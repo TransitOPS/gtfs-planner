@@ -301,12 +301,12 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.text(link) =~ "Routes"
     end
 
-    test "Stations activates on /gtfs/42/stops" do
+    test "Stops & stations activates on /gtfs/42/stops" do
       html = render_nav(editor_assigns("/gtfs/42/stops"))
       doc = LazyHTML.from_fragment(html)
 
       link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
-      assert LazyHTML.text(link) =~ "Stations"
+      assert LazyHTML.text(link) =~ "Stops & stations"
     end
 
     test "Import activates on /gtfs/42/import" do
@@ -415,7 +415,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     test "editor sees GTFS task links" do
       html = render_nav(editor_assigns("/"))
       assert html =~ "Routes"
-      assert html =~ "Stations"
+      assert html =~ "Stops"
       assert html =~ "Import"
       assert html =~ "Export"
     end
@@ -431,7 +431,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
 
       html = render_nav(assigns)
       refute html =~ "Routes"
-      refute html =~ "Stations"
+      refute html =~ "Stops"
     end
   end
 

@@ -79,7 +79,7 @@ defmodule GtfsPlannerWeb.Navigation do
           class={nav_link_class(gtfs_family_active?(@current_path, "stops"))}
           aria-current={gtfs_family_active?(@current_path, "stops") && "page"}
         >
-          <.icon name="hero-map-pin" class="w-4 h-4" /> Stations
+          <.icon name="hero-map-pin" class="w-4 h-4" /> Stops &amp; stations
         </.link>
       <% end %>
 

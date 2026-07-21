@@ -120,6 +120,89 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     end
   end
 
+  describe "resolve_wheelchair_boarding/2" do
+    test "returns accessible/direct for a child value of 1" do
+      child = %Stop{wheelchair_boarding: 1}
+
+      assert Stop.resolve_wheelchair_boarding(child, nil) ==
+               %{status: :accessible, source: :direct}
+    end
+
+    test "returns not_accessible/direct for a child value of 2" do
+      child = %Stop{wheelchair_boarding: 2}
+
+      assert Stop.resolve_wheelchair_boarding(child, nil) ==
+               %{status: :not_accessible, source: :direct}
+    end
+
+    test "a direct value wins over a conflicting parent" do
+      child = %Stop{wheelchair_boarding: 2}
+      parent = %Stop{wheelchair_boarding: 1}
+
+      assert Stop.resolve_wheelchair_boarding(child, parent) ==
+               %{status: :not_accessible, source: :direct}
+    end
+
+    test "inherits accessible from a parent 1 when the child is 0" do
+      child = %Stop{wheelchair_boarding: 0}
+      parent = %Stop{wheelchair_boarding: 1}
+
+      assert Stop.resolve_wheelchair_boarding(child, parent) ==
+               %{status: :accessible, source: :inherited}
+    end
+
+    test "inherits accessible from a parent 1 when the child is nil" do
+      child = %Stop{wheelchair_boarding: nil}
+      parent = %Stop{wheelchair_boarding: 1}
+
+      assert Stop.resolve_wheelchair_boarding(child, parent) ==
+               %{status: :accessible, source: :inherited}
+    end
+
+    test "inherits not_accessible from a parent 2 when the child is 0" do
+      child = %Stop{wheelchair_boarding: 0}
+      parent = %Stop{wheelchair_boarding: 2}
+
+      assert Stop.resolve_wheelchair_boarding(child, parent) ==
+               %{status: :not_accessible, source: :inherited}
+    end
+
+    test "returns unknown/missing for a child 0 with no parent" do
+      child = %Stop{wheelchair_boarding: 0}
+
+      assert Stop.resolve_wheelchair_boarding(child, nil) ==
+               %{status: :unknown, source: :missing}
+    end
+
+    test "returns unknown/missing for a child nil with a parent 0" do
+      child = %Stop{wheelchair_boarding: nil}
+      parent = %Stop{wheelchair_boarding: 0}
+
+      assert Stop.resolve_wheelchair_boarding(child, parent) ==
+               %{status: :unknown, source: :missing}
+    end
+
+    test "returns unknown/missing for a child nil with a parent nil" do
+      child = %Stop{wheelchair_boarding: nil}
+      parent = %Stop{wheelchair_boarding: nil}
+
+      assert Stop.resolve_wheelchair_boarding(child, parent) ==
+               %{status: :unknown, source: :missing}
+    end
+
+    test "leaves both input structs unchanged" do
+      child = %Stop{wheelchair_boarding: 0, stop_id: "CHILD"}
+      parent = %Stop{wheelchair_boarding: 1, stop_id: "PARENT"}
+
+      _result = Stop.resolve_wheelchair_boarding(child, parent)
+
+      assert child.wheelchair_boarding == 0
+      assert child.stop_id == "CHILD"
+      assert parent.wheelchair_boarding == 1
+      assert parent.stop_id == "PARENT"
+    end
+  end
+
   defp base_stop_attrs do
     %{
       stop_id: "STOP_1",

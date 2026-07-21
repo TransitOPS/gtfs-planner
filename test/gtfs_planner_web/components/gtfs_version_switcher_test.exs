@@ -361,7 +361,11 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       refute has_element?(view, "#gtfs-version-panel [data-version-option]", "Staging Version")
       refute has_element?(view, "#gtfs-version-panel [data-version-option]", "Importing Version")
       refute has_element?(view, "#gtfs-version-panel [data-version-option]", "Failed Version")
-      refute has_element?(view, ~s(#gtfs-version-panel [data-version-option][data-version-id="#{staging.id}"]))
+
+      refute has_element?(
+               view,
+               ~s(#gtfs-version-panel [data-version-option][data-version-id="#{staging.id}"])
+             )
     end
   end
 

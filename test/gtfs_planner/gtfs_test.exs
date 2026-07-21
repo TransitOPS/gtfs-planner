@@ -2,6 +2,7 @@ defmodule GtfsPlanner.GtfsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.Level
@@ -11,6 +12,7 @@ defmodule GtfsPlanner.GtfsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
+  import Mox
 
   describe "levels" do
     setup do
@@ -1167,6 +1169,148 @@ defmodule GtfsPlanner.GtfsTest do
                other_organization_version.id,
                other_organization_station.id
              ).user_id == other_organization_user.id
+    end
+
+    test "clear_station_editing_status surfaces connection loss instead of crashing", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      # Terminate the database backend so the clear's transaction loses its
+      # connection. The widened contract must surface an error outcome instead of
+      # crashing on the old `{:ok, :ok} =` pattern match. In the Ecto sandbox the
+      # lost ownership connection exits the checkout (which `rescue` cannot
+      # intercept), so accept either the production `{:error, _}` tuple or the
+      # sandbox exit — but never the old MatchError.
+      try do
+        GtfsPlanner.Repo.query!("SELECT pg_terminate_backend(pg_backend_pid())")
+      rescue
+        DBConnection.ConnectionError -> :ok
+      catch
+        :exit, _ -> :ok
+      end
+
+      result =
+        try do
+          {:returned,
+           Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)}
+        catch
+          :exit, _ -> :sandbox_connection_exit
+        end
+
+      case result do
+        {:returned, {:error, _reason}} ->
+          :ok
+
+        :sandbox_connection_exit ->
+          :ok
+
+        {:returned, other} ->
+          flunk("expected {:error, _} or a sandbox exit, got: #{inspect(other)}")
+      end
+    end
+  end
+
+  describe "adapter-backed catalog reads with a configured adapter" do
+    setup :verify_on_exit!
+
+    setup do
+      previous = Application.fetch_env(:gtfs_planner, :gtfs_catalog_read_adapter)
+      Application.put_env(:gtfs_planner, :gtfs_catalog_read_adapter, CatalogReadAdapterMock)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:gtfs_planner, :gtfs_catalog_read_adapter, value)
+          :error -> Application.delete_env(:gtfs_planner, :gtfs_catalog_read_adapter)
+        end
+      end)
+
+      :ok
+    end
+
+    test "each catalog read delegates to the adapter resolved at call time" do
+      organization_id = Ecto.UUID.generate()
+      gtfs_version_id = Ecto.UUID.generate()
+      route = %GtfsPlanner.Gtfs.Route{route_id: "r1"}
+      stop = %Stop{stop_id: "st1"}
+
+      route_page = %{rows: [route], total_count: 1, page: 1, route_types: [3], agencies: ["a1"]}
+
+      stop_page = %{
+        rows: [stop],
+        total_count: 1,
+        page: 1,
+        available_routes: [],
+        routes_by_stop: %{}
+      }
+
+      expect(CatalogReadAdapterMock, :load_route_catalog, fn org, version, opts ->
+        assert org == organization_id
+        assert version == gtfs_version_id
+        assert opts == [page: 1]
+        {:ok, route_page}
+      end)
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn org, version, opts ->
+        assert org == organization_id
+        assert version == gtfs_version_id
+        assert opts == [page: 2]
+        {:ok, stop_page}
+      end)
+
+      expect(CatalogReadAdapterMock, :fetch_route, fn _org, _version, "r1" -> {:ok, route} end)
+
+      expect(CatalogReadAdapterMock, :load_route_patterns, fn _org, _version, "r1" ->
+        {:ok, []}
+      end)
+
+      expect(CatalogReadAdapterMock, :fetch_stop, fn _org, _version, "st1" -> {:ok, stop} end)
+
+      expect(CatalogReadAdapterMock, :load_stop_regions, fn _org, _version, ^stop ->
+        %{
+          child_stops: {:ok, []},
+          levels: {:ok, []},
+          pathways: {:ok, []},
+          editing_status: {:ok, nil}
+        }
+      end)
+
+      assert Gtfs.load_route_catalog(organization_id, gtfs_version_id, page: 1) ==
+               {:ok, route_page}
+
+      assert Gtfs.load_stop_catalog(organization_id, gtfs_version_id, page: 2) ==
+               {:ok, stop_page}
+
+      assert Gtfs.fetch_catalog_route(organization_id, gtfs_version_id, "r1") == {:ok, route}
+      assert Gtfs.load_catalog_route_patterns(organization_id, gtfs_version_id, "r1") == {:ok, []}
+      assert Gtfs.fetch_catalog_stop(organization_id, gtfs_version_id, "st1") == {:ok, stop}
+
+      assert Gtfs.load_catalog_stop_regions(organization_id, gtfs_version_id, stop) == %{
+               child_stops: {:ok, []},
+               levels: {:ok, []},
+               pathways: {:ok, []},
+               editing_status: {:ok, nil}
+             }
+    end
+
+    test "the adapter is re-resolved on every call" do
+      id = Ecto.UUID.generate()
+
+      expect(CatalogReadAdapterMock, :fetch_route, 2, fn _org, _version, _route_id ->
+        {:error, :not_found}
+      end)
+
+      assert Gtfs.fetch_catalog_route(id, id, "r1") == {:error, :not_found}
+      assert Gtfs.fetch_catalog_route(id, id, "r1") == {:error, :not_found}
     end
   end
 

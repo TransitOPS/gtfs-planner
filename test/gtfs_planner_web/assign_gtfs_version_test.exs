@@ -53,7 +53,7 @@ defmodule GtfsPlannerWeb.AssignGtfsVersionTest do
     published: published
   } do
     {:ok, _view, html} = live(conn, "/gtfs/#{published.id}/stops")
-    assert html =~ "Stations"
+    assert html =~ "Stops"
   end
 
   test "redirects to dashboard for a staging version", %{conn: conn, organization: org} do
