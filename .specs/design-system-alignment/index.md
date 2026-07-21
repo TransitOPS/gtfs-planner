@@ -103,7 +103,7 @@ Implement shared contracts once, then migrate consumers. Page reports retain dom
 
 ### 1. Record ambiguous product-surface decisions — complete
 
-The schedules route, API-key UI, confirmation resend, admin user detail, station-resolution prototype, report pathway form, user-deactivation recovery, import atomicity/recovery, display timezone, clock-format deferral, and all proposal findings are resolved in [decisions.md](decisions.md). Removing a dead route/surface is a valid alignment correction; do not style an undefined feature.
+The schedules route, API-key UI, confirmation resend, admin user detail, station-resolution prototype, report pathway form, user-deactivation recovery, import atomicity/recovery, display timezone, 12-hour clock format, and all proposal findings are resolved in [decisions.md](decisions.md). Removing a dead route/surface is a valid alignment correction; do not style an undefined feature.
 
 ### 2. Repair the shared platform
 
@@ -137,7 +137,7 @@ The full rationale, evidence, proposal dispositions, and package insertion point
 6. Remove the unreachable report pathway form and keep pathway editing in the station diagram.
 7. Require explicit, consequence-specific confirmation for user deactivation; do not offer Undo for invalidated sessions.
 8. Import into a non-current staging version and publish atomically only after success.
-9. Display in the current version's agency timezone with explicit UTC fallback; defer the 12-hour/24-hour format choice until report/validation implementation.
+9. Display in the current version's agency timezone with explicit UTC fallback, using an unpadded 12-hour clock with uppercase AM/PM.
 10. All 21 proposal findings have accepted, deferred, or rejected dispositions and sequential insertion points.
 
 ## Verification status

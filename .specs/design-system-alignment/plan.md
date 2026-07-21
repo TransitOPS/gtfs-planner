@@ -8,12 +8,12 @@ Implementation is **dependency-ordered**. Packages that consume the same shared 
 
 ## Status
 
-- Branch: `main`; implementation through PR [#672](https://github.com/TransitOPS/gtfs-planner/pull/672) is merged; Package 18 is complete on branch `018-dsa`
+- Branch: `main`; implementation through PR [#675](https://github.com/TransitOPS/gtfs-planner/pull/675) is merged; Package 18 is complete but remains unmerged on branch `018-dsa`
 - Audit: complete
-- Implementation: Packages 0–5, 7, 9, 10, 12, 14, and 18 are complete; Package 8's prototype retirement is complete. Packages 11, 13, 15, 16, 17, 19, and 20 remain. Package 6's implementation is merged, but its historical keyboard-at-200%-zoom evidence item remains open; Package 8's P0 gate remains tied to that evidence.
+- Implementation: Packages 0–4, 7, 9–12, and 14 are complete on `main`; Package 13 is merged and fully verified on repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676), which remains pending merge. Package 5's implementation is complete with one historical browser observation pending; Package 6's implementation is merged with its historical keyboard-at-200%-zoom observation pending; Package 8's prototype retirement is complete; Package 18 is complete off-main; and Packages 15/16 have prepared specs and dedicated worktrees but no production implementation yet. Packages 15, 16, 17, 19, and 20 remain, and Package 18 still needs integration into `main`.
 - Accessibility scope: decision 0.12 in [decisions.md](decisions.md) removes nonvisual/screen-reader work (VoiceOver gates, announcement contracts, nonvisual canvas summaries, screen-reader smoke tests) across all packages; keyboard operability remains required within reason
-- Findings: 198 total — 2 P0 remaining (SHR-001/SHR-007 implementation resolved, keyboard-only browser check pending; AUTH-001 implementation resolved, keyboard-only `/first` browser check recorded as a separate zero-user release observation; EXC-001 closed by Package 8 retirement), 83 P1, 93 P2 (includes AUTH-013/AUTH-014 discovered during Package 10 browser evidence), 13 P3
-- Current quality gate: `mix precommit` passed for merged Package 14 on 2026-07-20 — 2,746 Elixir tests (0 failures, 5 skipped), 220 JavaScript tests, and four station-diagram Playwright suites. This full gate includes the merged Package 12 changes. Package 18 has focused ErrorHTML, retirement-route, design-system, and real-browser evidence on branch `018-dsa`.
+- Findings: 198 total — 9 P0 with 2 historical evidence records remaining (SHR-001/SHR-007 implementation resolved, keyboard-only browser check pending; AUTH-001 implementation resolved, keyboard-only `/first` browser check recorded as a separate zero-user release observation; EXC-001 closed by Package 8 retirement), 83 P1, 93 P2 (includes AUTH-013/AUTH-014 discovered during Package 10 browser evidence), 13 P3
+- Current quality gate: repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676), commit `c4c4d15`, passes `mix precommit` from a clean test database on 2026-07-21 — 3,059 tests (0 failures, 5 skipped), with no added Credo issues. Its focused navigation/access-control set passes 76 tests. The earlier 26 isolation failures were confirmed as persistent browser-seed contamination; the three real failures were stale “Stations” assertions updated to “Stops & stations.” Merge PR #676 before treating `main` itself as green. Package 18 has focused ErrorHTML, retirement-route, design-system, and real-browser evidence on `018-dsa`.
 
 ### Tracking convention
 
@@ -34,7 +34,7 @@ For every completed package, add a short completion note containing:
 ## Execution rules
 
 1. Follow the dependency lanes below. Numeric order is a tracking convention, not a concurrency prohibition.
-2. Do not start page-level visual alignment until the P0 correctness and accessibility gates are closed.
+2. Do not graduate a page-level package while a P0 implementation defect remains. The remaining Package 5/6 items are historical manual evidence observations for already-resolved implementations; they may be reconciled concurrently but must close before Package 20.
 3. Correct shared components before migrating page-owned copies of the same pattern.
 4. Update the design-system Components/Foundation documentation and regression tests in the same package as a shared-contract change.
 5. Treat every `proposal-opportunity` as advisory. It requires an explicit accept/defer/reject decision before implementation.
@@ -44,15 +44,17 @@ For every completed package, add a short completion note containing:
 
 ## Remaining execution lanes
 
-First reconcile the two outstanding historical P0 evidence records so the P0 gate is truthful: Package 6's keyboard-at-200%-zoom overlay observation and the separate zero-user `/first` release observation attached to `AUTH-001`. Package 10's implementation remains complete. These evidence checks are independent of the page-alignment work below.
+First reconcile the two outstanding historical P0 evidence records so the P0 gate is truthful: Package 6's keyboard-at-200%-zoom overlay observation and the separate zero-user `/first` release observation attached to `AUTH-001`. Package 10's implementation remains complete. These evidence checks are independent of the implementation lanes below.
 
 The recommended next implementation wave is:
 
-- **Lane A — Package 11:** dashboard, settings, and retirement of the legacy API-key subsystem. This work is independent of the GTFS page packages.
-- **Lane B — Package 13:** route/station catalogs and details. It consumes the Package 9 responsive data-view and route-identity contracts and can proceed independently of Lane A.
-- **Lane C — Packages 15 and 16:** Package 14 now unblocks report/history work, and Packages 1–3 plus 14 provide the correctness and upload foundations for import/export. These packages may proceed concurrently on page-owned work, but one lane must own each shared version-diff and count-strip API; the other lane must consume that API after it lands rather than create a competing primitive.
+- **Integration gate — restore green `main`:** PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) updates the three stale “Stations” assertions and passes `mix precommit` from a clean test database. Merge it before starting implementation from the verified checkpoint.
+- **Resolved decision — clock format:** decision 0.9 now requires an unpadded 12-hour clock with uppercase AM/PM, current-version agency timezone, and explicit UTC fallback. Packages 15 and 17 must consume that contract.
+- **Lane A — Package 15:** station reports and history. It owns the shared configurable count-strip contract and may proceed concurrently with Package 16 after Package 14 and the Package 13 tri-state/pathway presentation work.
+- **Lane B — Package 16:** import and export. It owns the shared version-diff contract and builds on Packages 1–3 plus the Package 14 upload contract. It may proceed concurrently with Package 15; each lane must consume, rather than duplicate, the other lane's shared primitive.
+- **Integration lane — Package 18:** rebase or otherwise reconcile `018-dsa` with current `main`, rerun its focused checks, and merge it. This is independent of Packages 15 and 16 except for likely shared design-page conflicts, which should be resolved by rebasing before merge.
 
-Package 17 follows the clock-format decision required by decision 0.9 and should consume the tri-state/pathway work established by Packages 13/15 plus the count-strip work established by Packages 15/16. Package 19 begins only after Packages 11, 13, 15, 16, and 17 have recorded their graduation evidence. Package 20 remains strictly last.
+While restoring green `main`, the two P0 evidence observations and Package 18 conflict assessment can proceed concurrently. After the green checkpoint, Packages 15 and 16 plus the Package 18 rebase/integration may proceed concurrently under the ownership boundaries above. Package 17 follows Packages 15/16 and consumes the resolved 12-hour clock, tri-state/pathway, and count-strip contracts. Package 19 begins only after Packages 15–18 are integrated and have recorded their graduation evidence. Package 20 remains strictly last.
 
 ## Work packages
 
@@ -68,9 +70,9 @@ Resolve ambiguity before implementation so later packages do not invent product 
 - [x] **0.6 Report pathway form:** remove the unreachable report-owned branch; keep pathway editing in the station diagram (`REP-014`).
 - [x] **0.7 User deactivation:** require user-specific explicit confirmation disclosing organization-access and global session revocation; do not offer a misleading Undo.
 - [x] **0.8 Import recovery:** use a non-current staging version and atomic publication; failed imports leave the prior version untouched and expose cleanup/retry.
-- [x] **0.9 Timezone:** use current-version agency timezone with explicit UTC fallback and zone disclosure where ambiguous; defer 12-hour versus 24-hour display format (`VAL-009`, `REP-023`).
+- [x] **0.9 Timezone and clock:** use current-version agency timezone with explicit UTC fallback and zone disclosure where ambiguous; render operator-facing time with an unpadded 12-hour clock and uppercase AM/PM (`VAL-009`, `REP-023`).
 - [x] **0.10 Proposal ledger:** all 21 proposal opportunities are accepted, deferred, or rejected in [decisions.md](decisions.md), with annotations in each owning report.
-- [x] **0.11 Gate:** every accepted proposal has a package insertion point; the deferred clock format is an explicit gate only for packages 15 and 17.
+- [x] **0.11 Gate:** every accepted proposal has a package insertion point; the clock-format gate is resolved for Packages 15 and 17 by decision 0.9.
 
 Completion note: decisions and source evidence are recorded in [decisions.md](decisions.md). No production code or tests changed. Accepted proposals are mapped to packages 9 and 13–19; deferred proposals retain explicit revisit conditions. Packages 1, 2, and 3 were subsequently implemented in merged PRs [#659](https://github.com/TransitOPS/gtfs-planner/pull/659), [#660](https://github.com/TransitOPS/gtfs-planner/pull/660), and [#661](https://github.com/TransitOPS/gtfs-planner/pull/661), and are closed in [import-and-export.md](import-and-export.md).
 
@@ -109,7 +111,7 @@ Completion note: merged PR [#661](https://github.com/TransitOPS/gtfs-planner/pul
 - [x] Verify keyboard labels, error associations, pending states, and focus after submission.
 - [x] Record completion evidence in [dashboard-settings-api-keys.md](dashboard-settings-api-keys.md).
 
-Completion note: merged PR [#662](https://github.com/TransitOPS/gtfs-planner/pull/662), commit `064ab50`, rebuilds the authenticated account-settings LiveView as two isolated email and password forms with stable DOM contracts, truthful pending/error states, secret clearing, disabled reconnect recovery, and first-error focus recovery. Email changes complete through an authenticated one-time confirmation route; password mutation moves to an authenticated HTTP boundary that atomically updates the password, revokes prior credentials, disconnects expired LiveView sessions, clears remember-me state, and issues a fresh current-browser session. 2,454 tests pass with 0 failures and 5 skipped; coverage includes deterministic mail-failure, controller, form-contract, token-lifecycle, cross-session revocation, and structured parameter-filter tests. `ACCT-001` and `ACCT-002` are resolved. Remaining ACCT-003–ACCT-018 findings are deferred to Package 11, which will apply the repaired shared form, feedback, shell, and CTA contracts once those contracts are completed in Package 9.
+Completion note: merged PR [#662](https://github.com/TransitOPS/gtfs-planner/pull/662), commit `064ab50`, rebuilds the authenticated account-settings LiveView as two isolated email and password forms with stable DOM contracts, truthful pending/error states, secret clearing, disabled reconnect recovery, and first-error focus recovery. Email changes complete through an authenticated one-time confirmation route; password mutation moves to an authenticated HTTP boundary that atomically updates the password, revokes prior credentials, disconnects expired LiveView sessions, clears remember-me state, and issues a fresh current-browser session. 2,454 tests pass with 0 failures and 5 skipped; coverage includes deterministic mail-failure, controller, form-contract, token-lifecycle, cross-session revocation, and structured parameter-filter tests. `ACCT-001` and `ACCT-002` are resolved. The remaining ACCT-003–ACCT-018 findings were subsequently dispositioned by Package 11 after Package 9 completed the shared form, feedback, shell, and CTA contracts.
 
 ### 5. Restore first-install error mapping
 
@@ -165,11 +167,12 @@ unauthenticated requests; the raw `/prototypes/` path is not statically publishe
 remain under `priv/prototypes/` with an advisory README. `EXC-001`, `EXC-002`, `EXC-003`, `EXC-004`,
 `EXC-006`, `EXC-007`, `EXC-008`, `EXC-009`, `EXC-011`, and the prototype-serving portion of
 `EXC-012` are closed by retirement. `EXC-005` and the `ErrorHTML` test-coverage portion of `EXC-012`
-remain open for Package 18. `EXC-010` is accepted/transferred to Packages 15/16/19. The P0 gate
+were subsequently closed on `018-dsa` by Package 18 and remain pending integration into `main`.
+`EXC-010` is accepted/transferred to Packages 15/16/19. The P0 gate
 remains open: `AUTH-001` and `SHR-001` each have implementation resolved but pending keyboard-only
-browser checks; Package 7's recorded CI/browser checkpoint is the remaining evidence input. Package 9
-is unauthorized until all nine P0 rows have evidence-backed closed or deliberately removed
-dispositions.
+browser checks; Package 7's recorded CI/browser checkpoint is the remaining evidence input. Subsequent
+page packages proceeded because the P0 implementations were resolved and covered by automated/browser
+contracts, but Package 20 cannot close until these final observations have evidence-backed dispositions.
 
 ### 9. Repair shared design-system contracts
 
@@ -209,14 +212,26 @@ findings recorded from browser evidence — `AUTH-013` (failed-submit auto-focus
 (shared default button 40px vs the 44px target) — both open and owned by follow-ups. The repository-wide
 `mix precommit` gate passed on 2026-07-20 (2,795 tests, 0 failures, 5 skipped; Credo diff from
 `origin/main` added no issues after a step-10 nesting refactor of `UserForgotPasswordLive.handle_event/2`),
-run against a freshly reset test database. Package 10 is complete and Package 11 is authorized.
+run against a freshly reset test database. Package 10 is complete; Package 11 subsequently completed in
+PR [#673](https://github.com/TransitOPS/gtfs-planner/pull/673).
 
 ### 11. Align dashboard, settings, and API keys
 
-- [ ] Implement all unresolved `ACCT-001`–`ACCT-018` findings in [dashboard-settings-api-keys.md](dashboard-settings-api-keys.md).
-- [ ] Apply the package 0 API-key decision; do not style a retired surface.
-- [ ] Verify empty, error, loading, success, destructive, narrow-screen, and keyboard states.
-- [ ] Run focused LiveView tests and browser checks.
+- [x] Implement all unresolved `ACCT-001`–`ACCT-018` findings in [dashboard-settings-api-keys.md](dashboard-settings-api-keys.md).
+- [x] Apply the package 0 API-key decision; do not style a retired surface.
+- [x] Verify empty, error, loading, success, destructive, narrow-screen, and keyboard states.
+- [x] Run focused LiveView tests and browser checks.
+
+Completion note: merged via PR [#673](https://github.com/TransitOPS/gtfs-planner/pull/673), commit
+`c7acb65`. Package 11 resolves the remaining dashboard/settings findings, closes `ACCT-006`–`ACCT-008`
+and `ACCT-016` by retiring the unused organization API-key subsystem, and records `ACCT-018` as rejected
+without implementation. Companion `api_session` authentication remains intact and is characterized by
+focused API tests. Verification: `mix precommit` passed 2,965 Elixir tests with 0 failures and 5 skipped;
+11 Chromium scenarios cover the account surfaces at 320/640/768/1280px, keyboard/focus, pending/error,
+reduced-motion, reconnect, and password-success behavior. Follow-up PR
+[#674](https://github.com/TransitOPS/gtfs-planner/pull/674), commit `acc5ae5`, moved version and account
+actions into tested menu contracts and updated their Elixir, Vitest, and Playwright coverage. Package 19
+owns the final governed inventory and maturity documentation for those shared navigation contracts.
 
 ### 12. Align administration
 
@@ -238,10 +253,25 @@ responsive table-action examples were updated with their production consumers.
 
 ### 13. Align GTFS catalogs and details
 
-- [ ] Implement all unresolved `CAT-001`–`CAT-024` findings in [gtfs-catalog-and-details.md](gtfs-catalog-and-details.md).
-- [ ] Apply the schedules decision from package 0.
-- [ ] Verify route/station catalogs, version context, route tabs, station details, filters, pagination, empty states, and narrow layouts.
-- [ ] Run focused catalog/detail tests and browser checks.
+- [x] Implement all unresolved `CAT-001`–`CAT-024` findings in [gtfs-catalog-and-details.md](gtfs-catalog-and-details.md).
+- [x] Apply the schedules decision from package 0.
+- [x] Verify route/station catalogs, version context, route tabs, station details, filters, pagination, empty states, and narrow layouts.
+- [x] Run focused catalog/detail tests and browser checks.
+- [x] Pass the post-merge repository-wide `mix precommit` gate from a clean test database.
+
+Implementation note: merged via PR [#675](https://github.com/TransitOPS/gtfs-planner/pull/675), commit
+`1b312eb`. Package 13 resolves `CAT-002`–`CAT-020` and `CAT-022`–`CAT-024`; `CAT-001` remains the
+approved schedules deferral and `CAT-021` remains deferred pending a product/data contract for stop
+sequences. Route and Stops & stations catalogs now use the shared responsive table, pagination, empty,
+route-identity, accessibility, and pathway contracts behind recoverable adapter-backed reads; detail
+regions distinguish not-found, partial, and unavailable outcomes. Focused adapter/unit/Mox LiveView
+tests cover ready, empty, partial, unavailable, not-found, retry, and editing outcomes. The 43-case
+Chromium matrix covers 320/768/1280px and 200% zoom, keyboard traversal, target size, overflow, long
+values, reduced motion, and state/copy contracts. Components examples were updated for the graduated
+transit presentation contracts; maturity labels remain owned by Package 19. Repair PR
+[#676](https://github.com/TransitOPS/gtfs-planner/pull/676), commit `c4c4d15`, updates the three stale
+navigation/access-control copy assertions and passes `mix precommit` from a clean test database with
+3,059 tests, 0 failures, and 5 skipped; it remains pending merge.
 
 ### 14. Align station diagram and editing
 
@@ -270,6 +300,12 @@ header/editing controls and passed 1,183 focused LiveView/component tests.
 - [ ] Verify all report sections, edit drawer, history, rollback, loading/stale/error states, print, and narrow layouts.
 - [ ] Run focused report/history tests and browser checks.
 
+Preparation note (2026-07-21): the complete architecture/critique/spec/preparation pipeline is ready in
+`.specs/015-dsa/` with 8 prepared steps, 9 guardrails, 6 live invariants, and a validated manifest.
+Branch/worktree `015-dsa` is based on `origin/main` at `1b312eb`; `mix setup` passed. Package 15 owns
+the configurable count-strip contract. Step 7 consumes Package 16's `TransitPresentation.version_diff_row/1`
+after that dependency lands. No production implementation has started.
+
 ### 16. Align import and export
 
 - [ ] Implement every import/export finding that remains unresolved after Packages 1–3 in [import-and-export.md](import-and-export.md); do not reopen the closed `IMP-001`, `IMP-002`, or `IMP-019` correctness boundaries without contradictory evidence.
@@ -277,6 +313,12 @@ header/editing controls and passed 1,183 focused LiveView/component tests.
 - [ ] Apply accepted upload and durable-task proposals only through graduated contracts.
 - [ ] Verify upload, parsing, diff review, decision application, export generation/download, validation launch, partial states, retry, reconnect, and version identity.
 - [ ] Run focused import/export tests and browser checks.
+
+Preparation note (2026-07-21): the complete architecture/critique/spec/preparation pipeline is ready in
+`.specs/016-dsa/` with 15 prepared steps, 11 guardrails, 10 live invariants, and a validated manifest.
+Branch/worktree `016-dsa` is based on `origin/main` at `1b312eb`; `mix setup` passed. Package 16 owns
+the shared version-diff contract. Step 14 consumes Package 15's count-strip implementation after that
+dependency lands. No production implementation has started.
 
 ### 17. Align validation and reachability
 
@@ -315,7 +357,7 @@ surfaces audit records the retained prototype as advisory research.
 
 ### 20. Full-system verification and closeout
 
-- [ ] Reconcile every one of the 196 finding IDs against its owning report; each must be resolved, removed, or explicitly deferred with rationale and owner.
+- [ ] Reconcile every one of the 198 finding IDs against its owning report; each must be resolved, removed, or explicitly deferred with rationale and owner.
 - [ ] Confirm there are no unresolved P0 findings.
 - [ ] Confirm every unresolved P1 has an explicit approved deferral; otherwise continue implementation.
 - [ ] Run focused tests for every module changed.
@@ -328,7 +370,7 @@ surfaces audit records the retained prototype as advisory research.
 
 ## Progress summary
 
-Update this table only after the matching package gate is complete.
+Update this table after a material package status change; use **Complete** only after the matching package gate is satisfied.
 
 | Package | Scope | Status | Completion evidence |
 |---:|---|---|---|
@@ -338,21 +380,21 @@ Update this table only after the matching package gate is complete.
 | 3 | Import outcome recovery | Complete | PR [#661](https://github.com/TransitOPS/gtfs-planner/pull/661), commit `c4fbfbf`; `IMP-019` closed in [import-and-export.md](import-and-export.md) |
 | 4 | Account/setup P0s | Complete | PR [#662](https://github.com/TransitOPS/gtfs-planner/pull/662), commit `064ab50`; `ACCT-001`, `ACCT-002` closed in [dashboard-settings-api-keys.md](dashboard-settings-api-keys.md) |
 | 5 | First-install P0 | Complete (impl.) | PR [#664](https://github.com/TransitOPS/gtfs-planner/pull/664), commit `4f26b68`; `AUTH-001` implementation resolved in [authentication-and-setup.md](authentication-and-setup.md); keyboard-only browser check pending (VoiceOver gate removed by decision 0.12) |
-| 6 | Shared overlay P0 | Complete | PR [#665](https://github.com/TransitOPS/gtfs-planner/pull/665): native `<dialog>` migration, Vitest/jsdom tooling, Playwright harness, 24-case e2e suite, CI integration, 4-family consumer compat; 634 tests / 0 failures; keyboard-only 200% zoom observation pending (VoiceOver gate removed by decision 0.12) in [shared-shell-and-components.md](shared-shell-and-components.md) |
+| 6 | Shared overlay P0 | Complete (impl.); evidence pending | PR [#665](https://github.com/TransitOPS/gtfs-planner/pull/665): native `<dialog>` migration, Vitest/jsdom tooling, Playwright harness, 24-case e2e suite, CI integration, 4-family consumer compat; 634 tests / 0 failures; keyboard-only 200% zoom observation pending (VoiceOver gate removed by decision 0.12) in [shared-shell-and-components.md](shared-shell-and-components.md) |
 | 7 | Spatial keyboard P0 | Complete | PR [#666](https://github.com/TransitOPS/gtfs-planner/pull/666), commit `f88d1c8`; `DIA-001` closed in [station-diagram-and-editing.md](station-diagram-and-editing.md); scale-calibration and DIA-003 deferred to Package 14 (2026-07-19) |
 
 Completion note: DIA-001 is closed and merged to `main` via PR [#666](https://github.com/TransitOPS/gtfs-planner/pull/666). CSS focus-suppression is replaced with paired dark/light `focus-visible` indicator; three SVG groups (stop, pathway, badge) have gated `tabindex` + `role="button"` + Enter/Space activation; coordinate fields and reposition table provide keyboard create/reposition paths; endpoint selects share `handle_stop_selection` state with canvas clicks; labeled pan/zoom/reset buttons are wired to the `DiagramCanvas` hook; Escape cancels placement with visible feedback. Focused suites: 321 Elixir diagram tests (0 failures), 41 Vitest diagram-canvas hook tests (0 failures), 452-line Playwright keyboard e2e spec. Two-point scale calibration keyboard path and DIA-003 map-alignment keyboard controls are recorded as dated, owned Package 14 debt (2026-07-19); the P0-closure claim is explicitly qualified for scale calibration (C-010). DIA-011 reposition-table visual token migration is also deferred to Package 14. No design-system documentation changed because Package 14 owns the broader station-diagram visual migration.
-| 8 | Prototype P0 and P0 gate | Retirement merged; P0 gate open | PR [#667](https://github.com/TransitOPS/gtfs-planner/pull/667), commit `9783ead`; prototype route/controller retired; 10 findings closed by retirement; `EXC-005`/`EXC-012` ErrorHTML portion remain for Package 18; `EXC-010` transferred to Packages 15/16/19; P0 gate open pending `AUTH-001`/`SHR-001` browser checks |
+| 8 | Prototype P0 and P0 gate | Retirement merged; P0 evidence gate open | PR [#667](https://github.com/TransitOPS/gtfs-planner/pull/667), commit `9783ead`; prototype route/controller retired; 10 findings closed by retirement; `EXC-005`/`EXC-012` ErrorHTML work is complete on `018-dsa` pending integration; `EXC-010` transferred to Packages 15/16/19; P0 evidence gate open pending `AUTH-001`/`SHR-001` browser observations |
 | 9 | Shared design-system contracts | Complete | PR [#668](https://github.com/TransitOPS/gtfs-planner/pull/668), commit `6e673fd`; 321 ExUnit (10 files), 19 Vitest, 41 Playwright (17 shared + 24 overlay regression); SHR-002–SHR-022 closed (SHR-016 closed by removal); GOV-009 trialed, GOV-010/011 experimental |
 | 10 | Authentication and setup | Complete | Branch `010-dsa-align-authentication-setup` (steps 1–9 + step 10); `AUTH-001`–`AUTH-012` dispositioned in [authentication-and-setup.md](authentication-and-setup.md#package-10-implementation-evidence); 151 ExUnit + 17 Vitest + 30 Playwright; new P2 `AUTH-013`/`AUTH-014` recorded; `mix precommit` passed (2,795 tests, 0 failures, 5 skipped) |
-| 11 | Dashboard, settings, and API keys | Not started | — |
+| 11 | Dashboard, settings, and API keys | Complete | PR [#673](https://github.com/TransitOPS/gtfs-planner/pull/673), commit `c7acb65`; `mix precommit` passed 2,965 tests (0 failures, 5 skipped) and 11 account Playwright scenarios; navigation-menu follow-up PR [#674](https://github.com/TransitOPS/gtfs-planner/pull/674), commit `acc5ae5` |
 | 12 | Administration | Complete | PR [#670](https://github.com/TransitOPS/gtfs-planner/pull/670), commit `42b5638`; ADM dispositions and 46 browser scenarios recorded in [administration.md](administration.md#package-12-automated-evidence-recorded-2026-07-20); Package 14's later `mix precommit` satisfies the integrator gate |
-| 13 | GTFS catalogs and details | Not started | — |
+| 13 | GTFS catalogs and details | Complete; repair PR pending merge | PR [#675](https://github.com/TransitOPS/gtfs-planner/pull/675), commit `1b312eb`; focused adapter/unit/LiveView coverage plus 43 catalog Playwright scenarios; repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) passes 3,059-test `mix precommit`; `CAT-001` and `CAT-021` remain approved deferrals |
 | 14 | Station diagram and editing | Complete | PR [#671](https://github.com/TransitOPS/gtfs-planner/pull/671), commit `d957359`; 2,746 Elixir + 220 JavaScript tests, four Playwright suites, and `mix precommit` pass |
-| 15 | Station reports and history | Not started | — |
-| 16 | Import and export | Not started | — |
+| 15 | Station reports and history | Prepared; implementation not started | `.specs/015-dsa/`: proposal, critique, 8-step spec, 9 guardrails, 6 invariants, 8 ready execution cards, validated manifest; branch/worktree `015-dsa` |
+| 16 | Import and export | Prepared; implementation not started | `.specs/016-dsa/`: proposal, critique, 15-step spec, 11 guardrails, 10 invariants, 15 ready execution cards, validated manifest; branch/worktree `016-dsa` |
 | 17 | Validation and reachability | Not started | — |
-| 18 | Exceptional surfaces | Complete | Branch `018-dsa`, commits `0e9b052`–`1dcd7a7`; `EXC-005` and remaining ErrorHTML portion of `EXC-012` closed with focused render/route and real-404 browser evidence; `EXC-010` remains transferred |
+| 18 | Exceptional surfaces | Complete off-main; integration pending | Branch `018-dsa`, commits `0e9b052`–`1dcd7a7`; `EXC-005` and remaining ErrorHTML portion of `EXC-012` closed with focused render/route and real-404 browser evidence; rebase/reverification/merge still required; `EXC-010` remains transferred |
 | 19 | Design-system governance | Not started | — |
 | 20 | Full-system verification and closeout | Not started | — |
 
