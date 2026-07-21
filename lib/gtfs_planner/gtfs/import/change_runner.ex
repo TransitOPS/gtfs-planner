@@ -3,6 +3,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunner do
 
   use GenServer, restart: :temporary
 
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns, ChangeWorker}
 
   @default_heartbeat_ms 60_000
@@ -111,7 +112,17 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunner do
     do: worker.compute(run, generation, token, topic)
 
   defp run_worker(worker, :apply, run, generation, token, topic),
-    do: worker.apply(run, generation, token, topic, [])
+    do: worker.apply(run, generation, token, audit_context(run), topic)
+
+  defp audit_context(run) do
+    %AuditContext{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      station_stop_id: nil,
+      actor_id: run.actor_id,
+      actor_email: run.actor_email
+    }
+  end
 
   defp close_worker_failure(%{operation: :apply} = state) do
     _ =

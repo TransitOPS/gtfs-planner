@@ -13,14 +13,15 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
 
   setup do
     root = Path.join(System.tmp_dir!(), "export-worker-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
     old_root = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path)
-    old_capacity = Application.get_env(:gtfs_planner, :export_artifact_max_total_bytes)
+    old_capacity = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes)
     Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, root)
 
     on_exit(fn ->
       File.rm_rf(root)
       restore_env(:gtfs_task_artifacts_path, old_root)
-      restore_env(:export_artifact_max_total_bytes, old_capacity)
+      restore_env(:gtfs_task_artifacts_max_total_bytes, old_capacity)
     end)
 
     %{root: root}
@@ -48,7 +49,14 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     assert is_binary(key)
     assert {:ok, claim} = ExportRuns.claim_download(organization.id, version.id, run.id)
     assert File.exists?(claim.path)
-    assert :ok = ExportRuns.complete_download(organization.id, version.id, ready.id)
+
+    assert :ok =
+             ExportRuns.complete_download(
+               organization.id,
+               version.id,
+               ready.id,
+               claim.claim_id
+             )
 
     assert File.exists?(
              Path.join([root, "export-runs", organization.id, version.id, run.id, key])
@@ -71,7 +79,7 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     stop_fixture(organization.id, version.id)
-    Application.put_env(:gtfs_planner, :export_artifact_max_total_bytes, 0)
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, 0)
     {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
     {:ok, claimed, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
 

@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Gtfs.AuditContext do
   @type t :: %__MODULE__{
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
-          station_stop_id: String.t(),
+          station_stop_id: String.t() | nil,
           actor_id: Ecto.UUID.t(),
           actor_email: String.t()
         }

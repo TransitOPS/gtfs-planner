@@ -3,7 +3,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeReview do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
-  alias GtfsPlanner.Gtfs.Import.{Diff, ParseError, ParseFailure, ParsedEntity, RowParser}
+  alias GtfsPlanner.Gtfs.Import.{Diff, ParsedEntity, ParseError, ParseFailure, RowParser}
 
   @spec compute(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) :: map()
   def compute(organization_id, version_id, files) do

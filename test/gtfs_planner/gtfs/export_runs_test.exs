@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
 
   setup do
     root = Path.join(System.tmp_dir!(), "export-runs-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
     old_root = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path)
     Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, root)
 
@@ -89,7 +90,7 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     assert claim.path == artifact.path
     assert {:error, :not_found} = ExportRuns.claim_download(organization.id, version.id, run.id)
     assert ExportRuns.cleanup_expired(organization.id) == 0
-    assert :ok = ExportRuns.complete_download(organization.id, version.id, run.id)
+    assert :ok = ExportRuns.complete_download(organization.id, version.id, run.id, claim.claim_id)
 
     from(r in Run, where: r.id == ^run.id)
     |> Repo.update_all(set: [artifact_expires_at: ~U[2000-01-01 00:00:00.000000Z]])
@@ -160,6 +161,40 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
 
     assert %Run{state: :failed, failure_code: "missing_or_corrupt_artifact"} =
              ExportRuns.get_for_version(organization.id, version.id, run.id)
+  end
+
+  test "fails fast when the configured private storage root is unavailable" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    missing =
+      Path.join(System.tmp_dir!(), "missing-export-root-#{System.unique_integer([:positive])}")
+
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, missing)
+
+    assert {:error, :artifact_storage_unavailable} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+  end
+
+  test "a stale completion cannot release a newer download claim" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    {:ok, _building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
+    artifact = publish!(organization.id, version.id, run.id)
+    {:ok, _ready} = ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+
+    assert {:ok, first} = ExportRuns.claim_download(organization.id, version.id, run.id)
+
+    from(r in Run, where: r.id == ^run.id)
+    |> Repo.update_all(set: [download_claimed_until: ~U[2000-01-01 00:00:00.000000Z]])
+
+    assert {:ok, second} = ExportRuns.claim_download(organization.id, version.id, run.id)
+    assert :ok = ExportRuns.complete_download(organization.id, version.id, run.id, first.claim_id)
+    assert {:error, :not_found} = ExportRuns.claim_download(organization.id, version.id, run.id)
+
+    assert :ok =
+             ExportRuns.complete_download(organization.id, version.id, run.id, second.claim_id)
   end
 
   defp publish!(organization_id, version_id, run_id) do

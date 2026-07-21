@@ -14,6 +14,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
     ChangeRuns
   }
 
+  alias GtfsPlanner.Gtfs.AuditContext
+
   @spec compute(struct(), pos_integer(), Ecto.UUID.t(), String.t()) :: :ok
   def compute(run, generation, token, _topic) do
     with {:ok, files} <- ChangeArtifactStorage.read(run),
@@ -34,20 +36,46 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
   end
 
   @doc "Applies approved or previously failed decisions through fenced per-row transactions."
-  @spec apply(struct(), pos_integer(), Ecto.UUID.t(), String.t(), keyword()) :: :ok
-  def apply(run, generation, token, _topic, opts \\ []) do
+  @spec apply(struct(), pos_integer(), Ecto.UUID.t(), AuditContext.t(), String.t()) :: :ok
+  def apply(run, generation, token, %AuditContext{} = audit_context, _topic) do
+    apply_with_options(run, generation, token, audit_context, [])
+  end
+
+  @doc false
+  def apply_with_hook(run, generation, token, %AuditContext{} = audit_context, topic, opts)
+      when is_list(opts) do
+    _ = topic
+    apply_with_options(run, generation, token, audit_context, opts)
+  end
+
+  defp apply_with_options(run, generation, token, audit_context, opts) do
     run.organization_id
     |> ChangeRuns.applyable_decisions(run.id)
     |> order_for_apply()
     |> Enum.reduce_while(:ok, fn decision, :ok ->
-      case ChangeRuns.apply_decision(
-             run.organization_id,
-             run.id,
-             decision.decision_id,
-             generation,
-             token,
-             opts
-           ) do
+      result =
+        if opts == [] do
+          ChangeRuns.apply_decision(
+            run.organization_id,
+            run.id,
+            decision.decision_id,
+            generation,
+            token,
+            audit_context
+          )
+        else
+          ChangeRuns.apply_decision_with_hook(
+            run.organization_id,
+            run.id,
+            decision.decision_id,
+            generation,
+            token,
+            audit_context,
+            opts
+          )
+        end
+
+      case result do
         {:ok, _applied} ->
           {:cont, :ok}
 

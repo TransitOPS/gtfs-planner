@@ -8,6 +8,8 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
 
   @default_max_run_bytes 150 * 1024 * 1024
 
+  alias GtfsPlanner.Gtfs.TaskArtifactCapacity
+
   @type artifact :: %{
           required(:key) => String.t(),
           required(:filename) => String.t(),
@@ -28,9 +30,12 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     with :ok <- validate_scope(organization_id, version_id, run_id),
          true <- safe_filename?(filename),
          {:ok, root} <- root(opts),
-         :ok <- capacity_available?(root, bytes, opts),
-         :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
-      publish_bytes(root, organization_id, version_id, run_id, filename, bytes)
+         {:ok, limits} <- capacity_limits(bytes, opts) do
+      TaskArtifactCapacity.within_limit(root, byte_size(bytes), limits.max_total_bytes, fn ->
+        with :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
+          publish_bytes(root, organization_id, version_id, run_id, filename, bytes)
+        end
+      end)
     else
       false -> {:error, :invalid_artifact_filename}
       {:error, _} = error -> error
@@ -39,15 +44,36 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
 
   def publish(_, _, _, _, _, _), do: {:error, :invalid_artifact}
 
+  @doc "Checks that the configured private root already exists and accepts a bounded probe write."
+  @spec available?(keyword()) :: :ok | {:error, :artifact_storage_unavailable}
+  def available?(opts \\ []) do
+    with {:ok, root} <- root(opts),
+         {:ok, %{type: :directory}} <- File.stat(root) do
+      probe = Path.join(root, ".storage-probe-#{Ecto.UUID.generate()}")
+
+      case File.write(probe, <<>>, [:exclusive]) do
+        :ok ->
+          _ = File.rm(probe)
+          :ok
+
+        {:error, _reason} ->
+          {:error, :artifact_storage_unavailable}
+      end
+    else
+      _ -> {:error, :artifact_storage_unavailable}
+    end
+  end
+
   @spec verify(map(), keyword()) :: {:ok, String.t()} | {:error, :missing_or_corrupt_artifact}
   def verify(artifact, opts \\ [])
 
   def verify(artifact, opts) when is_map(artifact) do
     with {:ok, root} <- root(opts),
          {:ok, path} <- artifact_path(root, artifact),
-         {:ok, bytes} <- File.read(path),
-         true <- byte_size(bytes) == artifact_size(artifact),
-         true <- digest(bytes) == artifact_digest(artifact) do
+         {:ok, %{type: :regular, size: size}} <- File.stat(path),
+         true <- size == artifact_size(artifact),
+         {:ok, digest} <- digest_file(path),
+         true <- digest == artifact_digest(artifact) do
       {:ok, path}
     else
       _ -> {:error, :missing_or_corrupt_artifact}
@@ -119,7 +145,7 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     end
   end
 
-  defp capacity_available?(root, bytes, opts) do
+  defp capacity_limits(bytes, opts) do
     max_run_bytes =
       Keyword.get(
         opts,
@@ -144,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
 
     with :ok <- valid_capacity?(max_run_bytes, max_total_bytes),
          :ok <- within_capacity?(byte_size(bytes), max_run_bytes) do
-      within_total_capacity?(root, byte_size(bytes), max_total_bytes)
+      {:ok, %{max_total_bytes: max_total_bytes}}
     end
   end
 
@@ -158,26 +184,6 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
 
   defp within_capacity?(size, limit) when size <= limit, do: :ok
   defp within_capacity?(_, _), do: {:error, :artifact_capacity_exceeded}
-
-  defp within_total_capacity?(root, size, limit) do
-    if stored_bytes(root) + size <= limit, do: :ok, else: {:error, :artifact_capacity_exceeded}
-  end
-
-  defp stored_bytes(root) do
-    root
-    |> Path.join("**/*")
-    |> Path.wildcard()
-    |> Enum.filter(&File.regular?/1)
-    |> Enum.map(&file_size/1)
-    |> Enum.sum()
-  end
-
-  defp file_size(path) do
-    case File.stat(path) do
-      {:ok, stat} -> stat.size
-      _ -> 0
-    end
-  end
 
   defp root(opts) do
     case Keyword.get(opts, :root) || Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path) do
@@ -232,6 +238,22 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     do: Map.get(artifact, :sha256) || Map.get(artifact, :artifact_sha256)
 
   defp digest(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  defp digest_file(path) do
+    with {:ok, device} <- File.open(path, [:read, :binary]) do
+      try do
+        digest =
+          IO.binstream(device, 64 * 1024)
+          |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+          |> :crypto.hash_final()
+          |> Base.encode16(case: :lower)
+
+        {:ok, digest}
+      after
+        File.close(device)
+      end
+    end
+  end
 
   defp run_directory(root, organization_id, version_id, run_id) do
     Path.join([root, "export-runs", organization_id, version_id, run_id])

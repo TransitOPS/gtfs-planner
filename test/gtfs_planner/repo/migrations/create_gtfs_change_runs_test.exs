@@ -1,11 +1,15 @@
 defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Ecto.{Migrator, UUID}
   alias GtfsPlanner.Repo
+  alias Postgrex.Error
 
   setup_all do
-    Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual) end)
+    Sandbox.mode(Repo, :auto)
+    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
     :ok
   end
 
@@ -79,7 +83,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
       insert_run!(context, "pending_compute")
       assert_constraint_violation(fn -> insert_run!(context, "review") end)
 
-      terminal_context = %{context | version_id: Ecto.UUID.generate()}
+      terminal_context = %{context | version_id: UUID.generate()}
       insert_version(context.schema, context.organization_id, terminal_context.version_id)
       insert_run!(terminal_context, "completed")
       insert_run!(terminal_context, "failed")
@@ -100,7 +104,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
     end
 
     test "rollback leaves the pre-existing version scope index intact", context do
-      Ecto.Migrator.down(Repo, @migration_version, Migration,
+      Migrator.down(Repo, @migration_version, Migration,
         prefix: context.schema,
         log: false
       )
@@ -113,13 +117,13 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
 
   defp setup_prefix do
     schema = "test_change_runs_#{System.unique_integer([:positive])}"
-    Ecto.Adapters.SQL.query!(Repo, ~s|CREATE SCHEMA "#{schema}"|, [])
+    SQL.query!(Repo, ~s|CREATE SCHEMA "#{schema}"|, [])
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.query!(Repo, ~s|DROP SCHEMA IF EXISTS "#{schema}" CASCADE|, [])
+      SQL.query!(Repo, ~s|DROP SCHEMA IF EXISTS "#{schema}" CASCADE|, [])
     end)
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TABLE "#{schema}".organizations (
@@ -130,7 +134,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
       []
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TABLE "#{schema}".gtfs_versions (
@@ -145,9 +149,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
   end
 
   defp insert_organization(schema) do
-    id = Ecto.UUID.generate()
+    id = UUID.generate()
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       ~s|INSERT INTO "#{schema}".organizations (id, name) VALUES ($1, $2)|,
       [dump(id), "Test"]
@@ -156,8 +160,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
     id
   end
 
-  defp insert_version(schema, organization_id, id \\ Ecto.UUID.generate()) do
-    Ecto.Adapters.SQL.query!(
+  defp insert_version(schema, organization_id, id \\ UUID.generate()) do
+    SQL.query!(
       Repo,
       """
       INSERT INTO "#{schema}".gtfs_versions (id, organization_id, name, inserted_at, updated_at)
@@ -170,12 +174,12 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
   end
 
   defp insert_run!(context, state, opts \\ []) do
-    id = Ecto.UUID.generate()
+    id = UUID.generate()
     leased? = Keyword.get(opts, :lease, state in @lease_states)
     finished? = Keyword.get(opts, :finished, state in @terminal_states)
     {current, total} = Keyword.get(opts, :progress, {nil, nil})
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       INSERT INTO "#{context.schema}".gtfs_change_runs (
@@ -195,7 +199,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
         "{}",
         1,
         0,
-        if(leased?, do: dump(Ecto.UUID.generate())),
+        if(leased?, do: dump(UUID.generate())),
         if(leased?, do: @now),
         if(state == "pending_compute", do: nil, else: @now),
         if(finished?, do: @now),
@@ -209,7 +213,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
   end
 
   defp insert_decision!(schema, run_id, decision_id) do
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       INSERT INTO "#{schema}".gtfs_change_decisions (
@@ -218,7 +222,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
       """,
       [
-        dump(Ecto.UUID.generate()),
+        dump(UUID.generate()),
         dump(run_id),
         decision_id,
         "stop",
@@ -236,13 +240,13 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
   end
 
   defp migrate_up(schema),
-    do: Ecto.Migrator.up(Repo, @migration_version, Migration, prefix: schema, log: false)
+    do: Migrator.up(Repo, @migration_version, Migration, prefix: schema, log: false)
 
-  defp assert_constraint_violation(fun), do: assert_raise(Postgrex.Error, fun)
+  defp assert_constraint_violation(fun), do: assert_raise(Error, fun)
 
   defp table_exists?(schema, table) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
         [schema, table]
@@ -253,7 +257,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
 
   defp index_exists?(schema, index) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = $2",
         [schema, index]
@@ -264,7 +268,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
 
   defp constraint_names(schema, table) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         SELECT con.conname FROM pg_constraint con
@@ -278,5 +282,5 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
     List.flatten(rows)
   end
 
-  defp dump(uuid), do: Ecto.UUID.dump!(uuid)
+  defp dump(uuid), do: UUID.dump!(uuid)
 end

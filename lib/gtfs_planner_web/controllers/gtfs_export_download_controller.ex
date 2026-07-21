@@ -37,7 +37,7 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadController do
       |> put_resp_header("content-length", Integer.to_string(claim.size))
       |> send_file(200, claim.path, 0, claim.size)
 
-    :ok = ExportRuns.complete_download(organization_id, version_id, run_id)
+    :ok = ExportRuns.complete_download(organization_id, version_id, run_id, claim.claim_id)
     conn
   end
 

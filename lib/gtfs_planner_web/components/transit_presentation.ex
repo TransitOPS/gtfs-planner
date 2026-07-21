@@ -77,6 +77,12 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
     """
   end
 
+  @absent_value :__absent__
+
+  @doc "Returns the sentinel used when one side of a change was not recorded."
+  @spec absent_value() :: :__absent__
+  def absent_value, do: @absent_value
+
   @doc """
   Renders one already-resolved version-diff decision.
 
@@ -98,6 +104,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   attr :dependency_keys, :list, default: []
   attr :edited?, :boolean, default: false
   attr :expanded?, :boolean, default: false
+  attr :class, :any, default: nil
   slot :actions
 
   def version_diff_row(assigns) do
@@ -112,6 +119,9 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       |> assign(:status_label, status_label)
       |> assign(:status_icon, status_icon)
       |> assign(:status_tone, status_tone)
+      |> assign(:visible_action_label, visible_action_label(assigns.action))
+      |> assign(:visible_status_label, visible_status_label(assigns.status))
+      |> assign(:rows, Enum.map(assigns.changes, &normalize_change/1))
 
     ~H"""
     <article
@@ -119,43 +129,72 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       data-version-diff-row
       data-version-diff-action={@action}
       data-version-diff-status={@status}
+      data-role="version-diff-row"
+      data-action={@action}
+      data-status={@status}
+      data-expanded={to_string(@expanded?)}
+      data-edited={to_string(@edited?)}
       aria-labelledby={"#{@id}-title"}
-      class="border-b border-base-300 py-4 text-sm last:border-b-0"
+      class={["border-b border-base-300 py-4 text-sm last:border-b-0", @class]}
     >
       <div class="grid gap-3 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(0,2fr)_auto] sm:items-start sm:gap-4">
-        <div class="flex items-center gap-2 font-medium">
+        <div data-role="version-diff-action" class="flex items-center gap-2 font-medium">
           <span data-version-diff-action-symbol aria-hidden="true">
             <.icon name={@action_icon} class={["size-4 shrink-0", @action_tone]} />
           </span>
-          <span class={@action_tone}>{@action_label}</span>
+          <span class={@action_tone} aria-label={@action_label}>{@visible_action_label}</span>
         </div>
 
         <div class="min-w-0">
-          <h3 id={"#{@id}-title"} class="font-medium text-base-content">
+          <h3
+            id={"#{@id}-title"}
+            data-role="version-diff-entity"
+            class="font-medium text-base-content"
+          >
             {@entity_label}
           </h3>
-          <p class="truncate font-mono text-xs text-base-content/70" title={@natural_key}>
+          <p
+            data-role="version-diff-key"
+            class="font-mono text-xs text-base-content/70 [overflow-wrap:anywhere]"
+            title={@natural_key}
+          >
             {@natural_key}
           </p>
-          <p :if={@summary} class="mt-1 text-base-content/70">{@summary}</p>
-          <p :if={@dependency_keys != []} class="mt-2 text-xs text-base-content/70">
+          <p :if={@summary} data-role="version-diff-summary" class="mt-1 text-base-content/70">
+            {@summary}
+          </p>
+          <p
+            :if={@dependency_keys != []}
+            data-role="version-diff-dependencies"
+            class="mt-2 text-xs text-base-content/70"
+          >
             Depends on: {Enum.join(@dependency_keys, ", ")}
           </p>
-          <p :if={@edited?} class="mt-1 text-xs font-medium text-info">Edited before applying</p>
+          <p
+            :if={@edited?}
+            data-role="version-diff-edited"
+            class="mt-1 text-xs font-medium text-info"
+          >
+            Edited before applying
+          </p>
           <p :if={@status == :rejected} class="mt-2 text-sm text-base-content/80">
             This change will not be applied.
           </p>
         </div>
 
         <div class="flex flex-wrap items-center gap-2 sm:justify-end">
-          <span class={["inline-flex items-center gap-1.5 font-medium", @status_tone]}>
+          <span
+            data-role="version-diff-status"
+            class={["inline-flex items-center gap-1.5 font-medium", @status_tone]}
+          >
             <span data-version-diff-status-symbol aria-hidden="true">
               <.icon name={@status_icon} class="size-4 shrink-0" />
             </span>
-            <span>{@status_label}</span>
+            <span aria-label={@status_label}>{@visible_status_label}</span>
           </span>
           <div
             :if={@actions != []}
+            data-role="version-diff-actions"
             class="flex min-h-11 items-center gap-2 [&_a]:min-h-11 [&_button]:min-h-11"
           >
             {render_slot(@actions)}
@@ -176,18 +215,45 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
         >
           View field changes
         </summary>
-        <dl class="mt-3 space-y-2">
+        <dl
+          data-role="version-diff-changes"
+          hidden={!@expanded?}
+          class="mt-3 space-y-2"
+        >
           <div
-            :for={change <- @changes}
+            :for={row <- @rows}
+            data-role="version-diff-change"
+            data-change-key={row.key}
             class="grid gap-1 sm:grid-cols-[minmax(9rem,1fr)_minmax(0,2fr)] sm:gap-3"
           >
-            <dt class="font-medium text-base-content/80">{Map.get(change, :label)}</dt>
+            <dt class="font-medium text-base-content/80">
+              <span data-role="version-diff-change-label">{row.label}</span>
+              <span
+                :if={row.key}
+                data-role="version-diff-change-key"
+                class="block font-mono text-xs text-base-content/70 [overflow-wrap:anywhere]"
+              >
+                {row.key}
+              </span>
+            </dt>
             <dd class="min-w-0 font-mono text-xs text-base-content/80">
-              <span class="break-words text-base-content/60">
-                {display_value(Map.get(change, :before))}
+              <span
+                data-role="version-diff-before"
+                data-value-kind={row.before.kind}
+                aria-label={row.before.label}
+                class="break-words text-base-content/60"
+              >
+                {row.before.text}
               </span>
               <span class="px-1 text-base-content/50" aria-hidden="true">→</span>
-              <span class="break-words">{display_value(Map.get(change, :after))}</span>
+              <span
+                data-role="version-diff-after"
+                data-value-kind={row.after.kind}
+                aria-label={row.after.label}
+                class="break-words"
+              >
+                {row.after.text}
+              </span>
             </dd>
           </div>
         </dl>
@@ -240,10 +306,35 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   defp version_diff_status(:applied), do: {"Applied", "hero-check-circle", "text-success"}
   defp version_diff_status(:failed), do: {"Failed", "hero-exclamation-circle", "text-error"}
 
-  defp display_value(nil), do: "No value"
-  defp display_value(%Decimal{} = value), do: Decimal.to_string(value, :normal)
-  defp display_value(value) when is_binary(value), do: value
-  defp display_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp display_value(value) when is_number(value), do: to_string(value)
-  defp display_value(value), do: inspect(value)
+  defp visible_action_label(:modify), do: "Modified"
+  defp visible_action_label(action), do: elem(version_diff_action(action), 0)
+  defp visible_status_label(:preview), do: "Preview"
+  defp visible_status_label(status), do: elem(version_diff_status(status), 0)
+
+  defp normalize_change(%{label: label, before: before, after: after_value} = change) do
+    %{
+      label: label,
+      key: Map.get(change, :key),
+      before: diff_value(before),
+      after: diff_value(after_value)
+    }
+  end
+
+  defp diff_value(@absent_value), do: %{kind: "absent", text: "Not recorded", label: nil}
+  defp diff_value(nil), do: %{kind: "nil", text: "nil", label: "No value"}
+  defp diff_value(true), do: %{kind: "boolean", text: "true", label: nil}
+  defp diff_value(false), do: %{kind: "boolean", text: "false", label: nil}
+
+  defp diff_value(%Decimal{} = value),
+    do: %{kind: "number", text: Decimal.to_string(value, :normal), label: nil}
+
+  defp diff_value(value) when is_number(value),
+    do: %{kind: "number", text: to_string(value), label: nil}
+
+  defp diff_value(value) when is_binary(value), do: %{kind: "string", text: value, label: nil}
+
+  defp diff_value(value) when is_atom(value),
+    do: %{kind: "atom", text: Atom.to_string(value), label: nil}
+
+  defp diff_value(value), do: %{kind: "term", text: inspect(value), label: nil}
 end

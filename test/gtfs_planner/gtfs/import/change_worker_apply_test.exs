@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
   use GtfsPlanner.DataCase, async: false
 
-  alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog}
 
   alias GtfsPlanner.Gtfs.Import.{
     ChangeDecision,
@@ -44,7 +44,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
       ])
 
     assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
-    assert :ok = ChangeWorker.apply(claimed, generation, token, ChangeRuns.topic(run), [])
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
 
     assert GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L2")
     assert GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
@@ -54,6 +62,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     assert Enum.all?(ChangeRuns.list_decisions(organization.id, run.id), &(&1.status == :applied))
     assert Repo.aggregate(ChangeLog, :count) == 2
+
+    logs = Repo.all(ChangeLog)
+    assert Enum.any?(logs, &(&1.entity_type == "level" and is_nil(&1.station_stop_id)))
+    assert Enum.any?(logs, &(&1.entity_type == "stop" and &1.station_stop_id == "central"))
   end
 
   test "rolls back mutation, audit, decision, and progress at an injected audit boundary" do
@@ -68,12 +80,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     assert {:ok, _claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
 
     assert {:error, :audit_boundary} =
-             ChangeRuns.apply_decision(
+             ChangeRuns.apply_decision_with_hook(
                organization.id,
                run.id,
                "level:L2",
                generation,
                token,
+               audit_context(run),
                on_step: fn
                  :before_audit -> {:error, :audit_boundary}
                  _step -> :ok
@@ -125,7 +138,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
       GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
       |> GtfsPlanner.Gtfs.import_update_stop(%{stop_name: "Drifted"})
 
-    assert :ok = ChangeWorker.apply(claimed, generation, token, ChangeRuns.topic(run), [])
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
 
     assert %ChangeRun{state: :partial, summary: %{"failed" => 1}} = Repo.get!(ChangeRun, run.id)
 
@@ -159,7 +179,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
       ])
 
     assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
-    assert :ok = ChangeWorker.apply(claimed, generation, token, ChangeRuns.topic(run), [])
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
 
     assert %{stop_name: "Central Station"} =
              GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
@@ -205,7 +233,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
 
     assert :ok =
-             ChangeWorker.apply(claimed, generation, token, ChangeRuns.topic(run),
+             ChangeWorker.apply_with_hook(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run),
                on_step: fn
                  :before_audit -> {:error, :audit_boundary}
                  _step -> :ok
@@ -225,8 +258,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
                retried,
                retry_generation,
                retry_token,
-               ChangeRuns.topic(retried),
-               []
+               audit_context(retried),
+               ChangeRuns.topic(retried)
              )
 
     assert %ChangeRun{state: :completed, progress_current: 1} = Repo.get!(ChangeRun, run.id)
@@ -255,11 +288,20 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
                "level:L2",
                generation + 1,
                token,
-               []
+               audit_context(run)
              )
 
     assert {:ok, cancelling} = ChangeRuns.request_cancel(organization.id, run.id)
-    assert :ok = ChangeWorker.apply(claimed, generation, token, ChangeRuns.topic(run), [])
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
     assert %ChangeRun{state: :cancelled} = Repo.get!(ChangeRun, cancelling.id)
     refute GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L2")
     refute GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L3")
@@ -307,6 +349,16 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
       dependency_keys: dependencies,
       current_fingerprint: nil,
       user_edited: false
+    }
+  end
+
+  defp audit_context(run) do
+    %AuditContext{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      station_stop_id: nil,
+      actor_id: run.actor_id,
+      actor_email: run.actor_email
     }
   end
 end

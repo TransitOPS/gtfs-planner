@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
   """
 
   alias GtfsPlanner.Gtfs.Import.ChangeRun
+  alias GtfsPlanner.Gtfs.TaskArtifactCapacity
 
   @max_files 3
   @max_file_bytes 50_000_000
@@ -26,18 +27,26 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
 
   def stage(organization_id, version_id, run_id, files, opts) when is_list(files) do
     with :ok <- validate_scope(organization_id, version_id, run_id),
-         :ok <- validate_files(files),
-         {:ok, root} <- root(opts),
-         :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
-      stage_files(root, organization_id, version_id, run_id, files)
-      |> case do
-        {:ok, staged} ->
-          {:ok, Enum.reverse(staged)}
+         {:ok, incoming_bytes} <- validate_files(files),
+         {:ok, root} <- root(opts) do
+      TaskArtifactCapacity.within_limit(
+        root,
+        incoming_bytes,
+        configured_max_total_bytes(),
+        fn ->
+          with :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
+            stage_files(root, organization_id, version_id, run_id, files)
+            |> case do
+              {:ok, staged} ->
+                {:ok, Enum.reverse(staged)}
 
-        {:error, reason} ->
-          _ = remove(organization_id, version_id, run_id, opts)
-          {:error, reason}
-      end
+              {:error, reason} ->
+                _ = remove(organization_id, version_id, run_id, opts)
+                {:error, reason}
+            end
+          end
+        end
+      )
     end
   end
 
@@ -119,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
         {:error, :artifact_capacity_exceeded}
 
       true ->
-        :ok
+        {:ok, Enum.sum(Enum.map(files, &byte_size(&1.content)))}
     end
   end
 
@@ -132,6 +141,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
 
   defp configured_max_run_bytes do
     Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_run_bytes, @max_total_bytes)
+  end
+
+  defp configured_max_total_bytes do
+    Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, 1024 * 1024 * 1024)
   end
 
   defp safe_filename?(filename) do

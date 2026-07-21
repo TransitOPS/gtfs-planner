@@ -51,6 +51,9 @@ config :gtfs_planner,
   gtfs_task_artifacts_max_total_bytes: 1024 * 1024 * 1024,
   gtfs_task_artifacts_ttl_seconds: 24 * 60 * 60
 
+# Maintenance is exercised explicitly so SQL sandbox tests retain process ownership.
+config :gtfs_planner, :task_artifact_maintenance_enabled, false
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

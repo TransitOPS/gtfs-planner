@@ -31,27 +31,33 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       when export_type in [:full, :pathways] do
     transaction_with_broadcast(fn ->
       if version_in_scope?(organization_id, version_id) do
-        lock_scope(organization_id, version_id, export_type)
+        case ArtifactStorage.available?() do
+          :ok ->
+            lock_scope(organization_id, version_id, export_type)
 
-        case lock_active_run(organization_id, version_id, export_type) do
-          %Run{} = run ->
-            {{:ok, run}, []}
+            case lock_active_run(organization_id, version_id, export_type) do
+              %Run{} = run ->
+                {{:ok, run}, []}
 
-          nil ->
-            attrs = %{
-              organization_id: organization_id,
-              gtfs_version_id: version_id,
-              actor_id: actor.id,
-              actor_email: actor.email,
-              export_type: export_type,
-              state: :pending,
-              phase: :preflight
-            }
+              nil ->
+                attrs = %{
+                  organization_id: organization_id,
+                  gtfs_version_id: version_id,
+                  actor_id: actor.id,
+                  actor_email: actor.email,
+                  export_type: export_type,
+                  state: :pending,
+                  phase: :preflight
+                }
 
-            case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
-              {:ok, run} -> {{:ok, run}, [run.id]}
-              {:error, changeset} -> {{:error, changeset}, []}
+                case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
+                  {:ok, run} -> {{:ok, run}, [run.id]}
+                  {:error, changeset} -> {{:error, changeset}, []}
+                end
             end
+
+          {:error, :artifact_storage_unavailable} ->
+            {{:error, :artifact_storage_unavailable}, []}
         end
       else
         {{:error, :not_found}, []}
@@ -143,7 +149,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       with {:ok, run} <- fenced_run(organization_id, run_id, generation, token),
            :ok <- matching_artifact?(run, artifact),
            {:ok, _path} <- ArtifactStorage.verify(artifact),
-           {:ok, ready} <- ready_run(run, artifact) do
+           {:ok, ready} <- ready_run(run, generation, token, artifact) do
         {{:ok, ready}, [run.id]}
       else
         {:error, :lease_lost} -> {{:error, :lease_lost}, []}
@@ -300,15 +306,16 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     end)
   end
 
-  @spec complete_download(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
-  def complete_download(organization_id, version_id, run_id) do
+  @spec complete_download(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t()) :: :ok
+  def complete_download(organization_id, version_id, run_id, claim_id) do
     transaction_with_broadcast(fn ->
       case lock_scoped_run(organization_id, version_id, run_id) do
         %Run{state: :ready} = run ->
           {_, _} =
             from(r in Run,
               where:
-                r.id == ^run.id and r.download_claimed_until >= fragment("CURRENT_TIMESTAMP"),
+                r.id == ^run.id and r.download_claimed_until == ^claim_id and
+                  r.download_claimed_until >= fragment("CURRENT_TIMESTAMP"),
               update: [
                 set: [download_claimed_until: nil, updated_at: fragment("CURRENT_TIMESTAMP")]
               ]
@@ -409,10 +416,11 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   def topic(%Run{id: id}), do: topic(id)
   def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id
 
-  defp ready_run(run, artifact) do
+  defp ready_run(run, generation, token, artifact) do
     database_now = database_now()
+    expires_at = DateTime.add(database_now, artifact_ttl_seconds())
 
-    Repo.update(
+    changeset =
       Run.system_changeset(run, %{
         state: :ready,
         phase: :cleanup,
@@ -422,10 +430,40 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
         artifact_filename: artifact.filename,
         artifact_sha256: artifact.sha256,
         artifact_size_bytes: artifact.size,
-        artifact_expires_at: DateTime.add(database_now, artifact_ttl_seconds()),
+        artifact_expires_at: expires_at,
         finished_at: database_now
       })
-    )
+
+    if changeset.valid? do
+      {updated, _} =
+        from(r in Run,
+          where:
+            r.id == ^run.id and r.organization_id == ^run.organization_id and
+              r.state == :building and r.lease_generation == ^generation and
+              r.lease_token == ^token and is_nil(r.cancel_requested_at) and
+              r.lease_expires_at >= fragment("CURRENT_TIMESTAMP"),
+          update: [
+            set: [
+              state: :ready,
+              phase: :cleanup,
+              lease_token: nil,
+              lease_expires_at: nil,
+              artifact_key: ^artifact.key,
+              artifact_filename: ^artifact.filename,
+              artifact_sha256: ^artifact.sha256,
+              artifact_size_bytes: ^artifact.size,
+              artifact_expires_at: ^expires_at,
+              finished_at: ^database_now,
+              updated_at: fragment("CURRENT_TIMESTAMP")
+            ]
+          ]
+        )
+        |> Repo.update_all([])
+
+      if updated == 1, do: {:ok, Repo.get!(Run, run.id)}, else: {:error, :lease_lost}
+    else
+      {:error, changeset}
+    end
   end
 
   defp claim_ready_download(run) do
@@ -443,23 +481,26 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
                 set: [
                   download_claimed_until:
                     fragment(
-                      "CURRENT_TIMESTAMP + (? * interval '1 second')",
+                      "clock_timestamp() + (? * interval '1 second')",
                       ^@download_claim_seconds
                     ),
                   download_count: r.download_count + 1,
-                  last_downloaded_at: fragment("CURRENT_TIMESTAMP"),
-                  updated_at: fragment("CURRENT_TIMESTAMP")
+                  last_downloaded_at: fragment("clock_timestamp()"),
+                  updated_at: fragment("clock_timestamp()")
                 ]
               ]
             )
             |> Repo.update_all([])
+
+          claimed_run = Repo.get!(Run, run.id)
 
           {{:ok,
             %{
               path: path,
               filename: run.artifact_filename,
               size: run.artifact_size_bytes,
-              sha256: run.artifact_sha256
+              sha256: run.artifact_sha256,
+              claim_id: claimed_run.download_claimed_until
             }}, [run.id]}
 
         {:error, :missing_or_corrupt_artifact} ->

@@ -106,4 +106,26 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorageTest do
     assert File.exists?(kept.path)
     refute File.exists?(orphan.path)
   end
+
+  test "serializes concurrent publications against the shared total budget", context do
+    publish = fn run_id ->
+      ArtifactStorage.publish(
+        context.organization_id,
+        context.version_id,
+        run_id,
+        "network.zip",
+        String.duplicate("x", 60),
+        root: context.root,
+        max_total_bytes: 100
+      )
+    end
+
+    results =
+      [Ecto.UUID.generate(), Ecto.UUID.generate()]
+      |> Task.async_stream(publish, ordered: false, timeout: :infinity)
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+    assert Enum.count(results, &(&1 == {:error, :artifact_capacity_exceeded})) == 1
+  end
 end

@@ -99,6 +99,26 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorageTest do
     refute File.exists?(orphan)
   end
 
+  test "enforces the shared total budget across existing task artifacts", context do
+    previous = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes)
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, 4)
+    File.mkdir_p!(context.root)
+    File.write!(Path.join(context.root, "existing-artifact"), "1234")
+
+    on_exit(fn ->
+      Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, previous)
+    end)
+
+    assert {:error, :artifact_capacity_exceeded} =
+             ChangeArtifactStorage.stage(
+               context.organization_id,
+               context.version_id,
+               context.run_id,
+               [%{filename: "levels.txt", content: "x"}],
+               root: context.root
+             )
+  end
+
   test "does not read a staged file whose final bytes changed", context do
     files = [%{filename: "levels.txt", content: "level_id,level_index\nL1,1\n"}]
 

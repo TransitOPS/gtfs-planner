@@ -60,6 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     # a reconnect always reconstructs current state from PostgreSQL.
     ImportRuns.adopt_legacy_failed_targets(organization_id)
     ImportRuns.reconcile_expired(organization_id)
+    ChangeRuns.reconcile_expired(organization_id)
 
     recoverable_runs = ImportRuns.list_recoverable(organization_id)
     route_version_id = socket.assigns.current_gtfs_version.id
@@ -393,14 +394,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   def handle_event("approve-all", %{"action" => action}, socket) do
     case Map.fetch(@diff_actions, action) do
       {:ok, action_atom} ->
-        socket =
-          Enum.reduce(socket.assigns.decisions_by_id, socket, fn {id, decision}, acc ->
-            if decision.action == action_atom and decision.status in [:pending, :rejected] do
-              update_change_decision(acc, id, :approved)
-            else
-              acc
-            end
-          end)
+        _ =
+          ChangeRuns.approve_all(
+            socket.assigns.current_organization.id,
+            socket.assigns.change_run.id,
+            action_atom
+          )
 
         {:noreply, refresh_change_review(socket)}
 
@@ -1139,8 +1138,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           <%= if @diff_step == :review do %>
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
               <%!-- Pressed filters + bulk actions --%>
-              <div class="flex items-end justify-between border-b border-base-300">
-                <div class="flex gap-6" aria-label="Filter decisions">
+              <div class="flex flex-wrap items-end justify-between gap-3 border-b border-base-300">
+                <div class="flex flex-wrap gap-x-6 gap-y-1" aria-label="Filter decisions">
                   <%= for {filter, label, count} <- [
                     {:all, "All", decision_total(@diff_summary)},
                     {:add, "Add", @diff_summary.add},
@@ -1168,11 +1167,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <% end %>
                 </div>
 
-                <div class="flex gap-1 pb-3">
+                <div class="flex flex-wrap gap-1 pb-3">
                   <%= if @diff_filter != :all do %>
                     <button
                       type="button"
-                      class="btn btn-xs btn-outline"
+                      class="btn btn-xs btn-outline min-h-11"
                       phx-click="approve-all"
                       phx-value-action={@diff_filter}
                     >
@@ -1182,7 +1181,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     <%= for {action, count} <- non_zero_action_counts(@diff_summary) do %>
                       <button
                         type="button"
-                        class="btn btn-xs btn-ghost"
+                        class="btn btn-xs btn-ghost min-h-11"
                         phx-click="approve-all"
                         phx-value-action={action}
                       >
@@ -1202,7 +1201,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <button
                     id="diff-degraded-choose-corrected-files"
                     type="button"
-                    class="btn btn-primary btn-sm mt-3"
+                    class="btn btn-primary btn-sm mt-3 min-h-11"
                     phx-click="reset-diff"
                   >
                     Choose corrected files
@@ -1261,7 +1260,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       type="button"
                       aria-pressed={to_string(decision.status == :approved)}
                       class={[
-                        "btn btn-sm",
+                        "btn btn-sm min-h-11",
                         decision.status == :approved && "btn-success",
                         decision.status != :approved && "btn-outline"
                       ]}
@@ -1274,7 +1273,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       type="button"
                       aria-pressed={to_string(decision.status == :rejected)}
                       class={[
-                        "btn btn-sm",
+                        "btn btn-sm min-h-11",
                         decision.status == :rejected && "btn-error",
                         decision.status != :rejected && "btn-ghost"
                       ]}
@@ -1325,7 +1324,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 :if={@change_run.state in [:computing, :applying, :pending_compute, :pending_apply]}
                 id="diff-cancel-btn"
                 type="button"
-                class="btn btn-ghost btn-sm mt-3"
+                class="btn btn-ghost btn-sm mt-3 min-h-11"
                 phx-click="cancel-diff-run"
               >
                 Cancel review
@@ -1334,7 +1333,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 :if={@change_run.state in [:partial, :failed, :interrupted, :cancelled, :expired]}
                 id="diff-retry-btn"
                 type="button"
-                class="btn btn-primary btn-sm mt-3"
+                class="btn btn-primary btn-sm mt-3 min-h-11"
                 phx-click="retry-diff-run"
               >
                 Retry

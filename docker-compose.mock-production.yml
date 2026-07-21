@@ -29,9 +29,10 @@ services:
       - '4000:4000'
     volumes:
       - uploads:/app/lib/gtfs_planner-0.1.0/priv/static/uploads
-      - uploads:/app/var/gtfs-task-artifacts
+      - task_artifacts:/app/var/gtfs-task-artifacts
     depends_on:
       - postgres
 volumes:
   db:
   uploads:
+  task_artifacts:

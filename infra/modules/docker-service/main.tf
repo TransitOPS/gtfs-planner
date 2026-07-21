@@ -1,9 +1,10 @@
 locals {
-  lb_file                = ".compose-loadbalancer.yml"
-  service_file           = ".compose-${var.project_name}-service-${var.name}.yml"
-  service_name           = "${var.project_name}-service-${var.name}"
-  service_uploads_volume = "${var.project_name}-service-${var.name}-uploads"
-  lb_network             = "proxy"
+  lb_file                       = ".compose-loadbalancer.yml"
+  service_file                  = ".compose-${var.project_name}-service-${var.name}.yml"
+  service_name                  = "${var.project_name}-service-${var.name}"
+  service_uploads_volume        = "${var.project_name}-service-${var.name}-uploads"
+  service_task_artifacts_volume = "${var.project_name}-service-${var.name}-task-artifacts"
+  lb_network                    = "proxy"
 
   lb_content = yamlencode({
     services = {
@@ -71,7 +72,7 @@ locals {
         ]
         volumes = [
           "${local.service_uploads_volume}:/app/lib/gtfs_planner-0.1.0/priv/static/uploads",
-          "${local.service_uploads_volume}:/app/var/gtfs-task-artifacts"
+          "${local.service_task_artifacts_volume}:/app/var/gtfs-task-artifacts"
         ]
         labels = [
           "traefik.enable=true",
@@ -83,7 +84,8 @@ locals {
       }
     }
     volumes = {
-      "${local.service_uploads_volume}" = {}
+      "${local.service_uploads_volume}"        = {}
+      "${local.service_task_artifacts_volume}" = {}
     }
     networks = {
       "${var.db_host}"      = {}

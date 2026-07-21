@@ -185,20 +185,24 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         %ChangeRun{} = run
         when run.state == :computing and run.lease_generation == generation and
                run.lease_token == token ->
-          state = if is_nil(run.cancel_requested_at), do: :failed, else: :cancelled
+          if lease_current?(run.id) do
+            state = if is_nil(run.cancel_requested_at), do: :failed, else: :cancelled
 
-          attrs = %{
-            state: state,
-            phase: :cleanup,
-            lease_token: nil,
-            lease_expires_at: nil,
-            failure_code: String.slice(code, 0, 128),
-            finished_at: DateTime.utc_now()
-          }
+            attrs = %{
+              state: state,
+              phase: :cleanup,
+              lease_token: nil,
+              lease_expires_at: nil,
+              failure_code: String.slice(code, 0, 128),
+              finished_at: DateTime.utc_now()
+            }
 
-          case Repo.update(ChangeRun.system_changeset(run, attrs)) do
-            {:ok, closed} -> {{:ok, closed}, [run.id]}
-            {:error, _} -> {{:error, :lease_lost}, []}
+            case Repo.update(ChangeRun.system_changeset(run, attrs)) do
+              {:ok, closed} -> {{:ok, closed}, [run.id]}
+              {:error, _} -> {{:error, :lease_lost}, []}
+            end
+          else
+            {{:error, :lease_lost}, []}
           end
 
         _ ->
@@ -229,6 +233,35 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   end
 
   def set_decision_status(_, _, _, _), do: {:error, :invalid_decision_status}
+
+  @doc false
+  @spec approve_all(Ecto.UUID.t(), Ecto.UUID.t(), atom()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def approve_all(organization_id, run_id, action) when action in @decision_actions do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %ChangeRun{state: :review} = run ->
+          {count, _} =
+            from(d in ChangeDecision,
+              where:
+                d.change_run_id == ^run.id and d.action == ^action and
+                  d.status in [:pending, :rejected],
+              update: [set: [status: :approved, updated_at: fragment("CURRENT_TIMESTAMP")]]
+            )
+            |> Repo.update_all([])
+
+          {{:ok, count}, if(count > 0, do: [run.id], else: [])}
+
+        nil ->
+          {{:error, :not_found}, []}
+
+        _run ->
+          {{:error, :invalid_transition}, []}
+      end
+    end)
+  end
+
+  def approve_all(_, _, _), do: {:error, :invalid_decision_action}
 
   @spec request_apply(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
   def request_apply(organization_id, run_id) do
@@ -277,17 +310,69 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
           String.t(),
           pos_integer(),
           Ecto.UUID.t(),
-          term()
+          AuditContext.t()
         ) ::
           {:ok, ChangeDecision.t()} | {:error, term()}
-  def apply_decision(organization_id, run_id, decision_id, generation, token, opts)
+  def apply_decision(
+        organization_id,
+        run_id,
+        decision_id,
+        generation,
+        token,
+        %AuditContext{} = context
+      )
+      when is_binary(decision_id) do
+    apply_decision_with_options(
+      organization_id,
+      run_id,
+      decision_id,
+      generation,
+      token,
+      context,
+      []
+    )
+  end
+
+  def apply_decision(_, _, _, _, _, _), do: {:error, :invalid_apply_decision}
+
+  @doc false
+  def apply_decision_with_hook(
+        organization_id,
+        run_id,
+        decision_id,
+        generation,
+        token,
+        %AuditContext{} = context,
+        opts
+      )
       when is_binary(decision_id) and is_list(opts) do
+    apply_decision_with_options(
+      organization_id,
+      run_id,
+      decision_id,
+      generation,
+      token,
+      context,
+      opts
+    )
+  end
+
+  defp apply_decision_with_options(
+         organization_id,
+         run_id,
+         decision_id,
+         generation,
+         token,
+         context,
+         opts
+       ) do
     transaction_with_broadcast(fn ->
       with {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+           :ok <- valid_audit_context?(run, context),
            %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
         case decision.status do
           :applied -> {{:ok, decision}, []}
-          _ -> apply_locked_decision(run, decision, generation, token, opts)
+          _ -> apply_locked_decision(run, decision, generation, token, context, opts)
         end
       else
         nil -> Repo.rollback(:not_found)
@@ -296,8 +381,6 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       end
     end)
   end
-
-  def apply_decision(_, _, _, _, _, _), do: {:error, :invalid_apply_decision}
 
   @doc false
   @spec applyable_decisions(Ecto.UUID.t(), Ecto.UUID.t()) :: [ChangeDecision.t()]
@@ -392,22 +475,26 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         %ChangeRun{} = run
         when run.state == :applying and run.lease_generation == generation and
                run.lease_token == token ->
-          summary = apply_summary(run.id, run.summary)
-          state = failed_apply_state(run, summary)
+          if lease_current?(run.id) do
+            summary = apply_summary(run.id, run.summary)
+            state = failed_apply_state(run, summary)
 
-          attrs = %{
-            state: state,
-            phase: :cleanup,
-            lease_token: nil,
-            lease_expires_at: nil,
-            summary: summary,
-            failure_code: String.slice(code, 0, 128),
-            finished_at: DateTime.utc_now()
-          }
+            attrs = %{
+              state: state,
+              phase: :cleanup,
+              lease_token: nil,
+              lease_expires_at: nil,
+              summary: summary,
+              failure_code: String.slice(code, 0, 128),
+              finished_at: DateTime.utc_now()
+            }
 
-          case Repo.update(ChangeRun.system_changeset(run, attrs)) do
-            {:ok, closed} -> {{:ok, closed}, [run.id]}
-            {:error, _} -> {{:error, :lease_lost}, []}
+            case Repo.update(ChangeRun.system_changeset(run, attrs)) do
+              {:ok, closed} -> {{:ok, closed}, [run.id]}
+              {:error, _} -> {{:error, :lease_lost}, []}
+            end
+          else
+            {{:error, :lease_lost}, []}
           end
 
         _ ->
@@ -496,18 +583,42 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
           case lock_active_run(run.organization_id, run.gtfs_version_id) do
             nil ->
-              attrs = %{
-                organization_id: run.organization_id,
-                gtfs_version_id: run.gtfs_version_id,
-                actor_id: run.actor_id,
-                actor_email: run.actor_email,
-                state: :pending_compute,
-                phase: :staging,
-                source_manifest: run.source_manifest,
-                serializer_version: ChangeDecisionSerializer.serializer_version()
-              }
+              decision_count =
+                Repo.aggregate(
+                  from(d in ChangeDecision, where: d.change_run_id == ^run.id),
+                  :count
+                )
 
-              case Repo.insert(ChangeRun.system_changeset(%ChangeRun{}, attrs)) do
+              retry_attrs =
+                if decision_count > 0 do
+                  %{
+                    state: :review,
+                    phase: :diffing,
+                    progress_current: decision_count,
+                    progress_total: decision_count,
+                    lease_token: nil,
+                    lease_expires_at: nil,
+                    cancel_requested_at: nil,
+                    failure_code: nil,
+                    finished_at: nil
+                  }
+                else
+                  %{
+                    state: :pending_compute,
+                    phase: :staging,
+                    progress_current: nil,
+                    progress_total: nil,
+                    lease_token: nil,
+                    lease_expires_at: nil,
+                    cancel_requested_at: nil,
+                    failure_code: nil,
+                    started_at: nil,
+                    finished_at: nil,
+                    serializer_version: ChangeDecisionSerializer.serializer_version()
+                  }
+                end
+
+              case Repo.update(ChangeRun.system_changeset(run, retry_attrs)) do
                 {:ok, retry_run} -> {{:ok, retry_run}, [retry_run.id]}
                 {:error, changeset} -> {{:error, changeset}, []}
               end
@@ -775,7 +886,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   defp applicable_decision?(_), do: {:error, :invalid_transition}
 
-  defp apply_locked_decision(run, decision, generation, token, opts) do
+  defp apply_locked_decision(run, decision, generation, token, audit_context, opts) do
     with :ok <- applicable_decision?(decision),
          :ok <- invoke_step(opts, :before_fingerprint),
          {:ok, current} <- current_entity(run, decision),
@@ -784,7 +895,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          :ok <- invoke_step(opts, :before_mutation),
          {:ok, entity} <- apply_mutation(run, decision, current),
          :ok <- invoke_step(opts, :before_audit),
-         {:ok, _audit} <- record_audit(run, decision, current, entity),
+         {:ok, _audit} <- record_audit(run, decision, current, entity, audit_context),
          :ok <- invoke_step(opts, :before_checkpoint),
          {:ok, applied} <- checkpoint_decision(decision),
          :ok <- invoke_step(opts, :before_progress),
@@ -892,19 +1003,60 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       pathway_id: natural_key
     }
 
-  defp record_audit(run, decision, current, _entity) do
+  defp record_audit(run, decision, current, entity, audit_context) do
     action = audit_action(decision.action)
 
-    context = %AuditContext{
-      organization_id: run.organization_id,
-      gtfs_version_id: run.gtfs_version_id,
-      station_stop_id: decision.natural_key,
-      actor_id: run.actor_id,
-      actor_email: run.actor_email
+    context = %{
+      audit_context
+      | station_stop_id: station_scope(run, decision, current, entity)
     }
 
     attrs = Map.merge(decision.uploaded_values, identity_attrs(run, decision))
     Gtfs.record_change_in_transaction(context, decision.entity_type, current, action, attrs)
+  end
+
+  defp valid_audit_context?(run, %AuditContext{} = context) do
+    if context.organization_id == run.organization_id and
+         context.gtfs_version_id == run.gtfs_version_id and context.actor_id == run.actor_id and
+         context.actor_email == run.actor_email,
+       do: :ok,
+       else: {:error, :invalid_audit_context}
+  end
+
+  defp station_scope(_run, %ChangeDecision{entity_type: :stop}, current, entity) do
+    stop = entity || current
+    Map.get(stop, :parent_station) || Map.get(stop, :stop_id)
+  end
+
+  defp station_scope(run, %ChangeDecision{entity_type: :pathway}, current, entity) do
+    pathway = entity || current
+    stop_id = Map.get(pathway, :from_stop_id) || Map.get(pathway, :to_stop_id)
+
+    case Gtfs.lock_import_entity(:stop, run.organization_id, run.gtfs_version_id, stop_id) do
+      nil -> nil
+      stop -> Map.get(stop, :parent_station) || Map.get(stop, :stop_id)
+    end
+  end
+
+  defp station_scope(
+         run,
+         %ChangeDecision{entity_type: :level, natural_key: level_id},
+         _current,
+         _entity
+       ) do
+    from(stop in GtfsPlanner.Gtfs.Stop,
+      where:
+        stop.organization_id == ^run.organization_id and
+          stop.gtfs_version_id == ^run.gtfs_version_id and stop.level_id == ^level_id,
+      order_by: [asc: stop.stop_id],
+      limit: 1,
+      select: {stop.parent_station, stop.stop_id}
+    )
+    |> Repo.one()
+    |> case do
+      {parent_station, stop_id} -> parent_station || stop_id
+      nil -> nil
+    end
   end
 
   defp audit_action(:add), do: "created"

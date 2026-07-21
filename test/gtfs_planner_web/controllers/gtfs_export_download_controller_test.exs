@@ -17,6 +17,7 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
 
   setup do
     root = Path.join(System.tmp_dir!(), "export-downloads-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
     old_root = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path)
     Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, root)
 
@@ -141,7 +142,7 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
     %{organization: organization, version: version, user: user} = editor_context()
     run = ready_run!(organization.id, version.id, "claimed bytes")
 
-    assert {:ok, _claim} = ExportRuns.claim_download(organization.id, version.id, run.id)
+    assert {:ok, claim} = ExportRuns.claim_download(organization.id, version.id, run.id)
 
     conn =
       conn
@@ -150,7 +151,14 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
 
     assert conn.status == 404
     assert conn.resp_body == "Not Found"
-    assert :ok = ExportRuns.complete_download(organization.id, version.id, run.id)
+
+    assert :ok =
+             ExportRuns.complete_download(
+               organization.id,
+               version.id,
+               run.id,
+               claim.claim_id
+             )
   end
 
   defp editor_context do
@@ -177,7 +185,10 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
 
   defp artifact_path!(organization_id, version_id, run_id) do
     {:ok, claim} = ExportRuns.claim_download(organization_id, version_id, run_id)
-    assert :ok = ExportRuns.complete_download(organization_id, version_id, run_id)
+
+    assert :ok =
+             ExportRuns.complete_download(organization_id, version_id, run_id, claim.claim_id)
+
     claim.path
   end
 
