@@ -1415,12 +1415,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       render_upload(upload, "stops.txt")
 
       view |> form("#diff-upload-form", %{}) |> render_submit()
+      await_import_task(view)
 
       view
       |> element("button[phx-click='approve-all'][phx-value-action='add']")
       |> render_click()
 
-      html = view |> element("#diff-apply-btn") |> render_click()
+      view |> element("#diff-apply-btn") |> render_click()
+      html = await_import_task(view)
 
       assert html =~ "Applied 1 decisions successfully, 0 failed."
 

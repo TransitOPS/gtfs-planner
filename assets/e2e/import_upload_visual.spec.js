@@ -47,3 +47,31 @@ test("import upload presentation stays usable at desktop and mobile widths", asy
 
   }
 });
+
+test("durable diff review remains readable at desktop and mobile widths", async ({ page }) => {
+  for (const viewport of [
+    { name: "desktop", width: 1280, height: 900 },
+    { name: "mobile", width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await logInAndOpenImport(page);
+
+    await page.locator("#diff-upload-input input").setInputFiles({
+      name: "levels.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("level_id,level_index,level_name\\nVISUAL,1.0,Visual Review"),
+    });
+
+    await page.locator("#diff-compute-btn").click();
+    await page.locator("#diff-decisions [data-version-diff-row]").waitFor();
+
+    await expect(page.locator("#diff-decisions")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    await page.screenshot({
+      path: `test-results/import-diff-${viewport.name}.png`,
+      fullPage: true,
+    });
+  }
+});

@@ -530,6 +530,17 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     |> Repo.one()
   end
 
+  @doc "Returns the most recent durable review for one immutable route-version scope."
+  @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t()) :: ChangeRun.t() | nil
+  def latest_for_version(organization_id, gtfs_version_id) do
+    from(r in ChangeRun,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      order_by: [desc: r.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   @spec list_decisions(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: [ChangeDecision.t()]
   def list_decisions(organization_id, run_id, opts \\ []) do
     query =
