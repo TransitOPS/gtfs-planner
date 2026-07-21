@@ -1037,10 +1037,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         </div>
       </dl>
 
+      <%!-- Full-bleed: the group's rules span the card so the evidence reads as
+            a tier of this card, not a box inside a box. The negative bottom
+            margin lets the parent divide-y line double as the group's close. --%>
       <div
         :if={@group}
         id={@region_id}
-        class={["mt-3", not @expanded && "hidden print:block"]}
+        class={["-mx-4 -mb-3 mt-3", not @expanded && "hidden print:block"]}
       >
         <.source_group_card
           group={@group}

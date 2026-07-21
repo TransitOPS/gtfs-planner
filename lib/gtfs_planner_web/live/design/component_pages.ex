@@ -646,6 +646,34 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </.table>
       </div>
 
+      <h2 class="mt-8 text-lg font-semibold">Nested regions</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        Dense evidence — groups of rows inside a card — nests by tier, not by box.
+        The outermost card owns the only full border and rounding. A nested group
+        announces itself with a full-width tinted header band
+        (<code class="font-mono text-sm">bg-base-200</code>) and separates its rows
+        with horizontal rules that span the card. Side borders and rounded boxes
+        never nest inside a card: depth reads from bands and rules, so a third tier
+        stays legible without adding ink.
+      </p>
+      <div id="ds-demo-nested-regions" class="mt-3 rounded-box border border-base-300 bg-base-100">
+        <div class="border-b border-base-300 px-4 py-3">
+          <h3 class="text-sm font-semibold">Entrance-to-platform reachability</h3>
+          <p class="mt-0.5 text-sm text-base-content/70">
+            Tier one: the card. One full border, one rounding.
+          </p>
+        </div>
+        <div class="px-4 py-3 text-sm">Summary row for the first source.</div>
+        <div class="border-y border-base-300 bg-base-200 px-4 py-2.5 text-sm font-semibold">
+          Entrance A
+          <span class="font-normal text-base-content/70">· tier two: tinted group band</span>
+        </div>
+        <div class="divide-y divide-base-300 text-sm">
+          <p class="px-4 py-3">Tier three: rows separated by full-width rules.</p>
+          <p class="px-4 py-3">No side borders below tier one.</p>
+        </div>
+      </div>
+
       <h2 class="mt-8 text-lg font-semibold">Stack mode</h2>
       <p class="mt-1 text-sm text-base-content/70">
         <code class="font-mono text-sm">responsive="stack"</code>

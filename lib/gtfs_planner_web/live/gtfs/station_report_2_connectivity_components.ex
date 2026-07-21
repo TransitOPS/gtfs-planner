@@ -28,8 +28,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     assigns = assign(assigns, :dimension_label, dimension_label(assigns.dimension))
 
     ~H"""
-    <div class="rounded-box border border-base-300 bg-base-100">
-      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 px-4 py-3">
+    <%!-- Nested tier: no side borders or rounding of its own. The outermost
+          card owns the only full border; this group announces itself with a
+          tinted full-width header band and horizontal rules. --%>
+    <div class="border-t border-base-300">
+      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 bg-base-200 px-4 py-2.5">
         <div class="min-w-0">
           <div class="flex flex-wrap items-baseline gap-2">
             <h4 class="text-sm font-semibold break-words">{@group.source.name}</h4>
