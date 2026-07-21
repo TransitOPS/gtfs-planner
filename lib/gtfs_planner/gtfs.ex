@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.Coordinates
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -3012,6 +3013,38 @@ defmodule GtfsPlanner.Gtfs do
     |> Agency.changeset(attrs)
     |> Repo.insert()
   end
+
+  # Display clock functions
+
+  @doc """
+  Resolves the display timezone for an organization and GTFS version.
+
+  See `GtfsPlanner.Gtfs.DisplayClock.resolve_zone/2`.
+  """
+  @spec resolve_display_zone(Ecto.UUID.t(), Ecto.UUID.t()) :: DisplayClock.zone_resolution()
+  defdelegate resolve_display_zone(organization_id, gtfs_version_id),
+    to: DisplayClock,
+    as: :resolve_zone
+
+  @doc """
+  Localizes stored UTC timestamps for display, preserving input order.
+
+  See `GtfsPlanner.Gtfs.DisplayClock.localize_many/2`.
+  """
+  @spec localize_display_times([DateTime.t()], DisplayClock.zone_resolution()) :: [
+          NaiveDateTime.t()
+        ]
+  defdelegate localize_display_times(timestamps, zone_resolution),
+    to: DisplayClock,
+    as: :localize_many
+
+  @doc """
+  Formats a localized time as unpadded 12-hour time with uppercase AM/PM.
+
+  See `GtfsPlanner.Gtfs.DisplayClock.format_time/2`.
+  """
+  @spec format_display_time(NaiveDateTime.t(), keyword()) :: String.t()
+  defdelegate format_display_time(local_time, opts \\ []), to: DisplayClock, as: :format_time
 
   # Area functions
 
