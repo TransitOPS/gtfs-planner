@@ -158,9 +158,9 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     } do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, _view, html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/stops")
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/stops")
 
-      assert html =~ "Stations"
+      assert has_element?(view, "h1", "Stops & stations")
     end
 
     test "editor can access export", %{
