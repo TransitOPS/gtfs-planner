@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
@@ -52,6 +53,8 @@ defmodule GtfsPlanner.Gtfs do
 
   require Logger
 
+  @default_catalog_read_adapter CatalogReadAdapter.Repo
+
   @type list_stations_opts :: [
           route_id: String.t() | nil,
           direction_id: integer() | nil,
@@ -63,6 +66,129 @@ defmodule GtfsPlanner.Gtfs do
           per_page: pos_integer() | nil,
           location_type: 0 | 1 | 2 | 3 | 4 | String.t() | nil
         ]
+
+  @doc """
+  Loads a page of routes for the route catalog through the configured catalog
+  read adapter.
+
+  The adapter counts the matching routes, clamps the requested page to a valid
+  canonical page, and returns the rows together with total/page metadata and the
+  available route types and agencies. A lost database connection becomes
+  `{:error, :unavailable}`.
+
+  ## Examples
+
+      iex> load_route_catalog(organization_id, gtfs_version_id, page: 1, per_page: 25)
+      {:ok, %{rows: [%Route{}], total_count: 1, page: 1, route_types: [3], agencies: ["agency1"]}}
+
+      iex> load_route_catalog(organization_id, gtfs_version_id, [])
+      {:error, :unavailable}
+  """
+  @spec load_route_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, CatalogReadAdapter.route_page()} | {:error, :unavailable}
+  def load_route_catalog(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_route_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Loads a page of stations for the Stops & stations catalog through the
+  configured catalog read adapter.
+
+  The adapter counts the matching stations, clamps the requested page to a valid
+  canonical page, and fetches the rows. Route enrichment (available routes and
+  routes-by-stop) runs separately, so its failure yields
+  `{:partial, page, :route_enrichment_unavailable}` while keeping the loaded
+  stop rows. A primary stop/count failure returns `{:error, :unavailable}`.
+
+  ## Examples
+
+      iex> load_stop_catalog(organization_id, gtfs_version_id, page: 1, per_page: 50)
+      {:ok, %{rows: [%Stop{}], total_count: 1, page: 1, available_routes: [], routes_by_stop: %{}}}
+
+      iex> load_stop_catalog(organization_id, gtfs_version_id, [])
+      {:partial, %{rows: [%Stop{}]}, :route_enrichment_unavailable}
+  """
+  @spec load_stop_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, CatalogReadAdapter.stop_page()}
+          | {:partial, CatalogReadAdapter.stop_page(), :route_enrichment_unavailable}
+          | {:error, :unavailable}
+  def load_stop_catalog(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_stop_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Fetches a single route by its GTFS `route_id` for the route detail surface
+  through the configured catalog read adapter.
+
+  ## Examples
+
+      iex> fetch_catalog_route(organization_id, gtfs_version_id, "R1")
+      {:ok, %Route{}}
+
+      iex> fetch_catalog_route(organization_id, gtfs_version_id, "missing")
+      {:error, :not_found}
+  """
+  @spec fetch_catalog_route(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Route.t()} | {:error, :not_found | :unavailable}
+  def fetch_catalog_route(organization_id, gtfs_version_id, route_id) do
+    catalog_read_adapter().fetch_route(organization_id, gtfs_version_id, route_id)
+  end
+
+  @doc """
+  Loads the route patterns for a route through the configured catalog read
+  adapter.
+
+  ## Examples
+
+      iex> load_catalog_route_patterns(organization_id, gtfs_version_id, "R1")
+      {:ok, [%RoutePattern{}]}
+  """
+  @spec load_catalog_route_patterns(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, [RoutePattern.t()]} | {:error, :unavailable}
+  def load_catalog_route_patterns(organization_id, gtfs_version_id, route_id) do
+    catalog_read_adapter().load_route_patterns(organization_id, gtfs_version_id, route_id)
+  end
+
+  @doc """
+  Fetches a single stop by its GTFS `stop_id` for the station detail surface
+  through the configured catalog read adapter.
+
+  ## Examples
+
+      iex> fetch_catalog_stop(organization_id, gtfs_version_id, "stop_1")
+      {:ok, %Stop{}}
+
+      iex> fetch_catalog_stop(organization_id, gtfs_version_id, "missing")
+      {:error, :not_found}
+  """
+  @spec fetch_catalog_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Stop.t()} | {:error, :not_found | :unavailable}
+  def fetch_catalog_stop(organization_id, gtfs_version_id, stop_id) do
+    catalog_read_adapter().fetch_stop(organization_id, gtfs_version_id, stop_id)
+  end
+
+  @doc """
+  Loads the independent station-detail regions (child stops, levels, pathways,
+  and editing status) for a fetched station through the configured catalog read
+  adapter.
+
+  Each region resolves independently, so a failure in one region is reported as
+  `{:error, :unavailable}` for that key without discarding the others.
+
+  ## Examples
+
+      iex> load_catalog_stop_regions(organization_id, gtfs_version_id, station)
+      %{child_stops: {:ok, [%Stop{}]}, levels: {:ok, []}, pathways: {:ok, []}, editing_status: {:ok, nil}}
+  """
+  @spec load_catalog_stop_regions(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t()) :: %{
+          child_stops: CatalogReadAdapter.stop_region([Stop.t()]),
+          levels: CatalogReadAdapter.stop_region(list()),
+          pathways: CatalogReadAdapter.stop_region(list()),
+          editing_status: CatalogReadAdapter.stop_region(struct() | nil)
+        }
+  def load_catalog_stop_regions(organization_id, gtfs_version_id, %Stop{} = station) do
+    catalog_read_adapter().load_stop_regions(organization_id, gtfs_version_id, station)
+  end
 
   @spec resolve_station_journal_scope(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, Scope.t()} | {:error, :not_found | :invalid_id}
@@ -1759,30 +1885,38 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Clears the active station editing status for an organization, GTFS version, and station.
+
+  Returns `:ok` on success. A failed transaction or a lost database connection
+  returns `{:error, reason}` instead of crashing, so callers can preserve the
+  prior status and offer an in-flow retry.
   """
-  @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, term()}
   def clear_station_editing_status(organization_id, gtfs_version_id, station_id) do
-    {:ok, :ok} =
-      Repo.transaction(fn ->
-        lock_station_editing_status!(organization_id, gtfs_version_id, station_id)
+    Repo.transaction(fn ->
+      lock_station_editing_status!(organization_id, gtfs_version_id, station_id)
 
-        from(s in StationEditingStatus,
-          where:
-            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-              s.station_id == ^station_id
+      from(s in StationEditingStatus,
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.station_id == ^station_id
+      )
+      |> Repo.delete_all()
+
+      :ok =
+        broadcast_station_editing_status(
+          organization_id,
+          gtfs_version_id,
+          station_id,
+          nil
         )
-        |> Repo.delete_all()
-
-        :ok =
-          broadcast_station_editing_status(
-            organization_id,
-            gtfs_version_id,
-            station_id,
-            nil
-          )
-      end)
-
-    :ok
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    DBConnection.ConnectionError -> {:error, :unavailable}
   end
 
   defp broadcast_station_editing_status(%StationEditingStatus{} = status) do
@@ -3661,6 +3795,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp apply_sort(query, _sort_by, _sort_dir), do: order_by(query, [r], asc: r.route_id)
+
+  # Resolved per call so tests and future runtime configuration take effect
+  # without recompiling this context.
+  defp catalog_read_adapter do
+    Application.get_env(
+      :gtfs_planner,
+      :gtfs_catalog_read_adapter,
+      @default_catalog_read_adapter
+    )
+  end
 
   defp paginate(query, nil, _per_page), do: paginate(query, 1, 25)
   defp paginate(query, _page, nil), do: paginate(query, 1, 25)
