@@ -12,6 +12,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
   attr :status, :atom, required: true, values: [:accessible, :not_accessible, :unknown]
+  attr :source, :atom, default: :direct, values: [:direct, :inherited, :missing]
   attr :class, :any, default: nil
 
   @doc "Renders the explicit accessibility state for a transit entity."
@@ -26,6 +27,13 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
     >
       <.icon name="hero-information-circle" class="size-4" />
       {@label}
+      <span
+        :if={@source == :inherited}
+        class="font-normal text-base-content/60"
+        data-accessibility-source="inherited"
+      >
+        Inherited from station
+      </span>
     </span>
     """
   end
@@ -60,7 +68,10 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       <span>{@direction}</span>
       <span :for={metric <- @metrics} class="inline-flex items-center gap-2">
         <span aria-hidden="true">·</span>
-        <span>{metric}</span>
+        <span class="inline-flex items-baseline gap-1">
+          <span class="font-mono tabular-nums">{metric.value}</span>
+          <span class="text-base-content/60">{metric.unit}</span>
+        </span>
       </span>
     </span>
     """
@@ -68,21 +79,21 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
 
   defp accessibility_copy(:accessible), do: {"Accessible", "text-success"}
   defp accessibility_copy(:not_accessible), do: {"Not accessible", "text-error"}
-  defp accessibility_copy(:unknown), do: {"Accessibility unknown", "text-base-content/70"}
+  defp accessibility_copy(:unknown), do: {"No data", "text-base-content/70"}
 
   defp pathway_metrics(pathway, mode) do
     []
     |> maybe_add(
       mode == 2 && present?(Map.get(pathway, :stair_count)),
-      "#{Map.get(pathway, :stair_count)} stairs"
+      %{value: to_string(Map.get(pathway, :stair_count)), unit: "stairs"}
     )
     |> maybe_add(
       present?(Map.get(pathway, :length)),
-      "#{decimal_string(Map.get(pathway, :length))} m"
+      %{value: decimal_string(Map.get(pathway, :length)), unit: "m"}
     )
     |> maybe_add(
       present?(Map.get(pathway, :traversal_time)),
-      "#{Map.get(pathway, :traversal_time)} sec"
+      %{value: to_string(Map.get(pathway, :traversal_time)), unit: "sec"}
     )
   end
 

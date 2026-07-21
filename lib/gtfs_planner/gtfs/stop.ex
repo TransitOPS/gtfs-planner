@@ -54,6 +54,9 @@ defmodule GtfsPlanner.Gtfs.Stop do
           updated_at: DateTime.t()
         }
 
+  @type accessibility_status :: :accessible | :not_accessible | :unknown
+  @type accessibility_source :: :direct | :inherited | :missing
+
   @doc "Creates a changeset for a stop."
   def changeset(stop, attrs) do
     stop
@@ -120,6 +123,33 @@ defmodule GtfsPlanner.Gtfs.Stop do
       _ -> nil
     end
   end
+
+  @doc """
+  Resolves the wheelchair boarding presentation for a stop.
+
+  A direct value wins: `1` resolves to `:accessible` and `2` to `:not_accessible`,
+  both with a `:direct` source. When the stop has no explicit value (`0` or `nil`),
+  a known parent station carrying `1`/`2` supplies the same status with an
+  `:inherited` source. Otherwise the status is `:unknown` with a `:missing` source.
+
+  Pure: returns a presentation map and never mutates either input.
+  """
+  @spec resolve_wheelchair_boarding(t(), t() | nil) ::
+          %{status: accessibility_status(), source: accessibility_source()}
+  def resolve_wheelchair_boarding(%__MODULE__{wheelchair_boarding: 1}, _parent),
+    do: %{status: :accessible, source: :direct}
+
+  def resolve_wheelchair_boarding(%__MODULE__{wheelchair_boarding: 2}, _parent),
+    do: %{status: :not_accessible, source: :direct}
+
+  def resolve_wheelchair_boarding(%__MODULE__{}, %__MODULE__{wheelchair_boarding: 1}),
+    do: %{status: :accessible, source: :inherited}
+
+  def resolve_wheelchair_boarding(%__MODULE__{}, %__MODULE__{wheelchair_boarding: 2}),
+    do: %{status: :not_accessible, source: :inherited}
+
+  def resolve_wheelchair_boarding(%__MODULE__{}, _parent),
+    do: %{status: :unknown, source: :missing}
 
   @doc "Returns slug prefix for location_type."
   def location_type_slug(location_type) do
