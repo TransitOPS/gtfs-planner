@@ -1,3 +1,43 @@
+defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest.ControlledHistorySource do
+  @moduledoc """
+  History boundary double used only by the scoped-lifecycle tests.
+
+  It announces every request to the controlling test process and blocks until
+  that test releases it, so a test can hold one load open while starting
+  another and choose the completion order. The task traps exits so a
+  `cancel_async/2` does not kill it: a released, already-superseded task then
+  really does deliver a completion the LiveView must refuse.
+
+  Only the change-log query is controlled. Zone resolution and localization go
+  straight to the production context so the agency clock is never faked.
+  """
+
+  alias GtfsPlanner.Gtfs
+
+  def list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id) do
+    Process.flag(:trap_exit, true)
+    owner = Application.fetch_env!(:gtfs_planner, :station_history_source_owner)
+    send(owner, {:history_requested, self(), entity_type, entity_id})
+
+    receive do
+      {:history_release, :real} ->
+        Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id)
+
+      {:history_release, {:raise, message}} ->
+        raise message
+
+      {:history_release, entries} ->
+        entries
+    after
+      10_000 -> []
+    end
+  end
+
+  defdelegate resolve_display_zone(organization_id, gtfs_version_id), to: Gtfs
+
+  defdelegate localize_display_times(timestamps, zone_resolution), to: Gtfs
+end
+
 defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   use GtfsPlannerWeb.ConnCase
 
@@ -10786,6 +10826,691 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - scoped history lifecycle" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "LIFE_STATION",
+          stop_name: "Lifecycle Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "LIFE_L1",
+          level_name: "Lifecycle Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "lifecycle.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp lifecycle_ctx(organization, gtfs_version, station, user) do
+      %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+    end
+
+    defp lifecycle_child(organization, gtfs_version, station, level, suffix) do
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "LIFE_STOP_#{suffix}",
+        stop_name: "Lifecycle Stop #{suffix}",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      })
+    end
+
+    defp open_diagram(conn, user, organization, gtfs_version, station) do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+    end
+
+    # Drives the real production path: open the entity's drawer, then click the
+    # shipped History tab, which carries phx-click="show_history" plus its
+    # entity-type/entity-id values.
+    defp open_stop_history(view, stop) do
+      render_hook(view, "edit_child_stop", %{"id" => stop.id})
+      view |> element("#stop-tab-history") |> render_click()
+      view
+    end
+
+    defp open_pathway_history(view, pathway) do
+      render_hook(view, "edit_pathway", %{"id" => pathway.id})
+      view |> element("#pathway-tab-history") |> render_click()
+      view
+    end
+
+    defp open_level_history(view) do
+      render_hook(view, "open_edit_level", %{})
+      view |> element("#level-tab-history") |> render_click()
+      view
+    end
+
+    defp control_history_source do
+      Application.put_env(
+        :gtfs_planner,
+        :station_history_source,
+        GtfsPlannerWeb.Gtfs.StationDiagramLiveTest.ControlledHistorySource
+      )
+
+      Application.put_env(:gtfs_planner, :station_history_source_owner, self())
+
+      on_exit(fn ->
+        Application.delete_env(:gtfs_planner, :station_history_source)
+        Application.delete_env(:gtfs_planner, :station_history_source_owner)
+      end)
+
+      :ok
+    end
+
+    defp await_history(entity_id) do
+      assert_receive {:history_requested, task_pid, _type, ^entity_id}, 5_000
+      task_pid
+    end
+
+    defp release_history(task_pid, result) do
+      send(task_pid, {:history_release, result})
+      :ok
+    end
+
+    test "stop history loads through the production drawer and reaches the ready state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "A")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Renamed Platform"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      html = render_async(view, 5_000)
+
+      assert html =~ ~s(id="history-stop")
+      assert html =~ ~s(data-state="ready")
+      assert html =~ "Renamed Platform"
+      assert has_element?(view, "#history-counts-stop")
+      assert has_element?(view, "select#history-filter-stop")
+    end
+
+    test "pathway history loads through the production drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a = lifecycle_child(organization, gtfs_version, station, level, "PA")
+      stop_b = lifecycle_child(organization, gtfs_version, station, level, "PB")
+
+      {:ok, pathway} =
+        Gtfs.create_pathway(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          pathway_id: "LIFE_PW",
+          from_stop_id: stop_a.stop_id,
+          to_stop_id: stop_b.stop_id,
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{pathway_mode: 2})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+
+      open_pathway_history(view, pathway)
+      html = render_async(view, 5_000)
+
+      assert html =~ ~s(id="history-pathway")
+      assert html =~ ~s(data-state="ready")
+      assert has_element?(view, "#history-counts-pathway")
+      assert has_element?(view, "select#history-filter-pathway")
+    end
+
+    test "level history loads through the production drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Mezzanine"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_level_history(view)
+      html = render_async(view, 5_000)
+
+      assert html =~ ~s(id="history-level")
+      assert html =~ ~s(data-state="ready")
+      assert has_element?(view, "#history-counts-level")
+      assert has_element?(view, "select#history-filter-level")
+    end
+
+    test "an entity with no change log renders the first-use empty state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "EMPTY")
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#history-empty-stop")
+      refute has_element?(view, "#history-filtered-empty-stop")
+    end
+
+    test "the panel shows initial loading while the scoped task is still running", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      control_history_source()
+      stop = lifecycle_child(organization, gtfs_version, station, level, "SLOW")
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+
+      task_pid = await_history(stop.id)
+
+      assert has_element?(view, "#history-loading-stop")
+      assert render(view) =~ ~s(data-state="loading")
+
+      release_history(task_pid, :real)
+      render_async(view, 5_000)
+
+      refute has_element?(view, "#history-loading-stop")
+    end
+
+    test "a failed load shows a local error with retry that keeps the entity and filter", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      control_history_source()
+      stop = lifecycle_child(organization, gtfs_version, station, level, "ERR")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          stop_lat: 1.5,
+          stop_name: "Error Platform"
+        })
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      release_history(await_history(stop.id), :real)
+      render_async(view, 5_000)
+
+      render_hook(view, "filter_history", %{"key" => "position"})
+      assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "position"
+
+      render_hook(view, "retry_history", %{})
+      release_history(await_history(stop.id), {:raise, "history query exploded"})
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#history-retry-stop")
+      assert render(view) =~ ~s(data-state="error")
+      # Prior entries stay visible as an explicit stale preview.
+      assert has_element?(view, "#history-stale-stop")
+
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.history_open_for == {"stop", stop.id}
+      assert state.history_field_filter == "position"
+
+      render_hook(view, "retry_history", %{})
+      release_history(await_history(stop.id), :real)
+      render_async(view, 5_000)
+
+      assert render(view) =~ ~s(data-state="ready")
+      assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "position"
+    end
+
+    test "a completion for a superseded entity never replaces the active entity's history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      control_history_source()
+      stop_a = lifecycle_child(organization, gtfs_version, station, level, "SCOPE_A")
+      stop_b = lifecycle_child(organization, gtfs_version, station, level, "SCOPE_B")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop_a, "updated", %{stop_name: "Alpha Only"})
+      :ok = Gtfs.record_change(ctx, :stop, stop_b, "updated", %{stop_name: "Bravo Only"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+
+      open_stop_history(view, stop_a)
+      task_a = await_history(stop_a.id)
+
+      open_stop_history(view, stop_b)
+      task_b = await_history(stop_b.id)
+
+      # B finishes first; A — already superseded and cancelled — finishes last.
+      release_history(task_b, :real)
+      render_async(view, 5_000)
+
+      ref = Process.monitor(task_a)
+      release_history(task_a, :real)
+      assert_receive {:DOWN, ^ref, :process, ^task_a, _}, 5_000
+
+      html = render(view)
+      assert html =~ "Bravo Only"
+      refute html =~ "Alpha Only"
+
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.history_open_for == {"stop", stop_b.id}
+      assert Enum.all?(state.history_entries, &(&1.entity_id == stop_b.id))
+    end
+
+    test "a completion delivered after the panel is hidden is discarded", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      control_history_source()
+      stop = lifecycle_child(organization, gtfs_version, station, level, "HIDE")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Ghost Entry"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      task_pid = await_history(stop.id)
+
+      render_hook(view, "hide_history", %{})
+
+      ref = Process.monitor(task_pid)
+      release_history(task_pid, :real)
+      assert_receive {:DOWN, ^ref, :process, ^task_pid, _}, 5_000
+
+      html = render(view)
+      refute html =~ "Ghost Entry"
+
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.history_open_for == nil
+      assert state.history_entries == []
+      assert state.history_scope == nil
+    end
+
+    test "a stale generation for the same entity cannot replace a newer result", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      control_history_source()
+      stop = lifecycle_child(organization, gtfs_version, station, level, "GEN")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Generation One"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      first = await_history(stop.id)
+
+      render_hook(view, "hide_history", %{})
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      second = await_history(stop.id)
+
+      release_history(second, [])
+      render_async(view, 5_000)
+
+      ref = Process.monitor(first)
+      release_history(first, :real)
+      assert_receive {:DOWN, ^ref, :process, ^first, _}, 5_000
+
+      # The newer generation returned an empty list; the older one must not
+      # resurrect the entry it loaded.
+      refute render(view) =~ "Generation One"
+      assert :sys.get_state(view.pid).socket.assigns.history_entries == []
+      assert has_element?(view, "#history-empty-stop")
+    end
+
+    test "history scope carries organization, version, station, entity and generation", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "SCOPED")
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      assert {organization_id, gtfs_version_id, station_stop_id, "stop", entity_id, generation} =
+               :sys.get_state(view.pid).socket.assigns.history_scope
+
+      assert organization_id == organization.id
+      assert gtfs_version_id == gtfs_version.id
+      assert station_stop_id == station.stop_id
+      assert entity_id == stop.id
+      assert is_integer(generation)
+    end
+
+    test "a refresh after a rollback keeps the previous entries visible", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      control_history_source()
+      stop = lifecycle_child(organization, gtfs_version, station, level, "REFRESH")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Refresh Platform"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Refresh Platform"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      release_history(await_history(stop.id), :real)
+      render_async(view, 5_000)
+
+      assert render(view) =~ "Refresh Platform"
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      task_pid = await_history(stop.id)
+      html = render(view)
+
+      assert html =~ ~s(data-state="refreshing")
+      assert html =~ "Refresh Platform"
+      assert has_element?(view, "#history-refreshing-stop")
+
+      release_history(task_pid, :real)
+      render_async(view, 5_000)
+
+      assert render(view) =~ ~s(data-state="ready")
+
+      assert [%{action: "rolled_back"} | _] =
+               :sys.get_state(view.pid).socket.assigns.history_entries
+    end
+
+    test "filter_history rejects a key that belongs to another entity type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "XFILTER")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Filter Platform"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      render_hook(view, "filter_history", %{"key" => "position"})
+      assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "position"
+
+      # "geometry" is a valid pathway group but not a stop group, and the client
+      # cannot choose which vocabulary the server validates against.
+      result = render_hook(view, "filter_history", %{"key" => "geometry"})
+
+      assert result =~ "Unknown history filter"
+      assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "all"
+    end
+
+    test "a client-supplied entity type cannot widen the accepted filter vocabulary", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "SPOOF")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Spoof Platform"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      render_hook(view, "filter_history", %{"key" => "signage", "entity-type" => "pathway"})
+
+      assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "all"
+    end
+
+    test "a filter with no matching changes shows Clear filter, which restores all fields", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "NOMATCH")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          stop_name: %{"from" => "Old", "to" => "New"}
+        })
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      render_hook(view, "filter_history", %{"key" => "position"})
+
+      assert has_element?(view, "#history-filtered-empty-stop")
+      refute has_element?(view, "#history-empty-stop")
+
+      view |> element("#history-clear-filter-stop") |> render_click()
+
+      refute has_element?(view, "#history-filtered-empty-stop")
+      assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "all"
+    end
+
+    test "history times and grouping follow the agency zone across the local date boundary", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      agency_fixture(organization.id, gtfs_version.id, %{agency_timezone: "America/New_York"})
+      stop = lifecycle_child(organization, gtfs_version, station, level, "TZ")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Late UTC"})
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Early UTC"})
+
+      [late, early] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      # Both instants sit on 2026-04-26 in UTC but on different New York dates.
+      pin_change_log_time(late.id, ~U[2026-04-26 20:00:00.000000Z])
+      pin_change_log_time(early.id, ~U[2026-04-26 02:00:00.000000Z])
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      html = render_async(view, 5_000)
+
+      headers =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("[data-testid=\"history-date-header\"] time")
+        |> LazyHTML.attribute("datetime")
+
+      assert headers == ["2026-04-26", "2026-04-25"]
+      assert html =~ "4:00 PM"
+      assert html =~ "10:00 PM"
+      refute html =~ "04:00 PM"
+      refute has_element?(view, "#history-utc-fallback-stop")
+      assert html =~ "America/New_York"
+    end
+
+    test "conflicting agency zones disclose the UTC fallback exactly once", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      agency_fixture(organization.id, gtfs_version.id, %{
+        agency_id: "TZ_A",
+        agency_timezone: "America/New_York"
+      })
+
+      agency_fixture(organization.id, gtfs_version.id, %{
+        agency_id: "TZ_B",
+        agency_timezone: "Europe/Berlin"
+      })
+
+      stop = lifecycle_child(organization, gtfs_version, station, level, "TZCONFLICT")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Conflicted"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      stored_before = Repo.get!(GtfsPlanner.Gtfs.ChangeLog, log.id).inserted_at
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      html = render_async(view, 5_000)
+
+      disclosures =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#history-utc-fallback-stop")
+
+      assert Enum.count(disclosures) == 1
+      assert LazyHTML.text(disclosures) =~ "UTC"
+
+      # Localization decorates; stored UTC is untouched.
+      assert Repo.get!(GtfsPlanner.Gtfs.ChangeLog, log.id).inserted_at == stored_before
+    end
+
+    test "the History tab, its panel and the shared hook stay synchronized", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop = lifecycle_child(organization, gtfs_version, station, level, "TABS")
+      ctx = lifecycle_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Tabbed"})
+
+      view = open_diagram(conn, user, organization, gtfs_version, station)
+      render_hook(view, "edit_child_stop", %{"id" => stop.id})
+
+      assert has_element?(view, "#stop-tabs[phx-hook='TablistHook'][role='tablist']")
+      assert has_element?(view, "#stop-tab-details[aria-selected='true']")
+      assert has_element?(view, "#stop-tab-history[aria-selected='false']")
+      assert has_element?(view, "#stop-panel-history[role='tabpanel'][hidden]")
+
+      view |> element("#stop-tab-history") |> render_click()
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#stop-tab-history[aria-selected='true'][tabindex='0']")
+      assert has_element?(view, "#stop-tab-details[aria-selected='false'][tabindex='-1']")
+      assert has_element?(view, "#stop-panel-details[role='tabpanel'][hidden]")
+
+      assert has_element?(
+               view,
+               "#stop-panel-history[role='tabpanel'][aria-labelledby='stop-tab-history']"
+             )
+
+      refute has_element?(view, "#stop-panel-history[hidden]")
+
+      view |> element("#stop-tab-details") |> render_click()
+
+      assert has_element?(view, "#stop-tab-details[aria-selected='true'][tabindex='0']")
+      assert has_element?(view, "#stop-panel-history[hidden]")
+    end
+  end
+
+  defp pin_change_log_time(log_id, %DateTime{} = at) do
+    {1, _} =
+      Repo.update_all(
+        from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.id == ^log_id),
+        set: [inserted_at: at]
+      )
+
+    :ok
+  end
+
   describe "StationDiagramLive - history tab events" do
     setup do
       organization = organization_fixture()
@@ -10872,6 +11597,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_open_for == {"stop", stop.id}
@@ -10928,6 +11654,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "entity-id" => pathway.id
       })
 
+      render_async(view, 5_000)
+
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_open_for == {"pathway", pathway.id}
       assert [%{entity_type: "pathway"}] = state.socket.assigns.history_entries
@@ -10951,6 +11679,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "show_history", %{"entity-type" => "level", "entity-id" => level.id})
+      render_async(view, 5_000)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_open_for == {"level", level.id}
@@ -10987,6 +11716,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       end)
 
       render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
@@ -11049,6 +11779,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_open_for == {"stop", stop.id}
@@ -11089,6 +11820,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_field_filter == "all"
@@ -11174,6 +11906,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert state.socket.assigns.history_field_filter == "all"
 
       render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_field_filter == "all"
@@ -11632,6 +12365,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      render_async(view, 5_000)
 
       restored = Gtfs.get_stop!(stop.id)
       assert restored.stop_name == "Original Name"
@@ -11757,6 +12491,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      render_async(view, 5_000)
 
       restored = Gtfs.get_stop!(stop.id)
       assert restored.diagram_coordinate == original_coordinate
@@ -11829,6 +12564,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      render_async(view, 5_000)
 
       restored = Gtfs.get_pathway!(pathway.id)
       assert restored.traversal_time == 30
@@ -11862,6 +12598,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      render_async(view, 5_000)
 
       restored = Gtfs.get_level!(level.id)
       assert restored.level_name == "Confirm Level"
@@ -12511,11 +13248,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="history-stop")
-      assert html =~ "No change history is available for this stop."
+      assert html =~ "No changes have been recorded for this stop"
     end
 
     test "non-empty list renders actor display name, timestamp, and action attribute" do
@@ -12525,7 +13263,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="history-stop")
@@ -12545,7 +13284,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(data-history-entry-action="undo")
@@ -12565,7 +13305,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="history-entry-#{entry.id}")
@@ -12588,7 +13329,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [original, rollback],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="history-entry-#{original.id}")
@@ -12604,7 +13346,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="history-stop")
@@ -12620,7 +13363,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(data-history-entry-action="original")
@@ -12639,7 +13383,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: nil
+          rollback_preview: nil,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="history-entry-#{entry.id}")
@@ -12665,7 +13410,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: preview
+          rollback_preview: preview,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       assert html =~ ~s(id="rollback-preview-stop")
@@ -12693,7 +13439,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
           entity_type: "stop",
-          rollback_preview: preview
+          rollback_preview: preview,
+          filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
       refute html =~ ~s(id="rollback-preview-stop")

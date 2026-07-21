@@ -5,6 +5,315 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
 
   alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
+  @agency_zone %{timezone: "America/New_York", fallback?: false, fallback_reason: nil}
+  @utc_fallback %{timezone: "UTC", fallback?: true, fallback_reason: :conflicting}
+
+  defp filter_form(key \\ "all"), do: Phoenix.Component.to_form(%{"key" => key})
+
+  defp entry(overrides) do
+    Map.merge(
+      %{
+        id: "log-1",
+        action: "updated",
+        actor_email: "ada.lovelace@example.com",
+        inserted_at: ~U[2026-04-26 18:30:00Z],
+        rolled_back_to_log_id: nil,
+        changed_fields: %{"stop_name" => %{"from" => "Old", "to" => "New"}}
+      },
+      Map.new(overrides)
+    )
+  end
+
+  # The LiveView localizes every timestamp in one batch (PostgreSQL owns the
+  # IANA conversion) and hands the component the result keyed by entry id.
+  # These isolated tests stand in for that batch with a fixed offset: the
+  # component's contract is "consume the supplied local values", never convert.
+  defp local_times(entries, zone) do
+    offset_seconds = if zone.fallback?, do: 0, else: -4 * 3600
+
+    Map.new(entries, fn e ->
+      {e.id, e.inserted_at |> DateTime.add(offset_seconds, :second) |> DateTime.to_naive()}
+    end)
+  end
+
+  defp render_history(opts) do
+    entries = Keyword.get(opts, :entries, [])
+    zone = Keyword.get(opts, :zone, @agency_zone)
+
+    assigns =
+      [
+        entity_type: "stop",
+        entries: entries,
+        state: :ready,
+        history_field_filter: "all",
+        rollback_preview: nil,
+        zone: zone,
+        local_times: local_times(entries, zone),
+        today: ~D[2026-04-26],
+        now: ~N[2026-04-26 14:35:00]
+      ]
+      |> Keyword.merge(opts)
+
+    assigns = Keyword.put(assigns, :filter_form, filter_form(assigns[:history_field_filter]))
+
+    render_component(&ChangeHistoryComponents.change_log_list/1, assigns)
+  end
+
+  defp doc(html), do: LazyHTML.from_fragment(html)
+
+  describe "change_log_list/1 lifecycle states" do
+    test "initial loading shows a labelled skeleton and no entry list" do
+      html = render_history(entries: [], state: :initial_loading)
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-loading-stop")) == 1
+      assert html =~ "Loading history"
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-stop"), "data-state") == ["loading"]
+      assert Enum.empty?(LazyHTML.query(d, "[data-role=\"history-entry\"]"))
+      assert Enum.empty?(LazyHTML.query(d, "#history-empty-stop"))
+    end
+
+    test "ready with no entries shows the first-use empty state, not the filtered one" do
+      html = render_history(entries: [], state: :ready)
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-empty-stop")) == 1
+      assert Enum.empty?(LazyHTML.query(d, "#history-filtered-empty-stop"))
+      assert html =~ "No changes have been recorded for this stop"
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-stop"), "data-state") == ["empty"]
+
+      # ux-states: a first-use empty state still offers a next action.
+      details = LazyHTML.query(d, "#history-open-details-stop")
+      assert LazyHTML.attribute(details, "phx-click") == ["hide_history"]
+    end
+
+    test "refreshing keeps the previously loaded entries on screen" do
+      entries = [entry(id: "log-1")]
+      html = render_history(entries: entries, state: :refreshing)
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-refreshing-stop")) == 1
+      assert html =~ "Refreshing history"
+      assert Enum.count(LazyHTML.query(d, "#history-entry-log-1")) == 1
+
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-stop"), "data-state") == [
+               "refreshing"
+             ]
+    end
+
+    test "error with prior entries renders a retry action and a stale-preview disclosure" do
+      entries = [entry(id: "log-1")]
+      html = render_history(entries: entries, state: :error)
+      d = doc(html)
+
+      retry = LazyHTML.query(d, "#history-retry-stop")
+      assert Enum.count(retry) == 1
+      assert LazyHTML.attribute(retry, "phx-click") == ["retry_history"]
+      assert html =~ "Retry"
+      assert Enum.count(LazyHTML.query(d, "#history-stale-stop")) == 1
+      assert Enum.count(LazyHTML.query(d, "#history-entry-log-1")) == 1
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-stop"), "data-state") == ["error"]
+    end
+
+    test "error without prior entries has no stale-preview disclosure" do
+      html = render_history(entries: [], state: :error)
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-retry-stop")) == 1
+      assert Enum.empty?(LazyHTML.query(d, "#history-stale-stop"))
+    end
+  end
+
+  describe "change_log_list/1 filter, counts and filtered-empty state" do
+    test "the Fields control is a form-bound select with a visible label" do
+      entries = [entry(id: "log-1")]
+      html = render_history(entries: entries)
+      d = doc(html)
+
+      select = LazyHTML.query(d, "select#history-filter-stop")
+      assert Enum.count(select) == 1
+      assert LazyHTML.attribute(select, "name") == ["key"]
+
+      form = LazyHTML.query(d, "#history-filter-form-stop")
+      assert LazyHTML.attribute(form, "phx-change") == ["filter_history"]
+
+      label_text =
+        d
+        |> LazyHTML.query("#history-filter-form-stop label span")
+        |> LazyHTML.text()
+
+      assert label_text =~ "Fields"
+
+      label_class =
+        d
+        |> LazyHTML.query("#history-filter-form-stop label span")
+        |> LazyHTML.attribute("class")
+        |> List.first()
+
+      refute label_class =~ "sr-only"
+    end
+
+    test "filter options carry their matching change counts" do
+      entries = [
+        entry(id: "log-1", changed_fields: %{"stop_lat" => %{"from" => 1.0, "to" => 2.0}})
+      ]
+
+      html = render_history(entries: entries)
+
+      assert html =~ "All fields (1)"
+      assert html =~ "Position only (1)"
+      assert html =~ "Accessibility only (0)"
+    end
+
+    test "counts render through the shared display-mode count strip" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{
+            "stop_lat" => %{"from" => 1.0, "to" => 2.0},
+            "stop_name" => %{"from" => "A", "to" => "B"}
+          }
+        )
+      ]
+
+      html = render_history(entries: entries)
+      d = doc(html)
+
+      strip = LazyHTML.query(d, "#history-counts-stop")
+      assert LazyHTML.attribute(strip, "data-role") == ["count-strip"]
+      assert LazyHTML.attribute(strip, "data-mode") == ["display"]
+      # Display mode owns no buttons, so there is no zero-count click surface here.
+      assert Enum.empty?(LazyHTML.query(d, "#history-counts-stop button"))
+
+      entries_value =
+        d
+        |> LazyHTML.query("#history-counts-stop-item-entries [data-role=\"count-strip-value\"]")
+        |> LazyHTML.text()
+
+      changes_value =
+        d
+        |> LazyHTML.query("#history-counts-stop-item-changes [data-role=\"count-strip-value\"]")
+        |> LazyHTML.text()
+
+      assert entries_value == "1"
+      assert changes_value == "2"
+    end
+
+    test "counts follow the active filter" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{
+            "stop_lat" => %{"from" => 1.0, "to" => 2.0},
+            "stop_name" => %{"from" => "A", "to" => "B"}
+          }
+        )
+      ]
+
+      html = render_history(entries: entries, history_field_filter: "position")
+
+      changes_value =
+        html
+        |> doc()
+        |> LazyHTML.query("#history-counts-stop-item-changes [data-role=\"count-strip-value\"]")
+        |> LazyHTML.text()
+
+      assert changes_value == "1"
+    end
+
+    test "a filter matching nothing renders one Clear filter region and no per-card no-match text" do
+      entries = [
+        entry(id: "log-1", changed_fields: %{"stop_name" => %{"from" => "A", "to" => "B"}}),
+        entry(id: "log-2", changed_fields: %{"stop_desc" => %{"from" => "A", "to" => "B"}})
+      ]
+
+      html = render_history(entries: entries, history_field_filter: "position")
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-filtered-empty-stop")) == 1
+      assert Enum.empty?(LazyHTML.query(d, "#history-empty-stop"))
+      assert Enum.empty?(LazyHTML.query(d, "[data-testid=\"history-entry-no-match\"]"))
+      refute html =~ "No matching changes"
+
+      clear = LazyHTML.query(d, "#history-clear-filter-stop")
+      assert Enum.count(clear) == 1
+      assert LazyHTML.attribute(clear, "phx-click") == ["clear_history_filter"]
+      assert LazyHTML.text(clear) =~ "Clear filter"
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-stop"), "data-state") == ["filtered"]
+    end
+
+    test "nonmatching entries are hidden while matching entries remain" do
+      entries = [
+        entry(id: "log-1", changed_fields: %{"stop_lat" => %{"from" => 1.0, "to" => 2.0}}),
+        entry(id: "log-2", changed_fields: %{"stop_desc" => %{"from" => "A", "to" => "B"}})
+      ]
+
+      html = render_history(entries: entries, history_field_filter: "position")
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-entry-log-1")) == 1
+      assert Enum.empty?(LazyHTML.query(d, "#history-entry-log-2"))
+      assert Enum.empty?(LazyHTML.query(d, "#history-filtered-empty-stop"))
+    end
+  end
+
+  describe "change_log_list/1 agency-local time" do
+    test "groups across the agency date boundary rather than the UTC one" do
+      # Both instants share one UTC date but straddle midnight in New York.
+      entries = [
+        entry(id: "log-late", inserted_at: ~U[2026-04-26 20:00:00Z]),
+        entry(id: "log-early", inserted_at: ~U[2026-04-26 02:00:00Z])
+      ]
+
+      html = render_history(entries: entries, today: ~D[2026-04-26], now: ~N[2026-04-26 16:05:00])
+      d = doc(html)
+
+      headers =
+        d
+        |> LazyHTML.query("[data-testid=\"history-date-header\"] time")
+        |> LazyHTML.attribute("datetime")
+
+      assert headers == ["2026-04-26", "2026-04-25"]
+    end
+
+    test "times render unpadded 12-hour with uppercase AM/PM" do
+      entries = [entry(id: "log-1", inserted_at: ~U[2026-04-26 13:05:00Z])]
+
+      html = render_history(entries: entries)
+
+      # 13:05 UTC is 9:05 AM in New York.
+      assert html =~ "9:05 AM"
+      refute html =~ "09:05"
+      refute html =~ "9:05 am"
+    end
+
+    test "a valid agency zone is named once and raises no UTC fallback disclosure" do
+      entries = [entry(id: "log-1")]
+      html = render_history(entries: entries)
+      d = doc(html)
+
+      assert Enum.empty?(LazyHTML.query(d, "#history-utc-fallback-stop"))
+      assert Enum.count(LazyHTML.query(d, "#history-timezone-stop")) == 1
+      assert html =~ "America/New_York"
+    end
+
+    test "a UTC fallback is disclosed exactly once at panel level with its reason" do
+      entries = [
+        entry(id: "log-1", inserted_at: ~U[2026-04-26 13:05:00Z]),
+        entry(id: "log-2", inserted_at: ~U[2026-04-25 13:05:00Z])
+      ]
+
+      html = render_history(entries: entries, zone: @utc_fallback)
+      d = doc(html)
+
+      assert Enum.count(LazyHTML.query(d, "#history-utc-fallback-stop")) == 1
+      assert html =~ "UTC"
+      assert html =~ "more than one time zone"
+      # Exactly one zone statement: the plain note yields to the disclosure.
+      assert Enum.empty?(LazyHTML.query(d, "#history-timezone-stop"))
+    end
+  end
+
   test "exposes change_log_list/1 as a function component" do
     Code.ensure_loaded!(ChangeHistoryComponents)
     assert function_exported?(ChangeHistoryComponents, :change_log_list, 1)
@@ -69,41 +378,51 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
   end
 
   describe "format_time_short/2" do
-    test "renders today's time without separator" do
-      now = DateTime.utc_now()
-      today = DateTime.to_date(now)
-      result = ChangeHistoryComponents.__test_format_time_short__(now, today)
-
-      refute result =~ "·"
-      assert result =~ ~r/\d{1,2}:\d{2}\s(AM|PM)/
+    test "renders today's local time without separator, unpadded and uppercase" do
+      assert ChangeHistoryComponents.__test_format_time_short__(
+               ~N[2026-04-26 09:05:00],
+               ~D[2026-04-26]
+             ) == "9:05 AM"
     end
 
     test "renders other-day time with month/day separator" do
-      now = DateTime.utc_now()
-      today = DateTime.to_date(now)
-      yesterday = DateTime.add(now, -86_400, :second)
-
-      assert ChangeHistoryComponents.__test_format_time_short__(yesterday, today) =~ "·"
+      assert ChangeHistoryComponents.__test_format_time_short__(
+               ~N[2026-04-25 21:00:00],
+               ~D[2026-04-26]
+             ) == "Apr 25 · 9:00 PM"
     end
   end
 
-  describe "group_entries_by_date/1" do
-    test "groups by date and sorts descending" do
-      d1 = ~U[2026-04-24 10:00:00Z]
-      d2 = ~U[2026-04-25 10:00:00Z]
-      d3 = ~U[2026-04-26 10:00:00Z]
-
+  describe "group_entries_by_local_date/2" do
+    test "groups by the supplied local date and sorts descending" do
       entries = [
-        %{id: 1, inserted_at: d1},
-        %{id: 2, inserted_at: d3},
-        %{id: 3, inserted_at: d2},
-        %{id: 4, inserted_at: d3}
+        %{id: 1, inserted_at: ~U[2026-04-24 10:00:00Z]},
+        %{id: 2, inserted_at: ~U[2026-04-26 10:00:00Z]},
+        %{id: 3, inserted_at: ~U[2026-04-25 10:00:00Z]},
+        %{id: 4, inserted_at: ~U[2026-04-26 10:00:00Z]}
       ]
 
-      grouped = ChangeHistoryComponents.__test_group_entries_by_date__(entries)
+      local_times = %{
+        1 => ~N[2026-04-24 06:00:00],
+        2 => ~N[2026-04-26 06:00:00],
+        3 => ~N[2026-04-25 06:00:00],
+        4 => ~N[2026-04-26 06:00:00]
+      }
+
+      grouped =
+        ChangeHistoryComponents.__test_group_entries_by_date__(entries, local_times)
+
       dates = Enum.map(grouped, fn {date, _} -> date end)
 
       assert dates == [~D[2026-04-26], ~D[2026-04-25], ~D[2026-04-24]]
+    end
+
+    test "an instant whose local date differs from its UTC date groups locally" do
+      entries = [%{id: 1, inserted_at: ~U[2026-04-26 02:00:00Z]}]
+      local_times = %{1 => ~N[2026-04-25 22:00:00]}
+
+      assert [{~D[2026-04-25], _}] =
+               ChangeHistoryComponents.__test_group_entries_by_date__(entries, local_times)
     end
   end
 
@@ -423,21 +742,21 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
 
   describe "relative_time/2" do
     test "just now for sub-minute differences" do
-      now = DateTime.utc_now()
+      now = ~N[2026-04-26 10:00:00]
       assert ChangeHistoryComponents.__test_relative_time__(now, now) =~ "just now"
     end
 
     test "minutes ago" do
-      now = DateTime.utc_now()
-      five_min_ago = DateTime.add(now, -5 * 60, :second)
+      now = ~N[2026-04-26 10:00:00]
+      five_min_ago = NaiveDateTime.add(now, -5 * 60, :second)
 
       assert ChangeHistoryComponents.__test_relative_time__(five_min_ago, now) ==
                "5 minutes ago"
     end
 
     test "yesterday for one-day-ago" do
-      now = DateTime.utc_now()
-      one_day_ago = DateTime.add(now, -86_400, :second)
+      now = ~N[2026-04-26 10:00:00]
+      one_day_ago = NaiveDateTime.add(now, -86_400, :second)
 
       assert ChangeHistoryComponents.__test_relative_time__(one_day_ago, now) == "yesterday"
     end

@@ -3,6 +3,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   LiveView for the station diagram editor.
   Allows users to view floor plan diagrams, add/edit child stops by clicking,
   create pathways by connecting stops, and switch between levels.
+
+  ## History lifecycle
+
+  The stop, pathway, and level History tabs are served by one stable
+  `:history_load` async task. Starting a load cancels its predecessor, bumps a
+  generation counter, and records the full scope
+  `{organization_id, gtfs_version_id, station_stop_id, entity_type, entity_id,
+  generation}`. The task closure captures that scope — plain ids, never the
+  socket — and returns it with its result, so `handle_async/3` applies a result
+  only while it still describes the open panel. Switching entity, hiding the
+  drawer, or starting a replacement load therefore cannot be overwritten by
+  superseded work, and a cancelled task's exit is not an error.
+
+  The task also resolves the agency display zone once and localizes the whole
+  ordered timestamp collection in one batch. Localization decorates only:
+  stored UTC change-log rows are never written by this path.
   """
   use GtfsPlannerWeb, :live_view
   require Logger
@@ -23,8 +39,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.DiagramPalette
+  alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
   alias LiveSelect.Component, as: LiveSelectComponent
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @history_key :history_load
 
   @impl true
   def mount(_params, _session, socket) do
@@ -113,10 +132,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:other_level_counts_cache, %{})
      |> assign(:other_level_markers_cache, %{})
      |> assign(:audit_ctx, nil)
-     |> assign(:history_open_for, nil)
-     |> assign(:history_entries, [])
-     |> assign(:history_field_filter, "all")
-     |> assign(:rollback_preview, nil)
+     |> assign(:history_generation, 0)
+     |> reset_history()
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
      |> assign(:map_generation, "unmounted")
@@ -181,6 +198,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         socket =
           socket
+          # A station change moves the history scope, so any in-flight history
+          # work is abandoned and its result can no longer match.
+          |> cancel_async(@history_key)
+          |> reset_history()
           |> assign(:stop_id, stop_id)
           |> assign(:station, station)
           |> assign(:levels, levels)
@@ -1017,7 +1038,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           reposition_y={@reposition_y}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
+          history_state={@history_state}
+          history_filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          history_zone={@history_zone}
+          history_local_times={@history_local_times}
+          history_today={@history_today}
+          history_now={@history_now}
           rollback_preview={@rollback_preview}
         />
 
@@ -1032,7 +1059,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_error={@pathway_error}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
+          history_state={@history_state}
+          history_filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          history_zone={@history_zone}
+          history_local_times={@history_local_times}
+          history_today={@history_today}
+          history_now={@history_now}
           rollback_preview={@rollback_preview}
         />
 
@@ -1050,7 +1083,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_shared={@level_shared}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
+          history_state={@history_state}
+          history_filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          history_zone={@history_zone}
+          history_local_times={@history_local_times}
+          history_today={@history_today}
+          history_now={@history_now}
           rollback_preview={@rollback_preview}
         />
 
@@ -3647,17 +3686,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("show_history", %{"entity-type" => type, "entity-id" => id}, socket)
       when type in ["stop", "pathway", "level"] and is_binary(id) do
     if entity_belongs_to_current_station?(socket, type, id) do
-      organization_id = socket.assigns.current_organization.id
-      gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-      entries = Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, type, id)
-
       {:noreply,
        socket
        |> assign(:history_open_for, {type, id})
-       |> assign(:history_entries, entries)
-       |> assign(:history_field_filter, "all")
-       |> assign(:rollback_preview, nil)}
+       |> assign(:history_entries, [])
+       |> assign_history_filter("all")
+       |> assign(:rollback_preview, nil)
+       |> start_history_load(type, id, :initial_loading)}
     else
       {:noreply, put_flash(socket, :error, "History not available for this entity.")}
     end
@@ -3669,25 +3704,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("hide_history", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:history_open_for, nil)
-     |> assign(:history_entries, [])
-     |> assign(:history_field_filter, "all")
-     |> assign(:rollback_preview, nil)}
+    {:noreply, reset_history(cancel_async(socket, @history_key))}
   end
 
   @impl true
-  def handle_event("filter_history", %{"key" => key, "entity-type" => type}, socket)
-      when type in ["stop", "pathway", "level"] and is_binary(key) do
-    if GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents.valid_filter_key?(type, key) do
-      {:noreply, assign(socket, :history_field_filter, key)}
-    else
-      {:noreply,
-       socket
-       |> assign(:history_field_filter, "all")
-       |> put_flash(:error, "Unknown history filter")}
+  def handle_event("retry_history", _params, socket) do
+    case socket.assigns.history_open_for do
+      {type, id} ->
+        state = if socket.assigns.history_entries == [], do: :initial_loading, else: :refreshing
+        {:noreply, start_history_load(socket, type, id, state)}
+
+      _ ->
+        {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("clear_history_filter", _params, socket) do
+    {:noreply, assign_history_filter(socket, "all")}
+  end
+
+  # The entity type is read from server-owned state, never from the payload, so
+  # a crafted request cannot widen the accepted filter vocabulary.
+  @impl true
+  def handle_event("filter_history", %{"key" => key}, socket) when is_binary(key) do
+    case socket.assigns.history_open_for do
+      {type, _id} ->
+        if ChangeHistoryComponents.valid_filter_key?(type, key) do
+          {:noreply, assign_history_filter(socket, key)}
+        else
+          {:noreply,
+           socket
+           |> assign_history_filter("all")
+           |> put_flash(:error, "Unknown history filter")}
+        end
+
+      _ ->
+        {:noreply, assign_history_filter(socket, "all")}
+    end
+  end
+
+  def handle_event("filter_history", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -3749,6 +3807,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   def handle_event("confirm_rollback_change_log", _params, socket) do
     {:noreply, put_flash(socket, :error, "Unable to revert change: invalid parameters")}
+  end
+
+  # -- Asynchronous history loading ------------------------------------------
+
+  @impl true
+  def handle_async(@history_key, {:ok, {:loaded, scope, result}}, socket) do
+    if scope == socket.assigns.history_scope do
+      {:noreply,
+       socket
+       |> assign(:history_entries, result.entries)
+       |> assign(:history_zone, result.zone)
+       |> assign(:history_local_times, result.local_times)
+       |> assign(:history_today, result.today)
+       |> assign(:history_now, result.now)
+       |> assign(:history_state, :ready)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # A cancelled task was superseded on purpose; it is never a failure.
+  def handle_async(@history_key, {:exit, {:shutdown, :cancel}}, socket), do: {:noreply, socket}
+
+  def handle_async(@history_key, {:exit, _reason}, socket) do
+    if socket.assigns.history_state in [:initial_loading, :refreshing] do
+      {:noreply, assign(socket, :history_state, :error)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # ============================================================================
@@ -4002,14 +4089,77 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Scoped history lifecycle
+  # ---------------------------------------------------------------------------
+
+  defp reset_history(socket) do
+    socket
+    |> assign(:history_open_for, nil)
+    |> assign(:history_scope, nil)
+    |> assign(:history_state, :idle)
+    |> assign(:history_entries, [])
+    |> assign(:history_zone, nil)
+    |> assign(:history_local_times, %{})
+    |> assign(:history_today, nil)
+    |> assign(:history_now, nil)
+    |> assign_history_filter("all")
+    |> assign(:rollback_preview, nil)
+  end
+
+  defp assign_history_filter(socket, key) do
+    socket
+    |> assign(:history_field_filter, key)
+    |> assign(:history_filter_form, to_form(%{"key" => key}))
+  end
+
+  defp start_history_load(socket, entity_type, entity_id, state) do
+    generation = socket.assigns.history_generation + 1
+
+    scope =
+      {socket.assigns.current_organization.id, socket.assigns.current_gtfs_version.id,
+       socket.assigns.station.stop_id, entity_type, entity_id, generation}
+
+    socket
+    |> assign(:history_generation, generation)
+    |> assign(:history_scope, scope)
+    |> assign(:history_state, state)
+    |> cancel_async(@history_key)
+    |> start_async(@history_key, fn -> load_history(scope) end)
+  end
+
+  # Runs in the task process. It receives ids only and returns its own scope so
+  # the LiveView can decide whether the answer is still wanted. The zone is
+  # resolved once and the whole ordered collection localized in one batch.
+  defp load_history({organization_id, gtfs_version_id, _station_stop_id, type, id, _gen} = scope) do
+    source = history_source()
+    entries = source.list_change_logs_for_entity(organization_id, gtfs_version_id, type, id)
+    zone = source.resolve_display_zone(organization_id, gtfs_version_id)
+
+    [now_local | locals] =
+      source.localize_display_times(
+        [DateTime.utc_now() | Enum.map(entries, & &1.inserted_at)],
+        zone
+      )
+
+    {:loaded, scope,
+     %{
+       entries: entries,
+       zone: zone,
+       local_times: entries |> Enum.zip(locals) |> Map.new(fn {e, at} -> {e.id, at} end),
+       today: NaiveDateTime.to_date(now_local),
+       now: now_local
+     }}
+  end
+
+  # Resolved per call so the history boundary can be exercised deterministically
+  # in tests without recompiling this module. Production always uses the context.
+  defp history_source do
+    Application.get_env(:gtfs_planner, :station_history_source, Gtfs)
+  end
+
   defp refresh_history_entries(socket, entity_type, entity_id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    entries =
-      Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id)
-
-    assign(socket, :history_entries, entries)
+    start_history_load(socket, entity_type, entity_id, :refreshing)
   end
 
   defp maybe_refresh_history_entries(socket, entity_type, entity_id) do

@@ -3070,7 +3070,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :platform_options, :list, default: []
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_state, :atom, default: :idle
+  attr :history_filter_form, :any, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :history_zone, :any, default: nil
+  attr :history_local_times, :map, default: %{}
+  attr :history_today, :any, default: nil
+  attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
 
   def child_stop_drawer(assigns) do
@@ -3184,8 +3190,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@history_active}
           entries={@history_entries}
           entity_type="stop"
-          rollback_preview={@rollback_preview}
+          state={@history_state}
+          filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          zone={@history_zone}
+          local_times={@history_local_times}
+          today={@history_today}
+          now={@history_now}
+          rollback_preview={@rollback_preview}
         />
       </div>
     </.drawer>
@@ -3869,7 +3881,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_error, :string, default: nil
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_state, :atom, default: :idle
+  attr :history_filter_form, :any, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :history_zone, :any, default: nil
+  attr :history_local_times, :map, default: %{}
+  attr :history_today, :any, default: nil
+  attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
 
   def pathway_drawer(assigns) do
@@ -3992,8 +4010,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@history_active}
           entries={@history_entries}
           entity_type="pathway"
-          rollback_preview={@rollback_preview}
+          state={@history_state}
+          filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          zone={@history_zone}
+          local_times={@history_local_times}
+          today={@history_today}
+          now={@history_now}
+          rollback_preview={@rollback_preview}
         />
       </div>
     </.drawer>
@@ -4531,7 +4555,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_shared, :boolean, default: false
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_state, :atom, default: :idle
+  attr :history_filter_form, :any, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :history_zone, :any, default: nil
+  attr :history_local_times, :map, default: %{}
+  attr :history_today, :any, default: nil
+  attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
 
   def level_sidebar(assigns) do
@@ -4589,8 +4619,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@history_active}
           entries={@history_entries}
           entity_type="level"
-          rollback_preview={@rollback_preview}
+          state={@history_state}
+          filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          zone={@history_zone}
+          local_times={@history_local_times}
+          today={@history_today}
+          now={@history_now}
+          rollback_preview={@rollback_preview}
         />
       </div>
     </.drawer>
