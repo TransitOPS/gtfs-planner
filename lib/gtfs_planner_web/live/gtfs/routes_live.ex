@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   @moduledoc """
-  LiveView for viewing GTFS routes.
+  LiveView for browsing GTFS routes.
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
@@ -13,25 +13,24 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   @impl true
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    available_route_types = Gtfs.list_distinct_route_types(organization_id, gtfs_version_id)
-    available_agencies = Gtfs.list_distinct_agencies(organization_id, gtfs_version_id)
 
     {:ok,
      socket
      |> assign(:page_title, "Routes")
      |> assign(:user_roles, user_roles)
-     |> assign(:available_route_types, available_route_types)
-     |> assign(:available_agencies, available_agencies)
+     |> assign(:available_route_types, [])
+     |> assign(:available_agencies, [])
      |> assign(:filter_form, to_form(%{"route_type" => "", "agency_id" => "", "active" => ""}))
+     |> assign(:search_form, to_form(%{"search" => ""}))
      |> assign(:search, "")
      |> assign(:sort_by, :route_id)
      |> assign(:sort_dir, :asc)
      |> assign(:page, 1)
      |> assign(:per_page, 50)
      |> assign(:total_count, 0)
-     |> assign(:routes_empty?, true)}
+     |> assign(:routes_empty?, true)
+     |> assign(:routes_state, :ready)
+     |> stream(:routes, [])}
   end
 
   @impl true
@@ -59,25 +58,57 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       per_page: per_page
     ]
 
-    routes = Gtfs.list_routes(organization_id, gtfs_version_id, opts)
-    total_count = Gtfs.count_routes(organization_id, gtfs_version_id, opts)
-
     filter_form_data = %{
       "route_type" => params["route_type"] || "",
       "agency_id" => params["agency_id"] || "",
       "active" => params["active"] || ""
     }
 
-    {:noreply,
-     socket
-     |> assign(:filter_form, to_form(filter_form_data))
-     |> assign(:search, search)
-     |> assign(:sort_by, sort_by)
-     |> assign(:sort_dir, sort_dir)
-     |> assign(:page, page)
-     |> assign(:total_count, total_count)
-     |> assign(:routes_empty?, routes == [])
-     |> stream(:routes, routes, reset: true)}
+    socket =
+      socket
+      |> assign(:filter_form, to_form(filter_form_data))
+      |> assign(:search_form, to_form(%{"search" => search}))
+      |> assign(:search, search)
+      |> assign(:sort_by, sort_by)
+      |> assign(:sort_dir, sort_dir)
+
+    case Gtfs.load_route_catalog(organization_id, gtfs_version_id, opts) do
+      {:ok,
+       %{
+         rows: routes,
+         total_count: total_count,
+         page: canonical_page,
+         route_types: route_types,
+         agencies: agencies
+       }} ->
+        socket =
+          socket
+          |> assign(:page, canonical_page)
+          |> assign(:total_count, total_count)
+          |> assign(:available_route_types, route_types)
+          |> assign(:available_agencies, agencies)
+          |> assign(:routes_empty?, routes == [])
+          |> assign(:routes_state, :ready)
+          |> stream(:routes, routes, reset: true)
+
+        if canonical_page != page do
+          query_params = build_query_params(socket, canonical_page)
+
+          {:noreply,
+           push_patch(socket,
+             to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+           )}
+        else
+          {:noreply, socket}
+        end
+
+      {:error, :unavailable} ->
+        {:noreply,
+         socket
+         |> assign(:routes_empty?, true)
+         |> assign(:routes_state, :unavailable)
+         |> stream(:routes, [], reset: true)}
+    end
   end
 
   @impl true
@@ -108,8 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
       |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
       |> maybe_put("active", socket.assigns.filter_form.params["active"])
-      |> maybe_put("sort_by", socket.assigns.sort_by)
-      |> maybe_put("sort_dir", socket.assigns.sort_dir)
+      |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
      push_patch(socket,
@@ -151,19 +181,59 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   def handle_event("paginate", %{"page" => page}, socket) do
     page_num = parse_integer(page, 1)
 
-    query_params =
-      %{}
-      |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-      |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-      |> maybe_put("active", socket.assigns.filter_form.params["active"])
-      |> maybe_put("search", socket.assigns.search)
-      |> maybe_put("sort_by", socket.assigns.sort_by)
-      |> maybe_put("sort_dir", socket.assigns.sort_dir)
-      |> Map.put("page", page_num)
+    query_params = build_query_params(socket, page_num)
 
     {:noreply,
      push_patch(socket,
        to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+     )}
+  end
+
+  @impl true
+  def handle_event("retry", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    opts = [
+      route_type: parse_route_type(socket.assigns.filter_form.params["route_type"]),
+      agency_id: parse_string(socket.assigns.filter_form.params["agency_id"]),
+      active: socket.assigns.filter_form.params["active"],
+      search: socket.assigns.search,
+      sort_by: socket.assigns.sort_by,
+      sort_dir: socket.assigns.sort_dir,
+      page: socket.assigns.page,
+      per_page: socket.assigns.per_page
+    ]
+
+    case Gtfs.load_route_catalog(organization_id, gtfs_version_id, opts) do
+      {:ok,
+       %{
+         rows: routes,
+         total_count: total_count,
+         page: canonical_page,
+         route_types: route_types,
+         agencies: agencies
+       }} ->
+        {:noreply,
+         socket
+         |> assign(:page, canonical_page)
+         |> assign(:total_count, total_count)
+         |> assign(:available_route_types, route_types)
+         |> assign(:available_agencies, agencies)
+         |> assign(:routes_empty?, routes == [])
+         |> assign(:routes_state, :ready)
+         |> stream(:routes, routes, reset: true)}
+
+      {:error, :unavailable} ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("clear_filters", _params, socket) do
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes"
      )}
   end
 
@@ -209,7 +279,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         <:subtitle>GTFS routes for the current version</:subtitle>
       </.header>
 
-      <%!-- Filter bar --%>
       <div class="mt-6 bg-base-100 border border-base-300 rounded-lg p-4">
         <.form
           for={@filter_form}
@@ -249,27 +318,82 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           </div>
         </.form>
 
-        <div class="mt-4">
-          <.form for={%{}} id="search-form" phx-change="search">
+        <div class="mt-4 max-w-md">
+          <.form for={@search_form} id="route-search-form" phx-change="search">
             <.input
-              name="search"
+              field={@search_form[:search]}
               type="search"
-              value={@search}
-              placeholder="Search routes..."
+              placeholder="Search names and IDs"
               phx-debounce="300"
               label="Search"
             />
+            <p class="mt-1 text-xs text-base-content/60">Search names and IDs</p>
           </.form>
         </div>
       </div>
 
-      <div :if={@routes_empty?} class="text-center py-8 text-base-content/60">
-        No routes found
+      <div
+        :if={@routes_state == :unavailable}
+        id="routes-unavailable"
+        class="mt-6"
+      >
+        <.callout kind="error" title="Route catalog unavailable">
+          The route catalog is temporarily unavailable. Please try again.
+          <.button
+            id="routes-retry"
+            phx-click="retry"
+            variant="secondary"
+            size="sm"
+            class="mt-2"
+          >
+            Retry
+          </.button>
+        </.callout>
       </div>
 
-      <div :if={not @routes_empty?} class="mt-6">
+      <div
+        :if={@routes_state == :ready and @routes_empty? and has_active_constraints?(assigns)}
+        id="routes-constrained-empty"
+        class="mt-6"
+      >
+        <.empty_state title="No routes match your filters">
+          Try adjusting your search or filter criteria.
+          <:action>
+            <.button
+              id="routes-clear-filters"
+              phx-click="clear_filters"
+              variant="secondary"
+              size="sm"
+            >
+              {if @search != "" and no_filter_active?(assigns),
+                do: "Clear search",
+                else: "Clear filters"}
+            </.button>
+          </:action>
+        </.empty_state>
+      </div>
+
+      <div
+        :if={@routes_state == :ready and @routes_empty? and not has_active_constraints?(assigns)}
+        id="routes-first-use-empty"
+        class="mt-6"
+      >
+        <.empty_state title="No routes yet">
+          Routes appear here after you import a GTFS feed.
+          <:action>
+            <.link
+              navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
+              class="btn btn-primary btn-sm"
+            >
+              Import feed
+            </.link>
+          </:action>
+        </.empty_state>
+      </div>
+
+      <div :if={@routes_state == :ready and not @routes_empty?} class="mt-6">
         <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
-          <.table id="routes" rows={@streams.routes}>
+          <.table id="routes" rows={@streams.routes} responsive="stack">
             <:col
               :let={{_id, route}}
               label="Route ID"
@@ -279,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             >
               <.link
                 navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
-                class="link link-primary font-semibold"
+                class="link link-primary font-semibold font-mono"
               >
                 {route.route_id}
               </.link>
@@ -327,6 +451,30 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  defp has_active_constraints?(assigns) do
+    search_active = assigns.search != ""
+    filter_active = not no_filter_active?(assigns)
+    search_active or filter_active
+  end
+
+  defp no_filter_active?(assigns) do
+    params = assigns.filter_form.params
+    params["route_type"] in [nil, ""] and
+      params["agency_id"] in [nil, ""] and
+      params["active"] in [nil, ""]
+  end
+
+  defp build_query_params(socket, page) do
+    %{}
+    |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
+    |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
+    |> maybe_put("active", socket.assigns.filter_form.params["active"])
+    |> maybe_put("search", socket.assigns.search)
+    |> maybe_put("sort_by", socket.assigns.sort_by)
+    |> maybe_put("sort_dir", socket.assigns.sort_dir)
+    |> Map.put("page", page)
   end
 
   defp parse_route_type(nil), do: nil
