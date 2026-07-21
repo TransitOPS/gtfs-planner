@@ -8,7 +8,15 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.Import.{ChangeArtifactStorage, ChangeRun, ChangeRuns, ChangeWorker}
+
+  alias GtfsPlanner.Gtfs.Import.{
+    ChangeArtifactStorage,
+    ChangeDecision,
+    ChangeRun,
+    ChangeRuns,
+    ChangeWorker
+  }
+
   alias GtfsPlanner.Gtfs.TaskArtifactMaintenance
   alias GtfsPlanner.Repo
 
@@ -248,6 +256,98 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     assert Repo.get!(ChangeRun, run.id).state == :failed
   end
 
+  test "serializes decision-backed retry with terminal decision cleanup" do
+    previous_ttl = Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds)
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 0)
+
+    on_exit(fn ->
+      Application.put_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, previous_ttl)
+    end)
+
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+    {:ok, _claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
+
+    assert {:ok, _review} =
+             ChangeRuns.persist_review(
+               organization.id,
+               run.id,
+               generation,
+               token,
+               persisted_review_payload()
+             )
+
+    from(r in ChangeRun, where: r.id == ^run.id)
+    |> Repo.update_all(set: [state: :failed, finished_at: ~U[2000-01-01 00:00:00.000000Z]])
+
+    assert Repo.aggregate(
+             from(d in ChangeDecision, where: d.change_run_id == ^run.id),
+             :count
+           ) == 1
+
+    parent = self()
+
+    maintenance =
+      Task.async(fn ->
+        Sandbox.allow(Repo, parent, self())
+
+        TaskArtifactMaintenance.maintain(
+          before_change_decision_cleanup: fn ->
+            send(parent, {:before_change_decision_cleanup, self()})
+
+            receive do
+              :continue_decision_cleanup -> :ok
+            end
+          end
+        )
+      end)
+
+    assert_receive {:before_change_decision_cleanup, maintenance_pid}
+
+    telemetry_handler = "decision-retry-root-lock-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        telemetry_handler,
+        [:gtfs_planner, :task_artifact_capacity, :lock_attempt],
+        fn _event, _measurements, _metadata, destination ->
+          send(destination, {:root_lock_attempted, self()})
+        end,
+        parent
+      )
+
+    on_exit(fn -> :telemetry.detach(telemetry_handler) end)
+
+    retry =
+      Task.async(fn ->
+        Sandbox.allow(Repo, parent, self())
+        send(parent, {:decision_retry_started, self()})
+        result = ChangeRuns.retry(organization.id, run.id)
+        send(parent, {:decision_retry_finished, self(), result})
+        result
+      end)
+
+    assert_receive {:decision_retry_started, retry_pid}
+    assert_receive {:root_lock_attempted, ^retry_pid}
+    refute_receive {:decision_retry_finished, ^retry_pid, _result}, 100
+
+    send(maintenance_pid, :continue_decision_cleanup)
+    assert :ok = Task.await(maintenance)
+
+    assert {:error, :missing_or_corrupt_artifact} = Task.await(retry)
+
+    assert_receive {:decision_retry_finished, ^retry_pid, {:error, :missing_or_corrupt_artifact}}
+
+    assert Repo.get!(ChangeRun, run.id).state == :failed
+
+    assert Repo.aggregate(
+             from(d in ChangeDecision, where: d.change_run_id == ^run.id),
+             :count
+           ) == 0
+  end
+
   test "does not delete a freshly staged directory before its run row is inserted" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -272,5 +372,30 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
     assert :ok = ChangeWorker.compute(claimed, generation, token, ChangeRuns.topic(run))
     assert Repo.get!(ChangeRun, run.id).state == :review
+  end
+
+  defp persisted_review_payload do
+    %{
+      decisions: [
+        %{
+          serializer_version: 1,
+          decision_id: "stop:central",
+          entity_type: :stop,
+          action: :modify,
+          status: :pending,
+          natural_key: "central",
+          current_values: %{"stop_name" => "Central"},
+          uploaded_values: %{"stop_name" => "Central Station"},
+          changed_fields: [
+            %{"field" => "stop_name", "before" => "Central", "after" => "Central Station"}
+          ],
+          dependency_keys: [],
+          current_fingerprint: String.duplicate("a", 64),
+          user_edited: false
+        }
+      ],
+      summary: %{applicable: 1, modify: 1},
+      diagnostics: []
+    }
   end
 end

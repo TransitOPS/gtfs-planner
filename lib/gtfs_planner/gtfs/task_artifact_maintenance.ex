@@ -58,7 +58,6 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
     safely(fn -> reconcile_change_artifacts(opts) end)
 
     safely(fn -> ArtifactStorage.reconcile(retained_export_run_ids()) end)
-    safely(&cleanup_terminal_change_decisions/0)
     :ok
   end
 
@@ -67,14 +66,26 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
       runs = retained_change_runs()
       after_change_snapshot(opts)
 
-      ChangeArtifactStorage.reconcile(runs,
-        orphan_grace_seconds: orphan_grace_seconds()
-      )
+      result =
+        ChangeArtifactStorage.reconcile(runs,
+          orphan_grace_seconds: orphan_grace_seconds()
+        )
+
+      before_change_decision_cleanup(opts)
+      cleanup_terminal_change_decisions()
+      result
     end)
   end
 
   defp after_change_snapshot(opts) do
     case Keyword.get(opts, :after_change_snapshot) do
+      hook when is_function(hook, 0) -> hook.()
+      nil -> :ok
+    end
+  end
+
+  defp before_change_decision_cleanup(opts) do
+    case Keyword.get(opts, :before_change_decision_cleanup) do
       hook when is_function(hook, 0) -> hook.()
       nil -> :ok
     end
