@@ -10,10 +10,9 @@ const GtfsVersionHook = {
     this.watchdogTimer = null;
     this.navigated = false;
 
-    const storedVersion = this.safeGetItem(this.storageKey);
-    const isGtfsPage = /^\/gtfs\/[^/]+/.test(window.location.pathname);
-    if (isGtfsPage) {
-      this.pushEvent("gtfs_version_loaded", { version_id: storedVersion });
+    const currentVersion = this.currentVersion();
+    if (currentVersion) {
+      this.safeSetItem(this.storageKey, currentVersion);
     }
 
     this.handleEvent("gtfs_version_selected", ({ version_id }) => {

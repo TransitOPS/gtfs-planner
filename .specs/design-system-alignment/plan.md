@@ -8,12 +8,12 @@ Implementation is **dependency-ordered**. Packages that consume the same shared 
 
 ## Status
 
-- Branch: `main`; implementation through PR [#675](https://github.com/TransitOPS/gtfs-planner/pull/675) is merged; Package 18 is complete but remains unmerged on branch `018-dsa`
+- Branch: `016-dsa`; implementation through PR [#677](https://github.com/TransitOPS/gtfs-planner/pull/677) (Package 15) is merged on `main`; Package 16 is implemented on this branch and pending merge; Package 18 remains complete but unmerged on branch `018-dsa`
 - Audit: complete
-- Implementation: Packages 0–4, 7, 9–12, and 14 are complete on `main`; Package 13 is merged and fully verified on repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676), which remains pending merge. Package 5's implementation is complete with one historical browser observation pending; Package 6's implementation is merged with its historical keyboard-at-200%-zoom observation pending; Package 8's prototype retirement is complete; Package 18 is complete off-main; and Packages 15/16 have prepared specs and dedicated worktrees but no production implementation yet. Packages 15, 16, 17, 19, and 20 remain, and Package 18 still needs integration into `main`.
+- Implementation: Packages 0–4, 7, 9–15 are complete on `main` — repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) and Package 15's PR [#677](https://github.com/TransitOPS/gtfs-planner/pull/677) both merged 2026-07-21. Package 5's implementation is complete with one historical browser observation pending; Package 6's implementation is merged with its historical keyboard-at-200%-zoom observation pending; Package 8's prototype retirement is complete. Package 16 is implemented on `016-dsa` (20 commits, based on merged `main` at `6259ad9`) with one actionable MED review finding (`B021`, iteration 5) outstanding before merge. Package 18 is complete off-main and merges cleanly into current `main` (verified 2026-07-21). Packages 17, 19, and 20 remain unstarted.
 - Accessibility scope: decision 0.12 in [decisions.md](decisions.md) removes nonvisual/screen-reader work (VoiceOver gates, announcement contracts, nonvisual canvas summaries, screen-reader smoke tests) across all packages; keyboard operability remains required within reason
 - Findings: 198 total — 9 P0 with 2 historical evidence records remaining (SHR-001/SHR-007 implementation resolved, keyboard-only browser check pending; AUTH-001 implementation resolved, keyboard-only `/first` browser check recorded as a separate zero-user release observation; EXC-001 closed by Package 8 retirement), 83 P1, 93 P2 (includes AUTH-013/AUTH-014 discovered during Package 10 browser evidence), 13 P3
-- Current quality gate: repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676), commit `c4c4d15`, passes `mix precommit` from a clean test database on 2026-07-21 — 3,059 tests (0 failures, 5 skipped), with no added Credo issues. Its focused navigation/access-control set passes 76 tests. The earlier 26 isolation failures were confirmed as persistent browser-seed contamination; the three real failures were stale “Stations” assertions updated to “Stops & stations.” Merge PR #676 before treating `main` itself as green. Package 18 has focused ErrorHTML, retirement-route, design-system, and real-browser evidence on `018-dsa`.
+- Current quality gate: `main` is green — PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) and PR [#677](https://github.com/TransitOPS/gtfs-planner/pull/677) merged 2026-07-21. On `016-dsa`, the iteration-4 verification passed `mix precommit` with 3,316 tests plus strict Credo and 13 focused tests; the read-only iteration-5 review confirms all earlier findings resolved but records one new actionable MED finding (`B021`, a terminal-decision cleanup race outside the root-lock critical section) that must be fixed before merge. Package 18 has focused ErrorHTML, retirement-route, design-system, and real-browser evidence on `018-dsa`.
 
 ### Tracking convention
 
@@ -48,13 +48,13 @@ First reconcile the two outstanding historical P0 evidence records so the P0 gat
 
 The recommended next implementation wave is:
 
-- **Integration gate — restore green `main`:** PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) updates the three stale “Stations” assertions and passes `mix precommit` from a clean test database. Merge it before starting implementation from the verified checkpoint.
-- **Resolved decision — clock format:** decision 0.9 now requires an unpadded 12-hour clock with uppercase AM/PM, current-version agency timezone, and explicit UTC fallback. Packages 15 and 17 must consume that contract.
-- **Lane A — Package 15:** station reports and history. It owns the shared configurable count-strip contract and may proceed concurrently with Package 16 after Package 14 and the Package 13 tri-state/pathway presentation work.
-- **Lane B — Package 16:** import and export. It owns the shared version-diff contract and builds on Packages 1–3 plus the Package 14 upload contract. It may proceed concurrently with Package 15; each lane must consume, rather than duplicate, the other lane's shared primitive.
-- **Integration lane — Package 18:** rebase or otherwise reconcile `018-dsa` with current `main`, rerun its focused checks, and merge it. This is independent of Packages 15 and 16 except for likely shared design-page conflicts, which should be resolved by rebasing before merge.
+- **Merge gate — Package 16:** fix the iteration-5 MED finding `B021` (keep terminal decision cleanup inside the same root-lock critical section as its authoritative snapshot/reconciliation, with a deterministic overlap test), rerun the focused suites, and merge `016-dsa`. The branch is already based on merged `main` at `6259ad9`, so no rebase is needed.
+- **Lane A — Package 17:** validation and reachability. Once Package 16 merges, every upstream contract it consumes is on `main`: the 12-hour clock (decision 0.9, implemented by Package 15's `DisplayClock`), tri-state/pathway presentation (Package 13), the count-strip (Package 15), and the durable-task/version-diff contracts (Package 16). Spec preparation in `.specs/017-dsa/` can begin immediately, before the Package 16 merge completes.
+- **Lane B — Package 18 integration:** `018-dsa` merges cleanly into current `main` (verified 2026-07-21, no conflicting paths); rerun its focused ErrorHTML/retirement/design-system/browser checks against the merged tree and merge it. Independent of Lane A.
+- **Lane C — P0 evidence observations:** record the Package 6 keyboard-at-200%-zoom overlay observation and the zero-user `/first` keyboard observation for `AUTH-001`. Independent of both lanes and required before Package 20.
+- **Lane D — Package 19 infrastructure (19a):** the governance mechanisms that do not depend on Package 17's outcome — making `/design` responsive and keyboard-operable, the governed inventory schema and registry/inventory drift checks, the programmatic and visual maturity taxonomy (stable/experimental/proposal/legacy/deprecated), and deterministic normative examples for the contracts already graduated by Packages 9–16. Building the drift-check tooling first makes Package 17's shared-contract consumption cheaper to verify, not harder.
 
-While restoring green `main`, the two P0 evidence observations and Package 18 conflict assessment can proceed concurrently. After the green checkpoint, Packages 15 and 16 plus the Package 18 rebase/integration may proceed concurrently under the ownership boundaries above. Package 17 follows Packages 15/16 and consumes the resolved 12-hour clock, tri-state/pathway, and count-strip contracts. Package 19 begins only after Packages 15–18 are integrated and have recorded their graduation evidence. Package 20 remains strictly last.
+Lanes A–D may proceed concurrently. Package 19's inventory-reconciliation close (19b) — adding Package 17's consumer rows, recording final graduation evidence, and rerunning the drift checks — begins only after Packages 17 and 18 are integrated. Package 20 remains strictly last.
 
 ## Work packages
 
@@ -271,7 +271,7 @@ values, reduced motion, and state/copy contracts. Components examples were updat
 transit presentation contracts; maturity labels remain owned by Package 19. Repair PR
 [#676](https://github.com/TransitOPS/gtfs-planner/pull/676), commit `c4c4d15`, updates the three stale
 navigation/access-control copy assertions and passes `mix precommit` from a clean test database with
-3,059 tests, 0 failures, and 5 skipped; it remains pending merge.
+3,059 tests, 0 failures, and 5 skipped; it merged on 2026-07-21.
 
 ### 14. Align station diagram and editing
 
@@ -294,31 +294,50 @@ header/editing controls and passed 1,183 focused LiveView/component tests.
 
 ### 15. Align station reports and history
 
-- [ ] Implement all unresolved `REP-001`–`REP-024` findings in [station-reports-and-history.md](station-reports-and-history.md).
-- [ ] Apply the pathway-form and timezone decisions from package 0.
-- [ ] Preserve audit history, rollback safety, print behavior, validation truthfulness, and station/version identity.
-- [ ] Verify all report sections, edit drawer, history, rollback, loading/stale/error states, print, and narrow layouts.
-- [ ] Run focused report/history tests and browser checks.
+- [x] Implement all unresolved `REP-001`–`REP-024` findings in [station-reports-and-history.md](station-reports-and-history.md).
+- [x] Apply the pathway-form and timezone decisions from package 0.
+- [x] Preserve audit history, rollback safety, print behavior, validation truthfulness, and station/version identity.
+- [x] Verify all report sections, edit drawer, history, rollback, loading/stale/error states, print, and narrow layouts.
+- [x] Run focused report/history tests and browser checks.
 
-Preparation note (2026-07-21): the complete architecture/critique/spec/preparation pipeline is ready in
-`.specs/015-dsa/` with 8 prepared steps, 9 guardrails, 6 live invariants, and a validated manifest.
-Branch/worktree `015-dsa` is based on `origin/main` at `1b312eb`; `mix setup` passed. Package 15 owns
-the configurable count-strip contract. Step 7 consumes Package 16's `TransitPresentation.version_diff_row/1`
-after that dependency lands. No production implementation has started.
+Completion note: merged via PR [#677](https://github.com/TransitOPS/gtfs-planner/pull/677), commit
+`6259ad9` (2026-07-21). The station report and stop/pathway/level change-history panels now meet the
+shared kit contracts: a scoped agency display clock (`GtfsPlanner.Gtfs.DisplayClock`) implements
+decision 0.9 with explicit UTC fallback; the shared `count_strip/1` kit component (display and filter
+modes) is documented on the Counts & metrics design page; the report lifecycle is scope-safe and
+asynchronous with explicit loading/error/empty/stale states; audit history and rollback render through
+the shared `version_diff_row` component with exact values and stated provenance; and the unreachable
+report pathway form is removed per decision 0.6. Review evidence also drove kit-wide corrections:
+darkened `base-200`/`base-300` theme tokens, a WCAG 1.4.11-compliant `control-border`, a 70%
+`base-content` floor for secondary text, tinted `status_badge`/diff statuses, a new `metric` tile,
+theme radius adoption across hand-built cards, station-reachability migration off the legacy gray
+palette, and a documented nested-regions pattern. Verification: focused ExUnit suites for report,
+connectivity, history, drawer, display clock, count strip, transit presentation, and design-system
+pages, plus Playwright regressions (`assets/e2e/station_reports_and_history.spec.js`) for layout,
+44px targets, focus, reduced motion, and print.
 
 ### 16. Align import and export
 
-- [ ] Implement every import/export finding that remains unresolved after Packages 1–3 in [import-and-export.md](import-and-export.md); do not reopen the closed `IMP-001`, `IMP-002`, or `IMP-019` correctness boundaries without contradictory evidence.
-- [ ] Build on the correctness/recovery contracts completed in packages 1–3.
-- [ ] Apply accepted upload and durable-task proposals only through graduated contracts.
-- [ ] Verify upload, parsing, diff review, decision application, export generation/download, validation launch, partial states, retry, reconnect, and version identity.
-- [ ] Run focused import/export tests and browser checks.
+- [x] Implement every import/export finding that remains unresolved after Packages 1–3 in [import-and-export.md](import-and-export.md); do not reopen the closed `IMP-001`, `IMP-002`, or `IMP-019` correctness boundaries without contradictory evidence.
+- [x] Build on the correctness/recovery contracts completed in packages 1–3.
+- [x] Apply accepted upload and durable-task proposals only through graduated contracts.
+- [x] Verify upload, parsing, diff review, decision application, export generation/download, validation launch, partial states, retry, reconnect, and version identity.
+- [x] Run focused import/export tests and browser checks.
+- [-] **Merge gate:** fix iteration-5 review finding `B021` and merge `016-dsa` into `main`.
 
-Preparation note (2026-07-21): the complete architecture/critique/spec/preparation pipeline is ready in
-`.specs/016-dsa/` with 15 prepared steps, 11 guardrails, 10 live invariants, and a validated manifest.
-Branch/worktree `016-dsa` is based on `origin/main` at `1b312eb`; `mix setup` passed. Package 16 owns
-the shared version-diff contract. Step 14 consumes Package 15's count-strip implementation after that
-dependency lands. No production implementation has started.
+Completion note (implementation, pending merge): complete on branch `016-dsa`, 20 commits from
+`699a606` through `b1c5ca5`, based on merged `main` at `6259ad9`. The branch delivers durable change
+review schemas and fenced run transitions, staged durable change reviews with persisted diff review,
+atomic decision application, durable export runs with supervised artifact builds and private task
+artifact storage, scoped export downloads, the shared `version_diff_row` contract, aligned upload and
+recovery presentation, live export attached to durable runs, removal of the obsolete synchronous diff
+helpers, and import/export browser coverage. Step 14 consumes Package 15's merged count-strip
+(`change_history_components`, `export_live`, validation-history count strips remain display-only).
+Five branch-review iterations are recorded in `.specs/016-dsa/reviews/`; iterations 1–4 are resolved
+and verified (13 focused tests, strict Credo, 3,316-test `mix precommit`). Iteration 5 confirms `B006`'s
+artifact race resolved but records one actionable MED finding, `B021`: terminal decision cleanup must
+stay inside the same root-lock critical section as its authoritative snapshot/reconciliation, with a
+deterministic overlap test. Merge is gated on that fix.
 
 ### 17. Align validation and reachability
 
@@ -326,6 +345,11 @@ dependency lands. No production implementation has started.
 - [ ] Apply the timezone policy and any graduated durable-task/selection contracts.
 - [ ] Verify polling, history, stale/partial/degraded states, reachability workspace/results, severity/status semantics, reconnect, keyboard use, and responsive layouts.
 - [ ] Run focused validation/reachability tests and browser checks.
+
+Readiness note (2026-07-21): no `.specs/017-dsa/` pipeline exists yet. All upstream contracts land on
+`main` with the Package 16 merge (12-hour clock via `DisplayClock`, tri-state/pathway presentation,
+count-strip, durable-task/version-diff). Spec preparation may begin immediately and does not need to
+wait for the `016-dsa` merge to complete.
 
 ### 18. Resolve exceptional surfaces
 
@@ -345,6 +369,13 @@ verified by direct render because no production route is intentionally made to c
 surfaces audit records the retained prototype as advisory research.
 
 ### 19. Establish design-system governance
+
+Sequencing note (2026-07-21): this package splits into an infrastructure lane (**19a**) that may run
+concurrently with Package 17 — `/design` responsiveness and keyboard operability, the inventory schema,
+registry/inventory and guide-copy drift checks, the maturity taxonomy, and deterministic examples for
+contracts already graduated by Packages 9–16 — and a reconciliation close (**19b**) that begins only
+after Packages 17 and 18 are integrated: adding Package 17's consumer rows, recording final graduation
+evidence, and rerunning the drift checks. Only 19b is gated on Packages 15–18.
 
 - [ ] Implement all accepted `GOV-001`–`GOV-013` work in [design-system-governance.md](design-system-governance.md).
 - [ ] Make `/design` responsive and keyboard-operable at the documented breakpoints.
@@ -389,13 +420,13 @@ Completion note: DIA-001 is closed and merged to `main` via PR [#666](https://gi
 | 10 | Authentication and setup | Complete | Branch `010-dsa-align-authentication-setup` (steps 1–9 + step 10); `AUTH-001`–`AUTH-012` dispositioned in [authentication-and-setup.md](authentication-and-setup.md#package-10-implementation-evidence); 151 ExUnit + 17 Vitest + 30 Playwright; new P2 `AUTH-013`/`AUTH-014` recorded; `mix precommit` passed (2,795 tests, 0 failures, 5 skipped) |
 | 11 | Dashboard, settings, and API keys | Complete | PR [#673](https://github.com/TransitOPS/gtfs-planner/pull/673), commit `c7acb65`; `mix precommit` passed 2,965 tests (0 failures, 5 skipped) and 11 account Playwright scenarios; navigation-menu follow-up PR [#674](https://github.com/TransitOPS/gtfs-planner/pull/674), commit `acc5ae5` |
 | 12 | Administration | Complete | PR [#670](https://github.com/TransitOPS/gtfs-planner/pull/670), commit `42b5638`; ADM dispositions and 46 browser scenarios recorded in [administration.md](administration.md#package-12-automated-evidence-recorded-2026-07-20); Package 14's later `mix precommit` satisfies the integrator gate |
-| 13 | GTFS catalogs and details | Complete; repair PR pending merge | PR [#675](https://github.com/TransitOPS/gtfs-planner/pull/675), commit `1b312eb`; focused adapter/unit/LiveView coverage plus 43 catalog Playwright scenarios; repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) passes 3,059-test `mix precommit`; `CAT-001` and `CAT-021` remain approved deferrals |
+| 13 | GTFS catalogs and details | Complete | PR [#675](https://github.com/TransitOPS/gtfs-planner/pull/675), commit `1b312eb`; focused adapter/unit/LiveView coverage plus 43 catalog Playwright scenarios; repair PR [#676](https://github.com/TransitOPS/gtfs-planner/pull/676) merged 2026-07-21 with a 3,059-test `mix precommit` pass; `CAT-001` and `CAT-021` remain approved deferrals |
 | 14 | Station diagram and editing | Complete | PR [#671](https://github.com/TransitOPS/gtfs-planner/pull/671), commit `d957359`; 2,746 Elixir + 220 JavaScript tests, four Playwright suites, and `mix precommit` pass |
-| 15 | Station reports and history | Prepared; implementation not started | `.specs/015-dsa/`: proposal, critique, 8-step spec, 9 guardrails, 6 invariants, 8 ready execution cards, validated manifest; branch/worktree `015-dsa` |
-| 16 | Import and export | Prepared; implementation not started | `.specs/016-dsa/`: proposal, critique, 15-step spec, 11 guardrails, 10 invariants, 15 ready execution cards, validated manifest; branch/worktree `016-dsa` |
-| 17 | Validation and reachability | Not started | — |
-| 18 | Exceptional surfaces | Complete off-main; integration pending | Branch `018-dsa`, commits `0e9b052`–`1dcd7a7`; `EXC-005` and remaining ErrorHTML portion of `EXC-012` closed with focused render/route and real-404 browser evidence; rebase/reverification/merge still required; `EXC-010` remains transferred |
-| 19 | Design-system governance | Not started | — |
+| 15 | Station reports and history | Complete | PR [#677](https://github.com/TransitOPS/gtfs-planner/pull/677), commit `6259ad9`; `DisplayClock`, shared `count_strip/1`, `version_diff_row` consumption, kit-wide contrast/token corrections; focused ExUnit suites plus `station_reports_and_history.spec.js` browser regressions |
+| 16 | Import and export | Complete on branch; merge gated on `B021` fix | Branch `016-dsa`, 20 commits `699a606`–`b1c5ca5` on merged `main` `6259ad9`; durable change/export runs, version-diff contract, count-strip consumption; iter-4 gates green (3,316-test `mix precommit`, strict Credo); iteration-5 review records one actionable MED finding `B021` |
+| 17 | Validation and reachability | Not started; unblocked at Package 16 merge | — |
+| 18 | Exceptional surfaces | Complete off-main; integration pending | Branch `018-dsa`, commits `0e9b052`–`1dcd7a7`; `EXC-005` and remaining ErrorHTML portion of `EXC-012` closed with focused render/route and real-404 browser evidence; merges cleanly into current `main` (verified 2026-07-21); reverification and merge still required; `EXC-010` remains transferred |
+| 19 | Design-system governance | Not started; 19a infrastructure lane may start now | — |
 | 20 | Full-system verification and closeout | Not started | — |
 
 ## Final completion definition
