@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
   @agency_zone %{timezone: "America/New_York", fallback?: false, fallback_reason: nil}
   @utc_fallback %{timezone: "UTC", fallback?: true, fallback_reason: :conflicting}
 
-  defp filter_form(key \\ "all"), do: Phoenix.Component.to_form(%{"key" => key})
+  defp filter_form(key), do: Phoenix.Component.to_form(%{"key" => key})
 
   defp entry(overrides) do
     Map.merge(
@@ -60,6 +60,15 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
   end
 
   defp doc(html), do: LazyHTML.from_fragment(html)
+
+  defp text_of(d, selector),
+    do: d |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+
+  defp texts_of(d, selector),
+    do: d |> LazyHTML.query(selector) |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+
+  defp attrs_of(d, selector, name),
+    do: d |> LazyHTML.query(selector) |> LazyHTML.attribute(name)
 
   describe "change_log_list/1 lifecycle states" do
     test "initial loading shows a labelled skeleton and no entry list" do
@@ -655,88 +664,420 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     end
   end
 
-  describe "change_diff/1 rendering" do
-    test "renders categorical wheelchair_boarding label and dot for stop entity" do
-      entry = %{
-        id: "abc",
-        changed_fields: %{"wheelchair_boarding" => %{"from" => 0, "to" => 1}}
-      }
-
-      html =
-        render_component(&ChangeHistoryComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
-
-      assert html =~ "Wheelchair accessible"
-      assert html =~ "No information"
-      assert html =~ "bg-emerald-600"
-      assert html =~ "bg-base-300"
+  describe "history entries consume the shared version-diff row" do
+    test "there is no local diff renderer left in this module" do
+      refute function_exported?(ChangeHistoryComponents, :change_diff, 1)
     end
 
-    test "renders not-accessible label and rose dot for to: 2" do
-      entry = %{
-        id: "abc",
-        changed_fields: %{"wheelchair_boarding" => %{"from" => 1, "to" => 2}}
-      }
+    test "each entry renders exactly one shared row carrying its action and status" do
+      entries = [entry(id: "log-1", action: "updated", entity_external_id: "ALEWIFE-1")]
+      d = doc(render_history(entries: entries))
 
-      html =
-        render_component(&ChangeHistoryComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      row = LazyHTML.query(d, "#history-diff-log-1")
 
-      assert html =~ "Not accessible"
-      assert html =~ "bg-rose-600"
+      assert LazyHTML.attribute(row, "data-role") == ["version-diff-row"]
+      assert LazyHTML.attribute(row, "data-action") == ["modify"]
+      assert LazyHTML.attribute(row, "data-status") == ["applied"]
+      assert Enum.count(LazyHTML.query(d, "[data-role=\"version-diff-row\"]")) == 1
     end
 
-    test "non-categorical fields fall through to plain text without dot span" do
-      entry = %{
-        id: "abc",
-        changed_fields: %{"stop_name" => %{"from" => "Old Name", "to" => "New Name"}}
-      }
+    test "the entry states the GTFS natural key beside the human entity name" do
+      entries = [entry(id: "log-1", entity_external_id: "ALEWIFE-1")]
+      d = doc(render_history(entries: entries))
 
-      html =
-        render_component(&ChangeHistoryComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
-
-      assert html =~ "stop_name"
-      assert html =~ "Old Name"
-      assert html =~ "New Name"
-      refute html =~ "bg-emerald-600"
-      refute html =~ "bg-base-300"
-      refute html =~ "bg-rose-600"
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-entity\"]") == "Stop"
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-key\"]") == "ALEWIFE-1"
     end
 
-    test "uses two-column grid layout" do
-      entry = %{
-        id: "abc",
-        changed_fields: %{"stop_name" => %{"from" => "A", "to" => "B"}}
-      }
+    test "a created entry maps to the add action and a deleted entry to remove" do
+      created = entry(id: "log-1", action: "created", changed_fields: %{})
+      d = doc(render_history(entries: [created]))
 
-      html =
-        render_component(&ChangeHistoryComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-diff-log-1"), "data-action") == [
+               "add"
+             ]
 
-      assert html =~ "[grid-template-columns:max-content_minmax(0,1fr)]"
+      deleted = entry(id: "log-2", action: "deleted")
+      d = doc(render_history(entries: [deleted]))
+
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-diff-log-2"), "data-action") ==
+               ["remove"]
     end
 
-    test "accepts pre-filtered rows via :rows attr" do
-      rows = [%{field: "wheelchair_boarding", from: 0, to: 1}]
+    test "a reverted entry carries the rejected status" do
+      original = entry(id: "log-1")
+      rollback = entry(id: "log-2", action: "rolled_back", rolled_back_to_log_id: "log-1")
+      d = doc(render_history(entries: [rollback, original]))
 
-      html =
-        render_component(&ChangeHistoryComponents.change_diff/1,
-          entry: %{id: "abc", changed_fields: %{}},
+      assert LazyHTML.attribute(LazyHTML.query(d, "#history-diff-log-1"), "data-status") ==
+               ["rejected"]
+    end
+
+    test "field rows carry a human label and the raw GTFS key as secondary metadata" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{"stop_name" => %{"from" => "Old", "to" => "New"}}
+        )
+      ]
+
+      d = doc(render_history(entries: entries))
+
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-change-label\"]") ==
+               "Stop name"
+
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-change-key\"]") ==
+               "stop_name"
+    end
+
+    test "a 61 character value renders complete, with no truncation marker" do
+      long = String.duplicate("Kendall-MIT-Northbound-Platform.", 4)
+      assert String.length(long) > 60
+
+      entries = [
+        entry(id: "log-1", changed_fields: %{"stop_name" => %{"from" => "A", "to" => long}})
+      ]
+
+      html = render_history(entries: entries)
+
+      assert text_of(doc(html), "#history-diff-log-1 [data-role=\"version-diff-after\"]") == long
+      refute html =~ "…"
+    end
+
+    test "false, zero and nil render as those exact values" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{
+            "custom_flag" => %{"from" => true, "to" => false},
+            "min_width" => %{"from" => 1.5, "to" => nil},
+            "stair_count" => %{"from" => 12, "to" => 0}
+          }
+        )
+      ]
+
+      d = doc(render_history(entries: entries, entity_type: "pathway"))
+
+      assert texts_of(d, "#history-diff-log-1 [data-role=\"version-diff-after\"]") ==
+               ["false", "nil", "0"]
+
+      assert texts_of(d, "#history-diff-log-1 [data-role=\"version-diff-before\"]") ==
+               ["true", "1.5", "12"]
+
+      assert attrs_of(
+               d,
+               "#history-diff-log-1 [data-role=\"version-diff-after\"]",
+               "data-value-kind"
+             ) ==
+               ["boolean", "nil", "number"]
+    end
+
+    test "a categorical GTFS code still reads as its documented meaning" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{"is_bidirectional" => %{"from" => true, "to" => false}}
+        )
+      ]
+
+      d = doc(render_history(entries: entries, entity_type: "pathway"))
+
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-before\"]") ==
+               "Bidirectional"
+
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-after\"]") == "One-way"
+    end
+
+    test "a change side the record never captured is not shown as nil" do
+      entries = [entry(id: "log-1", changed_fields: %{"stop_name" => %{"to" => "New"}})]
+      d = doc(render_history(entries: entries))
+
+      assert text_of(d, "#history-diff-log-1 [data-role=\"version-diff-before\"]") ==
+               "Not recorded"
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(d, "#history-diff-log-1 [data-role=\"version-diff-before\"]"),
+               "data-value-kind"
+             ) == ["absent"]
+    end
+
+    test "an unknown categorical code is shown as stored rather than as Unknown" do
+      entries = [
+        entry(id: "log-1", changed_fields: %{"location_type" => %{"from" => 1, "to" => nil}})
+      ]
+
+      d = doc(render_history(entries: entries))
+
+      assert texts_of(d, "#history-diff-log-1 [data-role=\"version-diff-before\"]") == ["Station"]
+      assert texts_of(d, "#history-diff-log-1 [data-role=\"version-diff-after\"]") == ["nil"]
+    end
+
+    test "the active field filter still decides which change rows render" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{
+            "stop_name" => %{"from" => "A", "to" => "B"},
+            "stop_lat" => %{"from" => 1.0, "to" => 2.0}
+          }
+        )
+      ]
+
+      d = doc(render_history(entries: entries, history_field_filter: "position"))
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(d, "#history-diff-log-1 [data-role=\"version-diff-change\"]"),
+               "data-change-key"
+             ) == ["stop_lat"]
+    end
+
+    test "history actions are passed through the shared row's action slot" do
+      entries = [entry(id: "log-1")]
+      d = doc(render_history(entries: entries))
+
+      action =
+        LazyHTML.query(
+          d,
+          "#history-diff-log-1 [data-role=\"version-diff-actions\"] #history-entry-action-log-1"
+        )
+
+      assert LazyHTML.attribute(action, "phx-click") == ["preview_rollback_change_log"]
+      assert LazyHTML.attribute(action, "phx-value-log-id") == ["log-1"]
+      assert LazyHTML.attribute(action, "data-history-entry-action") == ["undo"]
+    end
+
+    # The server pushes focus to the panel and to the replacement entry after a
+    # rollback. Both must be programmatically focusable or the push is a no-op
+    # and focus silently falls to <body>.
+    test "the panel and every entry are programmatic focus destinations" do
+      entries = [entry(id: "log-1")]
+      d = doc(render_history(entries: entries))
+
+      assert attrs_of(d, "#history-stop", "tabindex") == ["-1"]
+      assert attrs_of(d, "#history-stop", "phx-hook") == ["FormErrorFocus"]
+      assert attrs_of(d, "#history-entry-log-1", "tabindex") == ["-1"]
+
+      [panel_class] = attrs_of(d, "#history-stop", "class")
+      assert panel_class =~ "focus-visible:ring"
+    end
+
+    test "an unavailable original-version restore states a visible reason" do
+      entries = [entry(id: "log-1", action: "created", changed_fields: %{})]
+      d = doc(render_history(entries: entries))
+
+      action = LazyHTML.query(d, "#history-entry-action-log-1")
+      assert LazyHTML.attribute(action, "aria-disabled") == ["true"]
+
+      assert LazyHTML.attribute(action, "aria-describedby") == ["history-entry-unavailable-log-1"]
+
+      reason = text_of(d, "#history-entry-unavailable-log-1")
+      assert reason =~ "No earlier version exists"
+      assert reason =~ "stop was created"
+    end
+  end
+
+  describe "rollback_preview/1" do
+    defp preview(overrides) do
+      Map.merge(
+        %{
+          log: %{id: "log-1", entity_external_id: "ALEWIFE-1"},
           entity_type: "stop",
-          rows: rows
+          entity_id: "stop-1",
+          entity_name: "Alewife Northbound",
+          field_changes: [%{field: "stop_name", current: "New", restored: "Old"}]
+        },
+        Map.new(overrides)
+      )
+    end
+
+    defp render_preview(overrides \\ []) do
+      render_component(&ChangeHistoryComponents.rollback_preview/1,
+        rollback_preview: preview(overrides),
+        entity_type: Keyword.get(overrides, :entity_type, "stop")
+      )
+    end
+
+    test "names the entity and states the consequence before the action" do
+      d = doc(render_preview())
+
+      assert text_of(d, "#rollback-preview-heading-stop") == "Revert stop Alewife Northbound?"
+
+      consequence = text_of(d, "#rollback-preview-consequence-stop")
+      assert consequence =~ "restores 1 field on this stop"
+      assert consequence =~ "re-apply this change to the stop afterwards"
+    end
+
+    test "pluralizes the consequence by the number of restored fields" do
+      d =
+        doc(
+          render_preview(
+            field_changes: [
+              %{field: "stop_name", current: "New", restored: "Old"},
+              %{field: "stop_lat", current: 2.0, restored: 1.0}
+            ]
+          )
         )
 
-      assert html =~ "Wheelchair accessible"
-      assert html =~ "bg-emerald-600"
+      assert text_of(d, "#rollback-preview-consequence-stop") =~ "restores 2 fields on this stop"
+    end
+
+    test "renders its evidence through the shared version-diff row in preview status" do
+      d = doc(render_preview())
+
+      row = LazyHTML.query(d, "#rollback-preview-diff-stop")
+      assert LazyHTML.attribute(row, "data-role") == ["version-diff-row"]
+      assert LazyHTML.attribute(row, "data-status") == ["preview"]
+      assert LazyHTML.attribute(row, "data-action") == ["modify"]
+
+      assert text_of(d, "#rollback-preview-diff-stop [data-role=\"version-diff-key\"]") ==
+               "ALEWIFE-1"
+    end
+
+    test "offers one dominant verb+noun action beside a subdued cancel" do
+      d = doc(render_preview())
+
+      confirm = LazyHTML.query(d, "#rollback-preview-confirm-stop")
+      assert LazyHTML.text(confirm) |> String.trim() == "Revert stop"
+      assert LazyHTML.attribute(confirm, "phx-click") == ["confirm_rollback_change_log"]
+      assert LazyHTML.attribute(confirm, "phx-value-log-id") == ["log-1"]
+
+      [confirm_class] = LazyHTML.attribute(confirm, "class")
+      [cancel_class] = attrs_of(d, "#rollback-preview-cancel-stop", "class")
+      assert confirm_class =~ "btn-error"
+      assert cancel_class =~ "btn-outline"
+    end
+
+    test "prevents a duplicate submission and shows progress while reverting" do
+      d = doc(render_preview())
+
+      assert attrs_of(d, "#rollback-preview-confirm-stop", "phx-disable-with") ==
+               ["Reverting…"]
+    end
+
+    test "takes focus when it opens and returns focus to its opener on cancel" do
+      d = doc(render_preview())
+
+      region = LazyHTML.query(d, "#rollback-preview-stop")
+      assert LazyHTML.attribute(region, "tabindex") == ["-1"]
+      assert [mounted] = LazyHTML.attribute(region, "phx-mounted")
+      assert mounted =~ "focus"
+
+      [cancel] = attrs_of(d, "#rollback-preview-cancel-stop", "phx-click")
+      assert cancel =~ "cancel_rollback_preview"
+      assert cancel =~ "history-entry-action-log-1"
+    end
+
+    test "renders complete values with no truncation" do
+      long = String.duplicate("b", 61)
+
+      d =
+        doc(
+          render_preview(field_changes: [%{field: "stop_desc", current: long, restored: "Old"}])
+        )
+
+      assert text_of(d, "#rollback-preview-diff-stop [data-role=\"version-diff-before\"]") == long
+    end
+
+    test "falls back to the log's natural key when the caller supplies no entity name" do
+      d = doc(render_preview(entity_name: nil))
+
+      assert text_of(d, "#rollback-preview-heading-stop") == "Revert stop ALEWIFE-1?"
+    end
+  end
+
+  describe "history and rollback preview agree on the same change" do
+    test "the same field renders the same label, key and values in both places" do
+      long = String.duplicate("Davis-Square-Upper-Busway.", 3)
+
+      entries = [
+        entry(
+          id: "log-1",
+          entity_external_id: "DAVIS-1",
+          changed_fields: %{"stop_name" => %{"from" => long, "to" => "Davis"}}
+        )
+      ]
+
+      history = doc(render_history(entries: entries))
+
+      preview =
+        doc(
+          render_component(&ChangeHistoryComponents.rollback_preview/1,
+            entity_type: "stop",
+            rollback_preview: %{
+              log: %{id: "log-1", entity_external_id: "DAVIS-1"},
+              entity_type: "stop",
+              entity_id: "stop-1",
+              entity_name: "Davis",
+              field_changes: [%{field: "stop_name", current: "Davis", restored: long}]
+            }
+          )
+        )
+
+      assert text_of(history, "#history-diff-log-1 [data-role=\"version-diff-change-label\"]") ==
+               text_of(
+                 preview,
+                 "#rollback-preview-diff-stop [data-role=\"version-diff-change-label\"]"
+               )
+
+      assert text_of(history, "#history-diff-log-1 [data-role=\"version-diff-change-key\"]") ==
+               text_of(
+                 preview,
+                 "#rollback-preview-diff-stop [data-role=\"version-diff-change-key\"]"
+               )
+
+      # The history recorded long -> "Davis"; reverting restores "Davis" -> long.
+      # The two sides are mirrored, and every rendered value is identical.
+      assert text_of(history, "#history-diff-log-1 [data-role=\"version-diff-before\"]") == long
+
+      assert text_of(preview, "#rollback-preview-diff-stop [data-role=\"version-diff-after\"]") ==
+               long
+    end
+
+    test "zero renders as zero in both places, never as a blank" do
+      entries = [
+        entry(id: "log-1", changed_fields: %{"wheelchair_boarding" => %{"from" => 1, "to" => 0}})
+      ]
+
+      history = doc(render_history(entries: entries))
+
+      preview =
+        doc(
+          render_component(&ChangeHistoryComponents.rollback_preview/1,
+            entity_type: "stop",
+            rollback_preview: %{
+              log: %{id: "log-1", entity_external_id: "S-1"},
+              entity_type: "stop",
+              entity_id: "stop-1",
+              entity_name: "S",
+              field_changes: [%{field: "level_index", current: 0, restored: 3}]
+            }
+          )
+        )
+
+      assert text_of(history, "#history-diff-log-1 [data-role=\"version-diff-after\"]") ==
+               "No information"
+
+      assert text_of(preview, "#rollback-preview-diff-stop [data-role=\"version-diff-before\"]") ==
+               "0"
+    end
+  end
+
+  describe "field_label/2" do
+    test "maps GTFS keys to sentence-case human labels per entity type" do
+      assert ChangeHistoryComponents.__test_field_label__("stop", "stop_name") == "Stop name"
+
+      assert ChangeHistoryComponents.__test_field_label__("stop", "wheelchair_boarding") ==
+               "Accessibility"
+
+      assert ChangeHistoryComponents.__test_field_label__("pathway", "is_bidirectional") ==
+               "Direction"
+
+      assert ChangeHistoryComponents.__test_field_label__("level", "level_index") == "Level index"
+    end
+
+    test "an unmapped key falls back to its humanized form rather than raising" do
+      assert ChangeHistoryComponents.__test_field_label__("stop", "some_new_field") ==
+               "Some new field"
     end
   end
 

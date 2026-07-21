@@ -510,6 +510,62 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
   end
 
+  describe "version diff page" do
+    setup %{conn: conn} do
+      user = user_fixture()
+      {:ok, view, _html} = live(log_in_user(conn, user), ~p"/design/version-diff")
+      %{view: view}
+    end
+
+    test "documents every action and status as a word, not a color", %{view: view} do
+      for word <- ~w(Added Modified Removed Conflict) do
+        assert has_element?(view, "[data-role='version-diff-action']", word)
+      end
+
+      for word <- ~w(Applied Pending Rejected Failed) do
+        assert has_element?(view, "[data-role='version-diff-status']", word)
+      end
+    end
+
+    test "shows a long value complete and false, zero and nil as themselves", %{view: view} do
+      html = render(view)
+
+      assert html =~ "Kendall/MIT Northbound Platform Upper Mezzanine Entrance Alpha"
+
+      values =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-version-diff-modify [data-role='version-diff-after']")
+        |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+
+      assert "0" in values
+      assert "nil" in values
+      assert "false" in values
+    end
+
+    test "shows a human label beside its raw source key", %{view: view} do
+      assert has_element?(view, "[data-role='version-diff-change-label']", "Stop name")
+      assert has_element?(view, "[data-role='version-diff-change-key']", "stop_name")
+    end
+
+    test "documents that the caller owns the vocabulary and that values are never cut",
+         %{view: view} do
+      assert has_element?(view, "#ds-page-version-diff", "Never pre-truncate a value")
+      assert has_element?(view, "#ds-page-version-diff", "The row never invents an action")
+    end
+
+    test "a collapsed row keeps its values in the document but hidden", %{view: view} do
+      assert has_element?(
+               view,
+               "#ds-version-diff-conflict [data-role='version-diff-changes'][hidden]"
+             )
+    end
+
+    test "emits no event the LiveView does not handle", %{view: view} do
+      assert Enum.all?(emitted_events(view, "#ds-page-version-diff"), &(&1 in @handled_events))
+    end
+  end
+
   describe "inputs page" do
     test "renders text, select, textarea, and checkbox inputs inside the demo form", %{
       conn: conn,

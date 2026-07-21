@@ -3781,27 +3781,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       %{log: %{id: ^log_id}} = preview ->
         case Gtfs.rollback_entity(preview.log, socket.assigns.audit_ctx) do
           {:ok, entity} ->
+            # The panel takes focus immediately so the destroyed confirm button
+            # never strands it on <body>; when the refreshed history arrives,
+            # focus moves on to the entry that replaced it.
             {:noreply,
              socket
              |> apply_rollback_entity_refresh(preview.entity_type, entity)
              |> refresh_history_entries(preview.entity_type, preview.entity_id)
              |> assign(:rollback_preview, nil)
-             |> put_flash(:info, "Change reverted.")}
+             |> assign(:history_focus_newest?, true)
+             |> put_flash(:info, "Change reverted.")
+             |> focus_history_target("history-#{preview.entity_type}")}
 
           {:error, reason} ->
             {:noreply,
              socket
              |> assign(:rollback_preview, nil)
-             |> put_flash(:error, rollback_error_message(reason))}
+             |> put_flash(:error, rollback_error_message(reason))
+             |> focus_rollback_fallback(log_id)}
         end
 
       _ ->
         {:noreply,
-         put_flash(
-           socket,
+         socket
+         |> put_flash(
            :error,
            "This change has already been reverted or the preview is stale."
-         )}
+         )
+         |> focus_rollback_fallback(log_id)}
     end
   end
 
@@ -3821,7 +3828,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:history_local_times, result.local_times)
        |> assign(:history_today, result.today)
        |> assign(:history_now, result.now)
-       |> assign(:history_state, :ready)}
+       |> assign(:history_state, :ready)
+       |> focus_replacement_entry(result.entries)}
     else
       {:noreply, socket}
     end
@@ -4105,6 +4113,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:history_now, nil)
     |> assign_history_filter("all")
     |> assign(:rollback_preview, nil)
+    |> assign(:history_focus_newest?, false)
   end
 
   defp assign_history_filter(socket, key) do
@@ -4162,6 +4171,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     start_history_load(socket, entity_type, entity_id, :refreshing)
   end
 
+  # -- Deterministic rollback focus -------------------------------------------
+  #
+  # Every rollback outcome ends somewhere useful and inside the open panel. The
+  # scoped `FormErrorFocus` hook mounted on `#history-<entity>` only focuses ids
+  # it contains, so an event can never pull focus into another region.
+  defp focus_history_target(socket, id) do
+    push_event(socket, "focus_scoped_target", %{id: id})
+  end
+
+  # A failed or stale confirm has no preview left to return to. Focus the entry
+  # action it names, but only when that entry is genuinely listed — the id comes
+  # from the request, so it is never interpolated into a focus target unverified.
+  defp focus_rollback_fallback(socket, log_id) do
+    case socket.assigns.history_open_for do
+      {entity_type, _id} ->
+        if Enum.any?(socket.assigns.history_entries, &(&1.id == log_id)) do
+          focus_history_target(socket, "history-entry-action-#{log_id}")
+        else
+          focus_history_target(socket, "history-#{entity_type}")
+        end
+
+      _ ->
+        socket
+    end
+  end
+
+  defp focus_replacement_entry(%{assigns: %{history_focus_newest?: true}} = socket, entries) do
+    socket = assign(socket, :history_focus_newest?, false)
+
+    case Enum.reject(entries, &(&1.action == "rolled_back")) do
+      [newest | _] -> focus_history_target(socket, "history-entry-#{newest.id}")
+      [] -> socket
+    end
+  end
+
+  defp focus_replacement_entry(socket, _entries), do: socket
+
   defp maybe_refresh_history_entries(socket, entity_type, entity_id) do
     if socket.assigns.history_open_for == {entity_type, entity_id} do
       refresh_history_entries(socket, entity_type, entity_id)
@@ -4197,10 +4243,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          log: log,
          entity_type: log.entity_type,
          entity_id: log.entity_id,
+         entity_name: rollback_entity_name(log.entity_type, entity),
+         natural_key:
+           rollback_entity_natural_key(log.entity_type, entity) || log.entity_external_id,
          field_changes: field_changes
        }}
     end
   end
+
+  # The preview names the thing it is about to change. Both values come from the
+  # currently loaded entity, never from the change log's stored snapshot, so the
+  # heading describes the record as it stands right now.
+  defp rollback_entity_name("stop", %Gtfs.Stop{} = stop), do: stop.stop_name || stop.stop_id
+
+  defp rollback_entity_name("level", %Gtfs.Level{} = level),
+    do: level.level_name || level.level_id
+
+  defp rollback_entity_name("pathway", %Gtfs.Pathway{} = pathway),
+    do: pathway.signposted_as || pathway.pathway_id
+
+  defp rollback_entity_name(_type, _entity), do: nil
+
+  defp rollback_entity_natural_key("stop", %Gtfs.Stop{} = stop), do: stop.stop_id
+  defp rollback_entity_natural_key("pathway", %Gtfs.Pathway{} = pathway), do: pathway.pathway_id
+  defp rollback_entity_natural_key("level", %Gtfs.Level{} = level), do: level.level_id
+  defp rollback_entity_natural_key(_type, _entity), do: nil
 
   defp handle_rollback_preview_request(socket, log) do
     if rollback_preview_available?(socket, log) do

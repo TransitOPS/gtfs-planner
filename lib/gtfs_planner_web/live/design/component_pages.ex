@@ -1649,6 +1649,146 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
     """
   end
 
+  @version_diff_changes [
+    %{
+      label: "Stop name",
+      key: "stop_name",
+      before: "Kendall/MIT",
+      after: "Kendall/MIT Northbound Platform Upper Mezzanine Entrance Alpha"
+    },
+    %{label: "Accessibility", key: "wheelchair_boarding", before: "No information", after: 0},
+    %{label: "Platform code", key: "platform_code", before: "A", after: nil},
+    %{label: "Bidirectional", key: "is_bidirectional", before: true, after: false}
+  ]
+
+  @doc """
+  The shared `<.version_diff_row>`: one record's difference between two versions.
+  """
+  def version_diff(assigns) do
+    assigns = assign(assigns, :version_diff_changes, @version_diff_changes)
+
+    ~H"""
+    <section id="ds-page-version-diff" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Version diff</h1>
+      <p class="mt-2 text-base-content/70">
+        One row per changed record. The component owns structure only: the action word,
+        the status word, the label/value grid, and the action zone. The caller owns the
+        entity vocabulary, the human labels, the raw keys, and every value.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">A change with actions</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Values are never truncated. A long value wraps; <code class="font-mono text-sm">nil</code>, <code class="font-mono text-sm">false</code>, <code class="font-mono text-sm">0</code>, and
+        <code class="font-mono text-sm">""</code>
+        each render as themselves, because in GTFS they are all real stored values with
+        different meanings.
+      </p>
+      <div class="mt-3 border border-base-300 p-4">
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-modify"
+          action={:modify}
+          entity_label="Stop"
+          natural_key="KENDALL-NB-1"
+          status={:applied}
+          summary="Edited stop · 4 fields changed"
+          changes={@version_diff_changes}
+          dependency_keys={["PLACE-KNCMR", "LEVEL-MEZZ"]}
+          edited?={false}
+          expanded?={true}
+        >
+          <:actions>
+            <.button variant="secondary" size="sm" class="min-h-11">Undo change</.button>
+          </:actions>
+        </TransitPresentation.version_diff_row>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Other actions and statuses</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Four actions and six statuses, each a word beside its tone. A row is readable
+        with colour removed.
+      </p>
+      <div class="mt-3 space-y-3 border border-base-300 p-4">
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-add"
+          action={:add}
+          entity_label="Pathway"
+          natural_key="PW-EAST-01"
+          status={:pending}
+          summary="New pathway from the east entrance"
+          changes={[
+            %{
+              label: "Mode",
+              key: "pathway_mode",
+              before: TransitPresentation.absent_value(),
+              after: "Stairs"
+            }
+          ]}
+          dependency_keys={[]}
+          edited?={true}
+          expanded?={true}
+        />
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-remove"
+          action={:remove}
+          entity_label="Level"
+          natural_key="LEVEL-MEZZ"
+          status={:rejected}
+          summary="Level removed"
+          changes={[]}
+          dependency_keys={[]}
+          edited?={false}
+          expanded?={true}
+        />
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-conflict"
+          action={:conflict}
+          entity_label="Stop"
+          natural_key="KENDALL-SB-1"
+          status={:failed}
+          summary="Both versions changed this stop's name"
+          changes={[
+            %{label: "Stop name", key: "stop_name", before: "Kendall", after: "Kendall Square"}
+          ]}
+          dependency_keys={[]}
+          edited?={false}
+          expanded?={false}
+        />
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          Pass a human label for every field and its raw source key alongside it. The
+          label is what the row leads with; the key is secondary metadata.
+        </li>
+        <li>
+          Never pre-truncate a value. This row is audit evidence, and a value whose end
+          is unreachable is not evidence. Long values wrap.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">absent_value/0</code>
+          when a side of the change holds no recorded value. It is not the same as <code class="font-mono text-sm">nil</code>, which is a stored value.
+        </li>
+        <li>
+          Put every action in the <code class="font-mono text-sm">:actions</code>
+          slot. The row never invents an action and never decides what a consumer may do
+          with a change.
+        </li>
+        <li>
+          <code class="font-mono text-sm">expanded?={false}</code>
+          keeps the complete change list in the document but hidden, so a caller-owned
+          control can reveal it without a round trip.
+        </li>
+        <li>
+          A malformed change — wrong shape, extra field, blank label, non-string
+          dependency key — raises <code class="font-mono text-sm">ArgumentError</code>
+          at render time rather than misstating an audit record.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
   # Static demo data. A design system page shows the component, so these rows are
   # literals rather than a query: the page must render identically on an empty database.
   defp sample_routes do

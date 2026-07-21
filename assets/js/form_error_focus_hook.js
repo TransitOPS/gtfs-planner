@@ -1,10 +1,20 @@
 const FOCUS_FORM_ERROR_EVENT = "focus_form_error";
+// Some outcomes have no form and no invalid field — a rollback that succeeded,
+// failed, or was superseded still has to land focus somewhere useful. Those
+// pushes name their target directly. The containment check below is what keeps
+// this scoped: a hook only ever focuses an element it already owns, so a
+// broadcast event cannot pull focus into an unrelated region of the page.
+const FOCUS_SCOPED_TARGET_EVENT = "focus_scoped_target";
 const INVALID_CONTROL_SELECTOR = '[aria-invalid="true"]';
 
 const FormErrorFocus = {
   mounted() {
     this.handleEvent(FOCUS_FORM_ERROR_EVENT, (payload) => {
       this._focusFormError(payload || {});
+    });
+
+    this.handleEvent(FOCUS_SCOPED_TARGET_EVENT, (payload) => {
+      this._focusWithin((payload || {}).id);
     });
 
     const mountFocusId = this.el.dataset.focusOnMount;

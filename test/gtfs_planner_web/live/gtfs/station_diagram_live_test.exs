@@ -13469,18 +13469,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           entity_type: "stop"
         )
 
-      assert html =~ "Revert these changes?"
+      assert html =~ "Revert stop"
       assert html =~ "stop_name"
       assert html =~ "Blue Line"
       assert html =~ "Red Line"
       assert html =~ "location_type"
 
       assert html =~ ~s(id="rollback-preview-cancel-stop")
-      assert html =~ ~s(phx-click="cancel_rollback_preview")
+      assert html =~ ~s(cancel_rollback_preview)
 
       assert html =~ ~s(id="rollback-preview-confirm-stop")
       assert html =~ ~s(phx-click="confirm_rollback_change_log")
       assert html =~ ~s(phx-value-log-id="#{log.id}")
+    end
+
+    test "renders a preview with no known entity name using the log's natural key" do
+      log = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        entity_external_id: "ALEWIFE-1"
+      }
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: [%{field: "stop_name", current: "Blue Line", restored: "Red Line"}]
+      }
+
+      html =
+        render_component(&StationDiagramComponents.rollback_preview/1,
+          rollback_preview: preview,
+          entity_type: "stop"
+        )
+
+      assert html =~ "Revert stop ALEWIFE-1?"
     end
   end
 
@@ -14462,24 +14484,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  # R9 (falsy-value preservation). These cases moved from the deleted local
+  # `change_diff/1` onto the shared `TransitPresentation.version_diff_row/1`
+  # the history now renders through. Every assertion keeps its original intent:
+  # `false`, `0`, and `nil` are real stored values and must appear as such.
   describe "StationDiagramComponents - falsy-value diff rendering (R9)" do
     alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
 
-    test "renders 0 -> 1 instead of em-dash for location_type" do
+    defp render_diff(changed_fields, entity_type \\ "stop") do
       entry = %GtfsPlanner.Gtfs.ChangeLog{
-        id: Ecto.UUID.generate(),
+        id: "r9-log",
         action: "updated",
         actor_email: "e@x.com",
+        entity_type: entity_type,
+        entity_external_id: "R9-STOP",
         inserted_at: ~U[2026-04-24 12:00:00.000000Z],
-        snapshot: %{"location_type" => 0},
-        changed_fields: %{"location_type" => %{"from" => 0, "to" => 1}}
+        snapshot: %{},
+        changed_fields: changed_fields
       }
 
-      html =
-        render_component(&StationDiagramComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      render_component(&StationDiagramComponents.change_log_list/1,
+        entries: [entry],
+        entity_type: entity_type,
+        rollback_preview: nil,
+        filter_form: Phoenix.Component.to_form(%{"key" => "all"})
+      )
+    end
+
+    defp diff_values(html, side) do
+      html
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query(~s(#history-diff-r9-log [data-role="version-diff-#{side}"]))
+      |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+    end
+
+    test "renders 0 -> 1 instead of em-dash for location_type" do
+      html = render_diff(%{"location_type" => %{"from" => 0, "to" => 1}})
 
       assert html =~ "location_type"
       assert html =~ GtfsPlanner.Gtfs.Stop.location_type_label(0)
@@ -14488,98 +14528,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
 
     test "renders false -> true for wheelchair_boarding" do
-      entry = %GtfsPlanner.Gtfs.ChangeLog{
-        id: Ecto.UUID.generate(),
-        action: "updated",
-        actor_email: "e@x.com",
-        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
-        snapshot: %{"wheelchair_boarding" => false},
-        changed_fields: %{"wheelchair_boarding" => %{"from" => false, "to" => true}}
-      }
-
-      html =
-        render_component(&StationDiagramComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      html = render_diff(%{"wheelchair_boarding" => %{"from" => false, "to" => true}})
 
       assert html =~ "wheelchair_boarding"
-      assert html =~ "false"
-      assert html =~ "true"
+      assert diff_values(html, "before") == ["false"]
+      assert diff_values(html, "after") == ["true"]
     end
 
     test "renders nil -> 5 with nil text and value for 5" do
-      entry = %GtfsPlanner.Gtfs.ChangeLog{
-        id: Ecto.UUID.generate(),
-        action: "updated",
-        actor_email: "e@x.com",
-        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
-        snapshot: %{},
-        changed_fields: %{"some_int" => %{"from" => nil, "to" => 5}}
-      }
-
-      html =
-        render_component(&StationDiagramComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      html = render_diff(%{"some_int" => %{"from" => nil, "to" => 5}})
 
       assert html =~ "some_int"
-      assert html =~ "5"
-      assert html =~ "nil"
+      assert diff_values(html, "before") == ["nil"]
+      assert diff_values(html, "after") == ["5"]
     end
 
     test "suppresses system-noise fields while preserving stop_id" do
-      entry = %GtfsPlanner.Gtfs.ChangeLog{
-        id: Ecto.UUID.generate(),
-        action: "updated",
-        actor_email: "e@x.com",
-        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
-        snapshot: %{},
-        changed_fields: %{
+      html =
+        render_diff(%{
           "organization_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
           "gtfs_version_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
           "id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
           "inserted_at" => %{"from" => nil, "to" => "2026-04-24T12:00:00Z"},
           "updated_at" => %{"from" => nil, "to" => "2026-04-24T12:30:00Z"},
           "stop_id" => %{"from" => "OLD", "to" => "NEW"}
-        }
-      }
+        })
 
-      html =
-        render_component(&StationDiagramComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      change_keys =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s(#history-diff-r9-log [data-role="version-diff-change"]))
+        |> LazyHTML.attribute("data-change-key")
 
-      refute html =~ "organization_id"
-      refute html =~ "gtfs_version_id"
-      refute html =~ ~s(>id</div>)
-      refute html =~ "inserted_at"
-      refute html =~ "updated_at"
-      assert html =~ "stop_id"
+      assert change_keys == ["stop_id"]
     end
 
-    test "renders categorical label and dot for wheelchair_boarding=1" do
-      entry = %GtfsPlanner.Gtfs.ChangeLog{
-        id: Ecto.UUID.generate(),
-        action: "updated",
-        actor_email: "e@x.com",
-        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
-        snapshot: %{"wheelchair_boarding" => 0},
-        changed_fields: %{"wheelchair_boarding" => %{"from" => 0, "to" => 1}}
-      }
+    test "renders the categorical label for wheelchair_boarding=1 in words" do
+      html = render_diff(%{"wheelchair_boarding" => %{"from" => 0, "to" => 1}})
 
-      html =
-        render_component(&StationDiagramComponents.change_diff/1,
-          entry: entry,
-          entity_type: "stop"
-        )
+      assert diff_values(html, "before") == ["No information"]
+      assert diff_values(html, "after") == ["Wheelchair accessible"]
+    end
 
-      assert html =~ "Wheelchair accessible"
-      assert html =~ "bg-emerald-600"
-      assert html =~ "No information"
-      assert html =~ "bg-base-300"
+    test "a 61 character value is rendered whole, not truncated at 60" do
+      long = String.duplicate("x", 61)
+      html = render_diff(%{"stop_desc" => %{"from" => "short", "to" => long}})
+
+      assert diff_values(html, "after") == [long]
+      refute html =~ "…"
     end
   end
 
@@ -14996,6 +14992,411 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       on_exit(fn ->
         File.rm_rf!(Path.join([uploads_path, "diagrams", organization.id]))
       end)
+    end
+  end
+
+  # ==========================================================================
+  # AC-18 / AC-19 / AC-21 — the shared version diff and the rollback contract,
+  # proven through the routed LiveView rather than a hand-built component call.
+  # ==========================================================================
+  describe "StationDiagramLive - shared version diff and rollback interaction" do
+    @long_name "Kendall-MIT-Northbound-Platform-Upper-Mezzanine-Entrance-Alpha"
+
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFF_STATION",
+          stop_name: "Diff Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "DIFF_L1",
+          level_name: "Diff Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    # One recorded edit whose stored values exercise every value the audit must
+    # never distort: a 61+ character string, a zero, and a nil.
+    defp diff_fixture(%{
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         }) do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFF_STOP_1",
+          stop_name: "Short Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 0,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          stop_name: @long_name,
+          stop_desc: nil,
+          wheelchair_boarding: 0
+        })
+
+      [log] = Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _changed} = Gtfs.update_stop(stop, %{stop_name: @long_name})
+
+      %{stop: stop, log: log}
+    end
+
+    defp panel_doc(view), do: view |> render() |> LazyHTML.from_fragment()
+
+    defp node_text(doc, selector),
+      do: doc |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+
+    test "the History panel renders every entry through the shared version-diff row", ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      doc = panel_doc(view)
+
+      assert Enum.count(LazyHTML.query(doc, ~s([data-role="version-diff-row"]))) == 1
+      row = LazyHTML.query(doc, "#history-diff-#{log.id}")
+      assert LazyHTML.attribute(row, "data-action") == ["modify"]
+      assert LazyHTML.attribute(row, "data-status") == ["applied"]
+
+      # The GTFS natural key, not the internal UUID.
+      assert node_text(doc, "#history-diff-#{log.id} [data-role=\"version-diff-key\"]") ==
+               "DIFF_STOP_1"
+
+      assert node_text(doc, "#history-diff-#{log.id} [data-role=\"version-diff-change-label\"]") ==
+               "Stop name"
+
+      assert node_text(doc, "#history-diff-#{log.id} [data-role=\"version-diff-change-key\"]") ==
+               "stop_name"
+
+      assert String.length(@long_name) > 60
+
+      assert node_text(doc, "#history-diff-#{log.id} [data-role=\"version-diff-after\"]") ==
+               @long_name
+
+      refute node_text(doc, "#history-diff-#{log.id}") =~ "…"
+    end
+
+    test "the rollback preview names the entity, states the consequence, and offers one action",
+         ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      view |> element("#history-entry-action-#{log.id}") |> render_click()
+
+      doc = panel_doc(view)
+
+      assert node_text(doc, "#rollback-preview-heading-stop") ==
+               "Revert stop #{@long_name}?"
+
+      consequence = node_text(doc, "#rollback-preview-consequence-stop")
+      assert consequence =~ "restores 1 field on this stop"
+      assert consequence =~ "re-apply this change to the stop afterwards"
+
+      confirm = LazyHTML.query(doc, "#rollback-preview-confirm-stop")
+      assert LazyHTML.text(confirm) |> String.trim() == "Revert stop"
+      assert LazyHTML.attribute(confirm, "phx-disable-with") == ["Reverting…"]
+
+      # One dominant action: the only other control in the preview is subdued.
+      [confirm_class] = LazyHTML.attribute(confirm, "class")
+      assert confirm_class =~ "btn-error"
+
+      [cancel_class] =
+        doc |> LazyHTML.query("#rollback-preview-cancel-stop") |> LazyHTML.attribute("class")
+
+      assert cancel_class =~ "btn-outline"
+
+      # Focus moves into the preview when it opens and back to the opener on cancel.
+      region = LazyHTML.query(doc, "#rollback-preview-stop")
+      assert LazyHTML.attribute(region, "tabindex") == ["-1"]
+      assert [mounted] = LazyHTML.attribute(region, "phx-mounted")
+      assert mounted =~ "focus"
+
+      [cancel_click] =
+        doc |> LazyHTML.query("#rollback-preview-cancel-stop") |> LazyHTML.attribute("phx-click")
+
+      assert cancel_click =~ "history-entry-action-#{log.id}"
+    end
+
+    test "the preview and the history entry state the same values for the same change", ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      view |> element("#history-entry-action-#{log.id}") |> render_click()
+
+      doc = panel_doc(view)
+
+      history_after =
+        node_text(doc, "#history-diff-#{log.id} [data-role=\"version-diff-after\"]")
+
+      preview_before =
+        node_text(doc, "#rollback-preview-diff-stop [data-role=\"version-diff-before\"]")
+
+      # The history recorded "Short Name" -> long; reverting restores long -> "Short Name".
+      assert history_after == @long_name
+      assert preview_before == @long_name
+
+      assert node_text(doc, "#rollback-preview-diff-stop [data-role=\"version-diff-after\"]") ==
+               "Short Name"
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(doc, "#rollback-preview-diff-stop"),
+               "data-status"
+             ) == ["preview"]
+
+      assert node_text(
+               doc,
+               "#rollback-preview-diff-stop [data-role=\"version-diff-change-label\"]"
+             ) == "Stop name"
+    end
+
+    test "cancelling the preview clears it and writes nothing", ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      view |> element("#history-entry-action-#{log.id}") |> render_click()
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
+
+      view |> element("#rollback-preview-cancel-stop") |> render_click()
+
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview == nil
+      refute has_element?(view, "#rollback-preview-stop")
+      assert Gtfs.get_stop!(stop.id).stop_name == @long_name
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+    end
+
+    test "a successful revert focuses the panel, then the entry that replaced it", ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      view |> element("#history-entry-action-#{log.id}") |> render_click()
+      view |> element("#rollback-preview-confirm-stop") |> render_click()
+
+      assert_push_event(view, "focus_scoped_target", %{id: "history-stop"})
+
+      render_async(view, 5_000)
+
+      assert Gtfs.get_stop!(stop.id).stop_name == "Short Name"
+
+      [newest | _] = :sys.get_state(view.pid).socket.assigns.history_entries
+      assert newest.action == "rolled_back"
+
+      assert_push_event(view, "focus_scoped_target", %{id: focused_id})
+      assert focused_id != "history-stop"
+      assert String.starts_with?(focused_id, "history-entry-")
+    end
+
+    test "a reverted entry is marked rejected and offers re-apply", ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      view |> element("#history-entry-action-#{log.id}") |> render_click()
+      view |> element("#rollback-preview-confirm-stop") |> render_click()
+      render_async(view, 5_000)
+
+      doc = panel_doc(view)
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#history-diff-#{log.id}"), "data-status") ==
+               ["rejected"]
+
+      [rollback_log] =
+        Gtfs.list_change_logs_for_entity(
+          ctx.organization.id,
+          ctx.gtfs_version.id,
+          "stop",
+          stop.id
+        )
+        |> Enum.filter(&(&1.action == "rolled_back"))
+
+      action = LazyHTML.query(doc, "#history-entry-action-#{log.id}")
+      assert LazyHTML.attribute(action, "data-history-entry-action") == ["reapply"]
+      assert LazyHTML.attribute(action, "phx-value-log-id") == [rollback_log.id]
+    end
+
+    test "confirming twice reverts once and refuses the stale second attempt", ctx do
+      %{stop: stop, log: log} = diff_fixture(ctx)
+
+      view = open_diagram(ctx.conn, ctx.user, ctx.organization, ctx.gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      view |> element("#history-entry-action-#{log.id}") |> render_click()
+      view |> element("#rollback-preview-confirm-stop") |> render_click()
+      render_async(view, 5_000)
+
+      after_first =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_first == 1
+      restored_name = Gtfs.get_stop!(stop.id).stop_name
+
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      assert result =~ "already been reverted" or result =~ "stale"
+
+      assert Repo.aggregate(
+               from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+               :count
+             ) == after_first
+
+      assert Gtfs.get_stop!(stop.id).stop_name == restored_name
+      assert_push_event(view, "focus_scoped_target", %{id: _})
+    end
+
+    test "a created entry offers no restore and states a visible reason", ctx do
+      %{organization: organization, gtfs_version: gtfs_version, station: station, level: level} =
+        ctx
+
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFF_CREATED_STOP",
+          stop_name: "Created Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      audit = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: ctx.user.id,
+        actor_email: ctx.user.email
+      }
+
+      :ok = Gtfs.record_change(audit, :stop, stop, "created", %{stop_id: stop.stop_id})
+      [log] = Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      view = open_diagram(ctx.conn, ctx.user, organization, gtfs_version, station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      doc = panel_doc(view)
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#history-diff-#{log.id}"), "data-action") ==
+               ["add"]
+
+      action = LazyHTML.query(doc, "#history-entry-action-#{log.id}")
+      assert LazyHTML.attribute(action, "aria-disabled") == ["true"]
+
+      assert LazyHTML.attribute(action, "aria-describedby") ==
+               ["history-entry-unavailable-#{log.id}"]
+
+      reason = node_text(doc, "#history-entry-unavailable-#{log.id}")
+      assert reason =~ "No earlier version exists"
+      refute reason == ""
+    end
+
+    test "a log scoped to another station is still refused after the migration", ctx do
+      %{stop: stop} = diff_fixture(ctx)
+      %{organization: organization, gtfs_version: gtfs_version} = ctx
+
+      other_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFF_OTHER_STATION",
+          stop_name: "Other Station",
+          location_type: 1
+        })
+
+      {:ok, foreign_log} =
+        Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          station_stop_id: other_station.stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          actor_id: ctx.user.id,
+          actor_email: ctx.user.email,
+          action: "updated",
+          changed_fields: %{"stop_name" => %{"from" => "A", "to" => "B"}},
+          snapshot: %{"stop_name" => "A"}
+        })
+
+      view = open_diagram(ctx.conn, ctx.user, organization, gtfs_version, ctx.station)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+
+      before_name = Gtfs.get_stop!(stop.id).stop_name
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => foreign_log.id})
+
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview == nil
+      refute has_element?(view, "#rollback-preview-stop")
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => foreign_log.id})
+
+      assert Gtfs.get_stop!(stop.id).stop_name == before_name
     end
   end
 end

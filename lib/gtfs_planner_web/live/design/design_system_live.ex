@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     %{slug: "navigation", title: "Navigation", group: "Components"},
     %{slug: "badges", title: "Badges", group: "Components"},
     %{slug: "counts", title: "Counts", group: "Components"},
+    %{slug: "version-diff", title: "Version diff", group: "Components"},
     %{slug: "overlays", title: "Overlays", group: "Components"},
     %{slug: "autocomplete", title: "Autocomplete", group: "Components"},
     %{slug: "improvements", title: "Improvements", group: "Proposals"},
@@ -449,6 +450,9 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   defp page_body(%{page: %{slug: "badges"}} = assigns), do: ComponentPages.badges(assigns)
 
   defp page_body(%{page: %{slug: "counts"}} = assigns), do: ComponentPages.counts(assigns)
+
+  defp page_body(%{page: %{slug: "version-diff"}} = assigns),
+    do: ComponentPages.version_diff(assigns)
 
   defp page_body(%{page: %{slug: "tables"}} = assigns), do: ComponentPages.tables(assigns)
 
