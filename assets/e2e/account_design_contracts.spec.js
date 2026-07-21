@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 // Account design contracts (Package 11).
 // Step 3 owns the account-navigation block. Step 4 owns the dashboard block.
-// Later steps extend this file further.
+// Step 5 owns the account-settings block. Step 8 owns mutation credentials.
 
 const EDITOR_USER = {
   email: "diagram-test@gtfs-planner.test",
@@ -128,6 +128,72 @@ async function focusVisible(page, locator) {
       outlineStyle: style.outlineStyle,
       outlineWidth: style.outlineWidth,
       boxShadow: style.boxShadow,
+    };
+  });
+}
+
+/**
+ * Records every mutation of a control from the moment before it is activated.
+ * Matches admin_design_contracts.watchPendingState for phx-disable-with races.
+ */
+async function watchPendingState(page, selector) {
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) throw new Error(`No element for ${sel}`);
+    window.__pendingStates = [];
+    window.__pendingObserver = new MutationObserver(() => {
+      window.__pendingStates.push({
+        disabled: el.hasAttribute("disabled"),
+        text: el.textContent.trim(),
+      });
+    });
+    window.__pendingObserver.observe(el, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  }, selector);
+}
+
+async function readPendingStates(page) {
+  return page.evaluate(() => {
+    window.__pendingObserver?.disconnect();
+    return window.__pendingStates ?? [];
+  });
+}
+
+async function openSettings(page, user = EDITOR_USER) {
+  await logIn(page, user);
+  await page.goto("/users/settings");
+  await waitForLiveView(page);
+  await page.waitForSelector("#account-settings");
+}
+
+async function captureFormFieldMetrics(page, formSelector) {
+  return page.locator(formSelector).evaluate((form) => {
+    // Core input wraps label text in span.label above the control inside <label>.
+    const labelText = form.querySelector("label span.label");
+    const input = form.querySelector("input:not([type='hidden'])");
+    const help = form.querySelector("[id$='-help']");
+    const button = form.querySelector("button[type='submit'], button.btn");
+    const labelRect = labelText?.getBoundingClientRect();
+    const inputRect = input?.getBoundingClientRect();
+    const helpRect = help?.getBoundingClientRect();
+    const buttonRect = button?.getBoundingClientRect();
+    const inputStyle = input ? window.getComputedStyle(input) : null;
+    return {
+      formWidth: form.getBoundingClientRect().width,
+      labelAboveInput:
+        labelRect && inputRect ? labelRect.bottom <= inputRect.top + 4 : false,
+      inputHeight: inputRect?.height ?? 0,
+      buttonHeight: buttonRect?.height ?? 0,
+      buttonWidth: buttonRect?.width ?? 0,
+      buttonClass: typeof button?.className === "string" ? button.className : "",
+      inputBorderWidth: inputStyle?.borderTopWidth ?? "",
+      helpGap:
+        helpRect && inputRect ? helpRect.top - inputRect.bottom : null,
+      fontSize: inputStyle?.fontSize ?? "",
     };
   });
 }
@@ -474,5 +540,321 @@ test.describe("dashboard", () => {
     await page.context().clearCookies();
     // Attempt: login as system admin then navigate home already covered.
     // No production backdoor for stale session IDs.
+  });
+});
+
+test.describe("account settings", () => {
+  test("hierarchy, design-reference metrics, geometry, focus, pending, and secret recovery", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await logIn(page, EDITOR_USER);
+
+    // Design references first.
+    await page.goto("/design/inputs");
+    await waitForLiveView(page);
+    await page.waitForSelector("#ds-inputs-demo-form");
+    const refFormMetrics = await captureFormFieldMetrics(
+      page,
+      "#ds-inputs-demo-form",
+    );
+
+    await page.goto("/design/buttons");
+    await waitForLiveView(page);
+    await page.waitForSelector("#ds-page-buttons");
+    const refSecondary = page
+      .locator(
+        "#ds-page-buttons button.btn-outline, #ds-page-buttons a.btn-outline",
+      )
+      .first();
+    await expect(refSecondary).toBeVisible();
+    const refSecondaryMetrics = await captureSharedMetrics(refSecondary);
+    expect(refSecondaryMetrics.className).toContain("btn-outline");
+
+    await page.goto("/design/feedback");
+    await waitForLiveView(page);
+    await page.waitForSelector("#ds-page-feedback");
+
+    // Production settings.
+    await page.goto("/users/settings");
+    await waitForLiveView(page);
+    await page.waitForSelector("#account-settings");
+
+    await expect(page).toHaveTitle(/Account settings/);
+    await expect(page.locator("#account-settings-title")).toHaveText(
+      "Account settings",
+    );
+    await expect(page.locator("#email-settings-title")).toHaveText(
+      "Change email",
+    );
+    await expect(page.locator("#password-settings-title")).toHaveText(
+      "Change password",
+    );
+
+    const h1Count = await page.locator("#account-settings h1").count();
+    expect(h1Count).toBe(1);
+    const h2Count = await page.locator("#account-settings h2").count();
+    expect(h2Count).toBe(2);
+
+    await expect(page.locator("#email-submit")).toHaveClass(/btn-outline/);
+    await expect(page.locator("#password-submit")).toHaveClass(/btn-outline/);
+    await expect(page.locator("#email-submit")).not.toHaveClass(/btn-primary/);
+    await expect(page.locator("#password-submit")).not.toHaveClass(
+      /btn-primary/,
+    );
+
+    const emailMetrics = await captureFormFieldMetrics(page, "#email_form");
+    const passwordMetrics = await captureFormFieldMetrics(
+      page,
+      "#password_form",
+    );
+    expect(emailMetrics.labelAboveInput).toBe(true);
+    expect(passwordMetrics.labelAboveInput).toBe(true);
+    expect(emailMetrics.buttonClass).toContain("btn-outline");
+    expect(passwordMetrics.buttonClass).toContain("btn-outline");
+    // Shared input stack: comparable control height to design demo (±8px tolerance).
+    if (refFormMetrics.inputHeight > 0) {
+      expect(
+        Math.abs(emailMetrics.inputHeight - refFormMetrics.inputHeight),
+      ).toBeLessThanOrEqual(12);
+    }
+    void refSecondaryMetrics;
+
+    const settingsViewports = [
+      { label: "320px", width: 320, height: 568 },
+      { label: "desktop", width: 1280, height: 800 },
+      { label: "640px (200% zoom)", width: 640, height: 400 },
+    ];
+
+    for (const viewport of settingsViewports) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await page.goto("/users/settings");
+      await waitForLiveView(page);
+      await page.waitForSelector("#account-settings");
+
+      expect(
+        await bodyFitsViewport(page),
+        `settings overflow at ${viewport.label}`,
+      ).toBe(true);
+
+      for (const sectionId of ["#email-settings", "#password-settings"]) {
+        const section = page.locator(sectionId);
+        const box = await section.boundingBox();
+        expect(box).not.toBeNull();
+        // Full available width up to 40rem (640px).
+        expect(box.width).toBeLessThanOrEqual(640 + 1);
+        expect(box.width).toBeGreaterThan(0);
+      }
+
+      for (const controlId of [
+        "#email-address",
+        "#email-current-password",
+        "#email-submit",
+        "#password-current-password",
+        "#password-new-password",
+        "#password-confirmation",
+        "#password-submit",
+      ]) {
+        const control = page.locator(controlId);
+        await expect(control).toBeVisible();
+        const box = await control.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+    }
+
+    // Keyboard order + focus ring once at desktop (visual order contract).
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/users/settings");
+    await waitForLiveView(page);
+
+    const tabOrder = [
+      "#email-address",
+      "#email-current-password",
+      "#email-submit",
+      "#password-current-password",
+      "#password-new-password",
+      "#password-confirmation",
+      "#password-submit",
+    ];
+    await page.locator(tabOrder[0]).focus();
+    for (let i = 0; i < tabOrder.length; i++) {
+      const activeId = await page.evaluate(
+        () => document.activeElement && document.activeElement.id,
+      );
+      expect(activeId).toBe(tabOrder[i].slice(1));
+      if (i < tabOrder.length - 1) {
+        await page.keyboard.press("Tab");
+      }
+    }
+
+    const focus = await focusVisible(page, page.locator("#email-submit"));
+    expect(focus.isFocused).toBe(true);
+    expect(focus.outlineVisible || focus.ringVisible).toBe(true);
+
+    // Pending email submit (MutationObserver before click).
+    await page.fill("#email-address", "pending-check@example.com");
+    await page.fill("#email-current-password", EDITOR_USER.password);
+    await watchPendingState(page, "#email-submit");
+    await page.locator("#email-submit").click();
+    await page.waitForSelector("#flash-info", { timeout: 10_000 });
+    await waitForLiveView(page);
+    const emailPending = await readPendingStates(page);
+    expect(
+      emailPending.some(
+        (s) => s.disabled || s.text.includes("Sending confirmation"),
+      ),
+    ).toBe(true);
+
+    // Failed email submit (valid email shape, wrong password): secret cleared,
+    // proposed email kept, first invalid focused. Avoid HTML5 type=email blocks.
+    await page.goto("/users/settings");
+    await waitForLiveView(page);
+    await page.waitForSelector("#account-settings");
+    const proposedEmail = "different-settings@example.com";
+    await page.fill("#email-address", proposedEmail);
+    await page.fill("#email-current-password", "wrong-password-value");
+    await page.locator("#email-submit").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#email-current-password")?.value === "" &&
+        !!document.querySelector("#email_form [aria-invalid='true']"),
+      null,
+      { timeout: 10_000 },
+    );
+    await page.waitForFunction(
+      () => {
+        const active = document.activeElement;
+        return (
+          active &&
+          ["email-address", "email-current-password"].includes(active.id)
+        );
+      },
+      null,
+      { timeout: 10_000 },
+    );
+    await waitForLiveView(page);
+    await expect(page.locator("#email-address")).toHaveValue(proposedEmail);
+    await expect(page.locator("#email-current-password")).toHaveValue("");
+    const focusedAfterEmail = await page.evaluate(
+      () => document.activeElement && document.activeElement.id,
+    );
+    expect(["email-address", "email-current-password"]).toContain(
+      focusedAfterEmail,
+    );
+
+    // Failed password submit: use long-enough values that pass minlength HTML
+    // constraints but fail server confirmation/current-password checks.
+    await page.fill("#password-current-password", "wrong-password-value");
+    await page.fill("#password-new-password", "shortone12345");
+    await page.fill("#password-confirmation", "different12345");
+    await watchPendingState(page, "#password-submit");
+    await page.locator("#password-submit").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#password-current-password")?.value === "" &&
+        !!document.querySelector("#password_form [aria-invalid='true']"),
+      null,
+      { timeout: 10_000 },
+    );
+    await page.waitForFunction(
+      () => {
+        const active = document.activeElement;
+        return (
+          active &&
+          [
+            "password-current-password",
+            "password-new-password",
+            "password-confirmation",
+          ].includes(active.id)
+        );
+      },
+      null,
+      { timeout: 10_000 },
+    );
+    await waitForLiveView(page);
+    const passwordPending = await readPendingStates(page);
+    expect(
+      passwordPending.some(
+        (s) => s.disabled || s.text.includes("Changing password"),
+      ),
+    ).toBe(true);
+    await expect(page.locator("#password-current-password")).toHaveValue("");
+    await expect(page.locator("#password-new-password")).toHaveValue("");
+    await expect(page.locator("#password-confirmation")).toHaveValue("");
+    const focusedAfterPassword = await page.evaluate(
+      () => document.activeElement && document.activeElement.id,
+    );
+    expect([
+      "password-current-password",
+      "password-new-password",
+      "password-confirmation",
+    ]).toContain(focusedAfterPassword);
+  });
+
+  test("reviewed account-settings screenshots at 320/1280/640 with email masked", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await openSettings(page, EDITOR_USER);
+
+    const emailMask = [
+      page.locator("#email-address"),
+      page.locator(`text=${EDITOR_USER.email}`),
+    ];
+
+    for (const { width, height, label } of [
+      { width: 320, height: 568, label: "320" },
+      { width: 1280, height: 800, label: "1280" },
+      { width: 640, height: 400, label: "640" },
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto("/users/settings");
+      await waitForLiveView(page);
+      const root = page.locator("#account-settings");
+      await expect(root).toBeVisible();
+      await expect(root).toHaveScreenshot(`account-settings-${label}.png`, {
+        animations: "disabled",
+        mask: emailMask,
+      });
+    }
+
+    // Deterministic email task error root.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/users/settings");
+    await waitForLiveView(page);
+    await page.fill("#email-address", "settings-error@example.com");
+    await page.fill("#email-current-password", "wrong-password-value");
+    await page.locator("#email-submit").click();
+    await page.waitForFunction(
+      () => document.querySelector("#email_form [aria-invalid='true']"),
+    );
+    await waitForLiveView(page);
+    await expect(page.locator("#email-settings")).toHaveScreenshot(
+      "account-settings-email-error-1280.png",
+      {
+        animations: "disabled",
+        mask: [page.locator("#email-address")],
+      },
+    );
+
+    // Deterministic password task error root.
+    await page.fill("#password-current-password", "wrong-password-value");
+    await page.fill("#password-new-password", "shortone12345");
+    await page.fill("#password-confirmation", "different12345");
+    await page.locator("#password-submit").click();
+    await page.waitForFunction(
+      () => document.querySelector("#password_form [aria-invalid='true']"),
+    );
+    await waitForLiveView(page);
+    await expect(page.locator("#password-settings")).toHaveScreenshot(
+      "account-settings-password-error-1280.png",
+      {
+        animations: "disabled",
+      },
+    );
   });
 });
