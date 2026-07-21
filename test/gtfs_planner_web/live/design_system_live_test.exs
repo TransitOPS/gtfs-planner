@@ -749,6 +749,24 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
   end
 
   describe "tables page" do
+    test "documents the production version-diff row contract in responsive desktop and mobile structure",
+         %{
+           conn: conn,
+           user: user
+         } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-version-diff-row-demo [data-version-diff-row]")
+      assert has_element?(view, "#ds-version-diff-row-demo [class*='sm:grid']")
+      assert has_element?(view, "#ds-version-diff-row-demo [aria-controls$='-details']")
+      assert has_element?(view, "#ds-version-diff-row-demo #ds-version-diff-row-action.min-h-11")
+
+      assert has_element?(view, "#ds-page-tables", "TransitPresentation.version_diff_row")
+      assert has_element?(view, "#ds-page-tables", "Consumer owns actions and disclosure state")
+    end
+
     for {id, name, status} <- @sample_route_rows do
       test "renders the #{name} sample row", %{conn: conn, user: user} do
         conn = log_in_user(conn, user)
@@ -1657,10 +1675,12 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       for id <-
             ~w(ds-route-guard-demo ds-stop-sequence-demo ds-service-day-demo
-               ds-calendar-demo ds-tri-state-demo ds-pathway-demo ds-diff-demo
+               ds-calendar-demo ds-tri-state-demo ds-pathway-demo
                ds-severity-demo) do
         assert has_element?(view, "##{id}")
       end
+
+      refute has_element?(view, "#ds-diff-demo")
     end
 
     test "service-day times keep the next-day marker", %{conn: conn, user: user} do

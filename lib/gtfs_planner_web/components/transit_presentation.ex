@@ -29,7 +29,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       {@label}
       <span
         :if={@source == :inherited}
-        class="font-normal text-base-content/70"
+        class="font-normal text-base-content/60"
         data-accessibility-source="inherited"
       >
         Inherited from station
@@ -70,114 +70,19 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
         <span aria-hidden="true">·</span>
         <span class="inline-flex items-baseline gap-1">
           <span class="font-mono tabular-nums">{metric.value}</span>
-          <span class="text-base-content/70">{metric.unit}</span>
+          <span class="text-base-content/60">{metric.unit}</span>
         </span>
       </span>
     </span>
     """
   end
 
-  @version_diff_action_words %{
-    add: "Added",
-    modify: "Modified",
-    remove: "Removed",
-    conflict: "Conflict"
-  }
-
-  @version_diff_status_words %{
-    pending: "Pending",
-    approved: "Approved",
-    rejected: "Rejected",
-    preview: "Preview",
-    applied: "Applied",
-    failed: "Failed"
-  }
-
-  @version_diff_action_tones %{
-    add: "bg-success",
-    modify: "bg-info",
-    remove: "bg-error",
-    conflict: "bg-warning"
-  }
-
-  # Word plus tinted field, matching `<.status_badge>`: the theme's semantic
-  # text colors hold ≥4.5:1 on a 10% tint of themselves, and the word still
-  # carries the meaning without the color.
-  @version_diff_status_tones %{
-    pending: "border-base-content/40 bg-base-content/10 text-base-content",
-    approved: "border-success/40 bg-success/10 text-success",
-    rejected: "border-error/40 bg-error/10 text-error",
-    preview: "border-warning/40 bg-warning/10 text-warning",
-    applied: "border-success/40 bg-success/10 text-success",
-    failed: "border-error/40 bg-error/10 text-error"
-  }
-
-  @version_diff_change_required [:label, :before, :after]
-  @version_diff_change_allowed [:label, :before, :after, :key]
-
-  @absent_value :__absent__
-
   @doc """
-  The sentinel meaning "this side of the change holds no recorded value".
+  Renders one already-resolved version-diff decision.
 
-  It is distinct from `nil`, which is itself a real stored value. An added
-  record has no *before*; a removed record has no *after*; a change record that
-  never captured one side has neither. Pass `absent_value/0` on that side and
-  the row says so in words instead of inventing a value.
-  """
-  @spec absent_value() :: :__absent__
-  def absent_value, do: @absent_value
-
-  @doc """
-  Renders one record's difference between two versions.
-
-  Shared structure only. The caller owns the entity vocabulary, the human
-  labels, the raw keys, the values, and the actions; this component decides
-  nothing about the domain. It performs no truncation: a value is rendered
-  complete and wraps, because an audit row that hides the end of a value is
-  not evidence.
-
-  ## Contract
-
-    * `action` — what happened to the record. Rendered as a word plus a tone.
-    * `status` — where the change stands. Rendered as a word plus a tone.
-      Both are always words; colour never carries the meaning alone.
-    * `entity_label` / `natural_key` — the human entity name and its raw
-      source key, rendered as secondary metadata beside it.
-    * `summary` — one optional sentence describing the change.
-    * `changes` — an ordered list of `%{label:, before:, after:}` maps, each
-      with an optional `:key` carrying the raw source field name as secondary
-      metadata. `before`/`after` accept any term; `nil`, `false`, `0`, and `""`
-      render as those exact values, and `absent_value/0` renders as
-      "Not recorded".
-    * `dependency_keys` — raw keys of records this change depends on.
-    * `edited?` — the change was locally edited relative to its source.
-    * `expanded?` — `false` keeps the complete changes in the document but
-      hidden, so a caller-owned control can reveal them without a round trip.
-    * `actions` — a slot rendered in one fixed action zone.
-
-  Items are validated before rendering: a malformed change, dependency key,
-  label, or natural key raises `ArgumentError` so a consumer cannot silently
-  render a row that misstates an audit record.
-
-  ## Examples
-
-      <.version_diff_row
-        id="history-diff-1"
-        action={:modify}
-        entity_label="Stop"
-        natural_key="ALEWIFE-1"
-        status={:applied}
-        summary="Edited stop · 2 fields changed"
-        changes={[%{label: "Stop name", key: "stop_name", before: "Old", after: "New"}]}
-        dependency_keys={[]}
-        edited?={false}
-        expanded?={true}
-      >
-        <:actions>
-          <.button phx-click="undo">Undo change</.button>
-        </:actions>
-      </.version_diff_row>
+  The consumer owns the decision collection, filtering, persistence, disclosure
+  state, and every action. Pass only display-ready values; `changes` entries use
+  `%{label: String.t(), before: term(), after: term()}`.
   """
   attr :id, :string, required: true
   attr :action, :atom, required: true, values: [:add, :modify, :remove, :conflict]
@@ -185,266 +90,106 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   attr :natural_key, :string, required: true
 
   attr :status, :atom,
-    required: true,
-    values: [:pending, :approved, :rejected, :preview, :applied, :failed]
+    values: [:pending, :approved, :rejected, :preview, :applied, :failed],
+    default: :pending
 
   attr :summary, :string, default: nil
   attr :changes, :list, default: []
   attr :dependency_keys, :list, default: []
   attr :edited?, :boolean, default: false
-  attr :expanded?, :boolean, default: true
-  attr :class, :any, default: nil
-
+  attr :expanded?, :boolean, default: false
   slot :actions
 
   def version_diff_row(assigns) do
+    {action_label, action_icon, action_tone} = version_diff_action(assigns.action)
+    {status_label, status_icon, status_tone} = version_diff_status(assigns.status)
+
     assigns =
       assigns
-      |> assign(
-        :entity_label,
-        validate_diff_text!(assigns.entity_label, :entity_label, assigns.id)
-      )
-      |> assign(:natural_key, validate_diff_text!(assigns.natural_key, :natural_key, assigns.id))
-      |> assign(:rows, normalize_version_diff_changes(assigns.changes, assigns.id))
-      |> assign(
-        :dependency_keys,
-        normalize_version_diff_dependencies(assigns.dependency_keys, assigns.id)
-      )
-      |> assign(:action_word, Map.fetch!(@version_diff_action_words, assigns.action))
-      |> assign(:action_tone, Map.fetch!(@version_diff_action_tones, assigns.action))
-      |> assign(:status_word, Map.fetch!(@version_diff_status_words, assigns.status))
-      |> assign(:status_tone, Map.fetch!(@version_diff_status_tones, assigns.status))
+      |> assign(:action_label, action_label)
+      |> assign(:action_icon, action_icon)
+      |> assign(:action_tone, action_tone)
+      |> assign(:status_label, status_label)
+      |> assign(:status_icon, status_icon)
+      |> assign(:status_tone, status_tone)
 
     ~H"""
     <article
       id={@id}
-      data-role="version-diff-row"
-      data-action={@action}
-      data-status={@status}
-      data-expanded={to_string(@expanded?)}
-      data-edited={to_string(@edited?)}
-      class={["rounded-box border border-base-300 bg-base-100 text-sm", @class]}
+      data-version-diff-row
+      data-version-diff-action={@action}
+      data-version-diff-status={@status}
+      aria-labelledby={"#{@id}-title"}
+      class="border-b border-base-300 py-4 text-sm last:border-b-0"
     >
-      <header class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-base-300 px-3 py-2">
-        <span data-role="version-diff-action" class="inline-flex items-baseline gap-1.5">
-          <span class={["size-2 shrink-0 rounded-full", @action_tone]} aria-hidden="true"></span>
-          <span class="font-medium text-base-content">{@action_word}</span>
-        </span>
-        <span data-role="version-diff-entity" class="font-medium text-base-content">
-          {@entity_label}
-        </span>
-        <span
-          data-role="version-diff-key"
-          class="min-w-0 font-mono text-xs text-base-content/70 [overflow-wrap:anywhere]"
-        >
-          {@natural_key}
-        </span>
-        <span
-          :if={@edited?}
-          data-role="version-diff-edited"
-          class="rounded-selector border border-base-content/40 px-1.5 text-xs text-base-content"
-        >
-          Edited
-        </span>
-        <span
-          data-role="version-diff-status"
-          class={["rounded-selector ms-auto border px-1.5 text-xs font-medium", @status_tone]}
-        >
-          {@status_word}
-        </span>
-      </header>
-
-      <p :if={@summary} data-role="version-diff-summary" class="px-3 pt-2 text-base-content">
-        {@summary}
-      </p>
-
-      <dl
-        :if={@rows != []}
-        data-role="version-diff-changes"
-        hidden={!@expanded?}
-        class="@container m-0 divide-y divide-base-300 px-3 py-2"
-      >
-        <div
-          :for={row <- @rows}
-          data-role="version-diff-change"
-          data-change-key={row.key}
-          class={
-            [
-              "grid grid-cols-1 gap-x-4 gap-y-0.5 py-1.5",
-              # A container query, not a viewport one: this row is rendered inside a
-              # 480px drawer and inside a full-page review list, and only the space it
-              # actually has may decide whether the label sits beside its values.
-              "@md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]"
-            ]
-          }
-        >
-          <dt class="min-w-0">
-            <span data-role="version-diff-change-label" class="text-base-content/70">
-              {row.label}
-            </span>
-            <span
-              :if={row.key}
-              data-role="version-diff-change-key"
-              class="block font-mono text-xs text-base-content/70 [overflow-wrap:anywhere]"
-            >
-              {row.key}
-            </span>
-          </dt>
-          <dd class="m-0 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span
-              phx-no-format
-              data-role="version-diff-before"
-              data-value-kind={row.before.kind}
-              class={[
-                "min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere] text-base-content/70 line-through",
-                row.before.kind == "number" && "tabular-nums"
-              ]}
-            >{row.before.text}</span>
-            <span class="sr-only">changed to</span>
-            <span aria-hidden="true" class="text-base-content/70">→</span>
-            <span
-              phx-no-format
-              data-role="version-diff-after"
-              data-value-kind={row.after.kind}
-              class={[
-                "min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere] text-base-content",
-                row.after.kind == "number" && "tabular-nums"
-              ]}
-            >{row.after.text}</span>
-          </dd>
+      <div class="grid gap-3 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(0,2fr)_auto] sm:items-start sm:gap-4">
+        <div class="flex items-center gap-2 font-medium">
+          <span data-version-diff-action-symbol aria-hidden="true">
+            <.icon name={@action_icon} class={["size-4 shrink-0", @action_tone]} />
+          </span>
+          <span class={@action_tone}>{@action_label}</span>
         </div>
-      </dl>
 
-      <p
-        :if={@dependency_keys != []}
-        data-role="version-diff-dependencies"
-        class="px-3 pb-2 text-xs text-base-content/70"
-      >
-        Depends on
-        <span
-          :for={key <- @dependency_keys}
-          data-role="version-diff-dependency"
-          class="ms-1 font-mono [overflow-wrap:anywhere]"
-        >
-          {key}
-        </span>
-      </p>
+        <div class="min-w-0">
+          <h3 id={"#{@id}-title"} class="font-medium text-base-content">
+            {@entity_label}
+          </h3>
+          <p class="truncate font-mono text-xs text-base-content/70" title={@natural_key}>
+            {@natural_key}
+          </p>
+          <p :if={@summary} class="mt-1 text-base-content/70">{@summary}</p>
+          <p :if={@dependency_keys != []} class="mt-2 text-xs text-base-content/70">
+            Depends on: {Enum.join(@dependency_keys, ", ")}
+          </p>
+          <p :if={@edited?} class="mt-1 text-xs font-medium text-info">Edited before applying</p>
+          <p :if={@status == :rejected} class="mt-2 text-sm text-base-content/80">
+            This change will not be applied.
+          </p>
+        </div>
 
-      <div
-        :if={@actions != []}
-        data-role="version-diff-actions"
-        class="flex flex-wrap items-center justify-end gap-2 border-t border-base-300 px-3 py-2"
-      >
-        {render_slot(@actions)}
+        <div class="flex flex-wrap items-center gap-2 sm:justify-end">
+          <span class={["inline-flex items-center gap-1.5 font-medium", @status_tone]}>
+            <span data-version-diff-status-symbol aria-hidden="true">
+              <.icon name={@status_icon} class="size-4 shrink-0" />
+            </span>
+            <span>{@status_label}</span>
+          </span>
+          <div
+            :if={@actions != []}
+            class="flex min-h-11 items-center gap-2 [&_a]:min-h-11 [&_button]:min-h-11"
+          >
+            {render_slot(@actions)}
+          </div>
+        </div>
       </div>
+
+      <details id={"#{@id}-details"} open={@expanded?} class="mt-3 border-l-2 border-base-300 pl-3">
+        <summary
+          id={"#{@id}-disclosure"}
+          aria-controls={"#{@id}-details"}
+          class="cursor-pointer py-1 font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          View field changes
+        </summary>
+        <dl class="mt-3 space-y-2">
+          <div
+            :for={change <- @changes}
+            class="grid gap-1 sm:grid-cols-[minmax(9rem,1fr)_minmax(0,2fr)] sm:gap-3"
+          >
+            <dt class="font-medium text-base-content/80">{Map.get(change, :label)}</dt>
+            <dd class="min-w-0 font-mono text-xs text-base-content/80">
+              <span class="break-words text-base-content/60">
+                {display_value(Map.get(change, :before))}
+              </span>
+              <span class="px-1 text-base-content/50" aria-hidden="true">→</span>
+              <span class="break-words">{display_value(Map.get(change, :after))}</span>
+            </dd>
+          </div>
+        </dl>
+      </details>
     </article>
     """
   end
-
-  defp normalize_version_diff_changes(changes, id) when is_list(changes) do
-    Enum.map(changes, &normalize_version_diff_change(&1, id))
-  end
-
-  defp normalize_version_diff_changes(changes, id) do
-    version_diff_error(id, ":changes must be a list, got: #{inspect(changes)}")
-  end
-
-  defp normalize_version_diff_change(%{} = change, id) do
-    fields = Map.keys(change)
-
-    case fields -- @version_diff_change_allowed do
-      [] -> :ok
-      extra -> version_diff_error(id, "change carries unsupported field(s) #{inspect(extra)}")
-    end
-
-    case @version_diff_change_required -- fields do
-      [] -> :ok
-      missing -> version_diff_error(id, "change is missing required field(s) #{inspect(missing)}")
-    end
-
-    %{
-      label: validate_diff_text!(change.label, :label, id),
-      key: validate_diff_change_key!(Map.get(change, :key), id),
-      before: diff_value(change.before),
-      after: diff_value(change.after)
-    }
-  end
-
-  defp normalize_version_diff_change(change, id) do
-    version_diff_error(id, "change must be a map, got: #{inspect(change)}")
-  end
-
-  defp normalize_version_diff_dependencies(keys, id) when is_list(keys) do
-    Enum.map(keys, fn key ->
-      if is_binary(key) and String.trim(key) != "" do
-        key
-      else
-        version_diff_error(
-          id,
-          ":dependency_keys must hold non-empty strings, got: #{inspect(key)}"
-        )
-      end
-    end)
-  end
-
-  defp normalize_version_diff_dependencies(keys, id) do
-    version_diff_error(id, ":dependency_keys must be a list, got: #{inspect(keys)}")
-  end
-
-  defp validate_diff_text!(value, field, id) do
-    if is_binary(value) and String.trim(value) != "" do
-      value
-    else
-      version_diff_error(
-        id,
-        "#{inspect(field)} must be a non-empty string, got: #{inspect(value)}"
-      )
-    end
-  end
-
-  defp validate_diff_change_key!(nil, _id), do: nil
-
-  defp validate_diff_change_key!(key, id) do
-    if is_binary(key) and String.trim(key) != "" do
-      key
-    else
-      version_diff_error(
-        id,
-        "change :key must be a non-empty string or nil, got: #{inspect(key)}"
-      )
-    end
-  end
-
-  defp version_diff_error(id, message) do
-    raise ArgumentError, "version_diff_row #{inspect(id)} #{message}"
-  end
-
-  # Values are rendered exactly as stored. `nil`, `false`, `0`, and `""` are
-  # real GTFS values and never collapse into a blank cell or into each other.
-  defp diff_value(@absent_value), do: %{kind: "absent", text: "Not recorded"}
-  defp diff_value(nil), do: %{kind: "nil", text: "nil"}
-  defp diff_value(true), do: %{kind: "boolean", text: "true"}
-  defp diff_value(false), do: %{kind: "boolean", text: "false"}
-
-  defp diff_value(%Decimal{} = value),
-    do: %{kind: "number", text: Decimal.to_string(value, :normal)}
-
-  defp diff_value(value) when is_integer(value) or is_float(value),
-    do: %{kind: "number", text: to_string(value)}
-
-  defp diff_value(value) when is_binary(value) do
-    if String.trim(value) == "" do
-      %{kind: "blank", text: inspect(value)}
-    else
-      %{kind: "string", text: value}
-    end
-  end
-
-  defp diff_value(%module{} = value) when module in [Date, Time, NaiveDateTime, DateTime],
-    do: %{kind: "string", text: to_string(value)}
-
-  defp diff_value(value) when is_atom(value), do: %{kind: "atom", text: inspect(value)}
-  defp diff_value(value), do: %{kind: "term", text: inspect(value)}
 
   defp accessibility_copy(:accessible), do: {"Accessible", "text-success"}
   defp accessibility_copy(:not_accessible), do: {"Not accessible", "text-error"}
@@ -475,4 +220,25 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   defp present?(_), do: false
   defp decimal_string(%Decimal{} = value), do: Decimal.to_string(value, :normal)
   defp decimal_string(value), do: to_string(value)
+
+  defp version_diff_action(:add), do: {"Added", "hero-plus", "text-success"}
+  defp version_diff_action(:modify), do: {"Changed", "hero-pencil-square", "text-info"}
+  defp version_diff_action(:remove), do: {"Removed", "hero-minus", "text-error"}
+
+  defp version_diff_action(:conflict),
+    do: {"Conflict", "hero-exclamation-triangle", "text-warning"}
+
+  defp version_diff_status(:pending), do: {"Pending", "hero-clock", "text-warning"}
+  defp version_diff_status(:approved), do: {"Approved", "hero-check-circle", "text-success"}
+  defp version_diff_status(:rejected), do: {"Rejected", "hero-x-circle", "text-error"}
+  defp version_diff_status(:preview), do: {"Preview only", "hero-eye", "text-info"}
+  defp version_diff_status(:applied), do: {"Applied", "hero-check-circle", "text-success"}
+  defp version_diff_status(:failed), do: {"Failed", "hero-exclamation-circle", "text-error"}
+
+  defp display_value(nil), do: "No value"
+  defp display_value(%Decimal{} = value), do: Decimal.to_string(value, :normal)
+  defp display_value(value) when is_binary(value), do: value
+  defp display_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp display_value(value) when is_number(value), do: to_string(value)
+  defp display_value(value), do: inspect(value)
 end

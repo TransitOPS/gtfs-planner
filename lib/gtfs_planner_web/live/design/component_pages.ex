@@ -708,6 +708,46 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </.table>
       </div>
 
+      <h2 class="mt-8 text-lg font-semibold">Version diff row</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Use <code class="font-mono text-sm">TransitPresentation.version_diff_row</code>
+        for one resolved decision. It is a responsive row: aligned data columns on wider
+        screens and a readable record on narrow screens. Consumer owns actions and disclosure
+        state; the component owns no filtering, persistence, or apply behavior.
+      </p>
+
+      <div id="ds-version-diff-row-demo" class="mt-3 border border-base-300 px-4">
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-row"
+          action={:modify}
+          entity_label="Stop"
+          natural_key="stop:harbor-terminal"
+          status={:approved}
+          summary="Corrected the platform position"
+          changes={[
+            %{label: "Latitude", before: "47.60432", after: "47.60455"},
+            %{label: "Wheelchair boarding", before: "No", after: "Allowed"}
+          ]}
+          dependency_keys={["level:concourse"]}
+          edited?={true}
+          expanded?={true}
+        >
+          <:actions>
+            <.button id="ds-version-diff-row-action" variant="secondary" class="min-h-11">
+              Review change
+            </.button>
+          </:actions>
+        </TransitPresentation.version_diff_row>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;TransitPresentation.version_diff_row id={row.id} action={row.action} entity_label={row.entity_label} natural_key={row.natural_key} status={row.status} changes={row.changes}&gt;&lt;:actions&gt;…&lt;/:actions&gt;&lt;/TransitPresentation.version_diff_row&gt;
+        </code>
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">List</h2>
       <p class="mt-1 text-sm text-base-content/70">
         Definition pairs for one record. Use it where a table would have one row and
