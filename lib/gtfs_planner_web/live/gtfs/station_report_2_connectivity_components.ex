@@ -32,9 +32,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           card owns the only full border; this group announces itself with a
           tinted full-width header band and horizontal rules. --%>
     <div class="border-t border-base-300">
-      <%!-- Group content sits one indent step deeper than the card's own px-4
-            so nesting reads as indentation, never as an outdent. --%>
-      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 bg-base-200 py-2.5 pe-4 ps-6">
+      <%!-- Indent scale: card content ps-4, group tier ps-8, expanded route
+            evidence ps-12. Backgrounds and rules stay full width; only the
+            content indents, so depth reads at a glance. --%>
+      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 bg-base-200 py-2.5 pe-4 ps-8">
         <div class="min-w-0">
           <div class="flex flex-wrap items-baseline gap-2">
             <h4 class="text-sm font-semibold break-words">{@group.source.name}</h4>
@@ -93,7 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         phx-value-target_id={@target.stop_id}
         aria-expanded={to_string(@expanded)}
         aria-controls={@route_region_id}
-        class="print:hidden flex w-full min-h-11 cursor-pointer flex-col gap-2 py-3 pe-4 ps-6 text-left motion-safe:transition-colors hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+        class="print:hidden flex w-full min-h-11 cursor-pointer flex-col gap-2 py-3 pe-4 ps-8 text-left motion-safe:transition-colors hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
       >
         <span class="flex min-w-0 items-baseline gap-1">
           <.icon
@@ -108,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       </button>
 
       <%!-- Print carries the same facts without the control affordance. --%>
-      <div class="hidden py-3 pe-4 ps-6 print:block">
+      <div class="hidden py-3 pe-4 ps-8 print:block">
         <p class="text-sm font-medium break-words">{@source_name} → {@target.name}</p>
         <.route_metrics target={@target} nopath={@nopath} />
       </div>
@@ -120,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         aria-label={"Route from #{@source_name} to #{@target.name}"}
         class={["border-t border-base-300", not @expanded && "hidden print:block"]}
       >
-        <div class="border-b border-base-300 py-3 pe-4 ps-6">
+        <div class="border-b border-base-300 py-3 pe-4 ps-12">
           <div class="flex flex-wrap items-start justify-between gap-2">
             <p class="min-w-0 font-mono text-xs text-base-content/70 break-all">
               {@expanded_route.target.stop_id} · {@expanded_route.target.meta}
@@ -165,7 +166,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           </dl>
         </div>
 
-        <div class="py-3 pe-4 ps-6">
+        <div class="py-3 pe-4 ps-12">
           <.step_table steps={@expanded_route.steps} />
         </div>
       </div>
@@ -175,7 +176,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         id={@route_region_id}
         role="region"
         aria-label={"Route from #{@source_name} to #{@target.name}"}
-        class={["border-t border-base-300 py-3 pe-4 ps-6", not @expanded && "hidden print:block"]}
+        class={["border-t border-base-300 py-3 pe-4 ps-12", not @expanded && "hidden print:block"]}
       >
         <p class="flex items-start gap-2 text-sm">
           <.icon name="hero-x-circle" class="size-4 shrink-0 text-error" />

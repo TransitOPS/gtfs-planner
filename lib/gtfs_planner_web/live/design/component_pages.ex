@@ -653,24 +653,31 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         announces itself with a full-width tinted header band
         (<code class="font-mono text-sm">bg-base-200</code>) and separates its rows
         with horizontal rules that span the card. Side borders and rounded boxes
-        never nest inside a card: depth reads from bands and rules, so a third tier
-        stays legible without adding ink.
+        never nest inside a card. Depth is carried by start padding: card content
+        at <code class="font-mono text-sm">ps-4</code>, each nested tier one step
+        deeper (<code class="font-mono text-sm">ps-8</code>, then <code class="font-mono text-sm">ps-12</code>) — bands and rules stay full
+        width while their content indents, so the hierarchy reads at a glance
+        without added ink.
       </p>
       <div id="ds-demo-nested-regions" class="mt-3 rounded-box border border-base-300 bg-base-100">
         <div class="border-b border-base-300 px-4 py-3">
           <h3 class="text-sm font-semibold">Entrance-to-platform reachability</h3>
           <p class="mt-0.5 text-sm text-base-content/70">
-            Tier one: the card. One full border, one rounding.
+            Tier one: the card. One full border, one rounding, content at ps-4.
           </p>
         </div>
         <div class="px-4 py-3 text-sm">Summary row for the first source.</div>
-        <div class="border-y border-base-300 bg-base-200 px-4 py-2.5 text-sm font-semibold">
+        <div class="border-y border-base-300 bg-base-200 py-2.5 pe-4 ps-8 text-sm font-semibold">
           Entrance A
-          <span class="font-normal text-base-content/70">· tier two: tinted group band</span>
+          <span class="font-normal text-base-content/70">
+            · tier two: tinted band, full width, content at ps-8
+          </span>
         </div>
         <div class="divide-y divide-base-300 text-sm">
-          <p class="px-4 py-3">Tier three: rows separated by full-width rules.</p>
-          <p class="px-4 py-3">No side borders below tier one.</p>
+          <p class="py-3 pe-4 ps-8">Tier-two rows share the band's indent.</p>
+          <p class="py-3 pe-4 ps-12">
+            Tier three: expanded evidence steps to ps-12. No side borders below tier one.
+          </p>
         </div>
       </div>
 
