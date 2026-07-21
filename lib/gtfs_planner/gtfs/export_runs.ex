@@ -8,6 +8,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   import Ecto.Query, warn: false
 
+  require Logger
+
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Repo
@@ -320,8 +322,12 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       end
     end)
     |> case do
-      :ok -> :ok
-      _ -> :ok
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Could not release export download claim: #{inspect(reason)}")
+        :ok
     end
   end
 
@@ -404,6 +410,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id
 
   defp ready_run(run, artifact) do
+    database_now = database_now()
+
     Repo.update(
       Run.system_changeset(run, %{
         state: :ready,
@@ -414,8 +422,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
         artifact_filename: artifact.filename,
         artifact_sha256: artifact.sha256,
         artifact_size_bytes: artifact.size,
-        artifact_expires_at: DateTime.add(DateTime.utc_now(), artifact_ttl_seconds()),
-        finished_at: DateTime.utc_now()
+        artifact_expires_at: DateTime.add(database_now, artifact_ttl_seconds()),
+        finished_at: database_now
       })
     )
   end
@@ -554,7 +562,12 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   end
 
   defp artifact_ttl_seconds do
-    Application.get_env(:gtfs_planner, :export_artifact_ttl_seconds, 86_400)
+    Application.get_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 86_400)
+  end
+
+  defp database_now do
+    %Postgrex.Result{rows: [[database_now]]} = Repo.query!("SELECT CURRENT_TIMESTAMP")
+    database_now
   end
 
   defp transaction_with_broadcast(fun) do

@@ -264,7 +264,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentationTest do
       refute html =~ "phx-submit"
     end
 
-    test "keeps a collapsed disclosure keyboard-operable and omits optional content" do
+    test "omits an empty disclosure and optional content" do
       assigns = diff_row_assigns(:add, :pending)
 
       html =
@@ -278,8 +278,8 @@ defmodule GtfsPlannerWeb.Components.TransitPresentationTest do
         />
         """)
 
-      assert html =~ "<summary"
-      refute html =~ "<details id=\"diff-harbor-terminal-details\" open"
+      refute html =~ "<summary"
+      refute html =~ "<details"
       refute html =~ "Corrected the platform position"
       refute html =~ "Edited before applying"
       refute html =~ "Depends on:"

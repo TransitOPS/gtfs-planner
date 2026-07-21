@@ -32,7 +32,7 @@ async function openRoute(page, route) {
   await logIn(page);
   await page.locator(`#app-header a[href$='/${route}']`).first().click();
   await page.waitForURL(new RegExp(`/gtfs/[^/]+/${route}$`));
-  await page.locator("#topbar").waitFor({ state: "hidden" });
+  await page.locator(`#gtfs-${route}-form`).waitFor({ state: "visible" });
 }
 
 async function expectNoHorizontalOverflow(page) {
@@ -45,6 +45,13 @@ async function expectKeyboardAccess(page, selector, { visible = true } = {}) {
   await expect(control).toBeFocused();
   if (visible) await expect(control).toBeVisible();
   if (!visible) await page.evaluate(() => document.activeElement?.blur());
+}
+
+async function expectMinimumTargetSize(page, selector) {
+  const box = await page.locator(selector).boundingBox();
+  expect(box, `${selector} must have a rendered bounding box`).not.toBeNull();
+  expect(box.width, `${selector} must be at least 44px wide`).toBeGreaterThanOrEqual(44);
+  expect(box.height, `${selector} must be at least 44px tall`).toBeGreaterThanOrEqual(44);
 }
 
 test.describe("durable import and export browser journeys", () => {
@@ -66,6 +73,7 @@ test.describe("durable import and export browser journeys", () => {
       await expect(page.locator("#diff-compute-btn")).toBeDisabled();
       await expectKeyboardAccess(page, "#gtfs-import-version-name");
       await expectKeyboardAccess(page, "#diff-upload-input input", { visible: false });
+      await expectMinimumTargetSize(page, "#diff-upload label:has(#diff-upload-input)");
       await expectNoHorizontalOverflow(page);
 
       await page.screenshot({
@@ -80,6 +88,7 @@ test.describe("durable import and export browser journeys", () => {
       await expect(page.locator("#export-download-link")).toBeVisible();
       await expectKeyboardAccess(page, "#export-type-full");
       await expectKeyboardAccess(page, "#start-export");
+      await expectMinimumTargetSize(page, "#export-download-link");
 
       await page.locator("#export-type-pathways").check();
       await expect(page.locator("#export-type-pathways")).toBeChecked();
@@ -96,6 +105,7 @@ test.describe("durable import and export browser journeys", () => {
   test("ready export reconnects and downloads through an attachment response", async ({
     page,
   }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await openRoute(page, "export");
     const downloadLink = page.locator("#export-download-link");
 

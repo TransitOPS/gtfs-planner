@@ -63,6 +63,22 @@ defmodule GtfsPlanner.RuntimeConfigTest do
     end
   end
 
+  test "production rejects malformed task artifact budgets" do
+    put_required_prod_env!()
+    System.put_env("GTFS_TASK_ARTIFACTS_PATH", "/app/var/gtfs-task-artifacts")
+    System.put_env("GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES", "1048576x")
+
+    assert_raise RuntimeError, ~r/GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES/, fn ->
+      read_prod_app_config!()
+    end
+
+    System.put_env("GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES", "abc")
+
+    assert_raise RuntimeError, ~r/GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES/, fn ->
+      read_prod_app_config!()
+    end
+  end
+
   defp put_required_prod_env! do
     Enum.each(@required_prod_env, fn {key, value} -> System.put_env(key, value) end)
   end

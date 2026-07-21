@@ -69,6 +69,16 @@ defmodule GtfsPlanner.Gtfs.Export.RunTest do
       assert errors_on(invalid).artifact_size_bytes
       assert errors_on(invalid).progress_current
       assert errors_on(invalid).warnings
+
+      oversized =
+        Run.system_changeset(run, %{
+          artifact_key: String.duplicate("k", 256),
+          artifact_filename: String.duplicate("f", 256)
+        })
+
+      refute oversized.valid?
+      assert errors_on(oversized).artifact_key
+      assert errors_on(oversized).artifact_filename
     end
   end
 end

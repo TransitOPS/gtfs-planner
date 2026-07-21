@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRun do
   ]
   @phases [:staging, :parsing, :diffing, :preflight, :applying, :cleanup]
   @terminal_states [:partial, :completed, :failed, :interrupted, :cancelled, :expired]
-  @summary_keys ~w(applicable preview approved rejected applied failed add modify remove conflict)a
+  @summary_keys ~w(applicable preview approved rejected applied failed unapplied add modify remove conflict)a
   @diagnostic_keys ~w(code detail entity_type natural_key)a
   @manifest_keys ~w(files total_bytes)a
   @manifest_file_keys ~w(name key size sha256 content_type)a

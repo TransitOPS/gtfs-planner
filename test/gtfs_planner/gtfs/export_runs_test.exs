@@ -55,6 +55,10 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
              ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
 
     assert ready.state == :ready
+
+    assert DateTime.diff(ready.artifact_expires_at, ready.finished_at) ==
+             Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds)
+
     assert_receive {:export_run_changed, ^run_id}
 
     assert {:error, :lease_lost} =

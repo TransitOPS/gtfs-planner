@@ -93,6 +93,22 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRunsTest do
         insert_decision!(context.schema, run_id, "stop:central")
       end)
     end
+
+    test "accepts bounded 512-byte decision IDs", context do
+      run_id = insert_run!(context, "review")
+      insert_decision!(context.schema, run_id, String.duplicate("d", 512))
+    end
+
+    test "rollback leaves the pre-existing version scope index intact", context do
+      Ecto.Migrator.down(Repo, @migration_version, Migration,
+        prefix: context.schema,
+        log: false
+      )
+
+      assert index_exists?(context.schema, "gtfs_versions_organization_id_id_index")
+      refute table_exists?(context.schema, "gtfs_change_runs")
+      refute table_exists?(context.schema, "gtfs_change_decisions")
+    end
   end
 
   defp setup_prefix do

@@ -108,14 +108,18 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
   defp uuid?(_), do: false
 
   defp validate_files(files) do
-    total =
-      Enum.reduce(files, 0, fn file, acc -> acc + byte_size(Map.get(file, :content, <<>>)) end)
-
     cond do
-      files == [] or length(files) > @max_files -> {:error, :invalid_file_count}
-      total > configured_max_run_bytes() -> {:error, :artifact_capacity_exceeded}
-      Enum.any?(files, &(not valid_file?(&1))) -> {:error, :invalid_staged_files}
-      true -> :ok
+      files == [] or length(files) > @max_files ->
+        {:error, :invalid_file_count}
+
+      Enum.any?(files, &(not valid_file?(&1))) ->
+        {:error, :invalid_staged_files}
+
+      Enum.sum(Enum.map(files, &byte_size(&1.content))) > configured_max_run_bytes() ->
+        {:error, :artifact_capacity_exceeded}
+
+      true ->
+        :ok
     end
   end
 

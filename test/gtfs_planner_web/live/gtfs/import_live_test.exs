@@ -1424,7 +1424,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       view |> element("#diff-apply-btn") |> render_click()
       html = await_import_task(view)
 
-      assert html =~ "Applied 1 decisions successfully, 0 failed."
+      assert html =~ "Applied 1 · Failed 0 · Unapplied 0"
 
       # The change landed on the route version and created no new version rows.
       child = Gtfs.get_stop_by_stop_id(organization.id, version.id, "CHILD_DIFF_NO_LEVEL")

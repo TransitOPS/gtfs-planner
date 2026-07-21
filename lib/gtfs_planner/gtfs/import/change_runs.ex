@@ -393,7 +393,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         when run.state == :applying and run.lease_generation == generation and
                run.lease_token == token ->
           summary = apply_summary(run.id, run.summary)
-          state = if is_nil(run.cancel_requested_at), do: :partial, else: :cancelled
+          state = failed_apply_state(run, summary)
 
           attrs = %{
             state: state,
@@ -480,6 +480,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
               ChangeRun.system_changeset(run, %{
                 state: :pending_apply,
                 phase: :preflight,
+                progress_current: 0,
+                progress_total: retryable_decision_count(run.id),
                 finished_at: nil,
                 cancel_requested_at: nil,
                 failure_code: nil
@@ -819,6 +821,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     fingerprint =
       decision.entity_type
       |> Gtfs.entity_snapshot(entity)
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
       |> Map.take(Map.keys(decision.current_values))
       |> ChangeDecisionSerializer.current_fingerprint()
 
@@ -948,11 +951,20 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     previous_summary
     |> Map.put("applied", Map.get(counts, :applied, 0))
     |> Map.put("failed", Map.get(counts, :failed, 0) + Map.get(counts, :stale, 0))
+    |> Map.put("unapplied", Map.get(counts, :approved, 0))
   end
 
   defp approved_decision_count(run_id) do
     from(d in ChangeDecision,
       where: d.change_run_id == ^run_id and d.status == :approved,
+      select: count(d.id)
+    )
+    |> Repo.one()
+  end
+
+  defp retryable_decision_count(run_id) do
+    from(d in ChangeDecision,
+      where: d.change_run_id == ^run_id and d.status in [:approved, :failed],
       select: count(d.id)
     )
     |> Repo.one()
@@ -965,6 +977,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   defp terminal_apply_state(_run, summary) do
     if Map.get(summary, "failed", 0) > 0, do: :partial, else: :completed
   end
+
+  defp failed_apply_state(%ChangeRun{cancel_requested_at: value}, _summary)
+       when not is_nil(value),
+       do: :cancelled
+
+  defp failed_apply_state(_run, %{"applied" => applied}) when applied > 0, do: :partial
+  defp failed_apply_state(_run, _summary), do: :interrupted
 
   defp failure_code(reason) when is_atom(reason),
     do: reason |> Atom.to_string() |> String.slice(0, 128)

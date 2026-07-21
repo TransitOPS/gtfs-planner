@@ -231,10 +231,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         {:noreply, refresh_export_run(socket)}
 
       {:error, :artifact_storage_unavailable} ->
-        {:noreply, put_flash(socket, :error, "Export storage is unavailable. Try again later.")}
+        {:noreply,
+         socket
+         |> refresh_export_run()
+         |> put_flash(:error, "Export storage is unavailable. Try again later.")}
 
       _ ->
-        {:noreply, put_flash(socket, :error, "Could not start the export. Try again.")}
+        {:noreply,
+         socket
+         |> refresh_export_run()
+         |> put_flash(:error, "Could not start the export. Try again.")}
     end
   end
 
@@ -244,7 +250,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          {:ok, _run} <- ExportRuns.request_cancel(socket.assigns.current_organization.id, run_id) do
       {:noreply, refresh_export_run(socket)}
     else
-      _ -> {:noreply, put_flash(socket, :error, "The export could not be cancelled.")}
+      _ ->
+        {:noreply,
+         socket
+         |> refresh_export_run()
+         |> put_flash(:error, "The export could not be cancelled.")}
     end
   end
 
@@ -258,7 +268,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          {:ok, _pid} <- ExportRunner.start_build(organization_id, run.id) do
       {:noreply, assign(socket, :export_run, run)}
     else
-      _ -> {:noreply, put_flash(socket, :error, "The export could not be restarted.")}
+      _ ->
+        {:noreply,
+         socket
+         |> refresh_export_run()
+         |> put_flash(:error, "The export could not be restarted.")}
     end
   end
 

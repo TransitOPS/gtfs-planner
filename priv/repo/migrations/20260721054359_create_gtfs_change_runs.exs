@@ -49,7 +49,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRuns do
 
     create table(:gtfs_change_decisions, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :decision_id, :string, null: false
+      add :decision_id, :string, size: 512, null: false
       add :entity_type, :string, null: false
       add :action, :string, null: false
       add :status, :string, null: false, default: "pending"
@@ -111,7 +111,6 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsChangeRuns do
   def down do
     drop table(:gtfs_change_decisions)
     drop table(:gtfs_change_runs)
-    drop index(:gtfs_versions, [:organization_id, :id], name: @version_scope_index)
   end
 
   defp qualified_table(table) do

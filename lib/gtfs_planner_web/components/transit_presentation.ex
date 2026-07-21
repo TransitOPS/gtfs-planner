@@ -163,11 +163,16 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
         </div>
       </div>
 
-      <details id={"#{@id}-details"} open={@expanded?} class="mt-3 border-l-2 border-base-300 pl-3">
+      <details
+        :if={@changes != []}
+        id={"#{@id}-details"}
+        open={@expanded?}
+        class="mt-3 border-l-2 border-base-300 pl-3"
+      >
         <summary
           id={"#{@id}-disclosure"}
           aria-controls={"#{@id}-details"}
-          class="cursor-pointer py-1 font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          class="flex min-h-11 cursor-pointer items-center font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         >
           View field changes
         </summary>

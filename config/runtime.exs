@@ -26,10 +26,15 @@ if System.get_env("PHX_SERVER") do
 end
 
 parse_positive_env = fn variable, default ->
-  case Integer.parse(System.get_env(variable) || "") do
-    {value, ""} when value > 0 -> value
-    {_, ""} -> raise "environment variable #{variable} must be a positive integer"
-    _ -> default
+  case System.get_env(variable) do
+    nil ->
+      default
+
+    configured ->
+      case Integer.parse(configured) do
+        {value, ""} when value > 0 -> value
+        _ -> raise "environment variable #{variable} must be a positive integer"
+      end
   end
 end
 

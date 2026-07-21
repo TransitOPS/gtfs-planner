@@ -71,6 +71,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorageTest do
                files,
                root: context.root
              )
+
+    assert {:error, :invalid_staged_files} =
+             ChangeArtifactStorage.stage(
+               context.organization_id,
+               context.version_id,
+               context.run_id,
+               [%{filename: "levels.txt", content: nil}],
+               root: context.root
+             )
   end
 
   test "reconciles an orphan directory deterministically", context do

@@ -1138,9 +1138,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           <%= if @diff_step == :review do %>
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
-              <%!-- Filter tabs + bulk actions --%>
+              <%!-- Pressed filters + bulk actions --%>
               <div class="flex items-end justify-between border-b border-base-300">
-                <div class="flex gap-6" role="tablist" aria-label="Filter decisions">
+                <div class="flex gap-6" aria-label="Filter decisions">
                   <%= for {filter, label, count} <- [
                     {:all, "All", decision_total(@diff_summary)},
                     {:add, "Add", @diff_summary.add},
@@ -1151,10 +1151,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     <button
                       type="button"
                       id={"diff-filter-#{filter}"}
-                      role="tab"
-                      aria-selected={to_string(@diff_filter == filter)}
+                      aria-pressed={to_string(@diff_filter == filter)}
                       class={[
-                        "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+                        "min-h-11 pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
                         @diff_filter == filter &&
                           "border-primary text-base-content",
                         @diff_filter != filter &&
@@ -1260,7 +1259,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <:actions :if={decision.status in [:pending, :approved, :rejected]}>
                     <button
                       type="button"
-                      class="btn btn-success btn-sm"
+                      aria-pressed={to_string(decision.status == :approved)}
+                      class={[
+                        "btn btn-sm",
+                        decision.status == :approved && "btn-success",
+                        decision.status != :approved && "btn-outline"
+                      ]}
                       phx-click="approve-decision"
                       phx-value-id={decision.decision_id}
                     >
@@ -1268,7 +1272,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     </button>
                     <button
                       type="button"
-                      class="btn btn-ghost btn-sm"
+                      aria-pressed={to_string(decision.status == :rejected)}
+                      class={[
+                        "btn btn-sm",
+                        decision.status == :rejected && "btn-error",
+                        decision.status != :rejected && "btn-ghost"
+                      ]}
                       phx-click="reject-decision"
                       phx-value-id={decision.decision_id}
                     >
@@ -1298,6 +1307,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               role="status"
             >
               <p class="font-medium">{diff_state_label(@change_run)}</p>
+              <p
+                :if={@change_run.state in [:partial, :failed, :interrupted]}
+                id="diff-run-counts"
+                class="mt-1 text-sm tabular-nums text-base-content/80"
+              >
+                Applied {Map.get(@change_run.summary, "applied", 0)} · Failed {Map.get(
+                  @change_run.summary,
+                  "failed",
+                  0
+                )} · Unapplied {Map.get(@change_run.summary, "unapplied", 0)}
+              </p>
               <p class="mt-1 text-sm text-base-content/70">
                 This review is durable. You can safely reconnect while it runs.
               </p>
@@ -1326,11 +1346,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
               <div class="rounded-lg border border-base-300 p-4 bg-base-200">
                 <p class="text-sm font-semibold">
-                  Applied {Map.get(@change_run.summary, "applied", 0)} decisions successfully, {Map.get(
+                  Applied {Map.get(@change_run.summary, "applied", 0)} · Failed {Map.get(
                     @change_run.summary,
                     "failed",
                     0
-                  )} failed.
+                  )} · Unapplied {Map.get(@change_run.summary, "unapplied", 0)}
                 </p>
               </div>
 
@@ -1734,6 +1754,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   end
 
   defp format_parse_error(%ParseError{reason: reason}), do: parse_reason_label(reason)
+  defp format_parse_error(%{reason: reason}), do: parse_reason_label(reason)
+  defp format_parse_error(_error), do: "Unable to compute review"
 
   defp parse_reason_label(:empty_content), do: "File is empty"
   defp parse_reason_label(:invalid_utf8), do: "File uses an unsupported text encoding"
@@ -1755,6 +1777,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp parse_reason_label(:blank_natural_key), do: "Missing key value"
   defp parse_reason_label(:semantic_row), do: "Invalid row value"
   defp parse_reason_label(:unexpected_parser_failure), do: "Unexpected parse failure"
+
+  defp parse_reason_label(reason) when is_atom(reason) do
+    reason
+    |> Atom.to_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp parse_reason_label(reason) when is_binary(reason) do
+    reason
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp parse_reason_label(_reason), do: "Unable to compute review"
 
   defp entity_type_label(:level), do: "Levels"
   defp entity_type_label(:stop), do: "Stops"

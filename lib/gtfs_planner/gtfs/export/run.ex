@@ -131,6 +131,8 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
 
   defp validate_artifact(changeset) do
     changeset
+    |> validate_length(:artifact_key, max: 255)
+    |> validate_length(:artifact_filename, max: 255)
     |> validate_number(:artifact_size_bytes, greater_than_or_equal_to: 0)
     |> validate_change(:artifact_sha256, fn :artifact_sha256, value ->
       if is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value),
