@@ -648,13 +648,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       phx-value-key={@key}
       aria-expanded={to_string(@open?)}
       aria-controls={detail_region_id(@key)}
-      class="print:hidden inline-flex min-h-11 items-center gap-1 text-sm font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      class="print:hidden inline-flex min-h-11 items-center gap-1 text-sm font-medium text-primary group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
     >
       <.icon
         name={if @open?, do: "hero-chevron-down", else: "hero-chevron-right"}
         class="size-4 shrink-0"
       />
-      <span class="text-left break-words">{@label}</span>
+      <span class="text-left break-words underline-offset-2 group-hover:underline">{@label}</span>
     </button>
     """
   end
@@ -674,7 +674,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         phx-value-entity_type="stop"
         phx-value-opener_id={@opener_id}
         title={@stop_id}
-        class="text-left text-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 break-words"
+        class="text-left text-sm font-medium text-primary underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 break-words"
       >
         {@name}
       </button>
@@ -930,13 +930,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           phx-value-dimension={to_string(@dimension)}
           aria-expanded={to_string(@all_expanded)}
           aria-controls={"connectivity-sources-#{@dimension}"}
-          class="print:hidden inline-flex min-h-11 items-center gap-1 text-sm font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          class="print:hidden inline-flex min-h-11 items-center gap-1 text-sm font-medium text-primary group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
         >
           <.icon
             name={if @all_expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
             class="size-4 shrink-0"
           />
-          {if @all_expanded, do: "Hide all routes", else: "Show all routes"}
+          <span class="underline-offset-2 group-hover:underline">
+            {if @all_expanded, do: "Hide all routes", else: "Show all routes"}
+          </span>
         </button>
       </div>
 
@@ -1006,13 +1008,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           phx-value-source_stop_id={@row.source_stop_id}
           aria-expanded={to_string(@expanded)}
           aria-controls={@region_id}
-          class="print:hidden inline-flex min-h-11 min-w-0 items-center gap-1 text-left text-sm font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          class="print:hidden inline-flex min-h-11 min-w-0 items-center gap-1 text-left text-sm font-medium text-primary group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
         >
           <.icon
             name={if @expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
             class="size-4 shrink-0"
           />
-          <span class="break-words">{@row.source_name}</span>
+          <span class="break-words underline-offset-2 group-hover:underline">
+            {@row.source_name}
+          </span>
         </button>
         <p class="hidden text-sm font-medium print:block break-words">{@row.source_name}</p>
         <.reachability_status status={@row.status} />

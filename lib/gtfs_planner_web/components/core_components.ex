@@ -1334,11 +1334,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
             "motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-2",
             "focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
             entry.key == @selected_key &&
-              "border-primary bg-primary font-semibold text-primary-content",
+              "cursor-pointer border-primary bg-primary font-semibold text-primary-content",
             entry.key != @selected_key && entry.unavailable? &&
               "border-dashed border-base-content/40 bg-base-100 text-base-content/70 cursor-not-allowed",
             entry.key != @selected_key && !entry.unavailable? &&
-              "border-control-border bg-base-100 text-base-content hover:border-primary"
+              "cursor-pointer border-control-border bg-base-100 text-base-content hover:border-primary"
           ]}
         >
           <.count_strip_body entry={entry} colorize={false} />
