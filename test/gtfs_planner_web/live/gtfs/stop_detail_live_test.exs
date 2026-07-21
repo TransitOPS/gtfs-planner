@@ -1,7 +1,8 @@
 defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
-  use GtfsPlannerWeb.ConnCase
+  use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Mox
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -9,7 +10,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Repo
+
+  @adapter_key :gtfs_catalog_read_adapter
+
+  setup :verify_on_exit!
 
   describe "StopDetailLive - station editing status" do
     setup do
@@ -84,7 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert has_element?(
                view,
                ~s(#station-editing-status-button[phx-click="set_station_editing_status"][title="Let others know you're editing this Station."]),
-               "I'm editing this Station"
+               "Start editing"
              )
 
       render_click(element(view, "#station-editing-status-button"))
@@ -132,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert has_element?(
                view,
                ~s(#station-editing-status-button[phx-click="clear_station_editing_status"][title="Let others know you're done editing this Station."]),
-               "I'm done"
+               "Finish editing"
              )
 
       render_click(element(view, "#station-editing-status-button"))
@@ -396,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert has_element?(
                view,
                ~s(#station-editing-status-button[phx-click="set_station_editing_status"]),
-               "I'm editing this Station"
+               "Start editing"
              )
 
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
@@ -445,7 +451,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
 
       assert state.socket.assigns.station_editing_status.id == status.id
       assert state.socket.assigns.station_editing_status.user.id == editor.id
-      assert has_element?(view, "#flash-error", "Failed to set station editing status")
+      assert has_element?(view, "#editing-error", "Failed to set station editing status")
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
     end
   end
@@ -625,6 +631,360 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
                "#child-stop-row-#{leveled_stop.id} a",
                "Edit in Diagram"
              )
+    end
+  end
+
+  describe "StopDetailLive - station facts and regions (Mox)" do
+    setup do
+      previous = Application.fetch_env(:gtfs_planner, @adapter_key)
+      Application.put_env(:gtfs_planner, @adapter_key, CatalogReadAdapterMock)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:gtfs_planner, @adapter_key, value)
+          :error -> Application.delete_env(:gtfs_planner, @adapter_key)
+        end
+      end)
+    end
+
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    defp build_stop(organization_id, gtfs_version_id, attrs) do
+      %GtfsPlanner.Gtfs.Stop{
+        id: Ecto.UUID.generate(),
+        stop_id: Map.get(attrs, :stop_id, "TEST_STOP"),
+        stop_name: Map.get(attrs, :stop_name, "Test Station"),
+        stop_desc: Map.get(attrs, :stop_desc),
+        stop_lat: Map.get(attrs, :stop_lat, Decimal.new("40.7128")),
+        stop_lon: Map.get(attrs, :stop_lon, Decimal.new("-74.0060")),
+        location_type: Map.get(attrs, :location_type, 1),
+        wheelchair_boarding: Map.get(attrs, :wheelchair_boarding),
+        platform_code: Map.get(attrs, :platform_code),
+        level_id: Map.get(attrs, :level_id),
+        diagram_coordinate: Map.get(attrs, :diagram_coordinate),
+        parent_station: Map.get(attrs, :parent_station),
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        inserted_at: DateTime.utc_now(),
+        updated_at: DateTime.utc_now()
+      }
+    end
+
+    defp stub_fetch_stop(result) do
+      stub(CatalogReadAdapterMock, :fetch_stop, fn _org, _ver, _stop_id -> result end)
+    end
+
+    defp stub_load_regions(regions) do
+      stub(CatalogReadAdapterMock, :load_stop_regions, fn _org, _ver, _stop -> regions end)
+    end
+
+    defp default_regions do
+      %{
+        child_stops: {:ok, []},
+        levels: {:ok, []},
+        pathways: {:ok, []},
+        editing_status: {:ok, nil}
+      }
+    end
+
+    test "station facts render in dl/dt/dd with one h1, no C0 control characters", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "FACTS1",
+          stop_name: "Facts Station",
+          stop_desc: "A test station",
+          platform_code: "P1"
+        })
+
+      stub_fetch_stop({:ok, stop})
+      stub_load_regions(default_regions())
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      html = render(view)
+      doc = LazyHTML.from_fragment(html)
+
+      h1s = Enum.to_list(LazyHTML.query(doc, "h1"))
+      dls = Enum.to_list(LazyHTML.query(doc, "dl"))
+      dts = Enum.to_list(LazyHTML.query(doc, "dt"))
+      dds = Enum.to_list(LazyHTML.query(doc, "dd"))
+
+      assert length(h1s) == 1
+      refute Enum.empty?(dls)
+      refute Enum.empty?(dts)
+      refute Enum.empty?(dds)
+
+      refute html =~ ~r/[\x00-\x08\x0B\x0C\x0E-\x1F]/
+    end
+
+    test "accessibility shows tri-state with inherited source disclosure", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "ACCESS1",
+          stop_name: "Accessible Station",
+          wheelchair_boarding: 1
+        })
+
+      stub_fetch_stop({:ok, stop})
+      stub_load_regions(default_regions())
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      assert has_element?(view, "[data-accessibility='accessible']", "Accessible")
+    end
+
+    test "diagram status renders visible Available or No diagram text", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop_with_diagram =
+        build_stop(organization.id, version.id, %{
+          stop_id: "DIAG1",
+          stop_name: "Diagram Station",
+          diagram_coordinate: %{"x" => 100, "y" => 200}
+        })
+
+      stub_fetch_stop({:ok, stop_with_diagram})
+      stub_load_regions(default_regions())
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop_with_diagram.stop_id}")
+
+      assert has_element?(view, "#diagram-status", "Available")
+
+      stop_without_diagram =
+        build_stop(organization.id, version.id, %{
+          stop_id: "DIAG2",
+          stop_name: "No Diagram Station",
+          diagram_coordinate: nil
+        })
+
+      stub_fetch_stop({:ok, stop_without_diagram})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop_without_diagram.stop_id}")
+
+      assert has_element?(view, "#diagram-status", "No diagram")
+    end
+
+    test "pathway rows show mode, text direction, and only supplied metrics", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "PATH1",
+          stop_name: "Pathway Station"
+        })
+
+      pathway = %GtfsPlanner.Gtfs.Pathway{
+        id: Ecto.UUID.generate(),
+        pathway_id: "PW1",
+        pathway_mode: 2,
+        is_bidirectional: true,
+        stair_count: 12,
+        traversal_time: 30,
+        length: nil,
+        from_stop_id: "FROM1",
+        to_stop_id: "TO1",
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        inserted_at: DateTime.utc_now(),
+        updated_at: DateTime.utc_now()
+      }
+
+      stub_fetch_stop({:ok, stop})
+
+      stub_load_regions(%{
+        default_regions()
+        | pathways: {:ok, [pathway]}
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      assert has_element?(view, "[data-pathway-summary]")
+      assert has_element?(view, "[data-pathway-summary]", "Stairs")
+      assert has_element?(view, "[data-pathway-summary]", "Bidirectional")
+      assert has_element?(view, "[data-pathway-summary]", "12")
+      assert has_element?(view, "[data-pathway-summary]", "stairs")
+      assert has_element?(view, "[data-pathway-summary]", "30")
+      assert has_element?(view, "[data-pathway-summary]", "sec")
+    end
+
+    test "child/level/pathway unavailable shows stable-ID region with retry", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "UNAVAIL1",
+          stop_name: "Unavailable Station"
+        })
+
+      stub_fetch_stop({:ok, stop})
+
+      stub_load_regions(%{
+        child_stops: {:error, :unavailable},
+        levels: {:error, :unavailable},
+        pathways: {:error, :unavailable},
+        editing_status: {:ok, nil}
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      assert has_element?(view, "#child-stops-unavailable")
+      assert has_element?(view, "#child-stops-retry")
+      assert has_element?(view, "#levels-unavailable")
+      assert has_element?(view, "#levels-retry")
+      assert has_element?(view, "#pathways-unavailable")
+      assert has_element?(view, "#pathways-retry")
+    end
+
+    test "empty child/level/pathway shows explanatory state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "EMPTY1",
+          stop_name: "Empty Station"
+        })
+
+      stub_fetch_stop({:ok, stop})
+      stub_load_regions(default_regions())
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      assert has_element?(view, "#child-stops-empty")
+      assert has_element?(view, "#levels-empty")
+      assert has_element?(view, "#pathways-empty")
+    end
+
+    test "Start editing button has phx-disable-with; error preserves prior status", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "EDIT1",
+          stop_name: "Edit Station"
+        })
+
+      stub_fetch_stop({:ok, stop})
+      stub_load_regions(default_regions())
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      assert has_element?(
+               view,
+               ~s(#station-editing-status-button[phx-disable-with="Starting..."]),
+               "Start editing"
+             )
+    end
+
+    test "clear editing status error shows in-flow callout with retry", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        build_stop(organization.id, version.id, %{
+          stop_id: "CLEARERR1",
+          stop_name: "Clear Error Station"
+        })
+
+      stub_fetch_stop({:ok, stop})
+
+      editing_status = %GtfsPlanner.Gtfs.StationEditingStatus{
+        id: Ecto.UUID.generate(),
+        user_id: user.id,
+        user: user,
+        started_at: DateTime.utc_now(),
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        station_id: stop.id
+      }
+
+      stub_load_regions(%{
+        default_regions()
+        | editing_status: {:ok, editing_status}
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/#{stop.stop_id}")
+
+      assert has_element?(view, "#station-editing-status-banner")
+    end
+
+    test "not-found stop redirects; unavailable base shows full-page error with retry", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_fetch_stop({:error, :not_found})
+      stub_load_regions(default_regions())
+
+      assert {:error, {:live_redirect, %{to: to_path}}} =
+               live(conn, "/gtfs/#{version.id}/stops/MISSING")
+
+      assert to_path == "/gtfs/#{version.id}/stops"
+
+      stub_fetch_stop({:error, :unavailable})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops/UNAVAIL")
+
+      assert has_element?(view, "#stop-unavailable")
+      assert has_element?(view, "#stop-retry")
     end
   end
 end
