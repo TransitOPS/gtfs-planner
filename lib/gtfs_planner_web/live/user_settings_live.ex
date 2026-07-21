@@ -147,11 +147,11 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
               // LiveView may restore focus onto the submit control after
               // phx-disable-with ends. Keep correcting until the invalid field
-              // holds focus or the window expires.
+              // holds focus or the short post-patch window expires.
               let attempts = 0;
               this._focusTimer = setInterval(() => {
                 attempts += 1;
-                if (focusFirstInvalid() || attempts >= 40) {
+                if (focusFirstInvalid() || attempts >= 10) {
                   clearInterval(this._focusTimer);
                   this._focusTimer = null;
                 }

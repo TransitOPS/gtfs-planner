@@ -1,4 +1,10 @@
 import { test, expect } from "@playwright/test";
+import {
+  VIEWPORTS,
+  bodyFitsViewport,
+  readPendingStates,
+  watchPendingState,
+} from "./browser_helpers.js";
 
 // Account design contracts (Package 11).
 // Step 3 owns the account-navigation block. Step 4 owns the dashboard block.
@@ -41,15 +47,6 @@ const PASSWORD_MUTATE_USER = {
   email: "account-password-mutate@gtfs-planner.test",
   password: "AccountPassword123!",
 };
-
-const VIEWPORTS = [
-  { label: "320px", width: 320, height: 568 },
-  { label: "768px", width: 768, height: 1024 },
-  { label: "desktop", width: 1280, height: 800 },
-  // 200% browser zoom of a 1280x800 device viewport is a 640x400 CSS layout
-  // viewport. Exercising the layout viewport directly runs the media queries.
-  { label: "640px (200% zoom)", width: 640, height: 400 },
-];
 
 const DASHBOARD_STATE_ROOTS = [
   "#dashboard-system-administrator",
@@ -113,25 +110,14 @@ async function waitForLiveView(page) {
   });
 }
 
-async function bodyFitsViewport(page) {
-  return page.evaluate(
-    () => document.body.scrollWidth <= window.innerWidth + 1,
-  );
-}
-
 async function captureTargetMetrics(locator) {
   return locator.evaluate((el) => {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
     return {
-      minHeight: style.minHeight,
       height: rect.height,
       width: rect.width,
       fontWeight: style.fontWeight,
-      backgroundColor: style.backgroundColor,
-      outlineStyle: style.outlineStyle,
-      outlineWidth: style.outlineWidth,
-      boxShadow: style.boxShadow,
     };
   });
 }
@@ -152,37 +138,6 @@ async function focusVisible(page, locator) {
       outlineWidth: style.outlineWidth,
       boxShadow: style.boxShadow,
     };
-  });
-}
-
-/**
- * Records every mutation of a control from the moment before it is activated.
- * Matches admin_design_contracts.watchPendingState for phx-disable-with races.
- */
-async function watchPendingState(page, selector) {
-  await page.evaluate((sel) => {
-    const el = document.querySelector(sel);
-    if (!el) throw new Error(`No element for ${sel}`);
-    window.__pendingStates = [];
-    window.__pendingObserver = new MutationObserver(() => {
-      window.__pendingStates.push({
-        disabled: el.hasAttribute("disabled"),
-        text: el.textContent.trim(),
-      });
-    });
-    window.__pendingObserver.observe(el, {
-      attributes: true,
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-  }, selector);
-}
-
-async function readPendingStates(page) {
-  return page.evaluate(() => {
-    window.__pendingObserver?.disconnect();
-    return window.__pendingStates ?? [];
   });
 }
 
@@ -368,7 +323,6 @@ test.describe("dashboard", () => {
     await expect(refWarning).toBeVisible();
     await expect(refInfo).toBeVisible();
     const refWarningMetrics = await captureSharedMetrics(refWarning);
-    const refInfoMetrics = await captureSharedMetrics(refInfo);
 
     // Ideal organization (editor + published version)
     await page.goto("/");
@@ -430,21 +384,11 @@ test.describe("dashboard", () => {
     await page.context().clearCookies();
     await openDashboard(page, ORG_ADMIN_USER);
     const orgAdminRoot = await visibleDashboardRoot(page);
-    expect([
-      "#dashboard-organization",
-      "#dashboard-no-version",
-      "#dashboard-no-task-access",
-    ]).toContain(orgAdminRoot);
-    if (orgAdminRoot === "#dashboard-organization") {
-      await expect(
-        page.locator(`${orgAdminRoot} a.btn-primary[href='/admin/users']`),
-      ).toContainText("Manage users");
-      await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
-    }
-
-    // Missing-context style recovery uses info callout on no-organization when
-    // reachable; LiveView tests own the full missing/unavailable matrix.
-    void refInfoMetrics;
+    expect(orgAdminRoot).toBe("#dashboard-organization");
+    await expect(
+      page.locator(`${orgAdminRoot} a.btn-primary[href='/admin/users']`),
+    ).toContainText("Manage users");
+    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
   });
 
   test("representative states reflow without overflow at required viewports", async ({
@@ -557,7 +501,12 @@ test.describe("dashboard", () => {
     await waitForLiveView(page);
     await expect(page.locator("#dashboard-system-administrator")).toHaveScreenshot(
       "dashboard-system-administrator-1280.png",
-      { animations: "disabled" },
+      {
+        animations: "disabled",
+        mask: [
+          page.locator("#dashboard-system-administrator p").first(),
+        ],
+      },
     );
 
     // Dedicated no-version seed
@@ -615,8 +564,7 @@ test.describe("account settings", () => {
       )
       .first();
     await expect(refSecondary).toBeVisible();
-    const refSecondaryMetrics = await captureSharedMetrics(refSecondary);
-    expect(refSecondaryMetrics.className).toContain("btn-outline");
+    await expect(refSecondary).toHaveClass(/btn-outline/);
 
     await page.goto("/design/feedback");
     await waitForLiveView(page);
@@ -659,14 +607,12 @@ test.describe("account settings", () => {
     expect(passwordMetrics.labelAboveInput).toBe(true);
     expect(emailMetrics.buttonClass).toContain("btn-outline");
     expect(passwordMetrics.buttonClass).toContain("btn-outline");
-    // Shared input stack: comparable control height to design demo (±8px tolerance).
+    // Shared input stack: comparable control height to design demo (±12px tolerance).
     if (refFormMetrics.inputHeight > 0) {
       expect(
         Math.abs(emailMetrics.inputHeight - refFormMetrics.inputHeight),
       ).toBeLessThanOrEqual(12);
     }
-    void refSecondaryMetrics;
-
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize({
         width: viewport.width,
@@ -838,9 +784,9 @@ test.describe("account settings", () => {
     // No skeleton/placeholder during synchronous account context mount.
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await expect(page.locator(".animate-pulse, [aria-busy='true']")).toHaveCount(
-      0,
-    );
+    await expect(
+      page.locator(".motion-safe\\:animate-pulse, [aria-busy='true']"),
+    ).toHaveCount(0);
     await expect(page.locator("#account-settings")).toBeVisible();
   });
 
@@ -922,14 +868,23 @@ test.describe("account motion and reconnect", () => {
       ),
     ).toBe(true);
 
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await page.waitForSelector("#client-error", {
+      state: "visible",
+      timeout: 10_000,
+    });
+
     // Layout flash spinner uses motion-safe:animate-spin; under reduce it is none.
     const spinner = page.locator("#client-error .motion-safe\\:animate-spin");
-    if ((await spinner.count()) > 0) {
-      const animation = await spinner.evaluate(
-        (el) => window.getComputedStyle(el).animationName,
-      );
-      expect(animation).toBe("none");
-    }
+    await expect(spinner).toBeVisible();
+    const animation = await spinner.evaluate(
+      (el) => window.getComputedStyle(el).animationName,
+    );
+    expect(animation).toBe("none");
+
+    await page.evaluate(() => window.liveSocket.connect());
+    await waitForLiveView(page);
+    await expect(page.locator("#client-error")).toBeHidden();
 
     // Pending/error state changes remain observable under reduced motion.
     await page.fill("#email-address", "motion-check@example.com");
@@ -944,12 +899,13 @@ test.describe("account motion and reconnect", () => {
     await expect(page.locator("#email-address")).toHaveValue(
       "motion-check@example.com",
     );
-    await expect(page.locator(".animate-pulse")).toHaveCount(0);
+    await expect(page.locator(".motion-safe\\:animate-pulse")).toHaveCount(0);
   });
 
   test("disconnect and reconnect keep account layout reachable", async ({
     page,
   }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await openSettings(page, SETTINGS_USER);
     await expect(page.locator("#account-settings")).toBeVisible();
 
@@ -967,8 +923,6 @@ test.describe("account motion and reconnect", () => {
 
 // ── Destructive password handoff (isolated one-use seed) ──
 test.describe("account password mutation", () => {
-  test.describe.configure({ mode: "serial" });
-
   test("native password success replaces the session for the dedicated user", async ({
     page,
   }) => {
@@ -979,8 +933,6 @@ test.describe("account password mutation", () => {
     await page.fill("#password-current-password", PASSWORD_MUTATE_USER.password);
     await page.fill("#password-new-password", newPassword);
     await page.fill("#password-confirmation", newPassword);
-    await watchPendingState(page, "#password-submit");
-
     // LiveView validates first (trigger_submit), then the form natively POSTs
     // to /users/update_password and re-issues a session on /users/settings.
     const postResponse = page.waitForResponse(

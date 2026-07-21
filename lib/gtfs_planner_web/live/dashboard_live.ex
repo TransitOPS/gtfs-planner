@@ -59,8 +59,6 @@ defmodule GtfsPlannerWeb.DashboardLive do
   defp dashboard_state(%{organization_context_status: :available, current_organization: %{}}),
     do: :no_task
 
-  defp dashboard_state(_), do: :missing
-
   defp render_dashboard_state(:system_administrator, assigns) do
     ~H"""
     <div id="dashboard-system-administrator">
@@ -101,7 +99,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
       </.header>
 
       <div class="mt-6">
-        <.callout kind="info" title="Organization unavailable">
+        <.callout kind="info" title="Organization access required">
           Organization access is required to use Pathways Studio. Contact an administrator if you need access.
         </.callout>
       </div>

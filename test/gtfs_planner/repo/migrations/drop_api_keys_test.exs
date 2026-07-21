@@ -7,13 +7,16 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
   # mode is restored afterwards. The main test schema is never modified.
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Ecto.Migrator
   alias GtfsPlanner.Repo
 
   setup_all do
-    Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
+    Sandbox.mode(Repo, :auto)
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
+      Sandbox.mode(Repo, :manual)
     end)
 
     :ok
@@ -48,12 +51,10 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
                            __DIR__
                          )
 
-  @create_migration_digest (
-                             @create_migration_path
-                             |> File.read!()
-                             |> then(&:crypto.hash(:sha256, &1))
-                             |> Base.encode16(case: :lower)
-                           )
+  @create_migration_digest @create_migration_path
+                           |> File.read!()
+                           |> then(&:crypto.hash(:sha256, &1))
+                           |> Base.encode16(case: :lower)
 
   describe "up/0 drops api_keys in an isolated prefix" do
     test "removes api_keys and leaves the main public schema untouched" do
@@ -115,7 +116,7 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
 
       # Pin the file contents so any edit to the historical create migration fails.
       assert @create_migration_digest ==
-               (:crypto.hash(:sha256, source) |> Base.encode16(case: :lower))
+               :crypto.hash(:sha256, source) |> Base.encode16(case: :lower)
     end
 
     test "migration module documents empty-structure rollback and release drainage" do
@@ -137,17 +138,17 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
   defp setup_prefix do
     schema = "test_drop_api_keys_#{System.unique_integer([:positive])}"
 
-    Ecto.Adapters.SQL.query!(Repo, ~s|CREATE SCHEMA "#{schema}"|, [])
+    SQL.query!(Repo, ~s|CREATE SCHEMA "#{schema}"|, [])
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.query!(
-        GtfsPlanner.Repo,
+      SQL.query!(
+        Repo,
         ~s|DROP SCHEMA IF EXISTS "#{schema}" CASCADE|,
         []
       )
     end)
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TABLE "#{schema}".organizations (
@@ -161,7 +162,7 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
     )
 
     # Original api_keys shape from 20251223034107_create_api_keys.exs
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TABLE "#{schema}".api_keys (
@@ -182,16 +183,16 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
   end
 
   defp migrate_up(schema) do
-    Ecto.Migrator.up(Repo, @migration_version, Migration, prefix: schema, log: false)
+    Migrator.up(Repo, @migration_version, Migration, prefix: schema, log: false)
   end
 
   defp migrate_down(schema) do
-    Ecto.Migrator.down(Repo, @migration_version, Migration, prefix: schema, log: false)
+    Migrator.down(Repo, @migration_version, Migration, prefix: schema, log: false)
   end
 
   defp table_exists?(schema, table) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         SELECT 1 FROM information_schema.tables
@@ -219,6 +220,7 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
 
     version = Map.fetch!(columns, "version")
     assert version.udt_name == "int4"
+
     assert version_default?(version.column_default),
            "unexpected version default: #{inspect(version.column_default)}"
 
@@ -240,7 +242,7 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
 
   defp column_catalog(schema) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         SELECT column_name, udt_name, is_nullable, column_default, datetime_precision
@@ -287,7 +289,7 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
 
   defp primary_key_columns(schema) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         SELECT a.attname
@@ -308,7 +310,7 @@ defmodule GtfsPlanner.Repo.Migrations.DropApiKeysTest do
 
   defp organization_foreign_key(schema) do
     %{rows: rows} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         SELECT

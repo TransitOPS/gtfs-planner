@@ -159,37 +159,25 @@ defmodule GtfsPlannerWeb.EnsureRole do
       plug :ensure_role, nil # requires org membership only
 
   """
-  def ensure_role(conn, role_spec) do
-    user_id =
-      case conn.assigns[:current_user] do
-        nil -> nil
-        user -> user.id
-      end
-
-    organization_id =
-      case conn.assigns[:current_organization] do
-        nil -> nil
-        org -> org.id
-      end
-
-    cond do
-      is_nil(organization_id) or is_nil(user_id) ->
-        unauthorized(conn)
-
-      true ->
-        case Accounts.get_user_org_membership(user_id, organization_id) do
-          %UserOrgMembership{} = membership ->
-            if has_role?(membership.roles, role_spec) do
-              conn
-            else
-              unauthorized(conn)
-            end
-
-          _ ->
-            unauthorized(conn)
+  def ensure_role(
+        %{assigns: %{current_user: %{id: user_id}, current_organization: %{id: organization_id}}} =
+          conn,
+        role_spec
+      ) do
+    case Accounts.get_user_org_membership(user_id, organization_id) do
+      %UserOrgMembership{} = membership ->
+        if has_role?(membership.roles, role_spec) do
+          conn
+        else
+          unauthorized(conn)
         end
+
+      _ ->
+        unauthorized(conn)
     end
   end
+
+  def ensure_role(conn, _role_spec), do: unauthorized(conn)
 
   @doc """
   Helper function to check if a set of roles matches a role specification.

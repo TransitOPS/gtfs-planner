@@ -132,6 +132,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       # published-only latest query returns nil (staging-only is equivalent).
       organization = organization_fixture(%{name: "No Published Version Org"})
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
+
       {:ok, _staging} =
         Versions.create_staging_gtfs_version(organization.id, %{name: "Staging Only"})
 

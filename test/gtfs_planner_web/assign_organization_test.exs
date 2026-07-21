@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
   @deactivated_flash "Your account has been deactivated in this organization."
   @missing_org_flash "Your account has no organization assigned. Contact an administrator."
   @not_found_flash "Organization not found"
+  @unauthenticated_flash "You must log in to access this page."
 
   describe "on_mount :optional" do
     test "assigns complete nil/empty shape and system_administrator without organization queries" do
@@ -26,6 +27,7 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert {:cont, socket} = AssignOrganization.on_mount(:optional, %{}, session, socket)
 
       assert_safe_shape(socket, :system_administrator)
+
       refute Map.has_key?(socket.private, :lifecycle) and
                lifecycle_has_rename_hook?(socket)
     end
@@ -43,7 +45,9 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
 
       {:ok, older} = Versions.create_gtfs_version(organization.id, %{name: "Older Published"})
       {:ok, newer} = Versions.create_gtfs_version(organization.id, %{name: "Newer Published"})
-      {:ok, _staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging Only"})
+
+      {:ok, _staging} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Staging Only"})
 
       socket = build_socket(user)
       session = %{"organization_id" => organization.id}
@@ -52,6 +56,7 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
 
       assert socket.assigns.organization_context_status == :available
       assert socket.assigns.current_organization.id == organization.id
+
       assert Enum.sort(socket.assigns.user_roles) ==
                ["pathways_studio_admin", "pathways_studio_editor"]
 
@@ -59,6 +64,7 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert {older.id, "Older Published"} in socket.assigns.available_versions
       assert socket.assigns.current_gtfs_version.id == newer.id
       assert socket.assigns.current_gtfs_version.name == "Newer Published"
+
       refute Enum.any?(socket.assigns.available_versions, fn {_id, name} ->
                name == "Staging Only"
              end)
@@ -152,6 +158,7 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert phoenix_flash(socket, :error) == @deactivated_flash
       assert socket_redirect_to(socket) == "/users/log_in"
       refute Accounts.get_user_by_session_token(token)
+
       refute Map.has_key?(socket.assigns, :current_organization) and
                match?(%Organizations.Organization{}, socket.assigns[:current_organization])
     end
@@ -179,6 +186,16 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
   end
 
   describe "on_mount :default" do
+    test "missing current user redirects instead of raising during membership lookup" do
+      organization = organization_fixture()
+      socket = build_socket(nil)
+      session = %{"organization_id" => organization.id}
+
+      assert {:halt, socket} = AssignOrganization.on_mount(:default, %{}, session, socket)
+      assert phoenix_flash(socket, :error) == @unauthenticated_flash
+      assert socket_redirect_to(socket) == "/users/log_in"
+    end
+
     test "administrator bypass continues without organization assigns" do
       admin = system_administrator_fixture()
       socket = build_socket(admin)
@@ -414,11 +431,7 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
   end
 
   defp invoke_rename_hook(socket, updated_version) do
-    hooks =
-      case socket.private[:lifecycle] do
-        %Phoenix.LiveView.Lifecycle{handle_info: hooks} -> hooks
-        _ -> []
-      end
+    hooks = lifecycle_hooks(socket)
 
     hook =
       Enum.find(hooks, fn h -> h.id == :refresh_gtfs_versions_after_rename end) ||
@@ -431,15 +444,22 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
         :ok
     end
 
-    result =
-      case Function.info(hook.function, :arity) do
-        {:arity, 2} ->
-          hook.function.(msg, socket)
+    hook.function
+    |> invoke_hook(Function.info(hook.function, :arity), msg, socket)
+    |> unwrap_hook_result()
+  end
 
-        {:arity, 3} ->
-          hook.function.(msg, %{}, socket)
-      end
+  defp lifecycle_hooks(socket) do
+    case socket.private[:lifecycle] do
+      %Phoenix.LiveView.Lifecycle{handle_info: hooks} -> hooks
+      _ -> []
+    end
+  end
 
+  defp invoke_hook(function, {:arity, 2}, msg, socket), do: function.(msg, socket)
+  defp invoke_hook(function, {:arity, 3}, msg, socket), do: function.(msg, %{}, socket)
+
+  defp unwrap_hook_result(result) do
     case result do
       {:halt, socket} -> socket
       {:cont, socket} -> socket

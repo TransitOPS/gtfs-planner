@@ -29,15 +29,12 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
     %{user: user, org: org}
   end
 
-  defp authed_conn(conn, user, org_id \\ nil) do
+  defp authed_conn(conn, user) do
     token = Accounts.generate_api_session_token(user)
 
     conn
     |> put_req_header("accept", "application/json")
     |> put_req_header("authorization", "Bearer #{token}")
-    |> then(fn conn ->
-      if org_id, do: put_req_header(conn, "x-organization-id", org_id), else: conn
-    end)
   end
 
   defp session_conn(conn, token, org_id) do

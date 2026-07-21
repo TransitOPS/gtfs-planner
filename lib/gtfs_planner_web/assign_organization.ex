@@ -62,13 +62,20 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   def on_mount(:optional, _params, session, socket) do
     current_user = socket.assigns[:current_user]
 
-    cond do
-      current_user && UserAuth.is_administrator?(current_user) ->
-        {:cont, assign_safe_defaults(socket, :system_administrator)}
-
-      true ->
-        assign_organization_optional(session, socket)
+    if current_user && UserAuth.is_administrator?(current_user) do
+      {:cont, assign_safe_defaults(socket, :system_administrator)}
+    else
+      assign_organization_optional(session, socket)
     end
+  end
+
+  defp assign_organization_required(_session, %{assigns: %{current_user: nil}} = socket) do
+    socket =
+      socket
+      |> put_flash(:error, "You must log in to access this page.")
+      |> redirect(to: "/users/log_in")
+
+    {:halt, socket}
   end
 
   defp assign_organization_required(%{"organization_id" => organization_id}, socket) do
@@ -82,11 +89,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
           halt_deactivated(socket)
         else
           # Fetch user's roles for this organization
-          user_roles =
-            case Accounts.get_user_org_membership(current_user.id, organization_id) do
-              %Accounts.UserOrgMembership{roles: roles} -> roles
-              nil -> []
-            end
+          user_roles = membership_roles(current_user.id, organization_id)
 
           {:cont, assign_tenant_context(socket, organization, user_roles)}
         end
@@ -139,6 +142,13 @@ defmodule GtfsPlannerWeb.AssignOrganization do
 
   defp assign_organization_optional(_session, socket) do
     {:cont, assign_safe_defaults(socket, :missing)}
+  end
+
+  defp membership_roles(user_id, organization_id) do
+    case Accounts.get_user_org_membership(user_id, organization_id) do
+      %Accounts.UserOrgMembership{roles: roles} -> roles
+      nil -> []
+    end
   end
 
   defp halt_deactivated(socket) do

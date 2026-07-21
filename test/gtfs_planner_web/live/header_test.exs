@@ -133,6 +133,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       # Dashboard remains reachable with no session organization (optional mode).
       assert html =~ "Pathways Studio"
+      assert has_element?(view, "#dashboard-no-organization")
       assert has_element?(view, "#app-header nav a[href='/users/settings']")
     end
 
