@@ -104,15 +104,82 @@ defmodule GtfsPlannerWeb.Navigation do
           <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
         </.link>
       <% end %>
-
-      <.link
-        navigate="/users/settings"
-        class={nav_link_class(path_family_active?(@current_path, ["users", "settings"]))}
-        aria-current={path_family_active?(@current_path, ["users", "settings"]) && "page"}
-      >
-        <.icon name="hero-cog-6-tooth" class="w-4 h-4" /> Account settings
-      </.link>
     </nav>
+    """
+  end
+
+  @doc """
+  Renders the account menu: an icon-only trigger that opens a dropdown with
+  account-scoped actions (Account settings, Log out).
+
+  These actions are grouped here — separate from the task navigation in
+  `top_nav/1` — because they concern the signed-in account, not the transit data.
+  The trigger stays icon-only to keep the header uncluttered; the account's email
+  is carried in the trigger's `aria-label` and shown in the panel's "Signed in as"
+  header, so identity is available without competing with the task nav visually.
+
+  ## Attributes
+
+    * `:current_user` - The currently authenticated user (email used for the
+      accessible label and the panel's "Signed in as" line)
+    * `:current_path` - The current URL path, for marking Account settings active
+  """
+  attr :current_user, :map, required: true
+  attr :current_path, :string, default: "/"
+
+  def user_menu(assigns) do
+    ~H"""
+    <div id="user-menu" phx-hook="UserMenu" class="relative">
+      <button
+        type="button"
+        data-user-menu-trigger
+        aria-haspopup="menu"
+        aria-expanded="false"
+        aria-controls="user-menu-panel"
+        aria-label={"Account menu for #{@current_user.email}"}
+        title="Account"
+        class="inline-flex items-center justify-center gap-1 min-h-11 min-w-11 rounded-md px-2.5 py-2 text-base-content/70 hover:text-base-content hover:bg-base-200 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+      >
+        <.icon name="hero-user-circle" class="w-6 h-6 flex-none" />
+        <.icon name="hero-chevron-down" class="w-4 h-4 flex-none" />
+      </button>
+
+      <div
+        id="user-menu-panel"
+        data-user-menu-panel
+        role="menu"
+        aria-label="Account"
+        hidden
+        class="absolute right-0 mt-1 w-56 z-50 rounded-md border border-base-300 bg-base-100 py-1 shadow-lg"
+      >
+        <div class="px-3 py-2 border-b border-base-300">
+          <p class="text-xs text-base-content/60">Signed in as</p>
+          <p class="text-sm font-medium text-base-content truncate">{@current_user.email}</p>
+        </div>
+        <.link
+          navigate="/users/settings"
+          role="menuitem"
+          class={[
+            "flex items-center gap-2 min-h-11 px-3 py-2 text-sm focus:outline-none focus:bg-base-200",
+            if(path_family_active?(@current_path, ["users", "settings"]),
+              do: "font-semibold text-base-content bg-base-200",
+              else: "text-base-content/80 hover:bg-base-200 hover:text-base-content"
+            )
+          ]}
+          aria-current={path_family_active?(@current_path, ["users", "settings"]) && "page"}
+        >
+          <.icon name="hero-cog-6-tooth" class="w-4 h-4 flex-none" /> Account settings
+        </.link>
+        <.link
+          href="/users/log_out"
+          method="delete"
+          role="menuitem"
+          class="flex items-center gap-2 min-h-11 px-3 py-2 text-sm text-base-content/80 hover:bg-base-200 hover:text-base-content focus:outline-none focus:bg-base-200"
+        >
+          <.icon name="hero-arrow-right-on-rectangle" class="w-4 h-4 flex-none" /> Log out
+        </.link>
+      </div>
+    </div>
     """
   end
 

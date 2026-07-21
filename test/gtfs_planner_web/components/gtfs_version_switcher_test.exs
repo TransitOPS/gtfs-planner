@@ -72,26 +72,25 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
   end
 
   describe "rename affordance" do
-    test "renders an accessible rename button", %{conn: conn, current: current, org: org} do
+    test "renders a rename item as the first row in the dropdown", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
       {:ok, view, _html} = mount_host(conn, current, org)
 
-      assert has_element?(
-               view,
-               ~s(#gtfs-version-switcher [aria-label="Rename version"][title="Rename version"])
-             )
+      assert has_element?(view, "#gtfs-version-panel #gtfs-version-rename", "Rename version")
     end
 
-    test "rename button has a 44px-minimum target", %{conn: conn, current: current, org: org} do
+    test "rename item has a 44px-minimum target", %{conn: conn, current: current, org: org} do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       html =
         view
-        |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+        |> element("#gtfs-version-rename")
         |> render()
 
       assert html =~ "min-h-11"
-      assert html =~ "h-11"
-      assert html =~ "w-11"
     end
   end
 
@@ -104,7 +103,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       assert has_element?(view, "#gtfs-version-rename-form")
@@ -125,7 +124,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       html =
@@ -144,7 +143,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       assert has_element?(view, "#gtfs-version-rename-form")
@@ -167,7 +166,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       view
@@ -175,7 +174,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       |> render_submit()
 
       refute has_element?(view, "#gtfs-version-rename-form")
-      assert has_element?(view, "#gtfs-version-select option", "Renamed Version")
+      assert has_element?(view, "#gtfs-version-panel [data-version-option]", "Renamed Version")
 
       assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name ==
                "Renamed Version"
@@ -190,7 +189,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       html =
@@ -213,7 +212,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       view
@@ -232,7 +231,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       html =
@@ -256,7 +255,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       assert has_element?(view, "#gtfs-version-rename-form")
@@ -329,7 +328,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       view
-      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> element("#gtfs-version-rename")
       |> render_click()
 
       submit_html = view |> element("#gtfs-version-rename-form button[type=submit]") |> render()
@@ -357,12 +356,12 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       {:ok, view, _html} = mount_host(conn, current, org)
 
-      assert has_element?(view, "#gtfs-version-select option", "Current Version")
-      assert has_element?(view, "#gtfs-version-select option", "Other Version")
-      refute has_element?(view, "#gtfs-version-select option", "Staging Version")
-      refute has_element?(view, "#gtfs-version-select option", "Importing Version")
-      refute has_element?(view, "#gtfs-version-select option", "Failed Version")
-      refute has_element?(view, ~s(#gtfs-version-select option[value="#{staging.id}"]))
+      assert has_element?(view, "#gtfs-version-panel [data-version-option]", "Current Version")
+      assert has_element?(view, "#gtfs-version-panel [data-version-option]", "Other Version")
+      refute has_element?(view, "#gtfs-version-panel [data-version-option]", "Staging Version")
+      refute has_element?(view, "#gtfs-version-panel [data-version-option]", "Importing Version")
+      refute has_element?(view, "#gtfs-version-panel [data-version-option]", "Failed Version")
+      refute has_element?(view, ~s(#gtfs-version-panel [data-version-option][data-version-id="#{staging.id}"]))
     end
   end
 

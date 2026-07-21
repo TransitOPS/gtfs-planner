@@ -42,23 +42,40 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(view, "#app-header span.text-brand", "Pathways Studio")
     end
 
-    test "displays logout with accessible name and 44px target", %{conn: conn} do
+    test "account menu trigger is icon-only, labeled and paneled with the email", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      # Icon-only control: the accessible name comes from aria-label/title, not
-      # visible text.
-      assert has_element?(
-               view,
-               "a[href='/users/log_out'][aria-label='Log out of your account'][title='Log out']"
-             )
+      # Icon-only trigger: identity is in the accessible name and the panel, not
+      # visible header text.
+      trigger_html =
+        view
+        |> element("#app-header #user-menu [data-user-menu-trigger][aria-haspopup='menu']")
+        |> render()
 
-      assert has_element?(view, "#app-header a[href='/users/log_out'].min-h-11.min-w-11")
+      assert trigger_html =~ user.email
+      assert has_element?(view, "#user-menu-panel", "Signed in as")
+      assert has_element?(view, "#user-menu-panel", user.email)
     end
 
-    test "logout button uses correct method and path", %{conn: conn} do
+    test "log out is a menu item with visible label and 44px target", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#user-menu-panel a[href='/users/log_out'][role='menuitem']",
+               "Log out"
+             )
+
+      assert has_element?(view, "#user-menu-panel a[href='/users/log_out'].min-h-11")
+    end
+
+    test "logout item uses correct method and path", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -66,7 +83,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert html =~ "href=\"/users/log_out\""
       assert html =~ "data-method=\"delete\""
-      assert has_element?(view, "a[href='/users/log_out'][aria-label='Log out of your account']")
+      assert has_element?(view, "#user-menu-panel a[href='/users/log_out']")
     end
 
     test "header wraps without horizontal overflow", %{conn: conn} do
@@ -87,7 +104,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(view, "#app-header nav[aria-label='Main navigation']")
     end
 
-    test "Account settings is visible on dashboard for authenticated users", %{conn: conn} do
+    test "Account settings lives in the account menu, not the task nav", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -95,8 +112,13 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(
                view,
-               "#app-header nav[aria-label='Main navigation'] a[href='/users/settings']",
+               "#app-header #user-menu-panel a[href='/users/settings']",
                "Account settings"
+             )
+
+      refute has_element?(
+               view,
+               "#app-header nav[aria-label='Main navigation'] a[href='/users/settings']"
              )
     end
 
@@ -108,7 +130,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(
                settings_view,
-               "#app-header nav a[href='/users/settings'][aria-current='page']",
+               "#app-header #user-menu-panel a[href='/users/settings'][aria-current='page']",
                "Account settings"
              )
 
@@ -116,12 +138,12 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       refute has_element?(
                dash_view,
-               "#app-header nav a[href='/users/settings'][aria-current='page']"
+               "#app-header #user-menu-panel a[href='/users/settings'][aria-current='page']"
              )
 
       assert has_element?(
                dash_view,
-               "#app-header nav a[href='/users/settings']:not([aria-current])"
+               "#app-header #user-menu-panel a[href='/users/settings']:not([aria-current])"
              )
     end
 
@@ -134,7 +156,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       # Dashboard remains reachable with no session organization (optional mode).
       assert html =~ "Pathways Studio"
       assert has_element?(view, "#dashboard-no-organization")
-      assert has_element?(view, "#app-header nav a[href='/users/settings']")
+      assert has_element?(view, "#app-header #user-menu-panel a[href='/users/settings']")
     end
 
     test "design routes remain reachable without optional organization assigns", %{conn: conn} do
@@ -145,7 +167,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert html =~ "Navigation"
       assert has_element?(view, "#ds-page-navigation")
-      assert has_element?(view, "#app-header nav a[href='/users/settings']")
+      assert has_element?(view, "#app-header #user-menu-panel a[href='/users/settings']")
     end
   end
 

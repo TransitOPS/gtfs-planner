@@ -20,6 +20,16 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     """)
   end
 
+  defp render_user_menu(assigns) do
+    rendered_to_string(~H"""
+    <Navigation.user_menu current_user={@current_user} current_path={@current_path} />
+    """)
+  end
+
+  defp editor_menu_assigns(path) do
+    %{current_user: editor_user(), current_path: path}
+  end
+
   defp admin_user,
     do: %GtfsPlanner.Accounts.UserOrgMembership{roles: ["administrator"]}
 
@@ -80,46 +90,98 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     |> Enum.map(&String.trim(LazyHTML.text(&1)))
   end
 
-  describe "Account settings universal link" do
-    test "administrator sees exactly one Account settings link" do
+  describe "top_nav excludes account actions" do
+    test "task navigation omits the Account settings link" do
       html = render_nav(admin_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
-      links = account_link(doc)
-      assert Enum.count(links) == 1
-      assert LazyHTML.text(links) =~ "Account settings"
-      assert html =~ "hero-cog-6-tooth"
+      assert Enum.empty?(account_link(doc))
+      refute html =~ "hero-cog-6-tooth"
     end
 
-    test "editor sees exactly one Account settings link and gated GTFS tasks" do
+    test "editor sees gated GTFS tasks and no account link" do
       html = render_nav(editor_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
-      assert Enum.count(account_link(doc)) == 1
+      assert Enum.empty?(account_link(doc))
       assert html =~ "Routes"
       assert html =~ "Stations"
       refute html =~ "Organizations"
     end
 
-    test "organization admin sees Account settings and Users, not GTFS tasks" do
+    test "organization admin sees Users, not GTFS tasks or an account link" do
       html = render_nav(org_admin_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
-      assert Enum.count(account_link(doc)) == 1
+      assert Enum.empty?(account_link(doc))
       assert html =~ "Users"
       refute html =~ "Routes"
       refute html =~ "Organizations"
     end
 
-    test "no-task role sees only Account settings" do
+    test "no-task role sees an empty task nav" do
       html = render_nav(no_task_assigns("/"))
-      texts = nav_link_texts(html)
 
-      assert texts == ["Account settings"]
+      assert nav_link_texts(html) == []
+    end
+
+    test "declared visual order lists only task links" do
+      texts = nav_link_texts(render_nav(admin_assigns("/")))
+
+      assert texts == [
+               "Organizations",
+               "Users",
+               "Routes",
+               "Stations",
+               "Import",
+               "Export"
+             ]
+    end
+  end
+
+  describe "user_menu account actions" do
+    test "icon-only trigger opens a menu, labeled with the signed-in email" do
+      html = render_user_menu(editor_menu_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      trigger = LazyHTML.query(doc, "[data-user-menu-trigger]")
+      assert LazyHTML.attribute(trigger, "aria-haspopup") == ["menu"]
+      assert LazyHTML.attribute(trigger, "aria-expanded") == ["false"]
+
+      # The email is not visible header text; it rides in the accessible name.
+      refute LazyHTML.text(trigger) =~ "editor@test.com"
+      assert LazyHTML.attribute(trigger, "aria-label") |> List.first() =~ "editor@test.com"
+
+      panel = LazyHTML.query(doc, "#user-menu-panel")
+      assert LazyHTML.attribute(panel, "role") == ["menu"]
+      # Identity is still shown once the menu is open.
+      assert LazyHTML.text(panel) =~ "editor@test.com"
+    end
+
+    test "menu holds exactly one Account settings item" do
+      html = render_user_menu(editor_menu_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      links = account_link(doc)
+      assert Enum.count(links) == 1
+      assert LazyHTML.text(links) =~ "Account settings"
+      assert LazyHTML.attribute(links, "role") == ["menuitem"]
+      assert html =~ "hero-cog-6-tooth"
+    end
+
+    test "menu holds a Log out item using the delete method" do
+      html = render_user_menu(editor_menu_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      logout = LazyHTML.query(doc, ~s(a[href="/users/log_out"]))
+      assert Enum.count(logout) == 1
+      assert LazyHTML.text(logout) =~ "Log out"
+      assert LazyHTML.attribute(logout, "role") == ["menuitem"]
+      assert LazyHTML.attribute(logout, "data-method") == ["delete"]
     end
 
     test "Account settings activates on /users/settings" do
-      html = render_nav(editor_assigns("/users/settings"))
+      html = render_user_menu(editor_menu_assigns("/users/settings"))
       doc = LazyHTML.from_fragment(html)
 
       active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
@@ -128,7 +190,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
 
     test "Account settings activates on nested /users/settings/confirm" do
-      html = render_nav(editor_assigns("/users/settings/confirm"))
+      html = render_user_menu(editor_menu_assigns("/users/settings/confirm"))
       doc = LazyHTML.from_fragment(html)
 
       active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
@@ -137,7 +199,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
 
     test "Account settings does NOT activate on /users" do
-      html = render_nav(editor_assigns("/users"))
+      html = render_user_menu(editor_menu_assigns("/users"))
       doc = LazyHTML.from_fragment(html)
 
       link = account_link(doc)
@@ -147,7 +209,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
 
     test "Account settings does NOT activate on lookalike /users/settings-backup" do
-      html = render_nav(editor_assigns("/users/settings-backup"))
+      html = render_user_menu(editor_menu_assigns("/users/settings-backup"))
       doc = LazyHTML.from_fragment(html)
 
       link = account_link(doc)
@@ -155,7 +217,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
 
     test "Account settings ignores query strings on the settings family" do
-      html = render_nav(editor_assigns("/users/settings?tab=email"))
+      html = render_user_menu(editor_menu_assigns("/users/settings?tab=email"))
       doc = LazyHTML.from_fragment(html)
 
       active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
@@ -163,26 +225,12 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.text(active) =~ "Account settings"
     end
 
-    test "Account settings link has 44px minimum target" do
-      html = render_nav(editor_assigns("/"))
+    test "Account settings item has 44px minimum target" do
+      html = render_user_menu(editor_menu_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
       classes = LazyHTML.attribute(account_link(doc), "class") |> List.first()
       assert classes =~ "min-h-11"
-    end
-
-    test "declared visual order places Account settings after task links" do
-      texts = nav_link_texts(render_nav(admin_assigns("/")))
-
-      assert texts == [
-               "Organizations",
-               "Users",
-               "Routes",
-               "Stations",
-               "Import",
-               "Export",
-               "Account settings"
-             ]
     end
   end
 

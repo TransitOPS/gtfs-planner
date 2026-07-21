@@ -100,15 +100,7 @@ defmodule GtfsPlannerWeb.Layouts do
                 organization_id={@current_organization.id}
               />
             <% end %>
-            <.link
-              href={~p"/users/log_out"}
-              method="delete"
-              class="inline-flex items-center justify-center min-h-11 min-w-11 text-base-content/70 hover:text-base-content transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-              aria-label="Log out of your account"
-              title="Log out"
-            >
-              <.icon name="hero-arrow-right-on-rectangle" class="w-5 h-5" />
-            </.link>
+            <Navigation.user_menu current_user={@current_user} current_path={@current_path} />
           </div>
         <% else %>
           <div class="flex-1"></div>

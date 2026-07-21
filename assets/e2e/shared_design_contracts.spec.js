@@ -290,13 +290,13 @@ test.describe("Version switcher behavior", () => {
     await expect(switcher).toBeVisible();
   });
 
-  test("version switcher select has 44px target", async ({ page }) => {
+  test("version switcher trigger has 44px target", async ({ page }) => {
     await loginAsEditor(page);
     const versionId = await getGtfsVersionId(page);
     await navigateToGtfsPage(page, versionId);
 
-    const select = page.locator("#gtfs-version-select");
-    const box = await select.boundingBox();
+    const trigger = page.locator("#gtfs-version-trigger");
+    const box = await trigger.boundingBox();
     expect(box).not.toBeNull();
     expect(box.height).toBeGreaterThanOrEqual(44);
   });

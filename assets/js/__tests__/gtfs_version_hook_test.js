@@ -17,12 +17,32 @@ function setLocation(props) {
   });
 }
 
-function makeHook({ withSelect = true, pathname = "/gtfs/v1/stations", search = "", hash = "" } = {}) {
+function optionsMarkup(pairs) {
+  const buttons = pairs
+    .map(
+      ([id, label]) =>
+        `<button data-version-option data-version-id='${id}' role='menuitem'>${label}</button>`,
+    )
+    .join("");
+  return `<button id='gtfs-version-trigger' type='button'></button><div id='gtfs-version-panel'>${buttons}</div>`;
+}
+
+function makeHook({
+  withOptions = true,
+  current = "v1",
+  pathname = "/gtfs/v1/stations",
+  search = "",
+  hash = "",
+} = {}) {
   const el = document.createElement("div");
   el.dataset.organizationId = ORG_ID;
-  if (withSelect) {
+  el.dataset.currentVersion = current;
+  if (withOptions) {
     el.innerHTML =
-      "<select id='gtfs-version-select'><option value='v1'>v1</option><option value='v2'>v2</option></select>" +
+      optionsMarkup([
+        ["v1", "v1"],
+        ["v2", "v2"],
+      ]) +
       "<div id='gtfs-version-pending' hidden></div>" +
       "<div id='gtfs-version-failure' hidden><button id='gtfs-version-retry' type='button'>Retry</button></div>";
   }
@@ -38,9 +58,10 @@ function makeHook({ withSelect = true, pathname = "/gtfs/v1/stations", search = 
   return hook;
 }
 
-function dispatchChange(select, value) {
-  select.value = value;
-  select.dispatchEvent(new Event("change"));
+function clickOption(hook, id) {
+  const btn = hook.el.querySelector(`[data-version-id='${id}']`);
+  btn.click();
+  return btn;
 }
 
 describe("GtfsVersionHook", () => {
@@ -71,13 +92,12 @@ describe("GtfsVersionHook", () => {
   });
 
   describe("mount and binding", () => {
-    it("binds the initial select on mount and routes changes through selectVersion", () => {
+    it("binds option buttons on mount and routes clicks through selectVersion", () => {
       const hook = makeHook();
       hook.mounted();
 
-      const select = hook.el.querySelector("select");
       const spy = vi.spyOn(hook, "selectVersion");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
       expect(spy).toHaveBeenCalledTimes(1);
       expect(spy).toHaveBeenCalledWith("v2");
@@ -92,25 +112,26 @@ describe("GtfsVersionHook", () => {
       expect(window.location.href).not.toContain("v2");
     });
 
-    it("rebinds to a new select after the inner DOM is patched", () => {
+    it("rebinds to new option buttons after the inner DOM is patched", () => {
       const hook = makeHook();
       hook.mounted();
-      const oldSelect = hook.el.querySelector("select");
+      const oldOption = hook.el.querySelector("[data-version-id='v2']");
 
       hook.el.innerHTML =
-        "<select id='gtfs-version-select'><option value='v3'>v3</option><option value='v4'>v4</option></select>" +
+        optionsMarkup([
+          ["v3", "v3"],
+          ["v4", "v4"],
+        ]) +
         "<div id='gtfs-version-pending' hidden></div>" +
         "<div id='gtfs-version-failure' hidden></div>";
       hook.updated();
 
-      const newSelect = hook.el.querySelector("select");
-      expect(newSelect).not.toBe(oldSelect);
-
       const spy = vi.spyOn(hook, "selectVersion");
-      dispatchChange(newSelect, "v4");
+      clickOption(hook, "v4");
       expect(spy).toHaveBeenCalledWith("v4");
 
-      dispatchChange(oldSelect, "v3");
+      // The detached old button no longer routes through the hook.
+      oldOption.click();
       expect(spy).toHaveBeenCalledTimes(1);
     });
 
@@ -122,16 +143,28 @@ describe("GtfsVersionHook", () => {
       hook.updated();
 
       const spy = vi.spyOn(hook, "selectVersion");
-      dispatchChange(hook.el.querySelector("select"), "v2");
+      clickOption(hook, "v2");
       expect(spy).toHaveBeenCalledTimes(1);
     });
 
-    it("tolerates updated() when the select is absent (edit mode)", () => {
-      const hook = makeHook({ withSelect: false });
+    it("tolerates updated() when options are absent (edit mode)", () => {
+      const hook = makeHook({ withOptions: false });
       hook.mounted();
 
       expect(() => hook.updated()).not.toThrow();
-      expect(hook.boundSelect).toBeNull();
+      expect(hook.boundOptions).toBeNull();
+    });
+
+    it("ignores a click on the already-current version", () => {
+      const hook = makeHook({ current: "v1" });
+      hook.mounted();
+
+      const hrefSetter = vi.fn();
+      Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
+
+      clickOption(hook, "v1");
+      expect(hrefSetter).not.toHaveBeenCalled();
+      expect(hook.pendingValue).toBeNull();
     });
   });
 
@@ -174,32 +207,31 @@ describe("GtfsVersionHook", () => {
   });
 
   describe("pending state and duplicate prevention", () => {
-    it("marks busy, disables select, and shows pending text on selection", () => {
+    it("marks busy, disables the control, and shows pending text on selection", () => {
       const hook = makeHook();
       hook.mounted();
 
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
-      expect(select.disabled).toBe(true);
+      expect(hook.el.querySelector("#gtfs-version-trigger").disabled).toBe(true);
+      expect(hook.el.querySelector("[data-version-id='v2']").disabled).toBe(true);
       const pending = hook.el.querySelector("#gtfs-version-pending");
       expect(pending.hidden).toBe(false);
       expect(pending.textContent).toContain("Switching version");
     });
 
-    it("blocks duplicate change events while pending", () => {
+    it("blocks duplicate selections while pending", () => {
       const hook = makeHook();
       hook.mounted();
 
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
+      clickOption(hook, "v2");
 
       expect(hrefSetter).toHaveBeenCalledTimes(1);
     });
@@ -211,8 +243,7 @@ describe("GtfsVersionHook", () => {
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
       expect(hook.priorValue).toBe("v1");
     });
@@ -230,8 +261,7 @@ describe("GtfsVersionHook", () => {
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
       expect(hrefSetter).toHaveBeenCalledWith("/gtfs/v2/stations");
     });
@@ -248,20 +278,19 @@ describe("GtfsVersionHook", () => {
   });
 
   describe("watchdog recovery", () => {
-    it("restores prior value and shows failure after watchdog timeout", () => {
+    it("re-enables the control and shows failure after watchdog timeout", () => {
       const hook = makeHook();
       hook.mounted();
 
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
       vi.advanceTimersByTime(WATCHDOG_MS);
 
-      expect(select.value).toBe("v1");
-      expect(select.disabled).toBe(false);
+      expect(hook.el.querySelector("#gtfs-version-trigger").disabled).toBe(false);
+      expect(hook.el.querySelector("[data-version-id='v2']").disabled).toBe(false);
       const failure = hook.el.querySelector("#gtfs-version-failure");
       expect(failure.hidden).toBe(false);
       const pending = hook.el.querySelector("#gtfs-version-pending");
@@ -275,8 +304,7 @@ describe("GtfsVersionHook", () => {
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
       vi.advanceTimersByTime(WATCHDOG_MS);
 
       const retryBtn = hook.el.querySelector("#gtfs-version-retry");
@@ -290,7 +318,7 @@ describe("GtfsVersionHook", () => {
       expect(failure.hidden).toBe(true);
     });
 
-    it("setup exception restores prior value and shows failure", () => {
+    it("setup exception re-enables the control and shows failure", () => {
       const hook = makeHook();
       hook.mounted();
 
@@ -301,11 +329,9 @@ describe("GtfsVersionHook", () => {
         },
       });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
-      expect(select.value).toBe("v1");
-      expect(select.disabled).toBe(false);
+      expect(hook.el.querySelector("#gtfs-version-trigger").disabled).toBe(false);
       const failure = hook.el.querySelector("#gtfs-version-failure");
       expect(failure.hidden).toBe(false);
     });
@@ -319,8 +345,7 @@ describe("GtfsVersionHook", () => {
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
       window.dispatchEvent(new Event("pagehide"));
       vi.advanceTimersByTime(WATCHDOG_MS * 2);
@@ -338,27 +363,25 @@ describe("GtfsVersionHook", () => {
       const hrefSetter = vi.fn();
       Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
 
-      const select = hook.el.querySelector("select");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
 
       hook.destroyed();
       vi.advanceTimersByTime(WATCHDOG_MS * 2);
 
       const failure = hook.el.querySelector("#gtfs-version-failure");
       expect(failure.hidden).toBe(true);
-      expect(hook.boundSelect).toBeNull();
+      expect(hook.boundOptions).toBeNull();
       expect(hook.watchdogTimer).toBeNull();
     });
 
-    it("cleans up the change listener on destroyed()", () => {
+    it("cleans up the option click listeners on destroyed()", () => {
       const hook = makeHook();
       hook.mounted();
-      const select = hook.el.querySelector("select");
 
       hook.destroyed();
 
       const spy = vi.spyOn(hook, "selectVersion");
-      dispatchChange(select, "v2");
+      clickOption(hook, "v2");
       expect(spy).not.toHaveBeenCalled();
     });
   });
