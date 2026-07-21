@@ -75,7 +75,13 @@ defmodule GtfsPlanner.Gtfs.DisplayClockTest do
       assert %{timezone: "UTC", fallback?: true, fallback_reason: :invalid} ==
                DisplayClock.resolve_zone(organization_id, gtfs_version_id)
 
-      assert 1 == Repo.aggregate(Agency, :count)
+      # Scoped to this version so a non-empty baseline elsewhere in the table
+      # cannot turn an intact schema into a failure.
+      assert 1 ==
+               Repo.aggregate(
+                 from(a in Agency, where: a.gtfs_version_id == ^gtfs_version_id),
+                 :count
+               )
     end
 
     test "returns UTC with :conflicting when the version has two distinct zones", %{

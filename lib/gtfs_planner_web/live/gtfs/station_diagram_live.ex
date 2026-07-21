@@ -3835,9 +3835,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  def handle_async(@history_key, {:ok, {:load_failed, scope, _reason}}, socket) do
+    if scope == socket.assigns.history_scope do
+      {:noreply, assign(socket, :history_state, :error)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   # A cancelled task was superseded on purpose; it is never a failure.
   def handle_async(@history_key, {:exit, {:shutdown, :cancel}}, socket), do: {:noreply, socket}
 
+  # An exit carries no scope, so it can only be trusted once `load_history/1`
+  # isolates every failure it can observe into a scoped `{:load_failed, ...}`.
+  # What is left here is an external kill of the task the panel is waiting on.
   def handle_async(@history_key, {:exit, _reason}, socket) do
     if socket.assigns.history_state in [:initial_loading, :refreshing] do
       {:noreply, assign(socket, :history_state, :error)}
@@ -4140,6 +4151,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # Runs in the task process. It receives ids only and returns its own scope so
   # the LiveView can decide whether the answer is still wanted. The zone is
   # resolved once and the whole ordered collection localized in one batch.
+  # Failures are isolated here and reported as a scoped result: an unhandled
+  # raise or exit would otherwise arrive as an unscoped `{:exit, reason}` and
+  # let a superseded task error the entity that replaced it.
   defp load_history({organization_id, gtfs_version_id, _station_stop_id, type, id, _gen} = scope) do
     source = history_source()
     entries = source.list_change_logs_for_entity(organization_id, gtfs_version_id, type, id)
@@ -4159,6 +4173,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        today: NaiveDateTime.to_date(now_local),
        now: now_local
      }}
+  rescue
+    exception -> {:load_failed, scope, exception}
+  catch
+    kind, reason -> {:load_failed, scope, {kind, reason}}
   end
 
   # Resolved per call so the history boundary can be exercised deterministically

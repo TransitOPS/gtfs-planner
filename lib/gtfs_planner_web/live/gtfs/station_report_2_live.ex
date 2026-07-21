@@ -125,6 +125,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   # be presented as a failure.
   def handle_async(@report_key, {:exit, {:shutdown, :cancel}}, socket), do: {:noreply, socket}
 
+  # An exit carries no scope, so it can only be trusted once `load_report/1`
+  # isolates every failure it can observe into a scoped `{:load_failed, ...}`.
+  # What is left here is an external kill of the task the view is waiting on.
   def handle_async(@report_key, {:exit, _reason}, socket) do
     if socket.assigns.view_state in [:initial_loading, :refreshing] do
       {:noreply, assign_report_error(socket)}
@@ -151,7 +154,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   # Runs in the task process. It receives ids only and returns its own scope so
-  # the LiveView can decide whether the answer is still wanted.
+  # the LiveView can decide whether the answer is still wanted. Failures are
+  # isolated here and reported as a scoped result: an unhandled raise or exit
+  # would otherwise arrive as an unscoped `{:exit, reason}` and let a superseded
+  # task error the station that replaced it.
   defp load_report({organization_id, gtfs_version_id, stop_id, _generation} = scope) do
     case snapshot_source().get_station_report_snapshot(
            organization_id,
@@ -161,6 +167,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       {:ok, snapshot} -> {:loaded, scope, build_model(snapshot)}
       {:error, reason} -> {:load_failed, scope, reason}
     end
+  rescue
+    exception -> {:load_failed, scope, exception}
+  catch
+    kind, reason -> {:load_failed, scope, {kind, reason}}
   end
 
   # Resolved per call so the report boundary can be exercised deterministically
@@ -717,12 +727,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   defp parse_url_dimensions(params) do
     case params["dimensions"] do
       nil -> []
-      str -> str |> String.split(",") |> Enum.map(&parse_dimension/1)
+      str -> str |> String.split(",") |> Enum.map(&parse_dimension/1) |> Enum.reject(&is_nil/1)
     end
   end
 
+  # An unknown dimension is rejected rather than coerced: expanding an
+  # unrequested dimension would make the URL-controlled disclosure state lie.
   defp parse_dimension("entrance_to_platform"), do: :entrance_to_platform
   defp parse_dimension("platform_to_exit"), do: :platform_to_exit
   defp parse_dimension("platform_to_platform"), do: :platform_to_platform
-  defp parse_dimension(_), do: :entrance_to_platform
+  defp parse_dimension(_), do: nil
 end

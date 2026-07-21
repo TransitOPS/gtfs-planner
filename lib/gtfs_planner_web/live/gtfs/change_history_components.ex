@@ -98,7 +98,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         tabindex={if @history_active, do: "-1", else: "0"}
         class={[
           "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:rounded-sm",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
           if(@history_active,
             do: "text-base-content/60 hover:text-base-content border-transparent",
             else: "text-base-content font-medium border-base-content"
@@ -119,7 +119,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         tabindex={if @history_active, do: "0", else: "-1"}
         class={[
           "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:rounded-sm",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
           if(@history_active,
             do: "text-base-content font-medium border-base-content",
             else: "text-base-content/60 hover:text-base-content border-transparent"
@@ -410,7 +410,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                   aria-hidden="true"
                   class={[
                     "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-base-100 border-2",
-                    if(current?, do: "border-emerald-600", else: "border-base-content/40")
+                    if(current?, do: "border-success", else: "border-base-content/40")
                   ]}
                 >
                 </div>
@@ -418,7 +418,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                 <div class={[
                   "bg-base-100 border rounded-lg p-3.5",
                   if(current?,
-                    do: "border-emerald-600/40 ring-2 ring-emerald-500/30",
+                    do: "border-success/40 ring-2 ring-success/30",
                     else: "border-base-300"
                   )
                 ]}>
@@ -434,7 +434,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                     </span>
                     <span
                       :if={current?}
-                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-900 tracking-wide uppercase"
+                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-success text-success-content tracking-wide uppercase"
                     >
                       Current
                     </span>
