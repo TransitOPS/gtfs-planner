@@ -1004,36 +1004,36 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         </:action>
       </.empty_state>
 
-      <.table
+      <div
         :if={@organizations_state == :ready and not @organizations_empty?}
-        id="organizations"
-        rows={@streams.organizations}
-        responsive="stack"
+        class="rounded-box border border-base-300 bg-base-100 overflow-hidden"
       >
-        <:col :let={{_id, organization}} label="Name">
-          <.link
-            navigate={~p"/admin/organizations/#{organization.id}"}
-            class="link link-primary font-semibold"
-          >
-            {organization.name}
-          </.link>
-        </:col>
-        <:col :let={{_id, organization}} label="Alias">
-          <span class="font-mono text-sm">{organization.alias}</span>
-        </:col>
-        <:action :let={{_id, organization}}>
-          <.button
-            id={"edit-organization-#{organization.id}"}
-            variant="quiet"
-            size="sm"
-            class="min-h-11"
-            patch={~p"/admin/organizations/#{organization.id}/edit"}
-            aria-label={"Edit #{organization.name}"}
-          >
-            Edit
-          </.button>
-        </:action>
-      </.table>
+        <.table id="organizations" rows={@streams.organizations} responsive="stack">
+          <:col :let={{_id, organization}} label="Name">
+            <.link
+              navigate={~p"/admin/organizations/#{organization.id}"}
+              class="link link-primary font-semibold"
+            >
+              {organization.name}
+            </.link>
+          </:col>
+          <:col :let={{_id, organization}} label="Alias">
+            <span class="font-mono text-sm">{organization.alias}</span>
+          </:col>
+          <:action :let={{_id, organization}}>
+            <.button
+              id={"edit-organization-#{organization.id}"}
+              variant="quiet"
+              size="sm"
+              class="min-h-11"
+              patch={~p"/admin/organizations/#{organization.id}/edit"}
+              aria-label={"Edit #{organization.name}"}
+            >
+              Edit
+            </.button>
+          </:action>
+        </.table>
+      </div>
     </div>
 
     <.drawer

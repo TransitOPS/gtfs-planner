@@ -53,7 +53,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
 
             <div id="users" phx-update="stream">
               <div :for={{id, user_data} <- @streams.users} id={id} class="space-y-4">
-                <div class="bg-base-200 rounded-lg p-4 shadow-sm">
+                <div class="rounded-box border border-base-300 bg-base-100 p-4">
                   <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                     <div class="flex-1">
                       <p class="font-medium text-lg">{user_data.user.email}</p>

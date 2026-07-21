@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
           "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
           if(@history_active,
-            do: "text-base-content/60 hover:text-base-content border-transparent",
+            do: "text-base-content/70 hover:text-base-content border-transparent",
             else: "text-base-content font-medium border-base-content"
           )
         ]}
@@ -122,7 +122,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
           if(@history_active,
             do: "text-base-content font-medium border-base-content",
-            else: "text-base-content/60 hover:text-base-content border-transparent"
+            else: "text-base-content/70 hover:text-base-content border-transparent"
           )
         ]}
       >

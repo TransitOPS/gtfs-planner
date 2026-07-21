@@ -150,10 +150,10 @@ defmodule GtfsPlannerWeb.Navigation do
         role="menu"
         aria-label="Account"
         hidden
-        class="absolute right-0 mt-1 w-56 z-50 rounded-md border border-base-300 bg-base-100 py-1 shadow-lg"
+        class="absolute right-0 mt-1 w-56 z-50 rounded-box border border-base-300 bg-base-100 py-1 shadow-lg"
       >
         <div class="px-3 py-2 border-b border-base-300">
-          <p class="text-xs text-base-content/60">Signed in as</p>
+          <p class="text-xs text-base-content/70">Signed in as</p>
           <p class="text-sm font-medium text-base-content truncate">{@current_user.email}</p>
         </div>
         <.link

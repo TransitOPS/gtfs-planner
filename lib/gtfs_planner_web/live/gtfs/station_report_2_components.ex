@@ -28,7 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   import GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents
 
   import GtfsPlannerWeb.CoreComponents,
-    only: [icon: 1, status_badge: 1, callout: 1, empty_state: 1, count_strip: 1]
+    only: [icon: 1, status_badge: 1, callout: 1, empty_state: 1, count_strip: 1, metric: 1]
 
   alias GtfsPlanner.Gtfs.{Pathway, Stop}
 
@@ -203,25 +203,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <section id="report2-station-inventory" class="scroll-mt-4">
       <h2 class="text-xl font-semibold">Station Inventory</h2>
 
-      <div class="mt-3 space-y-4">
-        <.inventory_card title="Node inventory by location type">
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <.stat_card :for={item <- @inventory.node_counts} count={item.count} label={item.label} />
+      <div class="mt-3 space-y-6">
+        <div>
+          <h3 class="text-sm font-semibold">Node inventory by location type</h3>
+          <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            <.metric :for={item <- @inventory.node_counts} value={item.count} label={item.label} />
           </div>
-        </.inventory_card>
+        </div>
 
-        <.inventory_card title="Edge inventory by pathway mode">
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <.stat_card :for={item <- @inventory.edge_counts} count={item.count} label={item.label} />
+        <div>
+          <h3 class="text-sm font-semibold">Edge inventory by pathway mode</h3>
+          <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            <.metric :for={item <- @inventory.edge_counts} value={item.count} label={item.label} />
           </div>
-        </.inventory_card>
+        </div>
 
-        <.inventory_card title="Pathway directionality">
-          <div class="grid max-w-md grid-cols-2 gap-3">
-            <.stat_card count={@inventory.directionality.bidirectional} label="Bidirectional" />
-            <.stat_card count={@inventory.directionality.unidirectional} label="Unidirectional" />
+        <div>
+          <h3 class="text-sm font-semibold">Pathway directionality</h3>
+          <div class="mt-2 grid max-w-md grid-cols-2 gap-2">
+            <.metric value={@inventory.directionality.bidirectional} label="Bidirectional" />
+            <.metric value={@inventory.directionality.unidirectional} label="Unidirectional" />
           </div>
-        </.inventory_card>
+        </div>
 
         <.empty_state
           :if={@inventory.levels == []}
@@ -231,7 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           Level count, names, and indices appear here once the station's stops reference level records.
         </.empty_state>
 
-        <div :if={@inventory.levels != []} class="border border-base-300 bg-base-100">
+        <div :if={@inventory.levels != []} class="rounded-box border border-base-300 bg-base-100">
           <h3 class="border-b border-base-300 px-4 py-2 text-sm font-semibold">
             Level count, names, and indices
           </h3>
@@ -260,30 +263,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         </div>
       </div>
     </section>
-    """
-  end
-
-  attr :title, :string, required: true
-  slot :inner_block, required: true
-
-  defp inventory_card(assigns) do
-    ~H"""
-    <div class="border border-base-300 bg-base-100">
-      <h3 class="border-b border-base-300 px-4 py-2 text-sm font-semibold">{@title}</h3>
-      <div class="p-4">{render_slot(@inner_block)}</div>
-    </div>
-    """
-  end
-
-  attr :count, :integer, required: true
-  attr :label, :string, required: true
-
-  defp stat_card(assigns) do
-    ~H"""
-    <div class="border border-base-300 px-3 py-2">
-      <div class="text-xl font-semibold tabular-nums">{@count}</div>
-      <p class="mt-0.5 text-xs text-base-content/70 break-words">{@label}</p>
-    </div>
     """
   end
 
@@ -399,7 +378,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         {@empty_body}
       </.empty_state>
 
-      <div :if={@items != []} class="mt-3 border border-base-300 bg-base-100">
+      <div :if={@items != []} class="mt-3 rounded-box border border-base-300 bg-base-100">
         <div class="divide-y divide-base-300">
           <.report_check_row
             :for={item <- @items}
@@ -472,9 +451,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H""
   end
 
+  # A count value is always "how many records this check flagged". A bare
+  # number on the far edge of the row reads as noise, so the unit is stated;
+  # a non-zero count repeats the row's outcome tone so failures are findable
+  # in a column of checks without reading every badge.
+  defp check_value(%{item: %{value_format: :count, value: 0}} = assigns) do
+    ~H"""
+    <span class="shrink-0 text-sm text-base-content/70 tabular-nums">0 flagged</span>
+    """
+  end
+
   defp check_value(%{item: %{value_format: :count}} = assigns) do
     ~H"""
-    <span class="shrink-0 text-sm font-medium tabular-nums">{@item.value}</span>
+    <span class="shrink-0 text-sm tabular-nums">
+      <span class={["font-semibold", count_value_tone(@item.status)]}>{@item.value}</span>
+      <span class="text-base-content/70">flagged</span>
+    </span>
     """
   end
 
@@ -524,6 +516,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H""
   end
 
+  defp count_value_tone(:fail), do: "text-error"
+  defp count_value_tone(:warn), do: "text-warning"
+  defp count_value_tone(_other), do: nil
+
   attr :bad_count, :integer, required: true
   attr :bad_label, :string, required: true
   attr :good_count, :integer, required: true
@@ -547,7 +543,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_details(%{item: %{detail_layout: :table, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <div class="mt-3 border border-base-300">
+    <div class="mt-3 rounded-box border border-base-300">
       <.table_region label={@item.label}>
         <table class="w-full text-sm">
           <thead>
@@ -718,7 +714,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         Naming and ID convention checks appear here once the station has stops to evaluate.
       </.empty_state>
 
-      <div :if={@checks != []} class="mt-3 border border-base-300 bg-base-100">
+      <div :if={@checks != []} class="mt-3 rounded-box border border-base-300 bg-base-100">
         <div class="divide-y divide-base-300">
           <.naming_check_row :for={check <- @checks} check={check} expanded={@expanded} />
         </div>
@@ -750,8 +746,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
             <p class="text-sm font-medium break-words">{@check.label}</p>
-            <span class="shrink-0 text-sm font-medium tabular-nums">
-              {@check.issue_count}
+            <span
+              :if={@check.issue_count == 0}
+              class="shrink-0 text-sm text-base-content/70 tabular-nums"
+            >
+              0 flagged
+            </span>
+            <span :if={@check.issue_count > 0} class="shrink-0 text-sm tabular-nums">
+              <span class={["font-semibold", count_value_tone(@check.status)]}>
+                {@check.issue_count}
+              </span>
+              <span class="text-base-content/70">flagged</span>
             </span>
           </div>
           <p class="mt-0.5 text-xs text-base-content/70 break-words">{@check.rule}</p>
@@ -901,7 +906,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       |> assign(:all_expanded, all_expanded)
 
     ~H"""
-    <div id={"connectivity-#{@dimension}"} class="border border-base-300 bg-base-100">
+    <div id={"connectivity-#{@dimension}"} class="rounded-box border border-base-300 bg-base-100">
       <div class="flex flex-wrap items-start justify-between gap-3 border-b border-base-300 px-4 py-3">
         <div class="min-w-0">
           <h3 class="text-base font-semibold break-words">{@summary.title}</h3>
@@ -1097,7 +1102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
       <div
         :if={@groups != []}
-        class="mt-3 divide-y divide-base-300 border border-base-300 bg-base-100"
+        class="mt-3 rounded-box divide-y divide-base-300 border border-base-300 bg-base-100"
       >
         <div :for={group <- @groups} class="px-4 py-3">
           <h3 class="text-sm font-semibold">{group.mode_label}</h3>

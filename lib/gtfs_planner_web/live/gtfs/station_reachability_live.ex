@@ -167,8 +167,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       <section id="station-reachability" class="space-y-6">
         <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h2 class="text-xl font-semibold text-gray-900">Reachability</h2>
-            <p class="text-sm text-gray-600">
+            <h2 class="text-xl font-semibold text-base-content">Reachability</h2>
+            <p class="text-sm text-base-content/70">
               Run station-scoped pathways validation for this station.
             </p>
           </div>
@@ -179,13 +179,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
             phx-click="run_reachability"
             variant="secondary"
             size="md"
-            class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
+            class="min-h-11"
             disabled={@validating || is_nil(@stop_id)}
           >
             <%= if @validating do %>
               Running…
             <% else %>
-              Run Reachability Tests
+              Run reachability tests
             <% end %>
           </.button>
         </header>
@@ -193,18 +193,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <%= if @validating do %>
           <div
             id="station-reachability-progress"
-            class="space-y-3 rounded-lg border border-gray-300 bg-white px-4 py-4"
+            class="space-y-3 rounded-box border border-base-300 bg-base-100 px-4 py-4"
           >
             <progress
               class="progress progress-primary w-full"
               value={Map.get(@validation_progress || %{}, :percent, 10)}
               max="100"
             />
-            <div class="flex items-center gap-2 text-sm text-gray-700">
+            <div class="flex items-center gap-2 text-sm text-base-content">
               <span class="loading loading-spinner loading-sm"></span>
               <span>{phase_label(Map.get(@validation_progress || %{}, :phase))}</span>
             </div>
-            <p id="station-reachability-run-state" class="text-xs text-gray-500">
+            <p id="station-reachability-run-state" class="text-xs text-base-content/70">
               Run in progress · {@validation_run_id || "pending"}
               <%= if @validation_last_checked_at do %>
                 · Last checked {format_poll_time(@validation_last_checked_at)}
@@ -217,47 +217,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
           <section
             id="station-reachability-error-panel"
             role="alert"
-            class="rounded-lg border border-red-300 bg-white"
+            class="rounded-box border border-error/40 bg-base-100"
           >
-            <div class="flex items-start gap-3 border-b border-red-200 px-5 py-4">
-              <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+            <div class="flex items-start gap-3 border-b border-error/40 px-5 py-4">
+              <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
               <div class="min-w-0 flex-1">
                 <%= if @pathways_failure do %>
-                  <h3 class="text-base font-semibold leading-6 text-gray-900">
+                  <h3 class="text-base font-semibold leading-6 text-base-content">
                     {@pathways_failure.title}
                   </h3>
-                  <p class="mt-1 text-sm leading-5 text-gray-700">
+                  <p class="mt-1 text-sm leading-5 text-base-content">
                     {@pathways_failure.summary}
                   </p>
                 <% end %>
-                <p class="mt-2 text-sm leading-5 text-gray-700">{@validation_error}</p>
+                <p class="mt-2 text-sm leading-5 text-base-content">{@validation_error}</p>
               </div>
             </div>
 
             <div class="space-y-4 px-5 py-4 text-sm">
               <%= if @pathways_failure && @pathways_failure.blocking_issues != [] do %>
                 <section id="station-pathways-failure-blocking-issues" class="space-y-2">
-                  <h4 class="text-xs font-semibold uppercase tracking-wide text-red-700">
+                  <h4 class="text-xs font-semibold text-error">
                     Blocking issues
                   </h4>
                   <ul class="space-y-2">
                     <li
                       :for={issue <- @pathways_failure.blocking_issues}
-                      class="border-l-2 border-red-300 pl-3"
+                      class="border-l-2 border-error/40 pl-3"
                     >
-                      <p class="leading-5 text-gray-800">{issue.message}</p>
-                      <p class="mt-1 font-mono text-xs text-gray-600">
+                      <p class="leading-5 text-base-content">{issue.message}</p>
+                      <p class="mt-1 font-mono text-xs text-base-content/70">
                         code: {pathways_issue_code_text(issue)}
                       </p>
                       <p
                         :if={issue_context = pathways_issue_context_text(issue)}
-                        class="mt-1 font-mono text-xs text-gray-500"
+                        class="mt-1 font-mono text-xs text-base-content/70"
                       >
                         {issue_context}
                       </p>
                       <p
                         :if={issue.context_summary}
-                        class="mt-1 font-mono text-xs text-gray-500"
+                        class="mt-1 font-mono text-xs text-base-content/70"
                       >
                         {issue.context_summary}
                       </p>
@@ -269,12 +269,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               <%= if @pathways_failure do %>
                 <section
                   id="station-pathways-failure-checks"
-                  class="space-y-2 border-t border-gray-200 pt-3"
+                  class="space-y-2 border-t border-base-300 pt-3"
                 >
-                  <h4 class="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  <h4 class="text-xs font-semibold text-base-content/70">
                     Recommended checks
                   </h4>
-                  <ul class="list-disc space-y-1 pl-5 text-gray-700">
+                  <ul class="list-disc space-y-1 pl-5 text-base-content">
                     <li :for={check <- @pathways_failure.checks}>{check}</li>
                   </ul>
                 </section>
@@ -283,17 +283,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               <%= if @pathways_failure_diagnostics != [] do %>
                 <section
                   id="station-pathways-failure-diagnostics"
-                  class="space-y-2 border-t border-gray-200 pt-3"
+                  class="space-y-2 border-t border-base-300 pt-3"
                 >
-                  <h4 class="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  <h4 class="text-xs font-semibold text-base-content/70">
                     Technical diagnostics
                   </h4>
-                  <dl class="divide-y divide-gray-200 text-sm text-gray-700">
+                  <dl class="divide-y divide-base-300 text-sm text-base-content">
                     <div
                       :for={detail <- @pathways_failure_diagnostics}
                       class="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[12rem,1fr] sm:gap-3"
                     >
-                      <dt class="font-medium text-gray-600">{detail.label}:</dt>
+                      <dt class="font-medium text-base-content/70">{detail.label}:</dt>
                       <dd class="break-all font-mono text-xs sm:text-sm">{detail.value}</dd>
                     </div>
                   </dl>
@@ -303,15 +303,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               <%= if @pathways_failure do %>
                 <section
                   id="station-otp-data-requirements-summary"
-                  class="rounded-lg border border-gray-300 bg-gray-50 p-4"
+                  class="rounded-box border border-base-300 bg-base-200 p-4"
                 >
-                  <h3 class="text-sm font-semibold text-gray-900">
+                  <h3 class="text-sm font-semibold text-base-content">
                     OTP data requirements (quick checks)
                   </h3>
-                  <p class="mt-1 text-xs text-gray-600">
+                  <p class="mt-1 text-xs text-base-content/70">
                     Fix these common blockers before rerunning pathways validation.
                   </p>
-                  <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-gray-700">
+                  <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content">
                     <li :for={item <- otp_data_requirements_summary()}>{item}</li>
                   </ul>
                 </section>
@@ -323,107 +323,106 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <%= if @validation_result do %>
           <section
             id="station-reachability-summary"
-            class="rounded-lg border border-gray-400 bg-white overflow-hidden"
+            class="rounded-box border border-base-300 bg-base-100 overflow-hidden"
           >
-            <header class="border-b border-gray-300 px-5 py-3">
-              <h2 class="text-base font-semibold text-gray-900">Validation Summary</h2>
+            <header class="border-b border-base-300 px-5 py-3">
+              <h2 class="text-base font-semibold text-base-content">Validation Summary</h2>
             </header>
 
             <div class="space-y-4 p-5">
-              <section id="station-trip-overview" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div class="rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5">
-                  <div class="text-xs uppercase tracking-wide text-gray-500">Test cases</div>
+              <section id="station-trip-overview" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div class="rounded-box border border-base-300 bg-base-100 px-4 py-3">
                   <div
                     id="station-trip-overview-total-tests-value"
-                    class="text-base font-semibold text-gray-900"
+                    class="text-2xl font-semibold text-base-content tabular-nums"
                   >
                     {@validation_result.trip_overview.total_tests}
                   </div>
+                  <div class="mt-0.5 text-sm text-base-content/70">Test cases</div>
                 </div>
-                <div class="rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5">
-                  <div class="text-xs uppercase tracking-wide text-gray-500">Passed</div>
+                <div class="rounded-box border border-base-300 bg-base-100 px-4 py-3">
                   <div
                     id="station-trip-overview-pass-count-value"
-                    class="text-base font-semibold text-green-700"
+                    class="text-2xl font-semibold text-success tabular-nums"
                   >
                     {@validation_result.trip_overview.pass_count}
                   </div>
+                  <div class="mt-0.5 text-sm text-base-content/70">Passed</div>
                 </div>
-                <div class="rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5">
-                  <div class="text-xs uppercase tracking-wide text-gray-500">Warnings</div>
+                <div class="rounded-box border border-base-300 bg-base-100 px-4 py-3">
                   <div
                     id="station-trip-overview-warning-count-value"
-                    class="text-base font-semibold text-yellow-700"
+                    class="text-2xl font-semibold text-warning tabular-nums"
                   >
                     {@validation_result.trip_overview.warning_count}
                   </div>
+                  <div class="mt-0.5 text-sm text-base-content/70">Warnings</div>
                 </div>
-                <div class="rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5">
-                  <div class="text-xs uppercase tracking-wide text-gray-500">Failed</div>
+                <div class="rounded-box border border-base-300 bg-base-100 px-4 py-3">
                   <div
                     id="station-trip-overview-fail-count-value"
-                    class="text-base font-semibold text-red-700"
+                    class="text-2xl font-semibold text-error tabular-nums"
                   >
                     {@validation_result.trip_overview.fail_count}
                   </div>
+                  <div class="mt-0.5 text-sm text-base-content/70">Failed</div>
                 </div>
               </section>
 
               <div
-                class="overflow-x-auto rounded-md border border-gray-300"
+                class="overflow-x-auto rounded-box border border-base-300"
                 id="station-pathways-case-results"
               >
-                <table class="w-full text-sm" style="border-collapse: collapse;">
+                <table class="w-full text-sm">
                   <thead>
-                    <tr class="border-b border-gray-200 bg-gray-50">
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                    <tr class="border-b border-base-300 bg-base-200">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Test Case ID
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Description
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Status
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Issue
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Duration (s)
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Distance (m)
                       </th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-gray-200">
+                  <tbody class="divide-y divide-base-300">
                     <tr
                       :for={row <- @pathways_case_results}
                       id={"station-pathways-case-row-#{row.order_index}"}
                     >
                       <td
                         id={"station-pathways-case-id-#{row.order_index}"}
-                        class="px-3 py-2 font-mono text-xs text-gray-700"
+                        class="px-3 py-2 font-mono text-xs text-base-content"
                       >
                         {row.walkability_test_id}
                       </td>
                       <td
                         id={"station-pathways-case-description-#{row.order_index}"}
-                        class="px-3 py-2 text-xs text-gray-700"
+                        class="px-3 py-2 text-xs text-base-content"
                       >
                         {pathways_case_description(row)}
                       </td>
                       <td class="px-3 py-2">
-                        <.status_badge
-                          status={pathways_case_display_status(row)}
-                          label={String.upcase(to_string(pathways_case_display_status(row)))}
-                        />
+                        <.status_badge status={pathways_case_display_status(row)} />
                       </td>
-                      <td class="px-3 py-2 text-gray-700">{List.first(pathways_case_issues(row))}</td>
-                      <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                      <td class="px-3 py-2 text-base-content">
+                        {List.first(pathways_case_issues(row))}
+                      </td>
+                      <td class="px-3 py-2 font-mono tabular-nums text-base-content">
                         {row.duration_seconds || "-"}
                       </td>
-                      <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                      <td class="px-3 py-2 font-mono tabular-nums text-base-content">
                         {format_pathways_distance(row.distance_meters)}
                       </td>
                     </tr>
@@ -438,7 +437,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               navigate={
                 ~p"/gtfs/#{@current_gtfs_version.id}/station-reachability/#{@validation_run_id}?stop_id=#{@stop_id}"
               }
-              class="block w-full border-t border-gray-300 px-4 py-3 text-center text-[0.9625rem] font-medium text-teal-700 transition-colors duration-150 hover:bg-gray-50"
+              class="block w-full border-t border-base-300 px-4 py-3 text-center text-[0.9625rem] font-medium text-primary transition-colors duration-150 hover:bg-base-200"
             >
               Open Full Reachability Results
             </.link>
@@ -448,62 +447,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <%= if @recent_validation_runs != [] do %>
           <section
             id="recent-station-runs"
-            class="rounded-lg border border-gray-400 bg-white overflow-hidden"
+            class="rounded-box border border-base-300 bg-base-100 overflow-hidden"
           >
-            <header class="border-b border-gray-300 px-5 py-3">
-              <h2 class="text-base font-semibold text-gray-900">Recent Reachability Runs</h2>
+            <header class="border-b border-base-300 px-5 py-3">
+              <h2 class="text-base font-semibold text-base-content">Recent Reachability Runs</h2>
             </header>
 
             <div class="space-y-3 p-5">
               <div class="overflow-x-auto">
-                <table class="w-full text-sm" style="border-collapse: collapse;">
+                <table class="w-full text-sm">
                   <thead>
-                    <tr class="border-b border-gray-200 bg-gray-50">
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                    <tr class="border-b border-base-300 bg-base-200">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Run Results
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Date
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Status
                       </th>
-                      <th class="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-right text-xs font-semibold text-base-content/70">
                         Errors
                       </th>
-                      <th class="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-right text-xs font-semibold text-base-content/70">
                         Warnings
                       </th>
-                      <th class="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-right text-xs font-semibold text-base-content/70">
                         Info
                       </th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-gray-200">
+                  <tbody class="divide-y divide-base-300">
                     <tr :for={run <- @recent_validation_runs} id={"recent-station-run-#{run.id}"}>
                       <td class="px-3 py-2">
                         <.link
                           navigate={
                             ~p"/gtfs/#{@current_gtfs_version.id}/station-reachability/#{run.id}?stop_id=#{@station.stop_id}"
                           }
-                          class="text-teal-700 hover:text-teal-800 hover:underline"
+                          class="text-primary hover:underline"
                         >
                           {run.id}
                         </.link>
                       </td>
-                      <td class="px-3 py-2 text-sm text-gray-600">
+                      <td class="px-3 py-2 text-sm text-base-content/70">
                         {format_est_date(run.started_at)}
                       </td>
                       <td class="px-3 py-2">
-                        <span class="badge badge-outline badge-sm">{run.status}</span>
+                        <.status_badge
+                          status={run.status}
+                          label={Phoenix.Naming.humanize(to_string(run.status))}
+                        />
                       </td>
-                      <td class="px-3 py-2 text-right font-mono tabular-nums text-gray-700">
+                      <td class="px-3 py-2 text-right font-mono tabular-nums text-base-content">
                         {run.errors_count || 0}
                       </td>
-                      <td class="px-3 py-2 text-right font-mono tabular-nums text-gray-700">
+                      <td class="px-3 py-2 text-right font-mono tabular-nums text-base-content">
                         {run.warnings_count || 0}
                       </td>
-                      <td class="px-3 py-2 text-right font-mono tabular-nums text-gray-700">
+                      <td class="px-3 py-2 text-right font-mono tabular-nums text-base-content">
                         {run.infos_count || 0}
                       </td>
                     </tr>
@@ -516,24 +518,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
         <section
           id="station-reachability-test-cases"
-          class="rounded-lg border border-gray-400 bg-white overflow-hidden"
+          class="rounded-box border border-base-300 bg-base-100 overflow-hidden"
         >
-          <header class="border-b border-gray-300 px-5 py-3 flex items-center justify-between gap-3">
-            <h2 class="text-base font-semibold text-gray-900">Reachability Test Cases</h2>
+          <header class="border-b border-base-300 px-5 py-3 flex items-center justify-between gap-3">
+            <h2 class="text-base font-semibold text-base-content">Reachability Test Cases</h2>
             <.button
               id="back-to-diagram-from-reachability-cases"
-              navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@station.stop_id}/diagram"}
+              navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@station.stop_id}/diagram#lists-section"}
               variant="secondary"
               size="md"
-              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
+              class="min-h-11"
             >
-              Add Test Cases
+              Add test cases
             </.button>
           </header>
 
           <div class="space-y-3 p-5">
             <%= if @station_walkability_tests == [] do %>
-              <p class="px-4 py-3 text-sm text-gray-600">
+              <p class="px-4 py-3 text-sm text-base-content/70">
                 No reachability test cases for this station.
               </p>
             <% else %>
@@ -541,25 +543,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                 <table
                   id="station-walkability-tests-table"
                   class="w-full text-sm"
-                  style="border-collapse: collapse;"
                 >
                   <thead>
-                    <tr class="border-b border-gray-200 bg-gray-50">
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                    <tr class="border-b border-base-300 bg-base-200">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Stop
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Start address
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Expected
                       </th>
-                      <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                      <th class="px-3 py-2 text-left text-xs font-semibold text-base-content/70">
                         Updated
                       </th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-gray-200">
+                  <tbody class="divide-y divide-base-300">
                     <tr
                       :for={test_case <- @station_walkability_tests}
                       id={"station-walkability-test-row-#{test_case.id}"}
@@ -568,19 +569,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                         <button
                           type="button"
                           id={"station-walkability-test-stop-#{test_case.id}"}
-                          class="text-teal-700 hover:text-teal-800 hover:underline"
+                          class="text-primary hover:underline"
                           phx-click="edit_walkability_test"
                           phx-value-id={test_case.id}
                         >
                           {test_case.stop_id}
                         </button>
                       </td>
-                      <td class="px-3 py-2 max-w-80 truncate text-gray-700" title={test_case.address}>
+                      <td
+                        class="px-3 py-2 max-w-80 truncate text-base-content"
+                        title={test_case.address}
+                      >
                         {test_case.address}
                       </td>
                       <td class="px-3 py-2">
                         <div class="space-y-0.5">
-                          <p class="text-sm text-gray-800">
+                          <p class="text-sm text-base-content">
                             {if test_case.expected_traversable,
                               do: "Traversable",
                               else: "Not traversable"} / {if test_case.expected_wheelchair_accessible,
@@ -589,13 +593,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                           </p>
                           <p
                             :if={present_text?(test_case.description)}
-                            class="text-xs text-gray-500 truncate"
+                            class="text-xs text-base-content/70 truncate"
                           >
                             {test_case.description}
                           </p>
                         </div>
                       </td>
-                      <td class="px-3 py-2 tabular-nums text-sm text-gray-700">
+                      <td class="px-3 py-2 tabular-nums text-sm text-base-content">
                         {format_timestamp(test_case.updated_at)}
                       </td>
                     </tr>

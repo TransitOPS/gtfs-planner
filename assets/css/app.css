@@ -30,13 +30,14 @@
   --color-brand: oklch(52% 0.12 165);
   --color-brand-content: oklch(100% 0 0); /* white icon/text on the brand tile */
 
-  /* Control outline color. `base-300` (~1.1:1 on base-100) is too faint to read as
-     a control boundary. This is base-content mixed to ~2.1:1 on base-100 —
-     intentionally softer than WCAG 1.4.11's 3:1 floor per design call, since these
-     controls are also identified by fill, label, and placeholder, not the border
-     alone. Generates the `border-control-border` utility. Backgrounds and purely
-     decorative dividers stay on `base-300`. */
-  --color-control-border: color-mix(in oklab, var(--color-base-content) 34%, var(--color-base-100));
+  /* Control outline color. `base-300` is too faint to read as a control
+     boundary. This is base-content mixed to ~3.1:1 on base-100, meeting WCAG
+     1.4.11's 3:1 floor for component boundaries. (An earlier 34% mix sat at
+     ~2.1:1 on the theory that fill, label, and placeholder also identify the
+     control; the project has since standardized on meeting the 3:1 floor
+     outright.) Generates the `border-control-border` utility. Backgrounds and
+     purely decorative dividers stay on `base-300`. */
+  --color-control-border: color-mix(in oklab, var(--color-base-content) 50%, var(--color-base-100));
 }
 
 /* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
@@ -106,6 +107,33 @@
      — was 3.05:1, its own documented pairing failing AA. Solved to the same 5.2:1. */
   --color-secondary: oklch(56% 0.232 354.308); /* #D2017E · 5.20:1 on base-100 */
   --color-secondary-content: oklch(100% 0 0);
+
+  /* Base surfaces, darkened so structure is visible.
+
+     The stock light theme ships base-200 at oklch(98%) and base-300 at
+     oklch(95%) — roughly 1.05:1 and 1.15:1 against base-100. The page
+     background, card boundaries, table dividers, fills, and hover states all
+     ride on these two tokens, and at those ratios every one of them was near
+     invisible. These are not text, so WCAG sets no minimum for the decorative
+     ones, but a line nobody can see communicates nothing.
+
+     base-200 separates white cards from the page and makes fills and hover
+     states perceptible; base-300 draws a visible hairline (~1.5:1) without
+     turning decoration into ink. Hue follows base-content so grays stay in
+     one family. Controls keep the darker `--color-control-border`. */
+  --color-base-200: oklch(96.5% 0.002 285.885);
+  --color-base-300: oklch(87% 0.004 285.885);
+}
+
+/* daisyUI's .table hardcodes its own grays instead of riding the base tokens:
+   row separators at 5% base-content (~1.07:1, invisible) and header text at
+   60% alpha (fails AA at its 14px semibold size). Point the separators at the
+   structural divider token and lift header text to the app's 70% floor. */
+.table :where(thead tr, tbody tr:not(:last-child)) {
+  border-bottom: var(--border) solid var(--color-base-300);
+}
+.table :where(thead, tfoot) {
+  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
 }
 
 /* Improve font rendering and ensure full-height background */

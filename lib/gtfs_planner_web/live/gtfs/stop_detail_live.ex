@@ -394,7 +394,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   You can view it, but it's best to wait before making changes.
                 <% end %>
               </p>
-              <p class="mt-1 text-xs font-medium text-base-content/60">
+              <p class="mt-1 text-xs font-medium text-base-content/70">
                 Started {relative_started_at(@station_editing_status.started_at)}
               </p>
             </.callout>
@@ -454,50 +454,50 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
             </div>
           <% end %>
 
-          <div class="bg-base-100 border border-base-300 rounded-lg p-6 mt-8">
+          <div class="bg-base-100 border border-base-300 rounded-box p-6 mt-8">
             <dl class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Station ID</dt>
+                <dt class="text-sm font-medium text-base-content/70">Station ID</dt>
                 <dd class="mt-1 text-base font-mono">{@stop.stop_id}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Station Name</dt>
+                <dt class="text-sm font-medium text-base-content/70">Station Name</dt>
                 <dd class="mt-1 text-base">{@stop.stop_name || "—"}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Location Type</dt>
+                <dt class="text-sm font-medium text-base-content/70">Location Type</dt>
                 <dd class="mt-1 text-base">{Stop.location_type_label(@stop.location_type)}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Description</dt>
+                <dt class="text-sm font-medium text-base-content/70">Description</dt>
                 <dd class="mt-1 text-base">{@stop.stop_desc || "—"}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Latitude</dt>
+                <dt class="text-sm font-medium text-base-content/70">Latitude</dt>
                 <dd class="mt-1 text-base">{@stop.stop_lat || "—"}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Longitude</dt>
+                <dt class="text-sm font-medium text-base-content/70">Longitude</dt>
                 <dd class="mt-1 text-base">{@stop.stop_lon || "—"}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Level ID</dt>
+                <dt class="text-sm font-medium text-base-content/70">Level ID</dt>
                 <dd class="mt-1 text-base">{@stop.level_id || "—"}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Platform Code</dt>
+                <dt class="text-sm font-medium text-base-content/70">Platform Code</dt>
                 <dd class="mt-1 text-base">{@stop.platform_code || "—"}</dd>
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Accessibility</dt>
+                <dt class="text-sm font-medium text-base-content/70">Accessibility</dt>
                 <dd class="mt-1 text-base">
                   <TransitPresentation.accessibility_status
                     status={accessibility_resolution(@stop).status}
@@ -507,7 +507,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
               </div>
 
               <div>
-                <dt class="text-sm font-medium text-base-content/60">Diagram</dt>
+                <dt class="text-sm font-medium text-base-content/70">Diagram</dt>
                 <dd class="mt-1 text-base" id="diagram-status">
                   {diagram_status_text(@stop.diagram_coordinate)}
                 </dd>
@@ -540,7 +540,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
               <% true -> %>
                 <div class="space-y-4">
                   <%= for {level_name, stops} <- @child_stops_by_level do %>
-                    <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+                    <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
                       <div class="bg-base-200 px-4 py-2 font-medium flex justify-between">
                         <span>{level_name || "No Level"}</span>
                         <span class="badge badge-ghost">{length(stops)}</span>
@@ -553,7 +553,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                       >
                         <:col :let={stop} label="Name">
                           <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
-                          <span class="text-sm text-base-content/60 ml-2">{stop.stop_id}</span>
+                          <span class="text-sm text-base-content/70 ml-2">{stop.stop_id}</span>
                         </:col>
                         <:col :let={stop} label="Type">
                           <span class="badge badge-outline">

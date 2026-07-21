@@ -29,7 +29,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       {@label}
       <span
         :if={@source == :inherited}
-        class="font-normal text-base-content/60"
+        class="font-normal text-base-content/70"
         data-accessibility-source="inherited"
       >
         Inherited from station
@@ -70,7 +70,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
         <span aria-hidden="true">·</span>
         <span class="inline-flex items-baseline gap-1">
           <span class="font-mono tabular-nums">{metric.value}</span>
-          <span class="text-base-content/60">{metric.unit}</span>
+          <span class="text-base-content/70">{metric.unit}</span>
         </span>
       </span>
     </span>
@@ -100,13 +100,16 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
     conflict: "bg-warning"
   }
 
+  # Word plus tinted field, matching `<.status_badge>`: the theme's semantic
+  # text colors hold ≥4.5:1 on a 10% tint of themselves, and the word still
+  # carries the meaning without the color.
   @version_diff_status_tones %{
-    pending: "border-base-content/40 text-base-content",
-    approved: "border-success text-success",
-    rejected: "border-error text-error",
-    preview: "border-warning text-warning",
-    applied: "border-success text-success",
-    failed: "border-error text-error"
+    pending: "border-base-content/40 bg-base-content/10 text-base-content",
+    approved: "border-success/40 bg-success/10 text-success",
+    rejected: "border-error/40 bg-error/10 text-error",
+    preview: "border-warning/40 bg-warning/10 text-warning",
+    applied: "border-success/40 bg-success/10 text-success",
+    failed: "border-error/40 bg-error/10 text-error"
   }
 
   @version_diff_change_required [:label, :before, :after]
@@ -220,11 +223,11 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       data-status={@status}
       data-expanded={to_string(@expanded?)}
       data-edited={to_string(@edited?)}
-      class={["border border-base-300 bg-base-100 text-sm", @class]}
+      class={["rounded-box border border-base-300 bg-base-100 text-sm", @class]}
     >
       <header class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-base-300 px-3 py-2">
         <span data-role="version-diff-action" class="inline-flex items-baseline gap-1.5">
-          <span class={["size-1.5 shrink-0 rounded-full", @action_tone]} aria-hidden="true"></span>
+          <span class={["size-2 shrink-0 rounded-full", @action_tone]} aria-hidden="true"></span>
           <span class="font-medium text-base-content">{@action_word}</span>
         </span>
         <span data-role="version-diff-entity" class="font-medium text-base-content">
@@ -239,13 +242,13 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
         <span
           :if={@edited?}
           data-role="version-diff-edited"
-          class="border border-base-content/40 px-1.5 text-xs text-base-content"
+          class="rounded-selector border border-base-content/40 px-1.5 text-xs text-base-content"
         >
           Edited
         </span>
         <span
           data-role="version-diff-status"
-          class={["ms-auto border px-1.5 text-xs font-medium", @status_tone]}
+          class={["rounded-selector ms-auto border px-1.5 text-xs font-medium", @status_tone]}
         >
           {@status_word}
         </span>
@@ -282,7 +285,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
             <span
               :if={row.key}
               data-role="version-diff-change-key"
-              class="block font-mono text-xs text-base-content/50 [overflow-wrap:anywhere]"
+              class="block font-mono text-xs text-base-content/70 [overflow-wrap:anywhere]"
             >
               {row.key}
             </span>
@@ -298,7 +301,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
               ]}
             >{row.before.text}</span>
             <span class="sr-only">changed to</span>
-            <span aria-hidden="true" class="text-base-content/60">→</span>
+            <span aria-hidden="true" class="text-base-content/70">→</span>
             <span
               phx-no-format
               data-role="version-diff-after"

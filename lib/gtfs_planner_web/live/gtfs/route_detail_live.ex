@@ -202,44 +202,44 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
               <div class="bg-base-100 border border-base-300 rounded-lg p-6 mt-8">
                 <div class="flex items-center gap-3 mb-6">
                   <RouteIdentity.route_badge route={@route} />
-                  <span class="text-sm text-base-content/60 font-mono">
+                  <span class="text-sm text-base-content/70 font-mono">
                     {@route.route_color} / {@route.route_text_color}
                   </span>
                 </div>
 
                 <dl class="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Route ID</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Route ID</dt>
                     <dd class="mt-1 text-base font-mono">{@route.route_id}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Short Name</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Short Name</dt>
                     <dd class="mt-1 text-base">{@route.route_short_name || "—"}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Long Name</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Long Name</dt>
                     <dd class="mt-1 text-base">{@route.route_long_name || "—"}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Type</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Type</dt>
                     <dd class="mt-1 text-base">{Route.route_type_label(@route.route_type)}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Agency ID</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Agency ID</dt>
                     <dd class="mt-1 text-base">{@route.agency_id || "—"}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Description</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Description</dt>
                     <dd class="mt-1 text-base">{@route.route_desc || "—"}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">URL</dt>
+                    <dt class="text-sm font-medium text-base-content/70">URL</dt>
                     <dd class="mt-1 text-base">
                       <%= if valid_external_url?(@route.route_url) do %>
                         <a
@@ -257,27 +257,27 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Sort Order</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Sort Order</dt>
                     <dd class="mt-1 text-base">{@route.route_sort_order || "—"}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Continuous Pickup</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Continuous Pickup</dt>
                     <dd class="mt-1 text-base">{@route.continuous_pickup}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Continuous Drop Off</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Continuous Drop Off</dt>
                     <dd class="mt-1 text-base">{@route.continuous_drop_off}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Network ID</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Network ID</dt>
                     <dd class="mt-1 text-base">{@route.network_id || "—"}</dd>
                   </div>
 
                   <div>
-                    <dt class="text-sm font-medium text-base-content/60">Active</dt>
+                    <dt class="text-sm font-medium text-base-content/70">Active</dt>
                     <dd class="mt-1 text-base">{if @route.active, do: "Yes", else: "No"}</dd>
                   </div>
                 </dl>

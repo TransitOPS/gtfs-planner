@@ -70,15 +70,15 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           phx-click={!@editing? && @open_panel}
           class="inline-flex items-center gap-2 max-w-[14rem] bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-60 disabled:pointer-events-none"
         >
-          <span class="flex-none font-normal text-base-content/60">Version</span>
+          <span class="flex-none font-normal text-base-content/70">Version</span>
           <span class="truncate text-base-content">{@current_version.name}</span>
-          <.icon name="hero-chevron-down" class="size-3.5 flex-none text-base-content/60" />
+          <.icon name="hero-chevron-down" class="size-3.5 flex-none text-base-content/70" />
         </button>
 
         <%= if @editing? do %>
           <div
             id="gtfs-version-rename-panel"
-            class="absolute right-0 top-full mt-1 w-72 z-30 rounded-lg border border-base-300 bg-base-100 shadow-lg p-3"
+            class="absolute right-0 top-full mt-1 w-72 z-30 rounded-box border border-base-300 bg-base-100 shadow-lg p-3"
           >
             <.form
               for={@form}
@@ -135,7 +135,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
             phx-window-keydown={@close_panel}
             phx-key="escape"
             style="display: none;"
-            class="absolute right-0 top-full mt-1 w-64 max-h-80 overflow-auto z-30 rounded-lg border border-base-300 bg-base-100 shadow-lg text-sm"
+            class="absolute right-0 top-full mt-1 w-64 max-h-80 overflow-auto z-30 rounded-box border border-base-300 bg-base-100 shadow-lg text-sm"
           >
             <button
               id="gtfs-version-rename"

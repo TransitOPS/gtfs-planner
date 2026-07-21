@@ -494,7 +494,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/counts")
 
-      assert has_element?(view, "#ds-page-counts", "The component never calculates counts")
+      assert has_element?(view, "#ds-page-counts", "They never calculate counts")
       assert has_element?(view, "#ds-page-counts", "reject unknown or zero-count keys")
     end
 

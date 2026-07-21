@@ -526,14 +526,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
         <%= if @model do %>
           <.report_toc station_name={@station.stop_name || @station.stop_id} model={@model}>
-            <button
+            <.button
               id="report-expand-all"
-              type="button"
+              variant="secondary"
               data-report-control
               phx-click="toggle_expand_all"
               aria-expanded={to_string(@all_expanded)}
               aria-controls="station-report-2"
-              class="print:hidden inline-flex min-h-11 items-center gap-1.5 border border-base-300 bg-base-100 px-3 py-1.5 text-sm font-medium motion-safe:transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              class="print:hidden min-h-11"
             >
               <.icon
                 name={
@@ -542,7 +542,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
                 class="size-3.5"
               />
               {if @all_expanded, do: "Collapse all", else: "Expand all"}
-            </button>
+            </.button>
           </.report_toc>
           <.station_inventory_section report={@model.snapshot} />
           <.data_quality_section

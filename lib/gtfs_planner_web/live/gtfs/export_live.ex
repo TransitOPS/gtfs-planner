@@ -632,13 +632,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       </.header>
 
       <%!-- Version Info Card --%>
-      <div class="mt-6 bg-base-100 rounded-lg p-6 border border-base-300">
+      <div class="mt-6 rounded-box border border-base-300 bg-base-100 p-6">
         <div class="flex items-center gap-3">
           <div class="flex-1">
             <h2 class="text-xl font-semibold text-base-content">
               {@current_gtfs_version.name}
             </h2>
-            <p class="text-sm text-base-content/60 mt-1">
+            <p class="text-sm text-base-content/70 mt-1">
               GTFS Version for {@current_organization.name}
             </p>
           </div>
@@ -651,7 +651,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8"
       >
         <%!-- Export Column --%>
-        <div class="bg-base-100 rounded-lg p-6 border border-base-300">
+        <div class="rounded-box border border-base-300 bg-base-100 p-6">
           <h2 class="text-lg font-semibold mb-2">Export</h2>
           <p class="text-sm text-base-content/70 mb-4">
             Generate a GTFS zip file containing all data from this version. The export includes all required and optional GTFS files with current record counts.
@@ -730,7 +730,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         </div>
 
         <%!-- Validate Column --%>
-        <div class="bg-base-100 rounded-lg p-6 border border-base-300">
+        <div class="rounded-box border border-base-300 bg-base-100 p-6">
           <h2 class="text-lg font-semibold mb-2">Validate</h2>
           <p class="text-sm text-base-content/70 mb-6">
             Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
@@ -740,7 +740,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             <section
               id="validation-error-panel"
               role="alert"
-              class="mb-6 rounded-xl border border-error/40 bg-base-100"
+              class="mb-6 rounded-box border border-error/40 bg-base-100"
             >
               <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
                 <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
@@ -1024,7 +1024,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   />
                   <div>
                     <div class="font-medium">MobilityData GTFS Validator</div>
-                    <div class="text-xs text-base-content/60">
+                    <div class="text-xs text-base-content/70">
                       Industry-standard validation for GTFS compliance
                     </div>
                   </div>
@@ -1040,7 +1040,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   />
                   <div>
                     <div class="font-medium">Pathways Trip Tests</div>
-                    <div class="text-xs text-base-content/60">
+                    <div class="text-xs text-base-content/70">
                       Custom validation for pathways connectivity
                     </div>
                   </div>

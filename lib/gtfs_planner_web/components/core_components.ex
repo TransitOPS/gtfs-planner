@@ -441,8 +441,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
     >
       <legend class="fieldset-legend text-base">
         {@label}
-        <span :if={@required} class="text-sm text-base-content/60">(required)</span>
-        <span :if={!@required} class="text-sm text-base-content/60">(optional)</span>
+        <span :if={@required} class="text-sm text-base-content/70">(required)</span>
+        <span :if={!@required} class="text-sm text-base-content/70">(optional)</span>
       </legend>
       <div class="space-y-2 mt-2" role="group" aria-label={@label}>
         <label :for={{label, value} <- @options} class="flex items-center gap-2 cursor-pointer">
@@ -607,7 +607,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </tr>
         </thead>
         <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-          <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
+          <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="hover:bg-base-200">
             <td
               :for={col <- @col}
               data-label={col[:label]}
@@ -1013,7 +1013,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       if is_active do
         "font-semibold border-primary text-base-content"
       else
-        "font-medium border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+        "font-medium border-transparent text-base-content/70 hover:text-base-content hover:border-base-300"
       end
 
     [base, state]
@@ -1156,43 +1156,53 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "extra classes for sizing tweaks"
   attr :rest, :global
 
+  # Each entry is {label, dot, text, field}. The tinted field is what makes a
+  # column of badges scannable at a glance; the word still carries the meaning
+  # on its own. Semantic tones sit on a 10% tint of themselves — the theme's
+  # semantic colors are 5.2:1 on base-100, so the colored word stays ≥4.5:1 on
+  # its own tint. Neutral text uses /70, the smallest opacity of base-content
+  # that holds AA at this size.
   @status_presentation %{
-    "pass" => {"Pass", "bg-success", "text-success"},
-    "completed" => {"Completed", "bg-success", "text-success"},
-    "warning" => {"Warning", "bg-warning", "text-warning"},
-    "failed" => {"Failed", "bg-error", "text-error"},
-    "error" => {"Error", "bg-error", "text-error"},
-    "running" => {"Running", "bg-info", "text-info"},
-    "info" => {"Info", "bg-info", "text-info"},
-    "started" => {"Started", "bg-base-content/40", "text-base-content/60"},
-    "draft" => {"Draft", "bg-base-content/40", "text-base-content/60"},
-    "in_progress" => {"In progress", "bg-info", "text-info"},
-    "active" => {"Active", "bg-success", "text-success"},
-    "deactivated" => {"Deactivated", "bg-error", "text-error"},
-    "invitation_pending" => {"Invitation pending", "bg-warning", "text-warning"}
+    "pass" => {"Pass", "bg-success", "text-success", "bg-success/10"},
+    "completed" => {"Completed", "bg-success", "text-success", "bg-success/10"},
+    "warning" => {"Warning", "bg-warning", "text-warning", "bg-warning/10"},
+    "failed" => {"Failed", "bg-error", "text-error", "bg-error/10"},
+    "error" => {"Error", "bg-error", "text-error", "bg-error/10"},
+    "running" => {"Running", "bg-info", "text-info", "bg-info/10"},
+    "info" => {"Info", "bg-info", "text-info", "bg-info/10"},
+    "started" => {"Started", "bg-base-content/40", "text-base-content/70", "bg-base-content/10"},
+    "draft" => {"Draft", "bg-base-content/40", "text-base-content/70", "bg-base-content/10"},
+    "in_progress" => {"In progress", "bg-info", "text-info", "bg-info/10"},
+    "active" => {"Active", "bg-success", "text-success", "bg-success/10"},
+    "deactivated" => {"Deactivated", "bg-error", "text-error", "bg-error/10"},
+    "invitation_pending" => {"Invitation pending", "bg-warning", "text-warning", "bg-warning/10"}
   }
 
-  @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/60"}
+  @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/70", "bg-base-content/10"}
 
   def status_badge(assigns) do
     status = to_string(assigns.status)
-    {label, dot_class, text_class} = Map.get(@status_presentation, status, @status_unknown)
+
+    {label, dot_class, text_class, field_class} =
+      Map.get(@status_presentation, status, @status_unknown)
 
     assigns =
       assigns
       |> assign(:dot_class, dot_class)
       |> assign(:text_class, text_class)
+      |> assign(:field_class, field_class)
       |> assign(:word, assigns.label || label)
 
     ~H"""
     <span
       class={[
-        "inline-flex items-center gap-1.5 border border-base-300 px-2 py-0.5 text-sm",
+        "rounded-selector inline-flex items-center gap-1.5 px-2 py-0.5 text-sm",
+        @field_class,
         @class
       ]}
       {@rest}
     >
-      <span class={["size-1.5 rounded-full", @dot_class]} aria-hidden="true"></span>
+      <span class={["size-2 shrink-0 rounded-full", @dot_class]} aria-hidden="true"></span>
       <span class={["font-medium", @text_class]}>{@word}</span>
     </span>
     """
@@ -1209,6 +1219,18 @@ defmodule GtfsPlannerWeb.CoreComponents do
     success: "bg-success",
     warning: "bg-warning",
     error: "bg-error"
+  }
+
+  # Display-mode counts above zero repeat their tone on the number itself, so a
+  # non-zero warning or failure count is findable without reading every label.
+  # The theme's semantic text colors hold ≥4.5:1 on base-100. Filter buttons
+  # never use these — a selected button's text must stay primary-content.
+  @count_strip_count_classes %{
+    neutral: nil,
+    info: "text-info",
+    success: "text-success",
+    warning: "text-warning",
+    error: "text-error"
   }
 
   @doc """
@@ -1278,7 +1300,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
       id={@id}
       data-role="count-strip"
       data-mode={if @event, do: "filter", else: "display"}
-      class={["flex flex-wrap items-center gap-2", @class]}
+      class={[
+        "flex flex-wrap items-center",
+        if(@event, do: "gap-2", else: "gap-x-5 gap-y-1.5"),
+        @class
+      ]}
     >
       <%= if is_nil(@event) do %>
         <span
@@ -1286,9 +1312,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
           id={entry.dom_id}
           data-role="count-strip-item"
           data-key={entry.key}
-          class="inline-flex max-w-full items-center gap-2 border border-base-300 bg-base-100 px-3 py-1.5 text-sm"
+          class="inline-flex max-w-full items-center gap-2 py-0.5 text-sm"
         >
-          <.count_strip_body entry={entry} />
+          <.count_strip_body entry={entry} colorize={true} />
         </span>
       <% else %>
         <button
@@ -1303,7 +1329,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           phx-value-key={entry.key}
           phx-target={@target}
           class={[
-            "inline-flex min-h-11 min-w-11 max-w-full items-center gap-2 border px-3 py-1.5",
+            "rounded-field inline-flex min-h-11 min-w-11 max-w-full items-center gap-2 border px-3 py-1.5",
             "text-left text-sm",
             "motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-2",
             "focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
@@ -1312,10 +1338,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
             entry.key != @selected_key && entry.unavailable? &&
               "border-dashed border-base-content/40 bg-base-100 text-base-content/70 cursor-not-allowed",
             entry.key != @selected_key && !entry.unavailable? &&
-              "border-base-300 bg-base-100 text-base-content hover:border-primary"
+              "border-control-border bg-base-100 text-base-content hover:border-primary"
           ]}
         >
-          <.count_strip_body entry={entry} />
+          <.count_strip_body entry={entry} colorize={false} />
         </button>
       <% end %>
     </div>
@@ -1323,17 +1349,25 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   attr :entry, :map, required: true
+  attr :colorize, :boolean, required: true
 
   defp count_strip_body(assigns) do
     ~H"""
     <span
       data-role="count-strip-tone"
-      class={["size-1.5 shrink-0 rounded-full", @entry.tone_class]}
+      class={["size-2 shrink-0 rounded-full", @entry.tone_class]}
       aria-hidden="true"
     >
     </span>
     <span data-role="count-strip-label" class="min-w-0 break-words">{@entry.label}</span>
-    <span data-role="count-strip-value" class="font-semibold tabular-nums">{@entry.count}</span>
+    <span
+      phx-no-format
+      data-role="count-strip-value"
+      class={[
+        "font-semibold tabular-nums",
+        @colorize && @entry.count > 0 && @entry.count_class
+      ]}
+    >{@entry.count}</span>
     <span
       :if={@entry.disabled_reason}
       data-role="count-strip-reason"
@@ -1380,6 +1414,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       disabled_reason: validate_count_strip_reason!(Map.get(item, :disabled_reason), id),
       dom_id: "#{id}-item-#{key}",
       tone_class: count_strip_tone_class!(item.tone, id),
+      count_class: Map.get(@count_strip_count_classes, item.tone),
       unavailable?: count == 0
     }
   end
@@ -1461,6 +1496,42 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
+  Renders one prominent figure with its label — the metric tile for report
+  summaries and inventories.
+
+  The value reads first, at full contrast on a filled field; the label sits
+  under it at AA contrast. The caller owns both strings, including any unit
+  or formatting inside `value`. Use `<.count_strip>` for a row of small
+  labelled counts, and a table when figures need comparison down a column.
+
+  ## Examples
+
+      <.metric value={128} label="Stops" />
+      <.metric value="117.8s" label="Total time" />
+  """
+  attr :value, :any, required: true
+  attr :label, :string, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def metric(assigns) do
+    ~H"""
+    <div
+      data-role="metric"
+      class={["rounded-box border border-base-300 bg-base-100 px-4 py-3", @class]}
+      {@rest}
+    >
+      <div data-role="metric-value" class="text-2xl font-semibold text-base-content tabular-nums">
+        {@value}
+      </div>
+      <div data-role="metric-label" class="mt-0.5 text-sm text-base-content/70 break-words">
+        {@label}
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
   Renders an empty state for a data view.
 
   First-use empties explain what belongs here and give a primary CTA to create
@@ -1483,7 +1554,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def empty_state(assigns) do
     ~H"""
-    <div class={["border border-base-300 p-8 text-center", @class]} {@rest}>
+    <div class={["rounded-box border border-base-300 p-8 text-center", @class]} {@rest}>
       <p class="font-semibold">{@title}</p>
       <div :if={@inner_block != []} class="mt-1 text-sm text-base-content/70">
         {render_slot(@inner_block)}
@@ -1516,7 +1587,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def skeleton(assigns) do
     ~H"""
     <div class={@class} {@rest}>
-      <p class="text-sm text-base-content/60 mb-2">{@label}</p>
+      <p class="text-sm text-base-content/70 mb-2">{@label}</p>
       <div
         :if={@inner_block == []}
         class="space-y-3 motion-safe:animate-pulse"
@@ -1716,7 +1787,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <label id={"#{@id}-label"} class="block text-sm font-semibold">
         {@label}
       </label>
-      <p id={"#{@id}-help"} class="text-sm text-base-content/60">
+      <p id={"#{@id}-help"} class="text-sm text-base-content/70">
         {@help}
       </p>
 
@@ -1806,7 +1877,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               >
                 {entry.progress}%
               </progress>
-              <span class="text-xs text-base-content/60 tabular-nums">
+              <span class="text-xs text-base-content/70 tabular-nums">
                 {entry.progress}%
               </span>
             </div>
@@ -1822,7 +1893,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </div>
           <button
             type="button"
-            class="min-h-11 min-w-11 flex items-center justify-center text-base-content/60 hover:text-error"
+            class="min-h-11 min-w-11 flex items-center justify-center text-base-content/70 hover:text-error"
             phx-click={@cancel_event}
             phx-value-ref={entry.ref}
             phx-target={@target}
@@ -1981,7 +2052,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         <p
           :if={@show_group_reason?}
           id={"#{@id}-disabled-reason"}
-          class="text-xs text-base-content/60"
+          class="text-xs text-base-content/70"
         >
           {@disabled_reason}
         </p>

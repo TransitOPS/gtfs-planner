@@ -28,7 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     assigns = assign(assigns, :dimension_label, dimension_label(assigns.dimension))
 
     ~H"""
-    <div class="border border-base-300 bg-base-100">
+    <div class="rounded-box border border-base-300 bg-base-100">
       <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 px-4 py-3">
         <div class="min-w-0">
           <div class="flex flex-wrap items-baseline gap-2">
@@ -303,7 +303,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   # Renders a level identifier as a neutral chip; a level is a category, not a state.
   defp level_chip(assigns) do
     ~H"""
-    <span class="inline-flex items-center border border-base-300 px-2 py-0.5 text-xs">
+    <span class="rounded-selector inline-flex items-center border border-base-300 px-2 py-0.5 text-xs">
       {@name} · {format_level_index(@index)}
     </span>
     """
