@@ -189,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(
                view,
                "#run-station-reachability[phx-click='run_reachability']:not([disabled])",
-               "Run Reachability Tests"
+               "Run reachability tests"
              )
 
       html = render(view)
@@ -830,8 +830,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#station-trip-overview-pass-count-value", "0")
       assert has_element?(view, "#station-trip-overview-warning-count-value", "0")
       assert has_element?(view, "#station-trip-overview-fail-count-value", "1")
-      assert has_element?(view, "#station-pathways-case-row-0", "FAILED")
-      refute has_element?(view, "#station-pathways-case-row-0", "WARNING")
+      assert has_element?(view, "#station-pathways-case-row-0", "Failed")
+      refute has_element?(view, "#station-pathways-case-row-0", "Warning")
     end
 
     test "station reachability success triggers runtime cleanup", %{

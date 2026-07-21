@@ -279,7 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         <:subtitle>GTFS routes for the current version</:subtitle>
       </.header>
 
-      <div class="mt-6 bg-base-100 border border-base-300 rounded-lg p-4">
+      <div class="mt-6 bg-base-100 border border-base-300 rounded-box p-4">
         <.form
           for={@filter_form}
           id="route-filter-form"
@@ -327,7 +327,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
               phx-debounce="300"
               label="Search"
             />
-            <p class="mt-1 text-xs text-base-content/60">Search names and IDs</p>
+            <p class="mt-1 text-xs text-base-content/70">Search names and IDs</p>
           </.form>
         </div>
       </div>
@@ -392,7 +392,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       </div>
 
       <div :if={@routes_state == :ready and not @routes_empty?} class="mt-6">
-        <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+        <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
           <.table id="routes" rows={@streams.routes} responsive="stack">
             <:col
               :let={{_id, route}}

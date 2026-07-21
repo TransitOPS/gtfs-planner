@@ -203,7 +203,7 @@ defmodule GtfsPlannerWeb.Layouts do
 
     <main id="main-content" class="min-h-screen flex items-start justify-center px-4 py-12 sm:py-16">
       <div class="w-full max-w-md">
-        <div class="bg-base-100 border border-base-300 rounded-lg">
+        <div class="bg-base-100 border border-base-300 rounded-box">
           <div class="p-6">
             <div class="flex items-center justify-center gap-3 mb-6">
               <div class="bg-brand p-2 rounded-lg">

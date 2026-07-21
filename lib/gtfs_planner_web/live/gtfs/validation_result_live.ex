@@ -197,7 +197,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           <%= cond do %>
             <% @run.status == "failed" -> %>
               <%!-- Failed State --%>
-              <section class="mt-6 rounded-xl border border-error/40 bg-base-100" role="alert">
+              <section class="mt-6 rounded-box border border-error/40 bg-base-100" role="alert">
                 <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
                   <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
                   <div class="min-w-0 flex-1">
@@ -363,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
               <div class="flex items-center justify-center min-h-[400px] mt-6">
                 <div class="text-center">
                   <div class="loading loading-spinner loading-lg"></div>
-                  <p class="mt-4 text-base-content/60">
+                  <p class="mt-4 text-base-content/70">
                     <%= if @run.status == "started" do %>
                       Validation starting...
                     <% else %>
@@ -386,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
               <section
                 id="pathways-case-results"
-                class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+                class="mt-8 rounded-box border border-base-300 bg-base-100"
               >
                 <div class="px-4 py-3 border-b border-base-content/15">
                   <h3 class="text-sm font-semibold">Per-Test Results</h3>
@@ -423,7 +423,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                             />
                           </td>
                           <td>
-                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-base-content/60">
+                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-base-content/70">
                               <li :for={issue <- pathways_case_issues(row)}>{issue}</li>
                             </ol>
                           </td>
@@ -707,11 +707,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                 <% end %>
 
                 <%= if Enum.empty?(@run.result_json["notices"] || []) do %>
-                  <div class="text-center py-12 bg-base-100 rounded-lg border border-base-300">
+                  <div class="text-center py-12 rounded-box border border-base-300 bg-base-100">
                     <div class="text-success text-lg font-medium">
                       No validation issues found!
                     </div>
-                    <p class="text-base-content/60 mt-2">Your GTFS data passed all checks.</p>
+                    <p class="text-base-content/70 mt-2">Your GTFS data passed all checks.</p>
                   </div>
                 <% end %>
               </div>
@@ -736,7 +736,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             <div
               :for={{dom_id, run} <- @streams.validation_runs}
               id={dom_id}
-              class="card bg-base-100 shadow-sm"
+              class="rounded-box border border-base-300 bg-base-100"
             >
               <div class="card-body p-4">
                 <.link
@@ -744,7 +744,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                   class="block hover:bg-base-200 -m-4 p-4 rounded-lg transition-colors"
                 >
                   <div class="flex items-center justify-between mb-2">
-                    <div class="text-sm text-base-content/60">
+                    <div class="text-sm text-base-content/70">
                       {Calendar.strftime(run.started_at, "%Y-%m-%d %H:%M:%S")}
                     </div>
                     <.status_badge status={run.status} label={run.status} />
@@ -880,14 +880,14 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     ~H"""
     <section
       id="pathways-criteria-comparison-overview"
-      class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+      class="mt-8 rounded-box border border-base-300 bg-base-100"
     >
       <div class="px-4 py-3 border-b border-base-content/15">
         <h3 class="text-sm font-semibold">Criteria Comparison Overview</h3>
       </div>
       <div class="overflow-x-auto">
         <table class="table table-sm">
-          <thead class="text-xs uppercase tracking-wide text-base-content/60">
+          <thead class="text-xs uppercase tracking-wide text-base-content/70">
             <tr>
               <th>Criterion</th>
               <th>Configured</th>
@@ -971,7 +971,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     ~H"""
     <section
       id="pathways-trip-visualization-overview"
-      class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+      class="mt-8 rounded-box border border-base-300 bg-base-100"
     >
       <div class="px-4 py-3 border-b border-base-content/15">
         <h3 class="text-sm font-semibold">Trip Reachability Summary</h3>
@@ -983,7 +983,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             id="pathways-trip-overview-total-tests"
             class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Total Tests</div>
+            <div class="text-xs uppercase tracking-wide text-base-content/70">Total Tests</div>
             <div
               id="pathways-trip-overview-total-tests-value"
               class="mt-1 text-2xl font-semibold font-mono tabular-nums text-base-content"
@@ -996,7 +996,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             id="pathways-trip-overview-pass-count"
             class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Passed</div>
+            <div class="text-xs uppercase tracking-wide text-base-content/70">Passed</div>
             <div
               id="pathways-trip-overview-pass-count-value"
               class="mt-1 text-2xl font-semibold font-mono tabular-nums text-success"
@@ -1009,7 +1009,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             id="pathways-trip-overview-warning-count"
             class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Warnings</div>
+            <div class="text-xs uppercase tracking-wide text-base-content/70">Warnings</div>
             <div
               id="pathways-trip-overview-warning-count-value"
               class="mt-1 text-2xl font-semibold font-mono tabular-nums text-warning"
@@ -1022,7 +1022,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             id="pathways-trip-overview-fail-count"
             class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Failed</div>
+            <div class="text-xs uppercase tracking-wide text-base-content/70">Failed</div>
             <div
               id="pathways-trip-overview-fail-count-value"
               class="mt-1 text-2xl font-semibold font-mono tabular-nums text-error"
@@ -1040,7 +1040,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           id="pathways-trip-visualization-comparison"
         >
           <table class="table table-sm">
-            <thead class="text-xs uppercase tracking-wide text-base-content/60">
+            <thead class="text-xs uppercase tracking-wide text-base-content/70">
               <tr>
                 <th>Metric</th>
                 <th>Available</th>

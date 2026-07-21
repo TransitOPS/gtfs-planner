@@ -771,7 +771,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </.header>
 
       <div class="mt-8">
-        <div class="bg-base-100 rounded-lg p-6">
+        <div class="rounded-box border border-base-300 bg-base-100 p-6">
           <.form
             for={@form}
             id="gtfs-import-form"
@@ -808,11 +808,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </label>
               <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
                 <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                  <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
+                  <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/70" />
                   <p class="mb-2 text-sm font-medium">
                     <span class="text-primary">Click to upload</span> or drag and drop
                   </p>
-                  <p class="text-xs text-base-content/60">
+                  <p class="text-xs text-base-content/70">
                     GTFS .txt/.csv files or a .zip archive (max 50 files, 200MB each)
                   </p>
                 </div>
@@ -900,7 +900,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       >
                       </div>
                     </div>
-                    <span class="text-xs text-base-content/60">
+                    <span class="text-xs text-base-content/70">
                       {entry.progress}% uploaded
                     </span>
                   <% else %>
@@ -933,7 +933,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       <span class="text-sm font-medium">
                         Processing: {@import_progress.file}
                       </span>
-                      <span class="text-sm text-base-content/60">
+                      <span class="text-sm text-base-content/70">
                         {@import_progress.processed} / {@import_progress.total} rows
                       </span>
                     </div>
@@ -1021,7 +1021,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </div>
 
       <div class="mt-8">
-        <div class="bg-base-100 rounded-lg p-6">
+        <div class="rounded-box border border-base-300 bg-base-100 p-6">
           <div class="flex flex-col gap-3">
             <h2 class="text-xl font-semibold">Import recovery</h2>
             <p class="text-sm text-base-content/70">
@@ -1111,7 +1111,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <% end %>
 
                 <%= if run.state in ~w(pending running cleaning) do %>
-                  <span class="text-xs text-base-content/50 self-center">
+                  <span class="text-xs text-base-content/70 self-center">
                     {if run.state == "cleaning", do: "Cleanup in progress…", else: "In progress…"}
                   </span>
                 <% end %>
@@ -1122,7 +1122,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           <%= if @recovery_empty do %>
             <p
               id="import-recovery-empty"
-              class="text-sm text-base-content/60 py-2"
+              class="text-sm text-base-content/70 py-2"
             >
               No recoverable imports for this organization.
             </p>
@@ -1131,13 +1131,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </div>
 
       <div class="mt-8">
-        <div class="bg-base-100 rounded-lg p-6">
+        <div class="rounded-box border border-base-300 bg-base-100 p-6">
           <div class="flex flex-col gap-2">
             <h2 class="text-xl font-semibold">Update Station Data</h2>
             <p class="text-sm text-base-content/70">
               Upload `levels.txt`, `stops.txt`, and/or `pathways.txt` to review and apply station data diffs.
             </p>
-            <p id="diff-destination" class="text-xs text-base-content/60">
+            <p id="diff-destination" class="text-xs text-base-content/70">
               Reviewed changes apply to version “{version_display_name(@current_gtfs_version)}”.
             </p>
           </div>
@@ -1151,11 +1151,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           >
             <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
               <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
+                <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/70" />
                 <p class="mb-2 text-sm font-medium">
                   <span class="text-primary">Click to upload</span> or drag and drop
                 </p>
-                <p class="text-xs text-base-content/60">
+                <p class="text-xs text-base-content/70">
                   levels.txt, stops.txt, pathways.txt or a .zip archive (max 3 files, 50MB each)
                 </p>
               </div>
@@ -1185,7 +1185,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       >
                       </div>
                     </div>
-                    <span class="text-xs text-base-content/60">
+                    <span class="text-xs text-base-content/70">
                       {entry.progress}% uploaded
                     </span>
                   <% else %>
@@ -1278,7 +1278,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         @diff_filter == filter &&
                           "border-primary text-base-content",
                         @diff_filter != filter &&
-                          "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+                          "border-transparent text-base-content/70 hover:text-base-content hover:border-base-300"
                       ]}
                       phx-click="diff-filter"
                       phx-value-filter={filter}
@@ -1335,7 +1335,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       </li>
                     </ul>
                     <%= if failure.truncated? do %>
-                      <p class="text-xs text-base-content/60 mt-1">
+                      <p class="text-xs text-base-content/70 mt-1">
                         Showing first 100 of {failure.total_error_count} errors; further rows have the same issues.
                       </p>
                     <% end %>
@@ -1365,7 +1365,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <div class="overflow-x-auto mt-3">
                     <table class="table table-xs w-full">
                       <thead>
-                        <tr class="text-xs uppercase tracking-wide text-base-content/60">
+                        <tr class="text-xs uppercase tracking-wide text-base-content/70">
                           <th>Type</th>
                           <th>ID</th>
                           <th>Action</th>
@@ -1407,7 +1407,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               <div class="overflow-x-auto">
                 <table class="table table-xs w-full">
                   <thead>
-                    <tr class="text-xs uppercase tracking-wide text-base-content/60">
+                    <tr class="text-xs uppercase tracking-wide text-base-content/70">
                       <th>Type</th>
                       <th>ID</th>
                       <th>Action</th>
@@ -1450,7 +1450,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         </span>
                         <span
                           :if={decision.user_edited}
-                          class="text-xs text-base-content/50"
+                          class="text-xs text-base-content/70"
                         >
                           (edited)
                         </span>
@@ -1466,13 +1466,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         >
                           <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
                             <%= for {field, value} <- detail_fields(decision) do %>
-                              <span class="text-base-content/60 font-medium">{to_string(field)}</span>
+                              <span class="text-base-content/70 font-medium">{to_string(field)}</span>
                               <span class="font-mono">{format_value(value)}</span>
                             <% end %>
                           </div>
                           <p
                             :if={decision.dependency_keys != []}
-                            class="mt-2 text-xs text-base-content/50"
+                            class="mt-2 text-xs text-base-content/70"
                           >
                             Depends on: {Enum.join(decision.dependency_keys, ", ")}
                           </p>

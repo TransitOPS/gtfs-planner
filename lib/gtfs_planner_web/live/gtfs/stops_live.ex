@@ -282,7 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         <:subtitle>All top-level stops and stations in the feed.</:subtitle>
       </.header>
 
-      <div class="mt-6 bg-base-100 border border-base-300 rounded-lg p-4">
+      <div class="mt-6 bg-base-100 border border-base-300 rounded-box p-4">
         <.form
           for={@filter_form}
           id="stop-filter-form"
@@ -340,7 +340,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               phx-debounce="300"
               label="Search"
             />
-            <p class="mt-1 text-xs text-base-content/60">Search names and IDs</p>
+            <p class="mt-1 text-xs text-base-content/70">Search names and IDs</p>
           </.form>
         </div>
       </div>
@@ -433,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         :if={@stops_state in [:ready, :route_enrichment_unavailable] and not @stops_empty?}
         class="mt-6"
       >
-        <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+        <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
           <.table id="stops" rows={@streams.stops} responsive="stack">
             <:col
               :let={{_id, stop}}

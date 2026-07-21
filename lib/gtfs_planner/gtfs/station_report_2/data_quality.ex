@@ -142,7 +142,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       id: "orphaned_platforms",
       label: "Platforms missing boarding areas",
       description:
-        "Platforms without boarding-area children \u2014 review recommended for multi-berth platforms",
+        "Platforms without boarding-area children; review recommended for multi-berth platforms",
       status: :info,
       value: length(orphaned),
       value_format: :count,
@@ -161,7 +161,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       id: "minimum_station_children",
       label: "Minimum station children",
       description:
-        "At least 1 entrance and 1 platform required \u2014 #{entrance_count} entrances \u00b7 #{platform_count} platforms found",
+        "At least 1 entrance and 1 platform required; #{entrance_count} entrances \u00b7 #{platform_count} platforms found",
       status: if(ok, do: :pass, else: :fail),
       value: ok,
       value_format: :boolean,

@@ -205,7 +205,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               scale_open={@scale_open}
               scale_close={@scale_close}
             />
-            <span :if={@measurement_enabled} class="text-sm text-base-content/60 mx-auto">
+            <span :if={@measurement_enabled} class="text-sm text-base-content/70 mx-auto">
               {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
             </span>
             <.form
@@ -217,7 +217,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             >
               <div class="flex h-11 w-full items-center gap-2 rounded-md border border-control-border bg-base-100 px-3 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 sm:w-52">
                 <span
-                  class="hero-magnifying-glass size-4 shrink-0 text-base-content/50"
+                  class="hero-magnifying-glass size-4 shrink-0 text-base-content/70"
                   aria-hidden="true"
                 >
                 </span>
@@ -234,7 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               </div>
             </.form>
           <% @mode == :add -> %>
-            <span class="text-sm text-base-content/60 mx-auto">
+            <span class="text-sm text-base-content/70 mx-auto">
               Click floorplan to add a child stop
             </span>
             <button
@@ -246,12 +246,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               Enter coordinates
             </button>
           <% @mode == :connect && @selected_from_stop == nil -> %>
-            <span class="text-sm text-base-content/60 mx-auto">
+            <span class="text-sm text-base-content/70 mx-auto">
               Click a stop to start a connection
             </span>
           <% @mode == :connect && @selected_from_stop != nil -> %>
             <div class="mx-auto flex items-center gap-2">
-              <span class="text-sm text-base-content/60">
+              <span class="text-sm text-base-content/70">
                 From
                 <span class="font-medium text-base-content">
                   {@selected_from_stop.stop_name || @selected_from_stop.stop_id}
@@ -268,7 +268,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               </button>
             </div>
           <% @mode == :map -> %>
-            <span class="text-sm text-base-content/60 mx-auto">
+            <span class="text-sm text-base-content/70 mx-auto">
               Align the floorplan over real-world imagery
             </span>
             <.other_levels_panel
@@ -335,9 +335,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         aria-label={"Level, #{@active_level_name}"}
         phx-click={@open_panel}
       >
-        <span class="text-base-content/60 font-normal">Level</span>
+        <span class="text-base-content/70 font-normal">Level</span>
         <span class="text-base-content">{@active_level_name}</span>
-        <.icon name="hero-chevron-down" class="size-3.5 text-base-content/60" />
+        <.icon name="hero-chevron-down" class="size-3.5 text-base-content/70" />
       </button>
 
       <div
@@ -346,7 +346,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         phx-window-keydown={@close_panel}
         phx-key="escape"
         style="display: none;"
-        class="absolute left-0 top-full mt-1 w-60 border border-base-300 bg-base-100 rounded-lg shadow-lg z-30 text-sm"
+        class="absolute left-0 top-full mt-1 w-60 border border-base-300 bg-base-100 rounded-box shadow-lg z-30 text-sm"
       >
         <div class="px-3 py-1.5 text-[11px] font-medium text-base-content/40 uppercase tracking-wide">
           Switch level
@@ -489,7 +489,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-window-keydown={@scale_close}
             phx-key="escape"
             style="display: none;"
-            class="absolute left-0 top-full mt-1 w-48 border border-base-300 bg-base-100 rounded-lg shadow-lg z-30 text-sm"
+            class="absolute left-0 top-full mt-1 w-48 border border-base-300 bg-base-100 rounded-box shadow-lg z-30 text-sm"
           >
             <button
               type="button"
@@ -628,7 +628,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         phx-window-keydown={@close_panel}
         phx-key="escape"
         style="display: none;"
-        class="absolute right-0 z-20 mt-2 w-80 rounded-lg border border-base-300 bg-base-100 shadow-lg"
+        class="absolute right-0 z-20 mt-2 w-80 rounded-box border border-base-300 bg-base-100 shadow-lg"
       >
         <div class="flex items-center justify-between border-b border-base-200 px-4 py-2">
           <span class="text-sm font-medium text-base-content">Other levels</span>
@@ -677,7 +677,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   <span
                     :if={not row.floorplan_eligible?}
                     id={"floorplan-reason-#{row.level_id}"}
-                    class="text-xs text-base-content/60"
+                    class="text-xs text-base-content/70"
                   >
                     {floorplan_disabled_reason(row)}
                   </span>
@@ -696,7 +696,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   <span
                     :if={not row.stops_eligible?}
                     id={"stops-reason-#{row.level_id}"}
-                    class="text-xs text-base-content/60"
+                    class="text-xs text-base-content/70"
                   >
                     No geo-coded child stops
                   </span>
@@ -1082,7 +1082,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             role="dialog"
             aria-modal="true"
             aria-labelledby="coordinate-preview-confirmation-heading"
-            class="mt-4 border border-error/40 bg-base-100 p-4 shadow-lg"
+            class="mt-4 rounded-box border border-error/40 bg-base-100 p-4 shadow-lg"
           >
             <h3 id="coordinate-preview-confirmation-heading" class="font-semibold">
               Apply coordinate changes?
@@ -2831,7 +2831,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
     <div
       id="diagram-legend-panel"
-      class="hidden absolute bottom-12 left-2 z-10 bg-white border border-base-300 rounded-lg shadow-lg p-4 max-h-[70vh] overflow-y-auto w-72"
+      class="hidden absolute bottom-12 left-2 z-10 bg-base-100 border border-base-300 rounded-box shadow-lg p-4 max-h-[70vh] overflow-y-auto w-72"
     >
       <div class="flex items-center justify-between mb-3">
         <h3 class="font-semibold text-sm">Key</h3>
@@ -2846,7 +2846,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
 
       <div class="mb-4">
-        <h4 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+        <h4 class="text-xs font-semibold text-base-content/70 uppercase tracking-wide mb-2">
           Child Stops
         </h4>
         <div class="space-y-1.5">
@@ -2899,7 +2899,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
 
       <div>
-        <h4 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+        <h4 class="text-xs font-semibold text-base-content/70 uppercase tracking-wide mb-2">
           Pathways
         </h4>
         <div class="space-y-1.5">
@@ -3070,7 +3070,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :platform_options, :list, default: []
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_state, :atom, default: :idle
+  attr :history_filter_form, :any, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :history_zone, :any, default: nil
+  attr :history_local_times, :map, default: %{}
+  attr :history_today, :any, default: nil
+  attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
 
   def child_stop_drawer(assigns) do
@@ -3184,8 +3190,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@history_active}
           entries={@history_entries}
           entity_type="stop"
-          rollback_preview={@rollback_preview}
+          state={@history_state}
+          filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          zone={@history_zone}
+          local_times={@history_local_times}
+          today={@history_today}
+          now={@history_now}
+          rollback_preview={@rollback_preview}
         />
       </div>
     </.drawer>
@@ -3321,7 +3333,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 </tr>
               <% end %>
               <tr :if={@unpositioned_stops == []}>
-                <td colspan="4" class="text-sm text-base-content/60">
+                <td colspan="4" class="text-sm text-base-content/70">
                   No matching unpositioned stops.
                 </td>
               </tr>
@@ -3364,7 +3376,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 </tr>
               <% end %>
               <tr :if={@positioned_stops == []}>
-                <td colspan="4" class="text-sm text-base-content/60">
+                <td colspan="4" class="text-sm text-base-content/70">
                   No matching positioned stops on this level.
                 </td>
               </tr>
@@ -3480,7 +3492,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             required={@is_new_stop && @stop_id_mode == :manual}
             class="w-full input input-lg"
           />
-          <p :if={!@is_new_stop} class="text-xs text-base-content/60">
+          <p :if={!@is_new_stop} class="text-xs text-base-content/70">
             Leave blank to auto-generate from stop name
           </p>
           <button
@@ -3869,7 +3881,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_error, :string, default: nil
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_state, :atom, default: :idle
+  attr :history_filter_form, :any, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :history_zone, :any, default: nil
+  attr :history_local_times, :map, default: %{}
+  attr :history_today, :any, default: nil
+  attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
 
   def pathway_drawer(assigns) do
@@ -3992,8 +4010,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@history_active}
           entries={@history_entries}
           entity_type="pathway"
-          rollback_preview={@rollback_preview}
+          state={@history_state}
+          filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          zone={@history_zone}
+          local_times={@history_local_times}
+          today={@history_today}
+          now={@history_now}
+          rollback_preview={@rollback_preview}
         />
       </div>
     </.drawer>
@@ -4073,7 +4097,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <div class="bg-base-200 rounded-lg px-3 py-2 -mx-2">
-      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-0.5">
+      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70 mb-0.5">
         Pathway Diagram
       </h4>
       <TransitPresentation.pathway_summary pathway={@editing_pathway} class="mb-2" />
@@ -4531,7 +4555,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_shared, :boolean, default: false
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_state, :atom, default: :idle
+  attr :history_filter_form, :any, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :history_zone, :any, default: nil
+  attr :history_local_times, :map, default: %{}
+  attr :history_today, :any, default: nil
+  attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
 
   def level_sidebar(assigns) do
@@ -4589,8 +4619,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@history_active}
           entries={@history_entries}
           entity_type="level"
-          rollback_preview={@rollback_preview}
+          state={@history_state}
+          filter_form={@history_filter_form}
           history_field_filter={@history_field_filter}
+          zone={@history_zone}
+          local_times={@history_local_times}
+          today={@history_today}
+          now={@history_now}
+          rollback_preview={@rollback_preview}
         />
       </div>
     </.drawer>
@@ -4653,7 +4689,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <%= if @show_level_modal == :add && @level_mode == :existing do %>
         <%= if @available_levels == [] do %>
           <div class="p-4 bg-base-200 rounded-lg text-center">
-            <p class="text-base-content/60 mb-2">All levels are already assigned to this station</p>
+            <p class="text-base-content/70 mb-2">All levels are already assigned to this station</p>
             <p class="text-sm text-base-content/40">Switch to "Create new level" to add a new one</p>
           </div>
         <% else %>
@@ -4810,7 +4846,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
 
       <div class="p-4 bg-base-200 rounded-lg">
-        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-4">
+        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/70 mb-4">
           Stop Information
         </h4>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -4838,7 +4874,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
 
       <div>
-        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-2">
+        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/70 mb-2">
           Start Address
         </h4>
         <p class="text-sm text-base-content/70 mb-4">
@@ -5110,7 +5146,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           {@error}
         </div>
 
-        <div :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-base-content/60">
+        <div :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-base-content/70">
           No child stops to rename for this station.
         </div>
 
@@ -5239,7 +5275,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <h2 class="text-base font-semibold mb-2">Child Stops on Level</h2>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @child_stops_list == [] do %>
-          <p class="px-4 py-3 text-sm text-base-content/60">No child stops on this level.</p>
+          <p class="px-4 py-3 text-sm text-base-content/70">No child stops on this level.</p>
         <% else %>
           <.table
             id="child-stops-table"
@@ -5346,7 +5382,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <h2 class="text-base font-semibold mb-2">Reachability Test Cases</h2>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @walkability_tests_list == [] do %>
-          <p class="px-4 py-3 text-sm text-base-content/60">
+          <p class="px-4 py-3 text-sm text-base-content/70">
             No reachability test cases on this level.
           </p>
         <% else %>
@@ -5381,7 +5417,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 </p>
                 <p
                   :if={present_text?(test_case.description)}
-                  class="text-xs text-base-content/60 truncate"
+                  class="text-xs text-base-content/70 truncate"
                 >
                   {test_case.description}
                 </p>
@@ -5412,7 +5448,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @pathways_list == [] do %>
-          <p class="px-4 py-3 text-sm text-base-content/60">No pathways on this level.</p>
+          <p class="px-4 py-3 text-sm text-base-content/70">No pathways on this level.</p>
         <% else %>
           <.table
             id="pathways-table"

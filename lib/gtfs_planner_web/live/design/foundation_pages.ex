@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </p>
 
       <h3 class="mt-4 font-semibold">Buttons and CTAs</h3>
-      <p class="text-sm text-base-content/60">docs/design/cta-design.md</p>
+      <p class="text-sm text-base-content/70">docs/design/cta-design.md</p>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
           A button label is a promise. Write verb + noun in sentence case: Add job, Save changes.
@@ -82,7 +82,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </ul>
 
       <h3 class="mt-4 font-semibold">Forms</h3>
-      <p class="text-sm text-base-content/60">docs/design/form-design.md</p>
+      <p class="text-sm text-base-content/70">docs/design/form-design.md</p>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>Every field is a cost. Remove the field before styling it.</li>
         <li>Single column, top-aligned labels, roughly 640px maximum width.</li>
@@ -92,7 +92,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </ul>
 
       <h3 class="mt-4 font-semibold">Tables and rows</h3>
-      <p class="text-sm text-base-content/60">docs/design/table-row-design.md</p>
+      <p class="text-sm text-base-content/70">docs/design/table-row-design.md</p>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>Tables exist to find, compare, or act.</li>
         <li>Horizontal separators only. Vertical gridlines are chartjunk.</li>
@@ -102,7 +102,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </ul>
 
       <h3 class="mt-4 font-semibold">Functionalist baseline</h3>
-      <p class="text-sm text-base-content/60">docs/functionalist-design.md</p>
+      <p class="text-sm text-base-content/70">docs/functionalist-design.md</p>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
           Form follows data. Maximize the data-ink ratio: if an element can be erased without losing meaning, erase it.
@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">Surfaces</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Page and card backgrounds, ascending in depth. Body text on all three is <code class="font-mono text-sm">text-base-content</code>.
       </p>
       <div class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -148,7 +148,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">State</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Pair state color with text. Color alone is not an accessible signal.
       </p>
       <div class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -214,8 +214,21 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
             was 3.05:1 — a documented pair that failed AA.
           </dd>
         </div>
+        <div class="grid grid-cols-3 gap-4 py-2">
+          <dt class="font-mono text-sm">--color-base-200<br />--color-base-300</dt>
+          <dd class="col-span-2 text-base-content/70">
+            Darkened from the stock 98% and 95% lightness, which sat at roughly
+            1.05:1 and 1.15:1 on white — the page background, card boundaries,
+            dividers, fills, and hover states were all near invisible.
+            <code class="font-mono text-sm">base-200</code>
+            now separates cards from the page; <code class="font-mono text-sm">base-300</code>
+            draws a visible hairline (~1.5:1) for decorative structure. Control
+            boundaries use the darker <code class="font-mono text-sm">--color-control-border</code>, mixed to
+            ~3.1:1 to meet WCAG 1.4.11's 3:1 floor for component boundaries.
+          </dd>
+        </div>
       </dl>
-      <p class="mt-3 text-sm text-base-content/60">
+      <p class="mt-3 text-sm text-base-content/70">
         <code class="font-mono text-sm">--color-accent</code>
         is untouched and still fails as text: 1.9:1 on white. It is a background token —
         pair it with <code class="font-mono text-sm">text-accent-content</code>
@@ -223,7 +236,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Station diagram roles</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Station diagrams use named CSS variables from one palette contract. Color is paired
         with text, marker shape, outline, direction, or line style because an operator image
         can make any color hard to read.
@@ -268,32 +281,32 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Scale</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         The sizes in use. One level per rank — skipping a level to fake emphasis breaks
         the hierarchy.
       </p>
 
       <dl class="mt-3 divide-y divide-base-300 border-y border-base-300">
         <div class="grid grid-cols-3 items-baseline gap-4 py-3">
-          <dt class="font-mono text-xs text-base-content/60">text-2xl font-bold</dt>
+          <dt class="font-mono text-xs text-base-content/70">text-2xl font-bold</dt>
           <dd class="col-span-2">
             <p class="ds-type-sample text-2xl font-bold">Page title</p>
           </dd>
         </div>
         <div class="grid grid-cols-3 items-baseline gap-4 py-3">
-          <dt class="font-mono text-xs text-base-content/60">text-xl font-semibold</dt>
+          <dt class="font-mono text-xs text-base-content/70">text-xl font-semibold</dt>
           <dd class="col-span-2">
             <p class="ds-type-sample text-xl font-semibold">Section heading</p>
           </dd>
         </div>
         <div class="grid grid-cols-3 items-baseline gap-4 py-3">
-          <dt class="font-mono text-xs text-base-content/60">text-lg font-semibold</dt>
+          <dt class="font-mono text-xs text-base-content/70">text-lg font-semibold</dt>
           <dd class="col-span-2">
             <p class="ds-type-sample text-lg font-semibold">Subsection heading</p>
           </dd>
         </div>
         <div class="grid grid-cols-3 items-baseline gap-4 py-3">
-          <dt class="font-mono text-xs text-base-content/60">text-base</dt>
+          <dt class="font-mono text-xs text-base-content/70">text-base</dt>
           <dd class="col-span-2">
             <p class="ds-type-sample text-base">
               Body copy. Reads at a comfortable measure and carries the detail.
@@ -301,7 +314,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
           </dd>
         </div>
         <div class="grid grid-cols-3 items-baseline gap-4 py-3">
-          <dt class="font-mono text-xs text-base-content/60">text-sm text-base-content/70</dt>
+          <dt class="font-mono text-xs text-base-content/70">text-sm text-base-content/70</dt>
           <dd class="col-span-2">
             <p class="ds-type-sample text-sm text-base-content/70">
               Secondary and supporting text.
@@ -309,7 +322,7 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
           </dd>
         </div>
         <div class="grid grid-cols-3 items-baseline gap-4 py-3">
-          <dt class="font-mono text-xs text-base-content/60">font-mono text-sm</dt>
+          <dt class="font-mono text-xs text-base-content/70">font-mono text-sm</dt>
           <dd class="col-span-2">
             <p class="ds-type-sample font-mono text-sm">stop_id · GTFS-2481 · 47.6062</p>
           </dd>

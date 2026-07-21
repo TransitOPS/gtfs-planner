@@ -441,8 +441,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
     >
       <legend class="fieldset-legend text-base">
         {@label}
-        <span :if={@required} class="text-sm text-base-content/60">(required)</span>
-        <span :if={!@required} class="text-sm text-base-content/60">(optional)</span>
+        <span :if={@required} class="text-sm text-base-content/70">(required)</span>
+        <span :if={!@required} class="text-sm text-base-content/70">(optional)</span>
       </legend>
       <div class="space-y-2 mt-2" role="group" aria-label={@label}>
         <label :for={{label, value} <- @options} class="flex items-center gap-2 cursor-pointer">
@@ -607,7 +607,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </tr>
         </thead>
         <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-          <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
+          <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="hover:bg-base-200">
             <td
               :for={col <- @col}
               data-label={col[:label]}
@@ -1013,7 +1013,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       if is_active do
         "font-semibold border-primary text-base-content"
       else
-        "font-medium border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+        "font-medium border-transparent text-base-content/70 hover:text-base-content hover:border-base-300"
       end
 
     [base, state]
@@ -1156,45 +1156,378 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "extra classes for sizing tweaks"
   attr :rest, :global
 
+  # Each entry is {label, dot, text, field}. The tinted field is what makes a
+  # column of badges scannable at a glance; the word still carries the meaning
+  # on its own. Semantic tones sit on a 10% tint of themselves — the theme's
+  # semantic colors are 5.2:1 on base-100, so the colored word stays ≥4.5:1 on
+  # its own tint. Neutral text uses /70, the smallest opacity of base-content
+  # that holds AA at this size.
   @status_presentation %{
-    "pass" => {"Pass", "bg-success", "text-success"},
-    "completed" => {"Completed", "bg-success", "text-success"},
-    "warning" => {"Warning", "bg-warning", "text-warning"},
-    "failed" => {"Failed", "bg-error", "text-error"},
-    "error" => {"Error", "bg-error", "text-error"},
-    "running" => {"Running", "bg-info", "text-info"},
-    "info" => {"Info", "bg-info", "text-info"},
-    "started" => {"Started", "bg-base-content/40", "text-base-content/60"},
-    "draft" => {"Draft", "bg-base-content/40", "text-base-content/60"},
-    "in_progress" => {"In progress", "bg-info", "text-info"},
-    "active" => {"Active", "bg-success", "text-success"},
-    "deactivated" => {"Deactivated", "bg-error", "text-error"},
-    "invitation_pending" => {"Invitation pending", "bg-warning", "text-warning"}
+    "pass" => {"Pass", "bg-success", "text-success", "bg-success/10"},
+    "completed" => {"Completed", "bg-success", "text-success", "bg-success/10"},
+    "warning" => {"Warning", "bg-warning", "text-warning", "bg-warning/10"},
+    "failed" => {"Failed", "bg-error", "text-error", "bg-error/10"},
+    "error" => {"Error", "bg-error", "text-error", "bg-error/10"},
+    "running" => {"Running", "bg-info", "text-info", "bg-info/10"},
+    "info" => {"Info", "bg-info", "text-info", "bg-info/10"},
+    "started" => {"Started", "bg-base-content/40", "text-base-content/70", "bg-base-content/10"},
+    "draft" => {"Draft", "bg-base-content/40", "text-base-content/70", "bg-base-content/10"},
+    "in_progress" => {"In progress", "bg-info", "text-info", "bg-info/10"},
+    "active" => {"Active", "bg-success", "text-success", "bg-success/10"},
+    "deactivated" => {"Deactivated", "bg-error", "text-error", "bg-error/10"},
+    "invitation_pending" => {"Invitation pending", "bg-warning", "text-warning", "bg-warning/10"}
   }
 
-  @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/60"}
+  @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/70", "bg-base-content/10"}
 
   def status_badge(assigns) do
     status = to_string(assigns.status)
-    {label, dot_class, text_class} = Map.get(@status_presentation, status, @status_unknown)
+
+    {label, dot_class, text_class, field_class} =
+      Map.get(@status_presentation, status, @status_unknown)
 
     assigns =
       assigns
       |> assign(:dot_class, dot_class)
       |> assign(:text_class, text_class)
+      |> assign(:field_class, field_class)
       |> assign(:word, assigns.label || label)
 
     ~H"""
     <span
       class={[
-        "inline-flex items-center gap-1.5 border border-base-300 px-2 py-0.5 text-sm",
+        "rounded-selector inline-flex items-center gap-1.5 px-2 py-0.5 text-sm",
+        @field_class,
         @class
       ]}
       {@rest}
     >
-      <span class={["size-1.5 rounded-full", @dot_class]} aria-hidden="true"></span>
+      <span class={["size-2 shrink-0 rounded-full", @dot_class]} aria-hidden="true"></span>
       <span class={["font-medium", @text_class]}>{@word}</span>
     </span>
+    """
+  end
+
+  @count_strip_tones [:neutral, :info, :success, :warning, :error]
+  @count_strip_required_fields [:key, :label, :count, :tone]
+  @count_strip_allowed_fields [:key, :label, :count, :tone, :disabled_reason]
+  @count_strip_key_format ~r/\A[A-Za-z0-9_-]+\z/
+
+  @count_strip_tone_classes %{
+    neutral: "bg-base-content/40",
+    info: "bg-info",
+    success: "bg-success",
+    warning: "bg-warning",
+    error: "bg-error"
+  }
+
+  # Display-mode counts above zero repeat their tone on the number itself, so a
+  # non-zero warning or failure count is findable without reading every label.
+  # The theme's semantic text colors hold ≥4.5:1 on base-100. Filter buttons
+  # never use these — a selected button's text must stay primary-content.
+  @count_strip_count_classes %{
+    neutral: nil,
+    info: "text-info",
+    success: "text-success",
+    warning: "text-warning",
+    error: "text-error"
+  }
+
+  @doc """
+  Renders a strip of labelled counts, either as read-only figures or as filters.
+
+  Shared structure only. The caller owns every word and every number: this
+  component never calculates counts, never maps a domain term to a label, and
+  never assigns meaning to a tone. `:tone` is wayfinding — the label always
+  carries the meaning, so a strip is readable without colour.
+
+  `event: nil` renders display-only non-buttons. A non-nil `event` renders one
+  native button per item carrying `aria-pressed`, `phx-click`, `phx-value-key`,
+  and the optional `phx-target`. `selected_key` decides which button is pressed;
+  every button always states `aria-pressed` so the state never appears or
+  disappears between renders.
+
+  A zero-count filter item stays present and keyboard-focusable and is marked
+  `aria-disabled="true"` with a dashed border; its count and any
+  `:disabled_reason` explain the unavailability on screen. Native `disabled` is
+  deliberately not used — it would remove the control from the tab order. A
+  focusable `aria-disabled` button can still dispatch, so **the consumer handler
+  must reject unknown and zero-count keys**; this component cannot.
+
+  Items are validated before rendering. An item that is not a map, is missing a
+  required field, carries an unsupported field, or holds an invalid key, label,
+  count, tone, or reason raises `ArgumentError`, as do duplicate keys, which
+  would produce duplicate DOM ids. Keys must match `[A-Za-z0-9_-]+` because each
+  one becomes the stable id `<id>-item-<key>` that tests and consumers query.
+
+      @type count_strip_item :: %{
+              required(:key) => String.t(),
+              required(:label) => String.t(),
+              required(:count) => non_neg_integer(),
+              required(:tone) => :neutral | :info | :success | :warning | :error,
+              optional(:disabled_reason) => String.t()
+            }
+
+  ## Examples
+
+      <.count_strip
+        id="report-counts"
+        items={[
+          %{key: "stops", label: "Stops", count: 128, tone: :neutral},
+          %{key: "missing_coordinates", label: "Missing coordinates", count: 3, tone: :warning}
+        ]}
+      />
+
+      <.count_strip
+        id="history-filter"
+        items={@field_counts}
+        selected_key={@selected_field}
+        event="filter_field"
+      />
+  """
+  attr :id, :string, required: true
+  attr :items, :list, required: true
+  attr :selected_key, :string, default: nil
+  attr :event, :string, default: nil
+  attr :target, :any, default: nil
+  attr :class, :any, default: nil
+
+  def count_strip(assigns) do
+    assigns = assign(assigns, :entries, normalize_count_strip_items(assigns.items, assigns.id))
+
+    ~H"""
+    <div
+      id={@id}
+      data-role="count-strip"
+      data-mode={if @event, do: "filter", else: "display"}
+      class={[
+        "flex flex-wrap items-center",
+        if(@event, do: "gap-2", else: "gap-x-5 gap-y-1.5"),
+        @class
+      ]}
+    >
+      <%= if is_nil(@event) do %>
+        <span
+          :for={entry <- @entries}
+          id={entry.dom_id}
+          data-role="count-strip-item"
+          data-key={entry.key}
+          class="inline-flex max-w-full items-center gap-2 py-0.5 text-sm"
+        >
+          <.count_strip_body entry={entry} colorize={true} />
+        </span>
+      <% else %>
+        <button
+          :for={entry <- @entries}
+          id={entry.dom_id}
+          type="button"
+          data-role="count-strip-item"
+          data-key={entry.key}
+          aria-pressed={to_string(entry.key == @selected_key)}
+          aria-disabled={entry.unavailable? && "true"}
+          phx-click={@event}
+          phx-value-key={entry.key}
+          phx-target={@target}
+          class={[
+            "rounded-field inline-flex min-h-11 min-w-11 max-w-full items-center gap-2 border px-3 py-1.5",
+            "text-left text-sm",
+            "motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-2",
+            "focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+            entry.key == @selected_key &&
+              "cursor-pointer border-primary bg-primary font-semibold text-primary-content",
+            entry.key != @selected_key && entry.unavailable? &&
+              "border-dashed border-base-content/40 bg-base-100 text-base-content/70 cursor-not-allowed",
+            entry.key != @selected_key && !entry.unavailable? &&
+              "cursor-pointer border-control-border bg-base-100 text-base-content hover:border-primary"
+          ]}
+        >
+          <.count_strip_body entry={entry} colorize={false} />
+        </button>
+      <% end %>
+    </div>
+    """
+  end
+
+  attr :entry, :map, required: true
+  attr :colorize, :boolean, required: true
+
+  defp count_strip_body(assigns) do
+    ~H"""
+    <span
+      data-role="count-strip-tone"
+      class={["size-2 shrink-0 rounded-full", @entry.tone_class]}
+      aria-hidden="true"
+    >
+    </span>
+    <span data-role="count-strip-label" class="min-w-0 break-words">{@entry.label}</span>
+    <span
+      phx-no-format
+      data-role="count-strip-value"
+      class={[
+        "font-semibold tabular-nums",
+        @colorize && @entry.count > 0 && @entry.count_class
+      ]}
+    >{@entry.count}</span>
+    <span
+      :if={@entry.disabled_reason}
+      data-role="count-strip-reason"
+      class="min-w-0 break-words text-xs font-normal"
+    >
+      {@entry.disabled_reason}
+    </span>
+    """
+  end
+
+  defp normalize_count_strip_items(items, id) when is_list(items) do
+    entries = Enum.map(items, &normalize_count_strip_item(&1, id))
+
+    duplicates =
+      entries
+      |> Enum.frequencies_by(& &1.key)
+      |> Enum.filter(fn {_key, count} -> count > 1 end)
+      |> Enum.map(&elem(&1, 0))
+
+    if duplicates != [] do
+      raise ArgumentError,
+            "count_strip #{inspect(id)} received duplicate item key(s) #{inspect(duplicates)}; " <>
+              "each key becomes a DOM id and must be unique"
+    end
+
+    entries
+  end
+
+  defp normalize_count_strip_items(items, id) do
+    raise ArgumentError,
+          "count_strip #{inspect(id)} expects :items to be a list, got: #{inspect(items)}"
+  end
+
+  defp normalize_count_strip_item(%{} = item, id) do
+    validate_count_strip_fields!(item, id)
+
+    key = validate_count_strip_key!(item.key, id)
+    count = validate_count_strip_count!(item.count, id)
+
+    %{
+      key: key,
+      label: validate_count_strip_label!(item.label, id),
+      count: count,
+      disabled_reason: validate_count_strip_reason!(Map.get(item, :disabled_reason), id),
+      dom_id: "#{id}-item-#{key}",
+      tone_class: count_strip_tone_class!(item.tone, id),
+      count_class: Map.get(@count_strip_count_classes, item.tone),
+      unavailable?: count == 0
+    }
+  end
+
+  defp normalize_count_strip_item(item, id) do
+    count_strip_error(id, "item must be a map, got: #{inspect(item)}")
+  end
+
+  defp validate_count_strip_fields!(item, id) do
+    fields = Map.keys(item)
+
+    case fields -- @count_strip_allowed_fields do
+      [] -> :ok
+      extra -> count_strip_error(id, "carries unsupported field(s) #{inspect(extra)}")
+    end
+
+    case @count_strip_required_fields -- fields do
+      [] -> :ok
+      missing -> count_strip_error(id, "is missing required field(s) #{inspect(missing)}")
+    end
+  end
+
+  defp validate_count_strip_key!(key, id) do
+    if is_binary(key) and Regex.match?(@count_strip_key_format, key) do
+      key
+    else
+      count_strip_error(
+        id,
+        ":key must be a non-empty string of letters, digits, hyphens, or underscores, " <>
+          "got: #{inspect(key)}"
+      )
+    end
+  end
+
+  defp validate_count_strip_label!(label, id) do
+    if is_binary(label) and String.trim(label) != "" do
+      label
+    else
+      count_strip_error(id, ":label must be a non-empty string, got: #{inspect(label)}")
+    end
+  end
+
+  defp validate_count_strip_count!(count, id) do
+    if is_integer(count) and count >= 0 do
+      count
+    else
+      count_strip_error(id, ":count must be a non-negative integer, got: #{inspect(count)}")
+    end
+  end
+
+  defp validate_count_strip_reason!(nil, _id), do: nil
+
+  defp validate_count_strip_reason!(reason, id) do
+    if is_binary(reason) and String.trim(reason) != "" do
+      reason
+    else
+      count_strip_error(
+        id,
+        ":disabled_reason must be a non-empty string when given, got: #{inspect(reason)}"
+      )
+    end
+  end
+
+  defp count_strip_tone_class!(tone, id) do
+    case Map.fetch(@count_strip_tone_classes, tone) do
+      {:ok, class} ->
+        class
+
+      :error ->
+        count_strip_error(
+          id,
+          ":tone must be one of #{inspect(@count_strip_tones)}, got: #{inspect(tone)}"
+        )
+    end
+  end
+
+  defp count_strip_error(id, message) do
+    raise ArgumentError, "count_strip #{inspect(id)} #{message}"
+  end
+
+  @doc """
+  Renders one prominent figure with its label — the metric tile for report
+  summaries and inventories.
+
+  The value reads first, at full contrast on a filled field; the label sits
+  under it at AA contrast. The caller owns both strings, including any unit
+  or formatting inside `value`. Use `<.count_strip>` for a row of small
+  labelled counts, and a table when figures need comparison down a column.
+
+  ## Examples
+
+      <.metric value={128} label="Stops" />
+      <.metric value="117.8s" label="Total time" />
+  """
+  attr :value, :any, required: true
+  attr :label, :string, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def metric(assigns) do
+    ~H"""
+    <div
+      data-role="metric"
+      class={["rounded-box border border-base-300 bg-base-100 px-4 py-3", @class]}
+      {@rest}
+    >
+      <div data-role="metric-value" class="text-2xl font-semibold text-base-content tabular-nums">
+        {@value}
+      </div>
+      <div data-role="metric-label" class="mt-0.5 text-sm text-base-content/70 break-words">
+        {@label}
+      </div>
+    </div>
     """
   end
 
@@ -1221,7 +1554,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def empty_state(assigns) do
     ~H"""
-    <div class={["border border-base-300 p-8 text-center", @class]} {@rest}>
+    <div class={["rounded-box border border-base-300 p-8 text-center", @class]} {@rest}>
       <p class="font-semibold">{@title}</p>
       <div :if={@inner_block != []} class="mt-1 text-sm text-base-content/70">
         {render_slot(@inner_block)}
@@ -1254,7 +1587,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def skeleton(assigns) do
     ~H"""
     <div class={@class} {@rest}>
-      <p class="text-sm text-base-content/60 mb-2">{@label}</p>
+      <p class="text-sm text-base-content/70 mb-2">{@label}</p>
       <div
         :if={@inner_block == []}
         class="space-y-3 motion-safe:animate-pulse"
@@ -1454,7 +1787,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <label id={"#{@id}-label"} class="block text-sm font-semibold">
         {@label}
       </label>
-      <p id={"#{@id}-help"} class="text-sm text-base-content/60">
+      <p id={"#{@id}-help"} class="text-sm text-base-content/70">
         {@help}
       </p>
 
@@ -1544,7 +1877,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               >
                 {entry.progress}%
               </progress>
-              <span class="text-xs text-base-content/60 tabular-nums">
+              <span class="text-xs text-base-content/70 tabular-nums">
                 {entry.progress}%
               </span>
             </div>
@@ -1560,7 +1893,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </div>
           <button
             type="button"
-            class="min-h-11 min-w-11 flex items-center justify-center text-base-content/60 hover:text-error"
+            class="min-h-11 min-w-11 flex items-center justify-center text-base-content/70 hover:text-error"
             phx-click={@cancel_event}
             phx-value-ref={entry.ref}
             phx-target={@target}
@@ -1719,7 +2052,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         <p
           :if={@show_group_reason?}
           id={"#{@id}-disabled-reason"}
-          class="text-xs text-base-content/60"
+          class="text-xs text-base-content/70"
         >
           {@disabled_reason}
         </p>

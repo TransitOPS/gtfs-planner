@@ -85,76 +85,77 @@ defmodule GtfsPlannerWeb.Admin.Components do
       </:action>
     </.empty_state>
 
-    <.table
-      :if={!@empty?}
-      id={@id}
-      rows={@members}
-      responsive="stack"
-      row_id={&member_dom_id(row_member(&1))}
-      row_item={&row_member/1}
-    >
-      <:col :let={member} label="Email">{member.user.email}</:col>
-      <:col :let={member} label="Roles">
-        <span class="flex flex-wrap gap-1">
-          <span
-            :for={role <- member.roles}
-            data-role="member-role"
-            class="inline-flex items-center border border-base-300 px-2 py-0.5 text-sm"
-          >
-            {role_label(role)}
+    <div :if={!@empty?} class="rounded-box border border-base-300 bg-base-100 overflow-hidden">
+      <.table
+        id={@id}
+        rows={@members}
+        responsive="stack"
+        row_id={&member_dom_id(row_member(&1))}
+        row_item={&row_member/1}
+      >
+        <:col :let={member} label="Email">{member.user.email}</:col>
+        <:col :let={member} label="Roles">
+          <span class="flex flex-wrap gap-1">
+            <span
+              :for={role <- member.roles}
+              data-role="member-role"
+              class="rounded-selector inline-flex items-center border border-base-300 px-2 py-0.5 text-sm"
+            >
+              {role_label(role)}
+            </span>
+            <span :if={member.roles == []} class="text-sm text-base-content/70">No roles</span>
           </span>
-          <span :if={member.roles == []} class="text-sm text-base-content/60">No roles</span>
-        </span>
-      </:col>
-      <:col :let={member} label="Status">
-        <.status_badge data-role="member-status" status={member_status(member)} />
-      </:col>
+        </:col>
+        <:col :let={member} label="Status">
+          <.status_badge data-role="member-status" status={member_status(member)} />
+        </:col>
 
-      <:action :let={member}>
-        <.button
-          :if={member_status(member) == :invitation_pending}
-          id={"resend-invite-#{member.user.id}"}
-          variant="quiet"
-          size="sm"
-          class="min-h-11"
-          phx-click={@resend_event}
-          phx-value-user-id={member.user.id}
-          phx-disable-with="Resending invite…"
-          aria-label={"Resend invite to #{member.user.email}"}
-        >
-          Resend invite
-        </.button>
-      </:action>
+        <:action :let={member}>
+          <.button
+            :if={member_status(member) == :invitation_pending}
+            id={"resend-invite-#{member.user.id}"}
+            variant="quiet"
+            size="sm"
+            class="min-h-11"
+            phx-click={@resend_event}
+            phx-value-user-id={member.user.id}
+            phx-disable-with="Resending invite…"
+            aria-label={"Resend invite to #{member.user.email}"}
+          >
+            Resend invite
+          </.button>
+        </:action>
 
-      <:action :let={member}>
-        <.button
-          :if={member_status(member) == :deactivated}
-          id={"activate-user-#{member.user.id}"}
-          variant="quiet"
-          size="sm"
-          class="min-h-11"
-          phx-click={@activate_event}
-          phx-value-user-id={member.user.id}
-          phx-disable-with="Activating user…"
-          aria-label={"Activate #{member.user.email}"}
-        >
-          Activate user
-        </.button>
-        <.button
-          :if={member_status(member) != :deactivated}
-          id={"deactivate-user-#{member.user.id}"}
-          variant="quiet"
-          size="sm"
-          class="min-h-11"
-          phx-click={@deactivate_event}
-          phx-value-user-id={member.user.id}
-          phx-disable-with="Deactivating user…"
-          aria-label={"Deactivate #{member.user.email}"}
-        >
-          Deactivate user
-        </.button>
-      </:action>
-    </.table>
+        <:action :let={member}>
+          <.button
+            :if={member_status(member) == :deactivated}
+            id={"activate-user-#{member.user.id}"}
+            variant="quiet"
+            size="sm"
+            class="min-h-11"
+            phx-click={@activate_event}
+            phx-value-user-id={member.user.id}
+            phx-disable-with="Activating user…"
+            aria-label={"Activate #{member.user.email}"}
+          >
+            Activate user
+          </.button>
+          <.button
+            :if={member_status(member) != :deactivated}
+            id={"deactivate-user-#{member.user.id}"}
+            variant="quiet"
+            size="sm"
+            class="min-h-11"
+            phx-click={@deactivate_event}
+            phx-value-user-id={member.user.id}
+            phx-disable-with="Deactivating user…"
+            aria-label={"Deactivate #{member.user.email}"}
+          >
+            Deactivate user
+          </.button>
+        </:action>
+      </.table>
+    </div>
     """
   end
 

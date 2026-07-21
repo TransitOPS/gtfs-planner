@@ -2,28 +2,56 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   @moduledoc """
   Function components for the change-history panel rendered in the
   child-stop, pathway, and level sidebars of the station diagram editor.
+
+  ## Caller-owned state
+
+  This module renders; it never loads, converts, or decides. `StationDiagramLive`
+  owns the asynchronous lifecycle (`:initial_loading | :ready | :refreshing |
+  :error`), the assigned filter form, and the agency-local timestamps produced by
+  one batch `Gtfs.localize_display_times/2` call. The component receives those
+  local `NaiveDateTime` values keyed by entry id and groups by their local date —
+  it never converts a zone itself, and it never mutates the stored UTC value it
+  still emits in every `<time datetime>` attribute.
+
+  ## Shared version diff
+
+  Every audit difference — historical entry and rollback preview alike — is
+  rendered by `TransitPresentation.version_diff_row/1`. This module owns only
+  the mapping into that contract: the human field labels, the categorical GTFS
+  vocabulary, the action/status/natural-key translation, and the rollback
+  actions passed through its slot. There is no second diff renderer and no
+  truncation: a stored value reaches the screen complete.
   """
   use Phoenix.Component
+
+  alias Phoenix.LiveView.JS
+
+  import GtfsPlannerWeb.CoreComponents,
+    only: [button: 1, callout: 1, count_strip: 1, empty_state: 1, icon: 1, input: 1, skeleton: 1]
+
+  import GtfsPlannerWeb.Components.TransitPresentation, only: [version_diff_row: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlannerWeb.Components.TransitPresentation
 
   @system_noise_diff_fields MapSet.new(
                               ~w(organization_id gtfs_version_id id inserted_at updated_at)
                             )
 
-  @change_value_max_chars 60
-
   if Mix.env() == :test do
     def __test_display_name__(arg), do: display_name(arg)
     def __test_format_date_header__(d, t), do: format_date_header(d, t)
-    def __test_format_time_short__(dt, t), do: format_time_short(dt, t)
-    def __test_group_entries_by_date__(entries), do: group_entries_by_date(entries)
-    def __test_relative_time__(dt, now), do: relative_time(dt, now)
+    def __test_format_time_short__(local, t), do: format_time_short(local, t)
+
+    def __test_group_entries_by_date__(entries, local_times),
+      do: group_entries_by_local_date(entries, local_times)
+
+    def __test_relative_time__(local, now), do: relative_time(local, now)
     def __test_field_groups__(et), do: field_groups(et)
-    def __test_categorical_value__(key, value), do: categorical_value(key, value)
+    def __test_categorical_label__(key, value), do: categorical_label(key, value)
 
     def __test_apply_field_filter__(rows, entity_type, filter_key),
       do: apply_field_filter(rows, entity_type, filter_key)
@@ -35,6 +63,16 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
     def __test_preview_matches_entry__(preview, entity_type, entry),
       do: preview_matches_entry?(preview, entity_type, entry)
+
+    def __test_field_label__(entity_type, field), do: field_label(entity_type, field)
+
+    def __test_display_value__(entity_type, field, value),
+      do: display_value(entity_type, field, value)
+
+    def __test_diff_changes__(rows, entity_type), do: diff_changes(rows, entity_type)
+    def __test_diff_action__(entry), do: diff_action(entry)
+    def __test_diff_status__(reverted?), do: diff_status(reverted?)
+    def __test_natural_key__(entry), do: natural_key(entry)
   end
 
   attr :entity_type, :string, required: true
@@ -60,9 +98,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         tabindex={if @history_active, do: "-1", else: "0"}
         class={[
           "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:rounded-sm",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
           if(@history_active,
-            do: "text-base-content/60 hover:text-base-content border-transparent",
+            do: "text-base-content/70 hover:text-base-content border-transparent",
             else: "text-base-content font-medium border-base-content"
           )
         ]}
@@ -81,10 +119,10 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         tabindex={if @history_active, do: "0", else: "-1"}
         class={[
           "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:rounded-sm",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
           if(@history_active,
             do: "text-base-content font-medium border-base-content",
-            else: "text-base-content/60 hover:text-base-content border-transparent"
+            else: "text-base-content/70 hover:text-base-content border-transparent"
           )
         ]}
       >
@@ -94,20 +132,54 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     """
   end
 
-  attr :entries, :list, required: true
+  @doc """
+  Renders one entity's change history from caller-owned lifecycle state.
+
+  `state` drives the visible region: `:initial_loading` paints a skeleton,
+  `:refreshing` keeps the previous entries and adds a small refreshing strip,
+  and `:error` keeps them as an explicitly labelled stale preview beside one
+  retry action. `local_times` maps entry id to the agency-local
+  `NaiveDateTime` the caller already localized in one batch.
+  """
+  attr :entries, :list, default: []
   attr :entity_type, :string, required: true
+
+  attr :state, :atom,
+    default: :ready,
+    values: [:idle, :initial_loading, :ready, :refreshing, :error]
+
+  attr :filter_form, :any, required: true
   attr :rollback_preview, :map, default: nil
   attr :history_field_filter, :string, default: "all"
+  attr :zone, :any, default: nil
+  attr :local_times, :map, default: %{}
+  attr :today, :any, default: nil
+  attr :now, :any, default: nil
 
   def change_log_list(assigns) do
-    today = Date.utc_today()
-    rollback_by_original_id = rollback_by_original_id(assigns.entries)
-    entry_count = length(assigns.entries)
-    reverted_count = map_size(rollback_by_original_id)
-    last_modified_entry = List.first(assigns.entries)
+    entries = assigns.entries
+    entity_type = assigns.entity_type
+    filter_key = assigns.history_field_filter
+    local_times = assigns.local_times
+    today = assigns.today || Date.utc_today()
+    now = assigns.now || NaiveDateTime.utc_now()
 
-    visible_entries = Enum.reject(assigns.entries, &(&1.action == "rolled_back"))
-    grouped = group_entries_by_date(visible_entries)
+    rollback_by_original_id = rollback_by_original_id(entries)
+    reverted_count = map_size(rollback_by_original_id)
+    last_modified_entry = List.first(entries)
+
+    visible_entries = Enum.reject(entries, &(&1.action == "rolled_back"))
+
+    rows_by_id =
+      Map.new(visible_entries, fn entry ->
+        {entry.id, apply_field_filter(diff_rows(entry), entity_type, filter_key)}
+      end)
+
+    matching_entries =
+      Enum.filter(visible_entries, &entry_matches_filter?(&1, rows_by_id, filter_key))
+
+    matching_change_count =
+      matching_entries |> Enum.map(&length(Map.fetch!(rows_by_id, &1.id))) |> Enum.sum()
 
     current_state_entry_id =
       case last_modified_entry do
@@ -119,31 +191,110 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     assigns =
       assigns
       |> assign(:today, today)
-      |> assign(:now, DateTime.utc_now())
+      |> assign(:now, now)
       |> assign(:rollback_by_original_id, rollback_by_original_id)
-      |> assign(:grouped, grouped)
-      |> assign(:entry_count, entry_count)
+      |> assign(:rows_by_id, rows_by_id)
+      |> assign(:grouped, group_entries_by_local_date(matching_entries, local_times))
+      |> assign(:entry_count, length(entries))
       |> assign(:reverted_count, reverted_count)
       |> assign(:last_modified_entry, last_modified_entry)
+      |> assign(
+        :last_modified_local,
+        last_modified_entry && local_time(last_modified_entry, local_times)
+      )
       |> assign(:current_state_entry_id, current_state_entry_id)
-      |> assign(:field_groups, field_groups(assigns.entity_type))
+      |> assign(:filter_options, filter_options(entity_type, visible_entries, filter_key))
+      |> assign(:panel_state, panel_state(assigns.state, entries, matching_entries))
+      |> assign(
+        :count_items,
+        count_items(length(matching_entries), matching_change_count, reverted_count)
+      )
+      |> assign(:zone_label, zone_label(assigns.zone))
+      |> assign(:fallback_reason_text, fallback_reason_text(assigns.zone))
 
     ~H"""
-    <div id={"history-#{@entity_type}"} class="space-y-4">
-      <%= if @entries == [] do %>
-        <p class="text-sm text-base-content/70">
-          No change history is available for this {entity_label(@entity_type)}.
+    <div
+      id={"history-#{@entity_type}"}
+      data-role="history-panel"
+      data-state={@panel_state}
+      phx-hook="FormErrorFocus"
+      tabindex="-1"
+      class="space-y-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    >
+      <.skeleton
+        :if={@state in [:idle, :initial_loading]}
+        id={"history-loading-#{@entity_type}"}
+        rows={3}
+        label={"Loading history for this #{entity_label(@entity_type)}…"}
+      />
+
+      <div
+        :if={@state == :refreshing}
+        id={"history-refreshing-#{@entity_type}"}
+        class="flex items-center gap-2 border border-base-300 bg-base-200 px-3 py-2 text-sm text-base-content"
+      >
+        <.icon name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
+        <span>Refreshing history…</span>
+      </div>
+
+      <.callout
+        :if={@state == :error}
+        kind="error"
+        id={"history-error-#{@entity_type}"}
+        title="History could not load"
+      >
+        <p>
+          The change history for this {entity_label(@entity_type)} did not load. Nothing was changed.
         </p>
-      <% else %>
+        <div class="mt-3">
+          <.button
+            id={"history-retry-#{@entity_type}"}
+            size="sm"
+            phx-click="retry_history"
+            class="min-h-11"
+          >
+            Retry history
+          </.button>
+        </div>
+      </.callout>
+
+      <p
+        :if={@state == :error and @entries != []}
+        id={"history-stale-#{@entity_type}"}
+        class="text-sm text-base-content/70"
+      >
+        Showing the history loaded before that failure. It may be out of date.
+      </p>
+
+      <.empty_state
+        :if={@state not in [:idle, :initial_loading] and @entries == []}
+        id={"history-empty-#{@entity_type}"}
+        title={"No changes have been recorded for this #{entity_label(@entity_type)}"}
+      >
+        Edits are recorded automatically. The first change will appear in this panel.
+        <:action>
+          <.button
+            id={"history-open-details-#{@entity_type}"}
+            variant="secondary"
+            size="sm"
+            phx-click="hide_history"
+            class="min-h-11"
+          >
+            Edit {entity_label(@entity_type)}
+          </.button>
+        </:action>
+      </.empty_state>
+
+      <%= if @state not in [:idle, :initial_loading] and @entries != [] do %>
         <div
           data-testid="history-summary"
-          class="flex items-center justify-between gap-3 px-3 py-2.5 bg-base-200 border border-base-300 rounded-md"
+          class="flex flex-wrap items-end justify-between gap-3 px-3 py-2.5 bg-base-200 border border-base-300 rounded-md"
         >
           <div class="min-w-0">
-            <div class="text-[13px] text-base-content truncate">
+            <div class="text-[13px] text-base-content">
               Last modified
               <time datetime={DateTime.to_iso8601(@last_modified_entry.inserted_at)}>
-                {relative_time(@last_modified_entry.inserted_at, @now)}
+                {relative_time(@last_modified_local, @now)}
               </time>
               by
               <span class="font-medium">
@@ -154,28 +305,61 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
               {@entry_count} {if @entry_count == 1, do: "change", else: "changes"}, {@reverted_count} reverted
             </div>
           </div>
-          <label
-            for={"history-filter-#{@entity_type}"}
-            class="sr-only"
-          >
-            Filter by field
-          </label>
-          <select
-            id={"history-filter-#{@entity_type}"}
+
+          <.form
+            for={@filter_form}
+            id={"history-filter-form-#{@entity_type}"}
             phx-change="filter_history"
-            phx-value-entity-type={@entity_type}
-            class="text-xs border border-control-border rounded-md px-2 py-1 bg-base-100 text-base-content shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-            name="key"
+            class="shrink-0"
           >
-            <option
-              :for={g <- @field_groups}
-              value={g.key}
-              selected={g.key == @history_field_filter}
-            >
-              {g.label}
-            </option>
-          </select>
+            <.input
+              field={@filter_form[:key]}
+              id={"history-filter-#{@entity_type}"}
+              type="select"
+              label="Fields"
+              options={@filter_options}
+              class="select w-auto"
+            />
+          </.form>
         </div>
+
+        <.count_strip id={"history-counts-#{@entity_type}"} items={@count_items} />
+
+        <p
+          :if={@zone_label && is_nil(@fallback_reason_text)}
+          id={"history-timezone-#{@entity_type}"}
+          class="text-xs text-base-content/70"
+        >
+          Times shown in {@zone_label}.
+        </p>
+
+        <.callout
+          :if={@fallback_reason_text}
+          kind="warning"
+          id={"history-utc-fallback-#{@entity_type}"}
+          title="Times shown in UTC"
+        >
+          {@fallback_reason_text} Stored timestamps are unchanged.
+        </.callout>
+
+        <.empty_state
+          :if={@grouped == []}
+          id={"history-filtered-empty-#{@entity_type}"}
+          title="No changes match this filter"
+        >
+          No recorded change touched these fields. Clear the filter to see the full history.
+          <:action>
+            <.button
+              id={"history-clear-filter-#{@entity_type}"}
+              variant="secondary"
+              size="sm"
+              phx-click="clear_history_filter"
+              class="min-h-11"
+            >
+              Clear filter
+            </.button>
+          </:action>
+        </.empty_state>
 
         <div :for={{date, entries_for_date} <- @grouped} class="space-y-3">
           <div class="flex items-center gap-2">
@@ -201,14 +385,15 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
               <li
                 :for={entry <- entries_for_date}
                 id={"history-entry-#{entry.id}"}
-                class="relative"
+                data-role="history-entry"
+                tabindex="-1"
+                class="relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <% current? = entry.id == @current_state_entry_id
                 rollback_entry = Map.get(@rollback_by_original_id, entry.id)
                 reverted? = rollback_entry != nil
 
-                rows = apply_field_filter(diff_rows(entry), @entity_type, @history_field_filter)
-                no_match = rows == [] and diff_rows(entry) != []
+                rows = Map.get(@rows_by_id, entry.id, [])
 
                 variant =
                   rollback_button_variant(entry, @rollback_by_original_id, current?)
@@ -225,7 +410,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                   aria-hidden="true"
                   class={[
                     "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-base-100 border-2",
-                    if(current?, do: "border-emerald-600", else: "border-base-content/40")
+                    if(current?, do: "border-success", else: "border-base-content/40")
                   ]}
                 >
                 </div>
@@ -233,7 +418,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                 <div class={[
                   "bg-base-100 border rounded-lg p-3.5",
                   if(current?,
-                    do: "border-emerald-600/40 ring-2 ring-emerald-500/30",
+                    do: "border-success/40 ring-2 ring-success/30",
                     else: "border-base-300"
                   )
                 ]}>
@@ -249,44 +434,56 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                     </span>
                     <span
                       :if={current?}
-                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-900 tracking-wide uppercase"
+                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-success text-success-content tracking-wide uppercase"
                     >
                       Current
-                    </span>
-                    <span
-                      :if={reverted?}
-                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-base-300 text-base-content tracking-wide uppercase"
-                    >
-                      Reverted
                     </span>
                     <time
                       datetime={DateTime.to_iso8601(entry.inserted_at)}
                       class="ml-auto text-xs text-base-content/70 tabular-nums"
                     >
-                      {format_time_short(entry.inserted_at, @today)}
+                      {format_time_short(local_time(entry, @local_times), @today)}
                     </time>
                   </div>
 
-                  <div class="text-[13px] mb-2.5">
-                    <span class={if(reverted?, do: "text-base-content/70", else: "text-base-content")}>
-                      {entry_summary(entry, @entity_type)}
-                    </span>
-                  </div>
-
-                  <div
-                    :if={no_match}
-                    data-testid="history-entry-no-match"
-                    class="text-xs text-base-content/70"
+                  <.version_diff_row
+                    id={"history-diff-#{entry.id}"}
+                    action={diff_action(entry)}
+                    entity_label={entity_title(@entity_type)}
+                    natural_key={natural_key(entry)}
+                    status={diff_status(reverted?)}
+                    summary={entry_summary(entry, @entity_type)}
+                    changes={diff_changes(rows, @entity_type)}
+                    dependency_keys={[]}
+                    edited?={false}
+                    expanded?={true}
                   >
-                    No matching changes
-                  </div>
-
-                  <.change_diff
-                    :if={not no_match}
-                    entry={entry}
-                    entity_type={@entity_type}
-                    rows={rows}
-                  />
+                    <:actions :if={variant != :none}>
+                      <p
+                        :if={variant == :original}
+                        id={"history-entry-unavailable-#{entry.id}"}
+                        class="me-auto text-xs text-base-content/70"
+                      >
+                        {unavailable_reason(@entity_type)}
+                      </p>
+                      <.button
+                        id={"history-entry-action-#{entry.id}"}
+                        variant="secondary"
+                        size="sm"
+                        class="min-h-11"
+                        phx-click={if variant != :original, do: "preview_rollback_change_log"}
+                        phx-value-log-id={target_log_id}
+                        aria-disabled={if variant == :original, do: "true"}
+                        aria-describedby={
+                          if variant == :original, do: "history-entry-unavailable-#{entry.id}"
+                        }
+                        disabled={variant == :original}
+                        data-history-entry-action={Atom.to_string(variant)}
+                      >
+                        {rollback_button_label(variant)}
+                      </.button>
+                    </:actions>
+                  </.version_diff_row>
 
                   <div
                     :if={reverted?}
@@ -300,7 +497,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                       </span>
                       at
                       <time datetime={DateTime.to_iso8601(rollback_entry.inserted_at)}>
-                        {format_time_short(rollback_entry.inserted_at, @today)}
+                        {format_time_short(local_time(rollback_entry, @local_times), @today)}
                       </time>
                     </span>
                   </div>
@@ -314,34 +511,6 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                     rollback_preview={@rollback_preview}
                     entity_type={@entity_type}
                   />
-
-                  <%= if variant != :none do %>
-                    <div class="flex justify-end mt-2.5">
-                      <button
-                        type="button"
-                        data-history-entry-action={Atom.to_string(variant)}
-                        phx-click={if variant != :original, do: "preview_rollback_change_log"}
-                        phx-value-log-id={target_log_id}
-                        aria-disabled={if variant == :original, do: "true"}
-                        disabled={variant == :original}
-                        title={
-                          if variant == :original,
-                            do: "Cannot restore to before this #{entity_label(@entity_type)} existed"
-                        }
-                        class={[
-                          "text-xs px-2.5 py-1 rounded-md border",
-                          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
-                          if(variant == :original,
-                            do:
-                              "border-base-200 text-base-content/60 bg-base-200/60 cursor-not-allowed",
-                            else: "border-control-border text-base-content hover:bg-base-200"
-                          )
-                        ]}
-                      >
-                        {rollback_button_label(variant)}
-                      </button>
-                    </div>
-                  <% end %>
                 </div>
               </li>
             </ul>
@@ -352,108 +521,98 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     """
   end
 
-  attr :entry, :map, required: true
-  attr :entity_type, :string, required: true
-  attr :rows, :list, default: nil
+  @doc """
+  Renders the pending rollback for one entry.
 
-  def change_diff(assigns) do
-    assigns =
-      assign_new(assigns, :resolved_rows, fn -> assigns.rows || diff_rows(assigns.entry) end)
+  The preview names the entity it will change and states the consequence
+  before the destructive action is offered. Its evidence is the same shared
+  `version_diff_row/1` the history entries use, mapped through the same value
+  translation, so the preview cannot disagree with the history it sits in.
 
-    ~H"""
-    <div
-      :if={@resolved_rows != []}
-      class="bg-base-200 rounded-md p-2.5 grid [grid-template-columns:max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 items-baseline"
-    >
-      <%= for row <- @resolved_rows do %>
-        <div class="text-xs text-base-content/70">{row.field}</div>
-        <div class="text-xs flex items-baseline gap-1.5 flex-wrap min-w-0 break-words">
-          <span class="line-through text-base-content/70">
-            <.diff_cell entity_type={@entity_type} field={row.field} value={row.from} />
-          </span>
-          <span class="sr-only">changed to</span>
-          <span aria-hidden="true" class="text-base-content/60">→</span>
-          <span class="text-base-content">
-            <.diff_cell entity_type={@entity_type} field={row.field} value={row.to} />
-          </span>
-        </div>
-      <% end %>
-    </div>
-    """
-  end
-
-  attr :entity_type, :string, required: true
-  attr :field, :string, required: true
-  attr :value, :any, required: true
-
-  defp diff_cell(assigns) do
-    ~H"""
-    <%= case categorical_value({@entity_type, @field}, @value) do %>
-      <% :passthrough -> %>
-        {render_diff_value_text(@value)}
-      <% {label, nil} -> %>
-        {label}
-      <% {label, dot_class} -> %>
-        <span class="inline-flex items-center gap-1">
-          <span aria-hidden="true" class={"w-1.5 h-1.5 rounded-full " <> dot_class}></span>
-          {label}
-        </span>
-    <% end %>
-    """
-  end
-
-  defp render_diff_value_text(:__missing__), do: "—"
-  defp render_diff_value_text(value), do: render_present_value(value)
-
+  Focus is deterministic: the region takes focus when it mounts, and Cancel
+  returns focus to the entry action that opened it.
+  """
   attr :rollback_preview, :map, required: true
   attr :entity_type, :string, required: true
 
   def rollback_preview(assigns) do
+    preview = assigns.rollback_preview
+    entity_type = assigns.entity_type
+    log = preview.log
+    key = preview_natural_key(preview)
+
+    changes =
+      Enum.map(preview.field_changes, fn row ->
+        %{
+          label: field_label(entity_type, row.field),
+          key: row.field,
+          before: display_value(entity_type, row.field, row.current),
+          after: display_value(entity_type, row.field, row.restored)
+        }
+      end)
+
+    assigns =
+      assigns
+      |> assign(:log_id, log.id)
+      |> assign(:entity_name, Map.get(preview, :entity_name) || key)
+      |> assign(:natural_key, key)
+      |> assign(:changes, changes)
+      |> assign(:field_count, length(changes))
+      |> assign(:opener_id, "history-entry-action-#{log.id}")
+
     ~H"""
     <div
       id={"rollback-preview-#{@entity_type}"}
-      role="region"
-      aria-live="polite"
+      tabindex="-1"
+      phx-mounted={JS.focus()}
+      role="group"
       aria-labelledby={"rollback-preview-heading-#{@entity_type}"}
-      class="mt-2.5 border border-amber-300 bg-amber-50 rounded-md p-3 space-y-2"
+      class="mt-2.5 space-y-2 border-l-4 border-warning bg-warning/10 px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
     >
       <p
         id={"rollback-preview-heading-#{@entity_type}"}
-        class="text-[13px] font-medium text-amber-950"
+        class="text-sm font-medium text-base-content"
       >
-        Revert these changes?
+        Revert {entity_label(@entity_type)} {@entity_name}?
       </p>
 
-      <div class="bg-base-100 border border-amber-300 rounded-md p-2.5 grid [grid-template-columns:max-content_minmax(0,1fr)] gap-x-3 gap-y-1 items-baseline">
-        <%= for row <- @rollback_preview.field_changes do %>
-          <div class="text-xs text-base-content/70">{row.field}</div>
-          <div class="text-xs flex items-baseline gap-1.5 flex-wrap min-w-0 break-words">
-            <span class="line-through text-base-content/70">{truncate_value(row.current)}</span>
-            <span class="sr-only">changed to</span>
-            <span aria-hidden="true" class="text-base-content/60">→</span>
-            <span class="text-base-content">{truncate_value(row.restored)}</span>
-          </div>
-        <% end %>
-      </div>
+      <p id={"rollback-preview-consequence-#{@entity_type}"} class="text-sm text-base-content/80">
+        {consequence_sentence(@entity_type, @field_count)} {reapply_sentence(@entity_type)}
+      </p>
 
-      <div class="flex justify-end gap-2">
-        <button
+      <.version_diff_row
+        id={"rollback-preview-diff-#{@entity_type}"}
+        action={:modify}
+        entity_label={entity_title(@entity_type)}
+        natural_key={@natural_key}
+        status={:preview}
+        changes={@changes}
+        dependency_keys={[]}
+        edited?={false}
+        expanded?={true}
+      />
+
+      <div class="flex flex-wrap justify-end gap-2">
+        <.button
           id={"rollback-preview-cancel-#{@entity_type}"}
-          type="button"
-          class="text-xs px-2.5 py-1 rounded-md border border-control-border text-base-content hover:bg-base-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-          phx-click="cancel_rollback_preview"
+          variant="secondary"
+          size="sm"
+          class="min-h-11"
+          phx-click={JS.push("cancel_rollback_preview") |> JS.focus(to: "##{@opener_id}")}
         >
           Cancel
-        </button>
-        <button
+        </.button>
+        <.button
           id={"rollback-preview-confirm-#{@entity_type}"}
-          type="button"
-          class="text-xs px-2.5 py-1 rounded-md bg-amber-600 text-white hover:bg-amber-700 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-1"
+          variant="danger"
+          size="sm"
+          class="min-h-11"
           phx-click="confirm_rollback_change_log"
-          phx-value-log-id={@rollback_preview.log.id}
+          phx-value-log-id={@log_id}
+          phx-disable-with="Reverting…"
         >
-          Confirm revert
-        </button>
+          Revert {entity_label(@entity_type)}
+        </.button>
       </div>
     </div>
     """
@@ -494,19 +653,119 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     end
   end
 
-  defp render_present_value(nil), do: "nil"
-  defp render_present_value(value), do: truncate_value(value)
+  # -- Shared version-diff mapping -------------------------------------------
+  #
+  # The only place this module decides what a stored value means. Both the
+  # historical entry and the rollback preview go through it, so the same change
+  # can never be described two different ways.
 
-  defp truncate_value(nil), do: "—"
-  defp truncate_value(value) when is_binary(value), do: truncate_string(value)
-  defp truncate_value(value), do: value |> inspect() |> truncate_string()
+  defp diff_changes(rows, entity_type) do
+    Enum.map(rows, fn row ->
+      %{
+        label: field_label(entity_type, row.field),
+        key: row.field,
+        before: display_value(entity_type, row.field, row.from),
+        after: display_value(entity_type, row.field, row.to)
+      }
+    end)
+  end
 
-  defp truncate_string(str) do
-    if String.length(str) > @change_value_max_chars do
-      String.slice(str, 0, @change_value_max_chars) <> "…"
-    else
-      str
+  # A field the change record never captured is not the same as a field whose
+  # value is `nil`; the shared row states the difference.
+  defp display_value(_entity_type, _field, :__missing__), do: TransitPresentation.absent_value()
+
+  defp display_value(entity_type, field, value) do
+    case categorical_label({entity_type, field}, value) do
+      :passthrough -> value
+      label -> label
     end
+  end
+
+  defp diff_action(%{action: "created"}), do: :add
+  defp diff_action(%{action: "deleted"}), do: :remove
+  defp diff_action(_entry), do: :modify
+
+  defp diff_status(true), do: :rejected
+  defp diff_status(_reverted?), do: :applied
+
+  defp natural_key(entry) do
+    [Map.get(entry, :entity_external_id), Map.get(entry, :entity_id), Map.get(entry, :id)]
+    |> Enum.find(&present_key?/1)
+    |> case do
+      nil -> "Unknown"
+      key -> to_string(key)
+    end
+  end
+
+  defp preview_natural_key(preview) do
+    [
+      Map.get(preview, :natural_key),
+      Map.get(preview.log, :entity_external_id),
+      Map.get(preview, :entity_id)
+    ]
+    |> Enum.find(&present_key?/1)
+    |> case do
+      nil -> "Unknown"
+      key -> to_string(key)
+    end
+  end
+
+  defp present_key?(nil), do: false
+  defp present_key?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_key?(_value), do: true
+
+  @field_labels %{
+    "stop" => %{
+      "stop_id" => "Stop ID",
+      "stop_code" => "Stop code",
+      "stop_name" => "Stop name",
+      "stop_desc" => "Description",
+      "tts_stop_name" => "Spoken name",
+      "stop_lat" => "Latitude",
+      "stop_lon" => "Longitude",
+      "position_x" => "Diagram X",
+      "position_y" => "Diagram Y",
+      "location_type" => "Location type",
+      "parent_station" => "Parent station",
+      "platform_code" => "Platform code",
+      "level_id" => "Level",
+      "wheelchair_boarding" => "Accessibility",
+      "stop_timezone" => "Time zone",
+      "stop_url" => "Stop URL",
+      "zone_id" => "Fare zone"
+    },
+    "pathway" => %{
+      "pathway_id" => "Pathway ID",
+      "pathway_mode" => "Mode",
+      "is_bidirectional" => "Direction",
+      "length" => "Length",
+      "traversal_time" => "Traversal time",
+      "stair_count" => "Stair count",
+      "max_slope" => "Maximum slope",
+      "min_width" => "Minimum width",
+      "signposted_as" => "Signposted as",
+      "reversed_signposted_as" => "Reverse signposted as",
+      "from_stop_id" => "From stop",
+      "to_stop_id" => "To stop"
+    },
+    "level" => %{
+      "level_id" => "Level ID",
+      "level_name" => "Level name",
+      "level_index" => "Level index"
+    }
+  }
+
+  defp field_label(entity_type, field) do
+    @field_labels
+    |> Map.get(entity_type, %{})
+    |> Map.get(field, humanize_field(field))
+  end
+
+  defp humanize_field(field) do
+    field
+    |> to_string()
+    |> String.replace("_", " ")
+    |> :string.titlecase()
   end
 
   def valid_filter_key?(entity_type, key) when is_binary(entity_type) and is_binary(key) do
@@ -606,6 +865,23 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   defp entity_label("level"), do: "level"
   defp entity_label(other) when is_binary(other), do: other
 
+  defp entity_title(entity_type), do: entity_type |> entity_label() |> :string.titlecase()
+
+  defp consequence_sentence(entity_type, 1),
+    do: "Reverting restores 1 field on this #{entity_label(entity_type)} to its earlier value."
+
+  defp consequence_sentence(entity_type, count),
+    do:
+      "Reverting restores #{count} fields on this #{entity_label(entity_type)} to their earlier values."
+
+  defp reapply_sentence(entity_type),
+    do:
+      "The current values stay in this history, so you can re-apply this change to the #{entity_label(entity_type)} afterwards."
+
+  defp unavailable_reason(entity_type),
+    do:
+      "No earlier version exists: this entry is where the #{entity_label(entity_type)} was created."
+
   defp upcased_month_day(%Date{} = d),
     do: d |> Calendar.strftime("%b %-d") |> String.upcase()
 
@@ -617,22 +893,84 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     end
   end
 
-  defp format_time_short(%DateTime{} = dt, %Date{} = today) do
-    if DateTime.to_date(dt) == today do
-      Calendar.strftime(dt, "%-I:%M %p")
+  # Every time below is already agency-local: the caller localized the whole
+  # collection in one batch and the component only formats what it received.
+  defp format_time_short(%NaiveDateTime{} = local, %Date{} = today) do
+    if NaiveDateTime.to_date(local) == today do
+      Gtfs.format_display_time(local)
     else
-      Calendar.strftime(dt, "%b %-d · %-I:%M %p")
+      Calendar.strftime(local, "%b %-d") <> " · " <> Gtfs.format_display_time(local)
     end
   end
 
-  defp group_entries_by_date(entries) do
+  defp local_time(entry, local_times) do
+    case Map.get(local_times, entry.id) do
+      %NaiveDateTime{} = local -> local
+      _ -> DateTime.to_naive(entry.inserted_at)
+    end
+  end
+
+  defp group_entries_by_local_date(entries, local_times) do
     entries
-    |> Enum.group_by(fn entry -> DateTime.to_date(entry.inserted_at) end)
+    |> Enum.group_by(fn entry -> NaiveDateTime.to_date(local_time(entry, local_times)) end)
     |> Enum.sort_by(fn {date, _} -> date end, {:desc, Date})
   end
 
-  defp relative_time(%DateTime{} = dt, %DateTime{} = now) do
-    seconds = DateTime.diff(now, dt, :second)
+  defp entry_matches_filter?(_entry, _rows_by_id, "all"), do: true
+
+  defp entry_matches_filter?(entry, rows_by_id, _filter_key),
+    do: Map.get(rows_by_id, entry.id, []) != []
+
+  defp panel_state(state, _entries, _matching) when state in [:idle, :initial_loading],
+    do: "loading"
+
+  defp panel_state(:error, _entries, _matching), do: "error"
+  defp panel_state(:refreshing, _entries, _matching), do: "refreshing"
+  defp panel_state(:ready, [], _matching), do: "empty"
+  defp panel_state(:ready, _entries, []), do: "filtered"
+  defp panel_state(:ready, _entries, _matching), do: "ready"
+
+  defp count_items(entry_count, change_count, reverted_count) do
+    [
+      %{key: "entries", label: "Matching entries", count: entry_count, tone: :neutral},
+      %{key: "changes", label: "Matching changes", count: change_count, tone: :info},
+      %{key: "reverted", label: "Reverted", count: reverted_count, tone: :warning}
+    ]
+  end
+
+  # Options carry their own match count so a selection that will land on the
+  # filtered-empty state announces itself before it is made.
+  defp filter_options(entity_type, visible_entries, _filter_key) do
+    Enum.map(field_groups(entity_type), fn group ->
+      count =
+        visible_entries
+        |> Enum.map(&length(apply_field_filter(diff_rows(&1), entity_type, group.key)))
+        |> Enum.sum()
+
+      {"#{group.label} (#{count})", group.key}
+    end)
+  end
+
+  defp zone_label(%{timezone: timezone}) when is_binary(timezone), do: timezone
+  defp zone_label(_), do: nil
+
+  defp fallback_reason_text(%{fallback?: true, fallback_reason: reason}),
+    do: fallback_reason_sentence(reason)
+
+  defp fallback_reason_text(_), do: nil
+
+  defp fallback_reason_sentence(:conflicting),
+    do:
+      "This version's agencies declare more than one time zone, so no single agency zone applies."
+
+  defp fallback_reason_sentence(:invalid),
+    do: "This version's agency time zone is not a recognized IANA name."
+
+  defp fallback_reason_sentence(_),
+    do: "This version has no agency time zone recorded."
+
+  defp relative_time(%NaiveDateTime{} = local, %NaiveDateTime{} = now) do
+    seconds = NaiveDateTime.diff(now, local, :second)
 
     cond do
       seconds < 60 ->
@@ -642,17 +980,17 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         minutes = div(seconds, 60)
         "#{minutes} #{pluralize(minutes, "minute")} ago"
 
-      DateTime.to_date(dt) == DateTime.to_date(now) ->
+      NaiveDateTime.to_date(local) == NaiveDateTime.to_date(now) ->
         hours = div(seconds, 3600)
         "#{hours} #{pluralize(hours, "hour")} ago"
 
       true ->
-        days = Date.diff(DateTime.to_date(now), DateTime.to_date(dt))
+        days = Date.diff(NaiveDateTime.to_date(now), NaiveDateTime.to_date(local))
 
         cond do
           days == 1 -> "yesterday"
           days < 7 -> "#{days} days ago"
-          true -> Calendar.strftime(dt, "%b %-d")
+          true -> Calendar.strftime(local, "%b %-d")
         end
     end
   end
@@ -703,20 +1041,23 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     preview.entity_type == entity_type and preview.log.id == entry.id
   end
 
-  defp categorical_value({"stop", "wheelchair_boarding"}, 0),
-    do: {"No information", "bg-base-300"}
+  # A coded GTFS value is translated to the word an operator reads. The shared
+  # version-diff row carries no colour dot, so the mapping is a label only —
+  # there is nothing left for a tone token to reach.
+  defp categorical_label({"stop", "wheelchair_boarding"}, 0), do: "No information"
+  defp categorical_label({"stop", "wheelchair_boarding"}, 1), do: "Wheelchair accessible"
+  defp categorical_label({"stop", "wheelchair_boarding"}, 2), do: "Not accessible"
 
-  defp categorical_value({"stop", "wheelchair_boarding"}, 1),
-    do: {"Wheelchair accessible", "bg-emerald-600"}
+  # Only documented codes are translated. An unrecognised or `nil` code falls
+  # through untouched so the audit row shows what is actually stored instead of
+  # the word "Unknown".
+  defp categorical_label({"stop", "location_type"}, code) when code in 0..4,
+    do: Stop.location_type_label(code)
 
-  defp categorical_value({"stop", "wheelchair_boarding"}, 2),
-    do: {"Not accessible", "bg-rose-600"}
+  defp categorical_label({"pathway", "pathway_mode"}, code) when code in 1..7,
+    do: Pathway.mode_label(code)
 
-  defp categorical_value({"stop", "location_type"}, code),
-    do: {Stop.location_type_label(code), nil}
-
-  defp categorical_value({"pathway", "pathway_mode"}, code), do: {Pathway.mode_label(code), nil}
-  defp categorical_value({"pathway", "is_bidirectional"}, true), do: {"Bidirectional", nil}
-  defp categorical_value({"pathway", "is_bidirectional"}, false), do: {"One-way", nil}
-  defp categorical_value(_, _), do: :passthrough
+  defp categorical_label({"pathway", "is_bidirectional"}, true), do: "Bidirectional"
+  defp categorical_label({"pathway", "is_bidirectional"}, false), do: "One-way"
+  defp categorical_label(_, _), do: :passthrough
 end

@@ -1,10 +1,20 @@
 const FOCUS_FORM_ERROR_EVENT = "focus_form_error";
+// Some outcomes have no form and no invalid field — a rollback that succeeded,
+// failed, or was superseded still has to land focus somewhere useful. Those
+// pushes name their target directly. The containment check below is what keeps
+// this scoped: a hook only ever focuses an element it already owns, so a
+// broadcast event cannot pull focus into an unrelated region of the page.
+const FOCUS_SCOPED_TARGET_EVENT = "focus_scoped_target";
 const INVALID_CONTROL_SELECTOR = '[aria-invalid="true"]';
 
 const FormErrorFocus = {
   mounted() {
     this.handleEvent(FOCUS_FORM_ERROR_EVENT, (payload) => {
       this._focusFormError(payload || {});
+    });
+
+    this.handleEvent(FOCUS_SCOPED_TARGET_EVENT, (payload) => {
+      this._focusWithin((payload || {}).id);
     });
 
     const mountFocusId = this.el.dataset.focusOnMount;
@@ -44,6 +54,22 @@ const FormErrorFocus = {
   _attemptFocus(target) {
     if (!target || typeof target.focus !== "function") return;
     target.focus();
+
+    // A `phx-submit` round trip ends with LiveView restoring focus to the
+    // control that submitted the form, and that restoration runs *after* hook
+    // events are dispatched. Without this re-assertion the user is left on the
+    // submit button instead of the first invalid field. Re-assert once on the
+    // next frame, and only if something else took focus, so the synchronous
+    // behaviour above is unchanged.
+    const nextFrame =
+      typeof window !== "undefined" && window.requestAnimationFrame;
+    if (!nextFrame) return;
+
+    nextFrame(() => {
+      if (document.activeElement !== target && document.contains(target)) {
+        target.focus();
+      }
+    });
   },
 };
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import FormErrorFocus from "../form_error_focus_hook.js";
 
 const FOCUS_EVENT = "focus_form_error";
+const SCOPED_TARGET_EVENT = "focus_scoped_target";
 
 const LOGIN_FORM_HTML = `
   <div id="login-recovery" tabindex="-1">Check your email and password, then try again.</div>
@@ -51,6 +52,16 @@ function pushServerEvent(registrations, payload) {
   focusRegistrations(registrations).forEach((entry) => entry.callback(payload));
 }
 
+function scopedTargetRegistrations(registrations) {
+  return registrations.filter((entry) => entry.event === SCOPED_TARGET_EVENT);
+}
+
+function pushScopedTargetEvent(registrations, payload) {
+  scopedTargetRegistrations(registrations).forEach((entry) =>
+    entry.callback(payload),
+  );
+}
+
 function focusSpy(root, selector) {
   return vi.spyOn(root.querySelector(selector), "focus");
 }
@@ -75,12 +86,24 @@ describe("FormErrorFocus", () => {
 
       hook.mounted();
 
-      expect(hook.handleEvent).toHaveBeenCalledTimes(1);
       expect(hook.handleEvent).toHaveBeenCalledWith(
         FOCUS_EVENT,
         expect.any(Function),
       );
       expect(focusRegistrations(registrations)).toHaveLength(1);
+    });
+
+    it("registers exactly one focus_scoped_target handler from mounted", () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+
+      hook.mounted();
+
+      expect(hook.handleEvent).toHaveBeenCalledWith(
+        SCOPED_TARGET_EVENT,
+        expect.any(Function),
+      );
+      expect(scopedTargetRegistrations(registrations)).toHaveLength(1);
     });
 
     it("performs one focus attempt per repeated server event without stacking listeners", () => {
@@ -105,8 +128,75 @@ describe("FormErrorFocus", () => {
 
       expect(emailSpy).toHaveBeenCalledTimes(3);
       expect(focusRegistrations(registrations)).toHaveLength(1);
-      expect(hook.handleEvent).toHaveBeenCalledTimes(1);
       expect(document.activeElement).toBe(root.querySelector("#login-email"));
+    });
+  });
+
+  // =========================================================================
+  // Scoped target focus: outcomes with no form and no invalid field
+  // =========================================================================
+  describe("scoped target focus", () => {
+    it("focuses the named element inside its own root", () => {
+      const root = buildRoot({ innerHTML: VALID_LOGIN_FORM_HTML });
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      const recoverySpy = focusSpy(root, "#login-recovery");
+
+      pushScopedTargetEvent(registrations, { id: "login-recovery" });
+
+      expect(recoverySpy).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(
+        root.querySelector("#login-recovery"),
+      );
+    });
+
+    it("never focuses a target outside its own root", () => {
+      const outside = document.createElement("div");
+      outside.innerHTML = `<div id="outside-target" tabindex="-1"></div>`;
+      document.body.appendChild(outside);
+
+      const root = buildRoot({ innerHTML: VALID_LOGIN_FORM_HTML });
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      const outsideSpy = vi.spyOn(
+        outside.querySelector("#outside-target"),
+        "focus",
+      );
+
+      pushScopedTargetEvent(registrations, { id: "outside-target" });
+
+      expect(outsideSpy).not.toHaveBeenCalled();
+    });
+
+    it("ignores a missing target, a blank id, and a missing payload", () => {
+      const root = buildRoot({ innerHTML: VALID_LOGIN_FORM_HTML });
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      expect(() => {
+        pushScopedTargetEvent(registrations, { id: "not-here" });
+        pushScopedTargetEvent(registrations, { id: "" });
+        pushScopedTargetEvent(registrations, undefined);
+      }).not.toThrow();
+
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it("leaves the form-error handler untouched", () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      const emailSpy = focusSpy(root, "#login-email");
+
+      pushScopedTargetEvent(registrations, { id: "login-recovery" });
+
+      expect(emailSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(
+        root.querySelector("#login-recovery"),
+      );
     });
   });
 
@@ -398,6 +488,49 @@ describe("FormErrorFocus", () => {
 
       expect(emailSpy).not.toHaveBeenCalled();
       expect(recoverySpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // Late focus restoration by the caller must not win
+  // =========================================================================
+  describe("re-asserting focus after the frame", () => {
+    it("takes focus back when something else claims it in the same task", async () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      pushServerEvent(registrations, {
+        form_id: "login_form",
+        fallback_id: "login-recovery",
+      });
+
+      // LiveView restores focus to the submitting control after hook events.
+      root.querySelector("#login-submit").focus();
+      expect(document.activeElement).toBe(root.querySelector("#login-submit"));
+
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(document.activeElement).toBe(root.querySelector("#login-email"));
+    });
+
+    it("does not re-focus when the user has already moved on deliberately", async () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      const emailSpy = focusSpy(root, "#login-email");
+
+      pushServerEvent(registrations, {
+        form_id: "login_form",
+        fallback_id: "login-recovery",
+      });
+
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(emailSpy).toHaveBeenCalledTimes(1);
     });
   });
 

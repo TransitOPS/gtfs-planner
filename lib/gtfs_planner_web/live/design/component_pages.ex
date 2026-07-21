@@ -34,7 +34,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Variants and sizes</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Labels here name the combination so the mapping is visible. Real buttons use
         verb + noun.
       </p>
@@ -105,14 +105,14 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </div>
       </div>
 
-      <p class="mt-3 text-sm text-base-content/60">
+      <p class="mt-3 text-sm text-base-content/70">
         <code phx-no-curly-interpolation class="ds-code-caption font-mono text-xs">
           size="sm" → btn-sm · size="md" → no class (the default) · size="lg" → btn-lg
         </code>
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Disabled</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Passed through to the underlying element. A disabled control must still explain
         why it is unavailable — put the reason next to it, not in a tooltip alone.
       </p>
@@ -129,7 +129,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">With icon</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Text first. The icon reinforces the label; it does not replace it.
       </p>
       <div class="mt-3 border border-base-300 p-4">
@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">The clauses</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         One live form, one column, labels above fields. The form below submits to a
         no-op handler — it is a demo, not a real record.
       </p>
@@ -228,7 +228,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Error state</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         The field turns <code class="font-mono text-sm">input-error</code>
         and the message renders below it. Say what to do, not just what broke.
       </p>
@@ -278,7 +278,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </ul>
 
       <h2 class="mt-8 text-lg font-semibold">Checkbox group</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A fieldset with a legend for multi-select options. It takes a bare
         <code class="font-mono text-sm">name</code>
         and a selected list, not a form field.
@@ -303,7 +303,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Diagram upload states</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Upload fields keep the filename, determinate progress, errors, cancellation, and
         recovery copy together. The input always references its help and any active failure
         message; unavailable upload actions explain what must happen first.
@@ -321,7 +321,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">Mode selection</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Use native radios for a single workspace mode. Arrow keys remain in this group;
         entering a workspace is a separate action owned by the workspace itself.
       </p>
@@ -452,12 +452,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </dl>
 
       <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
-      <p class="mt-1 text-sm text-base-content/60">
-        One vocabulary for every status in the app: a colored dot beside a colored word,
-        never color alone. Known values render explicit labels; unrecognized or blank
+      <p class="mt-1 text-sm text-base-content/70">
+        One vocabulary for every status in the app: a colored dot and word on a tinted
+        field of the same tone, never color alone — the tint is what makes a column of
+        badges scannable. Known values render explicit labels; unrecognized or blank
         values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
       </p>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Membership states share this vocabulary: <code class="font-mono text-sm">:active</code>
         is available, <code class="font-mono text-sm">:deactivated</code>
         is access revoked, <code class="font-mono text-sm">:invitation_pending</code>
@@ -491,7 +492,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Stops &amp; stations presentation</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Accessibility and pathway details use separate components. Each keeps a text label
         alongside its visual treatment so the meaning is available without color.
         Tri-state accessibility resolves to <code class="font-mono text-sm">Accessible</code>, <code class="font-mono text-sm">Not accessible</code>, or <code class="font-mono text-sm">No data</code>; inherited values disclose their source.
@@ -572,7 +573,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Table</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Sample routes. The ID column passes <code class="font-mono text-sm">align="right"</code>,
         which right-aligns the header and the cells together, and <code class="font-mono text-sm">sort="asc"</code>, which marks the sorted column
         with <code class="font-mono text-sm">aria-sort</code>
@@ -609,7 +610,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Long content</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Wide tables stay inside their local overflow wrapper; the body never clips.
       </p>
 
@@ -631,7 +632,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">Empty</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         An empty dataset renders headers and an empty tbody. Pair with
         <code class="font-mono text-sm">&lt;.empty_state&gt;</code>
         above the table for a first-use message.
@@ -645,8 +646,46 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </.table>
       </div>
 
+      <h2 class="mt-8 text-lg font-semibold">Nested regions</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        Dense evidence — groups of rows inside a card — nests by tier, not by box.
+        The outermost card owns the only full border and rounding. A nested group
+        announces itself with a full-width header band tinted with the primary hue
+        at low opacity (<code class="font-mono text-sm">bg-primary/10</code>) and
+        separates its rows with horizontal rules that span the card. The band is a
+        hue on purpose: a gray band reads as the base-200 page background or a
+        hover state, and a green or teal band reads as a success state. The soft
+        indigo is structural wayfinding; state colors never mark structure. Side borders and rounded boxes
+        never nest inside a card. Depth is carried by start padding: card content
+        at <code class="font-mono text-sm">ps-4</code>, each nested tier one step
+        deeper (<code class="font-mono text-sm">ps-8</code>, then <code class="font-mono text-sm">ps-12</code>) — bands and rules stay full
+        width while their content indents, so the hierarchy reads at a glance
+        without added ink.
+      </p>
+      <div id="ds-demo-nested-regions" class="mt-3 rounded-box border border-base-300 bg-base-100">
+        <div class="border-b border-base-300 px-4 py-3">
+          <h3 class="text-sm font-semibold">Entrance-to-platform reachability</h3>
+          <p class="mt-0.5 text-sm text-base-content/70">
+            Tier one: the card. One full border, one rounding, content at ps-4.
+          </p>
+        </div>
+        <div class="px-4 py-3 text-sm">Summary row for the first source.</div>
+        <div class="border-y border-base-300 bg-primary/10 py-2.5 pe-4 ps-8 text-sm font-semibold">
+          Entrance A
+          <span class="font-normal text-base-content/70">
+            · tier two: tinted band, full width, content at ps-8
+          </span>
+        </div>
+        <div class="divide-y divide-base-300 text-sm">
+          <p class="py-3 pe-4 ps-8">Tier-two rows share the band's indent.</p>
+          <p class="py-3 pe-4 ps-12">
+            Tier three: expanded evidence steps to ps-12. No side borders below tier one.
+          </p>
+        </div>
+      </div>
+
       <h2 class="mt-8 text-lg font-semibold">Stack mode</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         <code class="font-mono text-sm">responsive="stack"</code>
         presents each row as a labeled record on narrow screens.
         Headers remain in the DOM; CSS hides them visually and uses
@@ -670,7 +709,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">List</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Definition pairs for one record. Use it where a table would have one row and
         the columns would read better stacked.
       </p>
@@ -692,7 +731,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Pagination</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Live: the buttons below move a real assign. Previous and Next disable at the
         ends of the range rather than disappearing, so the controls never shift position.
         The component normalizes negative totals, zero per-page, and out-of-range pages.
@@ -711,7 +750,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Pagination — empty</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Zero total renders <code class="font-mono text-sm">0–0 of 0</code>
         with both controls disabled.
       </p>
@@ -800,14 +839,14 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Flash</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Two kinds: <code class="font-mono text-sm">:info</code>
         for a background outcome that succeeded, <code class="font-mono text-sm">:error</code>
         for one that failed. The layout renders the real flashes for you — a page never
         calls <code class="font-mono text-sm">&lt;.flash_group&gt;</code>
         itself. You raise one from the server with <code class="font-mono text-sm">put_flash/3</code>.
       </p>
-      <p class="mt-2 text-sm text-base-content/60">
+      <p class="mt-2 text-sm text-base-content/70">
         In the app these appear as a toast pinned to the top right. The two below are the
         real component, shown in place by a page-scoped rule that returns them to normal
         flow — see <code class="font-mono text-sm">#ds-flash-demo</code>
@@ -829,7 +868,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Loading</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         LiveView adds a class to an element for as long as its event is in flight, so a
         button can show progress without any assign. Both buttons below are the same
         call; the right one carries the class LiveView would add, so the state is visible
@@ -839,7 +878,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <div id="ds-loading-demo" class="mt-3 border border-base-300 p-4">
         <div class="flex flex-wrap items-center gap-8">
           <div>
-            <p class="mb-2 text-xs font-semibold text-base-content/60">Idle</p>
+            <p class="mb-2 text-xs font-semibold text-base-content/70">Idle</p>
             <.button variant="primary" class="phx-click-loading:opacity-60">
               <.icon
                 name="hero-arrow-path"
@@ -848,7 +887,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
             </.button>
           </div>
           <div>
-            <p class="mb-2 text-xs font-semibold text-base-content/60">While the event runs</p>
+            <p class="mb-2 text-xs font-semibold text-base-content/70">While the event runs</p>
             <.button
               variant="primary"
               class="phx-click-loading phx-click-loading:opacity-60"
@@ -871,7 +910,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Callout</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         View-level state the user must not miss, in the flow of the page rather than a
         toast that can be missed. Four kinds carry the state color on the left border
         only; the title stays in <code class="font-mono text-sm">base-content</code>
@@ -902,12 +941,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
-      <p class="mt-1 text-sm text-base-content/60">
-        One vocabulary for every status in the app: a colored dot beside a colored word,
-        never color alone. Known values render explicit labels; unrecognized or blank
+      <p class="mt-1 text-sm text-base-content/70">
+        One vocabulary for every status in the app: a colored dot and word on a tinted
+        field of the same tone, never color alone — the tint is what makes a column of
+        badges scannable. Known values render explicit labels; unrecognized or blank
         values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
       </p>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Membership states share this vocabulary: <code class="font-mono text-sm">:active</code>
         is available, <code class="font-mono text-sm">:deactivated</code>
         is access revoked, <code class="font-mono text-sm">:invitation_pending</code>
@@ -941,7 +981,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Skeleton</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         For the first paint of a slow view, never to replace content already on screen.
         The bars mirror the table layout so nothing jumps when the rows arrive; they
         animate only under <code class="font-mono text-sm">motion-safe:</code>
@@ -961,7 +1001,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Empty state</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A data view that renders nothing is a bug, not a blank. First use and a
         filtered-empty result are different states: first use names what belongs here and
         offers the primary action; a filtered-empty repeats the query and offers the undo
@@ -1062,7 +1102,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Header</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A title, an optional subtitle, and an optional actions slot. The header only
         takes the row layout when you fill <code class="font-mono text-sm">&lt;:actions&gt;</code>, so a title-only header
         stays flush left.
@@ -1087,7 +1127,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Station sub-navigation</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Back button, station name, and the four station tabs. Both bars below are the
         real component fed sample records, so their links are live but point at IDs
         that do not exist — clicking a tab leaves the design system and lands on
@@ -1111,7 +1151,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Route sub-navigation</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         The same shape with two tabs. The heading is <code class="font-mono text-sm">short_name - long_name</code>, falling back to
         whichever exists and then to <code class="font-mono text-sm">route_id</code>.
       </p>
@@ -1133,7 +1173,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Long-content states</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Station and route names wrap at narrow widths via <code class="font-mono text-sm">break-words</code>.
         The back button and tab links maintain 44 px targets (<code class="font-mono text-sm">min-h-11</code>)
         regardless of content length. Sub-navigation links use ordinary
@@ -1191,7 +1231,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Drawer</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         The drawer renders a native modal dialog. Open state is a server assign;
         the hook calls <code class="font-mono text-sm">showModal()</code>.
         Close via the header button, Escape, or a true backdrop click — all push
@@ -1262,7 +1302,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Confirm dialog</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A fully server-owned confirmation. Focus lands on Cancel. The confirm
         button uses <code class="font-mono text-sm">phx-disable-with</code>
         for
@@ -1526,6 +1566,297 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
     """
   end
 
+  @report_count_items [
+    %{key: "stops", label: "Stops", count: 128, tone: :neutral},
+    %{key: "pathways", label: "Pathways", count: 34, tone: :neutral},
+    %{key: "missing_coordinates", label: "Missing coordinates", count: 3, tone: :warning},
+    %{key: "unreachable_platforms", label: "Unreachable platforms", count: 0, tone: :neutral}
+  ]
+
+  @history_filter_items [
+    %{key: "name", label: "Name", count: 6, tone: :neutral},
+    %{key: "location", label: "Location", count: 2, tone: :info},
+    %{
+      key: "signposted_as",
+      label: "Parent station and pathway signposted name",
+      count: 1,
+      tone: :neutral
+    },
+    %{
+      key: "wheelchair_boarding",
+      label: "Wheelchair boarding",
+      count: 0,
+      tone: :neutral,
+      disabled_reason: "No changes in this version"
+    }
+  ]
+
+  @doc """
+  The filter vocabulary the Counts page renders.
+
+  `DesignSystemLive` validates every incoming `count_strip_filter` key against
+  this same list, which is the point of the demo: the strip dispatches whatever
+  key it was given, and the consumer decides what is acceptable.
+  """
+  def history_filter_items, do: @history_filter_items
+
+  @doc """
+  The shared `<.count_strip>` in display and filter modes, with selected, long-label,
+  and zero-count entries.
+  """
+  def counts(assigns) do
+    assigns =
+      assigns
+      |> assign(:report_count_items, @report_count_items)
+      |> assign(:history_filter_items, @history_filter_items)
+
+    ~H"""
+    <section id="ds-page-counts" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Counts &amp; metrics</h1>
+      <p class="mt-2 text-base-content/70">
+        One strip of labelled counts in two modes, and one prominent metric tile.
+        The components own structure, interaction, and validation. They never
+        calculate counts and never translate a domain term: the caller passes every
+        label, number, and tone.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Display</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        No <code class="font-mono text-sm">event</code>
+        means no buttons — figures only, without box chrome, so the strip never reads
+        as a row of inputs. Counts are tabular so digits line up between entries, and
+        a non-zero count repeats its tone so warnings and failures are findable at a
+        glance. This is a station report vocabulary; nothing about it is built in.
+      </p>
+      <div class="mt-3 border border-base-300 p-4">
+        <.count_strip id="ds-count-strip-report" items={@report_count_items} />
+        <p class="mt-3">
+          <code
+            phx-no-curly-interpolation
+            class="ds-code-caption font-mono text-xs text-base-content/70"
+          >
+            &lt;.count_strip id="report-counts" items={[%{key: "stops", label: "Stops", count: 128, tone: :neutral}]} /&gt;
+          </code>
+        </p>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Filter</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        An <code class="font-mono text-sm">event</code>
+        turns each entry into a native button with <code class="font-mono text-sm">aria-pressed</code>, <code class="font-mono text-sm">phx-click</code>, and <code class="font-mono text-sm">phx-value-key</code>. This is a change-history
+        vocabulary — a second set of domain words over the same structure. The long
+        entry wraps rather than truncating; the zero entry stays in the tab order.
+      </p>
+      <div class="mt-3 border border-base-300 p-4">
+        <.count_strip
+          id="ds-count-strip-history"
+          items={@history_filter_items}
+          selected_key={@count_strip_filter_key}
+          event="count_strip_filter"
+        />
+        <p id="ds-count-strip-filter-outcome" class="mt-3 text-sm text-base-content/70">
+          {@count_strip_outcome || "Filtering by Name."}
+        </p>
+        <p class="mt-3">
+          <code
+            phx-no-curly-interpolation
+            class="ds-code-caption font-mono text-xs text-base-content/70"
+          >
+            &lt;.count_strip id="history-filter" items={@field_counts} selected_key={@selected_field} event="filter_field" /&gt;
+          </code>
+        </p>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Metric</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        <code class="font-mono text-sm">&lt;.metric&gt;</code>
+        is the single prominent figure: the value first at full contrast on a filled
+        field, the label under it. Use it for report summaries and inventories; use a
+        count strip for a row of small labelled counts, and a table when figures need
+        comparison down a column.
+      </p>
+      <div id="ds-metric-demo" class="mt-3 border border-base-300 p-4">
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <.metric value={128} label="Stops" />
+          <.metric value={17} label="Stairs" />
+          <.metric value={0} label="Moving sidewalks" />
+          <.metric value="117.8s" label="Total time" />
+        </div>
+        <p class="mt-3">
+          <code
+            phx-no-curly-interpolation
+            class="ds-code-caption font-mono text-xs text-base-content/70"
+          >
+            &lt;.metric value={128} label="Stops" /&gt; · the caller owns formatting, including units inside value
+          </code>
+        </p>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          The consumer owns the vocabulary. Pass the words your view already uses; do not
+          borrow error/warning/info as labels.
+        </li>
+        <li>
+          A zero entry is marked <code class="font-mono text-sm">aria-disabled</code>, not <code class="font-mono text-sm">disabled</code>: it stays focusable so a keyboard
+          user can read why it is unavailable. It still dispatches, so the handler must
+          reject unknown or zero-count keys on the server.
+        </li>
+        <li>
+          Tone is wayfinding, never the message. Every entry states its label and count in
+          words, so the strip reads correctly without colour.
+        </li>
+        <li>
+          A malformed item — wrong shape, extra field, negative count, unknown tone,
+          duplicate key — raises <code class="font-mono text-sm">ArgumentError</code>
+          at render time instead of shipping a broken strip.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @version_diff_changes [
+    %{
+      label: "Stop name",
+      key: "stop_name",
+      before: "Kendall/MIT",
+      after: "Kendall/MIT Northbound Platform Upper Mezzanine Entrance Alpha"
+    },
+    %{label: "Accessibility", key: "wheelchair_boarding", before: "No information", after: 0},
+    %{label: "Platform code", key: "platform_code", before: "A", after: nil},
+    %{label: "Bidirectional", key: "is_bidirectional", before: true, after: false}
+  ]
+
+  @doc """
+  The shared `<.version_diff_row>`: one record's difference between two versions.
+  """
+  def version_diff(assigns) do
+    assigns = assign(assigns, :version_diff_changes, @version_diff_changes)
+
+    ~H"""
+    <section id="ds-page-version-diff" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Version diff</h1>
+      <p class="mt-2 text-base-content/70">
+        One row per changed record. The component owns structure only: the action word,
+        the status word, the label/value grid, and the action zone. The caller owns the
+        entity vocabulary, the human labels, the raw keys, and every value.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">A change with actions</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        Values are never truncated. A long value wraps; <code class="font-mono text-sm">nil</code>, <code class="font-mono text-sm">false</code>, <code class="font-mono text-sm">0</code>, and
+        <code class="font-mono text-sm">""</code>
+        each render as themselves, because in GTFS they are all real stored values with
+        different meanings.
+      </p>
+      <div class="mt-3 border border-base-300 p-4">
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-modify"
+          action={:modify}
+          entity_label="Stop"
+          natural_key="KENDALL-NB-1"
+          status={:applied}
+          summary="Edited stop · 4 fields changed"
+          changes={@version_diff_changes}
+          dependency_keys={["PLACE-KNCMR", "LEVEL-MEZZ"]}
+          edited?={false}
+          expanded?={true}
+        >
+          <:actions>
+            <.button variant="secondary" size="sm" class="min-h-11">Undo change</.button>
+          </:actions>
+        </TransitPresentation.version_diff_row>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Other actions and statuses</h2>
+      <p class="mt-1 text-sm text-base-content/70">
+        Four actions and six statuses, each a word beside its tone. A row is readable
+        with colour removed.
+      </p>
+      <div class="mt-3 space-y-3 border border-base-300 p-4">
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-add"
+          action={:add}
+          entity_label="Pathway"
+          natural_key="PW-EAST-01"
+          status={:pending}
+          summary="New pathway from the east entrance"
+          changes={[
+            %{
+              label: "Mode",
+              key: "pathway_mode",
+              before: TransitPresentation.absent_value(),
+              after: "Stairs"
+            }
+          ]}
+          dependency_keys={[]}
+          edited?={true}
+          expanded?={true}
+        />
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-remove"
+          action={:remove}
+          entity_label="Level"
+          natural_key="LEVEL-MEZZ"
+          status={:rejected}
+          summary="Level removed"
+          changes={[]}
+          dependency_keys={[]}
+          edited?={false}
+          expanded?={true}
+        />
+        <TransitPresentation.version_diff_row
+          id="ds-version-diff-conflict"
+          action={:conflict}
+          entity_label="Stop"
+          natural_key="KENDALL-SB-1"
+          status={:failed}
+          summary="Both versions changed this stop's name"
+          changes={[
+            %{label: "Stop name", key: "stop_name", before: "Kendall", after: "Kendall Square"}
+          ]}
+          dependency_keys={[]}
+          edited?={false}
+          expanded?={false}
+        />
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          Pass a human label for every field and its raw source key alongside it. The
+          label is what the row leads with; the key is secondary metadata.
+        </li>
+        <li>
+          Never pre-truncate a value. This row is audit evidence, and a value whose end
+          is unreachable is not evidence. Long values wrap.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">absent_value/0</code>
+          when a side of the change holds no recorded value. It is not the same as <code class="font-mono text-sm">nil</code>, which is a stored value.
+        </li>
+        <li>
+          Put every action in the <code class="font-mono text-sm">:actions</code>
+          slot. The row never invents an action and never decides what a consumer may do
+          with a change.
+        </li>
+        <li>
+          <code class="font-mono text-sm">expanded?={false}</code>
+          keeps the complete change list in the document but hidden, so a caller-owned
+          control can reveal it without a round trip.
+        </li>
+        <li>
+          A malformed change — wrong shape, extra field, blank label, non-string
+          dependency key — raises <code class="font-mono text-sm">ArgumentError</code>
+          at render time rather than misstating an audit record.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
   # Static demo data. A design system page shows the component, so these rows are
   # literals rather than a query: the page must render identically on an empty database.
   defp sample_routes do
@@ -1541,5 +1872,5 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   # so "text-#{tone}" would compile and then be missing from the bundle.
   defp status_class("Active"), do: "text-success"
   defp status_class("Suspended"), do: "text-warning"
-  defp status_class("Draft"), do: "text-base-content/60"
+  defp status_class("Draft"), do: "text-base-content/70"
 end

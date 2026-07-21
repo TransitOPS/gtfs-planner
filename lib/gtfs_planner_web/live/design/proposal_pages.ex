@@ -37,7 +37,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">This round, graduated</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Five components shipped: <code class="font-mono text-sm">callout</code>, <code class="font-mono text-sm">status_badge</code>, <code class="font-mono text-sm">empty_state</code>, <code class="font-mono text-sm">skeleton</code>, and
         <code class="font-mono text-sm">confirm_dialog</code>
         — see Feedback, Badges, and Overlays. Alongside them: the off-token palettes
@@ -51,7 +51,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Gaps against neighboring systems</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         What Polaris, Carbon, and the GOV.UK system ship that this one lacks.
         Precedent is not a reason by itself; each row is here because the need is
         already visible in this app. Shipped rows stay as a record of the round.
@@ -59,7 +59,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div class="mt-3 overflow-x-auto">
         <table id="ds-gaps-table" class="w-full text-sm">
           <thead>
-            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/60">
+            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/70">
               <th class="py-2 pr-4 font-semibold">Pattern</th>
               <th class="py-2 pr-4 font-semibold">Precedent</th>
               <th class="py-2 pr-4 font-semibold">Here today</th>
@@ -146,7 +146,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
           </tbody>
         </table>
       </div>
-      <p class="mt-3 text-sm text-base-content/60">
+      <p class="mt-3 text-sm text-base-content/70">
         Open rows next in wayfinding order — breadcrumb, then global search — because
         finding a record is the top task; the Content &amp; IA standards and the
         Foundations accessibility page follow.
@@ -170,7 +170,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Scope is wayfinding</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Every record lives inside a GTFS version, and the version switcher already
         sits in the app header. The rules that keep that working: scope never
         disappears on a scoped view, the title names the record and the subtitle
@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
           <span class="font-mono">2026-01</span>
           <span class="inline-flex items-center gap-1">
             <span class="size-1.5 rounded-full bg-base-content/40" aria-hidden="true"></span>
-            <span class="font-medium text-base-content/60">Draft</span>
+            <span class="font-medium text-base-content/70">Draft</span>
           </span>
         </span>
         <span class="inline-flex items-center gap-1.5 border border-base-300 px-2 py-1 text-sm">
@@ -195,13 +195,13 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
             <span class="font-medium text-success">Published</span>
           </span>
         </span>
-        <span class="text-sm text-base-content/60">
+        <span class="text-sm text-base-content/70">
           — published versions are read-only; the chip says so before an edit begins
         </span>
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">The hierarchy needs a ladder</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         GTFS nests: station, level, platform, boarding area. The sub-navigation bars
         move sideways between tabs, and the back button moves one hop; nothing shows
         the whole path or jumps two levels. A breadcrumb is the ladder.
@@ -224,7 +224,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Search is the front door</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A production feed carries thousands of stops; browse-then-paginate makes the
         top task — find a specific stop or route — cost a page walk. A global search
         that matches names and GTFS ids, reachable by keyboard, turns it into one
@@ -233,29 +233,29 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div id="ds-search-demo" class="mt-3 border border-base-300 p-4">
         <div class="max-w-md">
           <div class="flex h-10 items-center gap-2 border border-control-border px-3 focus-within:border-primary">
-            <span class="hero-magnifying-glass size-4 text-base-content/60" aria-hidden="true"></span>
+            <span class="hero-magnifying-glass size-4 text-base-content/70" aria-hidden="true"></span>
             <input
               type="search"
               placeholder="Search stops, routes, ids"
               class="w-full bg-transparent text-sm focus:outline-none"
               aria-label="Search stops, routes, and ids"
             />
-            <kbd class="border border-base-300 px-1.5 font-mono text-xs text-base-content/60">⌘K</kbd>
+            <kbd class="border border-base-300 px-1.5 font-mono text-xs text-base-content/70">⌘K</kbd>
           </div>
           <ul class="mt-1 divide-y divide-base-300 border border-base-300 text-sm">
-            <li class="bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/60">Stops</li>
+            <li class="bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/70">Stops</li>
             <li class="flex items-center justify-between px-3 py-2">
               <span>Harbor Terminal</span>
-              <span class="font-mono text-xs text-base-content/60">stop_4211</span>
+              <span class="font-mono text-xs text-base-content/70">stop_4211</span>
             </li>
             <li class="flex items-center justify-between px-3 py-2">
               <span>Harborview &amp; 3rd</span>
-              <span class="font-mono text-xs text-base-content/60">stop_0388</span>
+              <span class="font-mono text-xs text-base-content/70">stop_0388</span>
             </li>
-            <li class="bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/60">Routes</li>
+            <li class="bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/70">Routes</li>
             <li class="flex items-center justify-between px-3 py-2">
               <span>231 · Harbor Shuttle</span>
-              <span class="font-mono text-xs text-base-content/60">route_231</span>
+              <span class="font-mono text-xs text-base-content/70">route_231</span>
             </li>
           </ul>
         </div>
@@ -277,7 +277,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Terminology</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         GTFS names things riders never say, and names some things twice. Pick one term
         per concept and keep it. Raw field names appear only as mono metadata — the
         Typography page already sets ids that way — never as labels.
@@ -285,7 +285,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div class="mt-3 overflow-x-auto">
         <table id="ds-terminology-table" class="w-full text-sm">
           <thead>
-            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/60">
+            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/70">
               <th class="py-2 pr-4 font-semibold">Concept</th>
               <th class="py-2 pr-4 font-semibold">Use</th>
               <th class="py-2 pr-4 font-semibold">Not</th>
@@ -346,14 +346,14 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">Formatting standards</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         One format per data type, chosen once. The list demo already writes ISO dates;
         this table makes the rest explicit.
       </p>
       <div class="mt-3 overflow-x-auto">
         <table id="ds-formats-table" class="w-full text-sm">
           <thead>
-            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/60">
+            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/70">
               <th class="py-2 pr-4 font-semibold">Data</th>
               <th class="py-2 pr-4 font-semibold">Format</th>
               <th class="py-2 font-semibold">Example</th>
@@ -400,43 +400,43 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">Microcopy patterns</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Three templates cover most of what screens write. Each pair below is
         instead-of / write.
       </p>
       <div id="ds-microcopy-demo" class="mt-3 divide-y divide-base-300 border-y border-base-300">
         <div class="grid gap-4 py-3 sm:grid-cols-2">
           <div>
-            <p class="mb-1 text-xs font-semibold text-base-content/60">Instead of</p>
+            <p class="mb-1 text-xs font-semibold text-base-content/70">Instead of</p>
             <p class="text-sm text-base-content/70">
               Silence — today a failed address search empties the dropdown and logs <span class="font-mono text-xs">:network_error</span>; the user gets nothing.
             </p>
           </div>
           <div>
-            <p class="mb-1 text-xs font-semibold text-base-content/60">Write</p>
+            <p class="mb-1 text-xs font-semibold text-base-content/70">Write</p>
             <p class="text-sm">
               Address search is unavailable. Check the connection and try again.
-              <span class="font-mono text-xs text-base-content/60">ref: network_error</span>
+              <span class="font-mono text-xs text-base-content/70">ref: network_error</span>
             </p>
           </div>
         </div>
         <div class="grid gap-4 py-3 sm:grid-cols-2">
           <div>
-            <p class="mb-1 text-xs font-semibold text-base-content/60">Instead of</p>
+            <p class="mb-1 text-xs font-semibold text-base-content/70">Instead of</p>
             <p class="text-sm text-base-content/70">No data.</p>
           </div>
           <div>
-            <p class="mb-1 text-xs font-semibold text-base-content/60">Write</p>
+            <p class="mb-1 text-xs font-semibold text-base-content/70">Write</p>
             <p class="text-sm">No stops yet. Stops appear after you import a feed.</p>
           </div>
         </div>
         <div class="grid gap-4 py-3 sm:grid-cols-2">
           <div>
-            <p class="mb-1 text-xs font-semibold text-base-content/60">Instead of</p>
+            <p class="mb-1 text-xs font-semibold text-base-content/70">Instead of</p>
             <p class="text-sm text-base-content/70">Are you sure? — Yes / No</p>
           </div>
           <div>
-            <p class="mb-1 text-xs font-semibold text-base-content/60">Write</p>
+            <p class="mb-1 text-xs font-semibold text-base-content/70">Write</p>
             <p class="text-sm">
               Delete route 42? This removes 214 trips. — Cancel / Delete route
             </p>
@@ -468,7 +468,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Feed colors, guarded</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         <code class="font-mono text-sm">route_color</code>
         and <code class="font-mono text-sm">route_text_color</code>
         are feed data, and real feeds ship illegible pairs. The Badges page warns
@@ -515,7 +515,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Stop sequence</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Order is the data: a table of stops hides it, a line shows it. The rail
         carries the route color, filled dots are termini, open dots are stops, and
         the stop name is the link. Times sit right, in mono.
@@ -606,7 +606,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">The clock past midnight</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         GTFS times run past 24:00:00 so an overnight trip stays one ordered service
         day: 25:14:00 is 01:14 the next calendar day. Display the wall clock with an
         explicit next-day marker, and never re-sort by it — service-day order is the
@@ -615,7 +615,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div id="ds-service-day-demo" class="mt-3 overflow-x-auto border border-base-300 p-4">
         <table class="w-full max-w-md text-sm">
           <thead>
-            <tr class="border-b border-base-300 text-left text-xs font-semibold text-base-content/60">
+            <tr class="border-b border-base-300 text-left text-xs font-semibold text-base-content/70">
               <th class="py-2 pr-4 font-semibold">Stop</th>
               <th class="py-2 pr-4 text-right font-semibold">Stored</th>
               <th class="py-2 text-right font-semibold">Displayed</th>
@@ -635,7 +635,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
                 24:08:00
               </td>
               <td class="py-2 text-right font-mono tabular-nums">
-                00:08 <span class="text-xs font-medium text-base-content/60">+1</span>
+                00:08 <span class="text-xs font-medium text-base-content/70">+1</span>
               </td>
             </tr>
             <tr>
@@ -644,7 +644,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
                 25:14:00
               </td>
               <td class="py-2 text-right font-mono tabular-nums">
-                01:14 <span class="text-xs font-medium text-base-content/60">+1</span>
+                01:14 <span class="text-xs font-medium text-base-content/70">+1</span>
               </td>
             </tr>
           </tbody>
@@ -657,7 +657,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Days of service</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         calendar.txt is seven booleans plus dated exceptions. Fill is the signal —
         filled chips run, outlined chips do not — so the pattern survives grayscale.
         Exceptions are always textual, with the symbol and the word.
@@ -682,10 +682,10 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
             <span class="inline-flex size-7 items-center justify-center bg-neutral text-xs font-semibold text-neutral-content">
               F
             </span>
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               S
             </span>
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               S
             </span>
           </span>
@@ -694,19 +694,19 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
           <span class="w-24 text-sm text-base-content/70">Weekend</span>
           <span class="sr-only">Runs Saturday and Sunday</span>
           <span class="flex gap-1" aria-hidden="true">
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               M
             </span>
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               T
             </span>
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               W
             </span>
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               T
             </span>
-            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/60">
+            <span class="inline-flex size-7 items-center justify-center border border-base-300 text-xs font-semibold text-base-content/70">
               F
             </span>
             <span class="inline-flex size-7 items-center justify-center bg-neutral text-xs font-semibold text-neutral-content">
@@ -725,7 +725,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </div>
 
       <h2 class="mt-8 text-lg font-semibold">Accessibility is three-valued</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         <code class="font-mono text-sm">wheelchair_boarding</code>
         is 1 accessible, 2 not accessible, and 0 or empty for no data. Collapsing "no
         data" into "not accessible" misreports the network; collapsing it the other
@@ -742,7 +742,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
           <span class="font-medium text-error">Not accessible</span>
         </span>
         <span class="inline-flex items-center gap-1.5 border border-dashed border-base-300 px-2 py-0.5 text-sm">
-          <span class="font-medium text-base-content/60">No data</span>
+          <span class="font-medium text-base-content/70">No data</span>
         </span>
       </div>
       <p class="mt-3">
@@ -752,7 +752,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Pathways</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A pathway is a mode, a direction, and a traversal time. The time is the
         comparison number, so it is mono; direction is text; stairs carry their step
         count because "45 s" hides what the 45 seconds are made of.
@@ -760,7 +760,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div id="ds-pathway-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
         <span class="inline-flex items-center gap-2 border border-base-300 px-2.5 py-1 text-sm">
           <span class="font-medium">Stairs ↑</span>
-          <span class="text-base-content/60">32 steps</span>
+          <span class="text-base-content/70">32 steps</span>
           <span class="font-mono tabular-nums text-base-content/70">45 s</span>
         </span>
         <span class="inline-flex items-center gap-2 border border-base-300 px-2.5 py-1 text-sm">
@@ -779,7 +779,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
         </span>
         <span class="inline-flex items-center gap-2 border border-base-300 px-2.5 py-1 text-sm">
           <span class="font-medium">Walkway ↔&#xFE0E;</span>
-          <span class="text-base-content/60">120 m</span>
+          <span class="text-base-content/70">120 m</span>
           <span class="font-mono tabular-nums text-base-content/70">95 s</span>
         </span>
       </div>
@@ -790,7 +790,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Version diff</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Import review compares versions, so every row states its verb: symbol plus
         word plus color, never color alone. Changed fields show from → to in mono.
         Removed rows stay fully legible — the import flow currently fades rejected
@@ -799,7 +799,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div id="ds-diff-demo" class="mt-3 overflow-x-auto border border-base-300 p-4">
         <table class="w-full text-sm">
           <thead>
-            <tr class="border-b border-base-300 text-left text-xs font-semibold text-base-content/60">
+            <tr class="border-b border-base-300 text-left text-xs font-semibold text-base-content/70">
               <th class="py-2 pr-4 font-semibold">Change</th>
               <th class="py-2 pr-4 font-semibold">Entity</th>
               <th class="py-2 font-semibold">Detail</th>
@@ -833,7 +833,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Severity counts</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         Validation and reachability both summarize error, warning, and info counts,
         each with its own markup today. One counts strip: the chips are the filters,
         counts in tabular numerals, pressed state via <code class="font-mono text-sm">aria-pressed</code>.
@@ -907,12 +907,12 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Upload field</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A file upload field with Phoenix LiveView's UploadConfig. Presents a labeled
         native file input, constraints, entry progress, cancellation, and rejection.
         Does not consume or persist files.
       </p>
-      <div class="mt-2 text-xs text-base-content/50">
+      <div class="mt-2 text-xs text-base-content/70">
         <span class="font-semibold">Maturity:</span>
         Experimental · <span class="font-semibold">Owner:</span>
         Packages 14/16 (import and diagram upload) · <span class="font-semibold">Graduation:</span>
@@ -937,11 +937,11 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Pressed filter</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A toggle button with aria-pressed state for filtering data. Server-owned
         pressed state, pending/disabled copy, configured event/value/target.
       </p>
-      <div class="mt-2 text-xs text-base-content/50">
+      <div class="mt-2 text-xs text-base-content/70">
         <span class="font-semibold">Maturity:</span>
         Experimental · <span class="font-semibold">Owner:</span>
         Packages 14–17 (selection adoption) · <span class="font-semibold">Graduation:</span>
@@ -975,11 +975,11 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Segmented control</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         A fieldset with visible legend and native same-name radio group. Server-owned
         selected value, configured event/target, disabled explanation.
       </p>
-      <div class="mt-2 text-xs text-base-content/50">
+      <div class="mt-2 text-xs text-base-content/70">
         <span class="font-semibold">Maturity:</span>
         Experimental · <span class="font-semibold">Owner:</span>
         Packages 14–17 (selection adoption) · <span class="font-semibold">Graduation:</span>
@@ -1005,7 +1005,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Semantic decision matrix</h2>
-      <p class="mt-1 text-sm text-base-content/60">
+      <p class="mt-1 text-sm text-base-content/70">
         When to use each selection primitive. Navigation uses links with aria-current,
         pressed filters use buttons with aria-pressed, and single choice uses a
         fieldset with native radios.
@@ -1013,7 +1013,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       <div class="mt-3 overflow-x-auto">
         <table id="ds-selection-matrix" class="w-full text-sm">
           <thead>
-            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/60">
+            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/70">
               <th class="py-2 pr-4 font-semibold">Pattern</th>
               <th class="py-2 pr-4 font-semibold">Component</th>
               <th class="py-2 pr-4 font-semibold">Semantics</th>
