@@ -123,16 +123,18 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRun do
       summary when is_map(summary) ->
         summary = normalize_keys(summary, @summary_keys)
 
-        if map_size(summary) <= 32 and
-             Enum.all?(summary, fn {key, value} ->
-               key in @summary_keys and valid_count?(value)
-             end),
-           do: changeset,
-           else: add_error(changeset, :summary, "contains unsupported or invalid values")
+        if valid_summary?(summary),
+          do: changeset,
+          else: add_error(changeset, :summary, "contains unsupported or invalid values")
 
       _ ->
         add_error(changeset, :summary, "must be a map")
     end
+  end
+
+  defp valid_summary?(summary) do
+    map_size(summary) <= 32 and
+      Enum.all?(summary, fn {key, value} -> key in @summary_keys and valid_count?(value) end)
   end
 
   defp validate_diagnostics(changeset) do

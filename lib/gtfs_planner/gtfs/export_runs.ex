@@ -30,38 +30,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   def create_pending(organization_id, version_id, actor, export_type)
       when export_type in [:full, :pathways] do
     transaction_with_broadcast(fn ->
-      if version_in_scope?(organization_id, version_id) do
-        case ArtifactStorage.available?() do
-          :ok ->
-            lock_scope(organization_id, version_id, export_type)
-
-            case lock_active_run(organization_id, version_id, export_type) do
-              %Run{} = run ->
-                {{:ok, run}, []}
-
-              nil ->
-                attrs = %{
-                  organization_id: organization_id,
-                  gtfs_version_id: version_id,
-                  actor_id: actor.id,
-                  actor_email: actor.email,
-                  export_type: export_type,
-                  state: :pending,
-                  phase: :preflight
-                }
-
-                case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
-                  {:ok, run} -> {{:ok, run}, [run.id]}
-                  {:error, changeset} -> {{:error, changeset}, []}
-                end
-            end
-
-          {:error, :artifact_storage_unavailable} ->
-            {{:error, :artifact_storage_unavailable}, []}
-        end
-      else
-        {{:error, :not_found}, []}
-      end
+      create_pending_transition(organization_id, version_id, actor, export_type)
     end)
   end
 
@@ -145,17 +114,10 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   @spec mark_ready(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), map()) ::
           {:ok, Run.t()} | {:error, :lease_lost | term()}
   def mark_ready(organization_id, run_id, generation, token, artifact) when is_map(artifact) do
-    transaction_with_broadcast(fn ->
-      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token),
-           :ok <- matching_artifact?(run, artifact),
-           {:ok, _path} <- ArtifactStorage.verify(artifact),
-           {:ok, ready} <- ready_run(run, generation, token, artifact) do
-        {{:ok, ready}, [run.id]}
-      else
-        {:error, :lease_lost} -> {{:error, :lease_lost}, []}
-        {:error, reason} -> {{:error, reason}, []}
-      end
-    end)
+    with :ok <- requested_artifact?(organization_id, run_id, artifact),
+         {:ok, _path} <- artifact_storage_module().verify(artifact) do
+      commit_ready(organization_id, run_id, generation, token, artifact)
+    end
   end
 
   def mark_ready(_, _, _, _, _), do: {:error, :invalid_artifact}
@@ -182,24 +144,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
           {:ok, Run.t()} | {:error, :lease_lost}
   def fail_build(organization_id, run_id, generation, token, code) when is_binary(code) do
     transaction_with_broadcast(fn ->
-      case lock_run(organization_id, run_id) do
-        %Run{} = run
-        when run.state == :building and run.lease_generation == generation and
-               run.lease_token == token ->
-          if lease_current?(run.id) do
-            state = if is_nil(run.cancel_requested_at), do: :failed, else: :cancelled
-
-            case close_build(run, state, String.slice(code, 0, 128)) do
-              {:ok, closed} -> {{:ok, closed}, [run.id]}
-              {:error, _} -> {{:error, :lease_lost}, []}
-            end
-          else
-            {{:error, :lease_lost}, []}
-          end
-
-        _ ->
-          {{:error, :lease_lost}, []}
-      end
+      fail_locked_build(lock_run(organization_id, run_id), generation, token, code)
     end)
   end
 
@@ -255,38 +200,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   @spec retry(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, term()}
   def retry(organization_id, run_id) do
     transaction_with_broadcast(fn ->
-      case lock_run(organization_id, run_id) do
-        %Run{state: state} = run when state in [:failed, :interrupted, :cancelled, :expired] ->
-          lock_scope(run.organization_id, run.gtfs_version_id, run.export_type)
-
-          case lock_active_run(run.organization_id, run.gtfs_version_id, run.export_type) do
-            nil ->
-              attrs = %{
-                organization_id: run.organization_id,
-                gtfs_version_id: run.gtfs_version_id,
-                actor_id: run.actor_id,
-                actor_email: run.actor_email,
-                version_name: run.version_name,
-                export_type: run.export_type,
-                state: :pending,
-                phase: :preflight
-              }
-
-              case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
-                {:ok, retry_run} -> {{:ok, retry_run}, [retry_run.id]}
-                {:error, changeset} -> {{:error, changeset}, []}
-              end
-
-            %Run{} ->
-              {{:error, :invalid_transition}, []}
-          end
-
-        nil ->
-          {{:error, :not_found}, []}
-
-        _ ->
-          {{:error, :invalid_transition}, []}
-      end
+      retry_locked_run(lock_run(organization_id, run_id))
     end)
   end
 
@@ -352,13 +266,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
         )
         |> Repo.all()
 
-      ids =
-        Enum.flat_map(runs, fn run ->
-          case expire_artifact(run) do
-            {:ok, _} -> [run.id]
-            _ -> []
-          end
-        end)
+      ids = Enum.flat_map(runs, &expired_artifact_id/1)
 
       {length(ids), ids}
     end)
@@ -375,15 +283,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
         )
         |> Repo.all()
 
-      ids =
-        Enum.flat_map(runs, fn run ->
-          state = if is_nil(run.cancel_requested_at), do: :interrupted, else: :cancelled
-
-          case close_build(run, state, "lease_expired") do
-            {:ok, _} -> [run.id]
-            _ -> []
-          end
-        end)
+      ids = Enum.flat_map(runs, &reconciled_run_id/1)
 
       {length(ids), ids}
     end)
@@ -416,6 +316,128 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   def topic(%Run{id: id}), do: topic(id)
   def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id
 
+  defp create_pending_transition(organization_id, version_id, actor, export_type) do
+    with true <- version_in_scope?(organization_id, version_id),
+         :ok <- ArtifactStorage.available?() do
+      create_or_reuse_pending(organization_id, version_id, actor, export_type)
+    else
+      false -> {{:error, :not_found}, []}
+      {:error, :artifact_storage_unavailable} -> {{:error, :artifact_storage_unavailable}, []}
+    end
+  end
+
+  defp create_or_reuse_pending(organization_id, version_id, actor, export_type) do
+    lock_scope(organization_id, version_id, export_type)
+
+    case lock_active_run(organization_id, version_id, export_type) do
+      %Run{} = run -> {{:ok, run}, []}
+      nil -> insert_pending_run(organization_id, version_id, actor, export_type)
+    end
+  end
+
+  defp insert_pending_run(organization_id, version_id, actor, export_type) do
+    attrs = %{
+      organization_id: organization_id,
+      gtfs_version_id: version_id,
+      actor_id: actor.id,
+      actor_email: actor.email,
+      export_type: export_type,
+      state: :pending,
+      phase: :preflight
+    }
+
+    case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
+      {:ok, run} -> {{:ok, run}, [run.id]}
+      {:error, changeset} -> {{:error, changeset}, []}
+    end
+  end
+
+  defp commit_ready(organization_id, run_id, generation, token, artifact) do
+    transaction_with_broadcast(fn ->
+      ready_transition(organization_id, run_id, generation, token, artifact)
+    end)
+  end
+
+  defp ready_transition(organization_id, run_id, generation, token, artifact) do
+    with {:ok, run} <- fenced_run(organization_id, run_id, generation, token),
+         :ok <- matching_artifact?(run, artifact),
+         {:ok, ready} <- ready_run(run, generation, token, artifact) do
+      {{:ok, ready}, [run.id]}
+    else
+      {:error, :lease_lost} -> {{:error, :lease_lost}, []}
+      {:error, reason} -> {{:error, reason}, []}
+    end
+  end
+
+  defp fail_locked_build(
+         %Run{state: :building, lease_generation: generation, lease_token: token} = run,
+         generation,
+         token,
+         code
+       ) do
+    if lease_current?(run.id), do: close_failed_build(run, code), else: lease_lost_result()
+  end
+
+  defp fail_locked_build(_run, _generation, _token, _code), do: lease_lost_result()
+
+  defp close_failed_build(run, code) do
+    state = if is_nil(run.cancel_requested_at), do: :failed, else: :cancelled
+
+    case close_build(run, state, String.slice(code, 0, 128)) do
+      {:ok, closed} -> {{:ok, closed}, [run.id]}
+      {:error, _reason} -> lease_lost_result()
+    end
+  end
+
+  defp lease_lost_result, do: {{:error, :lease_lost}, []}
+
+  defp retry_locked_run(%Run{state: state} = run)
+       when state in [:failed, :interrupted, :cancelled, :expired] do
+    lock_scope(run.organization_id, run.gtfs_version_id, run.export_type)
+
+    case lock_active_run(run.organization_id, run.gtfs_version_id, run.export_type) do
+      nil -> insert_retry_run(run)
+      %Run{} -> {{:error, :invalid_transition}, []}
+    end
+  end
+
+  defp retry_locked_run(nil), do: {{:error, :not_found}, []}
+  defp retry_locked_run(_run), do: {{:error, :invalid_transition}, []}
+
+  defp insert_retry_run(run) do
+    attrs = %{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      actor_id: run.actor_id,
+      actor_email: run.actor_email,
+      version_name: run.version_name,
+      export_type: run.export_type,
+      state: :pending,
+      phase: :preflight
+    }
+
+    case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
+      {:ok, retry_run} -> {{:ok, retry_run}, [retry_run.id]}
+      {:error, changeset} -> {{:error, changeset}, []}
+    end
+  end
+
+  defp expired_artifact_id(run) do
+    case expire_artifact(run) do
+      {:ok, _expired} -> [run.id]
+      _error -> []
+    end
+  end
+
+  defp reconciled_run_id(run) do
+    state = if is_nil(run.cancel_requested_at), do: :interrupted, else: :cancelled
+
+    case close_build(run, state, "lease_expired") do
+      {:ok, _closed} -> [run.id]
+      _error -> []
+    end
+  end
+
   defp ready_run(run, generation, token, artifact) do
     database_now = database_now()
     expires_at = DateTime.add(database_now, artifact_ttl_seconds())
@@ -441,7 +463,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
             r.id == ^run.id and r.organization_id == ^run.organization_id and
               r.state == :building and r.lease_generation == ^generation and
               r.lease_token == ^token and is_nil(r.cancel_requested_at) and
-              r.lease_expires_at >= fragment("CURRENT_TIMESTAMP"),
+              r.lease_expires_at >= fragment("clock_timestamp()"),
           update: [
             set: [
               state: :ready,
@@ -571,6 +593,13 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
        else: {:error, :invalid_artifact}
   end
 
+  defp requested_artifact?(organization_id, run_id, artifact) do
+    if Map.get(artifact, :organization_id) == organization_id and
+         Map.get(artifact, :run_id) == run_id,
+       do: :ok,
+       else: {:error, :invalid_artifact}
+  end
+
   defp artifact_current?(run) do
     from(r in Run,
       where:
@@ -604,6 +633,10 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   defp artifact_ttl_seconds do
     Application.get_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 86_400)
+  end
+
+  defp artifact_storage_module do
+    Application.get_env(:gtfs_planner, :export_artifact_storage_module, ArtifactStorage)
   end
 
   defp database_now do

@@ -31,11 +31,7 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
          true <- safe_filename?(filename),
          {:ok, root} <- root(opts),
          {:ok, limits} <- capacity_limits(bytes, opts) do
-      TaskArtifactCapacity.within_limit(root, byte_size(bytes), limits.max_total_bytes, fn ->
-        with :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
-          publish_bytes(root, organization_id, version_id, run_id, filename, bytes)
-        end
-      end)
+      publish_with_capacity(root, limits, organization_id, version_id, run_id, filename, bytes)
     else
       false -> {:error, :invalid_artifact_filename}
       {:error, _} = error -> error
@@ -43,6 +39,18 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
   end
 
   def publish(_, _, _, _, _, _), do: {:error, :invalid_artifact}
+
+  defp publish_with_capacity(root, limits, organization_id, version_id, run_id, filename, bytes) do
+    TaskArtifactCapacity.within_limit(root, byte_size(bytes), limits.max_total_bytes, fn ->
+      publish_validated(root, organization_id, version_id, run_id, filename, bytes)
+    end)
+  end
+
+  defp publish_validated(root, organization_id, version_id, run_id, filename, bytes) do
+    with :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
+      publish_bytes(root, organization_id, version_id, run_id, filename, bytes)
+    end
+  end
 
   @doc "Checks that the configured private root already exists and accepts a bounded probe write."
   @spec available?(keyword()) :: :ok | {:error, :artifact_storage_unavailable}

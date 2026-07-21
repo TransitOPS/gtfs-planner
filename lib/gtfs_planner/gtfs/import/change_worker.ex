@@ -49,62 +49,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
   end
 
   defp apply_with_options(run, generation, token, audit_context, opts) do
-    run.organization_id
-    |> ChangeRuns.applyable_decisions(run.id)
-    |> order_for_apply()
-    |> Enum.reduce_while(:ok, fn decision, :ok ->
-      result =
-        if opts == [] do
-          ChangeRuns.apply_decision(
-            run.organization_id,
-            run.id,
-            decision.decision_id,
-            generation,
-            token,
-            audit_context
-          )
-        else
-          ChangeRuns.apply_decision_with_hook(
-            run.organization_id,
-            run.id,
-            decision.decision_id,
-            generation,
-            token,
-            audit_context,
-            opts
-          )
-        end
+    _outcome =
+      run.organization_id
+      |> ChangeRuns.applyable_decisions(run.id)
+      |> order_for_apply()
+      |> Enum.reduce_while(:ok, &apply_one(&1, &2, run, generation, token, audit_context, opts))
 
-      case result do
-        {:ok, _applied} ->
-          {:cont, :ok}
-
-        {:error, :lease_lost} ->
-          {:halt, :lease_lost}
-
-        {:error, reason} ->
-          case ChangeRuns.mark_apply_failure(
-                 run.organization_id,
-                 run.id,
-                 decision.decision_id,
-                 generation,
-                 token,
-                 reason
-               ) do
-            {:ok, _failed} -> {:cont, :ok}
-            {:error, _} -> {:halt, :lease_lost}
-          end
-      end
-    end)
-    |> case do
-      :lease_lost ->
-        _ = ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
-        :ok
-
-      :ok ->
-        _ = ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
-        :ok
-    end
+    _ = ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
+    :ok
   rescue
     error ->
       require Logger
@@ -112,6 +64,49 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
       _ = ChangeRuns.fail_apply(run.organization_id, run.id, generation, token, "apply_failed")
       :ok
   end
+
+  defp apply_one(decision, :ok, run, generation, token, audit_context, opts) do
+    result = apply_decision(run, decision, generation, token, audit_context, opts)
+    continue_after_apply(result, run, decision, generation, token)
+  end
+
+  defp apply_decision(run, decision, generation, token, audit_context, []) do
+    ChangeRuns.apply_decision(
+      run.organization_id,
+      run.id,
+      decision.decision_id,
+      generation,
+      token,
+      audit_context
+    )
+  end
+
+  defp apply_decision(run, decision, generation, token, audit_context, opts) do
+    ChangeRuns.apply_decision_with_hook(
+      run.organization_id,
+      run.id,
+      decision.decision_id,
+      generation,
+      token,
+      audit_context,
+      opts
+    )
+  end
+
+  defp continue_after_apply({:ok, _applied}, _run, _decision, _generation, _token),
+    do: {:cont, :ok}
+
+  defp continue_after_apply({:error, :lease_lost}, _run, _decision, _generation, _token),
+    do: {:halt, :lease_lost}
+
+  defp continue_after_apply({:error, reason}, run, decision, generation, token) do
+    run.organization_id
+    |> ChangeRuns.mark_apply_failure(run.id, decision.decision_id, generation, token, reason)
+    |> continue_after_failure()
+  end
+
+  defp continue_after_failure({:ok, _failed}), do: {:cont, :ok}
+  defp continue_after_failure({:error, _reason}), do: {:halt, :lease_lost}
 
   defp close(run, generation, token, code) do
     _ = ChangeRuns.fail_compute(run.organization_id, run.id, generation, token, code)

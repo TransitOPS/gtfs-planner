@@ -7,7 +7,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
 
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns}
+  alias GtfsPlanner.Gtfs.Import.{ChangeArtifactStorage, ChangeRun, ChangeRuns, ChangeWorker}
   alias GtfsPlanner.Gtfs.TaskArtifactMaintenance
   alias GtfsPlanner.Repo
 
@@ -50,5 +50,60 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     assert :ok = TaskArtifactMaintenance.maintain()
     assert Repo.get!(ChangeRun, change_run.id).state == :interrupted
     assert Repo.get!(Run, export_run.id).state == :interrupted
+  end
+
+  test "retains interrupted compute sources through maintenance so retry can finish" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    run_id = Ecto.UUID.generate()
+
+    {:ok, manifest} =
+      ChangeArtifactStorage.stage(organization.id, version.id, run_id, [
+        %{
+          filename: "stops.txt",
+          content: "stop_id,stop_name,stop_lat,stop_lon\ncentral,Central,40.0,-70.0\n"
+        }
+      ])
+
+    {:ok, run} =
+      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, manifest, run_id)
+
+    {:ok, _, _, _} = ChangeRuns.claim(organization.id, run.id, :compute)
+
+    from(r in ChangeRun, where: r.id == ^run.id)
+    |> Repo.update_all(set: [lease_expires_at: ~U[2000-01-01 00:00:00.000000Z]])
+
+    assert :ok = TaskArtifactMaintenance.maintain()
+    assert Repo.get!(ChangeRun, run.id).state == :interrupted
+    assert {:ok, pending} = ChangeRuns.retry(organization.id, run.id)
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
+    assert :ok = ChangeWorker.compute(claimed, generation, token, ChangeRuns.topic(run))
+    assert Repo.get!(ChangeRun, pending.id).state == :review
+  end
+
+  test "does not delete a freshly staged directory before its run row is inserted" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    run_id = Ecto.UUID.generate()
+
+    {:ok, manifest} =
+      ChangeArtifactStorage.stage(organization.id, version.id, run_id, [
+        %{filename: "levels.txt", content: "level_id,level_index\nL1,1\n"}
+      ])
+
+    assert :ok = TaskArtifactMaintenance.maintain()
+
+    assert {:ok, run} =
+             ChangeRuns.create_pending_compute(
+               organization.id,
+               version.id,
+               @actor,
+               manifest,
+               run_id
+             )
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
+    assert :ok = ChangeWorker.compute(claimed, generation, token, ChangeRuns.topic(run))
+    assert Repo.get!(ChangeRun, run.id).state == :review
   end
 end

@@ -14,6 +14,20 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
 
+  defmodule BlockingArtifactStorage do
+    alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+
+    def verify(artifact) do
+      test_pid = Application.fetch_env!(:gtfs_planner, :export_artifact_verify_test_pid)
+      send(test_pid, {:artifact_verify_started, self()})
+
+      receive do
+        :continue_artifact_verify ->
+          ArtifactStorage.verify(artifact)
+      end
+    end
+  end
+
   setup do
     root = Path.join(System.tmp_dir!(), "export-runs-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -161,6 +175,41 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
 
     assert %Run{state: :failed, failure_code: "missing_or_corrupt_artifact"} =
              ExportRuns.get_for_version(organization.id, version.id, run.id)
+  end
+
+  test "publication loses its fence when the lease expires during artifact verification" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    {:ok, _building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
+    artifact = publish!(organization.id, version.id, run.id)
+
+    previous_module = Application.get_env(:gtfs_planner, :export_artifact_storage_module)
+    Application.put_env(:gtfs_planner, :export_artifact_storage_module, BlockingArtifactStorage)
+    Application.put_env(:gtfs_planner, :export_artifact_verify_test_pid, self())
+
+    on_exit(fn ->
+      if previous_module,
+        do: Application.put_env(:gtfs_planner, :export_artifact_storage_module, previous_module),
+        else: Application.delete_env(:gtfs_planner, :export_artifact_storage_module)
+
+      Application.delete_env(:gtfs_planner, :export_artifact_verify_test_pid)
+    end)
+
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        Sandbox.allow(Repo, parent, self())
+        ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+      end)
+
+    assert_receive {:artifact_verify_started, verifier_pid}
+    expire!(run)
+    send(verifier_pid, :continue_artifact_verify)
+
+    assert {:error, :lease_lost} = Task.await(task)
+    assert Repo.get!(Run, run.id).state == :building
   end
 
   test "fails fast when the configured private storage root is unavailable" do

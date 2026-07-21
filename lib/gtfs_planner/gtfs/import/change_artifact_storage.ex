@@ -29,28 +29,36 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
     with :ok <- validate_scope(organization_id, version_id, run_id),
          {:ok, incoming_bytes} <- validate_files(files),
          {:ok, root} <- root(opts) do
-      TaskArtifactCapacity.within_limit(
-        root,
-        incoming_bytes,
-        configured_max_total_bytes(),
-        fn ->
-          with :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
-            stage_files(root, organization_id, version_id, run_id, files)
-            |> case do
-              {:ok, staged} ->
-                {:ok, Enum.reverse(staged)}
-
-              {:error, reason} ->
-                _ = remove(organization_id, version_id, run_id, opts)
-                {:error, reason}
-            end
-          end
-        end
-      )
+      stage_with_capacity(root, incoming_bytes, organization_id, version_id, run_id, files, opts)
     end
   end
 
   def stage(_, _, _, _, _), do: {:error, :invalid_staged_files}
+
+  defp stage_with_capacity(root, incoming_bytes, organization_id, version_id, run_id, files, opts) do
+    TaskArtifactCapacity.within_limit(
+      root,
+      incoming_bytes,
+      configured_max_total_bytes(),
+      fn -> stage_validated_files(root, organization_id, version_id, run_id, files, opts) end
+    )
+  end
+
+  defp stage_validated_files(root, organization_id, version_id, run_id, files, opts) do
+    with :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
+      root
+      |> stage_files(organization_id, version_id, run_id, files)
+      |> finalize_staged_files(organization_id, version_id, run_id, opts)
+    end
+  end
+
+  defp finalize_staged_files({:ok, staged}, _organization_id, _version_id, _run_id, _opts),
+    do: {:ok, Enum.reverse(staged)}
+
+  defp finalize_staged_files({:error, reason}, organization_id, version_id, run_id, opts) do
+    _ = remove(organization_id, version_id, run_id, opts)
+    {:error, reason}
+  end
 
   @spec read(ChangeRun.t(), keyword()) :: {:ok, [map()]} | {:error, :missing_or_corrupt_artifact}
   def read(%ChangeRun{} = run, opts \\ []) do
@@ -85,7 +93,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
           Path.join([run.organization_id, run.gtfs_version_id, run.id])
         end)
 
-      removed = reconcile_organizations(Path.join(root, "change-runs"), entries, active, 0)
+      grace_seconds = Keyword.get(opts, :orphan_grace_seconds, 0)
+
+      removed =
+        reconcile_organizations(Path.join(root, "change-runs"), entries, active, grace_seconds, 0)
+
       {:ok, removed}
     else
       {:error, :enoent} -> {:ok, 0}
@@ -225,17 +237,17 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
     Path.join([root, "change-runs", organization_id, version_id, run_id])
   end
 
-  defp reconcile_organizations(_base, [], _active, count), do: count
+  defp reconcile_organizations(_base, [], _active, _grace_seconds, count), do: count
 
-  defp reconcile_organizations(base, [organization | rest], active, count) do
+  defp reconcile_organizations(base, [organization | rest], active, grace_seconds, count) do
     organization_path = Path.join(base, organization)
 
-    count = reconcile_organization(organization_path, organization, active, count)
+    count = reconcile_organization(organization_path, organization, active, grace_seconds, count)
 
-    reconcile_organizations(base, rest, active, count)
+    reconcile_organizations(base, rest, active, grace_seconds, count)
   end
 
-  defp reconcile_organization(organization_path, organization, active, count) do
+  defp reconcile_organization(organization_path, organization, active, grace_seconds, count) do
     case File.ls(organization_path) do
       {:ok, versions} ->
         Enum.reduce(versions, count, fn version, acc ->
@@ -244,6 +256,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
             organization,
             version,
             active,
+            grace_seconds,
             acc
           )
         end)
@@ -253,13 +266,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
     end
   end
 
-  defp reconcile_version(version_path, organization, version, active, count) do
+  defp reconcile_version(version_path, organization, version, active, grace_seconds, count) do
     case File.ls(version_path) do
       {:ok, runs} ->
         Enum.reduce(
           runs,
           count,
-          &reconcile_run(version_path, organization, version, active, &1, &2)
+          &reconcile_run(version_path, organization, version, active, grace_seconds, &1, &2)
         )
 
       _ ->
@@ -267,14 +280,26 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
     end
   end
 
-  defp reconcile_run(version_path, organization, version, active, run, count) do
-    if MapSet.member?(active, Path.join([organization, version, run])) do
+  defp reconcile_run(version_path, organization, version, active, grace_seconds, run, count) do
+    run_path = Path.join(version_path, run)
+
+    if MapSet.member?(active, Path.join([organization, version, run])) or
+         within_orphan_grace?(run_path, grace_seconds) do
       count
     else
-      case File.rm_rf(Path.join(version_path, run)) do
+      case File.rm_rf(run_path) do
         {:ok, _} -> count + 1
         _ -> count
       end
+    end
+  end
+
+  defp within_orphan_grace?(_path, grace_seconds) when grace_seconds <= 0, do: false
+
+  defp within_orphan_grace?(path, grace_seconds) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: modified_at}} -> System.os_time(:second) - modified_at < grace_seconds
+      _ -> false
     end
   end
 end

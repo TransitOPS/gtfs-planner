@@ -443,6 +443,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
     :ok
   end
 
+  defp select_validation(view, check) do
+    view
+    |> form("#validation-form", validation: %{checks: [check]})
+    |> render_change()
+  end
+
+  defp submit_validation(view) do
+    view
+    |> form("#validation-form")
+    |> render_submit()
+  end
+
   describe "ExportLive Validation" do
     setup do
       organization = organization_fixture()
@@ -485,12 +497,30 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
       # Click mobility_data checkbox
-      view
-      |> element("input[phx-value-validation='mobility_data']")
-      |> render_click()
+      select_validation(view, "mobility_data")
 
       # It should be checked
-      assert has_element?(view, "input[phx-value-validation='mobility_data'][checked]")
+      assert has_element?(view, "#validation-checks-mobility_data[checked]")
+    end
+
+    test "named validation form preserves selections and handles the final unchecked value", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      select_validation(view, "mobility_data")
+      assert has_element?(view, "#validation-form[phx-change='change_validation']")
+      assert has_element?(view, "#validation-form[phx-submit='run_validation']")
+      assert has_element?(view, "#validation-checks-mobility_data[checked]")
+
+      render_change(view, "change_validation", %{})
+
+      refute has_element?(view, "#validation-checks-mobility_data[checked]")
+      assert has_element?(view, "#validation-checks[aria-invalid='false']")
     end
 
     test "clicking 'Run Validation' with no selection shows guidance flash", %{
@@ -502,9 +532,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("button", "Run Validation") |> render_click()
+      submit_validation(view)
 
       assert render(view) =~ "Select at least one validation check before running validation"
+      assert has_element?(view, "#validation-checks-error")
+      assert has_element?(view, "#validation-checks[aria-invalid='true']")
     end
 
     test "pathways trip tests selection enters validating state after run click", %{
@@ -516,8 +548,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
         render(view)
@@ -576,8 +608,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_no_progress_started, run_id, opts}, 500
       assert is_function(opts[:status_callback], 1)
@@ -652,8 +684,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_detailed_progress_started, run_id, true}, 500
 
@@ -699,8 +731,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until run completes
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
@@ -731,8 +763,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until run completes
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
@@ -767,8 +799,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until summary metrics render
       Enum.reduce_while(1..60, :waiting, fn _, _acc ->
@@ -805,8 +837,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until validation error panel appears
       Enum.reduce_while(1..60, :waiting, fn _, _acc ->
@@ -842,8 +874,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until error panel appears
       Enum.reduce_while(1..60, :waiting, fn _, _acc ->
@@ -876,8 +908,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until error panel appears
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
@@ -908,8 +940,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until run completes
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
@@ -942,8 +974,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until error panel appears
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
@@ -1031,8 +1063,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_failed, run_id, %{reason: :no_walkability_tests}}, 500
 
@@ -1089,8 +1121,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       # Poll until error panel appears
       Enum.reduce_while(1..40, :waiting, fn _, _acc ->
@@ -1206,8 +1238,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_failed, run_id, %{reason: :otp_runtime_failed}}, 500
 
@@ -1321,8 +1353,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_failed, run_id, %{reason: :otp_runtime_failed}}, 500
 
@@ -1428,8 +1460,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_failed, _run_id, %{reason: :otp_runtime_failed}}, 500
 
@@ -1525,8 +1557,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_failed, _run_id, %{reason: :pathways_export_prep_failed}},
                      500
@@ -1606,8 +1638,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_invoked, run_id, org_id, version_id}, 500
       assert org_id == organization.id
@@ -1661,8 +1693,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "pathways_tests")
+      submit_validation(view)
 
       assert_receive {:pathways_runner_invoked, run_id, org_id, version_id}, 500
       assert org_id == organization.id
@@ -1689,8 +1721,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "mobility_data")
+      submit_validation(view)
 
       # Poll until validation result appears
       Enum.reduce_while(1..20, :waiting, fn _, _acc ->
@@ -1722,10 +1754,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
       # Select validator
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
+      select_validation(view, "mobility_data")
 
       # Run validation
-      view |> element("button", "Run Validation") |> render_click()
+      submit_validation(view)
 
       # Poll until validation result appears
       html =
@@ -1769,8 +1801,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
       # Select validator and run
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "mobility_data")
+      submit_validation(view)
 
       # Poll until progress label appears
       html =
@@ -1810,8 +1842,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
       # Select and run
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "mobility_data")
+      submit_validation(view)
 
       # Poll until validation results render
       html =
@@ -1848,8 +1880,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
       # Select and run
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "mobility_data")
+      submit_validation(view)
 
       # Poll until validation error renders
       Enum.reduce_while(1..20, :waiting, fn _, _acc ->
@@ -1934,8 +1966,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "mobility_data")
+      submit_validation(view)
 
       # Poll until validation error renders
       Enum.reduce_while(1..20, :waiting, fn _, _acc ->
@@ -1977,8 +2009,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
       # Run and complete
-      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
+      select_validation(view, "mobility_data")
+      submit_validation(view)
 
       # Poll until results render
       Enum.reduce_while(1..20, :waiting, fn _, _acc ->
@@ -2092,13 +2124,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      assert has_element?(view, "#recent-validation-errors-#{pathways_run.id}", "1")
-      assert has_element?(view, "#recent-validation-warnings-#{pathways_run.id}", "1")
-      assert has_element?(view, "#recent-validation-infos-#{pathways_run.id}", "0")
+      assert has_element?(view, "#recent-validation-counts-#{pathways_run.id}-item-errors", "1")
+      assert has_element?(view, "#recent-validation-counts-#{pathways_run.id}-item-warnings", "1")
+      assert has_element?(view, "#recent-validation-counts-#{pathways_run.id}-item-infos", "0")
 
-      assert has_element?(view, "#recent-validation-errors-#{mobility_run.id}", "7")
-      assert has_element?(view, "#recent-validation-warnings-#{mobility_run.id}", "8")
-      assert has_element?(view, "#recent-validation-infos-#{mobility_run.id}", "9")
+      assert has_element?(view, "#recent-validation-counts-#{mobility_run.id}-item-errors", "7")
+      assert has_element?(view, "#recent-validation-counts-#{mobility_run.id}-item-warnings", "8")
+      assert has_element?(view, "#recent-validation-counts-#{mobility_run.id}-item-infos", "9")
     end
 
     @tag :skip

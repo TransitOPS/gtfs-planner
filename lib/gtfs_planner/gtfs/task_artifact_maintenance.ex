@@ -18,7 +18,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   alias GtfsPlanner.Repo
 
   @default_interval_ms :timer.minutes(5)
-  @change_retained_states [
+  @change_active_states [
     :pending_compute,
     :computing,
     :review,
@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
     :applying,
     :partial
   ]
+  @change_retryable_states [:failed, :interrupted, :cancelled, :expired]
   @export_retained_states [:pending, :building, :ready]
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -54,7 +55,12 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
       safely(fn -> ExportRuns.cleanup_expired(organization_id) end)
     end)
 
-    safely(fn -> ChangeArtifactStorage.reconcile(retained_change_runs()) end)
+    safely(fn ->
+      ChangeArtifactStorage.reconcile(retained_change_runs(),
+        orphan_grace_seconds: orphan_grace_seconds()
+      )
+    end)
+
     safely(fn -> ArtifactStorage.reconcile(retained_export_run_ids()) end)
     safely(&cleanup_terminal_change_decisions/0)
     :ok
@@ -67,7 +73,16 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   end
 
   defp retained_change_runs do
-    Repo.all(from r in ChangeRun, where: r.state in ^@change_retained_states)
+    ttl_seconds = artifact_ttl_seconds()
+
+    Repo.all(
+      from r in ChangeRun,
+        where:
+          r.state in ^@change_active_states or
+            (r.state in ^@change_retryable_states and
+               r.finished_at >=
+                 fragment("CURRENT_TIMESTAMP - (? * interval '1 second')", ^ttl_seconds))
+    )
   end
 
   defp retained_export_run_ids do
@@ -75,12 +90,12 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   end
 
   defp cleanup_terminal_change_decisions do
-    ttl_seconds = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 86_400)
+    ttl_seconds = artifact_ttl_seconds()
 
     from(d in ChangeDecision,
       join: r in ChangeRun,
       on: r.id == d.change_run_id,
-      where: r.state not in ^@change_retained_states,
+      where: r.state not in ^@change_active_states,
       where:
         r.finished_at <
           fragment("CURRENT_TIMESTAMP - (? * interval '1 second')", ^ttl_seconds)
@@ -103,5 +118,13 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
       :task_artifact_maintenance_interval_ms,
       @default_interval_ms
     )
+  end
+
+  defp artifact_ttl_seconds do
+    Application.get_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 86_400)
+  end
+
+  defp orphan_grace_seconds do
+    Application.get_env(:gtfs_planner, :gtfs_task_artifacts_orphan_grace_seconds, 300)
   end
 end

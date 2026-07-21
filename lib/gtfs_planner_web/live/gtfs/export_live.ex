@@ -56,7 +56,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:user_roles, user_roles)
      |> assign(:export_type, :full)
      |> assign(:export_form, export_form(:full))
-     |> assign(:selected_validations, [])
+     |> assign(:validation_form, validation_form([]))
+     |> assign(:validation_group_error, nil)
+     |> assign(:validation_history_filter, nil)
      |> assign(:file_inventory, [])
      |> assign(:export_run, nil)
      |> assign(:validation_run_id, nil)
@@ -135,36 +137,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_event("toggle_validation", %{"validation" => validation}, socket) do
-    # Whitelist allowed validation types to prevent unbounded atom creation
-    validation_atom =
-      case validation do
-        "mobility_data" -> :mobility_data
-        "pathways_tests" -> :pathways_tests
-        # ignore unknown validation types
-        _ -> nil
-      end
+  def handle_event("change_validation", params, socket) do
+    params = Map.get(params, "validation", %{})
+    selected = normalize_validation_checks(Map.get(params, "checks", []))
 
-    current_validations = socket.assigns.selected_validations
-
-    updated_validations =
-      if validation_atom do
-        if validation_atom in current_validations do
-          List.delete(current_validations, validation_atom)
-        else
-          [validation_atom | current_validations]
-        end
-      else
-        # If validation_atom is nil (unknown type), don't modify the list
-        current_validations
-      end
-
-    {:noreply, assign(socket, :selected_validations, updated_validations)}
+    {:noreply,
+     socket
+     |> assign(:validation_form, validation_form(selected))
+     |> assign(:validation_group_error, nil)}
   end
 
   @impl Phoenix.LiveView
-  def handle_event("run_validation", _params, socket) do
-    selected_validations = socket.assigns.selected_validations
+  def handle_event("run_validation", params, socket) do
+    selected_validations =
+      params
+      |> Map.get("validation", socket.assigns.validation_form.params)
+      |> Map.get("checks", [])
+      |> normalize_validation_checks()
+
+    socket = assign(socket, :validation_form, validation_form(selected_validations))
 
     cond do
       socket.assigns.validating ->
@@ -172,10 +163,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       selected_validations == [] ->
         {:noreply,
-         put_flash(
+         assign(
            socket,
-           :info,
-           "Select at least one validation check before running validation"
+           :validation_group_error,
+           "Select at least one validation check before running validation."
          )}
 
       true ->
@@ -188,6 +179,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         else
           run_mobility_data_validation(socket, organization_id, gtfs_version_id)
         end
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("filter_validation_history", %{"key" => key}, socket) do
+    items = validation_history_count_items(socket.assigns.recent_validation_runs)
+
+    if Enum.any?(items, &(&1.key == key and &1.count > 0)) do
+      selected = if socket.assigns.validation_history_filter == key, do: nil, else: key
+      {:noreply, assign(socket, :validation_history_filter, selected)}
+    else
+      {:noreply, socket}
     end
   end
 
@@ -369,151 +372,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def handle_info({ref, result}, socket) do
     cond do
       socket.assigns.pathways_prep_task && socket.assigns.pathways_prep_task.ref == ref ->
-        Process.demonitor(ref, [:flush])
-
-        socket = assign(socket, :pathways_prep_task, nil)
-
-        case result do
-          {:ok, %{run_result: run_result, duration_ms: duration_ms}} ->
-            validation_run = Validations.get_validation_run!(socket.assigns.validation_run_id)
-
-            case Validations.mark_pathways_completed(validation_run, run_result, duration_ms) do
-              {:ok, completed_run} ->
-                persisted_summary =
-                  pathways_summary_from_result_json(completed_run.result_json || %{})
-
-                top_failure_categories =
-                  pathways_top_failure_categories_from_result_json(
-                    completed_run.result_json || %{}
-                  )
-
-                socket =
-                  socket
-                  |> assign(:validation_result, %{
-                    run_type: "pathways_tests",
-                    pathways_summary: persisted_summary,
-                    top_failure_categories: top_failure_categories
-                  })
-                  |> assign_recent_validation_data()
-
-                if socket.assigns.pending_mobility_validation do
-                  run_mobility_data_validation(
-                    socket |> assign(:pending_mobility_validation, false),
-                    socket.assigns.current_organization.id,
-                    socket.assigns.current_gtfs_version.id
-                  )
-                else
-                  {:noreply,
-                   socket
-                   |> assign(:pending_mobility_validation, false)
-                   |> assign(:validating, false)
-                   |> assign(:validation_progress, nil)}
-                end
-
-              {:error, reason} ->
-                _ =
-                  maybe_mark_pathways_run_failed(socket, %{
-                    reason: :pathways_persistence_failed,
-                    details: %{error: inspect(reason)}
-                  })
-
-                {:noreply,
-                 socket
-                 |> assign(:pending_mobility_validation, false)
-                 |> assign(:validating, false)
-                 |> assign(:validation_progress, nil)
-                 |> assign_pathways_error_panel(%{
-                   reason: :pathways_persistence_failed,
-                   details: %{error: inspect(reason)}
-                 })}
-            end
-
-          {:error, {:pathways_export_prep_failed, issues}} ->
-            Logger.error("Pathways export preparation failed",
-              event: "pathways_prep_failed",
-              organization_id: socket.assigns.current_organization.id,
-              gtfs_version_id: socket.assigns.current_gtfs_version.id,
-              phase: :pathways_prep,
-              issue_codes: Enum.map(issues, & &1.code),
-              details: issues
-            )
-
-            _ =
-              maybe_mark_pathways_run_failed(socket, %{
-                reason: :pathways_export_prep_failed,
-                issues: issues
-              })
-
-            {:noreply,
-             socket
-             |> assign(:pending_mobility_validation, false)
-             |> assign(:validating, false)
-             |> assign(:pathways_prep_detailed_progress, false)
-             |> assign(:validation_progress, nil)
-             |> assign_pathways_error_panel(%{
-               reason: :pathways_export_prep_failed,
-               issues: issues
-             })}
-        end
+        handle_pathways_prep_result(ref, result, socket)
 
       socket.assigns.validation_task && socket.assigns.validation_task.ref == ref ->
-        Process.demonitor(ref, [:flush])
-
-        socket =
-          case result do
-            {:ok, %Validator.Result{} = _validation_result} ->
-              case Runtime.cleanup_on_success(
-                     socket.assigns.current_organization.id,
-                     socket.assigns.current_gtfs_version.id
-                   ) do
-                :ok ->
-                  :ok
-
-                {:ok, _cleanup_result} ->
-                  :ok
-
-                {:error, reason} ->
-                  require Logger
-                  Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
-
-                other ->
-                  require Logger
-
-                  Logger.error(
-                    "Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}"
-                  )
-              end
-
-              # Result is now persisted in DB, just show success and keep validation_result for display
-              run = Validations.get_validation_run!(socket.assigns.validation_run_id)
-
-              # Verify authorization: ensure the run belongs to the current organization
-              if run.organization_id != socket.assigns.current_organization.id do
-                socket
-                |> assign(:validation_error, "Unauthorized access to validation run")
-              else
-                socket
-                |> assign(:validation_result, %{
-                  summary: %{
-                    errors: run.errors_count,
-                    warnings: run.warnings_count,
-                    infos: run.infos_count
-                  }
-                })
-                |> assign_recent_validation_data()
-              end
-
-            {:error, reason} ->
-              error_message = "Validation failed: #{inspect(reason)}"
-
-              socket
-              |> assign(:validation_error, error_message)
-          end
-
-        {:noreply,
-         socket
-         |> assign(:validating, false)
-         |> assign(:validation_task, nil)}
+        handle_validation_result(ref, result, socket)
 
       true ->
         {:noreply, socket}
@@ -551,7 +413,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          })}
 
       socket.assigns.validation_task && socket.assigns.validation_task.ref == ref ->
-        require Logger
         Logger.error("Validation task crashed: #{inspect(reason)}")
 
         {:noreply,
@@ -563,6 +424,146 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       true ->
         {:noreply, socket}
+    end
+  end
+
+  defp handle_pathways_prep_result(ref, result, socket) do
+    Process.demonitor(ref, [:flush])
+    socket = assign(socket, :pathways_prep_task, nil)
+
+    case result do
+      {:ok, %{run_result: run_result, duration_ms: duration_ms}} ->
+        persist_pathways_result(socket, run_result, duration_ms)
+
+      {:error, {:pathways_export_prep_failed, issues}} ->
+        handle_pathways_prep_failure(socket, issues)
+    end
+  end
+
+  defp persist_pathways_result(socket, run_result, duration_ms) do
+    validation_run = Validations.get_validation_run!(socket.assigns.validation_run_id)
+
+    case Validations.mark_pathways_completed(validation_run, run_result, duration_ms) do
+      {:ok, completed_run} -> complete_pathways_result(socket, completed_run)
+      {:error, reason} -> handle_pathways_persistence_failure(socket, reason)
+    end
+  end
+
+  defp complete_pathways_result(socket, completed_run) do
+    result_json = completed_run.result_json || %{}
+
+    socket =
+      socket
+      |> assign(:validation_result, %{
+        run_type: "pathways_tests",
+        pathways_summary: pathways_summary_from_result_json(result_json),
+        top_failure_categories: pathways_top_failure_categories_from_result_json(result_json)
+      })
+      |> assign_recent_validation_data()
+
+    if socket.assigns.pending_mobility_validation do
+      run_mobility_data_validation(
+        assign(socket, :pending_mobility_validation, false),
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id
+      )
+    else
+      {:noreply,
+       socket
+       |> assign(:pending_mobility_validation, false)
+       |> assign(:validating, false)
+       |> assign(:validation_progress, nil)}
+    end
+  end
+
+  defp handle_pathways_persistence_failure(socket, reason) do
+    payload = %{
+      reason: :pathways_persistence_failed,
+      details: %{error: inspect(reason)}
+    }
+
+    _ = maybe_mark_pathways_run_failed(socket, payload)
+
+    {:noreply,
+     socket
+     |> assign(:pending_mobility_validation, false)
+     |> assign(:validating, false)
+     |> assign(:validation_progress, nil)
+     |> assign_pathways_error_panel(payload)}
+  end
+
+  defp handle_pathways_prep_failure(socket, issues) do
+    Logger.error("Pathways export preparation failed",
+      event: "pathways_prep_failed",
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      phase: :pathways_prep,
+      issue_codes: Enum.map(issues, & &1.code),
+      details: issues
+    )
+
+    payload = %{reason: :pathways_export_prep_failed, issues: issues}
+    _ = maybe_mark_pathways_run_failed(socket, payload)
+
+    {:noreply,
+     socket
+     |> assign(:pending_mobility_validation, false)
+     |> assign(:validating, false)
+     |> assign(:pathways_prep_detailed_progress, false)
+     |> assign(:validation_progress, nil)
+     |> assign_pathways_error_panel(payload)}
+  end
+
+  defp handle_validation_result(ref, result, socket) do
+    Process.demonitor(ref, [:flush])
+    socket = apply_validation_result(socket, result)
+
+    {:noreply,
+     socket
+     |> assign(:validating, false)
+     |> assign(:validation_task, nil)}
+  end
+
+  defp apply_validation_result(socket, {:ok, %Validator.Result{}}) do
+    cleanup_validation_runtime(socket)
+    run = Validations.get_validation_run!(socket.assigns.validation_run_id)
+    assign_persisted_validation_result(socket, run)
+  end
+
+  defp apply_validation_result(socket, {:error, reason}) do
+    assign(socket, :validation_error, "Validation failed: #{inspect(reason)}")
+  end
+
+  defp cleanup_validation_runtime(socket) do
+    socket.assigns.current_organization.id
+    |> Runtime.cleanup_on_success(socket.assigns.current_gtfs_version.id)
+    |> log_validation_cleanup_result()
+  end
+
+  defp log_validation_cleanup_result(:ok), do: :ok
+  defp log_validation_cleanup_result({:ok, _cleanup_result}), do: :ok
+
+  defp log_validation_cleanup_result({:error, reason}) do
+    Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
+  end
+
+  defp log_validation_cleanup_result(other) do
+    Logger.error("Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}")
+  end
+
+  defp assign_persisted_validation_result(socket, run) do
+    if run.organization_id != socket.assigns.current_organization.id do
+      assign(socket, :validation_error, "Unauthorized access to validation run")
+    else
+      socket
+      |> assign(:validation_result, %{
+        summary: %{
+          errors: run.errors_count,
+          warnings: run.warnings_count,
+          infos: run.infos_count
+        }
+      })
+      |> assign_recent_validation_data()
     end
   end
 
@@ -975,32 +976,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             <% @validation_result -> %>
               <div class="space-y-6">
                 <%= if @validation_result[:run_type] == "pathways_tests" do %>
-                  <div class="grid grid-cols-2 gap-2" id="pathways-summary-metrics">
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Total</div>
-                      <div class="stat-value text-sm">
-                        {@validation_result.pathways_summary.total}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Passed</div>
-                      <div class="stat-value text-sm text-success">
-                        {@validation_result.pathways_summary.passed}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Failed</div>
-                      <div class="stat-value text-sm text-error">
-                        {@validation_result.pathways_summary.failed}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Pass Rate</div>
-                      <div class="stat-value text-sm">
-                        {@validation_result.pathways_summary.pass_rate}%
-                      </div>
-                    </div>
-                  </div>
+                  <.count_strip
+                    id="pathways-summary-metrics"
+                    items={pathways_result_count_items(@validation_result.pathways_summary)}
+                  />
+                  <p id="pathways-pass-rate" class="text-sm text-base-content/70">
+                    Pass rate:
+                    <span class="font-semibold text-base-content">
+                      {@validation_result.pathways_summary.pass_rate}%
+                    </span>
+                  </p>
 
                   <%= if @validation_result.top_failure_categories != [] do %>
                     <div class="space-y-2" id="pathways-top-failure-categories">
@@ -1015,26 +1000,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     </div>
                   <% end %>
                 <% else %>
-                  <div class="grid grid-cols-3 gap-2">
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Errors</div>
-                      <div class="stat-value text-sm text-error">
-                        {@validation_result.summary.errors}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Warnings</div>
-                      <div class="stat-value text-sm text-warning">
-                        {@validation_result.summary.warnings}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Infos</div>
-                      <div class="stat-value text-sm text-info">
-                        {@validation_result.summary.infos}
-                      </div>
-                    </div>
-                  </div>
+                  <.count_strip
+                    id="mobility-summary-metrics"
+                    items={mobility_result_count_items(@validation_result.summary)}
+                  />
                 <% end %>
 
                 <div class="flex flex-col gap-2">
@@ -1050,49 +1019,49 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 </div>
               </div>
             <% true -> %>
-              <div class="space-y-3">
-                <label class="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    class="checkbox"
-                    phx-click="toggle_validation"
-                    phx-value-validation="mobility_data"
-                    checked={:mobility_data in @selected_validations}
-                  />
-                  <div>
-                    <div class="font-medium">MobilityData GTFS Validator</div>
-                    <div class="text-xs text-base-content/60">
-                      Industry-standard validation for GTFS compliance
-                    </div>
-                  </div>
-                </label>
+              <.form
+                for={@validation_form}
+                id="validation-form"
+                phx-change="change_validation"
+                phx-submit="run_validation"
+                class="max-w-2xl"
+              >
+                <.checkbox_group
+                  id="validation-checks"
+                  name="validation[checks][]"
+                  label="Validation checks"
+                  options={[
+                    {"MobilityData GTFS Validator", "mobility_data"},
+                    {"Pathways Trip Tests", "pathways_tests"}
+                  ]}
+                  selected={validation_selected_values(@validation_form)}
+                  required
+                  error={@validation_group_error}
+                  help="Run the GTFS compliance validator, pathways connectivity checks, or both."
+                />
 
-                <label class="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    class="checkbox"
-                    phx-click="toggle_validation"
-                    phx-value-validation="pathways_tests"
-                    checked={:pathways_tests in @selected_validations}
-                  />
-                  <div>
-                    <div class="font-medium">Pathways Trip Tests</div>
-                    <div class="text-xs text-base-content/60">
-                      Custom validation for pathways connectivity
-                    </div>
-                  </div>
-                </label>
-              </div>
-
-              <button class="btn btn-outline mt-6 w-full" phx-click="run_validation">
-                Run Validation
-              </button>
+                <.button
+                  id="run-validation"
+                  type="submit"
+                  variant="secondary"
+                  class="mt-4 w-full"
+                >
+                  Run Validation
+                </.button>
+              </.form>
           <% end %>
 
           <%!-- Recent Validations --%>
           <%= if @recent_validation_runs != [] do %>
             <div class="mt-8 pt-8 border-t border-base-300">
               <h3 class="text-sm font-semibold mb-4">Recent Validations</h3>
+              <.count_strip
+                id="validation-history-counts"
+                items={validation_history_count_items(@recent_validation_runs)}
+                selected_key={@validation_history_filter}
+                event="filter_validation_history"
+                class="mb-4"
+              />
               <div class="overflow-x-auto">
                 <table class="table table-sm">
                   <thead>
@@ -1105,7 +1074,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     </tr>
                   </thead>
                   <tbody>
-                    <tr :for={run <- @recent_validation_runs}>
+                    <tr :for={
+                      run <-
+                        filtered_validation_runs(@recent_validation_runs, @validation_history_filter)
+                    }>
                       <% display_counts =
                         Map.get(
                           @recent_validation_display_counts_by_run_id,
@@ -1123,32 +1095,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                       <td class="text-sm text-base-content/70">
                         {format_date(run.started_at)}
                       </td>
-                      <td
-                        id={"recent-validation-errors-#{run.id}"}
-                        class={[
-                          "text-right",
-                          display_counts.errors > 0 && "text-error font-medium"
-                        ]}
-                      >
-                        {display_counts.errors}
-                      </td>
-                      <td
-                        id={"recent-validation-warnings-#{run.id}"}
-                        class={[
-                          "text-right",
-                          display_counts.warnings > 0 && "text-warning font-medium"
-                        ]}
-                      >
-                        {display_counts.warnings}
-                      </td>
-                      <td
-                        id={"recent-validation-infos-#{run.id}"}
-                        class={[
-                          "text-right",
-                          display_counts.infos > 0 && "text-info font-medium"
-                        ]}
-                      >
-                        {display_counts.infos}
+                      <td colspan="3" class="text-right">
+                        <.count_strip
+                          id={"recent-validation-counts-#{run.id}"}
+                          items={recent_validation_count_items(display_counts)}
+                          class="justify-end"
+                        />
                       </td>
                     </tr>
                   </tbody>
@@ -2777,6 +2729,83 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp export_form(export_type),
     do: to_form(%{"type" => Atom.to_string(export_type)}, as: :export)
+
+  defp validation_form(selected) do
+    checks = Enum.map(selected, &validation_check_value/1)
+    to_form(%{"checks" => checks}, as: :validation)
+  end
+
+  defp validation_selected_values(form), do: Map.get(form.params, "checks", [])
+
+  defp normalize_validation_checks(checks) when is_binary(checks),
+    do: normalize_validation_checks([checks])
+
+  defp normalize_validation_checks(checks) when is_list(checks) do
+    checks
+    |> Enum.map(&validation_check/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_validation_checks(_checks), do: []
+
+  defp validation_check("mobility_data"), do: :mobility_data
+  defp validation_check("pathways_tests"), do: :pathways_tests
+  defp validation_check(:mobility_data), do: :mobility_data
+  defp validation_check(:pathways_tests), do: :pathways_tests
+  defp validation_check(_check), do: nil
+
+  defp validation_check_value(:mobility_data), do: "mobility_data"
+  defp validation_check_value(:pathways_tests), do: "pathways_tests"
+
+  defp mobility_result_count_items(summary) do
+    [
+      %{key: "errors", label: "Errors", count: summary.errors, tone: :error},
+      %{key: "warnings", label: "Warnings", count: summary.warnings, tone: :warning},
+      %{key: "infos", label: "Information", count: summary.infos, tone: :info}
+    ]
+  end
+
+  defp pathways_result_count_items(summary) do
+    [
+      %{key: "total", label: "Total", count: summary.total, tone: :neutral},
+      %{key: "passed", label: "Passed", count: summary.passed, tone: :success},
+      %{key: "failed", label: "Failed", count: summary.failed, tone: :error}
+    ]
+  end
+
+  defp recent_validation_count_items(counts) do
+    [
+      %{key: "errors", label: "Errors", count: counts.errors, tone: :error},
+      %{key: "warnings", label: "Warnings", count: counts.warnings, tone: :warning},
+      %{key: "infos", label: "Information", count: counts.infos, tone: :info}
+    ]
+  end
+
+  defp validation_history_count_items(runs) do
+    Enum.reduce(runs, %{errors: 0, warnings: 0, infos: 0}, fn run, totals ->
+      counts = recent_validation_display_counts_from_source(run)
+
+      %{
+        errors: totals.errors + positive_count(counts.errors),
+        warnings: totals.warnings + positive_count(counts.warnings),
+        infos: totals.infos + positive_count(counts.infos)
+      }
+    end)
+    |> recent_validation_count_items()
+  end
+
+  defp positive_count(count) when count > 0, do: 1
+  defp positive_count(_count), do: 0
+
+  defp filtered_validation_runs(runs, nil), do: runs
+
+  defp filtered_validation_runs(runs, key) when key in ["errors", "warnings", "infos"] do
+    field = String.to_existing_atom(key)
+    Enum.filter(runs, &(Map.fetch!(recent_validation_display_counts_from_source(&1), field) > 0))
+  end
+
+  defp filtered_validation_runs(runs, _key), do: runs
 
   defp export_actor(socket) do
     %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}

@@ -144,25 +144,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer do
   defp normalize_values(values, entity_type, kind) when is_map(values) do
     allowed = Map.fetch!(@fields, entity_type)
 
-    unknown = Enum.find(Map.keys(values), &(normalize_field(&1, allowed) == :unknown))
-
-    case {kind, unknown} do
-      {:uploaded_values, invalid} when not is_nil(invalid) ->
-        {:error, {:unsupported_field, invalid}}
-
-      _ ->
-        Enum.reduce_while(allowed, {:ok, %{}}, fn field, {:ok, normalized} ->
-          case Map.fetch(values, field) do
-            :error ->
-              {:cont, {:ok, normalized}}
-
-            {:ok, value} ->
-              case normalize_value(value) do
-                {:ok, value} -> {:cont, {:ok, Map.put(normalized, Atom.to_string(field), value)}}
-                :error -> {:halt, {:error, {:unsafe_value, kind}}}
-              end
-          end
-        end)
+    case unsupported_uploaded_field(values, allowed, kind) do
+      nil -> normalize_allowed_values(values, allowed, kind)
+      invalid -> {:error, {:unsupported_field, invalid}}
     end
   end
 
@@ -173,47 +157,77 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer do
 
   defp load_values(_, _, kind), do: {:error, {:unsafe_value, kind}}
 
+  defp unsupported_uploaded_field(values, allowed, :uploaded_values) do
+    Enum.find(Map.keys(values), &(normalize_field(&1, allowed) == :unknown))
+  end
+
+  defp unsupported_uploaded_field(_values, _allowed, _kind), do: nil
+
+  defp normalize_allowed_values(values, allowed, kind) do
+    Enum.reduce_while(allowed, {:ok, %{}}, fn field, {:ok, normalized} ->
+      normalize_allowed_value(Map.fetch(values, field), field, normalized, kind)
+    end)
+  end
+
+  defp normalize_allowed_value(:error, _field, normalized, _kind),
+    do: {:cont, {:ok, normalized}}
+
+  defp normalize_allowed_value({:ok, value}, field, normalized, kind) do
+    case normalize_value(value) do
+      {:ok, value} -> {:cont, {:ok, Map.put(normalized, Atom.to_string(field), value)}}
+      :error -> {:halt, {:error, {:unsafe_value, kind}}}
+    end
+  end
+
   defp normalize_changed_fields(fields, entity_type) when is_list(fields) do
     allowed = Map.fetch!(@fields, entity_type)
 
     if length(fields) > length(allowed) do
       {:error, :too_many_changed_fields}
     else
-      result =
-        Enum.reduce_while(fields, {:ok, []}, fn
-          {field, {before, after_value}}, {:ok, acc} ->
-            if field in allowed do
-              with {:ok, before} <- normalize_value(before),
-                   {:ok, after_value} <- normalize_value(after_value) do
-                {:cont,
-                 {:ok,
-                  [
-                    %{
-                      "field" => Atom.to_string(field),
-                      "before" => before,
-                      "after" => after_value
-                    }
-                    | acc
-                  ]}}
-              else
-                :error -> {:halt, {:error, {:unsafe_value, :changed_fields}}}
-              end
-            else
-              {:halt, {:error, {:unsupported_field, field}}}
-            end
-
-          _, _ ->
-            {:halt, {:error, :invalid_changed_fields}}
-        end)
-
-      case result do
-        {:ok, normalized} -> {:ok, Enum.sort_by(normalized, & &1["field"])}
-        error -> error
-      end
+      normalize_changed_field_values(fields, allowed)
     end
   end
 
   defp normalize_changed_fields(_, _), do: {:error, :invalid_changed_fields}
+
+  defp normalize_changed_field_values(fields, allowed) do
+    fields
+    |> Enum.reduce_while({:ok, []}, &normalize_changed_field(&1, &2, allowed))
+    |> sort_changed_fields()
+  end
+
+  defp normalize_changed_field({field, {before, after_value}}, {:ok, acc}, allowed) do
+    if field in allowed do
+      normalize_changed_field_values(field, before, after_value, acc)
+    else
+      {:halt, {:error, {:unsupported_field, field}}}
+    end
+  end
+
+  defp normalize_changed_field(_, _, _allowed),
+    do: {:halt, {:error, :invalid_changed_fields}}
+
+  defp normalize_changed_field_values(field, before, after_value, acc) do
+    case {normalize_value(before), normalize_value(after_value)} do
+      {{:ok, before}, {:ok, after_value}} ->
+        normalized = %{
+          "field" => Atom.to_string(field),
+          "before" => before,
+          "after" => after_value
+        }
+
+        {:cont, {:ok, [normalized | acc]}}
+
+      _ ->
+        {:halt, {:error, {:unsafe_value, :changed_fields}}}
+    end
+  end
+
+  defp sort_changed_fields({:ok, normalized}),
+    do: {:ok, Enum.sort_by(normalized, & &1["field"])}
+
+  defp sort_changed_fields(error), do: error
 
   defp load_changed_fields(fields, entity_type) when is_list(fields) do
     result =

@@ -33,6 +33,24 @@ async function openRoute(page, route) {
   await page.locator(`#app-header a[href$='/${route}']`).first().click();
   await page.waitForURL(new RegExp(`/gtfs/[^/]+/${route}$`));
   await page.locator(`#gtfs-${route}-form`).waitFor({ state: "visible" });
+  await page.waitForFunction(() => window.liveSocket?.isConnected());
+}
+
+async function selectVersion(page, name) {
+  const trigger = page.locator("#gtfs-version-trigger");
+  if ((await trigger.textContent()).includes(name)) return;
+
+  await trigger.click();
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: name });
+  const versionId = await option.getAttribute("data-version-id");
+  await Promise.all([
+    page.waitForURL(new RegExp(`/gtfs/${versionId}/`), { waitUntil: "networkidle" }),
+    option.click(),
+  ]);
+  await page.waitForFunction(() => window.liveSocket?.isConnected());
+  await expect(page.locator("#gtfs-version-trigger")).toContainText(name);
 }
 
 async function expectNoHorizontalOverflow(page) {
@@ -55,6 +73,105 @@ async function expectMinimumTargetSize(page, selector) {
 }
 
 test.describe("durable import and export browser journeys", () => {
+  test("real diff compute reconnects, applies, exports, reconnects, and downloads", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openRoute(page, "import");
+    await selectVersion(page, "Browser E2E Version");
+
+    await page.locator("#diff-upload-input input").setInputFiles({
+      name: "levels.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(
+        "level_id,level_index,level_name\n" +
+          "BROWSER_L1,1.0,Browser Level Updated\n",
+      ),
+    });
+
+    await expect(page.locator("#diff-upload-entries")).toContainText("levels.txt");
+    await expect(page.locator("#diff-compute-btn")).toBeEnabled();
+    await page.locator("#diff-compute-btn").click();
+    await expect(page.locator("#diff-run-state, #diff-decisions").first()).toBeVisible();
+
+    await page.context().setOffline(true);
+    await page.waitForFunction(() => !window.liveSocket?.isConnected());
+    await page.context().setOffline(false);
+    await page.reload();
+
+    const firstDecision = page.locator("#diff-decisions [data-version-diff-row]").first();
+    await expect(firstDecision).toBeVisible();
+    await page.locator("#diff-filter-add").click();
+    await expect(page.locator("#diff-decisions-empty")).toBeVisible();
+    await page.locator("#diff-filter-all").click();
+    await expect(firstDecision).toBeVisible();
+    await page.locator("button[phx-click='approve-all'][phx-value-action='modify']").click();
+    await expect(page.locator("#diff-apply-btn")).toBeEnabled();
+    await page.locator("#diff-apply-btn").click();
+    await expect(page.locator("#diff-reset-btn")).toBeVisible();
+
+    await openRoute(page, "export");
+    await selectVersion(page, "Browser E2E Version");
+    const oldDownloadHref = await page.locator("#export-download-link").getAttribute("href");
+    await page.locator("#start-export").click();
+    await expect(page.locator("#export-download-link")).toBeHidden();
+    await expect(page.locator("#export-run-status")).toContainText(/Queued|Building/);
+    await page.reload();
+    await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("#export-download-link")).not.toHaveAttribute(
+      "href",
+      oldDownloadHref,
+    );
+
+    const responsePromise = page.waitForResponse((response) =>
+      /\/export-runs\/[^/]+\/download$/.test(new URL(response.url()).pathname),
+    );
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#export-download-link").click();
+    const [response, download] = await Promise.all([responsePromise, downloadPromise]);
+
+    expect(response.status()).toBe(200);
+    expect(await response.headerValue("content-disposition")).toMatch(/^attachment; filename=/);
+    expect(download.suggestedFilename()).toMatch(/\.zip$/);
+    await expect(page.locator("[phx-hook='DownloadHook']")).toHaveCount(0);
+  });
+
+  test("validation group preserves choices, inline errors, and keyboard access", async ({ page }) => {
+    await openRoute(page, "export");
+    await expectKeyboardAccess(page, "#validation-checks-mobility_data");
+    await page.locator("#run-validation").click();
+    await expect(page.locator("#validation-checks-error")).toBeVisible();
+    await page.locator("#validation-checks-mobility_data").check();
+    await expect(page.locator("#validation-checks-mobility_data")).toBeChecked();
+    await expect(page.locator("#validation-checks-error")).toHaveCount(0);
+  });
+
+  test("partial review retries and pending review cancels truthfully", async ({ page }) => {
+    await openRoute(page, "import");
+    await selectVersion(page, "Browser Partial Retry Version");
+    await expect(page.locator("#diff-run-state")).toContainText("Some changes need attention");
+    await page.locator("#diff-retry-btn").click();
+    await expect(page.locator("#diff-reset-btn")).toBeVisible({ timeout: 30_000 });
+
+    await selectVersion(page, "Browser Cancel Version");
+    await expect(page.locator("#diff-cancel-btn")).toBeVisible();
+    await page.locator("#diff-cancel-btn").click();
+    await expect(page.locator("#diff-run-state")).toContainText("Review cancelled");
+    await expect(page.locator("#diff-retry-btn")).toBeVisible();
+  });
+
+  test("preflight warnings and long diagnostics remain readable at 320px", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 568 });
+    await openRoute(page, "export");
+    await selectVersion(page, "Catalog Routes Only Version");
+    await expect(page.locator("#export-warning-panel")).toBeVisible();
+    await expect(page.locator("#export-warning-panel")).toContainText(
+      "browser_preflight_warning",
+    );
+    await expect(page.locator("#export-warning-panel")).toContainText("route-reference-");
+    await expectNoHorizontalOverflow(page);
+  });
+
   test("import and export stay usable across responsive and zoomed layouts", async ({
     page,
   }) => {
