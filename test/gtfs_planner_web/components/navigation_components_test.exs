@@ -105,7 +105,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
 
       assert Enum.empty?(account_link(doc))
       assert html =~ "Routes"
-      assert html =~ "Stations"
+      assert "Stops & stations" in nav_link_texts(html)
       refute html =~ "Organizations"
     end
 
@@ -132,7 +132,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "Organizations",
                "Users",
                "Routes",
-               "Stations",
+               "Stops & stations",
                "Import",
                "Export"
              ]
