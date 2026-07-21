@@ -490,16 +490,18 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
-      <h2 class="mt-8 text-lg font-semibold">Transit presentation</h2>
+      <h2 class="mt-8 text-lg font-semibold">Stops &amp; stations presentation</h2>
       <p class="mt-1 text-sm text-base-content/60">
         Accessibility and pathway details use separate components. Each keeps a text label
         alongside its visual treatment so the meaning is available without color.
+        Tri-state accessibility resolves to <code class="font-mono text-sm">Accessible</code>, <code class="font-mono text-sm">Not accessible</code>, or <code class="font-mono text-sm">No data</code>; inherited values disclose their source.
       </p>
       <div id="ds-transit-presentation-demo" class="mt-3 space-y-3 border border-base-300 p-4">
         <div class="flex flex-wrap gap-4">
           <TransitPresentation.accessibility_status status={:accessible} />
           <TransitPresentation.accessibility_status status={:not_accessible} />
           <TransitPresentation.accessibility_status status={:unknown} />
+          <TransitPresentation.accessibility_status status={:accessible} source={:inherited} />
         </div>
         <TransitPresentation.pathway_summary pathway={
           %{
@@ -508,6 +510,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
             stair_count: 24,
             length: Decimal.new("18.5"),
             traversal_time: 32
+          }
+        } />
+        <TransitPresentation.pathway_summary pathway={
+          %{
+            pathway_mode: 1,
+            is_bidirectional: true,
+            length: Decimal.new("45.0")
           }
         } />
       </div>

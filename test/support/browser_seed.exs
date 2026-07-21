@@ -547,6 +547,165 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: account password-mutation user #{password_user.email} (one-use per reset)"
     )
+    # ── Catalog design-contract fixtures (catalog_design_contracts.spec.js) ──
+    #
+    # Deterministic stops, pathways, and versions that exercise the responsive
+    # catalog contracts: long-value overflow, tri-state accessibility, pathway
+    # metrics, and empty/partial catalog states.
+    {:ok, _long_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "VERY_LONG_STOP_ID_FOR_OVERFLOW_TESTING_12345",
+        stop_name:
+          "This Is A Very Long Station Name For Testing Overflow Behavior At Narrow Viewports",
+        location_type: 1,
+        wheelchair_boarding: 0,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _missing_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "CATALOG_MISSING_VALUES",
+        stop_name: "Missing Values Stop",
+        location_type: 0,
+        wheelchair_boarding: 0,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _accessible_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "CATALOG_ACCESSIBLE",
+        stop_name: "Direct Accessible Stop",
+        location_type: 0,
+        wheelchair_boarding: 1,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _not_accessible_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "CATALOG_NOT_ACCESSIBLE",
+        stop_name: "Direct Not Accessible Stop",
+        location_type: 0,
+        wheelchair_boarding: 2,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, inherited_station} =
+      Gtfs.create_stop(%{
+        stop_id: "CATALOG_INHERITED_STATION",
+        stop_name: "Inherited Accessibility Station",
+        location_type: 1,
+        wheelchair_boarding: 1,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _inherited_child} =
+      Gtfs.import_create_stop(%{
+        stop_id: "CATALOG_INHERITED_CHILD",
+        stop_name: "Inherited Child Stop",
+        location_type: 0,
+        wheelchair_boarding: 0,
+        parent_station: inherited_station.stop_id,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _no_data_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "CATALOG_NO_DATA",
+        stop_name: "No Data Stop",
+        location_type: 0,
+        wheelchair_boarding: 0,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    IO.puts("Browser seed: tri-state accessibility stops for catalog contracts")
+
+    {:ok, _pathway_station} =
+      Gtfs.create_stop(%{
+        stop_id: "CATALOG_PATHWAY_STATION",
+        stop_name: "Pathway Metrics Station",
+        location_type: 1,
+        wheelchair_boarding: 0,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, pathway_to_a} =
+      Gtfs.import_create_stop(%{
+        stop_id: "CATALOG_PATHWAY_TO_A",
+        stop_name: "Pathway Target A",
+        location_type: 0,
+        wheelchair_boarding: 0,
+        parent_station: "CATALOG_PATHWAY_STATION",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, pathway_to_b} =
+      Gtfs.import_create_stop(%{
+        stop_id: "CATALOG_PATHWAY_TO_B",
+        stop_name: "Pathway Target B",
+        location_type: 0,
+        wheelchair_boarding: 0,
+        parent_station: "CATALOG_PATHWAY_STATION",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _full_pathway} =
+      Gtfs.create_pathway(%{
+        pathway_id: "CATALOG_PW_FULL",
+        pathway_mode: 2,
+        is_bidirectional: false,
+        stair_count: 24,
+        length: Decimal.new("18.5"),
+        traversal_time: 32,
+        from_stop_id: "CATALOG_PATHWAY_STATION",
+        to_stop_id: pathway_to_a.stop_id,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _partial_pathway} =
+      Gtfs.create_pathway(%{
+        pathway_id: "CATALOG_PW_PARTIAL",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        length: Decimal.new("45.0"),
+        from_stop_id: "CATALOG_PATHWAY_STATION",
+        to_stop_id: pathway_to_b.stop_id,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    IO.puts("Browser seed: pathways with full and partial metrics for catalog contracts")
+
+    {:ok, empty_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Catalog Empty Version"})
+
+    IO.puts("Browser seed: empty catalog version #{empty_version.id} (no routes or stops)")
+
+    {:ok, routes_only_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Catalog Routes Only Version"})
+
+    {:ok, _routes_only_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: routes_only_version.id,
+        route_id: "CATALOG_ROUTES_ONLY_1",
+        route_short_name: "RO1",
+        route_long_name: "Routes Only Route One",
+        route_type: 3,
+        route_color: "003366"
+      })
+
+    IO.puts("Browser seed: routes-only version #{routes_only_version.id} (routes but no stops)")
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
