@@ -110,6 +110,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   """
   def detail_region_id(key), do: "check-detail-#{key}"
 
+  @doc """
+  Builds the stable id of the stop link that opens the report's stop drawer.
+
+  The drawer restores focus to the exact control that opened it, so every
+  link needs an id the server can name. Ids are unique per disclosure region
+  because a stop appears at most once in a check's detail list.
+  """
+  def stop_link_id(key, stop_id), do: "open-stop-#{key}-#{slug(stop_id)}"
+
+  defp slug(value), do: String.replace(to_string(value), ~r/[^A-Za-z0-9_-]/, "-")
+
   defp expanded?(nil, _key), do: false
   defp expanded?(set, key), do: MapSet.member?(set, key)
 
@@ -571,7 +582,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <.check_disclosure_button key={@key} open?={@open?} label={@item.detail_label} />
       <ul id={detail_region_id(@key)} class={["mt-2 space-y-1", not @open? && "hidden print:grid"]}>
         <li :for={entry <- @item.details}>
-          <.stop_name_link stop_id={entry.id} name={entry.name} />
+          <.stop_name_link
+            opener_id={stop_link_id(@key, entry.id)}
+            stop_id={entry.id}
+            name={entry.name}
+          />
         </li>
       </ul>
     </div>
@@ -588,7 +603,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         class={["mt-2 space-y-1 list-disc pl-5", not @open? && "hidden print:grid"]}
       >
         <li :for={entry <- @item.details}>
-          <.stop_name_link stop_id={entry.id} name={entry.name} />
+          <.stop_name_link
+            opener_id={stop_link_id(@key, entry.id)}
+            stop_id={entry.id}
+            name={entry.name}
+          />
         </li>
       </ul>
     </div>
@@ -604,7 +623,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <.check_disclosure_button key={@key} open?={@open?} label={@item.detail_label} />
       <ul id={detail_region_id(@key)} class={["mt-2 space-y-1.5", not @open? && "hidden print:grid"]}>
         <li :for={entry <- @item.details} class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <.stop_name_link stop_id={entry.id} name={entry.name} />
+          <.stop_name_link
+            opener_id={stop_link_id(@key, entry.id)}
+            stop_id={entry.id}
+            name={entry.name}
+          />
           <span class="text-xs text-base-content/70 break-words">{entry.reason}</span>
         </li>
       </ul>
@@ -640,6 +663,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
+  attr :opener_id, :string, required: true
   attr :stop_id, :string, required: true
   attr :name, :string, required: true
 
@@ -647,10 +671,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <span class="inline-flex flex-wrap items-baseline gap-x-2">
       <button
+        id={@opener_id}
         type="button"
         phx-click="select_entity"
         phx-value-entity_id={@stop_id}
         phx-value-entity_type="stop"
+        phx-value-opener_id={@opener_id}
         title={@stop_id}
         class="text-left text-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 break-words"
       >

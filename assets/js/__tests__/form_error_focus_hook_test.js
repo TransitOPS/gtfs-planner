@@ -402,6 +402,49 @@ describe("FormErrorFocus", () => {
   });
 
   // =========================================================================
+  // Late focus restoration by the caller must not win
+  // =========================================================================
+  describe("re-asserting focus after the frame", () => {
+    it("takes focus back when something else claims it in the same task", async () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      pushServerEvent(registrations, {
+        form_id: "login_form",
+        fallback_id: "login-recovery",
+      });
+
+      // LiveView restores focus to the submitting control after hook events.
+      root.querySelector("#login-submit").focus();
+      expect(document.activeElement).toBe(root.querySelector("#login-submit"));
+
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(document.activeElement).toBe(root.querySelector("#login-email"));
+    });
+
+    it("does not re-focus when the user has already moved on deliberately", async () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      const emailSpy = focusSpy(root, "#login-email");
+
+      pushServerEvent(registrations, {
+        form_id: "login_form",
+        fallback_id: "login-recovery",
+      });
+
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(emailSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // =========================================================================
   // DOM preservation: focus-only, never owns or mutates DOM
   // =========================================================================
   describe("DOM preservation", () => {

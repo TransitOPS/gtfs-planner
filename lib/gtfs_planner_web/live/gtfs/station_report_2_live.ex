@@ -39,11 +39,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.StationReport2Components
+  alias GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @report_key :report_load
   @dimensions [:entrance_to_platform, :platform_to_platform, :platform_to_exit]
+  @editable_stop_fields ~w(stop_name stop_lat stop_lon level_id wheelchair_boarding platform_code)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -62,7 +64,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:url_dimensions, [])
      |> clear_model()
      |> reset_expansion()
-     |> reset_drawer()}
+     |> clear_drawer()}
   end
 
   @impl true
@@ -81,7 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
        |> assign(:url_dimensions, parse_url_dimensions(params))
        |> clear_model()
        |> reset_expansion()
-       |> reset_drawer()
+       |> clear_drawer()
        |> start_report_load(:initial_loading, nil)}
     end
   end
@@ -359,73 +361,133 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   # -- Drawer events ---------------------------------------------------------
 
   @impl true
-  def handle_event("select_entity", %{"entity_id" => entity_id, "entity_type" => "stop"}, socket) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-
-    case Gtfs.get_stop_by_stop_id(org_id, version_id, entity_id) do
-      nil ->
-        {:noreply, assign_drawer_error(socket, :stop, "Stop not found: #{entity_id}")}
-
-      stop ->
-        form =
-          to_form(
-            %{
-              "stop_name" => stop.stop_name || "",
-              "stop_lat" => to_optional_string(stop.stop_lat),
-              "stop_lon" => to_optional_string(stop.stop_lon),
-              "level_id" => stop.level_id || "",
-              "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
-              "platform_code" => stop.platform_code || ""
-            },
-            as: :stop
-          )
-
-        {:noreply,
-         socket
-         |> assign(:drawer_entity, stop)
-         |> assign(:drawer_type, :stop)
-         |> assign(:drawer_form, form)
-         |> assign(:drawer_error, nil)}
-    end
+  def handle_event(
+        "select_entity",
+        %{"entity_id" => entity_id, "entity_type" => "stop"} = params,
+        socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(:drawer_return_focus_id, params["opener_id"])
+     |> open_stop_drawer(entity_id)}
   end
 
   @impl true
   def handle_event("select_entity", _params, socket), do: {:noreply, socket}
 
+  # Recovery from a failed lookup retries the id the report already asked for.
+  # The client supplies nothing here, and the retry still goes through the same
+  # scoped context query.
+  @impl true
+  def handle_event("retry_entity_lookup", _params, socket) do
+    case socket.assigns.drawer_entity_id do
+      nil -> {:noreply, socket}
+      entity_id -> {:noreply, open_stop_drawer(socket, entity_id)}
+    end
+  end
+
   @impl true
   def handle_event("close_entity_drawer", _params, socket) do
+    # The opener id survives the close so the shipped OverlayDialog hook can
+    # still read it while returning focus.
     {:noreply, reset_drawer(socket)}
   end
 
   @impl true
-  def handle_event("save_entity", %{"stop" => stop_params}, socket) do
-    case {socket.assigns.drawer_type, socket.assigns.drawer_entity} do
-      {:stop, %Stop{} = stop} ->
-        case Gtfs.update_stop(stop, stop_params) do
-          {:ok, _updated} ->
-            {:noreply,
-             socket
-             |> reset_drawer()
-             |> start_report_load(refresh_state(socket), :saved)}
+  def handle_event("validate_entity", %{"stop" => stop_params}, socket) do
+    case socket.assigns.drawer_entity do
+      %Stop{} = stop ->
+        changeset =
+          stop
+          |> Gtfs.change_stop(editable_stop_params(stop_params))
+          |> Map.put(:action, :validate)
 
-          {:error, changeset} ->
-            {:noreply,
-             socket
-             |> assign(:drawer_form, to_form(changeset, as: :stop))
-             |> assign(:drawer_error, nil)}
-        end
+        {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :stop))}
 
       _ ->
-        # No open stop drawer: a repeated or replayed submit must not save
-        # again and must not queue a second rebuild.
-        {:noreply, assign_drawer_error(socket, :stop, "Stop is no longer available for editing")}
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("validate_entity", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_entity", %{"stop" => stop_params}, socket) do
+    case socket.assigns.drawer_entity do
+      %Stop{} = stop ->
+        save_stop(socket, stop, stop_params)
+
+      _ ->
+        # No open stop: a repeated or replayed submit must not save again and
+        # must not queue a second rebuild.
+        {:noreply, socket}
     end
   end
 
   @impl true
   def handle_event("save_entity", _params, socket) do
     {:noreply, socket}
+  end
+
+  defp save_stop(socket, stop, stop_params) do
+    case Gtfs.update_stop(stop, editable_stop_params(stop_params)) do
+      {:ok, _updated} ->
+        {:noreply,
+         socket
+         |> reset_drawer()
+         |> start_report_load(refresh_state(socket), :saved)}
+
+      {:error, changeset} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_form, to_form(changeset, as: :stop))
+         |> assign(:drawer_error, nil)
+         |> push_event("focus_form_error", %{
+           form_id: StationReportDrawerComponents.form_id(),
+           fallback_id: StationReportDrawerComponents.error_summary_id()
+         })}
+    end
+  end
+
+  # The drawer edits six fields. `Stop.changeset/2` also casts identity and
+  # scope columns, so anything else in the submitted params is dropped here:
+  # a crafted submit cannot rename, reparent, or move a stop into another
+  # organization or GTFS version.
+  defp editable_stop_params(stop_params) when is_map(stop_params),
+    do: Map.take(stop_params, @editable_stop_fields)
+
+  defp editable_stop_params(_stop_params), do: %{}
+
+  defp open_stop_drawer(socket, entity_id) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_stop_by_stop_id(org_id, version_id, entity_id) do
+      nil ->
+        assign_drawer_error(socket, entity_id)
+
+      stop ->
+        socket
+        |> assign(:drawer_entity, stop)
+        |> assign(:drawer_entity_id, entity_id)
+        |> assign(:drawer_form, stop_form(stop))
+        |> assign(:drawer_error, nil)
+    end
+  end
+
+  defp stop_form(stop) do
+    to_form(
+      %{
+        "stop_name" => stop.stop_name || "",
+        "stop_lat" => to_optional_string(stop.stop_lat),
+        "stop_lon" => to_optional_string(stop.stop_lon),
+        "level_id" => stop.level_id || "",
+        "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
+        "platform_code" => stop.platform_code || ""
+      },
+      as: :stop
+    )
   end
 
   @impl true
@@ -496,9 +558,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
       <.entity_drawer
         drawer_entity={@drawer_entity}
-        drawer_type={@drawer_type}
+        drawer_entity_id={@drawer_entity_id}
         drawer_form={@drawer_form}
         drawer_error={@drawer_error}
+        drawer_return_focus_id={@drawer_return_focus_id}
       />
     </Layouts.app>
     """
@@ -618,20 +681,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   defp refresh_state(socket),
     do: if(socket.assigns.model, do: :refreshing, else: :initial_loading)
 
+  # Closes the drawer but keeps the opener id: the OverlayDialog hook reads
+  # `data-return-focus-id` on the patch that closes the dialog, so clearing it
+  # here would drop focus to the document body.
   defp reset_drawer(socket) do
     socket
     |> assign(:drawer_entity, nil)
-    |> assign(:drawer_type, nil)
+    |> assign(:drawer_entity_id, nil)
     |> assign(:drawer_form, nil)
     |> assign(:drawer_error, nil)
   end
 
-  defp assign_drawer_error(socket, drawer_type, message) do
+  # A route change retires the opener with the report that owned it.
+  defp clear_drawer(socket) do
+    socket
+    |> reset_drawer()
+    |> assign(:drawer_return_focus_id, nil)
+  end
+
+  defp assign_drawer_error(socket, entity_id) do
     socket
     |> assign(:drawer_entity, nil)
-    |> assign(:drawer_type, drawer_type)
+    |> assign(:drawer_entity_id, entity_id)
     |> assign(:drawer_form, nil)
-    |> assign(:drawer_error, message)
+    |> assign(
+      :drawer_error,
+      "#{entity_id} is not in this report's GTFS version. It may have been renamed or removed " <>
+        "since the report was built. Retry the lookup, or close this panel and rebuild the report."
+    )
   end
 
   defp to_optional_string(nil), do: ""

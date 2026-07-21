@@ -44,6 +44,22 @@ const FormErrorFocus = {
   _attemptFocus(target) {
     if (!target || typeof target.focus !== "function") return;
     target.focus();
+
+    // A `phx-submit` round trip ends with LiveView restoring focus to the
+    // control that submitted the form, and that restoration runs *after* hook
+    // events are dispatched. Without this re-assertion the user is left on the
+    // submit button instead of the first invalid field. Re-assert once on the
+    // next frame, and only if something else took focus, so the synchronous
+    // behaviour above is unchanged.
+    const nextFrame =
+      typeof window !== "undefined" && window.requestAnimationFrame;
+    if (!nextFrame) return;
+
+    nextFrame(() => {
+      if (document.activeElement !== target && document.contains(target)) {
+        target.focus();
+      }
+    });
   },
 };
 

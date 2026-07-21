@@ -1493,7 +1493,428 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     end
   end
 
+  describe "report stop drawer" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      _level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      station = build_station(organization, gtfs_version, "STATION_1", "Station One")
+
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        view: view
+      }
+    end
+
+    test "the report issue link is the only way in and opens only the stop form", ctx do
+      view = ctx.view
+
+      refute has_element?(view, "#report-stop-edit-form")
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='false']")
+
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
+      assert has_element?(view, "form#report-stop-edit-form")
+
+      # The report owns no pathway drawer: neither a form nor a select path.
+      refute has_element?(view, "#report-pathway-edit-form")
+      refute has_element?(view, "[phx-value-entity_type='pathway']")
+    end
+
+    test "selecting a pathway entity leaves the drawer closed", ctx do
+      render_click(ctx.view, "select_entity", %{
+        "entity_id" => "PATH_1",
+        "entity_type" => "pathway"
+      })
+
+      assert has_element?(ctx.view, "dialog#report-entity-drawer-overlay[data-open='false']")
+      refute has_element?(ctx.view, "#report-pathway-edit-form")
+      refute has_element?(ctx.view, "#report-stop-edit-form")
+    end
+
+    test "the stop form reads as sentence case with visible optional and raw-key help", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      form_html = view |> element("form#report-stop-edit-form") |> render()
+
+      for label <- [
+            "Stop name (optional)",
+            "Latitude (optional)",
+            "Longitude (optional)",
+            "Wheelchair boarding (optional)",
+            "Platform code (optional)",
+            "Level"
+          ] do
+        assert form_html =~ label, "expected the visible label #{inspect(label)}"
+      end
+
+      # Raw GTFS keys stay available as secondary help, never as the label.
+      for {input_id, gtfs_key} <- [
+            {"stop_stop_name", "stop_name"},
+            {"stop_stop_lat", "stop_lat"},
+            {"stop_stop_lon", "stop_lon"},
+            {"stop_level_id", "level_id"},
+            {"stop_wheelchair_boarding", "wheelchair_boarding"},
+            {"stop_platform_code", "platform_code"}
+          ] do
+        assert has_element?(view, "##{input_id}-help", gtfs_key)
+        assert has_element?(view, "##{input_id}[aria-describedby~='#{input_id}-help']")
+      end
+    end
+
+    test "numeric fields declare numeric type, step, range, and input mode", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(
+               view,
+               "#stop_stop_lat[type='number'][step='0.000001'][min='-90'][max='90'][inputmode='decimal']"
+             )
+
+      assert has_element?(
+               view,
+               "#stop_stop_lon[type='number'][step='0.000001'][min='-180'][max='180'][inputmode='decimal']"
+             )
+    end
+
+    test "the form stays one column so it fits a 320 px drawer", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      form_html = view |> element("form#report-stop-edit-form") |> render()
+
+      refute form_html =~ "grid-cols-2",
+             "the stop form must not place inputs side by side at any width"
+    end
+
+    test "an invalid submit keeps the drawer, preserves input, and associates field errors",
+         ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form",
+        stop: %{
+          stop_name: "Renamed But Rejected",
+          stop_lat: "91.5",
+          stop_lon: "-122.3",
+          level_id: "",
+          wheelchair_boarding: "",
+          platform_code: ""
+        }
+      )
+      |> render_submit()
+
+      # The drawer does not close.
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
+      assert has_element?(view, "form#report-stop-edit-form")
+
+      # Typed values survive.
+      assert has_element?(view, "#stop_stop_lat[value='91.5']")
+      assert has_element?(view, "#stop_stop_name[value='Renamed But Rejected']")
+
+      # Errors are associated with their controls, not just printed.
+      assert has_element?(view, "#stop_stop_lat[aria-invalid='true']")
+      assert has_element?(view, "#stop_stop_lat[aria-describedby~='stop_stop_lat-error']")
+      assert has_element?(view, "#stop_stop_lat-error")
+      assert has_element?(view, "#stop_level_id[aria-invalid='true']")
+      assert has_element?(view, "#stop_level_id-error", "can't be blank")
+
+      # A view-level explanation says what failed and what to do next.
+      assert has_element?(view, "#report-stop-form-error", "Check the highlighted fields")
+
+      # Nothing was written, not even the field that was valid.
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.stop_name == "Entrance One"
+      assert stored.level_id == "L1"
+
+      assert is_nil(stored.stop_lat) or
+               Decimal.compare(stored.stop_lat, Decimal.new("91.5")) != :eq
+    end
+
+    test "an invalid submit asks the client to focus the first invalid field", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(view, "#report-stop-drawer[phx-hook='FormErrorFocus']")
+
+      view
+      |> form("#report-stop-edit-form",
+        stop: %{
+          stop_name: "Entrance One",
+          stop_lat: "91.5",
+          stop_lon: "-122.3",
+          level_id: "",
+          wheelchair_boarding: "",
+          platform_code: ""
+        }
+      )
+      |> render_submit()
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "report-stop-edit-form",
+        fallback_id: "report-stop-form-error"
+      })
+    end
+
+    test "a valid submit acknowledges immediately and cannot be submitted twice", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(
+               view,
+               "#report-stop-edit-form button[type='submit'][phx-disable-with='Saving…']"
+             )
+
+      submit_stop_name(view, "Saved Once")
+      render_async(view, 5_000)
+
+      # The form is gone, so a replayed submit has nothing to save again.
+      refute has_element?(view, "#report-stop-edit-form")
+
+      render_click(view, "save_entity", %{"stop" => %{"stop_name" => "Saved Twice"}})
+
+      assert Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1").stop_name ==
+               "Saved Once"
+    end
+
+    test "validating on change reports errors without writing anything", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form",
+        stop: %{
+          stop_name: "Typed But Unsaved",
+          stop_lat: "200",
+          stop_lon: "-122.3",
+          level_id: "L1",
+          wheelchair_boarding: "",
+          platform_code: ""
+        }
+      )
+      |> render_change()
+
+      assert has_element?(view, "#stop_stop_lat[aria-invalid='true']")
+      # A change is not a save attempt, so no failed-save banner appears.
+      refute has_element?(view, "#report-stop-form-error")
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.stop_name == "Entrance One"
+    end
+
+    test "a zero wheelchair value is stored and shown as zero, never dropped", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form",
+        stop: %{
+          stop_name: "Entrance One",
+          stop_lat: "",
+          stop_lon: "",
+          level_id: "L1",
+          wheelchair_boarding: "0",
+          platform_code: ""
+        }
+      )
+      |> render_submit()
+
+      render_async(view, 5_000)
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.wheelchair_boarding == 0
+
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(view, "#stop_wheelchair_boarding option[value='0'][selected]")
+    end
+
+    test "submitted scope and identity fields cannot move the stop", ctx do
+      view = ctx.view
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      open_stop_drawer(view, "Entrance One")
+
+      render_submit(view, "save_entity", %{
+        "stop" => %{
+          "stop_name" => "Renamed",
+          "stop_lat" => "47.6",
+          "stop_lon" => "-122.3",
+          "level_id" => "L1",
+          "wheelchair_boarding" => "",
+          "platform_code" => "",
+          "stop_id" => "HIJACKED",
+          "organization_id" => other_organization.id,
+          "gtfs_version_id" => other_version.id,
+          "parent_station" => "SOMEWHERE_ELSE",
+          "location_type" => "1"
+        }
+      })
+
+      render_async(view, 5_000)
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.stop_name == "Renamed"
+      assert stored.stop_id == "ENT_1"
+      assert stored.organization_id == ctx.organization.id
+      assert stored.gtfs_version_id == ctx.gtfs_version.id
+      assert stored.parent_station == "STATION_1"
+      assert stored.location_type == 2
+
+      refute is_nil(Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1"))
+      assert is_nil(Gtfs.get_stop_by_stop_id(other_organization.id, other_version.id, "HIJACKED"))
+    end
+
+    test "a stop outside the active scope is refused instead of loaded", ctx do
+      view = ctx.view
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      foreign =
+        stop_fixture(other_organization.id, other_version.id, %{
+          stop_id: "FOREIGN_1",
+          stop_name: "Foreign Platform",
+          location_type: 0,
+          parent_station: nil
+        })
+
+      render_click(view, "select_entity", %{
+        "entity_id" => "FOREIGN_1",
+        "entity_type" => "stop"
+      })
+
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
+      refute has_element?(view, "#report-stop-edit-form")
+      assert has_element?(view, "#report-stop-lookup-error", "Stop not found")
+      refute render(view) =~ "Foreign Platform"
+
+      # A submit while the lookup failed writes nothing anywhere.
+      render_submit(view, "save_entity", %{"stop" => %{"stop_name" => "Hijacked"}})
+
+      assert Gtfs.get_stop_by_stop_id(other_organization.id, other_version.id, "FOREIGN_1").stop_name ==
+               foreign.stop_name
+    end
+
+    test "a same-id stop in another version is never the one edited", ctx do
+      view = ctx.view
+      other_version = gtfs_version_fixture(ctx.organization.id)
+
+      other_entrance =
+        stop_fixture(ctx.organization.id, other_version.id, %{
+          stop_id: "ENT_1",
+          stop_name: "Other Version Entrance",
+          location_type: 2,
+          parent_station: nil
+        })
+
+      open_stop_drawer(view, "Entrance One")
+      submit_stop_name(view, "Active Version Only")
+      render_async(view, 5_000)
+
+      assert Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1").stop_name ==
+               "Active Version Only"
+
+      assert Gtfs.get_stop_by_stop_id(ctx.organization.id, other_version.id, "ENT_1").stop_name ==
+               other_entrance.stop_name
+    end
+
+    test "a failed lookup offers a local retry that recovers in place", ctx do
+      view = ctx.view
+
+      render_click(view, "select_entity", %{
+        "entity_id" => "LATE_ARRIVAL",
+        "entity_type" => "stop"
+      })
+
+      assert has_element?(view, "#report-stop-lookup-error", "Stop not found")
+      assert has_element?(view, "button#report-stop-lookup-retry", "Retry lookup")
+
+      # Retrying while the stop is still missing stays in the drawer.
+      view |> element("button#report-stop-lookup-retry") |> render_click()
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#report-stop-lookup-error")
+
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "LATE_ARRIVAL",
+        stop_name: "Late Arrival",
+        location_type: 0,
+        parent_station: nil
+      })
+
+      view |> element("button#report-stop-lookup-retry") |> render_click()
+
+      refute has_element?(view, "#report-stop-lookup-error")
+      assert has_element?(view, "form#report-stop-edit-form")
+      assert has_element?(view, "#stop_stop_name[value='Late Arrival']")
+    end
+
+    test "the drawer names the exact opener so closing restores it", ctx do
+      view = ctx.view
+
+      opener_id = stop_link_opener_id(view, "Entrance One")
+      assert opener_id != ""
+
+      assert has_element?(
+               view,
+               "##{opener_id}[phx-click='select_entity'][phx-value-opener_id='#{opener_id}']"
+             )
+
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(
+               view,
+               "dialog#report-entity-drawer-overlay[data-open='true'][data-return-focus-id='#{opener_id}']"
+             )
+
+      render_click(view, "close_entity_drawer")
+
+      # The opener is still named while the dialog closes, so focus can return.
+      assert has_element?(
+               view,
+               "dialog#report-entity-drawer-overlay[data-open='false'][data-return-focus-id='#{opener_id}']"
+             )
+
+      refute has_element?(view, "#report-stop-edit-form")
+      assert has_element?(view, "##{opener_id}")
+    end
+  end
+
   # -- helpers --------------------------------------------------------------
+
+  defp stop_link_opener_id(view, entity_name) do
+    html =
+      view
+      |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", entity_name)
+      |> render()
+
+    [id] = Regex.run(~r/\bid="([^"]+)"/, html, capture: :all_but_first)
+    id
+  end
 
   defp report_html(%{view: view}) do
     view |> element("#station-report-2") |> render()
