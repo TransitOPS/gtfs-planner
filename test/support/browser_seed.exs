@@ -444,6 +444,110 @@ case Accounts.register_first_admin(%{
         "active, multi-role, long-email, deactivate-target, deactivated, invitation-pending"
     )
 
+    # ── Package 11 account design-contract fixtures (account_design_contracts.spec.js) ──
+    #
+    # Dedicated users/orgs keep dashboard branch baselines and settings mutations
+    # away from diagram, auth, and administration suites. Credentials are test-only
+    # and mirrored in the Playwright file; never placed in application config.
+    #
+    # create_organization seeds a published default version; no-version deletes it
+    # and leaves staging-only so the published-only latest query returns nil.
+
+    {:ok, no_version_org} =
+      Organizations.create_organization(%{
+        name: "Account No Version Org",
+        alias: "account-no-version"
+      })
+
+    Repo.delete_all(
+      from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^no_version_org.id)
+    )
+
+    {:ok, _no_version_staging} =
+      Versions.create_staging_gtfs_version(no_version_org.id, %{name: "Staging Only"})
+
+    {:ok, no_version_user} =
+      Accounts.register_user(%{
+        email: "account-no-version@gtfs-planner.test",
+        password: "AccountNoVersion123!"
+      })
+
+    Repo.update!(User.confirm_changeset(no_version_user))
+
+    {:ok, _} =
+      Accounts.create_user_org_membership(%{
+        user_id: no_version_user.id,
+        organization_id: no_version_org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    IO.puts(
+      "Browser seed: account no-version user #{no_version_user.email} in #{no_version_org.name}"
+    )
+
+    {:ok, no_task_org} =
+      Organizations.create_organization(%{
+        name: "Account No Task Org",
+        alias: "account-no-task"
+      })
+
+    # Default published version remains so context is available with empty roles.
+    {:ok, no_task_user} =
+      Accounts.register_user(%{
+        email: "account-no-task@gtfs-planner.test",
+        password: "AccountNoTask123!"
+      })
+
+    Repo.update!(User.confirm_changeset(no_task_user))
+
+    {:ok, _} =
+      Accounts.create_user_org_membership(%{
+        user_id: no_task_user.id,
+        organization_id: no_task_org.id,
+        roles: []
+      })
+
+    IO.puts("Browser seed: account no-task user #{no_task_user.email} in #{no_task_org.name}")
+
+    # Non-destructive settings user: email confirmation-sent and error recovery only.
+    {:ok, settings_user} =
+      Accounts.register_user(%{
+        email: "account-settings@gtfs-planner.test",
+        password: "AccountSettings123!"
+      })
+
+    Repo.update!(User.confirm_changeset(settings_user))
+
+    {:ok, _} =
+      Accounts.create_user_org_membership(%{
+        user_id: settings_user.id,
+        organization_id: org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    IO.puts("Browser seed: account settings user #{settings_user.email}")
+
+    # One-use password mutation handoff. After a successful password change the
+    # seed password is invalid until the next `mise run prepare:browser` reset.
+    {:ok, password_user} =
+      Accounts.register_user(%{
+        email: "account-password-mutate@gtfs-planner.test",
+        password: "AccountPassword123!"
+      })
+
+    Repo.update!(User.confirm_changeset(password_user))
+
+    {:ok, _} =
+      Accounts.create_user_org_membership(%{
+        user_id: password_user.id,
+        organization_id: org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    IO.puts(
+      "Browser seed: account password-mutation user #{password_user.email} (one-use per reset)"
+    )
+
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
 end

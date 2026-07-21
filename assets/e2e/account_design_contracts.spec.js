@@ -19,6 +19,29 @@ const ORG_ADMIN_USER = {
   password: "AdminContracts123!",
 };
 
+// Package 11 dedicated seeds (test/support/browser_seed.exs). Credentials are
+// test-only mirrors; never application config.
+const NO_VERSION_USER = {
+  email: "account-no-version@gtfs-planner.test",
+  password: "AccountNoVersion123!",
+};
+
+const NO_TASK_USER = {
+  email: "account-no-task@gtfs-planner.test",
+  password: "AccountNoTask123!",
+};
+
+const SETTINGS_USER = {
+  email: "account-settings@gtfs-planner.test",
+  password: "AccountSettings123!",
+};
+
+// One-use password mutation per `mise run prepare:browser` reset.
+const PASSWORD_MUTATE_USER = {
+  email: "account-password-mutate@gtfs-planner.test",
+  password: "AccountPassword123!",
+};
+
 const VIEWPORTS = [
   { label: "320px", width: 320, height: 568 },
   { label: "768px", width: 768, height: 1024 },
@@ -389,29 +412,34 @@ test.describe("dashboard", () => {
     const adminMetrics = await captureSharedMetrics(adminPrimary);
     expect(adminMetrics.height).toBeGreaterThanOrEqual(44);
 
-    // Organization admin without editor role → Manage users primary, no GTFS CTA
+    // Dedicated no-version seed: warning callout, no GTFS destination.
+    await page.context().clearCookies();
+    await openDashboard(page, NO_VERSION_USER);
+    await page.waitForSelector("#dashboard-no-version");
+    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
+    const callout = page.locator("#dashboard-no-version .border-warning").first();
+    await expect(callout).toBeVisible();
+    await expect(callout).toContainText("No published GTFS version");
+    const calloutMetrics = await captureSharedMetrics(callout);
+    expect(calloutMetrics.borderLeftStyle).not.toBe("none");
+    expect(parseFloat(calloutMetrics.borderLeftWidth)).toBeGreaterThanOrEqual(
+      parseFloat(refWarningMetrics.borderLeftWidth) - 0.5,
+    );
+
+    // Organization admin without editor: Manage users when a published version exists.
     await page.context().clearCookies();
     await openDashboard(page, ORG_ADMIN_USER);
     const orgAdminRoot = await visibleDashboardRoot(page);
-    // Admin Contracts Org has only a staging default unless published elsewhere.
-    // Accept organization or no-version; never expose unauthorized GTFS links.
-    expect(["#dashboard-organization", "#dashboard-no-version"]).toContain(
-      orgAdminRoot,
-    );
-    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
+    expect([
+      "#dashboard-organization",
+      "#dashboard-no-version",
+      "#dashboard-no-task-access",
+    ]).toContain(orgAdminRoot);
     if (orgAdminRoot === "#dashboard-organization") {
       await expect(
         page.locator(`${orgAdminRoot} a.btn-primary[href='/admin/users']`),
       ).toContainText("Manage users");
-    } else {
-      const callout = page.locator(`${orgAdminRoot} .border-warning`).first();
-      await expect(callout).toBeVisible();
-      await expect(callout).toContainText("No published GTFS version");
-      const calloutMetrics = await captureSharedMetrics(callout);
-      expect(calloutMetrics.borderLeftStyle).not.toBe("none");
-      expect(parseFloat(calloutMetrics.borderLeftWidth)).toBeGreaterThanOrEqual(
-        parseFloat(refWarningMetrics.borderLeftWidth) - 0.5,
-      );
+      await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
     }
 
     // Missing-context style recovery uses info callout on no-organization when
@@ -434,20 +462,21 @@ test.describe("dashboard", () => {
         label: "system-admin",
       },
       {
-        user: ORG_ADMIN_USER,
-        root: null,
-        label: "org-admin",
+        user: NO_VERSION_USER,
+        root: "#dashboard-no-version",
+        label: "no-version",
+      },
+      {
+        user: NO_TASK_USER,
+        root: "#dashboard-no-task-access",
+        label: "no-task",
       },
     ];
 
     for (const scenario of scenarios) {
       await page.context().clearCookies();
       await openDashboard(page, scenario.user);
-      const root =
-        scenario.root ||
-        (await visibleDashboardRoot(page)) ||
-        "#dashboard-organization";
-      await page.waitForSelector(root);
+      await page.waitForSelector(scenario.root);
 
       for (const viewport of VIEWPORTS) {
         await page.setViewportSize({
@@ -456,14 +485,16 @@ test.describe("dashboard", () => {
         });
         await page.goto("/");
         await waitForLiveView(page);
-        await page.waitForSelector(root);
+        await page.waitForSelector(scenario.root);
 
         expect(
           await bodyFitsViewport(page),
           `${scenario.label} overflow at ${viewport.label}`,
         ).toBe(true);
 
-        const actions = page.locator(`${root} a.btn, ${root} button.btn`);
+        const actions = page.locator(
+          `${scenario.root} a.btn, ${scenario.root} button.btn`,
+        );
         const count = await actions.count();
         for (let i = 0; i < count; i++) {
           const action = actions.nth(i);
@@ -474,10 +505,33 @@ test.describe("dashboard", () => {
           expect(box.width).toBeGreaterThanOrEqual(44);
         }
 
-        const h1Count = await page.locator(`${root} h1`).count();
+        const h1Count = await page.locator(`${scenario.root} h1`).count();
         expect(h1Count).toBe(1);
       }
     }
+  });
+
+  test("dedicated no-version and no-task seeds render truthful roots", async ({
+    page,
+  }) => {
+    await openDashboard(page, NO_VERSION_USER);
+    await page.waitForSelector("#dashboard-no-version");
+    await expect(page.locator("#dashboard-no-version")).toBeVisible();
+    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
+    await expect(page.locator("#dashboard-no-version")).toContainText(
+      "No published GTFS version",
+    );
+    // Authorized org name may appear; GTFS destinations must not.
+    await expect(page.locator("#dashboard-no-version h1")).toHaveCount(1);
+
+    await page.context().clearCookies();
+    await openDashboard(page, NO_TASK_USER);
+    await page.waitForSelector("#dashboard-no-task-access");
+    await expect(page.locator("#dashboard-no-task-access")).toBeVisible();
+    await expect(page.locator("#dashboard-no-task-access a.btn")).toHaveCount(0);
+    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
+    await expect(page.locator("a[href='/admin/users']")).toHaveCount(0);
+    await expect(page.locator("a[href='/admin/organizations']")).toHaveCount(0);
   });
 
   test("reviewed dashboard state screenshots", async ({ page }) => {
@@ -506,40 +560,32 @@ test.describe("dashboard", () => {
       { animations: "disabled" },
     );
 
-    // Org admin: no-version or organization depending on seed publication state.
+    // Dedicated no-version seed
     await page.context().clearCookies();
-    await openDashboard(page, ORG_ADMIN_USER);
-    const orgAdminRoot = await visibleDashboardRoot(page);
-    expect(orgAdminRoot).not.toBeNull();
+    await openDashboard(page, NO_VERSION_USER);
+    await page.waitForSelector("#dashboard-no-version");
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/");
     await waitForLiveView(page);
-    const rootLocator = page.locator(orgAdminRoot);
-    await expect(rootLocator).toBeVisible();
+    await expect(page.locator("#dashboard-no-version")).toHaveScreenshot(
+      "dashboard-no-version-1280.png",
+      { animations: "disabled" },
+    );
 
-    if (orgAdminRoot === "#dashboard-no-version") {
-      await expect(rootLocator).toHaveScreenshot("dashboard-no-version-1280.png", {
-        animations: "disabled",
-      });
-    } else if (orgAdminRoot === "#dashboard-organization") {
-      // Seed has a published version for this org; still capture the root.
-      await expect(rootLocator).toHaveScreenshot(
-        "dashboard-organization-org-admin-1280.png",
-        { animations: "disabled" },
-      );
-    } else if (orgAdminRoot === "#dashboard-no-task-access") {
-      await expect(rootLocator).toHaveScreenshot("dashboard-no-task-access-1280.png", {
-        animations: "disabled",
-      });
-    }
-
-    // Missing-context is not browser-login-reachable for seeded members without a
-    // production session bypass. LiveView tests own #dashboard-no-organization and
-    // #dashboard-organization-unavailable non-disclosure. Capture no-organization
-    // only if a seeded path ever exposes it.
+    // Dedicated no-task seed
     await page.context().clearCookies();
-    // Attempt: login as system admin then navigate home already covered.
-    // No production backdoor for stale session IDs.
+    await openDashboard(page, NO_TASK_USER);
+    await page.waitForSelector("#dashboard-no-task-access");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForLiveView(page);
+    await expect(page.locator("#dashboard-no-task-access")).toHaveScreenshot(
+      "dashboard-no-task-access-1280.png",
+      { animations: "disabled" },
+    );
+
+    // Missing/unavailable are not browser-login-reachable without a production
+    // session bypass. LiveView tests own those non-disclosure branches.
   });
 });
 
@@ -548,7 +594,8 @@ test.describe("account settings", () => {
     page,
   }) => {
     test.setTimeout(90_000);
-    await logIn(page, EDITOR_USER);
+    // Non-destructive settings user: keeps EDITOR_USER free of email-change noise.
+    await logIn(page, SETTINGS_USER);
 
     // Design references first.
     await page.goto("/design/inputs");
@@ -620,13 +667,7 @@ test.describe("account settings", () => {
     }
     void refSecondaryMetrics;
 
-    const settingsViewports = [
-      { label: "320px", width: 320, height: 568 },
-      { label: "desktop", width: 1280, height: 800 },
-      { label: "640px (200% zoom)", width: 640, height: 400 },
-    ];
-
-    for (const viewport of settingsViewports) {
+    for (const viewport of VIEWPORTS) {
       await page.setViewportSize({
         width: viewport.width,
         height: viewport.height,
@@ -697,7 +738,7 @@ test.describe("account settings", () => {
 
     // Pending email submit (MutationObserver before click).
     await page.fill("#email-address", "pending-check@example.com");
-    await page.fill("#email-current-password", EDITOR_USER.password);
+    await page.fill("#email-current-password", SETTINGS_USER.password);
     await watchPendingState(page, "#email-submit");
     await page.locator("#email-submit").click();
     await page.waitForSelector("#flash-info", { timeout: 10_000 });
@@ -793,17 +834,25 @@ test.describe("account settings", () => {
       "password-new-password",
       "password-confirmation",
     ]).toContain(focusedAfterPassword);
+
+    // No skeleton/placeholder during synchronous account context mount.
+    await page.goto("/users/settings");
+    await waitForLiveView(page);
+    await expect(page.locator(".animate-pulse, [aria-busy='true']")).toHaveCount(
+      0,
+    );
+    await expect(page.locator("#account-settings")).toBeVisible();
   });
 
   test("reviewed account-settings screenshots at 320/1280/640 with email masked", async ({
     page,
   }) => {
     test.setTimeout(90_000);
-    await openSettings(page, EDITOR_USER);
+    await openSettings(page, SETTINGS_USER);
 
     const emailMask = [
       page.locator("#email-address"),
-      page.locator(`text=${EDITOR_USER.email}`),
+      page.locator(`text=${SETTINGS_USER.email}`),
     ];
 
     for (const { width, height, label } of [
@@ -856,5 +905,128 @@ test.describe("account settings", () => {
         animations: "disabled",
       },
     );
+  });
+});
+
+// ── Reduced motion + reconnect (Step 8) ──
+test.describe("account motion and reconnect", () => {
+  test("reduced motion removes nonessential delay while state remains visible", async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await openSettings(page, SETTINGS_USER);
+
+    expect(
+      await page.evaluate(
+        () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+      ),
+    ).toBe(true);
+
+    // Layout flash spinner uses motion-safe:animate-spin; under reduce it is none.
+    const spinner = page.locator("#client-error .motion-safe\\:animate-spin");
+    if ((await spinner.count()) > 0) {
+      const animation = await spinner.evaluate(
+        (el) => window.getComputedStyle(el).animationName,
+      );
+      expect(animation).toBe("none");
+    }
+
+    // Pending/error state changes remain observable under reduced motion.
+    await page.fill("#email-address", "motion-check@example.com");
+    await page.fill("#email-current-password", "wrong-password-value");
+    await page.locator("#email-submit").click();
+    await page.waitForFunction(
+      () => !!document.querySelector("#email_form [aria-invalid='true']"),
+      null,
+      { timeout: 10_000 },
+    );
+    await expect(page.locator("#email_form [aria-invalid='true']").first()).toBeVisible();
+    await expect(page.locator("#email-address")).toHaveValue(
+      "motion-check@example.com",
+    );
+    await expect(page.locator(".animate-pulse")).toHaveCount(0);
+  });
+
+  test("disconnect and reconnect keep account layout reachable", async ({
+    page,
+  }) => {
+    await openSettings(page, SETTINGS_USER);
+    await expect(page.locator("#account-settings")).toBeVisible();
+
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await page.waitForSelector("#client-error", { state: "visible", timeout: 10_000 });
+    await expect(page.locator("#client-error")).toContainText(/reconnect/i);
+
+    await page.evaluate(() => window.liveSocket.connect());
+    await waitForLiveView(page);
+    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#email-submit")).toBeEnabled();
+    await expect(page.locator("#client-error")).toBeHidden();
+  });
+});
+
+// ── Destructive password handoff (isolated one-use seed) ──
+test.describe("account password mutation", () => {
+  test.describe.configure({ mode: "serial" });
+
+  test("native password success replaces the session for the dedicated user", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const newPassword = "AccountPasswordChanged456!";
+
+    await openSettings(page, PASSWORD_MUTATE_USER);
+    await page.fill("#password-current-password", PASSWORD_MUTATE_USER.password);
+    await page.fill("#password-new-password", newPassword);
+    await page.fill("#password-confirmation", newPassword);
+    await watchPendingState(page, "#password-submit");
+
+    // LiveView validates first (trigger_submit), then the form natively POSTs
+    // to /users/update_password and re-issues a session on /users/settings.
+    const postResponse = page.waitForResponse(
+      (res) =>
+        res.url().includes("/users/update_password") &&
+        res.request().method() === "POST" &&
+        res.status() >= 200 &&
+        res.status() < 400,
+      { timeout: 15_000 },
+    );
+    await page.locator("#password-submit").click();
+    await postResponse;
+    await page.waitForURL((url) => url.pathname === "/users/settings", {
+      timeout: 15_000,
+    });
+    await waitForLiveView(page);
+    await expect(page.getByText("Password updated successfully.")).toBeVisible({
+      timeout: 10_000,
+    });
+    // Pending MutationObserver is destroyed by the native navigation; success
+    // flash + POST response are the durable progress-observer outcomes here.
+    // Non-destructive settings tests still capture disabled/pending labels.
+
+    // Old credential must fail after successful change.
+    await page.context().clearCookies();
+    await page.goto("/users/log_in");
+    await expect(page.locator("#login_form")).toBeVisible();
+    await page.fill('input[name="user[email]"]', PASSWORD_MUTATE_USER.email);
+    await page.fill(
+      'input[name="user[password]"]',
+      PASSWORD_MUTATE_USER.password,
+    );
+    await page.locator('button:has-text("Log in")').click();
+    await expect(page).toHaveURL(/\/users\/log_in/);
+    await expect(page.locator("#login_form")).toBeVisible();
+    await expect(page.locator("#login-recovery, #flash-error").first()).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // New credential authenticates.
+    await page.fill('input[name="user[email]"]', PASSWORD_MUTATE_USER.email);
+    await page.fill('input[name="user[password]"]', newPassword);
+    await page.locator('button:has-text("Log in")').click();
+    await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
+    await page.goto("/users/settings");
+    await waitForLiveView(page);
+    await expect(page.locator("#account-settings")).toBeVisible();
   });
 });
