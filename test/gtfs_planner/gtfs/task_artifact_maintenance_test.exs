@@ -81,6 +81,65 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     assert Repo.get!(ChangeRun, pending.id).state == :review
   end
 
+  test "rejects compute retry after maintenance removes an expired source artifact" do
+    previous_ttl = Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds)
+
+    previous_grace =
+      Application.get_env(:gtfs_planner, :gtfs_task_artifacts_orphan_grace_seconds)
+
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 0)
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_orphan_grace_seconds, 0)
+
+    on_exit(fn ->
+      Application.put_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, previous_ttl)
+
+      if previous_grace,
+        do:
+          Application.put_env(
+            :gtfs_planner,
+            :gtfs_task_artifacts_orphan_grace_seconds,
+            previous_grace
+          ),
+        else:
+          Application.delete_env(
+            :gtfs_planner,
+            :gtfs_task_artifacts_orphan_grace_seconds
+          )
+    end)
+
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    run_id = Ecto.UUID.generate()
+
+    {:ok, manifest} =
+      ChangeArtifactStorage.stage(organization.id, version.id, run_id, [
+        %{filename: "levels.txt", content: "level_id,level_index\nL1,1\n"}
+      ])
+
+    {:ok, run} =
+      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, manifest, run_id)
+
+    {:ok, _claimed, generation, token} =
+      ChangeRuns.claim(organization.id, run.id, :compute)
+
+    assert {:ok, failed} =
+             ChangeRuns.fail_compute(
+               organization.id,
+               run.id,
+               generation,
+               token,
+               "compute_failed"
+             )
+
+    from(r in ChangeRun, where: r.id == ^run.id)
+    |> Repo.update_all(set: [finished_at: ~U[2000-01-01 00:00:00.000000Z]])
+
+    assert :ok = TaskArtifactMaintenance.maintain()
+    assert {:error, :missing_or_corrupt_artifact} = ChangeArtifactStorage.read(failed)
+    assert {:error, :missing_or_corrupt_artifact} = ChangeRuns.retry(organization.id, run.id)
+    assert Repo.get!(ChangeRun, run.id).state == :failed
+  end
+
   test "does not delete a freshly staged directory before its run row is inserted" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)

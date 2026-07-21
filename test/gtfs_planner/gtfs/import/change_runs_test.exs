@@ -181,9 +181,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       expired = expire!(computing)
       assert ChangeRuns.reconcile_expired(organization.id) == 1
       assert Repo.get!(ChangeRun, expired.id).state == :cancelled
-      assert {:ok, retry_run} = ChangeRuns.retry(organization.id, run.id)
-      assert retry_run.id == run.id
-      assert {:error, :invalid_transition} = ChangeRuns.retry(organization.id, run.id)
+      assert {:error, :missing_or_corrupt_artifact} = ChangeRuns.retry(organization.id, run.id)
+      assert Repo.get!(ChangeRun, run.id).state == :cancelled
       assert {:error, :not_found} = ChangeRuns.request_cancel(other_organization.id, run.id)
     end
   end

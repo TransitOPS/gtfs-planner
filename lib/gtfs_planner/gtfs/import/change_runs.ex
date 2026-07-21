@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Import.ChangeArtifactStorage
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer
   alias GtfsPlanner.Gtfs.Import.ChangeRun
@@ -633,6 +634,22 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     decision_count =
       Repo.aggregate(from(d in ChangeDecision, where: d.change_run_id == ^run.id), :count)
 
+    case retry_source_available(run, decision_count) do
+      :ok -> update_terminal_retry(run, decision_count)
+      {:error, reason} -> {{:error, reason}, []}
+    end
+  end
+
+  defp retry_source_available(_run, decision_count) when decision_count > 0, do: :ok
+
+  defp retry_source_available(run, _decision_count) do
+    case ChangeArtifactStorage.read(run) do
+      {:ok, _files} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp update_terminal_retry(run, decision_count) do
     case Repo.update(ChangeRun.system_changeset(run, retry_attrs(decision_count))) do
       {:ok, retry_run} -> {{:ok, retry_run}, [retry_run.id]}
       {:error, changeset} -> {{:error, changeset}, []}

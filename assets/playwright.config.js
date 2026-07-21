@@ -28,7 +28,7 @@ export default defineConfig({
 
   webServer: {
     command:
-      "MIX_ENV=test mix assets.deploy && MIX_ENV=test PHX_SERVER=true PORT=4002 mix phx.server",
+      "MIX_ENV=test mix assets.deploy && BROWSER_E2E=true MIX_ENV=test PHX_SERVER=true PORT=4002 mix phx.server",
     cwd: resolve(__dirname, ".."),
     url: "http://127.0.0.1:4002",
     reuseExistingServer: !process.env.CI,

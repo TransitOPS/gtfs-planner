@@ -85,7 +85,12 @@ test.describe("durable import and export browser journeys", () => {
       mimeType: "text/plain",
       buffer: Buffer.from(
         "level_id,level_index,level_name\n" +
-          "BROWSER_L1,1.0,Browser Level Updated\n",
+          "BROWSER_L1,1.0,Browser Level Updated\n" +
+          Array.from(
+            { length: 20 },
+            (_, index) =>
+              `BROWSER_APPLY_${index},${index + 2}.0,Browser Apply Level ${index}\n`,
+          ).join(""),
       ),
     });
 
@@ -101,14 +106,20 @@ test.describe("durable import and export browser journeys", () => {
 
     const firstDecision = page.locator("#diff-decisions [data-version-diff-row]").first();
     await expect(firstDecision).toBeVisible();
-    await page.locator("#diff-filter-add").click();
+    await page.locator("#diff-filter-remove").click();
     await expect(page.locator("#diff-decisions-empty")).toBeVisible();
     await page.locator("#diff-filter-all").click();
     await expect(firstDecision).toBeVisible();
+    await page.locator("button[phx-click='approve-all'][phx-value-action='add']").click();
     await page.locator("button[phx-click='approve-all'][phx-value-action='modify']").click();
     await expect(page.locator("#diff-apply-btn")).toBeEnabled();
     await page.locator("#diff-apply-btn").click();
-    await expect(page.locator("#diff-reset-btn")).toBeVisible();
+    await expect(page.locator("#diff-run-state[data-state='applying']")).toBeVisible();
+
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await page.waitForFunction(() => !window.liveSocket?.isConnected());
+    await page.reload();
+    await expect(page.locator("#diff-reset-btn")).toBeVisible({ timeout: 30_000 });
 
     await openRoute(page, "export");
     await selectVersion(page, "Browser E2E Version");
@@ -136,7 +147,9 @@ test.describe("durable import and export browser journeys", () => {
     await expect(page.locator("[phx-hook='DownloadHook']")).toHaveCount(0);
   });
 
-  test("validation group preserves choices, inline errors, and keyboard access", async ({ page }) => {
+  test("validation form launches a persisted run and exposes its result and history", async ({
+    page,
+  }) => {
     await openRoute(page, "export");
     await expectKeyboardAccess(page, "#validation-checks-mobility_data");
     await page.locator("#run-validation").click();
@@ -144,6 +157,22 @@ test.describe("durable import and export browser journeys", () => {
     await page.locator("#validation-checks-mobility_data").check();
     await expect(page.locator("#validation-checks-mobility_data")).toBeChecked();
     await expect(page.locator("#validation-checks-error")).toHaveCount(0);
+
+    const historyLinks = page.locator("table tbody a", { hasText: "MobilityData" });
+    const historyCountBefore = await historyLinks.count();
+    await page.locator("#validation-form").evaluate((form) => form.requestSubmit());
+
+    await expect(page.locator("#mobility-summary-metrics")).toBeVisible();
+    await expect(page.locator("#validation-history-counts")).toBeVisible();
+    await expect(historyLinks).toHaveCount(historyCountBefore + 1);
+
+    const resultLink = page.getByRole("link", { name: "View Full Results" });
+    const resultHref = await resultLink.getAttribute("href");
+    await expect(historyLinks.first()).toHaveAttribute("href", resultHref);
+    await resultLink.click();
+    await page.waitForURL(new RegExp("/gtfs/[^/]+/validation/[^/]+$"));
+    await expect(page.getByText("COMPLETED", { exact: true })).toBeVisible();
+    await expect(page.getByText("No validation issues found!", { exact: true })).toBeVisible();
   });
 
   test("partial review retries and pending review cancels truthfully", async ({ page }) => {
@@ -160,8 +189,23 @@ test.describe("durable import and export browser journeys", () => {
     await expect(page.locator("#diff-retry-btn")).toBeVisible();
   });
 
-  test("preflight warnings and long diagnostics remain readable at 320px", async ({ page }) => {
+  test("long uploads, warnings, and diagnostics remain accessible at 320px", async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 568 });
+    await openRoute(page, "import");
+
+    const longFilename =
+      "regional-transit-accessibility-update-2026-final-review.zip";
+    await page.locator("#gtfs-import-upload-input input").setInputFiles({
+      name: longFilename,
+      mimeType: "application/zip",
+      buffer: Buffer.from("browser upload fixture"),
+    });
+    await expect(page.locator(`#gtfs-import-upload-entries [title='${longFilename}']`)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: `Cancel ${longFilename}` }),
+    ).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+
     await openRoute(page, "export");
     await selectVersion(page, "Catalog Routes Only Version");
     await expect(page.locator("#export-warning-panel")).toBeVisible();

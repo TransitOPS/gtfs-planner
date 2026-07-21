@@ -13,8 +13,16 @@ config :gtfs_planner, GtfsPlanner.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
-# Use mock validator in tests
-config :gtfs_planner, :validator_module, GtfsPlanner.Gtfs.ValidatorMock
+# Use a deterministic final-validator adapter for browser journeys while ordinary
+# ExUnit cases retain process-owned Mox expectations.
+validator_module =
+  if System.get_env("BROWSER_E2E") == "true" do
+    GtfsPlanner.Gtfs.BrowserValidator
+  else
+    GtfsPlanner.Gtfs.ValidatorMock
+  end
+
+config :gtfs_planner, :validator_module, validator_module
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.

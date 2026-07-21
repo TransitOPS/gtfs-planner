@@ -2124,6 +2124,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
+      assert has_element?(view, "#validation-history-counts[data-mode=\"display\"]")
+      refute has_element?(view, "#validation-history-counts button")
+
       assert has_element?(view, "#recent-validation-counts-#{pathways_run.id}-item-errors", "1")
       assert has_element?(view, "#recent-validation-counts-#{pathways_run.id}-item-warnings", "1")
       assert has_element?(view, "#recent-validation-counts-#{pathways_run.id}-item-infos", "0")

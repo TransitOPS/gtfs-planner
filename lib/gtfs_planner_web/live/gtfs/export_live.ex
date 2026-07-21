@@ -58,7 +58,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:export_form, export_form(:full))
      |> assign(:validation_form, validation_form([]))
      |> assign(:validation_group_error, nil)
-     |> assign(:validation_history_filter, nil)
      |> assign(:file_inventory, [])
      |> assign(:export_run, nil)
      |> assign(:validation_run_id, nil)
@@ -179,18 +178,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         else
           run_mobility_data_validation(socket, organization_id, gtfs_version_id)
         end
-    end
-  end
-
-  @impl Phoenix.LiveView
-  def handle_event("filter_validation_history", %{"key" => key}, socket) do
-    items = validation_history_count_items(socket.assigns.recent_validation_runs)
-
-    if Enum.any?(items, &(&1.key == key and &1.count > 0)) do
-      selected = if socket.assigns.validation_history_filter == key, do: nil, else: key
-      {:noreply, assign(socket, :validation_history_filter, selected)}
-    else
-      {:noreply, socket}
     end
   end
 
@@ -1058,8 +1045,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               <.count_strip
                 id="validation-history-counts"
                 items={validation_history_count_items(@recent_validation_runs)}
-                selected_key={@validation_history_filter}
-                event="filter_validation_history"
                 class="mb-4"
               />
               <div class="overflow-x-auto">
@@ -1074,10 +1059,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     </tr>
                   </thead>
                   <tbody>
-                    <tr :for={
-                      run <-
-                        filtered_validation_runs(@recent_validation_runs, @validation_history_filter)
-                    }>
+                    <tr :for={run <- @recent_validation_runs}>
                       <% display_counts =
                         Map.get(
                           @recent_validation_display_counts_by_run_id,
@@ -2797,15 +2779,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp positive_count(count) when count > 0, do: 1
   defp positive_count(_count), do: 0
-
-  defp filtered_validation_runs(runs, nil), do: runs
-
-  defp filtered_validation_runs(runs, key) when key in ["errors", "warnings", "infos"] do
-    field = String.to_existing_atom(key)
-    Enum.filter(runs, &(Map.fetch!(recent_validation_display_counts_from_source(&1), field) > 0))
-  end
-
-  defp filtered_validation_runs(runs, _key), do: runs
 
   defp export_actor(socket) do
     %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
