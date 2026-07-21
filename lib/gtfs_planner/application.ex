@@ -14,6 +14,8 @@ defmodule GtfsPlanner.Application do
       {Phoenix.PubSub, name: GtfsPlanner.PubSub},
       {Task.Supervisor, name: GtfsPlanner.TaskSupervisor},
       {DynamicSupervisor, name: GtfsPlanner.Gtfs.Import.RunnerSupervisor, strategy: :one_for_one},
+      {DynamicSupervisor,
+       name: GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor, strategy: :one_for_one},
       # Start a worker by calling: GtfsPlanner.Worker.start_link(arg)
       # {GtfsPlanner.Worker, arg},
       # Start to serve requests, typically the last entry

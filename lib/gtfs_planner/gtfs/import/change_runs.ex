@@ -27,6 +27,22 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
           {:ok, ChangeRun.t()} | {:error, term()}
   def create_pending_compute(organization_id, gtfs_version_id, actor, staged_files)
       when is_list(staged_files) do
+    create_pending_compute(organization_id, gtfs_version_id, actor, staged_files, nil)
+  end
+
+  def create_pending_compute(_, _, _, _), do: {:error, :invalid_staged_files}
+
+  @doc "Creates a pending run with a preallocated ID for immutable file staging."
+  @spec create_pending_compute(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          actor(),
+          [staged_file()],
+          Ecto.UUID.t() | nil
+        ) ::
+          {:ok, ChangeRun.t()} | {:error, term()}
+  def create_pending_compute(organization_id, gtfs_version_id, actor, staged_files, run_id)
+      when is_list(staged_files) and (is_nil(run_id) or is_binary(run_id)) do
     transaction_with_broadcast(fn ->
       if version_in_scope?(organization_id, gtfs_version_id) do
         lock_scope(organization_id, gtfs_version_id)
@@ -43,11 +59,16 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
               actor_email: actor.email,
               state: :pending_compute,
               phase: :staging,
-              source_manifest: %{files: staged_files},
+              source_manifest: %{
+                files: staged_files,
+                total_bytes: Enum.sum(Enum.map(staged_files, &Map.get(&1, :size, 0)))
+              },
               serializer_version: ChangeDecisionSerializer.serializer_version()
             }
 
-            case Repo.insert(ChangeRun.system_changeset(%ChangeRun{}, attrs)) do
+            run = if is_nil(run_id), do: %ChangeRun{}, else: %ChangeRun{id: run_id}
+
+            case Repo.insert(ChangeRun.system_changeset(run, attrs)) do
               {:ok, run} -> {{:ok, run}, [run.id]}
               {:error, changeset} -> {{:error, changeset}, []}
             end
@@ -58,7 +79,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end)
   end
 
-  def create_pending_compute(_, _, _, _), do: {:error, :invalid_staged_files}
+  def create_pending_compute(_, _, _, _, _), do: {:error, :invalid_staged_files}
 
   @spec claim(Ecto.UUID.t(), Ecto.UUID.t(), :compute | :apply) ::
           {:ok, ChangeRun.t(), pos_integer(), Ecto.UUID.t()} | {:error, term()}
@@ -152,6 +173,37 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   end
 
   def persist_review(_, _, _, _, _), do: {:error, :invalid_review}
+
+  @doc "Closes a fenced compute attempt without allowing a stale executor to overwrite a newer lease."
+  @spec fail_compute(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), String.t()) ::
+          {:ok, ChangeRun.t()} | {:error, :lease_lost}
+  def fail_compute(organization_id, run_id, generation, token, code) when is_binary(code) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %ChangeRun{} = run
+        when run.state == :computing and run.lease_generation == generation and
+               run.lease_token == token ->
+          state = if is_nil(run.cancel_requested_at), do: :failed, else: :cancelled
+
+          attrs = %{
+            state: state,
+            phase: :cleanup,
+            lease_token: nil,
+            lease_expires_at: nil,
+            failure_code: String.slice(code, 0, 128),
+            finished_at: DateTime.utc_now()
+          }
+
+          case Repo.update(ChangeRun.system_changeset(run, attrs)) do
+            {:ok, closed} -> {{:ok, closed}, [run.id]}
+            {:error, _} -> {{:error, :lease_lost}, []}
+          end
+
+        _ ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+  end
 
   @spec set_decision_status(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), :approved | :rejected) ::
           {:ok, ChangeDecision.t()} | {:error, term()}
@@ -498,11 +550,16 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         |> Enum.reduce_while({:ok, []}, fn decision, {:ok, acc} ->
           case ChangeDecisionSerializer.deserialize(decision) do
             {:ok, deserialized} ->
-              {:ok, serialized} = ChangeDecisionSerializer.serialize(deserialized)
-              {:cont, {:ok, [serialized | acc]}}
+              case ChangeDecisionSerializer.serialize(deserialized) do
+                {:ok, serialized} -> {:cont, {:ok, [serialized | acc]}}
+                {:error, reason} -> {:halt, {:error, {:invalid_decision, reason}}}
+              end
 
             {:error, reason} ->
               {:halt, {:error, {:invalid_decision, reason}}}
+
+            :error ->
+              {:halt, {:error, {:invalid_decision, :invalid_serialized_decision}}}
           end
         end)
         |> case do

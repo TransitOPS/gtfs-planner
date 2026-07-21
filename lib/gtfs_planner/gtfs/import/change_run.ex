@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRun do
   @summary_keys ~w(applicable preview approved rejected applied failed add modify remove conflict)a
   @diagnostic_keys ~w(code detail entity_type natural_key)a
   @manifest_keys ~w(files total_bytes)a
-  @manifest_file_keys ~w(name size sha256 content_type)a
+  @manifest_file_keys ~w(name key size sha256 content_type)a
   @max_string 4_096
 
   @primary_key {:id, :binary_id, autogenerate: true}
