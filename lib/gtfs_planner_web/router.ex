@@ -33,6 +33,14 @@ defmodule GtfsPlannerWeb.Router do
     plug :require_authenticated_user_pl
   end
 
+  pipeline :browser_organization do
+    plug GtfsPlannerWeb.Plugs.AssignBrowserOrganization
+  end
+
+  pipeline :require_gtfs_editor do
+    plug :ensure_gtfs_editor
+  end
+
   pipeline :api do
     plug :accepts, ["json"]
   end
@@ -142,6 +150,17 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
+  scope "/gtfs", GtfsPlannerWeb do
+    pipe_through [
+      :browser,
+      :require_authenticated_user,
+      :browser_organization,
+      :require_gtfs_editor
+    ]
+
+    get "/:version/export-runs/:run_id/download", GtfsExportDownloadController, :show
+  end
+
   # -- Companion API pipelines --------------------------------------------------
 
   pipeline :api_cors do
@@ -224,4 +243,7 @@ defmodule GtfsPlannerWeb.Router do
 
   defp require_authenticated_user_pl(conn, opts),
     do: GtfsPlannerWeb.UserAuth.require_authenticated_user(conn, opts)
+
+  defp ensure_gtfs_editor(conn, _opts),
+    do: GtfsPlannerWeb.EnsureRole.ensure_role(conn, :pathways_studio_editor)
 end
