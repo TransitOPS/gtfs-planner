@@ -1,3 +1,31 @@
+defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest.ControlledSnapshotSource do
+  @moduledoc """
+  Report snapshot boundary double used only by the lifecycle tests.
+
+  Every call announces itself to the controlling test process and then blocks
+  until that test releases it, so a test can hold one load open while starting
+  another and decide the completion order. The task traps exits so that a
+  `cancel_async/2` does not kill it: a released, already-cancelled task then
+  really does deliver a completion the LiveView must refuse.
+  """
+
+  def get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
+    Process.flag(:trap_exit, true)
+    owner = Application.fetch_env!(:gtfs_planner, :station_report_snapshot_owner)
+    send(owner, {:snapshot_requested, self(), stop_id})
+
+    receive do
+      {:snapshot_release, :real} ->
+        GtfsPlanner.Gtfs.get_station_report_snapshot(organization_id, gtfs_version_id, stop_id)
+
+      {:snapshot_release, result} ->
+        result
+    after
+      2_000 -> {:error, :release_timeout}
+    end
+  end
+end
+
 defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
   use GtfsPlannerWeb.ConnCase
 
@@ -9,6 +37,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlannerWeb.Gtfs.StationReport2LiveTest.ControlledSnapshotSource
+
+  defp live_report(conn, path) do
+    {:ok, view, _html} = live(conn, path)
+    {view, render_async(view, 5_000)}
+  end
+
+  defp control_snapshot_source do
+    Application.put_env(:gtfs_planner, :station_report_snapshot_source, ControlledSnapshotSource)
+    Application.put_env(:gtfs_planner, :station_report_snapshot_owner, self())
+
+    on_exit(fn ->
+      Application.delete_env(:gtfs_planner, :station_report_snapshot_source)
+      Application.delete_env(:gtfs_planner, :station_report_snapshot_owner)
+    end)
+
+    :ok
+  end
+
+  defp await_load(stop_id) do
+    assert_receive {:snapshot_requested, task_pid, ^stop_id}, 2_000
+    task_pid
+  end
+
+  defp release_load(task_pid, result) do
+    send(task_pid, {:snapshot_release, result})
+    :ok
+  end
 
   describe "StationReport2Live" do
     setup do
@@ -80,8 +136,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#station-sub-nav")
       assert has_element?(view, "#station-report-2")
@@ -102,8 +158,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       section_ids = [
         "report2-station-inventory",
@@ -135,8 +191,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(
                view,
@@ -156,8 +212,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       report_href = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report"
 
-      {:ok, view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, html} = live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(
                view,
@@ -191,8 +246,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, html} = live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Check that known check labels appear
       assert html =~ "Isolated nodes"
@@ -213,8 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, html} = live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # GPS check labels
       assert html =~ "GPS presence by location type"
@@ -237,8 +290,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Stop-name links use phx-click="select_entity" instead of navigation hrefs
       assert has_element?(view, "[phx-click='select_entity'][phx-value-entity_type='stop']")
@@ -272,8 +325,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # The stop-name link shows the human-readable name, not the raw ID
       assert has_element?(
@@ -298,8 +351,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       refute has_element?(view, "#report-stop-edit-form")
 
@@ -326,8 +379,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the drawer
       view
@@ -391,8 +444,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # All 12 generic nodes plus the entrance should appear as isolated
       # Verify the last generic node renders (confirms full list is present)
@@ -410,8 +463,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the drawer
       view
@@ -455,8 +508,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Naming &amp; ID Conventions"
       assert html =~ "of 6 checks failed"
@@ -471,8 +524,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Stop name title case"
       assert html =~ "Generic node ID prefix"
@@ -508,8 +561,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-naming-conventions .bg-red-100", "FAIL")
     end
@@ -523,8 +576,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-naming-conventions .bg-green-100", "PASS")
     end
@@ -555,8 +608,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Expected prefix"
       assert html =~ "entrance_"
@@ -570,10 +623,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      assert {:error, {:live_redirect, %{to: to_path, flash: %{"error" => "Station not found"}}}} =
-               live(conn, "/gtfs/#{gtfs_version.id}/stops/UNKNOWN/report")
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/UNKNOWN/report")
 
+      {to_path, flash} = assert_redirect(view, 5_000)
       assert to_path == "/gtfs/#{gtfs_version.id}/stops"
+      assert flash == %{"error" => "Station not found"}
     end
 
     test "station inventory section renders node and edge counts", %{
@@ -585,8 +639,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-station-inventory")
       refute has_element?(view, "#report2-station-inventory p", "Not yet implemented")
@@ -607,8 +661,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # All 5 location types present
       assert html =~ "Stop/Platform"
@@ -640,11 +694,598 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "L1"
       assert html =~ "Street"
     end
+  end
+
+  describe "report lifecycle" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      _level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      station_one = build_station(organization, gtfs_version, "STATION_1", "Station One")
+      station_two = build_station(organization, gtfs_version, "STATION_2", "Station Two")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_one: station_one,
+        station_two: station_two
+      }
+    end
+
+    test "shows a loading state and withholds sections until the matching result arrives", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+
+      assert has_element?(view, "#report-status[data-state='initial_loading']")
+      assert render(view) =~ "Loading report"
+      refute has_element?(view, "#report2-station-inventory")
+      refute has_element?(view, "#report2-reachability-connectivity")
+
+      station_one.stop_id |> await_load() |> release_load(:real)
+      html = render_async(view, 5_000)
+
+      refute has_element?(view, "#report-status")
+      assert has_element?(view, "#report2-station-inventory")
+      assert has_element?(view, "#report2-pathway-field-completeness")
+      assert html =~ "Station One"
+    end
+
+    test "a station switch during a load applies only the active station's result", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one,
+      station_two: station_two
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      first_load = await_load(station_one.stop_id)
+
+      render_patch(view, report_path(gtfs_version, station_two))
+      second_load = await_load(station_two.stop_id)
+
+      release_load(second_load, :real)
+      assert render_async(view, 5_000) =~ "Station Two"
+
+      # The superseded load finishes last. Its completion carries the previous
+      # scope and must never replace the station the user is now looking at.
+      release_and_settle(view, first_load, :real)
+
+      assert render(view) =~ "Station Two"
+      refute render(view) =~ "Station One"
+      assert has_element?(view, "#report2-station-inventory")
+    end
+
+    test "a stale completion cannot revive content after the active load already applied", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one,
+      station_two: station_two
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      first_load = await_load(station_one.stop_id)
+
+      # Complete the first load normally, then switch stations.
+      release_load(first_load, :real)
+      assert render_async(view, 5_000) =~ "Station One"
+
+      render_patch(view, report_path(gtfs_version, station_two))
+      second_load = await_load(station_two.stop_id)
+
+      # While station two is loading the report region is explicit, and the
+      # station one content is not presented as station two's report.
+      assert has_element?(view, "#report-status[data-state='initial_loading']")
+      refute has_element?(view, "#report2-station-inventory")
+
+      release_load(second_load, :real)
+      assert render_async(view, 5_000) =~ "Station Two"
+    end
+
+    test "navigating to another version cancels in-flight work instead of applying it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      in_flight = await_load(station_one.stop_id)
+
+      render_click(view, "gtfs_version_loaded", %{"version_id" => to_string(other_version.id)})
+
+      {to_path, _flash} = assert_redirect(view, 5_000)
+      assert to_path == "/gtfs/#{other_version.id}/stops/#{station_one.stop_id}/report"
+
+      # The abandoned load is released after the view is gone. Nothing it reports
+      # can be applied, and the test process observes no crash from it.
+      ref = Process.monitor(in_flight)
+      release_load(in_flight, :real)
+      assert_receive {:DOWN, ^ref, :process, ^in_flight, _reason}, 2_000
+    end
+
+    test "refreshing after a save keeps the previous report on screen", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      station_one.stop_id |> await_load() |> release_load(:real)
+      render_async(view, 5_000)
+
+      open_stop_drawer(view, "Entrance One")
+      submit_stop_name(view, "Renamed Entrance")
+
+      refresh_load = await_load(station_one.stop_id)
+
+      # Refreshing never blanks content that is already on screen.
+      assert has_element?(view, "#report-status[data-state='refreshing']")
+      assert has_element?(view, "#report2-station-inventory")
+      assert render(view) =~ "Refreshing report"
+      refute render(view) =~ "Loading report"
+
+      release_load(refresh_load, :real)
+      html = render_async(view, 5_000)
+
+      refute has_element?(view, "#report-status")
+      assert html =~ "Renamed Entrance"
+    end
+
+    test "a failed initial load offers retry and recovers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      station_one.stop_id |> await_load() |> release_load({:error, :snapshot_unavailable})
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#report-status[data-state='error']")
+      assert render(view) =~ "Report could not load"
+      assert has_element?(view, "button#report-retry", "Retry report")
+      refute has_element?(view, "#report2-station-inventory")
+
+      view |> element("button#report-retry") |> render_click()
+
+      station_one.stop_id |> await_load() |> release_load(:real)
+      html = render_async(view, 5_000)
+
+      refute has_element?(view, "#report-status")
+      assert has_element?(view, "#report2-station-inventory")
+      assert html =~ "Station One"
+    end
+
+    test "a failed post-save refresh reports the save, keeps content, and retries", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      station_one.stop_id |> await_load() |> release_load(:real)
+      render_async(view, 5_000)
+
+      open_stop_drawer(view, "Entrance One")
+      submit_stop_name(view, "Saved But Stale")
+
+      station_one.stop_id |> await_load() |> release_load({:error, :snapshot_unavailable})
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#report-status[data-state='error']")
+      assert render(view) =~ "Stop saved, but the report could not refresh"
+      assert has_element?(view, "button#report-retry", "Retry report")
+      # The stale-but-real report stays visible rather than disappearing.
+      assert has_element?(view, "#report2-station-inventory")
+
+      # The save itself did land.
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "ENT_1").stop_name ==
+               "Saved But Stale"
+
+      view |> element("button#report-retry") |> render_click()
+      station_one.stop_id |> await_load() |> release_load(:real)
+      html = render_async(view, 5_000)
+
+      refute has_element?(view, "#report-status")
+      assert html =~ "Saved But Stale"
+    end
+
+    test "a repeated save submit after the drawer closed starts no second report load", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+      station_one.stop_id |> await_load() |> release_load(:real)
+      render_async(view, 5_000)
+
+      open_stop_drawer(view, "Entrance One")
+      submit_stop_name(view, "Only Once")
+
+      first_refresh = await_load(station_one.stop_id)
+
+      # A duplicate submit for a drawer that is already closed must not queue
+      # another rebuild.
+      render_click(view, "save_entity", %{"stop" => %{"stop_name" => "Only Once"}})
+      refute_receive {:snapshot_requested, _pid, _stop_id}, 200
+
+      release_load(first_refresh, :real)
+      render_async(view, 5_000)
+      refute has_element?(view, "#report-status")
+    end
+
+    test "the stop form acknowledges submission with a distinct saving label", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station_one))
+
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(
+               view,
+               "#report-stop-edit-form button[type='submit'][phx-disable-with='Saving…']"
+             )
+    end
+  end
+
+  describe "report disclosure and print model" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      _level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      station = build_station(organization, gtfs_version, "STATION_1", "Station One")
+
+      _isolated =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "GEN_ISO",
+          stop_name: "Isolated Node",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "a newly loaded report carries every section and every connectivity detail", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {view, html} = live_report(conn, report_path(gtfs_version, station))
+
+      for id <- [
+            "report2-station-inventory",
+            "report2-data-quality",
+            "report2-gps-checks",
+            "report2-naming-conventions",
+            "report2-reachability-connectivity",
+            "report2-pathway-field-completeness"
+          ] do
+        assert has_element?(view, "##{id}"), "expected section #{id} in a freshly loaded report"
+      end
+
+      # No disclosure has been interacted with yet.
+      refute has_element?(view, "#station-report-2 [aria-expanded='true']")
+
+      # Source-level connectivity evidence is already built.
+      assert has_element?(view, "#connectivity-detail-entrance_to_platform-ENT_1")
+      # Route-level and step-level evidence is already built.
+      assert has_element?(view, "#route-ENT_1-PLAT_1")
+      assert has_element?(view, "#route-ENT_1-PLAT_1 table thead th", "Instruction")
+      assert has_element?(view, "#route-ENT_1-PLAT_1 table tbody td", "Elevator")
+      # Failed-check evidence is already built.
+      assert has_element?(view, "#check-detail-data-quality-isolated_nodes", "Isolated Node")
+      assert has_element?(view, "#check-detail-naming-naming_entrance_prefix")
+
+      # Collapsed evidence is hidden on screen but retained for print.
+      assert has_element?(view, "#route-ENT_1-PLAT_1[class*='print:block']")
+
+      assert has_element?(
+               view,
+               "#connectivity-detail-entrance_to_platform-ENT_1[class*='print:']"
+             )
+
+      assert has_element?(view, "#check-detail-data-quality-isolated_nodes[class*='print:grid']")
+
+      # The client-only expand-all mutation and native <details> disclosure are gone.
+      refute html =~ "ExpandAll"
+      refute html =~ "<details"
+    end
+
+    test "individual disclosure is server owned and survives an unrelated patch", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      key = "data-quality-isolated_nodes"
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_check_detail'][phx-value-key='#{key}'][aria-expanded='false']"
+             )
+
+      view
+      |> element("button[phx-click='toggle_check_detail'][phx-value-key='#{key}']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_check_detail'][phx-value-key='#{key}'][aria-expanded='true']"
+             )
+
+      refute has_element?(view, "#check-detail-#{key}[class*='hidden']")
+
+      # A patch that does not change the scope leaves disclosure state alone.
+      render_patch(view, report_path(gtfs_version, station) <> "?dimensions=platform_to_platform")
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_check_detail'][phx-value-key='#{key}'][aria-expanded='true']"
+             )
+
+      view
+      |> element("button[phx-click='toggle_check_detail'][phx-value-key='#{key}']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_check_detail'][phx-value-key='#{key}'][aria-expanded='false']"
+             )
+    end
+
+    test "Expand all and Collapse all drive the same server-owned state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      assert has_element?(view, "button#report-expand-all[aria-expanded='false']", "Expand all")
+
+      view |> element("button#report-expand-all") |> render_click()
+
+      assert has_element?(view, "button#report-expand-all[aria-expanded='true']", "Collapse all")
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_check_detail'][phx-value-key='data-quality-isolated_nodes'][aria-expanded='true']"
+             )
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_1'][aria-expanded='true']"
+             )
+
+      refute has_element?(view, "#route-ENT_1-PLAT_1[class*='hidden']")
+
+      view |> element("button#report-expand-all") |> render_click()
+
+      assert has_element?(view, "button#report-expand-all[aria-expanded='false']", "Expand all")
+      assert has_element?(view, "#route-ENT_1-PLAT_1[class*='hidden']")
+    end
+
+    test "expansion survives a post-save refresh of the same station", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      view |> element("button#report-expand-all") |> render_click()
+      assert has_element?(view, "button#report-expand-all[aria-expanded='true']")
+
+      open_stop_drawer(view, "Entrance One")
+      submit_stop_name(view, "Entrance Renamed")
+      render_async(view, 5_000)
+
+      # Individual disclosure keys survive the rebuild rather than snapping shut.
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_check_detail'][phx-value-key='data-quality-isolated_nodes'][aria-expanded='true']"
+             )
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_1'][phx-value-target_id='PLAT_1'][aria-expanded='true']"
+             )
+
+      refute has_element?(view, "#route-ENT_1-PLAT_1[class*='hidden']")
+    end
+
+    test "expansion resets when the station changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      other = build_station(organization, gtfs_version, "STATION_2", "Station Two")
+
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      view |> element("button#report-expand-all") |> render_click()
+      assert has_element?(view, "button#report-expand-all[aria-expanded='true']")
+
+      render_patch(view, report_path(gtfs_version, other))
+      render_async(view, 5_000)
+
+      assert has_element?(view, "button#report-expand-all[aria-expanded='false']")
+      assert has_element?(view, "#route-ENT_2-PLAT_2[class*='hidden']")
+    end
+  end
+
+  # -- helpers --------------------------------------------------------------
+
+  defp report_path(gtfs_version, station),
+    do: "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report"
+
+  defp build_station(organization, gtfs_version, station_id, station_name) do
+    suffix = String.replace(station_id, "STATION_", "")
+
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: station_id,
+        stop_name: station_name,
+        location_type: 1,
+        parent_station: nil
+      })
+
+    entrance =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "ENT_#{suffix}",
+        stop_name: "Entrance #{station_name |> String.split() |> List.last()}",
+        location_type: 2,
+        parent_station: station.stop_id,
+        level_id: "L1"
+      })
+
+    platform =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "PLAT_#{suffix}",
+        stop_name: "Platform #{suffix}",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: "L1"
+      })
+
+    _pathway =
+      pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{
+        pathway_id: "PATH_#{suffix}",
+        pathway_mode: 5,
+        is_bidirectional: true
+      })
+
+    station
+  end
+
+  defp open_stop_drawer(view, entity_name) do
+    view
+    |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", entity_name)
+    |> render_click()
+  end
+
+  defp submit_stop_name(view, stop_name) do
+    view
+    |> form("#report-stop-edit-form",
+      stop: %{
+        stop_name: stop_name,
+        stop_lat: "47.6",
+        stop_lon: "-122.3",
+        level_id: "L1",
+        wheelchair_boarding: "",
+        platform_code: ""
+      }
+    )
+    |> render_submit()
+  end
+
+  # Releases a held load and waits until the task process is gone, so any
+  # completion it reported is already queued ahead of the next render.
+  defp release_and_settle(view, task_pid, result) do
+    ref = Process.monitor(task_pid)
+    release_load(task_pid, result)
+    assert_receive {:DOWN, ^ref, :process, ^task_pid, _reason}, 2_000
+    render(view)
+    :ok
   end
 end

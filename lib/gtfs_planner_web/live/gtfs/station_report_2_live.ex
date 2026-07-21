@@ -1,6 +1,25 @@
 defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   @moduledoc """
-  LiveView for the new station report dashboard with independent section components.
+  LiveView for the station report dashboard with independent section components.
+
+  ## Lifecycle
+
+  The report is built by one stable `:report_load` async task. Starting a load
+  cancels the previous one, bumps a generation counter, and records the full
+  scope `{organization_id, gtfs_version_id, stop_id, generation}`. The task
+  closure captures that scope — plain ids, never the socket — and returns it
+  with its result, so `handle_async/3` can apply a result only while it still
+  describes the active route. A navigation, station change, or replacement load
+  therefore cannot be overwritten by work started for a previous scope, and a
+  cancelled task's exit is not an error.
+
+  ## One report truth
+
+  The async result is a single normalized model: every section list plus every
+  connectivity route group, route, and step, all built once from the same
+  scoped snapshot. Screen disclosure state is server-owned and only decides
+  what is *visible*; the evidence itself is always in the document, so printing
+  a freshly loaded report is complete without any prior click.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -19,8 +38,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   }
 
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Gtfs.StationReport2Components
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @report_key :report_load
+  @dimensions [:entrance_to_platform, :platform_to_platform, :platform_to_exit]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -30,21 +53,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      socket
      |> assign(:page_title, "Station Report")
      |> assign(:user_roles, user_roles)
-     |> assign(:station, nil)
-     |> assign(:report, nil)
      |> assign(:stop_id, nil)
-     |> assign(:data_quality_items, [])
-     |> assign(:gps_items, [])
-     |> assign(:naming_convention_checks, [])
-     |> assign(:pathway_field_completeness_groups, [])
-     |> assign(:connectivity_summaries, nil)
-     |> assign(:connectivity_expanded_sources, MapSet.new())
-     |> assign(:connectivity_route_details, %{})
-     |> assign(:expanded_routes, %{})
-     |> assign(:drawer_entity, nil)
-     |> assign(:drawer_type, nil)
-     |> assign(:drawer_form, nil)
-     |> assign(:drawer_error, nil)}
+     |> assign(:generation, 0)
+     |> assign(:report_scope, nil)
+     |> assign(:view_state, :initial_loading)
+     |> assign(:refresh_reason, nil)
+     |> assign(:report_error, nil)
+     |> assign(:url_dimensions, [])
+     |> clear_model()
+     |> reset_expansion()
+     |> reset_drawer()}
   end
 
   @impl true
@@ -52,50 +70,290 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    case Gtfs.get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
-      {:ok, snapshot} ->
-        connectivity_summaries = Connectivity.build_summaries(snapshot)
+    if active_scope?(socket, organization_id, gtfs_version_id, stop_id) do
+      # A patch that does not move the report scope (for example a `dimensions`
+      # query change) must not restart work or discard disclosure state.
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:stop_id, stop_id)
+       |> assign(:url_dimensions, parse_url_dimensions(params))
+       |> clear_model()
+       |> reset_expansion()
+       |> reset_drawer()
+       |> start_report_load(:initial_loading, nil)}
+    end
+  end
 
-        url_dimensions =
-          case params["dimensions"] do
-            nil -> []
-            str -> str |> String.split(",") |> Enum.map(&parse_dimension/1)
+  # -- Asynchronous report loading -------------------------------------------
+
+  @impl true
+  def handle_async(@report_key, {:ok, {:loaded, scope, model}}, socket) do
+    if scope == socket.assigns.report_scope do
+      {:noreply, apply_model(socket, model)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async(@report_key, {:ok, {:load_failed, scope, :not_found}}, socket) do
+    if scope == socket.assigns.report_scope do
+      {_organization_id, gtfs_version_id, _stop_id, _generation} = scope
+
+      {:noreply,
+       socket
+       |> cancel_async(@report_key)
+       |> put_flash(:error, "Station not found")
+       |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async(@report_key, {:ok, {:load_failed, scope, _reason}}, socket) do
+    if scope == socket.assigns.report_scope do
+      {:noreply, assign_report_error(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # A cancelled task is expected: it was superseded on purpose and must never
+  # be presented as a failure.
+  def handle_async(@report_key, {:exit, {:shutdown, :cancel}}, socket), do: {:noreply, socket}
+
+  def handle_async(@report_key, {:exit, _reason}, socket) do
+    if socket.assigns.view_state in [:initial_loading, :refreshing] do
+      {:noreply, assign_report_error(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp start_report_load(socket, view_state, refresh_reason) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    stop_id = socket.assigns.stop_id
+    generation = socket.assigns.generation + 1
+    scope = {organization_id, gtfs_version_id, stop_id, generation}
+
+    socket
+    |> assign(:generation, generation)
+    |> assign(:report_scope, scope)
+    |> assign(:view_state, view_state)
+    |> assign(:refresh_reason, refresh_reason)
+    |> assign(:report_error, nil)
+    |> cancel_async(@report_key)
+    |> start_async(@report_key, fn -> load_report(scope) end)
+  end
+
+  # Runs in the task process. It receives ids only and returns its own scope so
+  # the LiveView can decide whether the answer is still wanted.
+  defp load_report({organization_id, gtfs_version_id, stop_id, _generation} = scope) do
+    case snapshot_source().get_station_report_snapshot(
+           organization_id,
+           gtfs_version_id,
+           stop_id
+         ) do
+      {:ok, snapshot} -> {:loaded, scope, build_model(snapshot)}
+      {:error, reason} -> {:load_failed, scope, reason}
+    end
+  end
+
+  # Resolved per call so the report boundary can be exercised deterministically
+  # in tests without recompiling this module. Production always uses the context.
+  defp snapshot_source do
+    Application.get_env(:gtfs_planner, :station_report_snapshot_source, Gtfs)
+  end
+
+  defp active_scope?(socket, organization_id, gtfs_version_id, stop_id) do
+    case socket.assigns.report_scope do
+      {^organization_id, ^gtfs_version_id, ^stop_id, _generation} -> true
+      _ -> false
+    end
+  end
+
+  defp apply_model(socket, model) do
+    first_model? = is_nil(socket.assigns.model)
+
+    socket
+    |> assign(:model, model)
+    |> assign(:station, model.station)
+    |> assign(:view_state, :ready)
+    |> assign(:refresh_reason, nil)
+    |> assign(:report_error, nil)
+    |> then(fn socket ->
+      if first_model?, do: seed_expansion(socket, model), else: put_expansion(socket, [])
+    end)
+  end
+
+  defp assign_report_error(socket) do
+    kind =
+      case {socket.assigns.view_state, socket.assigns.refresh_reason} do
+        {:refreshing, :saved} -> :refresh_after_save
+        {:refreshing, _} -> :refresh
+        _ -> :load
+      end
+
+    socket
+    |> assign(:view_state, :error)
+    |> assign(:report_error, kind)
+  end
+
+  defp clear_model(socket) do
+    socket
+    |> assign(:model, nil)
+    |> assign(:station, nil)
+  end
+
+  # -- Normalized report model -----------------------------------------------
+
+  # Builds every screen section and every connectivity detail exactly once, in
+  # the task process. Screen and print read this one model; nothing downstream
+  # recalculates. Calculation itself still belongs to the StationReport2
+  # builders — this function only composes their results.
+  defp build_model(snapshot) do
+    summaries = Connectivity.build_summaries(snapshot)
+
+    route_details =
+      Map.new(@dimensions, fn dimension ->
+        {dimension, Connectivity.build_route_detail(snapshot, dimension)}
+      end)
+
+    routes =
+      for {_dimension, groups} <- route_details,
+          group <- groups,
+          target <- group.targets,
+          into: %{} do
+        {{group.source.stop_id, target.stop_id},
+         Connectivity.build_expanded_route(snapshot, group.source.stop_id, target.stop_id)}
+      end
+
+    %{
+      snapshot: snapshot,
+      station: snapshot.station,
+      data_quality_items: DataQuality.build(snapshot),
+      gps_items: Gps.build(snapshot),
+      naming_convention_checks: NamingConventions.build(snapshot),
+      pathway_field_completeness_groups: PathwayFieldCompleteness.build(snapshot),
+      connectivity_summaries: summaries,
+      connectivity_route_details: route_details,
+      connectivity_routes: routes
+    }
+  end
+
+  # -- Server-owned disclosure ----------------------------------------------
+
+  @impl true
+  def handle_event("toggle_check_detail", %{"key" => key}, socket) do
+    {:noreply,
+     put_expansion(socket, expanded_checks: toggle_member(socket.assigns.expanded_checks, key))}
+  end
+
+  @impl true
+  def handle_event("toggle_expand_all", _params, socket) do
+    case socket.assigns.model do
+      nil ->
+        {:noreply, socket}
+
+      model ->
+        if all_expanded?(socket, model) do
+          {:noreply, reset_expansion(socket)}
+        else
+          {:noreply,
+           put_expansion(socket,
+             expanded_sources: all_source_keys(model),
+             expanded_route_keys: all_route_keys(model),
+             expanded_checks: StationReport2Components.collapsible_check_keys(model)
+           )}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_connectivity_dimension", %{"dimension" => dimension_str}, socket) do
+    case socket.assigns.model do
+      nil ->
+        {:noreply, socket}
+
+      model ->
+        dimension = parse_dimension(dimension_str)
+        keys = dimension_source_keys(model, dimension)
+        expanded = socket.assigns.expanded_sources
+
+        expanded =
+          if MapSet.size(keys) > 0 and MapSet.subset?(keys, expanded) do
+            MapSet.difference(expanded, keys)
+          else
+            MapSet.union(expanded, keys)
           end
 
-        route_details =
-          url_dimensions
-          |> Enum.into(%{}, fn dim -> {dim, Connectivity.build_route_detail(snapshot, dim)} end)
+        {:noreply, put_expansion(socket, expanded_sources: expanded)}
+    end
+  end
 
-        expanded_sources =
-          url_dimensions
-          |> Enum.flat_map(fn dim ->
-            case Map.get(connectivity_summaries, dim) do
-              nil -> []
-              summary -> Enum.map(summary.summary_rows, &{dim, &1.source_stop_id})
-            end
-          end)
-          |> MapSet.new()
+  @impl true
+  def handle_event(
+        "toggle_connectivity_source",
+        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id},
+        socket
+      ) do
+    key = {parse_dimension(dimension_str), source_stop_id}
 
-        {:noreply,
-         socket
-         |> assign(:stop_id, stop_id)
-         |> assign(:station, snapshot.station)
-         |> assign(:report, snapshot)
-         |> assign(:data_quality_items, DataQuality.build(snapshot))
-         |> assign(:gps_items, Gps.build(snapshot))
-         |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
-         |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
-         |> assign(:connectivity_summaries, connectivity_summaries)
-         |> assign(:connectivity_expanded_sources, expanded_sources)
-         |> assign(:connectivity_route_details, route_details)
-         |> assign(:expanded_routes, %{})
-         |> reset_drawer()}
+    {:noreply,
+     put_expansion(socket, expanded_sources: toggle_member(socket.assigns.expanded_sources, key))}
+  end
 
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Station not found")
-         |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
+  @impl true
+  def handle_event(
+        "toggle_connectivity_source_keydown",
+        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id, "key" => key},
+        socket
+      ) do
+    if key in ["Enter", " ", "Space", "Spacebar"] do
+      member = {parse_dimension(dimension_str), source_stop_id}
+
+      {:noreply,
+       put_expansion(socket,
+         expanded_sources: toggle_member(socket.assigns.expanded_sources, member)
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_connectivity_source_keydown", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event(
+        "toggle_route_expand",
+        %{"source_id" => source_id, "target_id" => target_id},
+        socket
+      ) do
+    {:noreply,
+     put_expansion(socket,
+       expanded_route_keys:
+         toggle_member(socket.assigns.expanded_route_keys, {source_id, target_id})
+     )}
+  end
+
+  # -- Lifecycle events ------------------------------------------------------
+
+  @impl true
+  def handle_event("retry_report", _params, socket) do
+    cond do
+      socket.assigns.view_state in [:initial_loading, :refreshing] ->
+        {:noreply, socket}
+
+      socket.assigns.report_error == :refresh_after_save ->
+        {:noreply, start_report_load(socket, refresh_state(socket), :saved)}
+
+      true ->
+        {:noreply, start_report_load(socket, refresh_state(socket), :retry)}
     end
   end
 
@@ -112,11 +370,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           do: "/gtfs/#{version_id}/stops/#{stop_id}/report",
           else: "/gtfs/#{version_id}/stops"
 
-      {:noreply, push_navigate(socket, to: path)}
+      {:noreply,
+       socket
+       |> cancel_async(@report_key)
+       |> push_navigate(to: path)}
     else
       {:noreply, socket}
     end
   end
+
+  # -- Drawer events ---------------------------------------------------------
 
   @impl true
   def handle_event("select_entity", %{"entity_id" => entity_id, "entity_type" => "stop"}, socket) do
@@ -167,7 +430,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
             {:noreply,
              socket
              |> reset_drawer()
-             |> rebuild_report()}
+             |> start_report_load(refresh_state(socket), :saved)}
 
           {:error, changeset} ->
             {:noreply,
@@ -177,6 +440,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         end
 
       _ ->
+        # No open stop drawer: a repeated or replayed submit must not save
+        # again and must not queue a second rebuild.
         {:noreply, assign_drawer_error(socket, :stop, "Stop is no longer available for editing")}
     end
   end
@@ -184,159 +449,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   @impl true
   def handle_event("save_entity", _params, socket) do
     {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event("toggle_connectivity_dimension", %{"dimension" => dimension_str}, socket) do
-    dimension = parse_dimension(dimension_str)
-    expanded_sources = socket.assigns.connectivity_expanded_sources
-    route_details = socket.assigns.connectivity_route_details
-    summary = Map.get(socket.assigns.connectivity_summaries, dimension)
-    source_ids = if summary, do: Enum.map(summary.summary_rows, & &1.source_stop_id), else: []
-    all_keys = MapSet.new(source_ids, &{dimension, &1})
-    all_expanded = MapSet.subset?(all_keys, expanded_sources) and MapSet.size(all_keys) > 0
-
-    if all_expanded do
-      {:noreply,
-       socket
-       |> assign(:connectivity_expanded_sources, MapSet.difference(expanded_sources, all_keys))
-       |> assign(:connectivity_route_details, Map.delete(route_details, dimension))}
-    else
-      route_details =
-        if Map.has_key?(route_details, dimension) do
-          route_details
-        else
-          snapshot = socket.assigns.report
-          Map.put(route_details, dimension, Connectivity.build_route_detail(snapshot, dimension))
-        end
-
-      {:noreply,
-       socket
-       |> assign(:connectivity_expanded_sources, MapSet.union(expanded_sources, all_keys))
-       |> assign(:connectivity_route_details, route_details)}
-    end
-  end
-
-  @impl true
-  def handle_event(
-        "toggle_connectivity_source",
-        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id},
-        socket
-      ) do
-    {:noreply, toggle_connectivity_source(socket, dimension_str, source_stop_id)}
-  end
-
-  @impl true
-  def handle_event(
-        "toggle_connectivity_source_keydown",
-        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id, "key" => key},
-        socket
-      ) do
-    if key in ["Enter", " ", "Space", "Spacebar"] do
-      {:noreply, toggle_connectivity_source(socket, dimension_str, source_stop_id)}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("toggle_connectivity_source_keydown", _params, socket) do
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event(
-        "toggle_route_expand",
-        %{"source_id" => source_id, "target_id" => target_id},
-        socket
-      ) do
-    key = {source_id, target_id}
-    expanded_routes = socket.assigns.expanded_routes
-
-    if Map.has_key?(expanded_routes, key) do
-      {:noreply, assign(socket, :expanded_routes, Map.delete(expanded_routes, key))}
-    else
-      snapshot = socket.assigns.report
-      route = Connectivity.build_expanded_route(snapshot, source_id, target_id)
-
-      {:noreply, assign(socket, :expanded_routes, Map.put(expanded_routes, key, route))}
-    end
-  end
-
-  @impl true
-  def handle_event("expand_all_routes", _params, socket) do
-    snapshot = socket.assigns.report
-    dimensions = [:entrance_to_platform, :platform_to_platform, :platform_to_exit]
-    summaries = socket.assigns.connectivity_summaries
-
-    # Open all dimensions and build their route details
-    route_details =
-      Enum.into(dimensions, socket.assigns.connectivity_route_details, fn dim ->
-        if Map.has_key?(socket.assigns.connectivity_route_details, dim) do
-          {dim, socket.assigns.connectivity_route_details[dim]}
-        else
-          {dim, Connectivity.build_route_detail(snapshot, dim)}
-        end
-      end)
-
-    # Expand all sources across all dimensions
-    expanded_sources =
-      dimensions
-      |> Enum.flat_map(fn dim ->
-        case Map.get(summaries, dim) do
-          nil -> []
-          summary -> Enum.map(summary.summary_rows, &{dim, &1.source_stop_id})
-        end
-      end)
-      |> MapSet.new()
-
-    # Expand all individual routes across all dimensions
-    expanded_routes =
-      for {_dim, groups} <- route_details,
-          group <- groups,
-          target <- group.targets,
-          reduce: socket.assigns.expanded_routes do
-        acc ->
-          key = {group.source.stop_id, target.stop_id}
-
-          if Map.has_key?(acc, key) do
-            acc
-          else
-            route =
-              Connectivity.build_expanded_route(snapshot, group.source.stop_id, target.stop_id)
-
-            Map.put(acc, key, route)
-          end
-      end
-
-    {:noreply,
-     socket
-     |> assign(:connectivity_expanded_sources, expanded_sources)
-     |> assign(:connectivity_route_details, route_details)
-     |> assign(:expanded_routes, expanded_routes)}
-  end
-
-  defp toggle_connectivity_source(socket, dimension_str, source_stop_id) do
-    dimension = parse_dimension(dimension_str)
-    key = {dimension, source_stop_id}
-    expanded_sources = socket.assigns.connectivity_expanded_sources
-    route_details = socket.assigns.connectivity_route_details
-
-    if MapSet.member?(expanded_sources, key) do
-      assign(socket, :connectivity_expanded_sources, MapSet.delete(expanded_sources, key))
-    else
-      route_details =
-        if Map.has_key?(route_details, dimension) do
-          route_details
-        else
-          snapshot = socket.assigns.report
-          Map.put(route_details, dimension, Connectivity.build_route_detail(snapshot, dimension))
-        end
-
-      socket
-      |> assign(:connectivity_expanded_sources, MapSet.put(expanded_sources, key))
-      |> assign(:connectivity_route_details, route_details)
-    end
   end
 
   @impl true
@@ -366,50 +478,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       </div>
 
       <div id="station-report-2" class="space-y-6">
-        <%= if @report do %>
+        <.report_status state={@view_state} reason={@refresh_reason} error={@report_error} />
+
+        <%= if @model do %>
           <.report_toc station_name={@station.stop_name || @station.stop_id}>
             <button
-              id="expand-all-btn"
+              id="report-expand-all"
               type="button"
-              class="print:hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors cursor-pointer"
-              phx-hook=".ExpandAll"
+              phx-click="toggle_expand_all"
+              aria-expanded={to_string(@all_expanded)}
+              aria-controls="station-report-2"
+              class="print:hidden inline-flex min-h-11 items-center gap-1.5 rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
-              <svg
-                class="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M4 8V4m0 0h4M4 4l5 5M20 8V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5M20 16v4m0 0h-4m4 0l-5-5" />
-              </svg>
-              Expand all
-            </button>
-            <script :type={Phoenix.LiveView.ColocatedHook} name=".ExpandAll">
-              export default {
-                mounted() {
-                  this.el.addEventListener("click", () => {
-                    const container = document.getElementById("station-report-2")
-                    if (!container) return
-                    container.querySelectorAll("details:not([open])").forEach(d => d.open = true)
-                    this.pushEvent("expand_all_routes", {})
-                  })
+              <.icon
+                name={
+                  if @all_expanded, do: "hero-arrows-pointing-in", else: "hero-arrows-pointing-out"
                 }
-              }
-            </script>
+                class="size-3.5"
+              />
+              {if @all_expanded, do: "Collapse all", else: "Expand all"}
+            </button>
           </.report_toc>
-          <.station_inventory_section report={@report} />
-          <.data_quality_section items={@data_quality_items} />
-          <.gps_checks_section items={@gps_items} />
-          <.naming_conventions_section checks={@naming_convention_checks} />
-          <.reachability_connectivity_section
-            report={@report}
-            connectivity_summaries={@connectivity_summaries}
-            connectivity_expanded_sources={@connectivity_expanded_sources}
-            connectivity_route_details={@connectivity_route_details}
-            expanded_routes={@expanded_routes}
+          <.station_inventory_section report={@model.snapshot} />
+          <.data_quality_section
+            items={@model.data_quality_items}
+            section="data-quality"
+            expanded={@expanded_checks}
           />
-          <.pathway_field_completeness_section groups={@pathway_field_completeness_groups} />
+          <.gps_checks_section items={@model.gps_items} section="gps" expanded={@expanded_checks} />
+          <.naming_conventions_section
+            checks={@model.naming_convention_checks}
+            expanded={@expanded_checks}
+          />
+          <.reachability_connectivity_section
+            connectivity_summaries={@model.connectivity_summaries}
+            connectivity_route_details={@model.connectivity_route_details}
+            connectivity_routes={@model.connectivity_routes}
+            expanded_sources={@expanded_sources}
+            expanded_route_keys={@expanded_route_keys}
+          />
+          <.pathway_field_completeness_section groups={@model.pathway_field_completeness_groups} />
         <% end %>
       </div>
 
@@ -423,31 +531,119 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     """
   end
 
-  defp rebuild_report(socket) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    stop_id = socket.assigns.stop_id
+  attr :state, :atom, required: true
+  attr :reason, :atom, default: nil
+  attr :error, :atom, default: nil
 
-    case Gtfs.get_station_report_snapshot(org_id, version_id, stop_id) do
-      {:ok, snapshot} ->
-        connectivity_summaries = Connectivity.build_summaries(snapshot)
+  defp report_status(%{state: :ready} = assigns) do
+    ~H""
+  end
 
-        socket
-        |> assign(:station, snapshot.station)
-        |> assign(:report, snapshot)
-        |> assign(:data_quality_items, DataQuality.build(snapshot))
-        |> assign(:gps_items, Gps.build(snapshot))
-        |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
-        |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
-        |> assign(:connectivity_summaries, connectivity_summaries)
-        |> assign(:connectivity_expanded_sources, MapSet.new())
-        |> assign(:connectivity_route_details, %{})
-        |> assign(:expanded_routes, %{})
+  defp report_status(assigns) do
+    ~H"""
+    <div id="report-status" data-role="report-status" data-state={@state} class="print:hidden">
+      <.skeleton :if={@state == :initial_loading} rows={6} label="Loading report…" />
 
-      {:error, _} ->
-        socket
+      <div
+        :if={@state == :refreshing}
+        class="flex items-center gap-2 border border-base-300 px-4 py-3 text-sm"
+      >
+        <.icon name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
+        <span>{refresh_label(@reason)}</span>
+      </div>
+
+      <.callout :if={@state == :error} kind="error" title={error_title(@error)}>
+        {error_body(@error)}
+        <div class="mt-3">
+          <.button id="report-retry" type="button" phx-click="retry_report" size="sm">
+            Retry report
+          </.button>
+        </div>
+      </.callout>
+    </div>
+    """
+  end
+
+  defp refresh_label(:saved), do: "Stop saved. Refreshing report…"
+  defp refresh_label(_reason), do: "Refreshing report…"
+
+  defp error_title(:refresh_after_save), do: "Stop saved, but the report could not refresh"
+  defp error_title(:refresh), do: "Report could not refresh"
+  defp error_title(_kind), do: "Report could not load"
+
+  defp error_body(:refresh_after_save),
+    do: "Your change was saved. The report below is from before that change until it rebuilds."
+
+  defp error_body(:refresh), do: "The report below is from the last successful build."
+  defp error_body(_kind), do: "Nothing was changed. Retry to build the station report."
+
+  # -- Expansion state -------------------------------------------------------
+
+  defp reset_expansion(socket) do
+    socket
+    |> assign(:expanded_sources, MapSet.new())
+    |> assign(:expanded_route_keys, MapSet.new())
+    |> assign(:expanded_checks, MapSet.new())
+    |> assign(:all_expanded, false)
+  end
+
+  defp seed_expansion(socket, model) do
+    seeded =
+      socket.assigns.url_dimensions
+      |> Enum.flat_map(&MapSet.to_list(dimension_source_keys(model, &1)))
+      |> MapSet.new()
+
+    put_expansion(socket, expanded_sources: seeded)
+  end
+
+  # Every expansion change recomputes the derived "everything is open" flag that
+  # the Expand all / Collapse all control reports.
+  defp put_expansion(socket, changes) do
+    socket = assign(socket, changes)
+    assign(socket, :all_expanded, model_all_expanded?(socket))
+  end
+
+  defp model_all_expanded?(%{assigns: %{model: nil}}), do: false
+  defp model_all_expanded?(socket), do: all_expanded?(socket, socket.assigns.model)
+
+  defp toggle_member(set, key) do
+    if MapSet.member?(set, key), do: MapSet.delete(set, key), else: MapSet.put(set, key)
+  end
+
+  defp dimension_source_keys(model, dimension) do
+    case Map.get(model.connectivity_summaries, dimension) do
+      nil -> MapSet.new()
+      summary -> MapSet.new(summary.summary_rows, &{dimension, &1.source_stop_id})
     end
   end
+
+  defp all_source_keys(model) do
+    @dimensions
+    |> Enum.flat_map(&MapSet.to_list(dimension_source_keys(model, &1)))
+    |> MapSet.new()
+  end
+
+  defp all_route_keys(model), do: model.connectivity_routes |> Map.keys() |> MapSet.new()
+
+  defp all_expanded?(socket, model) do
+    sources = all_source_keys(model)
+    routes = all_route_keys(model)
+    checks = StationReport2Components.collapsible_check_keys(model)
+
+    nonempty?(sources, routes, checks) and
+      MapSet.subset?(sources, socket.assigns.expanded_sources) and
+      MapSet.subset?(routes, socket.assigns.expanded_route_keys) and
+      MapSet.subset?(checks, socket.assigns.expanded_checks)
+  end
+
+  defp nonempty?(sources, routes, checks) do
+    MapSet.size(sources) + MapSet.size(routes) + MapSet.size(checks) > 0
+  end
+
+  # -- Drawer helpers --------------------------------------------------------
+
+  defp refresh_state(socket),
+    do: if(socket.assigns.model, do: :refreshing, else: :initial_loading)
 
   defp reset_drawer(socket) do
     socket
@@ -467,6 +663,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   defp to_optional_string(nil), do: ""
   defp to_optional_string(value), do: to_string(value)
+
+  defp parse_url_dimensions(params) do
+    case params["dimensions"] do
+      nil -> []
+      str -> str |> String.split(",") |> Enum.map(&parse_dimension/1)
+    end
+  end
 
   defp parse_dimension("entrance_to_platform"), do: :entrance_to_platform
   defp parse_dimension("platform_to_exit"), do: :platform_to_exit

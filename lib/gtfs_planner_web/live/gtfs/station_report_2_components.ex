@@ -45,6 +45,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     }
   ]
 
+  @collapsible_detail_layouts [:stop_ids, :stop_ids_with_dots, :stop_ids_with_reasons]
+
+  @doc """
+  Returns every disclosure key the report model can open, as a `MapSet`.
+
+  The LiveView owns disclosure state, but the layouts that *have* a disclosure
+  are a rendering fact, so the set is derived here and consumed there. Keeping
+  one definition means Expand all can never disagree with what is rendered.
+  """
+  def collapsible_check_keys(model) do
+    check_keys =
+      Enum.concat([
+        collapsible_item_keys("data-quality", model.data_quality_items),
+        collapsible_item_keys("gps", model.gps_items),
+        for(
+          check <- model.naming_convention_checks,
+          check.status == :fail,
+          do: check_key("naming", check.id)
+        )
+      ])
+
+    MapSet.new(check_keys)
+  end
+
+  defp collapsible_item_keys(section, items) do
+    for item <- items,
+        item.detail_layout in @collapsible_detail_layouts,
+        is_list(item.details),
+        item.details != [],
+        do: check_key(section, item.id)
+  end
+
+  @doc """
+  Builds the stable disclosure key for one check within one report section.
+  """
+  def check_key(section, id), do: "#{section}-#{id}"
+
+  @doc """
+  Builds the stable id of the region a disclosure key controls.
+  """
+  def detail_region_id(key), do: "check-detail-#{key}"
+
+  defp expanded?(nil, _key), do: false
+  defp expanded?(set, key), do: MapSet.member?(set, key)
+
   attr :station_name, :string, required: true
   slot :inner_block
 
@@ -248,6 +293,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :items, :list, required: true
+  attr :section, :string, required: true
+  attr :expanded, :any, required: true, doc: "MapSet of server-owned open disclosure keys"
 
   def data_quality_section(assigns) do
     ~H"""
@@ -257,7 +304,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
         <div class="divide-y divide-gray-200">
-          <.report_check_row :for={item <- @items} item={item} />
+          <.report_check_row
+            :for={item <- @items}
+            item={item}
+            section={@section}
+            expanded={@expanded}
+          />
         </div>
       </div>
     </section>
@@ -265,6 +317,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :items, :list, required: true
+  attr :section, :string, required: true
+  attr :expanded, :any, required: true, doc: "MapSet of server-owned open disclosure keys"
 
   def gps_checks_section(assigns) do
     ~H"""
@@ -274,7 +328,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
         <div class="divide-y divide-gray-200">
-          <.report_check_row :for={item <- @items} item={item} />
+          <.report_check_row
+            :for={item <- @items}
+            item={item}
+            section={@section}
+            expanded={@expanded}
+          />
         </div>
       </div>
     </section>
@@ -282,6 +341,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :checks, :list, required: true
+  attr :expanded, :any, required: true, doc: "MapSet of server-owned open disclosure keys"
 
   def naming_conventions_section(assigns) do
     fail_count = Enum.count(assigns.checks, &(&1.status == :fail))
@@ -319,7 +379,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           </thead>
           <tbody>
             <%= for check <- @checks do %>
-              <.naming_check_row check={check} />
+              <.naming_check_row check={check} expanded={@expanded} />
             <% end %>
           </tbody>
         </table>
@@ -329,6 +389,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :check, :map, required: true
+  attr :expanded, :any, default: nil
 
   defp naming_check_row(%{check: %{status: :pass}} = assigns) do
     ~H"""
@@ -368,54 +429,73 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   defp naming_check_row(%{check: %{status: :fail}} = assigns) do
+    key = check_key("naming", assigns.check.id)
+
+    assigns =
+      assigns
+      |> assign(:key, key)
+      |> assign(:region_id, detail_region_id(key))
+      |> assign(:open?, expanded?(assigns.expanded, key))
+
     ~H"""
     <tr>
-      <td colspan="5">
-        <details class="group">
-          <summary
-            class="grid cursor-pointer hover:bg-gray-50 border-b border-gray-200"
-            style="grid-template-columns: 2rem 1fr 1fr 6rem 5rem; display: grid; list-style: none;"
-          >
-            <span class="py-3 px-4 text-center flex items-center justify-center">
-              <svg
-                class="text-gray-400 transition-transform duration-150 group-open:rotate-180"
-                width="16"
-                height="16"
-                viewBox="0 0 16 16"
-                fill="none"
-              >
-                <path
-                  d="M4 6l4 4 4-4"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </span>
-            <span class="py-3 pr-4 font-medium text-gray-900 flex items-center">{@check.label}</span>
-            <span class="py-3 pr-4 text-gray-600 flex items-center">
-              <.naming_rule_text rule={@check.rule} id={@check.id} />
-            </span>
-            <span class="py-3 px-4 flex items-center justify-center">
-              <span
-                class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-red-100 text-[#991b1b]"
-                style="padding-top: 2px; padding-bottom: 2px;"
-              >
-                FAIL
-              </span>
-            </span>
-            <span
-              class="py-3 px-4 flex items-center justify-end text-gray-700"
-              style="font-variant-numeric: tabular-nums;"
+      <td colspan="5" class="p-0">
+        <button
+          type="button"
+          phx-click="toggle_check_detail"
+          phx-value-key={@key}
+          aria-expanded={to_string(@open?)}
+          aria-controls={@region_id}
+          class="grid w-full cursor-pointer text-left hover:bg-gray-50 border-b border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+          style="grid-template-columns: 2rem 1fr 1fr 6rem 5rem;"
+        >
+          <span class="py-3 px-4 text-center flex items-center justify-center">
+            <svg
+              class={[
+                "text-gray-400 transition-transform duration-150",
+                @open? && "rotate-180"
+              ]}
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
             >
-              {@check.issue_count}
+              <path
+                d="M4 6l4 4 4-4"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
+          <span class="py-3 pr-4 font-medium text-gray-900 flex items-center">{@check.label}</span>
+          <span class="py-3 pr-4 text-gray-600 flex items-center">
+            <.naming_rule_text rule={@check.rule} id={@check.id} />
+          </span>
+          <span class="py-3 px-4 flex items-center justify-center">
+            <span
+              class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-red-100 text-[#991b1b]"
+              style="padding-top: 2px; padding-bottom: 2px;"
+            >
+              FAIL
             </span>
-          </summary>
-          <div class="border-b border-gray-200">
-            <.naming_violation_panel check={@check} />
-          </div>
-        </details>
+          </span>
+          <span
+            class="py-3 px-4 flex items-center justify-end text-gray-700"
+            style="font-variant-numeric: tabular-nums;"
+          >
+            {@check.issue_count}
+          </span>
+        </button>
+      </td>
+    </tr>
+    <tr id={@region_id} class={[not @open? && "hidden print:table-row"]}>
+      <td colspan="5" class="p-0">
+        <div class="border-b border-gray-200">
+          <.naming_violation_panel check={@check} />
+        </div>
       </td>
     </tr>
     """
@@ -589,11 +669,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  attr :report, :map, default: nil
   attr :connectivity_summaries, :map, default: nil
-  attr :expanded_routes, :map, default: %{}
-  attr :connectivity_expanded_sources, :map, default: MapSet.new()
   attr :connectivity_route_details, :map, default: %{}
+  attr :connectivity_routes, :map, default: %{}
+  attr :expanded_sources, :any, default: MapSet.new()
+  attr :expanded_route_keys, :any, default: MapSet.new()
 
   def reachability_connectivity_section(assigns) do
     ~H"""
@@ -609,9 +689,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             :for={dim <- [:entrance_to_platform, :platform_to_platform, :platform_to_exit]}
             summary={Map.get(@connectivity_summaries, dim)}
             dimension={dim}
-            expanded_sources={@connectivity_expanded_sources}
+            expanded_sources={@expanded_sources}
             route_detail_groups={Map.get(@connectivity_route_details, dim, [])}
-            expanded_routes={@expanded_routes}
+            routes={@connectivity_routes}
+            expanded_route_keys={@expanded_route_keys}
           />
         </div>
       <% else %>
@@ -626,9 +707,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :summary, :map, required: true
   attr :dimension, :atom, required: true
-  attr :expanded_sources, :map, default: MapSet.new()
+  attr :expanded_sources, :any, default: MapSet.new()
   attr :route_detail_groups, :list, default: []
-  attr :expanded_routes, :map, default: %{}
+  attr :routes, :map, default: %{}
+  attr :expanded_route_keys, :any, default: MapSet.new()
 
   defp connectivity_dimension_section(assigns) do
     stats = assigns.summary.stats
@@ -668,7 +750,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
               type="button"
               phx-click="toggle_connectivity_dimension"
               phx-value-dimension={to_string(@dimension)}
-              class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer"
+              class="print:hidden inline-flex min-h-11 items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
               {if @all_expanded, do: "Hide all routes", else: "Show all routes"}
               <svg
@@ -711,7 +793,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
                 class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms] cursor-pointer"
                 role="button"
                 tabindex="0"
-                aria-expanded={row_expanded}
+                aria-expanded={to_string(row_expanded)}
+                aria-controls={"connectivity-detail-#{@dimension}-#{row.source_stop_id}"}
                 phx-click="toggle_connectivity_source"
                 phx-keydown="toggle_connectivity_source_keydown"
                 phx-value-dimension={to_string(@dimension)}
@@ -744,21 +827,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
                   </svg>
                 </td>
               </tr>
-              <%= if row_expanded do %>
-                <% group = Map.get(@route_detail_by_source, row.source_stop_id) %>
-                <%= if group do %>
-                  <tr>
-                    <td colspan="5" class="p-0">
-                      <div class="bg-gray-50 border-t border-gray-200 px-4 py-4">
-                        <.source_group_card
-                          group={group}
-                          dimension={@dimension}
-                          expanded_routes={@expanded_routes}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                <% end %>
+              <% group = Map.get(@route_detail_by_source, row.source_stop_id) %>
+              <%= if group do %>
+                <tr
+                  id={"connectivity-detail-#{@dimension}-#{row.source_stop_id}"}
+                  class={[not row_expanded && "hidden print:table-row"]}
+                >
+                  <td colspan="5" class="p-0">
+                    <div class="bg-gray-50 border-t border-gray-200 px-4 py-4">
+                      <.source_group_card
+                        group={group}
+                        dimension={@dimension}
+                        routes={@routes}
+                        expanded_route_keys={@expanded_route_keys}
+                      />
+                    </div>
+                  </td>
+                </tr>
               <% end %>
             <% end %>
           </tbody>
@@ -959,8 +1044,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   # --- Private components ---
 
   attr :item, :map, required: true
+  attr :section, :string, required: true
+  attr :expanded, :any, required: true
 
   defp report_check_row(assigns) do
+    key = check_key(assigns.section, assigns.item.id)
+
+    assigns =
+      assigns
+      |> assign(:key, key)
+      |> assign(:open?, expanded?(assigns.expanded, key))
+
     ~H"""
     <div class="px-5 py-4">
       <div class="flex items-start gap-3">
@@ -971,7 +1065,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             <.check_value item={@item} />
           </div>
           <p class="text-xs text-gray-500 mt-0.5">{@item.description}</p>
-          <.check_details :if={@item.detail_layout != nil} item={@item} />
+          <.check_details
+            :if={@item.detail_layout != nil}
+            item={@item}
+            key={@key}
+            open?={@open?}
+          />
         </div>
       </div>
     </div>
@@ -1101,6 +1200,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :item, :map, required: true
+  attr :key, :string, required: true
+  attr :open?, :boolean, required: true
 
   defp check_details(%{item: %{detail_layout: :table}} = assigns) do
     ~H"""
@@ -1138,49 +1239,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_details(%{item: %{detail_layout: :stop_ids, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <details class="group mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
-        <svg
-          class="w-3 h-3 transition-transform duration-150 group-open:rotate-90"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2.5"
-        >
-          <path d="M9 5l7 7-7 7" />
-        </svg>
-        {@item.detail_label}
-      </summary>
-      <div class="mt-2 grid grid-cols-1 gap-0.5">
+    <div class="mt-2.5">
+      <.check_disclosure_button
+        key={@key}
+        open?={@open?}
+        label={@item.detail_label}
+      />
+      <div
+        id={detail_region_id(@key)}
+        class={["mt-2 grid grid-cols-1 gap-0.5", not @open? && "hidden print:grid"]}
+      >
         <.stop_name_link :for={entry <- @item.details} stop_id={entry.id} name={entry.name} />
       </div>
-    </details>
+    </div>
     """
   end
 
   defp check_details(%{item: %{detail_layout: :stop_ids_with_dots, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <details class="group mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
-        <svg
-          class="w-3 h-3 transition-transform duration-150 group-open:rotate-90"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2.5"
-        >
-          <path d="M9 5l7 7-7 7" />
-        </svg>
-        {@item.detail_label}
-      </summary>
-      <div class="mt-2 grid grid-cols-1 gap-1">
+    <div class="mt-2.5">
+      <.check_disclosure_button
+        key={@key}
+        open?={@open?}
+        label={@item.detail_label}
+      />
+      <div
+        id={detail_region_id(@key)}
+        class={["mt-2 grid grid-cols-1 gap-1", not @open? && "hidden print:grid"]}
+      >
         <div :for={entry <- @item.details} class="flex items-center gap-2">
           <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
           <.stop_name_link stop_id={entry.id} name={entry.name} />
         </div>
       </div>
-    </details>
+    </div>
     """
   end
 
@@ -1189,31 +1282,56 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
        )
        when is_list(details) and details != [] do
     ~H"""
-    <details class="group mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
-        <svg
-          class="w-3 h-3 transition-transform duration-150 group-open:rotate-90"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2.5"
-        >
-          <path d="M9 5l7 7-7 7" />
-        </svg>
-        {@item.detail_label}
-      </summary>
-      <div class="mt-2 grid grid-cols-1 gap-1.5">
+    <div class="mt-2.5">
+      <.check_disclosure_button
+        key={@key}
+        open?={@open?}
+        label={@item.detail_label}
+      />
+      <div
+        id={detail_region_id(@key)}
+        class={["mt-2 grid grid-cols-1 gap-1.5", not @open? && "hidden print:grid"]}
+      >
         <div :for={entry <- @item.details} class="flex items-baseline gap-3">
           <.stop_name_link stop_id={entry.id} name={entry.name} class="shrink-0" />
           <span class="text-xs text-gray-500">{entry.reason}</span>
         </div>
       </div>
-    </details>
+    </div>
     """
   end
 
   defp check_details(assigns) do
     ~H""
+  end
+
+  attr :key, :string, required: true
+  attr :open?, :boolean, required: true
+  attr :label, :string, required: true
+
+  defp check_disclosure_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      phx-click="toggle_check_detail"
+      phx-value-key={@key}
+      aria-expanded={to_string(@open?)}
+      aria-controls={detail_region_id(@key)}
+      class="print:hidden inline-flex min-h-11 items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+    >
+      <svg
+        class={["w-3 h-3 transition-transform duration-150", @open? && "rotate-90"]}
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2.5"
+        aria-hidden="true"
+      >
+        <path d="M9 5l7 7-7 7" />
+      </svg>
+      {@label}
+    </button>
+    """
   end
 
   attr :stop_id, :string, required: true

@@ -9,6 +9,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
   alias GtfsPlanner.Accounts
 
+  # The report is loaded asynchronously; every case waits for the scoped result
+  # before asserting on report content.
+  defp live_report(conn, path) do
+    {:ok, view, _html} = live(conn, path)
+    {view, render_async(view, 5_000)}
+  end
+
   describe "Connectivity section" do
     setup do
       organization = organization_fixture()
@@ -137,8 +144,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Entrance-to-Platform Reachability"
       assert html =~ "Platform Interconnection Reachability"
@@ -154,8 +161,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Main Entrance"
       assert html =~ "Side Entrance"
@@ -172,8 +179,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Side Entrance has no pathways → zero reachability → alert
       assert has_element?(
@@ -201,8 +208,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {_view, html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Entrance-to-platform has partial connectivity (ENT_B disconnected) → Fail badge
       assert html =~ "Fail"
@@ -217,8 +224,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open entrance_to_platform detail
       view
@@ -231,6 +238,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       assert html =~ "Entrance to platform"
       assert html =~ "Reachable"
 
+      # Every source row for the dimension is now disclosed on screen.
+      assert has_element?(view, "#connectivity-detail-entrance_to_platform-ENT_A")
+
+      refute has_element?(
+               view,
+               "#connectivity-detail-entrance_to_platform-ENT_A[class*='hidden']"
+             )
+
       # Close it again
       view
       |> element(
@@ -238,9 +253,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      html = render(view)
-      # Route detail cards should be gone (no route badges visible)
-      refute html =~ "No path"
+      # The detail is hidden on screen again, but stays in the document so that
+      # printing still carries the evidence.
+      assert has_element?(
+               view,
+               "#connectivity-detail-entrance_to_platform-ENT_A[class*='hidden']"
+             )
+
+      assert has_element?(
+               view,
+               "#connectivity-detail-entrance_to_platform-ENT_A[class*='print:table-row']"
+             )
     end
 
     test "multiple dimensions can be open simultaneously", %{
@@ -252,8 +275,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open both entrance_to_platform and platform_to_platform
       view
@@ -283,8 +306,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       view
       |> element(
@@ -308,8 +331,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the dimension first
       view
@@ -343,8 +366,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       view
       |> element(
@@ -366,6 +389,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       html = render(view)
       assert html =~ "No directed path exists"
+      refute has_element?(view, "#route-ENT_B-PLAT_1[class*='hidden']")
 
       # Click again to collapse
       view
@@ -374,8 +398,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      html = render(view)
-      refute html =~ "No directed path exists"
+      assert has_element?(view, "#route-ENT_B-PLAT_1[class*='hidden']")
+      assert has_element?(view, "#route-ENT_B-PLAT_1[class*='print:block']")
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_B'][phx-value-target_id='PLAT_1'][aria-expanded='false']"
+             )
     end
 
     test "URL with dimensions param restores open dimensions", %{
@@ -387,14 +416,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(
+      {view, html} =
+        live_report(
           conn,
           "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report?dimensions=platform_to_platform"
         )
 
       assert html =~ "Platform to platform"
       assert html =~ "Platform Interconnection Reachability"
+
+      # The URL seeds server-owned disclosure, not client DOM state.
+      assert has_element?(view, "#connectivity-detail-platform_to_platform-PLAT_1")
+
+      refute has_element?(
+               view,
+               "#connectivity-detail-platform_to_platform-PLAT_1[class*='hidden']"
+             )
     end
   end
 
@@ -524,8 +561,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
          } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the entrance_to_platform dimension
       view
@@ -624,8 +661,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       view
       |> element(
@@ -671,7 +708,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      refute has_element?(view, "#route-ENT_INACC-PLAT_INACC")
+      # Collapsed on screen, still in the document for print.
+      assert has_element?(view, "#route-ENT_INACC-PLAT_INACC[class*='hidden']")
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'][aria-expanded='false']"
+             )
 
       assert has_element?(
                view,
@@ -754,8 +797,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the entrance_to_platform dimension
       view
@@ -771,10 +814,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      html = render(view)
-      # Forward traversal should show signposted_as
-      assert html =~ "To Platform"
-      refute html =~ "To Exit"
+      # The forward route's own steps carry the forward signpost only; the
+      # reverse signpost belongs to the platform-to-exit route.
+      route_html = view |> element("#route-ENT_SIGN-PLAT_SIGN") |> render()
+
+      assert route_html =~ "To Platform"
+      refute route_html =~ "To Exit"
     end
   end
 
@@ -816,8 +861,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-reachability-connectivity")
     end

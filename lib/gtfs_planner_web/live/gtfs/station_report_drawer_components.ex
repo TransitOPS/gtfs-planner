@@ -89,7 +89,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
           ]}
         />
         <.input field={@form[:platform_code]} label="platform_code" type="text" />
-        <button type="submit" class="btn btn-primary btn-sm w-full">Save changes</button>
+        <button type="submit" phx-disable-with="Saving…" class="btn btn-primary btn-sm w-full">
+          Save changes
+        </button>
       </.form>
     </div>
     """

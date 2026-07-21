@@ -19,7 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   attr :dimension, :atom, required: true
   attr :groups, :list, required: true
-  attr :expanded_routes, :map, default: %{}
+  attr :routes, :map, default: %{}
+  attr :expanded_route_keys, :any, default: MapSet.new()
 
   def connectivity_route_detail(assigns) do
     assigns = assign(assigns, :dimension_label, dimension_label(assigns.dimension))
@@ -61,7 +62,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           :for={group <- @groups}
           group={group}
           dimension={@dimension}
-          expanded_routes={@expanded_routes}
+          routes={@routes}
+          expanded_route_keys={@expanded_route_keys}
         />
       </div>
     </div>
@@ -70,7 +72,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   attr :group, :map, required: true
   attr :dimension, :atom, required: true
-  attr :expanded_routes, :map, default: %{}
+  attr :routes, :map, default: %{}
+  attr :expanded_route_keys, :any, default: MapSet.new()
 
   def source_group_card(assigns) do
     worst = worst_target_status(assigns.group.targets)
@@ -107,7 +110,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           target={target}
           source_id={@group.source.stop_id}
           source_name={@group.source.name}
-          expanded_routes={@expanded_routes}
+          routes={@routes}
+          expanded_route_keys={@expanded_route_keys}
         />
       </div>
     </div>
@@ -117,14 +121,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   attr :target, :map, required: true
   attr :source_id, :string, required: true
   attr :source_name, :string, required: true
-  attr :expanded_routes, :map, default: %{}
+  attr :routes, :map, default: %{}
+  attr :expanded_route_keys, :any, default: MapSet.new()
 
   defp target_row(assigns) do
     nopath = assigns.target.status == :nopath
     inaccessible = not nopath and assigns.target.accessible == false
     key = {assigns.source_id, assigns.target.stop_id}
-    expanded_route = Map.get(assigns.expanded_routes, key)
-    expanded = expanded_route != nil
+    # The route was built once with the report. Expansion only decides whether
+    # it is visible on screen; it is always present for print.
+    expanded_route = Map.get(assigns.routes, key)
+    expanded = MapSet.member?(assigns.expanded_route_keys, key)
     route_region_id = "route-#{assigns.source_id}-#{assigns.target.stop_id}"
 
     assigns =
@@ -203,8 +210,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         </div>
       </button>
 
-      <%= if @expanded and not @nopath and is_map(@expanded_route) do %>
-        <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50">
+      <%= if is_map(@expanded_route) do %>
+        <div
+          id={@route_region_id}
+          role="region"
+          class={["border-t border-gray-200 bg-gray-50", not @expanded && "hidden print:block"]}
+        >
           <div class="p-5 border-b border-gray-200">
             <div class="flex items-start justify-between mb-4">
               <p class="text-xs text-gray-500 font-mono">
@@ -255,8 +266,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         </div>
       <% end %>
 
-      <%= if @expanded and @nopath do %>
-        <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50 px-5 py-6">
+      <%= if not is_map(@expanded_route) do %>
+        <div
+          id={@route_region_id}
+          role="region"
+          class={[
+            "border-t border-gray-200 bg-gray-50 px-5 py-6",
+            not @expanded && "hidden print:block"
+          ]}
+        >
           <div class="flex items-center gap-3 text-sm text-gray-600">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
