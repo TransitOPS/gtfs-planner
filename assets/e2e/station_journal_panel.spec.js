@@ -608,3 +608,29 @@ test("Package 03 marker to panel scoping and clear action", async ({ page }) => 
   await clearBtn.click();
   await expect(scopeBar).toHaveCount(0);
 });
+
+test("Package 03 Show on floorplan", async ({ page }) => {
+  await mkdir(pkg3ArtifactRoot, { recursive: true });
+  const panel = await openJournal(page);
+  await chooseJournalFilter(panel, "all");
+
+  const showBtn = panel.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`);
+  await expect(showBtn).toBeVisible();
+
+  await showBtn.click();
+
+  await expect(showBtn).toBeFocused();
+
+  const ring = page.locator('#journal-markers-svg [data-journal-ring="true"]');
+  await expect(ring).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  const screenshotPath = resolve(pkg3ArtifactRoot, "production-show-on-floorplan.png");
+  console.log("SAVING SCREENSHOT TO:", screenshotPath);
+  const buf = await page.screenshot({
+    animations: "disabled",
+  });
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(screenshotPath, buf);
+  console.log("SCREENSHOT WRITTEN BYTES:", buf.length);
+});

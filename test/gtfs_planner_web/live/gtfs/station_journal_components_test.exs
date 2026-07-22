@@ -246,6 +246,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       refute html =~ "Show on floorplan"
     end
 
+    test "renders Show on floorplan button only for floorplan-eligible entry IDs" do
+      eligible_id = @entry_id
+      ineligible_id = @closed_entry_id
+
+      closed = entry(%{id: ineligible_id, closed_at: ~U[2026-07-17 15:00:00Z]})
+
+      html =
+        render_panel(
+          journal_entries: [
+            {"journal-entries-#{eligible_id}", entry()},
+            {"journal-entries-#{ineligible_id}", closed}
+          ],
+          journal_floorplan_entry_ids: MapSet.new([eligible_id]),
+          journal_filter: :all,
+          journal_visible_count: 2
+        )
+
+      d = doc(html)
+
+      eligible_btn = LazyHTML.query(d, "#journal-show-entry-#{eligible_id}")
+      assert LazyHTML.attribute(eligible_btn, "phx-click") == ["show_journal_entry_on_floorplan"]
+      assert LazyHTML.attribute(eligible_btn, "phx-value-id") == [eligible_id]
+      assert LazyHTML.text(eligible_btn) =~ "Show on floorplan"
+
+      assert Enum.empty?(LazyHTML.query(d, "#journal-show-entry-#{ineligible_id}"))
+    end
+
     test "suppresses edit actions for removed targets and exposes reopen for closed rows" do
       closed =
         entry(%{

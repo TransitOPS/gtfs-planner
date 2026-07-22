@@ -1078,6 +1078,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   journal_target_scope={@journal_target_scope}
                   journal_scoped_open_count={@journal_scoped_open_count}
                   journal_scoped_closed_count={@journal_scoped_closed_count}
+                  journal_floorplan_entry_ids={@journal_floorplan_entry_ids}
                   station_name={@station && @station.stop_name}
                   journal_entries={@streams.journal_entries}
                   journal_state={@journal_state}
@@ -1389,6 +1390,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        )}
     end
   end
+
+  @impl true
+  def handle_event("show_journal_entry_on_floorplan", %{"id" => entry_id}, socket) do
+    {:noreply, show_journal_entry_on_floorplan(socket, entry_id)}
+  end
+
+  def handle_event("show_journal_entry_on_floorplan", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event(
@@ -4492,6 +4500,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> assign(:journal_target_scope, nil)
       |> assign(:journal_scoped_open_count, nil)
       |> assign(:journal_scoped_closed_count, nil)
+      |> assign(:journal_focused_marker_id, nil)
+      |> project_and_stream_journal_markers()
       |> maybe_cancel_hidden_journal_load(was_open?)
 
     socket =
@@ -5205,7 +5215,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp active_journal_geometry(socket) do
     %{
-      active_level_id: active_level_id(socket),
+      active_level_id: socket.assigns[:active_level] && socket.assigns.active_level.id,
       active_stop_level_id:
         socket.assigns[:active_stop_level] && socket.assigns.active_stop_level.id,
       child_stops: socket.assigns[:child_stops_list] || [],
@@ -5372,6 +5382,72 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       target_scope: target_scope,
       focus_entry_id: focus_entry_id
     )
+  end
+
+  defp show_journal_entry_on_floorplan(socket, entry_id) do
+    index = socket.assigns[:journal_marker_index]
+
+    case StationJournalMarkers.locate_entry(index, entry_id) do
+      {:ok, locator} ->
+        socket = maybe_switch_level_for_locator(socket, locator)
+        socket = assign(socket, :journal_focused_marker_id, locator.marker_id)
+        socket = project_and_stream_journal_markers(socket)
+
+        geometry = active_journal_geometry(socket)
+
+        case StationJournalMarkers.active_marker(index, locator.marker_id, geometry) do
+          {:ok, marker} ->
+            push_event(socket, "center_on_stop", %{x: marker.x, y: marker.y})
+
+          :error ->
+            socket
+        end
+
+      :error ->
+        assign(socket, :journal_error_message, "The entry could not be located on the floorplan.")
+    end
+  end
+
+  defp maybe_switch_level_for_locator(socket, locator) do
+    locator_level_id = locator.level_id
+
+    current_level_uuid =
+      socket.assigns[:active_level] && to_string(socket.assigns.active_level.id)
+
+    target_level =
+      if locator_level_id do
+        Enum.find(socket.assigns[:levels] || [], fn level ->
+          to_string(level.id) == to_string(locator_level_id)
+        end)
+      end
+
+    if target_level && to_string(target_level.id) != current_level_uuid do
+      socket
+      |> discard_pending_diagram_upload()
+      |> disable_measurement()
+      |> assign(:active_level, target_level)
+      |> assign(:pending_xy, nil)
+      |> assign(:diagram_error, nil)
+      |> assign(:show_diagram_upload_drawer, false)
+      |> assign(:show_walkability_drawer, false)
+      |> assign(:walkability_stop, nil)
+      |> assign(
+        :walkability_form,
+        to_form(default_walkability_form_params(), as: :walkability)
+      )
+      |> clear_walkability_selection()
+      |> assign(:walkability_last_results, [])
+      |> assign(:walkability_mode, :create)
+      |> assign(:editing_walkability_test, nil)
+      |> reset_reposition_state()
+      |> load_station_stop_levels_cache()
+      |> assign(:other_levels_floorplan, MapSet.new())
+      |> assign(:other_levels_stops, MapSet.new())
+      |> reset_map_workflow()
+      |> load_level_data(target_level)
+    else
+      socket
+    end
   end
 
   defp marker_target_scope(

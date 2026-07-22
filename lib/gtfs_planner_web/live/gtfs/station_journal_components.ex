@@ -159,6 +159,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   attr :journal_target_scope, :map, default: nil
   attr :journal_scoped_open_count, :integer, default: nil
   attr :journal_scoped_closed_count, :integer, default: nil
+  attr :journal_floorplan_entry_ids, :any, default: MapSet.new()
 
   @doc """
   Renders the complete journal panel shell and its ready/non-ideal states.
@@ -330,6 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           scope={@journal_scope}
           undo?={collection_member?(@journal_undo_ids, entry.id)}
           new?={collection_member?(@journal_new_entry_ids, entry.id)}
+          show_on_floorplan?={collection_member?(@journal_floorplan_entry_ids, entry.id)}
           author={Map.get(@journal_authors, entry.author_id)}
           target={target_presentation(entry, @journal_targets, @station_name)}
           captured_local={local_time(entry, :captured, @journal_local_times)}
@@ -474,6 +476,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   attr :scope, Scope, required: true
   attr :undo?, :boolean, required: true
   attr :new?, :boolean, default: false
+  attr :show_on_floorplan?, :boolean, default: false
   attr :author, :any, default: nil
   attr :target, :map, required: true
   attr :captured_local, NaiveDateTime, required: true
@@ -564,6 +567,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         </span>
 
         <span :if={!@undo?} class="ml-auto flex shrink-0 items-center gap-1">
+          <.button
+            :if={@show_on_floorplan?}
+            id={"journal-show-entry-#{@entry.id}"}
+            type="button"
+            variant="quiet"
+            size="sm"
+            class="text-xs"
+            phx-click="show_journal_entry_on_floorplan"
+            phx-value-id={@entry.id}
+          >
+            Show on floorplan
+          </.button>
+
           <.button
             :if={@target.edit_event}
             id={"journal-edit-target-#{@entry.id}"}
