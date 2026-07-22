@@ -96,6 +96,25 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
     |> validate_number(:lon, greater_than_or_equal_to: -180, less_than_or_equal_to: 180)
   end
 
+  @spec close_changeset(t(), DateTime.t(), Ecto.UUID.t()) :: Ecto.Changeset.t()
+  def close_changeset(%__MODULE__{} = entry, %DateTime{} = closed_at, closed_by) do
+    entry
+    |> change()
+    |> put_change(:closed_at, closed_at)
+    |> put_change(:closed_by, closed_by)
+    |> check_constraint(:closed_at, name: :journal_entries_closure_pair_ck)
+  end
+
+  @spec reopen_changeset(t()) :: Ecto.Changeset.t()
+  def reopen_changeset(%__MODULE__{} = entry) do
+    entry
+    |> change()
+    |> put_change(:closed_at, nil)
+    |> put_change(:closed_by, nil)
+    |> check_constraint(:closed_at, name: :journal_entries_closure_pair_ck)
+  end
+
+
   defp validate_entry_fields(changeset, options \\ []) do
     required =
       if Keyword.get(options, :required, true), do: [:id, :target_type, :captured_at], else: []

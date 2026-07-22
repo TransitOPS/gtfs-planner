@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
-      journal_entries = Gtfs.list_station_journal(journal_scope)
+      journal_entries = Gtfs.list_station_journal(journal_scope, status: :all, order: :asc)
 
       entries_by_target =
         Enum.group_by(journal_entries, &entry_target/1, &JournalJSON.entry(&1, journal_scope))

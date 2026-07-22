@@ -203,8 +203,23 @@ defmodule GtfsPlanner.Gtfs do
   def sync_journal_entries(%Scope{} = scope, entries),
     do: StationJournal.sync_entries(scope, entries)
 
-  @spec list_station_journal(Scope.t()) :: [JournalEntry.t()]
-  def list_station_journal(%Scope{} = scope), do: StationJournal.list_entries(scope)
+  @spec list_station_journal(Scope.t(), keyword()) :: [JournalEntry.t()]
+  def list_station_journal(%Scope{} = scope, opts \\ []),
+    do: StationJournal.list_entries(scope, opts)
+
+  @spec close_journal_entry(Scope.t(), Ecto.UUID.t()) ::
+          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def close_journal_entry(%Scope{} = scope, entry_id),
+    do: StationJournal.close_entry(scope, entry_id)
+
+  @spec reopen_journal_entry(Scope.t(), Ecto.UUID.t()) ::
+          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def reopen_journal_entry(%Scope{} = scope, entry_id),
+    do: StationJournal.reopen_entry(scope, entry_id)
+
+  @spec subscribe_station_journal(Scope.t()) :: :ok | {:error, term()}
+  def subscribe_station_journal(%Scope{} = scope),
+    do: StationJournal.subscribe(scope)
 
   @spec create_journal_photo(
           Scope.t(),

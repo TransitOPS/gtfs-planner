@@ -549,6 +549,525 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
     end
   end
 
+  describe "JournalEntry closure changesets" do
+    test "close_changeset/3 sets closed_at and closed_by together and attaches check constraint" do
+      entry = %JournalEntry{}
+      closed_at = ~U[2026-07-21 12:00:00.000000Z]
+      closed_by = Ecto.UUID.generate()
+
+      changeset = JournalEntry.close_changeset(entry, closed_at, closed_by)
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_change(changeset, :closed_at) == closed_at
+      assert Ecto.Changeset.get_change(changeset, :closed_by) == closed_by
+      assert Enum.any?(changeset.constraints, &(&1.constraint == "journal_entries_closure_pair_ck"))
+    end
+
+    test "reopen_changeset/1 clears closed_at and closed_by together and attaches check constraint" do
+      entry = %JournalEntry{closed_at: ~U[2026-07-21 12:00:00.000000Z], closed_by: Ecto.UUID.generate()}
+
+      changeset = JournalEntry.reopen_changeset(entry)
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_change(changeset, :closed_at) == nil
+      assert Ecto.Changeset.get_change(changeset, :closed_by) == nil
+      assert Enum.any?(changeset.constraints, &(&1.constraint == "journal_entries_closure_pair_ck"))
+    end
+
+    test "sync_changeset/2 ignores client-supplied closure fields" do
+      entry = %JournalEntry{}
+
+      changeset =
+        JournalEntry.sync_changeset(entry, %{
+          "closed_at" => "2026-07-21T12:00:00Z",
+          "closed_by" => Ecto.UUID.generate(),
+          "body" => "updated"
+        })
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_change(changeset, :body) == "updated"
+      refute Map.has_key?(changeset.changes, :closed_at)
+      refute Map.has_key?(changeset.changes, :closed_by)
+    end
+  end
+
+  describe "journal list options" do
+    setup do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, version.id,
+          stop_id: "station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      scope = %Scope{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      {:ok, scope: scope}
+    end
+
+    test "default list_station_journal/1 is equivalent to status: :all, order: :asc, limit: nil", %{
+      scope: scope
+    } do
+      open_id = Ecto.UUID.generate()
+      closed_id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: open_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
+        entry_attrs(%{id: closed_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]})
+      ])
+
+      {:ok, _closed} = Gtfs.close_journal_entry(scope, closed_id)
+
+      default_list = Gtfs.list_station_journal(scope)
+      explicit_list = Gtfs.list_station_journal(scope, status: :all, order: :asc, limit: nil)
+
+      assert Enum.map(default_list, & &1.id) == [open_id, closed_id]
+      assert Enum.map(default_list, & &1.id) == Enum.map(explicit_list, & &1.id)
+    end
+
+    test "status: :open excludes closed entries", %{scope: scope} do
+      open_id = Ecto.UUID.generate()
+      closed_id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: open_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
+        entry_attrs(%{id: closed_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]})
+      ])
+
+      {:ok, _closed} = Gtfs.close_journal_entry(scope, closed_id)
+
+      open_entries = Gtfs.list_station_journal(scope, status: :open)
+      assert Enum.map(open_entries, & &1.id) == [open_id]
+    end
+
+    test "order: :desc reverses entry sort keys without reversing photo order", %{scope: scope} do
+      e1_id = Ecto.UUID.generate()
+      e2_id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: e1_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00.000000Z]}),
+        entry_attrs(%{id: e2_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00.000000Z]})
+      ])
+
+      p1 = Repo.insert!(%JournalPhoto{
+        id: Ecto.UUID.generate(),
+        journal_entry_id: e2_id,
+        filename: "1.jpg",
+        content_type: "image/jpeg",
+        byte_size: 10,
+        sha256: :crypto.strong_rand_bytes(32),
+        captured_at: ~U[2026-07-13 08:00:00.000000Z]
+      })
+
+      p2 = Repo.insert!(%JournalPhoto{
+        id: Ecto.UUID.generate(),
+        journal_entry_id: e2_id,
+        filename: "2.jpg",
+        content_type: "image/jpeg",
+        byte_size: 10,
+        sha256: :crypto.strong_rand_bytes(32),
+        captured_at: ~U[2026-07-13 09:00:00.000000Z]
+      })
+
+      asc_entries = Gtfs.list_station_journal(scope, order: :asc)
+      desc_entries = Gtfs.list_station_journal(scope, order: :desc)
+
+      assert Enum.map(asc_entries, & &1.id) == [e1_id, e2_id]
+      assert Enum.map(desc_entries, & &1.id) == [e2_id, e1_id]
+
+      [top_desc | _] = desc_entries
+      assert Enum.map(top_desc.photos, & &1.id) == [p1.id, p2.id]
+    end
+
+    test "entry sort order breaks ties on inserted_at and id", %{scope: scope} do
+      same_time = ~U[2026-07-13 10:00:00.000000Z]
+      id1 = "10000000-0000-0000-0000-000000000001"
+      id2 = "10000000-0000-0000-0000-000000000002"
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: id1, target_type: "station", captured_at: same_time}),
+        entry_attrs(%{id: id2, target_type: "station", captured_at: same_time})
+      ])
+
+      asc_entries = Gtfs.list_station_journal(scope, order: :asc)
+      desc_entries = Gtfs.list_station_journal(scope, order: :desc)
+
+      assert Enum.map(asc_entries, & &1.id) == [id1, id2]
+      assert Enum.map(desc_entries, & &1.id) == [id2, id1]
+    end
+
+    test "limit truncates returned list", %{scope: scope} do
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
+        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]}),
+        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station", captured_at: ~U[2026-07-13 12:00:00Z]})
+      ])
+
+      entries = Gtfs.list_station_journal(scope, limit: 2)
+      assert length(entries) == 2
+    end
+
+    test "raises ArgumentError for unknown options or invalid values", %{scope: scope} do
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, unknown_opt: true)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, status: :invalid_status)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, order: :invalid_order)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, limit: 0)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, limit: -1)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, limit: "10")
+      end
+    end
+  end
+
+  describe "close and reopen lifecycle" do
+    setup do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, version.id,
+          stop_id: "station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      scope = %Scope{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      {:ok, scope: scope}
+    end
+
+    test "closing an open entry sets closed_at and closed_by", %{scope: scope} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope, [entry_attrs(%{id: id, target_type: "station"})])
+
+      before_time = DateTime.utc_now()
+      assert {:ok, closed_entry} = Gtfs.close_journal_entry(scope, id)
+      after_time = DateTime.utc_now()
+
+      assert closed_entry.closed_by == scope.actor_id
+      assert DateTime.compare(closed_entry.closed_at, before_time) in [:gt, :eq]
+      assert DateTime.compare(closed_entry.closed_at, after_time) in [:lt, :eq]
+
+      persisted = Repo.get!(JournalEntry, id)
+      assert persisted.closed_by == scope.actor_id
+      assert persisted.closed_at == closed_entry.closed_at
+    end
+
+    test "closing an already closed entry is idempotent and emits no changes", %{scope: scope} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope, [entry_attrs(%{id: id, target_type: "station"})])
+
+      {:ok, closed1} = Gtfs.close_journal_entry(scope, id)
+      {:ok, closed2} = Gtfs.close_journal_entry(scope, id)
+
+      assert closed1.closed_at == closed2.closed_at
+      assert closed1.closed_by == closed2.closed_by
+    end
+
+    test "reopening a closed entry clears closure fields", %{scope: scope} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope, [entry_attrs(%{id: id, target_type: "station"})])
+
+      {:ok, closed} = Gtfs.close_journal_entry(scope, id)
+      refute is_nil(closed.closed_at)
+
+      assert {:ok, reopened} = Gtfs.reopen_journal_entry(scope, id)
+      assert is_nil(reopened.closed_at)
+      assert is_nil(reopened.closed_by)
+
+      persisted = Repo.get!(JournalEntry, id)
+      assert is_nil(persisted.closed_at)
+      assert is_nil(persisted.closed_by)
+    end
+
+    test "reopening an open entry is idempotent", %{scope: scope} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope, [entry_attrs(%{id: id, target_type: "station"})])
+
+      assert {:ok, open_entry} = Gtfs.reopen_journal_entry(scope, id)
+      assert is_nil(open_entry.closed_at)
+      assert is_nil(open_entry.closed_by)
+    end
+
+    test "malformed, missing, or cross-scope entry id returns {:error, :not_found}", %{
+      scope: scope
+    } do
+      assert {:error, :not_found} = Gtfs.close_journal_entry(scope, "invalid-uuid")
+      assert {:error, :not_found} = Gtfs.close_journal_entry(scope, Ecto.UUID.generate())
+      assert {:error, :not_found} = Gtfs.reopen_journal_entry(scope, "invalid-uuid")
+      assert {:error, :not_found} = Gtfs.reopen_journal_entry(scope, Ecto.UUID.generate())
+
+      other_org = organization_fixture()
+      other_ver = gtfs_version_fixture(other_org.id)
+
+      other_station =
+        stop_fixture(other_org.id, other_ver.id,
+          stop_id: "station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      other_scope = %Scope{
+        organization_id: other_org.id,
+        gtfs_version_id: other_ver.id,
+        station_id: other_station.id,
+        station_stop_id: other_station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      other_id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(other_scope, [entry_attrs(%{id: other_id, target_type: "station"})])
+
+      assert {:error, :not_found} = Gtfs.close_journal_entry(scope, other_id)
+      assert {:error, :not_found} = Gtfs.reopen_journal_entry(scope, other_id)
+    end
+
+    test "concurrent transitions on the same entry row serialize without error", %{scope: scope} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope, [entry_attrs(%{id: id, target_type: "station"})])
+
+      parent = self()
+
+      task1 =
+        Task.async(fn ->
+          send(parent, {:ready, 1})
+
+          receive do
+            :go -> Gtfs.close_journal_entry(scope, id)
+          end
+        end)
+
+      task2 =
+        Task.async(fn ->
+          send(parent, {:ready, 2})
+
+          receive do
+            :go -> Gtfs.reopen_journal_entry(scope, id)
+          end
+        end)
+
+      assert_receive {:ready, 1}
+      assert_receive {:ready, 2}
+
+      send(task1.pid, :go)
+      send(task2.pid, :go)
+
+      Task.await(task1)
+      Task.await(task2)
+
+      entry = Repo.get!(JournalEntry, id)
+      assert is_nil(entry.closed_at) or not is_nil(entry.closed_at)
+    end
+
+    test "replay sync on a closed entry preserves closure fields", %{scope: scope} do
+      id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: id, target_type: "station", body: "initial"})
+      ])
+
+      {:ok, closed} = Gtfs.close_journal_entry(scope, id)
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: id, target_type: "station", body: "updated body"})
+      ])
+
+      synced = Repo.get!(JournalEntry, id)
+      assert synced.body == "updated body"
+      assert synced.closed_at == closed.closed_at
+      assert synced.closed_by == closed.closed_by
+    end
+  end
+
+  describe "scoped notifications" do
+    setup do
+      previous = Application.get_env(:gtfs_planner, :uploads_path)
+
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "station_journal_notifications_#{System.unique_integer([:positive])}"
+        )
+
+      Application.put_env(:gtfs_planner, :uploads_path, root)
+
+      on_exit(fn ->
+        File.rm_rf!(root)
+
+        if is_nil(previous),
+          do: Application.delete_env(:gtfs_planner, :uploads_path),
+          else: Application.put_env(:gtfs_planner, :uploads_path, previous)
+      end)
+
+      org_a = organization_fixture()
+      ver_a = gtfs_version_fixture(org_a.id)
+
+      station_a =
+        stop_fixture(org_a.id, ver_a.id,
+          stop_id: "station_a_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      scope_a = %Scope{
+        organization_id: org_a.id,
+        gtfs_version_id: ver_a.id,
+        station_id: station_a.id,
+        station_stop_id: station_a.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      org_b = organization_fixture()
+      ver_b = gtfs_version_fixture(org_b.id)
+
+      station_b =
+        stop_fixture(org_b.id, ver_b.id,
+          stop_id: "station_b_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      scope_b = %Scope{
+        organization_id: org_b.id,
+        gtfs_version_id: ver_b.id,
+        station_id: station_b.id,
+        station_stop_id: station_b.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      {:ok, scope_a: scope_a, scope_b: scope_b}
+    end
+
+    test "subscribes and receives notifications for synced entries", %{
+      scope_a: scope_a,
+      scope_b: scope_b
+    } do
+      assert :ok = Gtfs.subscribe_station_journal(scope_a)
+
+      id_a = Ecto.UUID.generate()
+
+      assert %{synced_count: 1} =
+               Gtfs.sync_journal_entries(scope_a, [entry_attrs(%{id: id_a, target_type: "station"})])
+
+      station_id_a = scope_a.station_id
+      assert_receive {:station_journal_changed, ^station_id_a}
+
+      # Sync with 0 accepted entries emits no notification
+      invalid_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 0} =
+               Gtfs.sync_journal_entries(scope_a, [
+                 entry_attrs(%{id: invalid_id, target_type: "pathway", target_id: Ecto.UUID.generate()})
+               ])
+
+      refute_receive {:station_journal_changed, _}
+
+      # Scope B mutations do not notify Scope A subscriber
+      Gtfs.sync_journal_entries(scope_b, [
+        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station"})
+      ])
+
+      refute_receive {:station_journal_changed, _}
+    end
+
+    test "notifies on successful close and reopen transitions but silent on no-op and missing ids",
+         %{scope_a: scope_a} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope_a, [entry_attrs(%{id: id, target_type: "station"})])
+
+      assert :ok = Gtfs.subscribe_station_journal(scope_a)
+      station_id = scope_a.station_id
+
+      # Close transition emits notification
+      {:ok, _} = Gtfs.close_journal_entry(scope_a, id)
+      assert_receive {:station_journal_changed, ^station_id}
+
+      # Idempotent close no-op emits no notification
+      {:ok, _} = Gtfs.close_journal_entry(scope_a, id)
+      refute_receive {:station_journal_changed, _}
+
+      # Reopen transition emits notification
+      {:ok, _} = Gtfs.reopen_journal_entry(scope_a, id)
+      assert_receive {:station_journal_changed, ^station_id}
+
+      # Idempotent reopen no-op emits no notification
+      {:ok, _} = Gtfs.reopen_journal_entry(scope_a, id)
+      refute_receive {:station_journal_changed, _}
+
+      # Missing entry emits no notification
+      {:error, :not_found} = Gtfs.close_journal_entry(scope_a, Ecto.UUID.generate())
+      refute_receive {:station_journal_changed, _}
+    end
+
+    test "notifies on photo creation and retry but silent on photo error", %{scope_a: scope_a} do
+      id = Ecto.UUID.generate()
+      Gtfs.sync_journal_entries(scope_a, [entry_attrs(%{id: id, target_type: "station"})])
+
+      assert :ok = Gtfs.subscribe_station_journal(scope_a)
+      station_id = scope_a.station_id
+
+      tmp_file = Path.join(System.tmp_dir!(), "upload_#{System.unique_integer([:positive])}.jpg")
+      File.write!(tmp_file, <<0xFF, 0xD8, "photo_bytes", 0xFF, 0xD9>>)
+
+      on_exit(fn -> File.rm(tmp_file) end)
+
+      photo_id = Ecto.UUID.generate()
+      upload = %{path: tmp_file, filename: "photo.jpg", content_type: "image/jpeg"}
+
+      attrs = %{
+        id: photo_id,
+        journal_entry_id: id,
+        captured_at: ~U[2026-07-21 12:00:00Z],
+        width: 100,
+        height: 100
+      }
+
+      # Successful photo creation notifies
+      assert {:ok, _photo} = Gtfs.create_journal_photo(scope_a, attrs, upload)
+      assert_receive {:station_journal_changed, ^station_id}
+
+      # Idempotent retry notifies
+      assert {:ok, _photo} = Gtfs.create_journal_photo(scope_a, attrs, upload)
+      assert_receive {:station_journal_changed, ^station_id}
+
+      # Photo error emits no notification
+      assert {:error, :not_found} =
+               Gtfs.create_journal_photo(
+                 scope_a,
+                 Map.put(attrs, :id, Ecto.UUID.generate())
+                 |> Map.put(:journal_entry_id, Ecto.UUID.generate()),
+                 upload
+               )
+
+      refute_receive {:station_journal_changed, _}
+    end
+  end
+
   defp entry_attrs(attrs) do
     Map.merge(%{id: @entry_id, captured_at: @captured_at}, attrs)
   end

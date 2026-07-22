@@ -432,6 +432,12 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
           closed_by: user.id
         })
 
+      open_station_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          body: "open station entry",
+          captured_at: ~U[2026-07-13 10:00:00.000000Z]
+        })
+
       _node_entry =
         journal_entry_fixture(org, version, station, user, %{
           target_type: "node",
@@ -485,9 +491,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
 
       assert %{"data" => data} = json_response(conn, 200)
-      assert [station_json] = data["journal_entries"]
+      assert [station_json, open_station_json] = data["journal_entries"]
       assert station_json["id"] == station_entry.id
       assert station_json["closed_by"] == user.id
+      assert open_station_json["id"] == open_station_entry.id
+      assert open_station_json["closed_at"] == nil
       assert [photo, second_photo] = station_json["photos"]
       assert photo["id"] == earlier_photo.id
       assert second_photo["id"] == later_photo.id
