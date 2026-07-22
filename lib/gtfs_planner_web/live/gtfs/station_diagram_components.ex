@@ -6,6 +6,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   use Phoenix.Component
 
   import GtfsPlannerWeb.CoreComponents
+
+  import GtfsPlannerWeb.Gtfs.StationJournalComponents,
+    only: [journal_trigger: 1, journal_context_box: 1]
+
   import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
   alias GtfsPlanner.Gtfs.Coordinates
@@ -46,8 +50,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <.button
           id="mark-editing-button"
           type="button"
-          variant="secondary"
-          class="border-control-border bg-base-100 text-base-content hover:bg-base-200"
+          variant="quiet"
+          class="border border-transparent text-base-content hover:bg-base-200"
           phx-click="set_station_editing_status"
         >
           Mark as editing
@@ -105,6 +109,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :child_stops_list, :list, default: []
   attr :stop_search_form, :any, required: true
   attr :station, :any, required: true
+  attr :journal_scope, :any, default: nil
+  attr :journal_open_count, :integer, default: 0
+  attr :journal_panel_open?, :boolean, default: false
 
   def diagram_action_strip(assigns) do
     open_panel =
@@ -167,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <div
       id="diagram-action-strip"
-      class="sticky top-0 z-20 relative border-b border-base-300 bg-base-200 px-4 sm:px-6 lg:px-8 py-2"
+      class="sticky top-0 z-20 relative border-b border-blue-200 bg-blue-50 px-4 sm:px-6 lg:px-8 py-2"
     >
       <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
         <a
@@ -195,16 +202,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           close_panel={@close_panel}
         />
 
+        <div :if={@mode == :view} id="scale-control">
+          <.scale_control
+            active_stop_level={@active_stop_level}
+            measurement_enabled={@measurement_enabled}
+            has_scale={@has_scale}
+            scale_value={@scale_value}
+            scale_open={@scale_open}
+            scale_close={@scale_close}
+          />
+        </div>
+
+        <.journal_trigger
+          :if={@journal_scope && @mode in [:view, :add, :connect]}
+          open_count={@journal_open_count}
+          panel_open?={@journal_panel_open?}
+        />
+
         <%= cond do %>
           <% @mode == :view -> %>
-            <.scale_control
-              active_stop_level={@active_stop_level}
-              measurement_enabled={@measurement_enabled}
-              has_scale={@has_scale}
-              scale_value={@scale_value}
-              scale_open={@scale_open}
-              scale_close={@scale_close}
-            />
             <span :if={@measurement_enabled} class="text-sm text-base-content/70 mx-auto">
               {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
             </span>
@@ -3078,6 +3094,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :history_today, :any, default: nil
   attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
+  attr :journal_context, :any, default: nil
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -3158,6 +3175,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         aria-labelledby={if @show_history_tabs, do: "stop-tab-details"}
         hidden={@history_active}
       >
+        <.journal_context_box context={@journal_context} />
+
         <.reposition_stop_view
           :if={@reposition_mode && @selected_stop_id == nil}
           reposition_stops={@reposition_stops}
@@ -3889,6 +3908,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :history_today, :any, default: nil
   attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
+  attr :journal_context, :any, default: nil
 
   def pathway_drawer(assigns) do
     pathway_id = assigns.editing_pathway && Map.get(assigns.editing_pathway, :id)
@@ -3983,6 +4003,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         aria-labelledby={if @show_history_tabs, do: "pathway-tab-details"}
         hidden={@history_active}
       >
+        <.journal_context_box :if={@open} context={@journal_context} />
+
         <.pathway_preview
           :if={@open and @editing_pathway}
           editing_pathway={@editing_pathway}

@@ -80,3 +80,6 @@ infra/modules/rds-database/db_admin.zip
 # Spec-driven development artifacts
 .specs/
 test-results/
+
+# Browser test screenshot output
+.artifacts/

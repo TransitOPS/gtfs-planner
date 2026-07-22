@@ -230,7 +230,7 @@ case Accounts.register_first_admin(%{
       )
 
     # Create child stops with diagram coordinates
-    {:ok, _child_a} =
+    {:ok, browser_child_a} =
       Gtfs.create_stop(%{
         stop_id: "BROWSER_STOP_A",
         stop_name: "Platform A North",
@@ -242,7 +242,7 @@ case Accounts.register_first_admin(%{
         gtfs_version_id: diagram_version.id
       })
 
-    {:ok, _child_b} =
+    {:ok, browser_child_b} =
       Gtfs.create_stop(%{
         stop_id: "BROWSER_STOP_B",
         stop_name: "Platform B South",
@@ -256,7 +256,7 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: child stops placed on diagram")
 
-    {:ok, _child_c} =
+    {:ok, browser_child_c} =
       Gtfs.create_stop(%{
         stop_id: "BROWSER_STOP_C",
         stop_name: "Entrance C",
@@ -293,7 +293,7 @@ case Accounts.register_first_admin(%{
     # One reachable entrance→platform route, so the station report renders a
     # real connectivity route with a step table. Without it every pair is
     # unreachable and print evidence never exercises the step-table path.
-    {:ok, _browser_pathway} =
+    {:ok, browser_pathway} =
       Gtfs.create_pathway(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
@@ -307,6 +307,138 @@ case Accounts.register_first_admin(%{
       })
 
     IO.puts("Browser seed: elevator pathway BROWSER_STOP_C → BROWSER_STOP_A")
+
+    # ── Station journal fixtures (station_journal_panel.spec.js, Package 02) ──
+    #
+    # These records deliberately traverse the same trusted scope, sync,
+    # closure, photo-inspection, and canonical-storage contracts used by the
+    # companion and the production LiveView. Fixed journal/photo UUIDs make
+    # retries deterministic; generated station target IDs remain correctly
+    # scoped to this freshly reset browser database.
+    {:ok, journal_scope} =
+      Gtfs.resolve_station_journal_scope(org.id, diagram_version.id, station.id, editor.id)
+
+    journal_entries = [
+      %{
+        id: "00000000-0000-4000-8000-000000000701",
+        target_type: "node",
+        target_id: browser_child_a.id,
+        body:
+          "Water is collecting above the north platform sign. Inspect the ceiling joint and confirm the temporary barrier remains clear of the accessible route.",
+        captured_at: ~U[2026-07-21 14:32:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000702",
+        target_type: "station",
+        body: "North entrance elevator returned to service after the morning inspection.",
+        captured_at: ~U[2026-07-21 13:15:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000703",
+        target_type: "pathway",
+        target_id: browser_pathway.id,
+        body: "Elevator travel time measured at 45 seconds with doors operating normally.",
+        captured_at: ~U[2026-07-20 17:45:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000704",
+        target_type: "pin",
+        stop_level_id: stop_level.id,
+        diagram_x: 52.0,
+        diagram_y: 38.0,
+        body:
+          "Long field note: verify that the temporary wayfinding board remains readable from both approach directions, does not narrow the accessible clear width, and includes the updated platform designation before the next published export.",
+        captured_at: ~U[2026-07-20 12:00:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000705",
+        target_type: "node",
+        target_id: browser_child_b.id,
+        body: "Platform B tactile strip is intact; clean residue near the south end.",
+        captured_at: ~U[2026-07-19 16:20:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000706",
+        target_type: "node",
+        target_id: browser_child_c.id,
+        body: "Entrance C door closer needs adjustment after the evening peak.",
+        captured_at: ~U[2026-07-19 09:10:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000707",
+        target_type: "station",
+        body: "Information display audio level checked at the center concourse.",
+        captured_at: ~U[2026-07-18 15:00:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000708",
+        target_type: "pathway",
+        target_id: browser_pathway.id,
+        body: "Elevator threshold remains level with the landing surface.",
+        captured_at: ~U[2026-07-18 10:30:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000709",
+        target_type: "station",
+        body: "Emergency call box test completed without faults.",
+        captured_at: ~U[2026-07-17 18:05:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-00000000070a",
+        target_type: "station",
+        body: "Concourse lighting inspection complete; no lamps are out.",
+        captured_at: ~U[2026-07-17 11:40:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-00000000070b",
+        target_type: "station",
+        body: "Bench clearances measured and recorded near the fare array.",
+        captured_at: ~U[2026-07-16 14:25:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-00000000070c",
+        target_type: "station",
+        body: "South platform directional sign is secure and legible.",
+        captured_at: ~U[2026-07-16 08:50:00Z]
+      }
+    ]
+
+    %{synced_count: 12, errors: []} =
+      Gtfs.sync_journal_entries(journal_scope, journal_entries)
+
+    {:ok, _closed_browser_journal_entry} =
+      Gtfs.close_journal_entry(journal_scope, "00000000-0000-4000-8000-000000000702")
+
+    journal_photo_path =
+      Path.join(
+        System.tmp_dir!(),
+        "gtfs-planner-browser-journal-#{System.unique_integer([:positive])}.png"
+      )
+
+    File.write!(journal_photo_path, one_pixel_png)
+
+    try do
+      {:ok, _journal_photo} =
+        Gtfs.create_journal_photo(
+          journal_scope,
+          %{
+            id: "00000000-0000-4000-8000-0000000007a1",
+            journal_entry_id: "00000000-0000-4000-8000-000000000701",
+            captured_at: ~U[2026-07-21 14:32:00Z],
+            width: 1,
+            height: 1
+          },
+          %{
+            path: journal_photo_path,
+            filename: "browser-journal-photo.png",
+            content_type: "image/png"
+          }
+        )
+    after
+      File.rm(journal_photo_path)
+    end
+
+    IO.puts("Browser seed: 12 journal entries with one closed entry and canonical photo")
 
     # A long-named, long-id, unconnected generic node. It fails the isolated
     # node check, so the report renders a failed-check detail whose value must

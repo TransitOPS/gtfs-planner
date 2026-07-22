@@ -2033,6 +2033,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
     default: :separate,
     doc: "separate chips or one contiguous joined control"
 
+  attr :size, :atom,
+    values: [:md, :sm],
+    default: :md,
+    doc: "md for primary mode switches, sm for compact secondary filters"
+
+  attr :emphasis, :atom,
+    values: [:primary, :quiet],
+    default: :primary,
+    doc: "primary fills the selected segment; quiet keeps a neutral selected state"
+
   attr :legend_class, :any, default: nil, doc: "optional classes for the legend (e.g. sr-only)"
 
   def segmented_control(assigns) do
@@ -2074,25 +2084,37 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </p>
         <div class={[
           @appearance == :separate && "flex flex-wrap gap-2",
-          @appearance == :joined &&
-            "flex w-full overflow-hidden rounded-md border border-control-border bg-base-100 p-0.5 sm:w-auto"
+          @appearance == :joined && "flex w-full overflow-hidden rounded-md p-0.5 sm:w-auto",
+          @appearance == :joined && @emphasis == :primary &&
+            "border border-control-border bg-base-100",
+          @appearance == :joined && @emphasis == :quiet && "bg-base-200"
         ]}>
           <label
             :for={option <- @normalized_options}
             for={option.id}
             class={[
               @appearance == :separate &&
-                "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
+                "flex items-center justify-center font-semibold border rounded-lg cursor-pointer transition-colors",
+              @appearance == :separate && @size == :md && "h-11 min-w-[44px] px-4 text-sm",
+              @appearance == :separate && @size == :sm && "h-8 min-w-[32px] px-2.5 text-xs",
               @appearance == :joined &&
-                "flex h-11 min-h-11 min-w-0 flex-1 items-center justify-center px-3 text-sm font-medium cursor-pointer transition-colors sm:flex-none sm:px-4",
-              @appearance == :separate && @value == option.value &&
+                "flex min-w-0 flex-1 items-center justify-center font-medium cursor-pointer transition-colors sm:flex-none",
+              @appearance == :joined && @size == :md && "h-11 min-h-11 px-3 text-sm sm:px-4",
+              @appearance == :joined && @size == :sm && "h-8 px-2.5 text-xs",
+              @appearance == :separate && @value == option.value && @emphasis == :primary &&
                 "bg-primary text-primary-content border-primary",
+              @appearance == :separate && @value == option.value && @emphasis == :quiet &&
+                "bg-base-200 text-base-content border-control-border",
               @appearance == :separate && @value != option.value &&
                 "bg-base-100 text-base-content border-control-border hover:border-primary",
-              @appearance == :joined && @value == option.value &&
+              @appearance == :joined && @value == option.value && @emphasis == :primary &&
                 "rounded bg-primary font-semibold text-primary-content",
-              @appearance == :joined && @value != option.value &&
+              @appearance == :joined && @value == option.value && @emphasis == :quiet &&
+                "rounded bg-base-100 font-semibold text-base-content shadow-sm",
+              @appearance == :joined && @value != option.value && @emphasis == :primary &&
                 "rounded text-base-content hover:bg-base-200",
+              @appearance == :joined && @value != option.value && @emphasis == :quiet &&
+                "rounded text-base-content/70 hover:text-base-content",
               option.disabled && "cursor-not-allowed opacity-60"
             ]}
           >

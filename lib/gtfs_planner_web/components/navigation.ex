@@ -189,7 +189,7 @@ defmodule GtfsPlannerWeb.Navigation do
 
     state =
       if is_active do
-        "font-semibold text-base-content bg-base-200"
+        "font-semibold text-brand bg-brand/10"
       else
         "font-medium text-base-content/70 hover:text-base-content hover:bg-base-200"
       end

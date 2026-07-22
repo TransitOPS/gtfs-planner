@@ -7,10 +7,17 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     active_stop fallback_stop other_level_stop
     pathway_forward pathway_reverse pathway_inactive
     label label_halo ruler focus selection building_outline error degraded
+    journal_open
   )a
 
   test "defines every named diagram role with a semantic CSS variable and non-color cue" do
     assert Map.keys(DiagramPalette.roles()) |> Enum.sort() == Enum.sort(@required_roles)
+
+    assert DiagramPalette.roles().journal_open == %{
+             css_variable: "--diagram-journal-open",
+             color: "#B45309",
+             cue: "left accent, target label, and text state"
+           }
 
     for role <- @required_roles do
       metadata = DiagramPalette.roles() |> Map.fetch!(role)
@@ -28,6 +35,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     assert declarations =~ "--diagram-active-stop: #0B5FFF"
     assert declarations =~ "--diagram-label-halo: #FFFFFF"
     assert declarations =~ "--diagram-degraded: #6B7280"
+    assert declarations =~ "--diagram-journal-open: #B45309"
 
     variables = DiagramPalette.css_variables()
     assert Enum.map(variables, &elem(&1, 0)) == Enum.sort(Enum.map(variables, &elem(&1, 0)))

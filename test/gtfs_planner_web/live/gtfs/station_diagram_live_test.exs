@@ -3485,7 +3485,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Assert the action strip contains sticky positioning classes
       assert html =~ "sticky top-0 z-20"
-      assert html =~ "bg-base-200"
+      assert html =~ "bg-blue-50"
     end
 
     test "upload form shows in empty state when no diagram exists", %{
