@@ -25,6 +25,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   @type geometry :: %{
           active_level_id: String.t() | nil,
           active_level_token: String.t() | nil,
+          active_stop_level_id: String.t() | nil,
           child_stops: [Stop.t() | map()],
           pathways: [Pathway.t() | map()],
           focused_marker_id: marker_key() | nil
@@ -145,6 +146,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   defp process_group_tuple({marker_key, group}, targets) do
     sorted_entries = sort_entries(group.entries)
     entry_ids = Enum.map(sorted_entries, & &1.id)
+
+    entry_metadata =
+      Map.new(sorted_entries, fn entry ->
+        {entry.id, %{state: if(is_nil(entry.closed_at), do: :open, else: :closed)}}
+      end)
+
     focus_entry_id = List.first(entry_ids)
     open_count = Enum.count(sorted_entries, &is_nil(&1.closed_at))
     total_count = length(sorted_entries)
@@ -159,8 +166,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
       stop_level_id: group[:stop_level_id],
       x: group[:x],
       y: group[:y],
-      entries: sorted_entries,
       entry_ids: entry_ids,
+      entry_metadata: entry_metadata,
       focus_entry_id: focus_entry_id,
       open_count: open_count,
       total_count: total_count,
@@ -208,17 +215,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     Enum.reduce(groups, %{}, fn {marker_key, group}, loc_acc ->
       label = resolve_target_label(targets, group.kind, group.target_id)
 
-      Enum.reduce(group.entries, loc_acc, fn entry, inner_acc ->
+      Enum.reduce(group.entry_ids, loc_acc, fn entry_id, inner_acc ->
         loc = %{
-          entry_id: entry.id,
+          entry_id: entry_id,
           marker_id: marker_key,
           target_type: group.kind,
           target_id: group.target_id,
-          level_id: resolve_entry_level_id(group, entry, targets),
+          level_id: resolve_entry_level_id(group, targets),
           label: label
         }
 
-        Map.put(inner_acc, entry.id, loc)
+        Map.put(inner_acc, entry_id, loc)
       end)
     end)
   end
@@ -572,7 +579,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   defp to_float(%Decimal{} = dec) do
     {:ok, Decimal.to_float(dec)}
   rescue
-    _ -> :error
+    Decimal.Error -> :error
   end
 
   defp to_float(_), do: :error
@@ -674,10 +681,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
 
   defp fallback_target_label(_targets, _kind, _target_id), do: "Pin"
 
-  defp resolve_entry_level_id(group, entry, targets) do
+  defp resolve_entry_level_id(group, targets) do
     case group.kind do
       :pin ->
-        raw_id = group.stop_level_id || entry.stop_level_id
+        raw_id = group.stop_level_id
 
         case get_stop_level(targets, raw_id) do
           {:ok, sl} -> normalize_id(Map.get(sl, :level_id) || Map.get(sl, "level_id") || raw_id)

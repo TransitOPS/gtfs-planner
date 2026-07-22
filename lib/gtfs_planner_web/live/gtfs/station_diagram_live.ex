@@ -4460,6 +4460,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp open_journal_panel(socket, opts) do
     persist? = Keyword.fetch!(opts, :persist?)
     clear_scope? = Keyword.get(opts, :clear_scope?, false)
+    reason = Keyword.get(opts, :reason, :open)
 
     target_scope =
       if clear_scope?,
@@ -4469,17 +4470,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     focus_entry_id = Keyword.get(opts, :focus_entry_id, nil)
     filter = Keyword.get(opts, :filter, socket.assigns.journal_filter)
 
-    if journal_panel_allowed?(socket) and not socket.assigns.journal_panel_open? do
+    if journal_panel_allowed?(socket) and
+         (not socket.assigns.journal_panel_open? or reason != :open) do
+      was_open? = socket.assigns.journal_panel_open?
+
       socket =
         socket
         |> assign(:journal_panel_open?, true)
         |> assign(:journal_restore_after_align?, false)
-        |> load_journal(:full, :open, filter,
+        |> load_journal(:full, reason, filter,
           target_scope: target_scope,
           focus_entry_id: focus_entry_id
         )
 
-      if persist? do
+      if persist? and not was_open? do
         push_event(socket, "journal-panel-preference", %{open: true})
       else
         socket
@@ -5089,14 +5093,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp apply_journal_payload(socket, %{intent: :counts_only}, payload) do
-    marker_index =
-      Map.get(payload, :marker_index) ||
-        StationJournalMarkers.build_index([], %{
-          presentations: %{},
-          nodes: %{},
-          pathways: %{},
-          stop_levels: %{}
-        })
+    marker_index = payload_marker_index(payload)
 
     socket
     |> assign_journal_counts(payload)
@@ -5134,14 +5131,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         do: MapSet.intersection(pending_ids, payload.entry_ids),
         else: MapSet.new()
 
-    marker_index =
-      Map.get(payload, :marker_index) ||
-        StationJournalMarkers.build_index([], %{
-          presentations: %{},
-          nodes: %{},
-          pathways: %{},
-          stop_levels: %{}
-        })
+    marker_index = payload_marker_index(payload)
 
     socket =
       socket
@@ -5178,14 +5168,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp apply_journal_payload(socket, %{intent: :observe_scrolled}, payload) do
     pending_ids = MapSet.difference(payload.entry_ids, socket.assigns.journal_rendered_entry_ids)
 
-    marker_index =
-      Map.get(payload, :marker_index) ||
-        StationJournalMarkers.build_index([], %{
-          presentations: %{},
-          nodes: %{},
-          pathways: %{},
-          stop_levels: %{}
-        })
+    marker_index = payload_marker_index(payload)
 
     socket
     |> assign_journal_counts(payload)
@@ -5195,6 +5178,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_floorplan_entry_ids, marker_index.floorplan_entry_ids)
     |> project_and_stream_journal_markers()
     |> finish_journal_load()
+  end
+
+  defp payload_marker_index(payload) do
+    Map.get(payload, :marker_index) ||
+      StationJournalMarkers.build_index([], %{
+        presentations: %{},
+        nodes: %{},
+        pathways: %{},
+        stop_levels: %{}
+      })
   end
 
   defp project_and_stream_journal_markers(socket) do
@@ -5261,7 +5254,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     # in even when the data signature is unchanged since the last render.
     # Otherwise the reopened panel renders empty until another reason (a filter
     # change) forces a reset.
-    request.reason in [:open, :filter, :retry, :refresh] or
+    request.reason in [:open, :filter, :retry, :refresh, :marker_click, :clear_scope] or
       payload.signature != socket.assigns.journal_rendered_signature
   end
 
@@ -5321,9 +5314,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp find_entry_state(_index, _entry_id), do: :open
 
   defp find_entry_state_in_group({_key, group}, entry_id) do
-    case Enum.find(group.entries, &(&1.id == entry_id)) do
+    case Map.get(group.entry_metadata, entry_id) do
+      %{state: state} -> state
       nil -> nil
-      entry -> if is_nil(entry.closed_at), do: :open, else: :closed
     end
   end
 
@@ -5336,10 +5329,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     Enum.filter(entries, fn entry ->
       entry_target_type = to_string(entry.target_type)
       entry_target_id = to_string(entry.target_id)
-      entry_stop_level_id = to_string(entry.stop_level_id)
 
-      entry_target_type == type_str and
-        (entry_target_id == target_str or entry_stop_level_id == target_str)
+      entry_target_type == type_str and entry_target_id == target_str
     end)
   end
 
@@ -5376,10 +5367,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     socket
-    |> assign(:journal_panel_open?, true)
     |> assign(:journal_undo_ids, MapSet.new())
     |> assign(:journal_pending_new_ids, MapSet.new())
-    |> load_journal(:full, :marker_click, adjusted_filter,
+    |> open_journal_panel(
+      persist?: true,
+      reason: :marker_click,
+      filter: adjusted_filter,
       target_scope: target_scope,
       focus_entry_id: focus_entry_id
     )
@@ -5402,6 +5395,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
           :error ->
             socket
+            |> assign(:journal_error_message, "The entry could not be located on the floorplan.")
+            |> assign(:journal_focused_marker_id, nil)
+            |> project_and_stream_journal_markers()
         end
 
       :error ->
@@ -5418,7 +5414,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     target_level =
       if locator_level_id do
         Enum.find(socket.assigns[:levels] || [], fn level ->
-          to_string(level.id) == to_string(locator_level_id)
+          to_string(level.id) == to_string(locator_level_id) or
+            to_string(level.level_id) == to_string(locator_level_id)
         end)
       end
 

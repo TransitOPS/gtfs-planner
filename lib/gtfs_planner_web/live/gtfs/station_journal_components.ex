@@ -440,7 +440,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   end
 
   defp panel_flags(assigns) do
-    total_count = assigns.journal_open_count + assigns.journal_closed_count
+    total_count =
+      if assigns.journal_target_scope do
+        (assigns.journal_scoped_open_count || 0) + (assigns.journal_scoped_closed_count || 0)
+      else
+        assigns.journal_open_count + assigns.journal_closed_count
+      end
 
     %{
       total_count: total_count,

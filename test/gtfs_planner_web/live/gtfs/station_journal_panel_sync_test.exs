@@ -629,6 +629,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert state.journal_target_scope == nil
     expected_selector = "#journal-entries-#{pin_id}"
     assert_push_event(view, "journal-focus", %{selector: ^expected_selector})
+    assert_push_event(view, "journal-panel-preference", %{open: true})
     assert has_element?(view, "#journal-entries-#{pin_id}")
   end
 
@@ -648,14 +649,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
 
     entry1 = Ecto.UUID.generate()
     entry2 = Ecto.UUID.generate()
+    other_pin_id = Ecto.UUID.generate()
 
     sync_entries(scope, [
       journal_attrs(entry1, "node", ~U[2026-07-18 12:00:00.000000Z], %{target_id: node.id}),
-      journal_attrs(entry2, "node", ~U[2026-07-18 12:10:00.000000Z], %{target_id: node.id})
+      journal_attrs(entry2, "node", ~U[2026-07-18 12:10:00.000000Z], %{target_id: node.id}),
+      journal_attrs(other_pin_id, "pin", ~U[2026-07-18 12:20:00.000000Z], %{
+        stop_level_id: context.stop_level.id,
+        diagram_x: 40.0,
+        diagram_y: 50.0
+      })
     ])
 
     view = open_diagram(context)
     render_async(view, 5_000)
+
+    render_hook(view, "open_journal", %{})
+    render_async(view, 5_000)
+    assert has_element?(view, "#journal-entries-#{other_pin_id}")
 
     render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-node-#{node.id}"})
     render_async(view, 5_000)
@@ -665,10 +676,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert state.journal_target_scope != nil
     assert state.journal_target_scope.target_id == node.id
     assert state.journal_scoped_open_count == 2
-    assert state.journal_open_count == 2
+    assert state.journal_open_count == 3
 
     assert has_element?(view, "#journal-target-scope")
     assert has_element?(view, "#journal-clear-target-scope")
+    refute has_element?(view, "#journal-entries-#{other_pin_id}")
     expected_entry2_selector = "#journal-entries-#{entry2}"
     assert_push_event(view, "journal-focus", %{selector: ^expected_entry2_selector})
 
@@ -679,6 +691,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     cleared = assigns(view)
     assert cleared.journal_target_scope == nil
     refute has_element?(view, "#journal-target-scope")
+    assert has_element?(view, "#journal-entries-#{other_pin_id}")
   end
 
   test "forged or stale marker clicks are inert and do not mutate panel state", context do

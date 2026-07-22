@@ -18,11 +18,7 @@ const PHOTO_ENTRY_ID = "00000000-0000-4000-8000-000000000701";
 const CLOSED_ENTRY_ID = "00000000-0000-4000-8000-000000000702";
 const SECOND_OPEN_ENTRY_ID = "00000000-0000-4000-8000-000000000703";
 const PENDING_ENTRY_ID = "00000000-0000-4000-8000-0000000007f0";
-const MULTI_ENTRY_NODE_ID = "00000000-0000-4000-8000-000000000711";
 const L2_PIN_ENTRY_ID = "00000000-0000-4000-8000-000000000712";
-const SAME_LEVEL_PW_ENTRY_ID = "00000000-0000-4000-8000-000000000713";
-const CROWDED_NODE_ENTRY_ID = "00000000-0000-4000-8000-000000000715";
-const L1_PIN_ENTRY_ID = "00000000-0000-4000-8000-000000000716";
 
 const diagramUser = {
   email: "diagram-test@gtfs-planner.test",
@@ -740,7 +736,7 @@ test("Package 03 other-level Show on floorplan switches level and renders ring",
   const rings = page.locator('#journal-markers-svg [data-journal-ring="true"]');
   await expect(rings).toHaveCount(1);
 
-  const levelIndicator = page.locator("#diagram-level-name");
+  const levelIndicator = page.locator("#level-control-trigger");
   await expect(levelIndicator).toContainText("Browser Level 2");
 });
 
@@ -755,20 +751,19 @@ test("Package 03 markers visible but inert in Add and Connect modes", async ({ p
 
     const markers = page.locator("#journal-markers-svg [data-journal-marker]");
     const markerCount = await markers.count();
+    expect(markerCount).toBeGreaterThan(0);
 
-    if (markerCount > 0) {
-      const firstMarker = markers.first();
-      const pointerEvents = await firstMarker.evaluate(
-        (el) => getComputedStyle(el).pointerEvents,
-      );
-      expect(pointerEvents).toBe("none");
+    const firstMarker = markers.first();
+    const pointerEvents = await firstMarker.evaluate(
+      (el) => getComputedStyle(el).pointerEvents,
+    );
+    expect(pointerEvents).toBe("none");
 
-      const tabindex = await firstMarker.getAttribute("tabindex");
-      expect(tabindex).toBeNull();
+    const tabindex = await firstMarker.getAttribute("tabindex");
+    expect(tabindex).toBeNull();
 
-      const role = await firstMarker.getAttribute("role");
-      expect(role).toBeNull();
-    }
+    const role = await firstMarker.getAttribute("role");
+    expect(role).toBeNull();
   }
 });
 

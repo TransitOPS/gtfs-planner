@@ -209,6 +209,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
 
       # Scoped filter counts are used in header summary and segmented control
       assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() =~ "2 open · 1 closed"
+
+      all_filter_label =
+        d
+        |> LazyHTML.query("label[for='journal-filter-option-all']")
+        |> LazyHTML.text()
+
+      assert all_filter_label =~ "All (3)"
+      refute all_filter_label =~ "All (15)"
     end
 
     test "renders each entry complete — note, photos, metadata, and actions — with no disclosure" do

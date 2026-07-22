@@ -1453,7 +1453,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               cx={marker.x}
               cy={marker.y}
               r="0.6"
-              stroke-width="0.15"
+              stroke-width="0.12"
             />
         <% end %>
 
@@ -1464,8 +1464,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-center-y={marker.y}
           cx={marker.x}
           cy={marker.y}
-          r="1.3"
-          stroke-width="0.15"
+          r="1.32"
+          stroke-width="0.12"
           stroke-dasharray="0.4 0.3"
         />
 
@@ -3118,11 +3118,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <svg width="14" height="20" class="shrink-0" viewBox="-8 -20 16 22">
               <path
                 d="M 0 0 C -4 -5.6 -7.2 -8.8 -7.2 -12.8 A 7.2 7.2 0 1 1 7.2 -12.8 C 7.2 -8.8 4 -5.6 0 0 Z"
-                fill="#B45309"
-                stroke="#FFFFFF"
+                fill="var(--diagram-journal-open)"
+                stroke="var(--diagram-label-halo)"
                 stroke-width="1.2"
               />
-              <circle cx="0" cy="-12.8" r="2.4" fill="#FFFFFF" />
+              <circle cx="0" cy="-12.8" r="2.4" fill="var(--diagram-label-halo)" />
             </svg>
             <span>Open Pin</span>
           </div>
@@ -3130,14 +3130,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <svg width="14" height="20" class="shrink-0" viewBox="-8 -20 16 22">
               <path
                 d="M 0 0 C -4 -5.6 -7.2 -8.8 -7.2 -12.8 A 7.2 7.2 0 1 1 7.2 -12.8 C 7.2 -8.8 4 -5.6 0 0 Z"
-                fill="#FFFFFF"
-                stroke="#B45309"
+                fill="var(--diagram-label-halo)"
+                stroke="var(--diagram-journal-open)"
                 stroke-width="1.2"
               />
               <path
                 d="M -2 -12.8 L -0.5 -11.3 L 2.5 -14.3"
                 fill="none"
-                stroke="#B45309"
+                stroke="var(--diagram-journal-open)"
                 stroke-width="1.2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
@@ -3147,7 +3147,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="14" class="shrink-0">
-              <circle cx="7" cy="7" r="5" fill="#B45309" stroke="#FFFFFF" stroke-width="1.5" />
+              <circle
+                cx="7"
+                cy="7"
+                r="5"
+                fill="var(--diagram-journal-open)"
+                stroke="var(--diagram-label-halo)"
+                stroke-width="1.5"
+              />
             </svg>
             <span>Entity Dot</span>
           </div>

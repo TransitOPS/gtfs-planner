@@ -199,6 +199,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
       }
 
       index = StationJournalMarkers.build_index([e_closed, e_open_older, e_open_newer], targets)
+      group = index.groups["journal-marker-node-#{node_id}"]
+
+      refute Map.has_key?(group, :entries)
+
+      assert group.entry_metadata == %{
+               "e-closed-1" => %{state: :closed},
+               "e-open-new" => %{state: :open},
+               "e-open-old" => %{state: :open}
+             }
 
       geometry = %{
         active_level_id: level_id,
