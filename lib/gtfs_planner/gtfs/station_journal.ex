@@ -102,51 +102,12 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     order = Keyword.get(opts, :order, :asc)
     limit = Keyword.get(opts, :limit, nil)
 
-    photos =
-      from(photo in JournalPhoto,
-        order_by: [asc: photo.captured_at, asc: photo.inserted_at, asc: photo.id]
-      )
-
-    query =
-      from(entry in JournalEntry,
-        where:
-          entry.organization_id == ^scope.organization_id and
-            entry.gtfs_version_id == ^scope.gtfs_version_id and
-            entry.station_id == ^scope.station_id,
-        preload: [photos: ^photos]
-      )
-
-    query =
-      case status do
-        :open -> where(query, [entry], is_nil(entry.closed_at))
-        :all -> query
-      end
-
-    query =
-      case order do
-        :asc ->
-          order_by(query, [entry], [
-            asc: entry.captured_at,
-            asc: entry.inserted_at,
-            asc: entry.id
-          ])
-
-        :desc ->
-          order_by(query, [entry], [
-            desc: entry.captured_at,
-            desc: entry.inserted_at,
-            desc: entry.id
-          ])
-      end
-
-    query =
-      if limit do
-        limit(query, ^limit)
-      else
-        query
-      end
-
-    Repo.all(query)
+    scope
+    |> base_entries_query()
+    |> filter_by_status(status)
+    |> sort_by_order(order)
+    |> limit_entries(limit)
+    |> Repo.all()
   end
 
   @spec close_entry(Scope.t(), Ecto.UUID.t()) ::
@@ -636,6 +597,43 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
         {:error, reason}
     end
   end
+
+  defp base_entries_query(%Scope{} = scope) do
+    photos =
+      from(photo in JournalPhoto,
+        order_by: [asc: photo.captured_at, asc: photo.inserted_at, asc: photo.id]
+      )
+
+    from(entry in JournalEntry,
+      where:
+        entry.organization_id == ^scope.organization_id and
+          entry.gtfs_version_id == ^scope.gtfs_version_id and
+          entry.station_id == ^scope.station_id,
+      preload: [photos: ^photos]
+    )
+  end
+
+  defp filter_by_status(query, :all), do: query
+  defp filter_by_status(query, :open), do: where(query, [entry], is_nil(entry.closed_at))
+
+  defp sort_by_order(query, :asc) do
+    order_by(query, [entry],
+      asc: entry.captured_at,
+      asc: entry.inserted_at,
+      asc: entry.id
+    )
+  end
+
+  defp sort_by_order(query, :desc) do
+    order_by(query, [entry],
+      desc: entry.captured_at,
+      desc: entry.inserted_at,
+      desc: entry.id
+    )
+  end
+
+  defp limit_entries(query, nil), do: query
+  defp limit_entries(query, limit) when is_integer(limit) and limit > 0, do: limit(query, ^limit)
 
   defp validate_list_opts!(opts) do
     unless Keyword.keyword?(opts) do

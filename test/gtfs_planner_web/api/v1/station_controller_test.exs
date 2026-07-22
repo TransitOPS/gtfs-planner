@@ -424,6 +424,14 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         }
         |> Repo.insert()
 
+      earlier_closed_station_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          body: "earlier closed station entry",
+          captured_at: ~U[2026-07-13 08:30:00.000000Z],
+          closed_at: ~U[2026-07-13 08:45:00.000000Z],
+          closed_by: user.id
+        })
+
       station_entry =
         journal_entry_fixture(org, version, station, user, %{
           body: "station entry",
@@ -491,7 +499,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
 
       assert %{"data" => data} = json_response(conn, 200)
-      assert [station_json, open_station_json] = data["journal_entries"]
+      assert [earlier_closed_json, station_json, open_station_json] = data["journal_entries"]
+      assert earlier_closed_json["id"] == earlier_closed_station_entry.id
+      assert earlier_closed_json["closed_by"] == user.id
       assert station_json["id"] == station_entry.id
       assert station_json["closed_by"] == user.id
       assert open_station_json["id"] == open_station_entry.id

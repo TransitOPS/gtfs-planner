@@ -560,18 +560,29 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert changeset.valid?
       assert Ecto.Changeset.get_change(changeset, :closed_at) == closed_at
       assert Ecto.Changeset.get_change(changeset, :closed_by) == closed_by
-      assert Enum.any?(changeset.constraints, &(&1.constraint == "journal_entries_closure_pair_ck"))
+
+      assert Enum.any?(
+               changeset.constraints,
+               &(&1.constraint == "journal_entries_closure_pair_ck")
+             )
     end
 
     test "reopen_changeset/1 clears closed_at and closed_by together and attaches check constraint" do
-      entry = %JournalEntry{closed_at: ~U[2026-07-21 12:00:00.000000Z], closed_by: Ecto.UUID.generate()}
+      entry = %JournalEntry{
+        closed_at: ~U[2026-07-21 12:00:00.000000Z],
+        closed_by: Ecto.UUID.generate()
+      }
 
       changeset = JournalEntry.reopen_changeset(entry)
 
       assert changeset.valid?
       assert Ecto.Changeset.get_change(changeset, :closed_at) == nil
       assert Ecto.Changeset.get_change(changeset, :closed_by) == nil
-      assert Enum.any?(changeset.constraints, &(&1.constraint == "journal_entries_closure_pair_ck"))
+
+      assert Enum.any?(
+               changeset.constraints,
+               &(&1.constraint == "journal_entries_closure_pair_ck")
+             )
     end
 
     test "sync_changeset/2 ignores client-supplied closure fields" do
@@ -613,15 +624,24 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       {:ok, scope: scope}
     end
 
-    test "default list_station_journal/1 is equivalent to status: :all, order: :asc, limit: nil", %{
-      scope: scope
-    } do
+    test "default list_station_journal/1 is equivalent to status: :all, order: :asc, limit: nil",
+         %{
+           scope: scope
+         } do
       open_id = Ecto.UUID.generate()
       closed_id = Ecto.UUID.generate()
 
       Gtfs.sync_journal_entries(scope, [
-        entry_attrs(%{id: open_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
-        entry_attrs(%{id: closed_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]})
+        entry_attrs(%{
+          id: open_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 10:00:00Z]
+        }),
+        entry_attrs(%{
+          id: closed_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 11:00:00Z]
+        })
       ])
 
       {:ok, _closed} = Gtfs.close_journal_entry(scope, closed_id)
@@ -638,8 +658,16 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       closed_id = Ecto.UUID.generate()
 
       Gtfs.sync_journal_entries(scope, [
-        entry_attrs(%{id: open_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
-        entry_attrs(%{id: closed_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]})
+        entry_attrs(%{
+          id: open_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 10:00:00Z]
+        }),
+        entry_attrs(%{
+          id: closed_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 11:00:00Z]
+        })
       ])
 
       {:ok, _closed} = Gtfs.close_journal_entry(scope, closed_id)
@@ -653,29 +681,39 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       e2_id = Ecto.UUID.generate()
 
       Gtfs.sync_journal_entries(scope, [
-        entry_attrs(%{id: e1_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00.000000Z]}),
-        entry_attrs(%{id: e2_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00.000000Z]})
+        entry_attrs(%{
+          id: e1_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 10:00:00.000000Z]
+        }),
+        entry_attrs(%{
+          id: e2_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 11:00:00.000000Z]
+        })
       ])
 
-      p1 = Repo.insert!(%JournalPhoto{
-        id: Ecto.UUID.generate(),
-        journal_entry_id: e2_id,
-        filename: "1.jpg",
-        content_type: "image/jpeg",
-        byte_size: 10,
-        sha256: :crypto.strong_rand_bytes(32),
-        captured_at: ~U[2026-07-13 08:00:00.000000Z]
-      })
+      p1 =
+        Repo.insert!(%JournalPhoto{
+          id: Ecto.UUID.generate(),
+          journal_entry_id: e2_id,
+          filename: "1.jpg",
+          content_type: "image/jpeg",
+          byte_size: 10,
+          sha256: :crypto.strong_rand_bytes(32),
+          captured_at: ~U[2026-07-13 08:00:00.000000Z]
+        })
 
-      p2 = Repo.insert!(%JournalPhoto{
-        id: Ecto.UUID.generate(),
-        journal_entry_id: e2_id,
-        filename: "2.jpg",
-        content_type: "image/jpeg",
-        byte_size: 10,
-        sha256: :crypto.strong_rand_bytes(32),
-        captured_at: ~U[2026-07-13 09:00:00.000000Z]
-      })
+      p2 =
+        Repo.insert!(%JournalPhoto{
+          id: Ecto.UUID.generate(),
+          journal_entry_id: e2_id,
+          filename: "2.jpg",
+          content_type: "image/jpeg",
+          byte_size: 10,
+          sha256: :crypto.strong_rand_bytes(32),
+          captured_at: ~U[2026-07-13 09:00:00.000000Z]
+        })
 
       asc_entries = Gtfs.list_station_journal(scope, order: :asc)
       desc_entries = Gtfs.list_station_journal(scope, order: :desc)
@@ -706,16 +744,56 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
     test "limit truncates returned list", %{scope: scope} do
       Gtfs.sync_journal_entries(scope, [
-        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
-        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]}),
-        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station", captured_at: ~U[2026-07-13 12:00:00Z]})
+        entry_attrs(%{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          captured_at: ~U[2026-07-13 10:00:00Z]
+        }),
+        entry_attrs(%{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          captured_at: ~U[2026-07-13 11:00:00Z]
+        }),
+        entry_attrs(%{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          captured_at: ~U[2026-07-13 12:00:00Z]
+        })
       ])
 
       entries = Gtfs.list_station_journal(scope, limit: 2)
       assert length(entries) == 2
     end
 
-    test "raises ArgumentError for unknown options or invalid values", %{scope: scope} do
+    test "open status, descending three-key entry order, and positive limit compose deterministically",
+         %{
+           scope: scope
+         } do
+      e1_id = Ecto.UUID.generate()
+      e2_id = Ecto.UUID.generate()
+      e3_id = Ecto.UUID.generate()
+      e4_id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{id: e1_id, target_type: "station", captured_at: ~U[2026-07-13 10:00:00Z]}),
+        entry_attrs(%{id: e2_id, target_type: "station", captured_at: ~U[2026-07-13 11:00:00Z]}),
+        entry_attrs(%{id: e3_id, target_type: "station", captured_at: ~U[2026-07-13 12:00:00Z]}),
+        entry_attrs(%{id: e4_id, target_type: "station", captured_at: ~U[2026-07-13 13:00:00Z]})
+      ])
+
+      {:ok, _closed} = Gtfs.close_journal_entry(scope, e2_id)
+
+      composed_entries = Gtfs.list_station_journal(scope, status: :open, order: :desc, limit: 2)
+      assert Enum.map(composed_entries, & &1.id) == [e4_id, e3_id]
+    end
+
+    test "raises ArgumentError for unknown options, non-keyword lists, or invalid values", %{
+      scope: scope
+    } do
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, [1, 2, 3])
+      end
+
       assert_raise ArgumentError, fn ->
         Gtfs.list_station_journal(scope, unknown_opt: true)
       end
@@ -843,7 +921,10 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       }
 
       other_id = Ecto.UUID.generate()
-      Gtfs.sync_journal_entries(other_scope, [entry_attrs(%{id: other_id, target_type: "station"})])
+
+      Gtfs.sync_journal_entries(other_scope, [
+        entry_attrs(%{id: other_id, target_type: "station"})
+      ])
 
       assert {:error, :not_found} = Gtfs.close_journal_entry(scope, other_id)
       assert {:error, :not_found} = Gtfs.reopen_journal_entry(scope, other_id)
@@ -972,7 +1053,9 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       id_a = Ecto.UUID.generate()
 
       assert %{synced_count: 1} =
-               Gtfs.sync_journal_entries(scope_a, [entry_attrs(%{id: id_a, target_type: "station"})])
+               Gtfs.sync_journal_entries(scope_a, [
+                 entry_attrs(%{id: id_a, target_type: "station"})
+               ])
 
       station_id_a = scope_a.station_id
       assert_receive {:station_journal_changed, ^station_id_a}
@@ -982,7 +1065,11 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
       assert %{synced_count: 0} =
                Gtfs.sync_journal_entries(scope_a, [
-                 entry_attrs(%{id: invalid_id, target_type: "pathway", target_id: Ecto.UUID.generate()})
+                 entry_attrs(%{
+                   id: invalid_id,
+                   target_type: "pathway",
+                   target_id: Ecto.UUID.generate()
+                 })
                ])
 
       refute_receive {:station_journal_changed, _}
