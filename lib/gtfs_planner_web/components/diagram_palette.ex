@@ -70,6 +70,11 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
       css_variable: "--diagram-degraded",
       color: "#6B7280",
       cue: "dashed boundary and degraded text"
+    },
+    journal_open: %{
+      css_variable: "--diagram-journal-open",
+      color: "#B45309",
+      cue: "left accent, target label, and text state"
     }
   }
 
