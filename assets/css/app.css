@@ -490,6 +490,36 @@ body {
   fill: var(--diagram-ruler) !important;
 }
 
+#diagram-page [data-journal-pin-body],
+#diagram-page [data-journal-dot],
+#diagram-page [data-journal-aggregate-dot] {
+  fill: var(--diagram-journal-open) !important;
+  stroke: var(--diagram-label-halo) !important;
+}
+
+#diagram-page [data-journal-pin-head] {
+  fill: var(--diagram-label-halo) !important;
+}
+
+#diagram-page g[data-journal-state="closed"] [data-journal-pin-body],
+#diagram-page [data-journal-closed-body] {
+  fill: var(--diagram-label-halo) !important;
+  stroke: var(--diagram-journal-open) !important;
+}
+
+#diagram-page [data-journal-closed-glyph],
+#diagram-page [data-journal-glyph] {
+  fill: none !important;
+  stroke: var(--diagram-journal-open) !important;
+}
+
+#diagram-page [data-journal-ring],
+#diagram-page [data-journal-landing-ring],
+#diagram-page [data-journal-focus-ring] {
+  fill: none !important;
+  stroke: var(--diagram-journal-open) !important;
+}
+
 /* ── Native dialog overlay presentation ── */
 
 /* Backdrop: dim the page behind every open modal dialog.

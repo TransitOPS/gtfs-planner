@@ -11,6 +11,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(here, "../..");
 const referenceRoot = resolve(repositoryRoot, ".specs/journal-02/visual-references");
 const artifactRoot = resolve(repositoryRoot, ".artifacts/journal-02");
+const pkg3ReferenceRoot = resolve(repositoryRoot, ".specs/journal-03/visual-references");
+const pkg3ArtifactRoot = resolve(repositoryRoot, ".artifacts/journal-03");
 
 const PHOTO_ENTRY_ID = "00000000-0000-4000-8000-000000000701";
 const CLOSED_ENTRY_ID = "00000000-0000-4000-8000-000000000702";
@@ -114,6 +116,36 @@ async function apiJournalWriter(page) {
     expect((await response.json()).data.journal_synced_count).toBe(1);
   };
 }
+
+test("Package 03 marker palette resolves amber token and captures reference", async ({ page }) => {
+  await mkdir(pkg3ArtifactRoot, { recursive: true });
+
+  await page.goto(
+    pathToFileURL(resolve(pkg3ReferenceRoot, "mock-02-floorplans-view.html")).href,
+    { waitUntil: "networkidle" },
+  );
+  await page.evaluate(() => document.fonts.ready);
+
+  const referenceHeading = page.getByText("Mock 02 · Floorplans — View mode, journal closed", { exact: false });
+  await expect(referenceHeading).toBeVisible();
+
+  await page.screenshot({ path: resolve(pkg3ArtifactRoot, "reference-marker-palette.png") });
+
+  await loginAndGoToDiagram(page);
+
+  const diagramPage = page.locator("#diagram-page");
+  await expect(diagramPage).toBeVisible();
+
+  const journalOpenVar = await diagramPage.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--diagram-journal-open").trim().toUpperCase()
+  );
+  expect(journalOpenVar).toBe("#B45309");
+
+  await page.screenshot({
+    path: resolve(pkg3ArtifactRoot, "production-marker-palette.png"),
+    animations: "disabled",
+  });
+});
 
 test("renders copied journal references", async ({ page }) => {
   await mkdir(artifactRoot, { recursive: true });
