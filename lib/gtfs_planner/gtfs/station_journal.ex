@@ -58,6 +58,11 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     end
   end
 
+  @spec subscribe(Scope.t()) :: :ok | {:error, term()}
+  def subscribe(%Scope{} = scope) do
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic(scope))
+  end
+
   @spec sync_entries(Scope.t(), [map()]) :: %{
           synced_count: non_neg_integer(),
           errors: [sync_error()]
@@ -76,25 +81,59 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
         end
       end)
 
-    %{result | errors: Enum.reverse(result.errors)}
+    result = %{result | errors: Enum.reverse(result.errors)}
+
+    if result.synced_count > 0 do
+      broadcast_changed(scope)
+    end
+
+    result
   end
 
-  @spec list_entries(Scope.t()) :: [JournalEntry.t()]
-  def list_entries(%Scope{} = scope) do
-    photos =
-      from(photo in JournalPhoto,
-        order_by: [asc: photo.captured_at, asc: photo.inserted_at, asc: photo.id]
-      )
+  @spec list_entries(Scope.t(), keyword()) :: [JournalEntry.t()]
+  def list_entries(%Scope{} = scope, opts \\ []) when is_list(opts) do
+    opts = validate_list_opts!(opts)
 
-    from(entry in JournalEntry,
-      where:
-        entry.organization_id == ^scope.organization_id and
-          entry.gtfs_version_id == ^scope.gtfs_version_id and
-          entry.station_id == ^scope.station_id,
-      order_by: [asc: entry.captured_at, asc: entry.inserted_at, asc: entry.id],
-      preload: [photos: ^photos]
-    )
+    status = Keyword.get(opts, :status, :all)
+    order = Keyword.get(opts, :order, :asc)
+    limit = Keyword.get(opts, :limit, nil)
+
+    scope
+    |> base_entries_query()
+    |> filter_by_status(status)
+    |> sort_by_order(order)
+    |> limit_entries(limit)
     |> Repo.all()
+  end
+
+  @spec close_entry(Scope.t(), Ecto.UUID.t()) ::
+          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def close_entry(%Scope{} = scope, entry_id) do
+    case cast_uuid(entry_id) do
+      {:ok, id} ->
+        case apply_transition(scope, id, :close) do
+          {:ok, {entry, _tag}} -> {:ok, entry}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :error ->
+        {:error, :not_found}
+    end
+  end
+
+  @spec reopen_entry(Scope.t(), Ecto.UUID.t()) ::
+          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def reopen_entry(%Scope{} = scope, entry_id) do
+    case cast_uuid(entry_id) do
+      {:ok, id} ->
+        case apply_transition(scope, id, :reopen) do
+          {:ok, {entry, _tag}} -> {:ok, entry}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :error ->
+        {:error, :not_found}
+    end
   end
 
   @spec refresh_pin_coordinates_for_stop_level(StopLevel.t(), pos_integer(), pos_integer()) ::
@@ -143,8 +182,10 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   def create_photo(%Scope{} = scope, attrs, upload) when is_map(attrs) and is_map(upload) do
     with {:ok, photo_id} <- cast_uuid(attr(attrs, :id)),
          {:ok, entry_id} <- cast_uuid(attr(attrs, :journal_entry_id)),
-         {:ok, staged} <- PhotoStorage.stage(scope, photo_id, upload) do
-      create_staged_photo(scope, photo_id, entry_id, attrs, staged)
+         {:ok, staged} <- PhotoStorage.stage(scope, photo_id, upload),
+         {:ok, photo} <- create_staged_photo(scope, photo_id, entry_id, attrs, staged) do
+      broadcast_changed(scope)
+      {:ok, photo}
     else
       :error -> {:error, :invalid_id}
       {:error, reason} -> {:error, reason}
@@ -501,5 +542,150 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     entry.organization_id == scope.organization_id and
       entry.gtfs_version_id == scope.gtfs_version_id and
       entry.station_id == scope.station_id
+  end
+
+  defp apply_transition(scope, entry_id, transition) do
+    result =
+      Repo.transaction(fn ->
+        case locked_scoped_entry(scope, entry_id) do
+          nil ->
+            Repo.rollback(:not_found)
+
+          %JournalEntry{} = entry ->
+            case transition do
+              :close ->
+                if is_nil(entry.closed_at) do
+                  changeset =
+                    JournalEntry.close_changeset(entry, DateTime.utc_now(), scope.actor_id)
+
+                  case Repo.update(changeset) do
+                    {:ok, updated} -> {:updated, updated}
+                    {:error, cs} -> Repo.rollback(cs)
+                  end
+                else
+                  {:noop, entry}
+                end
+
+              :reopen ->
+                if not is_nil(entry.closed_at) do
+                  changeset = JournalEntry.reopen_changeset(entry)
+
+                  case Repo.update(changeset) do
+                    {:ok, updated} -> {:updated, updated}
+                    {:error, cs} -> Repo.rollback(cs)
+                  end
+                else
+                  {:noop, entry}
+                end
+            end
+        end
+      end)
+
+    case result do
+      {:ok, {:updated, entry}} ->
+        broadcast_changed(scope)
+        {:ok, {entry, :updated}}
+
+      {:ok, {:noop, entry}} ->
+        {:ok, {entry, :noop}}
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, changeset}
+
+      {:error, reason} ->
+        raise "unexpected journal transition error: #{inspect(reason)}"
+    end
+  end
+
+  defp base_entries_query(%Scope{} = scope) do
+    photos =
+      from(photo in JournalPhoto,
+        order_by: [asc: photo.captured_at, asc: photo.inserted_at, asc: photo.id]
+      )
+
+    from(entry in JournalEntry,
+      where:
+        entry.organization_id == ^scope.organization_id and
+          entry.gtfs_version_id == ^scope.gtfs_version_id and
+          entry.station_id == ^scope.station_id,
+      preload: [photos: ^photos]
+    )
+  end
+
+  defp filter_by_status(query, :all), do: query
+  defp filter_by_status(query, :open), do: where(query, [entry], is_nil(entry.closed_at))
+
+  defp sort_by_order(query, :asc) do
+    order_by(query, [entry],
+      asc: entry.captured_at,
+      asc: entry.inserted_at,
+      asc: entry.id
+    )
+  end
+
+  defp sort_by_order(query, :desc) do
+    order_by(query, [entry],
+      desc: entry.captured_at,
+      desc: entry.inserted_at,
+      desc: entry.id
+    )
+  end
+
+  defp limit_entries(query, nil), do: query
+  defp limit_entries(query, limit) when is_integer(limit) and limit > 0, do: limit(query, ^limit)
+
+  defp validate_list_opts!(opts) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError, "options must be a keyword list"
+    end
+
+    allowed_keys = [:status, :order, :limit]
+
+    for {key, val} <- opts do
+      if key not in allowed_keys do
+        raise ArgumentError, "unknown option: #{inspect(key)}"
+      end
+
+      case key do
+        :status ->
+          if val not in [:open, :all] do
+            raise ArgumentError, "invalid :status option: #{inspect(val)}"
+          end
+
+        :order ->
+          if val not in [:asc, :desc] do
+            raise ArgumentError, "invalid :order option: #{inspect(val)}"
+          end
+
+        :limit ->
+          unless is_nil(val) or (is_integer(val) and val > 0) do
+            raise ArgumentError, "invalid :limit option: #{inspect(val)}"
+          end
+      end
+    end
+
+    opts
+  end
+
+  defp topic(%Scope{} = scope) do
+    "station_journal:#{scope.organization_id}:#{scope.gtfs_version_id}:#{scope.station_id}"
+  end
+
+  defp broadcast_changed(%Scope{} = scope) do
+    case Phoenix.PubSub.broadcast(
+           GtfsPlanner.PubSub,
+           topic(scope),
+           {:station_journal_changed, scope.station_id}
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("station_journal_pubsub_broadcast_failed", reason: reason)
+        :ok
+    end
   end
 end
