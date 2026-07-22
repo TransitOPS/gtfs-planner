@@ -58,10 +58,6 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     end
   end
 
-  @spec sync_entries(Scope.t(), [map()]) :: %{
-          synced_count: non_neg_integer(),
-          errors: [sync_error()]
-        }
   @spec subscribe(Scope.t()) :: :ok | {:error, term()}
   def subscribe(%Scope{} = scope) do
     Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic(scope))
@@ -600,7 +596,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
         {:error, changeset}
 
       {:error, reason} ->
-        {:error, reason}
+        raise "unexpected journal transition error: #{inspect(reason)}"
     end
   end
 

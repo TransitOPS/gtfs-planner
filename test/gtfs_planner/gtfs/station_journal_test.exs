@@ -963,11 +963,14 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       send(task1.pid, :go)
       send(task2.pid, :go)
 
-      Task.await(task1)
-      Task.await(task2)
+      assert {:ok, %JournalEntry{} = task1_entry} = Task.await(task1)
+      assert {:ok, %JournalEntry{} = task2_entry} = Task.await(task2)
+
+      assert closure_fields_paired?(task1_entry)
+      assert closure_fields_paired?(task2_entry)
 
       entry = Repo.get!(JournalEntry, id)
-      assert is_nil(entry.closed_at) or not is_nil(entry.closed_at)
+      assert closure_fields_paired?(entry)
     end
 
     test "replay sync on a closed entry preserves closure fields", %{scope: scope} do
@@ -988,6 +991,11 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert synced.closed_at == closed.closed_at
       assert synced.closed_by == closed.closed_by
     end
+  end
+
+  defp closure_fields_paired?(entry) do
+    (is_nil(entry.closed_at) and is_nil(entry.closed_by)) or
+      (not is_nil(entry.closed_at) and not is_nil(entry.closed_by))
   end
 
   describe "scoped notifications" do
