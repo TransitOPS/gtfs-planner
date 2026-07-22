@@ -1373,6 +1373,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         measurement_enabled={@measurement_enabled}
         cross_level_badges_by_stop={@cross_level_badges_by_stop}
       />
+      <.journal_markers_layer streams={@streams} mode={@mode} />
       <.ruler_line
         :if={(@mode == :view and @scale_point_a) && @scale_point_b}
         point_a={@scale_point_a}
@@ -1384,6 +1385,104 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         pending_xy={@pending_xy}
       />
     </svg>
+    """
+  end
+
+  attr :streams, :any, required: true
+  attr :mode, :atom, required: true
+
+  def journal_markers_layer(assigns) do
+    ~H"""
+    <g id="journal-markers-svg" phx-update="stream">
+      <g
+        :for={{dom_id, marker} <- @streams.journal_markers}
+        id={dom_id}
+        data-journal-marker="true"
+        data-journal-kind={marker.kind}
+        data-journal-state={marker.state}
+        data-journal-target-id={marker.target_id}
+        data-center-x={marker.x}
+        data-center-y={marker.y}
+        class={[
+          "journal-marker-group",
+          if(@mode == :view, do: "cursor-pointer focus:outline-none", else: "pointer-events-none")
+        ]}
+        tabindex={if @mode == :view, do: "0"}
+        role={if @mode == :view, do: "button"}
+        aria-label={marker.accessible_name}
+        phx-click={if @mode == :view, do: "journal_marker_clicked"}
+        phx-value-id={if @mode == :view, do: marker.id}
+      >
+        <title>{marker.accessible_name}</title>
+
+        <%= case marker.kind do %>
+          <% :pin -> %>
+            <g
+              data-journal-pin="true"
+              data-center-x={marker.x}
+              data-center-y={marker.y}
+              transform={"translate(#{marker.x}, #{marker.y})"}
+            >
+              <path
+                data-journal-pin-body={if marker.state == :open, do: "true"}
+                data-journal-closed-body={if marker.state == :closed, do: "true"}
+                d="M 0 0 C -0.4 -0.56 -0.72 -0.88 -0.72 -1.28 A 0.72 0.72 0 1 1 0.72 -1.28 C 0.72 -0.88 0.4 -0.56 0 0 Z"
+                stroke-width="0.12"
+              />
+              <circle
+                :if={marker.state == :open}
+                data-journal-pin-head="true"
+                cx="0"
+                cy="-1.28"
+                r="0.24"
+              />
+              <path
+                :if={marker.state == :closed}
+                data-journal-closed-glyph="true"
+                d="M -0.2 -1.28 L -0.05 -1.13 L 0.25 -1.43"
+                stroke-width="0.1"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+
+          <% _node_or_pathway -> %>
+            <circle
+              data-journal-dot="true"
+              data-center-x={marker.x}
+              data-center-y={marker.y}
+              cx={marker.x}
+              cy={marker.y}
+              r="0.6"
+              stroke-width="0.15"
+            />
+        <% end %>
+
+        <circle
+          :if={marker.focused?}
+          data-journal-ring="true"
+          data-center-x={marker.x}
+          data-center-y={marker.y}
+          cx={marker.x}
+          cy={marker.y}
+          r="1.3"
+          stroke-width="0.15"
+          stroke-dasharray="0.4 0.3"
+        />
+
+        <rect
+          data-journal-hit-target="true"
+          data-journal-kind={marker.kind}
+          data-center-x={marker.x}
+          data-center-y={marker.y}
+          x={marker.x - 1.75}
+          y={if marker.kind == :pin, do: marker.y - 2.625, else: marker.y - 1.75}
+          width="3.5"
+          height="3.5"
+          fill="transparent"
+        />
+      </g>
+    </g>
     """
   end
 
@@ -3007,6 +3106,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <polygon points="35,2 40,6 35,10" fill="#FF00FF" />
             </svg>
             <span>Exit Gate</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4 pt-3 border-t border-base-200">
+        <h4 class="text-xs font-semibold text-base-content/70 uppercase tracking-wide mb-2">
+          Journal
+        </h4>
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="20" class="shrink-0" viewBox="-8 -20 16 22">
+              <path
+                d="M 0 0 C -4 -5.6 -7.2 -8.8 -7.2 -12.8 A 7.2 7.2 0 1 1 7.2 -12.8 C 7.2 -8.8 4 -5.6 0 0 Z"
+                fill="#B45309"
+                stroke="#FFFFFF"
+                stroke-width="1.2"
+              />
+              <circle cx="0" cy="-12.8" r="2.4" fill="#FFFFFF" />
+            </svg>
+            <span>Open Pin</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="20" class="shrink-0" viewBox="-8 -20 16 22">
+              <path
+                d="M 0 0 C -4 -5.6 -7.2 -8.8 -7.2 -12.8 A 7.2 7.2 0 1 1 7.2 -12.8 C 7.2 -8.8 4 -5.6 0 0 Z"
+                fill="#FFFFFF"
+                stroke="#B45309"
+                stroke-width="1.2"
+              />
+              <path
+                d="M -2 -12.8 L -0.5 -11.3 L 2.5 -14.3"
+                fill="none"
+                stroke="#B45309"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span>Closed Pin</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="14" class="shrink-0">
+              <circle cx="7" cy="7" r="5" fill="#B45309" stroke="#FFFFFF" stroke-width="1.5" />
+            </svg>
+            <span>Entity Dot</span>
           </div>
         </div>
       </div>

@@ -147,6 +147,44 @@ test("Package 03 marker palette resolves amber token and captures reference", as
   });
 });
 
+test("Package 03 marker shell and legend", async ({ page }) => {
+  await mkdir(pkg3ArtifactRoot, { recursive: true });
+
+  await page.goto(
+    pathToFileURL(resolve(pkg3ReferenceRoot, "mock-02-floorplans-view.html")).href,
+    { waitUntil: "networkidle" }
+  );
+  await page.evaluate(() => document.fonts.ready);
+
+  const referenceHeading = page.getByText("Mock 02 · Floorplans — View mode, journal closed", { exact: false });
+  await expect(referenceHeading).toBeVisible();
+
+  await page.screenshot({ path: resolve(pkg3ArtifactRoot, "reference-marker-anatomy.png") });
+
+  await loginAndGoToDiagram(page);
+
+  const diagramPage = page.locator("#diagram-page");
+  await expect(diagramPage).toBeVisible();
+
+  const markerStream = page.locator("#journal-markers-svg");
+  await expect(markerStream).toBeAttached();
+
+  const keyButton = page.getByRole("button", { name: "Show Key" });
+  await expect(keyButton).toBeVisible();
+  await keyButton.click();
+
+  const legendPanel = page.locator("#diagram-legend-panel");
+  await expect(legendPanel).toBeVisible();
+  await expect(legendPanel.getByText("Open Pin")).toBeVisible();
+  await expect(legendPanel.getByText("Closed Pin")).toBeVisible();
+  await expect(legendPanel.getByText("Entity Dot")).toBeVisible();
+
+  await page.screenshot({
+    path: resolve(pkg3ArtifactRoot, "production-marker-shell.png"),
+    animations: "disabled",
+  });
+});
+
 test("renders copied journal references", async ({ page }) => {
   await mkdir(artifactRoot, { recursive: true });
 

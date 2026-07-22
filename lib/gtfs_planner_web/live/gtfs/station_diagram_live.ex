@@ -93,6 +93,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> stream_configure(:journal_entries,
        dom_id: fn entry -> "journal-entries-#{entry.id}" end
      )
+     |> stream_configure(:journal_markers,
+       dom_id: fn marker -> marker.id end
+     )
      |> assign(:journal_load_generation, 0)
      |> reset_journal()
      |> assign(:mode, :view)
@@ -4353,6 +4356,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp reset_journal(socket) do
     socket
     |> stream(:journal_entries, [], reset: true)
+    |> stream(:journal_markers, [], reset: true)
+    |> assign(:journal_marker_index, nil)
+    |> assign(:journal_focused_marker_id, nil)
+    |> assign(:journal_target_scope, nil)
+    |> assign(:journal_floorplan_entry_ids, MapSet.new())
     |> assign(:journal_scope, nil)
     |> assign(:journal_panel_open?, false)
     |> assign(:journal_filter, :open)

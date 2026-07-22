@@ -82,6 +82,26 @@ function makeBadgeGroup(overlay, { id = "badge-g-1", pathwayId = 1, tabindex = "
   return group;
 }
 
+function makeJournalGroup(
+  overlay,
+  { id = "journal-marker-pin-1", markerId = "journal-marker-pin-1", tabindex = "0" } = {}
+) {
+  const group = elSVG("g", {
+    id,
+    "data-journal-marker": "true",
+    "data-journal-kind": "pin",
+    "data-journal-state": "open",
+    "data-center-x": "50",
+    "data-center-y": "50",
+    tabindex,
+    role: "button",
+    "phx-click": "journal_marker_clicked",
+    "phx-value-id": markerId
+  });
+  overlay.appendChild(group);
+  return group;
+}
+
 function makeHook(svg) {
   const hook = Object.create(DiagramCanvasHook);
   hook.el = svg;
@@ -189,6 +209,33 @@ describe("DiagramCanvasHook — group activation", () => {
 
     it("clicks the badge group when Space is pressed on a focused badge group", () => {
       const group = makeBadgeGroup(overlay);
+      const hook = makeHook(svg);
+      hook.mounted();
+
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
+      group.focus();
+      const event = dispatchDocumentKeydown(" ");
+
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("clicks the journal marker group when Enter is pressed on a focused journal group", () => {
+      const group = makeJournalGroup(overlay);
+      const hook = makeHook(svg);
+      hook.mounted();
+
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
+      group.focus();
+      dispatchDocumentKeydown("Enter");
+
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("clicks the journal marker group when Space is pressed on a focused journal group", () => {
+      const group = makeJournalGroup(overlay);
       const hook = makeHook(svg);
       hook.mounted();
 

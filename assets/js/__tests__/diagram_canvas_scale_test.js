@@ -106,6 +106,13 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-badge-offset-x="1.1"
             ></rect>
           </g>
+          <g id="journal-markers-svg" phx-update="stream">
+            <g id="journal-pin-g" data-journal-pin="true" data-center-x="40" data-center-y="50"></g>
+            <circle id="journal-dot" data-journal-dot="true" data-center-x="25" data-center-y="35"></circle>
+            <circle id="journal-ring" data-journal-ring="true" data-center-x="40" data-center-y="50"></circle>
+            <rect id="journal-hit" data-journal-hit-target="true" data-journal-kind="pin" data-center-x="40" data-center-y="50"></rect>
+            <rect id="journal-invalid-hit" data-journal-hit-target="true" data-journal-kind="pin" data-center-x="invalid" data-center-y="50"></rect>
+          </g>
           <g id="pathways-svg">
             <g
               id="editable-pathway"
@@ -673,6 +680,34 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(() => hook.scaleOverlayElements()).not.toThrow();
     expect(stairsHit.getAttribute("width")).toBe("1.23");
     expect(stairsHit.getAttribute("height")).toBe("4.56");
+  });
+
+  it("rescales finite journal markers, dots, rings, and hit targets while ignoring malformed geometry", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 2;
+    hook.scaleOverlayElements();
+
+    const pin = document.querySelector("#journal-pin-g");
+    const dot = document.querySelector("#journal-dot");
+    const ring = document.querySelector("#journal-ring");
+    const hit = document.querySelector("#journal-hit");
+    const invalidHit = document.querySelector("#journal-invalid-hit");
+
+    expect(pin.getAttribute("transform")).toBe("translate(40, 50) scale(0.5)");
+    expect(dot.getAttribute("cx")).toBe("25");
+    expect(dot.getAttribute("cy")).toBe("35");
+    expect(parseFloat(dot.getAttribute("r"))).toBeCloseTo(0.3, 3);
+    expect(ring.getAttribute("cx")).toBe("40");
+    expect(ring.getAttribute("cy")).toBe("50");
+    expect(hit.getAttribute("x")).toBe("39.125");
+    expect(hit.getAttribute("y")).toBe("48.6875");
+    expect(hit.getAttribute("width")).toBe("1.75");
+    expect(hit.getAttribute("height")).toBe("1.75");
+    expect(invalidHit.getAttribute("x")).toBe(null);
   });
 
   it("shows and hides tooltip on hover for stop and pathway targets", () => {
