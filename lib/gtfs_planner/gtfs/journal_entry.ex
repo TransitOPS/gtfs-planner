@@ -114,7 +114,6 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
     |> check_constraint(:closed_at, name: :journal_entries_closure_pair_ck)
   end
 
-
   defp validate_entry_fields(changeset, options \\ []) do
     required =
       if Keyword.get(options, :required, true), do: [:id, :target_type, :captured_at], else: []

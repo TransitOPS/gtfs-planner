@@ -115,7 +115,10 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   def close_entry(%Scope{} = scope, entry_id) do
     case cast_uuid(entry_id) do
       {:ok, id} ->
-        apply_transition(scope, id, :close)
+        case apply_transition(scope, id, :close) do
+          {:ok, {entry, _tag}} -> {:ok, entry}
+          {:error, reason} -> {:error, reason}
+        end
 
       :error ->
         {:error, :not_found}
@@ -127,7 +130,10 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   def reopen_entry(%Scope{} = scope, entry_id) do
     case cast_uuid(entry_id) do
       {:ok, id} ->
-        apply_transition(scope, id, :reopen)
+        case apply_transition(scope, id, :reopen) do
+          {:ok, {entry, _tag}} -> {:ok, entry}
+          {:error, reason} -> {:error, reason}
+        end
 
       :error ->
         {:error, :not_found}
@@ -582,10 +588,10 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     case result do
       {:ok, {:updated, entry}} ->
         broadcast_changed(scope)
-        {:ok, entry}
+        {:ok, {entry, :updated}}
 
       {:ok, {:noop, entry}} ->
-        {:ok, entry}
+        {:ok, {entry, :noop}}
 
       {:error, :not_found} ->
         {:error, :not_found}

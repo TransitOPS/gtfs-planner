@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.StationJournalTest do
   use GtfsPlanner.DataCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto}
   alias GtfsPlanner.Gtfs.StationJournal.Scope
@@ -938,6 +939,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
       task1 =
         Task.async(fn ->
+          Sandbox.allow(Repo, parent, self())
           send(parent, {:ready, 1})
 
           receive do
@@ -947,6 +949,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
       task2 =
         Task.async(fn ->
+          Sandbox.allow(Repo, parent, self())
           send(parent, {:ready, 2})
 
           receive do
