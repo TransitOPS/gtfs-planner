@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
+  import ExUnit.CaptureLog
   import Mox
 
   @adapter_key :gtfs_catalog_read_adapter
@@ -258,6 +259,101 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
     end
   end
 
+  describe "stop catalog telemetry through the production Repo adapter" do
+    @phase_event [:gtfs_planner, :stop_catalog, :phase]
+
+    test "successful stop catalog emits two events with safe metadata", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _station = stop_fixture(org.id, version.id, %{stop_id: "st1", location_type: 1})
+      _other = stop_fixture(org.id, version.id, %{stop_id: "st2", location_type: 1})
+
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+      trip = trip_fixture(org.id, version.id, "r1")
+      stop_time_fixture(org.id, version.id, trip.trip_id, "st1")
+
+      handler_id = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        @phase_event,
+        fn _event, measurements, meta, _config ->
+          send(test_pid, {:catalog_phase_event, measurements, meta})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, _page} = Gtfs.load_stop_catalog(org.id, version.id, page: 1, per_page: 50)
+
+      events = receive_all_events([])
+
+      assert length(events) == 2
+
+      [{_prim_meas, prim_meta}, {_enr_meas, enr_meta}] = events
+
+      assert prim_meta.phase == :primary
+      assert prim_meta.outcome == :ok
+      assert prim_meta.row_count == 2
+
+      assert enr_meta.phase == :route_enrichment
+      assert enr_meta.outcome == :ok
+      assert enr_meta.row_count == 2
+
+      for {measurements, meta} <- events do
+        assert is_integer(measurements.duration)
+        assert measurements.duration >= 0
+
+        assert is_integer(meta.row_count)
+        assert meta.row_count >= 0
+        assert meta.phase in [:primary, :route_enrichment]
+        assert meta.outcome in [:ok, :unavailable]
+
+        refute Map.has_key?(meta, :organization_id)
+        refute Map.has_key?(meta, :gtfs_version_id)
+        refute Map.has_key?(meta, :search)
+        refute Map.has_key?(meta, :route_id)
+        refute Map.has_key?(meta, :stop_id)
+      end
+    end
+
+    test "primary unavailable emits only the primary event with :unavailable outcome", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      handler_id = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        @phase_event,
+        fn _event, measurements, meta, _config ->
+          send(test_pid, {:catalog_phase_event, measurements, meta})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      capture_log(fn ->
+        with_unreachable_repo(fn ->
+          assert Gtfs.load_stop_catalog(org.id, version.id, []) == {:error, :unavailable}
+        end)
+      end)
+
+      events = receive_all_events([])
+      assert length(events) == 1
+
+      [{_measurements, meta}] = events
+      assert meta.phase == :primary
+      assert meta.outcome == :unavailable
+      assert meta.row_count == 0
+    end
+  end
+
   describe "outcome classification with a configured adapter" do
     setup :verify_on_exit!
 
@@ -374,5 +470,42 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
       gtfs_version_id: gtfs_version_id
     })
     |> Repo.insert!()
+  end
+
+  defp receive_all_events(acc) do
+    receive do
+      {:catalog_phase_event, measurements, meta} ->
+        receive_all_events([{measurements, meta} | acc])
+    after
+      50 -> Enum.reverse(acc)
+    end
+  end
+
+  defp with_unreachable_repo(fun) do
+    {:ok, pid} =
+      GtfsPlanner.Repo.start_link(
+        name: nil,
+        hostname: "127.0.0.1",
+        port: 1,
+        username: "postgres",
+        password: "postgres",
+        database: "gtfs_planner_unreachable",
+        pool: DBConnection.ConnectionPool,
+        pool_size: 1,
+        queue_target: 20,
+        queue_interval: 20,
+        connect_timeout: 100,
+        log: false
+      )
+
+    previous = GtfsPlanner.Repo.get_dynamic_repo()
+    GtfsPlanner.Repo.put_dynamic_repo(pid)
+
+    try do
+      fun.()
+    after
+      GtfsPlanner.Repo.put_dynamic_repo(previous)
+      Supervisor.stop(pid)
+    end
   end
 end
