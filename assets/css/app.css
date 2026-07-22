@@ -268,11 +268,99 @@ body {
   scroll-margin-top: 1rem;
 }
 
+/* The journal is a fixed-width work queue that participates in the floorplan
+   flex row. It never overlays the canvas, and each side owns its own overflow. */
+#diagram-page #diagram-canvas-wrapper {
+  min-width: 0;
+}
+
+#station-journal-panel {
+  max-height: 100%;
+  contain: inline-size;
+}
+
+#journal-entry-list {
+  scrollbar-gutter: stable;
+}
+
+#journal-empty-first-use {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+#journal-empty-first-use > div {
+  display: contents;
+}
+
+#journal-empty-first-use .journal-empty-icon {
+  order: -1;
+  margin-bottom: 0.75rem;
+}
+
+#journal-empty-first-use .journal-empty-copy {
+  order: 1;
+  margin-top: 0.25rem;
+}
+
+#station-journal-panel [data-role="journal-entry"],
+#station-journal-panel [data-role="journal-excerpt"],
+#station-journal-panel [id^="journal-entry-target-"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.journal-panel-motion {
+  transition-property: opacity, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.journal-panel-enter-start,
+.journal-panel-exit-end {
+  opacity: 0;
+  transform: translateX(-0.75rem);
+}
+
+.journal-panel-enter-end,
+.journal-panel-exit-start {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.journal-loading-delay {
+  animation: journal-skeleton-reveal 1ms step-end 300ms both;
+}
+
+.journal-entry-motion {
+  animation: journal-entry-insert 600ms ease-out both;
+}
+
+@keyframes journal-skeleton-reveal {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+@keyframes journal-entry-insert {
+  from {
+    background-color: color-mix(in oklab, var(--diagram-journal-open) 12%, var(--color-base-100));
+  }
+
+  to {
+    background-color: var(--color-base-100);
+  }
+}
+
 @media (min-width: 768px) {
   .diagram-workspace {
     max-height: min(72rem, calc(100vh - 13rem));
-    overflow: auto;
-    overscroll-behavior: contain;
+    overflow: hidden;
   }
 }
 
@@ -432,9 +520,21 @@ dialog[role="alertdialog"][open] > div > div {
 
 @media (prefers-reduced-motion: reduce) {
   .diagram-workspace,
+  #station-journal-panel,
+  .journal-panel-motion,
+  .journal-entry-motion,
+  .journal-loading-delay,
   #diagram-page #diagram-canvas-wrapper,
   #diagram-page #map-canvas-wrapper {
+    animation-duration: 0ms !important;
     transition-duration: 0ms;
+  }
+
+  .journal-panel-enter-start,
+  .journal-panel-enter-end,
+  .journal-panel-exit-start,
+  .journal-panel-exit-end {
+    transform: none !important;
   }
 
   /* Zero out native overlay motion for accessibility */

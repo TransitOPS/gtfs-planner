@@ -333,6 +333,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       d = doc(html)
 
       assert Enum.count(LazyHTML.query(d, "#journal-empty-first-use")) == 1
+      assert Enum.count(LazyHTML.query(d, "#journal-empty-first-use .journal-empty-icon")) == 1
+      assert Enum.count(LazyHTML.query(d, "#journal-empty-first-use .journal-empty-copy")) == 1
       assert Enum.empty?(LazyHTML.query(d, "#journal-filter"))
       assert Enum.empty?(LazyHTML.query(d, "#journal-empty-first-use button"))
       refute html =~ "Add entry"

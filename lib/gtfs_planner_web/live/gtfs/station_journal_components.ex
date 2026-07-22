@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope
+  alias Phoenix.LiveView.JS
 
   @doc """
   Compacts a roster user or email into a journal byline.
@@ -182,7 +183,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       id="station-journal-panel"
       aria-label="Station journal"
       data-state={@panel_state}
-      class="flex w-[340px] min-w-[340px] max-w-[340px] shrink-0 flex-col overflow-hidden border-r border-base-300 bg-base-100 text-sm text-base-content"
+      phx-mounted={journal_panel_enter()}
+      phx-remove={journal_panel_exit()}
+      phx-window-keydown="close_journal"
+      phx-key="escape"
+      class="journal-panel-shell flex min-h-0 w-[340px] min-w-[340px] max-w-[340px] shrink-0 flex-col overflow-hidden border-r border-base-300 bg-base-100 text-sm text-base-content"
     >
       <header class="flex items-center gap-2 px-4 pb-2 pt-3">
         <h2 class="text-base font-semibold leading-tight">Journal</h2>
@@ -206,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         </.button>
       </header>
 
-      <div :if={@first_loading?} class="px-4 pb-3" aria-hidden="true">
+      <div :if={@first_loading?} class="journal-loading-delay px-4 pb-3" aria-hidden="true">
         <div class="h-11 w-40 rounded-md bg-base-200"></div>
       </div>
 
@@ -374,7 +379,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       data-entry-id={@entry.id}
       data-entry-state={if @closed?, do: "closed", else: "open"}
       class={[
-        "border-l-2 border-l-transparent bg-base-100 transition-colors",
+        "journal-entry-motion border-l-2 border-l-transparent bg-base-100 transition-colors",
         @expanded? &&
           "border-l-[color:var(--diagram-journal-open)] bg-warning/10",
         @closed? && !@undo? && "opacity-70"
@@ -573,8 +578,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       title="No journal entries"
       class="mx-4 mt-2 border-0 px-4 py-10"
     >
-      <.icon name="hero-clipboard-document-list" class="mx-auto mb-3 size-8 text-base-content/40" />
-      Notes and photos captured at this station with the Pathways field companion appear here for review.
+      <span class="journal-empty-icon">
+        <.icon name="hero-clipboard-document-list" class="size-8 text-base-content/40" />
+      </span>
+      <span class="journal-empty-copy">
+        Notes and photos captured at this station with the Pathways field companion appear here for review.
+      </span>
     </.empty_state>
     """
   end
@@ -630,6 +639,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       </.callout>
     </div>
     """
+  end
+
+  defp journal_panel_enter do
+    JS.show(
+      display: "flex",
+      time: 180,
+      transition: {"journal-panel-motion", "journal-panel-enter-start", "journal-panel-enter-end"}
+    )
+  end
+
+  defp journal_panel_exit do
+    JS.hide(
+      time: 140,
+      transition: {"journal-panel-motion", "journal-panel-exit-start", "journal-panel-exit-end"}
+    )
   end
 
   defp target_presentation(%JournalEntry{} = entry, targets) do

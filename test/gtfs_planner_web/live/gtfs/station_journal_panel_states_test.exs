@@ -11,7 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelStatesTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.StationJournal.Scope
 
-  @controlled_source GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest.ControlledJournalSource
+  @controlled_source GtfsPlannerWeb.Gtfs.ControlledJournalSource
 
   setup do
     organization = organization_fixture()

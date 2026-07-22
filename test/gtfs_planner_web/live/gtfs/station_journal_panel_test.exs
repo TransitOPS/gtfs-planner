@@ -67,6 +67,70 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     }
   end
 
+  test "production toolbar and workspace compose the journal as a left push panel", context do
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    assert has_element?(
+             view,
+             "#diagram-page[style*='--diagram-journal-open'][phx-hook='JournalPanelHook']:not([phx-update='ignore'])"
+           )
+
+    assert has_element?(view, "#diagram-action-strip #scale-control + #journal-trigger")
+    assert has_element?(view, "#journal-trigger[aria-expanded='false']")
+    refute has_element?(view, "#station-journal-panel")
+
+    view
+    |> element("#journal-trigger")
+    |> render_click()
+
+    render_async(view, 5_000)
+
+    assert has_element?(view, "#journal-trigger[aria-expanded='true']")
+
+    assert has_element?(
+             view,
+             "#station-journal-panel[phx-mounted][phx-remove][phx-window-keydown='close_journal'][phx-key='escape']:not([phx-update='ignore'])"
+           )
+
+    assert has_element?(
+             view,
+             "#diagram-workspace > #station-journal-panel + #diagram-canvas-wrapper.min-w-0.flex-1"
+           )
+
+    assert has_element?(
+             view,
+             "#station-journal-panel[class~='w-[340px]'][class~='min-w-[340px]'][class~='max-w-[340px]']"
+           )
+
+    assert has_element?(view, "#journal-empty-first-use")
+    refute has_element?(view, "#journal-filter")
+    refute has_element?(view, "[data-journal-scrim]")
+
+    render_hook(view, "switch_mode", %{"mode" => "add"})
+    assert has_element?(view, "#journal-trigger")
+
+    render_hook(view, "switch_mode", %{"mode" => "connect"})
+    assert has_element?(view, "#journal-trigger")
+
+    render_hook(view, "switch_mode", %{"mode" => "map"})
+    refute has_element?(view, "#journal-trigger")
+    refute has_element?(view, "#station-journal-panel")
+  end
+
+  test "journal motion CSS consumes the canonical palette and covers non-ideal states" do
+    css = File.read!("assets/css/app.css")
+
+    assert css =~ "#station-journal-panel"
+    assert css =~ "#journal-entry-list"
+    assert css =~ ".journal-panel-motion"
+    assert css =~ ".journal-loading-delay"
+    assert css =~ ".journal-entry-motion"
+    assert css =~ "var(--diagram-journal-open)"
+    assert css =~ "@media (prefers-reduced-motion: reduce)"
+    refute Regex.match?(~r/--diagram-journal-open\s*:/, css)
+  end
+
   test "open, filter, and expansion keep the server-owned stream authoritative", context do
     first_id = Ecto.UUID.generate()
     second_id = Ecto.UUID.generate()

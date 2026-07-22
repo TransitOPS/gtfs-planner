@@ -24,6 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   require Logger
 
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
+  import GtfsPlannerWeb.Gtfs.StationJournalComponents, only: [journal_panel: 1]
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
@@ -1007,6 +1008,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             child_stops_list={@child_stops_list}
             stop_search_form={@stop_search_form}
             station={@station}
+            journal_scope={@journal_scope}
+            journal_open_count={@journal_open_count}
+            journal_panel_open?={@journal_panel_open?}
           />
           <section
             id="floorplan-workspace"
@@ -1043,9 +1047,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 />
               </div>
             <% else %>
-              <div id="diagram-workspace" class="diagram-workspace w-full px-4 sm:px-6 lg:px-8 py-4">
+              <div
+                id="diagram-workspace"
+                class="diagram-workspace flex min-h-0 min-w-0 w-full items-stretch overflow-hidden"
+              >
                 <h2 id="floorplan-workspace-heading" class="sr-only">Floorplan workspace</h2>
-                <div id="diagram-canvas-wrapper">
+                <.journal_panel
+                  :if={@journal_panel_open? && @journal_scope}
+                  journal_scope={@journal_scope}
+                  journal_entries={@streams.journal_entries}
+                  journal_state={@journal_state}
+                  journal_filter={@journal_filter}
+                  journal_loaded_once?={@journal_loaded_once?}
+                  journal_refresh_error?={@journal_refresh_error?}
+                  journal_open_count={@journal_open_count}
+                  journal_closed_count={@journal_closed_count}
+                  journal_visible_count={@journal_visible_count}
+                  journal_expanded_id={@journal_expanded_id}
+                  journal_undo_ids={@journal_undo_ids}
+                  journal_pending_new_ids={@journal_pending_new_ids}
+                  journal_authors={@journal_authors}
+                  journal_targets={@journal_targets}
+                  journal_local_times={@journal_local_times}
+                  journal_display_zone={@journal_display_zone}
+                  journal_now={@journal_now}
+                  journal_live_message={@journal_live_message}
+                  journal_error_message={@journal_error_message}
+                />
+                <div
+                  id="diagram-canvas-wrapper"
+                  class="min-w-0 flex-1 overflow-auto overscroll-contain px-4 py-4 sm:px-6 lg:px-8"
+                >
                   <.diagram_canvas
                     station={@station}
                     active_level={@active_level}

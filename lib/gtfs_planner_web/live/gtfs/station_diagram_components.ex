@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   use Phoenix.Component
 
   import GtfsPlannerWeb.CoreComponents
+  import GtfsPlannerWeb.Gtfs.StationJournalComponents, only: [journal_trigger: 1]
   import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
   alias GtfsPlanner.Gtfs.Coordinates
@@ -105,6 +106,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :child_stops_list, :list, default: []
   attr :stop_search_form, :any, required: true
   attr :station, :any, required: true
+  attr :journal_scope, :any, default: nil
+  attr :journal_open_count, :integer, default: 0
+  attr :journal_panel_open?, :boolean, default: false
 
   def diagram_action_strip(assigns) do
     open_panel =
@@ -195,16 +199,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           close_panel={@close_panel}
         />
 
+        <div :if={@mode == :view} id="scale-control">
+          <.scale_control
+            active_stop_level={@active_stop_level}
+            measurement_enabled={@measurement_enabled}
+            has_scale={@has_scale}
+            scale_value={@scale_value}
+            scale_open={@scale_open}
+            scale_close={@scale_close}
+          />
+        </div>
+
+        <.journal_trigger
+          :if={@journal_scope && @mode in [:view, :add, :connect]}
+          open_count={@journal_open_count}
+          panel_open?={@journal_panel_open?}
+        />
+
         <%= cond do %>
           <% @mode == :view -> %>
-            <.scale_control
-              active_stop_level={@active_stop_level}
-              measurement_enabled={@measurement_enabled}
-              has_scale={@has_scale}
-              scale_value={@scale_value}
-              scale_open={@scale_open}
-              scale_close={@scale_close}
-            />
             <span :if={@measurement_enabled} class="text-sm text-base-content/70 mx-auto">
               {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
             </span>
