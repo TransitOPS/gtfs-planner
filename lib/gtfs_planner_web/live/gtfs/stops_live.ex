@@ -77,6 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       |> assign(:search, search)
       |> assign(:sort_by, sort_by)
       |> assign(:sort_dir, sort_dir)
+      |> assign(:page, page)
       |> assign(:route_id, route_id)
       |> assign(:direction_id, direction_id)
 
@@ -452,11 +453,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       </div>
 
       <div
-        :if={@stops_state in [:ready, :route_enrichment_unavailable] and not @stops_empty?}
+        :if={
+          @stops_state == :loading or
+            (@stops_state in [:ready, :route_enrichment_unavailable] and not @stops_empty?)
+        }
         class="mt-6"
       >
         <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-          <.table id="stops" rows={@streams.stops} responsive="stack">
+          <.table
+            id="stops"
+            rows={@streams.stops}
+            responsive="stack"
+            disabled={@stops_state == :loading}
+          >
             <:col
               :let={{_id, stop}}
               label="Stop ID"
@@ -515,11 +524,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         </div>
 
         <.pagination
-          :if={@total_count > 0}
+          :if={@stops_state == :loading or @total_count > 0}
           page={@page}
           per_page={@per_page}
           total={@total_count}
           entity="stops &amp; stations"
+          disabled={@stops_state == :loading}
         />
       </div>
     </Layouts.app>

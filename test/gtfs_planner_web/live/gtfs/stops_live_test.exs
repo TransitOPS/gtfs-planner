@@ -691,7 +691,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert Enum.empty?(LazyHTML.query(doc, "#stops-constrained-empty"))
       assert Enum.empty?(LazyHTML.query(doc, "#stops-unavailable"))
       assert Enum.empty?(LazyHTML.query(doc, "#stops-enrichment-warning"))
-      assert Enum.empty?(LazyHTML.query(doc, "tbody#stops"))
+      assert Enum.count(LazyHTML.query(doc, "tbody#stops")) == 1
+      assert Enum.empty?(LazyHTML.query(doc, "tbody#stops tr"))
     end
 
     test "loading state disables filter selects and search input", %{
@@ -788,6 +789,35 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       connected = render(view)
       assert connected =~ "URLVAL1"
+    end
+
+    test "loading keeps URL-derived sort and pagination controls visible and disabled", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn =
+        get(
+          conn,
+          "/gtfs/#{version.id}/stops?sort_by=stop_id&sort_dir=desc&page=3"
+        )
+
+      assert conn.status == 200
+      doc = LazyHTML.from_fragment(conn.resp_body)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-container")) == 1
+      assert Enum.count(LazyHTML.query(doc, "th[aria-sort='descending']")) == 1
+      assert Enum.count(LazyHTML.query(doc, "th button[disabled]")) == 3
+      assert Enum.count(LazyHTML.query(doc, "button[phx-click='paginate'][disabled]")) == 2
+
+      assert Enum.count(LazyHTML.query(doc, "button[phx-click='paginate'][phx-value-page='2']")) ==
+               1
+
+      assert Enum.count(LazyHTML.query(doc, "button[phx-click='paginate'][phx-value-page='4']")) ==
+               1
     end
   end
 
