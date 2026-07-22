@@ -355,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           })
         end)
 
-      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
+      catalog_result = fn opts ->
         page = Keyword.get(opts, :page, 1)
         per_page = Keyword.get(opts, :per_page, 50)
         total = 75
@@ -368,6 +368,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           |> Enum.take(per_page)
 
         {:ok, stop_page(rows, total, canonical, [], %{})}
+      end
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
+        catalog_result.(opts)
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=999")
@@ -386,6 +390,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       # no stable assert_patch/2 observation point here. The exact Mox expectation
       # proves the canonical patch did not trigger a second catalog read, while
       # the DOM assertions prove that the loaded result is canonical page 2.
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
+        catalog_result.(opts)
+      end)
+
+      render_patch(view, "/gtfs/#{version.id}/stops?page=999")
+
+      requested_path = assert_patch(view)
+      requested_uri = URI.parse(requested_path)
+
+      assert requested_uri.path == "/gtfs/#{version.id}/stops"
+      assert URI.decode_query(requested_uri.query)["page"] == "999"
+
+      canonical_path = assert_patch(view)
+      canonical_uri = URI.parse(canonical_path)
+
+      assert canonical_uri.path == "/gtfs/#{version.id}/stops"
+      assert URI.decode_query(canonical_uri.query)["page"] == "2"
+
+      assert has_element?(view, "a", "CL051")
+      refute has_element?(view, "a", "CL001")
     end
   end
 

@@ -555,26 +555,23 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
   end
 
   defp with_started_unreachable_repo(fun) do
-    {:ok, pid} =
-      GtfsPlanner.Repo.start_link(
-        name: nil,
-        hostname: "127.0.0.1",
-        port: 1,
-        username: "postgres",
-        password: "postgres",
-        database: "gtfs_planner_unreachable",
-        pool: DBConnection.ConnectionPool,
-        pool_size: 1,
-        queue_target: 20,
-        queue_interval: 20,
-        connect_timeout: 100,
-        log: false
+    pid =
+      start_supervised!(
+        {GtfsPlanner.Repo,
+         name: nil,
+         hostname: "127.0.0.1",
+         port: 1,
+         username: "postgres",
+         password: "postgres",
+         database: "gtfs_planner_unreachable",
+         pool: DBConnection.ConnectionPool,
+         pool_size: 1,
+         queue_target: 20,
+         queue_interval: 20,
+         connect_timeout: 100,
+         log: false}
       )
 
-    try do
-      fun.(pid)
-    after
-      Supervisor.stop(pid)
-    end
+    fun.(pid)
   end
 end
