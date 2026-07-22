@@ -1598,6 +1598,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("switch_mode", %{"mode" => mode}, socket) do
     case parse_mode(mode) do
       {:ok, mode_atom} ->
+        restore_mode_focus? = journal_mode_focus_transition?(socket, mode_atom)
+
         socket =
           if socket.assigns.mode == :connect do
             assign(socket, :selected_from_stop, nil)
@@ -1620,6 +1622,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> reset_map_workflow()
           |> assign_other_levels()
           |> push_child_stop_markers()
+          |> maybe_focus_journal_mode(mode_atom, restore_mode_focus?)
 
         {:noreply, socket}
 
@@ -4452,6 +4455,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> assign(:journal_expanded_id, expanded_id)
       |> assign(:journal_error_message, nil)
       |> restream_journal_rows(payload, [previous_id, entry_id])
+      |> push_event("journal-focus", %{selector: "#journal-entry-toggle-#{entry_id}"})
     else
       _ -> journal_action_failed(socket)
     end
@@ -4649,6 +4653,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp transition_journal_mode(socket, _next_mode), do: socket
+
+  defp journal_mode_focus_transition?(socket, :map),
+    do: socket.assigns.journal_panel_open?
+
+  defp journal_mode_focus_transition?(%{assigns: %{mode: :map}} = socket, next_mode)
+       when next_mode in [:view, :add, :connect],
+       do: socket.assigns.journal_restore_after_align?
+
+  defp journal_mode_focus_transition?(_socket, _next_mode), do: false
+
+  defp maybe_focus_journal_mode(socket, mode, true) do
+    push_event(socket, "journal-focus", %{selector: "#diagram-mode-option-#{mode}"})
+  end
+
+  defp maybe_focus_journal_mode(socket, _mode, false), do: socket
 
   defp open_pathway_drawer(socket, pathway) do
     pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)

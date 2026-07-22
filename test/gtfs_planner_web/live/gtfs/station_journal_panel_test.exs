@@ -116,6 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     render_hook(view, "switch_mode", %{"mode" => "map"})
     refute has_element?(view, "#journal-trigger")
     refute has_element?(view, "#station-journal-panel")
+    assert_push_event(view, "journal-focus", %{selector: "#diagram-mode-option-map"})
   end
 
   test "journal motion CSS consumes the canonical palette and covers non-ideal states" do
@@ -193,6 +194,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
              end)
            ) ==
              MapSet.new(["journal-entries-#{first_id}", "journal-entries-#{second_id}"])
+
+    render_hook(view, "select_journal_entry", %{"id" => first_id})
+    first_selector = "#journal-entry-toggle-#{first_id}"
+    assert_push_event(view, "journal-focus", %{selector: ^first_selector})
 
     render_hook(view, "set_journal_filter", %{"journal_filter" => "all"})
     render_async(view, 5_000)
@@ -329,6 +334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     refute aligned.journal_panel_open?
     assert aligned.journal_restore_after_align?
     refute_push_event(view, "journal-panel-preference", %{open: false})
+    assert_push_event(view, "journal-focus", %{selector: "#diagram-mode-option-map"})
 
     render_hook(view, "restore_journal_panel", %{"open" => true})
     refute assigns(view).journal_panel_open?
@@ -341,6 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert restored.journal_panel_open?
     refute restored.journal_restore_after_align?
     refute_push_event(view, "journal-panel-preference", %{open: true})
+    assert_push_event(view, "journal-focus", %{selector: "#diagram-mode-option-view"})
 
     render_hook(view, "restore_journal_panel", %{"open" => false})
     refute assigns(view).journal_panel_open?
