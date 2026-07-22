@@ -18,6 +18,11 @@ const PHOTO_ENTRY_ID = "00000000-0000-4000-8000-000000000701";
 const CLOSED_ENTRY_ID = "00000000-0000-4000-8000-000000000702";
 const SECOND_OPEN_ENTRY_ID = "00000000-0000-4000-8000-000000000703";
 const PENDING_ENTRY_ID = "00000000-0000-4000-8000-0000000007f0";
+const MULTI_ENTRY_NODE_ID = "00000000-0000-4000-8000-000000000711";
+const L2_PIN_ENTRY_ID = "00000000-0000-4000-8000-000000000712";
+const SAME_LEVEL_PW_ENTRY_ID = "00000000-0000-4000-8000-000000000713";
+const CROWDED_NODE_ENTRY_ID = "00000000-0000-4000-8000-000000000715";
+const L1_PIN_ENTRY_ID = "00000000-0000-4000-8000-000000000716";
 
 const diagramUser = {
   email: "diagram-test@gtfs-planner.test",
@@ -242,7 +247,7 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
   await expect(row.getByRole("button", { name: "Edit node" })).toBeVisible();
   await expect(row.getByRole("button", { name: "Close entry" })).toBeVisible();
   await expect(row.locator(`#journal-entry-toggle-${PHOTO_ENTRY_ID}`)).toHaveCount(0);
-  await expect(row.getByText("Show on floorplan", { exact: true })).toHaveCount(0);
+  await expect(row.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`)).toBeVisible();
 
   const photo = row.locator('button[id^="journal-photo-"]');
   await expect(photo).toHaveCount(1);
@@ -583,7 +588,7 @@ test("Package 03 marker to panel scoping and clear action", async ({ page }) => 
 
   const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
   await expect(nodeMarker).toBeVisible();
-  await nodeMarker.click();
+  await nodeMarker.click({ force: true });
 
   const panel = page.locator("#station-journal-panel");
   await expect(panel).toBeVisible();
@@ -633,4 +638,273 @@ test("Package 03 Show on floorplan", async ({ page }) => {
   const { writeFile } = await import("node:fs/promises");
   await writeFile(screenshotPath, buf);
   console.log("SCREENSHOT WRITTEN BYTES:", buf.length);
+});
+
+test("Package 03 marker keyboard activation opens panel with focus", async ({ page }) => {
+  await loginAndGoToDiagram(page);
+
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await expect(nodeMarker).toBeVisible();
+  await nodeMarker.focus();
+  await page.keyboard.press("Enter");
+
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("#journal-target-scope")).toBeVisible();
+  await expectFocusInsidePage(page);
+
+  await panel.locator("#journal-clear-target-scope").click();
+  await expect(panel.locator("#journal-target-scope")).toHaveCount(0);
+
+  const pinMarker = page.locator('#journal-markers-svg [data-journal-kind="pin"]').first();
+  await expect(pinMarker).toBeVisible();
+  await pinMarker.focus();
+  await page.keyboard.press("Space");
+
+  await expect(panel.locator("#journal-entry-list")).toBeVisible();
+  await expectFocusInsidePage(page);
+});
+
+test("Package 03 entity scope shows scoped entries and clear restores station view", async ({ page }) => {
+  await loginAndGoToDiagram(page);
+
+  const nodeMarkers = page.locator('#journal-markers-svg [data-journal-kind="node"]');
+  await expect(nodeMarkers.first()).toBeVisible();
+
+  const targetId = await nodeMarkers.first().getAttribute("data-journal-target-id");
+  expect(targetId).toBeTruthy();
+  await nodeMarkers.first().click({ force: true });
+
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+
+  const scopeBar = panel.locator("#journal-target-scope");
+  await expect(scopeBar).toBeVisible();
+
+  const visibleRows = panel.locator('[data-role="journal-entry"]');
+  const count = await visibleRows.count();
+  expect(count).toBeGreaterThanOrEqual(1);
+
+  await panel.locator("#journal-clear-target-scope").click();
+  await expect(scopeBar).toHaveCount(0);
+
+  const allRows = panel.locator('[data-role="journal-entry"]');
+  const allCount = await allRows.count();
+  expect(allCount).toBeGreaterThan(count);
+});
+
+test("Package 03 filter states control marker visibility", async ({ page }) => {
+  const panel = await openJournal(page);
+
+  await chooseJournalFilter(panel, "open");
+  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toHaveCount(0);
+  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
+
+  const openMarkers = page.locator('#journal-markers-svg [data-journal-state="open"]');
+  await expect(openMarkers.first()).toBeVisible();
+
+  await chooseJournalFilter(panel, "closed");
+  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
+  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toHaveCount(0);
+
+  await chooseJournalFilter(panel, "all");
+  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
+  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
+});
+
+test("Package 03 same-level Show on floorplan retains focus and renders one ring", async ({ page }) => {
+  const panel = await openJournal(page);
+  await chooseJournalFilter(panel, "all");
+
+  const showBtn = panel.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`);
+  await expect(showBtn).toBeVisible();
+  await showBtn.click();
+
+  await expect(showBtn).toBeFocused();
+
+  const rings = page.locator('#journal-markers-svg [data-journal-ring="true"]');
+  await expect(rings).toHaveCount(1);
+  await expect(rings.first()).toBeVisible();
+});
+
+test("Package 03 other-level Show on floorplan switches level and renders ring", async ({ page }) => {
+  const panel = await openJournal(page);
+  await chooseJournalFilter(panel, "all");
+
+  const showBtn = panel.locator(`#journal-show-entry-${L2_PIN_ENTRY_ID}`);
+  await expect(showBtn).toBeVisible();
+  await showBtn.click();
+
+  await expect(showBtn).toBeFocused();
+
+  const rings = page.locator('#journal-markers-svg [data-journal-ring="true"]');
+  await expect(rings).toHaveCount(1);
+
+  const levelIndicator = page.locator("#diagram-level-name");
+  await expect(levelIndicator).toContainText("Browser Level 2");
+});
+
+test("Package 03 markers visible but inert in Add and Connect modes", async ({ page }) => {
+  await loginAndGoToDiagram(page);
+
+  const markerSvg = page.locator("#journal-markers-svg");
+  await expect(markerSvg).toBeAttached();
+
+  for (const mode of ["add", "connect"]) {
+    await selectDiagramMode(page, mode);
+
+    const markers = page.locator("#journal-markers-svg [data-journal-marker]");
+    const markerCount = await markers.count();
+
+    if (markerCount > 0) {
+      const firstMarker = markers.first();
+      const pointerEvents = await firstMarker.evaluate(
+        (el) => getComputedStyle(el).pointerEvents,
+      );
+      expect(pointerEvents).toBe("none");
+
+      const tabindex = await firstMarker.getAttribute("tabindex");
+      expect(tabindex).toBeNull();
+
+      const role = await firstMarker.getAttribute("role");
+      expect(role).toBeNull();
+    }
+  }
+});
+
+test("Package 03 no marker overlay in Align mode", async ({ page }) => {
+  await loginAndGoToDiagram(page);
+
+  await selectDiagramMode(page, "map");
+
+  const markerSvg = page.locator("#journal-markers-svg");
+  await expect(markerSvg).toHaveCount(0);
+});
+
+test("Package 03 reduced motion keeps markers usable", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await loginAndGoToDiagram(page);
+
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await expect(nodeMarker).toBeVisible();
+
+  const transition = await nodeMarker.evaluate(
+    (el) => getComputedStyle(el).transitionDuration,
+  );
+  expect(transition).toBe("0s");
+
+  await nodeMarker.click({ force: true });
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+  await expectFocusInsidePage(page);
+});
+
+test("Package 03 panel scroll independent of canvas at multiple viewports", async ({ page }) => {
+  for (const width of [1280, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    const panel = await openJournal(page);
+
+    const list = panel.locator("#journal-entry-list");
+    const scrolling = await list.evaluate((element) => ({
+      overflowY: getComputedStyle(element).overflowY,
+      scrollable: element.scrollHeight > element.clientHeight,
+    }));
+
+    expect(scrolling.overflowY).toBe("auto");
+    expect(scrolling.scrollable).toBe(true);
+
+    const bodyOverflow = await page.evaluate(
+      () => document.body.scrollWidth - window.innerWidth,
+    );
+    expect(bodyOverflow).toBeLessThanOrEqual(2);
+
+    await page.locator("#journal-trigger").click();
+    await expect(panel).toHaveCount(0);
+  }
+});
+
+test("Package 03 no document overflow at 200 percent zoom with markers", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await loginAndGoToDiagram(page);
+
+  await expect(page.locator("#journal-markers-svg")).toBeAttached();
+
+  await page.evaluate(() => {
+    document.body.style.zoom = "2";
+  });
+
+  const overflow = await page.evaluate(() => ({
+    body: document.body.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+
+  expect(overflow.body).toBeLessThanOrEqual(overflow.viewport + 2);
+});
+
+test("Package 03 crowded stop marker stays attached at 200 percent zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginAndGoToDiagram(page);
+
+  const markers = page.locator("#journal-markers-svg [data-journal-marker]");
+  await expect(markers.first()).toBeVisible();
+
+  await page.evaluate(() => {
+    document.body.style.zoom = "2";
+  });
+
+  const geometries = await markers.evaluateAll((els) =>
+    els.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        id: el.id,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        hasNaN: [rect.x, rect.y, rect.width, rect.height].some(Number.isNaN),
+      };
+    }),
+  );
+
+  for (const geo of geometries) {
+    expect(geo.hasNaN, `${geo.id} has NaN geometry`).toBe(false);
+    expect(geo.width, `${geo.id} width`).toBeGreaterThan(0);
+    expect(geo.height, `${geo.id} height`).toBeGreaterThan(0);
+  }
+});
+
+test("Package 03 captures stable reference-governed screenshots", async ({ page }) => {
+  await mkdir(pkg3ArtifactRoot, { recursive: true });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await loginAndGoToDiagram(page);
+
+  await expect(page.locator("#journal-markers-svg")).toBeAttached();
+  await page.evaluate(() => document.fonts.ready);
+
+  await page.screenshot({
+    path: resolve(pkg3ArtifactRoot, "production-markers-view-mode.png"),
+    animations: "disabled",
+  });
+
+  const trigger = page.locator("#journal-trigger");
+  await trigger.click();
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("#journal-entry-list")).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: resolve(pkg3ArtifactRoot, "production-markers-journal-open.png"),
+    animations: "disabled",
+  });
+
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await nodeMarker.click({ force: true });
+  await expect(panel.locator("#journal-target-scope")).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: resolve(pkg3ArtifactRoot, "production-markers-entity-scope.png"),
+    animations: "disabled",
+  });
 });

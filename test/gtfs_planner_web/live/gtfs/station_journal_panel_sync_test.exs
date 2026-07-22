@@ -553,7 +553,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
 
     assert has_element?(
              view,
-             "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_id}"
+             "#journal-markers-svg #journal-marker-pin-#{pin_id}"
            )
 
     render_hook(view, "open_journal", %{})
@@ -565,7 +565,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
 
     assert has_element?(
              view,
-             "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_id}"
+             "#journal-markers-svg #journal-marker-pin-#{pin_id}"
            )
   end
 
@@ -716,7 +716,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
         stop_id: station.id,
-        level_id: level.id
+        level_id: level.id,
+        diagram_filename: "journal_level_#{suffix}.svg"
       })
 
     {station, level, stop_level}

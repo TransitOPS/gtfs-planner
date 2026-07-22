@@ -24,6 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
         }
   @type geometry :: %{
           active_level_id: String.t() | nil,
+          active_level_token: String.t() | nil,
           child_stops: [Stop.t() | map()],
           pathways: [Pathway.t() | map()],
           focused_marker_id: marker_key() | nil
@@ -81,10 +82,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   @spec project(index(), geometry()) :: [marker()]
   def project(%{groups: groups}, geometry) when is_map(groups) and is_map(geometry) do
     active_level_id = normalize_id(geometry[:active_level_id])
+    active_level_token = normalize_id(geometry[:active_level_token])
     focused_marker_id = geometry[:focused_marker_id]
 
     groups
-    |> Enum.flat_map(&project_single_group(&1, active_level_id, geometry, focused_marker_id))
+    |> Enum.flat_map(
+      &project_single_group(
+        &1,
+        {active_level_id, active_level_token},
+        geometry,
+        focused_marker_id
+      )
+    )
     |> Enum.sort_by(& &1.id)
   end
 
@@ -216,8 +225,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
 
   # Private Projection Helpers
 
-  defp project_single_group({marker_key, group}, active_level_id, geometry, focused_marker_id) do
-    case project_group_coordinates(group, active_level_id, geometry) do
+  defp project_single_group({marker_key, group}, level_ids, geometry, focused_marker_id) do
+    case project_group_coordinates(group, level_ids, geometry) do
       {:ok, x, y} ->
         [
           %{
@@ -241,7 +250,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp project_group_coordinates(%{kind: :pin} = group, active_level_id, geometry) do
+  defp project_group_coordinates(%{kind: :pin} = group, {active_level_id, _token}, geometry) do
     active_stop_level_id = normalize_id(geometry[:active_stop_level_id])
 
     if group.stop_level_id == active_level_id or
@@ -252,26 +261,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp project_group_coordinates(%{kind: :node} = group, active_level_id, geometry) do
+  defp project_group_coordinates(%{kind: :node} = group, level_ids, geometry) do
     if group.open_count > 0 do
-      project_node_coordinates(group.target_id, active_level_id, geometry[:child_stops])
+      project_node_coordinates(group.target_id, level_ids, geometry[:child_stops])
     else
       :error
     end
   end
 
-  defp project_group_coordinates(%{kind: :pathway} = group, active_level_id, geometry) do
+  defp project_group_coordinates(%{kind: :pathway} = group, level_ids, geometry) do
     if group.open_count > 0 do
-      project_pathway_coordinates(group.target_id, active_level_id, geometry)
+      project_pathway_coordinates(group.target_id, level_ids, geometry)
     else
       :error
     end
   end
 
-  defp project_node_coordinates(target_id, active_level_id, child_stops) do
+  defp project_node_coordinates(target_id, {active_level_id, active_level_token}, child_stops) do
     with stop when not is_nil(stop) <- find_stop(child_stops, target_id),
          {:ok, level_id} <- extract_stop_level_id(stop),
-         true <- level_id == active_level_id,
+         true <- level_id == active_level_id or level_id == active_level_token,
          {:ok, {sx, sy}} <- extract_stop_coordinate(stop) do
       {:ok, sx + 0.75, sy - 0.75}
     else
@@ -279,11 +288,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp project_pathway_coordinates(target_id, active_level_id, geometry) do
+  defp project_pathway_coordinates(target_id, {active_level_id, active_level_token}, geometry) do
     with pathway when not is_nil(pathway) <- find_pathway(geometry[:pathways], target_id),
          {:ok, from_stop, to_stop} <- resolve_pathway_stops_from_geometry(geometry, pathway),
          {:ok, level_id} <- match_same_level(from_stop, to_stop),
-         true <- level_id == active_level_id,
+         true <- level_id == active_level_id or level_id == active_level_token,
          {:ok, c1, c2} <- extract_valid_pathway_coords(from_stop, to_stop),
          true <- c1 != c2,
          {x, y} <- pathway_offset_point(c1, c2) do

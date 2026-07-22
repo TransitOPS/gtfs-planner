@@ -5216,6 +5216,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp active_journal_geometry(socket) do
     %{
       active_level_id: socket.assigns[:active_level] && socket.assigns.active_level.id,
+      active_level_token: socket.assigns[:active_level] && socket.assigns.active_level.level_id,
       active_stop_level_id:
         socket.assigns[:active_stop_level] && socket.assigns.active_stop_level.id,
       child_stops: socket.assigns[:child_stops_list] || [],

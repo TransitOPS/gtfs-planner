@@ -127,8 +127,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assigns = %{
         streams: %{
           journal_markers: [
-            {"journal-markers-svg-journal-marker-pin-#{pin_id}", Enum.at(markers, 0)},
-            {"journal-markers-svg-journal-marker-node-#{node_id}", Enum.at(markers, 1)}
+            {"journal-marker-pin-#{pin_id}", Enum.at(markers, 0)},
+            {"journal-marker-node-#{node_id}", Enum.at(markers, 1)}
           ]
         },
         mode: :view
@@ -145,7 +145,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(id="journal-markers-svg")
 
       # Pin marker elements
-      assert html =~ ~s(id="journal-markers-svg-journal-marker-pin-#{pin_id}")
+      assert html =~ ~s(id="journal-marker-pin-#{pin_id}")
       assert html =~ ~s(data-journal-marker)
       assert html =~ ~s(data-journal-kind="pin")
       assert html =~ ~s(data-journal-state="open")
@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(data-journal-hit-target)
 
       # Node marker elements
-      assert html =~ ~s(id="journal-markers-svg-journal-marker-node-#{node_id}")
+      assert html =~ ~s(id="journal-marker-node-#{node_id}")
       assert html =~ ~s(data-journal-kind="node")
       assert html =~ ~s(data-journal-dot)
       assert html =~ ~s(aria-label="Journal: 2 open of 3 entries · North Entrance")
@@ -191,7 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assigns = %{
         streams: %{
           journal_markers: [
-            {"journal-markers-svg-journal-marker-pin-#{pin_id}", marker}
+            {"journal-marker-pin-#{pin_id}", marker}
           ]
         },
         mode: :add
@@ -353,6 +353,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
 
       # Open journal panel
       render_click(element(view, "#journal-trigger"))
+      render_async(view, 5_000)
       assert has_element?(view, "#station-journal-panel")
 
       # Click Show on floorplan
