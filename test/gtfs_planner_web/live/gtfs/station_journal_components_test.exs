@@ -66,7 +66,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       journal_open_count: 1,
       journal_closed_count: 0,
       journal_visible_count: 1,
-      journal_expanded_id: nil,
       journal_undo_ids: MapSet.new(),
       journal_pending_new_ids: MapSet.new(),
       journal_authors: %{@author_id => %User{email: "alex.rivera@example.com"}},
@@ -128,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
   end
 
   describe "journal_trigger/1" do
-    test "exposes the panel relationship, state, count, and a 44px action target" do
+    test "exposes the panel relationship, state, and count as a compact link-style trigger" do
       html =
         render_component(&StationJournalComponents.journal_trigger/1,
           open_count: 3,
@@ -141,7 +140,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert LazyHTML.attribute(trigger, "aria-controls") == ["station-journal-panel"]
       assert LazyHTML.attribute(trigger, "aria-expanded") == ["false"]
       assert LazyHTML.attribute(trigger, "phx-click") == ["open_journal"]
-      assert LazyHTML.attribute(trigger, "class") |> List.first() =~ "min-h-11"
+      assert LazyHTML.attribute(trigger, "class") |> List.first() =~ "py-1.5"
 
       assert LazyHTML.query(d, "#journal-trigger-count") |> LazyHTML.text() |> String.trim() ==
                "3"
@@ -171,7 +170,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert Enum.count(LazyHTML.query(d, "#journal-panel-close[phx-click='close_journal']")) == 1
       assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() =~ "1 open"
 
-      assert Enum.count(LazyHTML.query(d, "#journal-filter input[type='radio']")) == 2
+      assert Enum.count(LazyHTML.query(d, "#journal-filter input[type='radio']")) == 3
 
       assert LazyHTML.attribute(
                LazyHTML.query(d, "#journal-filter-option-open"),
@@ -187,51 +186,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert LazyHTML.attribute(status, "aria-live") == ["polite"]
     end
 
-    test "renders a target-first collapsed disclosure with UTC machine time and photo count" do
-      d = render_panel() |> doc()
+    test "renders each entry complete — note, photos, metadata, and actions — with no disclosure" do
+      html = render_panel()
+      d = doc(html)
       row = LazyHTML.query(d, "#journal-entries-#{@entry_id}")
-      disclosure = LazyHTML.query(row, "#journal-entry-toggle-#{@entry_id}")
       time = LazyHTML.query(row, "time")
+      photo = LazyHTML.query(row, "#journal-photo-#{@photo_id}")
+      edit = LazyHTML.query(row, "#journal-edit-target-#{@entry_id}")
 
-      assert LazyHTML.attribute(disclosure, "aria-expanded") == ["false"]
+      assert Enum.empty?(LazyHTML.query(row, "[aria-expanded]"))
+      assert Enum.empty?(LazyHTML.query(row, "#journal-entry-toggle-#{@entry_id}"))
 
-      assert LazyHTML.attribute(disclosure, "aria-controls") == [
-               "journal-entry-detail-#{@entry_id}"
-             ]
-
-      assert LazyHTML.attribute(disclosure, "phx-click") == ["select_journal_entry"]
-      assert LazyHTML.attribute(time, "datetime") == ["2026-07-16T18:32:00Z"]
       assert Enum.count(LazyHTML.query(row, "#journal-entry-target-#{@entry_id}")) == 1
-      assert Enum.count(LazyHTML.query(row, "#journal-entry-photo-count-#{@entry_id}")) == 1
 
-      assert LazyHTML.attribute(LazyHTML.query(row, "[data-role='journal-excerpt']"), "class")
-             |> List.first() =~ "line-clamp-2"
+      assert LazyHTML.query(row, "[data-role='journal-note']") |> LazyHTML.text() =~
+               "Confirm the field note before the next export."
 
-      assert Enum.empty?(LazyHTML.query(row, "#journal-entry-detail-#{@entry_id}"))
-    end
+      assert LazyHTML.attribute(time, "datetime") == ["2026-07-16T18:32:00Z"]
+      assert LazyHTML.attribute(time, "title") |> List.first() =~ "Jul 16, 2026 · 2:32 PM"
 
-    test "expands inline with full note, scoped photos, localized absolute time, and node actions" do
-      d = render_panel(journal_expanded_id: @entry_id) |> doc()
-      detail = LazyHTML.query(d, "#journal-entry-detail-#{@entry_id}")
-      photo = LazyHTML.query(detail, "#journal-photo-#{@photo_id}")
-      edit = LazyHTML.query(detail, "#journal-edit-target-#{@entry_id}")
+      assert LazyHTML.attribute(photo, "phx-click") == ["open_journal_photo"]
+      assert LazyHTML.attribute(photo, "phx-value-photo_id") == [@photo_id]
+      assert LazyHTML.attribute(photo, "phx-value-entry_id") == [@entry_id]
 
-      assert Enum.count(detail) == 1
-
-      assert LazyHTML.attribute(photo, "href") == [
+      assert LazyHTML.attribute(LazyHTML.query(photo, "img"), "src") == [
                "/uploads/field-captures/#{@scope.organization_id}/OLNEY_TC/#{@photo_id}.jpg"
              ]
 
-      assert LazyHTML.attribute(photo, "target") == ["_blank"]
       assert LazyHTML.attribute(edit, "phx-click") == ["edit_child_stop"]
       assert LazyHTML.attribute(edit, "phx-value-id") == [@target_id]
-      assert Enum.count(LazyHTML.query(detail, "#journal-close-entry-#{@entry_id}")) == 1
+      assert Enum.count(LazyHTML.query(row, "#journal-close-entry-#{@entry_id}")) == 1
 
-      assert LazyHTML.query(detail, "#journal-captured-at-#{@entry_id}") |> LazyHTML.text() =~
-               "Jul 16, 2026 · 2:32 PM"
-
-      assert Enum.empty?(LazyHTML.query(detail, "[phx-click='show_journal_entry']"))
-      refute render_panel(journal_expanded_id: @entry_id) =~ "Show on floorplan"
+      assert Enum.empty?(LazyHTML.query(row, "[phx-click='show_journal_entry']"))
+      refute html =~ "Show on floorplan"
     end
 
     test "suppresses edit actions for removed targets and exposes reopen for closed rows" do
@@ -250,7 +237,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
           journal_open_count: 0,
           journal_closed_count: 1,
           journal_filter: :all,
-          journal_expanded_id: @closed_entry_id,
           journal_targets: %{},
           journal_local_times: %{
             {@closed_entry_id, :captured} => ~N[2026-07-16 14:32:00],
@@ -273,7 +259,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       d =
         render_panel(
           journal_entries: [{"journal-entries-#{@entry_id}", closed}],
-          journal_expanded_id: @entry_id,
           journal_undo_ids: MapSet.new([@entry_id]),
           journal_local_times: %{
             {@entry_id, :captured} => ~N[2026-07-16 14:32:00],
@@ -289,6 +274,61 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert Enum.empty?(LazyHTML.query(d, "#journal-close-entry-#{@entry_id}"))
     end
 
+    test "scopes the arrival highlight to entries flagged as new" do
+      quiet = render_panel() |> doc()
+
+      refute LazyHTML.attribute(LazyHTML.query(quiet, "#journal-entries-#{@entry_id}"), "class")
+             |> List.first() =~ "journal-entry-motion"
+
+      highlighted =
+        render_panel(journal_new_entry_ids: MapSet.new([@entry_id])) |> doc()
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(highlighted, "#journal-entries-#{@entry_id}"),
+               "class"
+             )
+             |> List.first() =~ "journal-entry-motion"
+    end
+
+    test "renders the photo viewer as a modal dialog with close and original-file controls" do
+      refute render_panel() =~ "journal-photo-viewer"
+
+      d =
+        render_panel(
+          journal_photo_viewer: %{
+            photo_id: @photo_id,
+            entry_id: @entry_id,
+            src: "/uploads/field-captures/org/OLNEY_TC/#{@photo_id}.jpg",
+            index: 1,
+            count: 2
+          }
+        )
+        |> doc()
+
+      viewer = LazyHTML.query(d, "#journal-photo-viewer")
+
+      assert LazyHTML.attribute(viewer, "role") == ["dialog"]
+      assert LazyHTML.attribute(viewer, "aria-modal") == ["true"]
+      assert LazyHTML.attribute(viewer, "aria-label") == ["Journal photo 1 of 2"]
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(viewer, "#journal-photo-viewer-backdrop"),
+               "phx-click"
+             ) == ["close_journal_photo"]
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(viewer, "#journal-photo-viewer-close"),
+               "phx-click"
+             ) == ["close_journal_photo"]
+
+      original = LazyHTML.query(viewer, "#journal-photo-viewer-original")
+      assert LazyHTML.attribute(original, "target") == ["_blank"]
+
+      assert LazyHTML.attribute(original, "href") == [
+               "/uploads/field-captures/org/OLNEY_TC/#{@photo_id}.jpg"
+             ]
+    end
+
     test "offers an identity-derived pending refresh without modifying the row list" do
       d =
         render_panel(journal_pending_new_ids: MapSet.new([@entry_id, @closed_entry_id]))
@@ -299,6 +339,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert LazyHTML.attribute(pending, "phx-click") == ["refresh_journal"]
       assert LazyHTML.text(pending) =~ "2 new entries"
       assert Enum.count(LazyHTML.query(d, "#journal-entry-list > article")) == 1
+    end
+  end
+
+  describe "journal_context_box/1" do
+    test "renders nothing without a context" do
+      html =
+        render_component(&StationJournalComponents.journal_context_box/1, context: nil)
+
+      assert String.trim(html) == ""
+    end
+
+    test "restates the originating entry above a form" do
+      html =
+        render_component(&StationJournalComponents.journal_context_box/1,
+          context: %{
+            entry_id: @entry_id,
+            body: "Confirm signage before export.",
+            byline: "A. Rivera",
+            captured_label: "2d ago"
+          }
+        )
+
+      box = html |> doc() |> LazyHTML.query("#journal-form-context")
+
+      assert LazyHTML.text(box) =~ "Journal entry"
+      assert LazyHTML.text(box) =~ "A. Rivera"
+      assert LazyHTML.text(box) =~ "2d ago"
+      assert LazyHTML.text(box) =~ "Confirm signage before export."
     end
   end
 
@@ -354,8 +422,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
 
       assert Enum.count(LazyHTML.query(d, "#journal-filter")) == 1
       assert LazyHTML.attribute(view_all, "phx-click") == ["set_journal_filter"]
-      assert LazyHTML.attribute(view_all, "phx-value-journal-filter") == ["all"]
+      assert LazyHTML.attribute(view_all, "phx-value-journal_filter") == ["all"]
       assert Enum.count(LazyHTML.query(d, "#journal-empty-filtered .hero-check-circle")) == 1
+    end
+
+    test "closed-filter empty explains the open queue and offers the same next action" do
+      d =
+        render_panel(
+          journal_entries: [],
+          journal_filter: :closed,
+          journal_open_count: 5,
+          journal_closed_count: 0,
+          journal_visible_count: 0
+        )
+        |> doc()
+
+      empty = LazyHTML.query(d, "#journal-empty-filtered")
+
+      assert LazyHTML.text(empty) =~ "No closed entries"
+      assert LazyHTML.text(empty) =~ "All 5 entries for this station are open."
+      assert Enum.count(LazyHTML.query(d, "#journal-view-all")) == 1
     end
 
     test "first-load error is contained, announced, and recoverable" do

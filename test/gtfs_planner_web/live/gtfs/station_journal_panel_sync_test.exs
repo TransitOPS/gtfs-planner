@@ -418,7 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert refreshed.journal_rendered_entry_ids == MapSet.new([existing_id, new_id])
     assert refreshed.journal_rendered_signature == refreshed.journal_observed_signature
     assert_push_event(view, "journal-scroll-top", %{})
-    new_entry_selector = "#journal-entry-toggle-#{new_id}"
+    new_entry_selector = "#journal-entries-#{new_id}"
     assert_push_event(view, "journal-focus", %{selector: ^new_entry_selector})
   end
 
@@ -510,7 +510,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert reset.journal_rendered_entry_ids == MapSet.new()
     assert reset.journal_pending_new_ids == MapSet.new()
     assert reset.journal_undo_ids == MapSet.new()
-    assert reset.journal_expanded_id == nil
     assert reset.journal_authors == %{}
     assert reset.journal_targets == %{}
 

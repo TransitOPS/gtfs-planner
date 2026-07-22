@@ -106,14 +106,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   """
   def journal_trigger(assigns) do
     ~H"""
-    <.button
+    <button
       id="journal-trigger"
       type="button"
-      variant="quiet"
-      size="sm"
       class={[
-        "min-h-11 gap-2 border border-control-border px-3 text-base-content",
-        @panel_open? && "bg-base-300"
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium text-blue-900 transition-colors",
+        "hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-blue-50",
+        @panel_open? && "bg-blue-100"
       ]}
       phx-click={if @panel_open?, do: "close_journal", else: "open_journal"}
       aria-expanded={to_string(@panel_open?)}
@@ -123,11 +122,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <span>Journal</span>
       <span
         id="journal-trigger-count"
-        class="inline-flex min-w-5 items-center justify-center rounded-full border border-control-border bg-base-100 px-1.5 text-xs tabular-nums text-base-content"
+        class="inline-flex min-w-4 items-center justify-center rounded-full border border-control-border bg-base-100 px-1.5 text-[11px] leading-4 tabular-nums text-base-content"
       >
         {@open_count}
       </span>
-    </.button>
+    </button>
     """
   end
 
@@ -138,15 +137,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     default: :idle,
     values: [:idle, :loading, :ready, :error]
 
-  attr :journal_filter, :atom, default: :open, values: [:open, :all]
+  attr :station_name, :string, default: nil
+  attr :journal_filter, :atom, default: :open, values: [:open, :closed, :all]
   attr :journal_loaded_once?, :boolean, default: false
   attr :journal_refresh_error?, :boolean, default: false
   attr :journal_open_count, :integer, default: 0
   attr :journal_closed_count, :integer, default: 0
   attr :journal_visible_count, :integer, default: 0
-  attr :journal_expanded_id, :string, default: nil
   attr :journal_undo_ids, :any, default: MapSet.new()
   attr :journal_pending_new_ids, :any, default: MapSet.new()
+  attr :journal_new_entry_ids, :any, default: MapSet.new()
+  attr :journal_photo_viewer, :any, default: nil
   attr :journal_authors, :map, default: %{}
   attr :journal_targets, :map, default: %{}
   attr :journal_local_times, :map, default: %{}
@@ -167,6 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
 
     filter_options = [
       {"Open (#{assigns.journal_open_count})", "open"},
+      {"Closed (#{assigns.journal_closed_count})", "closed"},
       {"All (#{flags.total_count})", "all"}
     ]
 
@@ -212,7 +214,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       </header>
 
       <div :if={@first_loading?} class="journal-loading-delay px-4 pb-3" aria-hidden="true">
-        <div class="h-11 w-40 rounded-md bg-base-200"></div>
+        <div class="h-9 w-36 rounded-md bg-base-200"></div>
       </div>
 
       <div
@@ -228,6 +230,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           value={Atom.to_string(@journal_filter)}
           event="set_journal_filter"
           appearance={:joined}
+          size={:sm}
+          emphasis={:quiet}
         />
       </div>
 
@@ -276,6 +280,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <.first_use_empty_state :if={@first_use_empty?} />
       <.filtered_empty_state
         :if={@filtered_empty?}
+        filter={@journal_filter}
+        open_count={@journal_open_count}
         closed_count={@journal_closed_count}
       />
 
@@ -290,10 +296,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           id={dom_id}
           entry={entry}
           scope={@journal_scope}
-          expanded?={@journal_expanded_id == entry.id}
           undo?={collection_member?(@journal_undo_ids, entry.id)}
+          new?={collection_member?(@journal_new_entry_ids, entry.id)}
           author={Map.get(@journal_authors, entry.author_id)}
-          target={target_presentation(entry, @journal_targets)}
+          target={target_presentation(entry, @journal_targets, @station_name)}
           captured_local={local_time(entry, :captured, @journal_local_times)}
           closed_local={local_time(entry, :closed, @journal_local_times)}
           now={@now}
@@ -310,7 +316,92 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       >
         {@journal_live_message}
       </p>
+
+      <.journal_photo_viewer :if={@journal_photo_viewer} viewer={@journal_photo_viewer} />
     </aside>
+    """
+  end
+
+  attr :context, :any, default: nil
+
+  @doc """
+  Renders the originating journal entry above an edit form.
+
+  Opening an edit from the journal closes the panel, so the drawer restates the
+  note the reviewer is acting on. Renders nothing without a context.
+  """
+  def journal_context_box(assigns) do
+    ~H"""
+    <div
+      :if={@context}
+      id="journal-form-context"
+      data-role="journal-form-context"
+      class="mb-4 border-l-4 border-[color:var(--diagram-journal-open)] bg-base-200/60 px-3 py-2 text-sm"
+    >
+      <p class="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs font-medium text-base-content/70">
+        <.icon name="hero-clipboard-document-list" class="size-3.5 shrink-0" />
+        <span>Journal entry</span>
+        <span aria-hidden="true">·</span>
+        <span>{@context.byline}</span>
+        <span :if={@context.captured_label} aria-hidden="true">·</span>
+        <span :if={@context.captured_label}>{@context.captured_label}</span>
+      </p>
+      <p class="mt-1 break-words leading-relaxed text-base-content [overflow-wrap:anywhere]">
+        {note_body(@context.body)}
+      </p>
+    </div>
+    """
+  end
+
+  attr :viewer, :map, required: true
+
+  # In-app lightbox for journal photos. Escape is handled by the panel's shared
+  # keydown binding: `close_journal` dismisses this viewer first when it is open.
+  defp journal_photo_viewer(assigns) do
+    ~H"""
+    <div
+      id="journal-photo-viewer"
+      role="dialog"
+      aria-modal="true"
+      aria-label={"Journal photo #{@viewer.index} of #{@viewer.count}"}
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8"
+    >
+      <div
+        id="journal-photo-viewer-backdrop"
+        class="absolute inset-0 bg-black/75"
+        aria-hidden="true"
+        phx-click="close_journal_photo"
+      >
+      </div>
+      <figure class="relative flex max-h-full max-w-3xl flex-col">
+        <img
+          src={@viewer.src}
+          alt={"Journal photo #{@viewer.index}"}
+          class="max-h-[80vh] w-auto rounded-md object-contain"
+        />
+        <figcaption class="mt-2 flex items-center gap-3 text-sm text-white">
+          <span>Photo {@viewer.index} of {@viewer.count}</span>
+          <a
+            id="journal-photo-viewer-original"
+            href={@viewer.src}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="underline underline-offset-2 hover:text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          >
+            Open original
+          </a>
+        </figcaption>
+        <button
+          id="journal-photo-viewer-close"
+          type="button"
+          class="absolute -right-2 -top-2 flex size-11 items-center justify-center rounded-full bg-base-100 text-base-content shadow-md hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          phx-click="close_journal_photo"
+          aria-label="Close photo"
+        >
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </figure>
+    </div>
     """
   end
 
@@ -343,14 +434,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
 
   defp filtered_empty?(assigns, total_count),
     do:
-      assigns.journal_state == :ready and assigns.journal_filter == :open and
+      assigns.journal_state == :ready and assigns.journal_filter in [:open, :closed] and
         assigns.journal_visible_count == 0 and total_count > 0
 
   attr :id, :string, required: true
   attr :entry, JournalEntry, required: true
   attr :scope, Scope, required: true
-  attr :expanded?, :boolean, required: true
   attr :undo?, :boolean, required: true
+  attr :new?, :boolean, default: false
   attr :author, :any, default: nil
   attr :target, :map, required: true
   attr :captured_local, NaiveDateTime, required: true
@@ -358,6 +449,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   attr :now, NaiveDateTime, required: true
   attr :zone, :any, default: nil
 
+  # Every entry renders complete — note, photos, metadata, and actions — so the
+  # queue never hides content or controls behind an unlabeled disclosure click.
   defp journal_entry_row(assigns) do
     photos = loaded_photos(assigns.entry.photos)
     closed? = not is_nil(assigns.entry.closed_at)
@@ -369,7 +462,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       |> assign(:closed?, closed?)
       |> assign(:byline, author_label(assigns.author))
       |> assign(:relative_capture, relative_time(assigns.captured_local, assigns.now))
-      |> assign(:absolute_capture, absolute_time(assigns.captured_local))
       |> assign(:zone_title, zone_title(assigns.captured_local, assigns.zone))
 
     ~H"""
@@ -378,138 +470,78 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       data-role="journal-entry"
       data-entry-id={@entry.id}
       data-entry-state={if @closed?, do: "closed", else: "open"}
+      tabindex="-1"
       class={[
-        "journal-entry-motion border-l-2 border-l-transparent bg-base-100 transition-colors",
-        @expanded? &&
-          "border-l-[color:var(--diagram-journal-open)] bg-warning/10",
+        "bg-base-100 px-4 py-3 transition-colors",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
+        @new? && "journal-entry-motion",
         @closed? && !@undo? && "opacity-70"
       ]}
     >
-      <button
-        id={"journal-entry-toggle-#{@entry.id}"}
-        type="button"
-        class="block min-h-11 w-full px-4 py-3 text-left hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-        phx-click="select_journal_entry"
-        phx-value-id={@entry.id}
-        aria-expanded={to_string(@expanded?)}
-        aria-controls={"journal-entry-detail-#{@entry.id}"}
-      >
-        <span class="flex min-w-0 items-start gap-2">
-          <span
-            id={"journal-entry-target-#{@entry.id}"}
-            class={[
-              "inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-control-border bg-base-100 px-2 py-0.5 text-xs font-medium [overflow-wrap:anywhere]",
-              @expanded? && "text-[var(--diagram-journal-open)]"
-            ]}
-          >
-            <.icon name={@target.icon} class="size-3 shrink-0" />
-            <span>{@target.label}</span>
-          </span>
-
-          <span class="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-base-content/70">
-            <span>{@byline}</span>
-            <span aria-hidden="true">·</span>
-            <time datetime={DateTime.to_iso8601(@entry.captured_at)} title={@zone_title}>
-              {@relative_capture}
-            </time>
-          </span>
-        </span>
-
+      <div class="flex items-start gap-2 text-xs">
         <span
-          :if={!@expanded?}
-          data-role="journal-excerpt"
-          class="mt-1.5 line-clamp-2 break-words leading-relaxed text-base-content/80 [overflow-wrap:anywhere]"
+          id={"journal-entry-target-#{@entry.id}"}
+          class="inline-flex min-w-0 items-center gap-1 font-medium text-base-content/70"
         >
-          {note_body(@entry.body)}
+          <.icon name={@target.icon} class="size-3.5 shrink-0" />
+          <span class="truncate">{@target.label}</span>
         </span>
-
-        <span class="mt-1.5 flex items-center gap-2 text-xs text-base-content/70">
-          <span
-            :if={@photo_count > 0}
-            id={"journal-entry-photo-count-#{@entry.id}"}
-            class="inline-flex items-center gap-1"
-          >
-            <.icon name="hero-camera" class="size-3.5" />
-            {@photo_count}
-            <span class="sr-only">{if @photo_count == 1, do: "photo", else: "photos"}</span>
-          </span>
-          <span
-            :if={@closed? && @closed_local}
-            class="ml-auto rounded-full border border-control-border px-2 py-0.5"
-          >
-            Closed · {short_date(@closed_local)}
-          </span>
+        <span
+          :if={@closed? && @closed_local}
+          class="ml-auto shrink-0 text-base-content/60"
+        >
+          Closed · {short_date(@closed_local)}
         </span>
-      </button>
+      </div>
 
-      <div
-        :if={@expanded?}
-        id={"journal-entry-detail-#{@entry.id}"}
-        class="px-4 pb-4"
+      <p
+        data-role="journal-note"
+        class="mt-1.5 break-words leading-relaxed text-base-content [overflow-wrap:anywhere]"
       >
-        <p class="break-words leading-relaxed text-base-content [overflow-wrap:anywhere]">
-          {note_body(@entry.body)}
-        </p>
+        {note_body(@entry.body)}
+      </p>
 
-        <div :if={@photo_count > 0} class="mt-3 grid grid-cols-2 gap-2">
-          <a
-            :for={{photo, index} <- Enum.with_index(@photos, 1)}
-            id={"journal-photo-#{photo.id}"}
-            href={PhotoStorage.public_path(@scope, photo)}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="group relative aspect-[4/3] min-h-11 overflow-hidden rounded-md border border-base-300 bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            aria-label={"Open journal photo #{index} in a new tab"}
-          >
-            <img
-              src={PhotoStorage.public_path(@scope, photo)}
-              alt={"Journal photo #{index}"}
-              loading="lazy"
-              decoding="async"
-              class="h-full w-full object-cover transition-transform group-hover:scale-[1.02] motion-reduce:transition-none"
-            />
-          </a>
-        </div>
-
-        <p
-          id={"journal-captured-at-#{@entry.id}"}
-          class="mt-3 text-xs text-base-content/70"
+      <div :if={@photo_count > 0} class="mt-2 flex flex-wrap gap-1.5">
+        <button
+          :for={{photo, index} <- Enum.with_index(@photos, 1)}
+          id={"journal-photo-#{photo.id}"}
+          type="button"
+          class="group relative size-14 overflow-hidden rounded-md border border-base-300 bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          phx-click="open_journal_photo"
+          phx-value-photo_id={photo.id}
+          phx-value-entry_id={@entry.id}
+          aria-label={"View journal photo #{index} of #{@photo_count}"}
         >
-          Captured
+          <img
+            src={PhotoStorage.public_path(@scope, photo)}
+            alt={"Journal photo #{index}"}
+            loading="lazy"
+            decoding="async"
+            class="h-full w-full object-cover transition-transform group-hover:scale-[1.02] motion-reduce:transition-none"
+          />
+        </button>
+      </div>
+
+      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-base-content/70">
+        <span class="min-w-0 truncate">
+          <span>{@byline}</span>
+          <span aria-hidden="true">·</span>
           <time datetime={DateTime.to_iso8601(@entry.captured_at)} title={@zone_title}>
-            {@absolute_capture}
+            {@relative_capture}
           </time>
-        </p>
+        </span>
 
-        <div
-          :if={@undo?}
-          id={"journal-undo-strip-#{@entry.id}"}
-          class="mt-3 flex min-h-11 items-center gap-2 border-l-4 border-success bg-success/10 px-3 py-2"
-        >
-          <span class="font-medium">Entry closed</span>
-          <.button
-            id={"journal-undo-entry-#{@entry.id}"}
-            type="button"
-            variant="quiet"
-            size="sm"
-            class="ml-auto min-h-11 text-success"
-            phx-click="undo_journal_close"
-            phx-value-id={@entry.id}
-          >
-            Undo
-          </.button>
-        </div>
-
-        <div :if={!@undo?} class="mt-3 flex flex-wrap items-center gap-2">
+        <span :if={!@undo?} class="ml-auto flex shrink-0 items-center gap-1">
           <.button
             :if={@target.edit_event}
             id={"journal-edit-target-#{@entry.id}"}
             type="button"
-            variant="secondary"
+            variant="quiet"
             size="sm"
-            class="min-h-11"
+            class="text-xs"
             phx-click={@target.edit_event}
             phx-value-id={@target.edit_id}
+            phx-value-journal_entry_id={@entry.id}
           >
             {@target.edit_label}
           </.button>
@@ -518,9 +550,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
             :if={!@closed?}
             id={"journal-close-entry-#{@entry.id}"}
             type="button"
-            variant="secondary"
+            variant="quiet"
             size="sm"
-            class="min-h-11"
+            class="text-xs"
             phx-click="close_journal_entry"
             phx-value-id={@entry.id}
           >
@@ -531,15 +563,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
             :if={@closed?}
             id={"journal-reopen-entry-#{@entry.id}"}
             type="button"
-            variant="secondary"
+            variant="quiet"
             size="sm"
-            class="min-h-11"
+            class="text-xs"
             phx-click="reopen_journal_entry"
             phx-value-id={@entry.id}
           >
             Reopen entry
           </.button>
-        </div>
+        </span>
+      </div>
+
+      <div
+        :if={@undo?}
+        id={"journal-undo-strip-#{@entry.id}"}
+        class="mt-2 flex min-h-11 items-center gap-2 border-l-4 border-success bg-success/10 px-3 py-1.5"
+      >
+        <span class="font-medium">Entry closed</span>
+        <.button
+          id={"journal-undo-entry-#{@entry.id}"}
+          type="button"
+          variant="quiet"
+          size="sm"
+          class="ml-auto text-success"
+          phx-click="undo_journal_close"
+          phx-value-id={@entry.id}
+        >
+          Undo
+        </.button>
       </div>
     </article>
     """
@@ -588,17 +639,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     """
   end
 
+  attr :filter, :atom, required: true
+  attr :open_count, :integer, required: true
   attr :closed_count, :integer, required: true
 
   defp filtered_empty_state(assigns) do
     ~H"""
     <.empty_state
       id="journal-empty-filtered"
-      title="No open entries"
+      title={if @filter == :open, do: "No open entries", else: "No closed entries"}
       class="mx-4 mt-2 border-0 px-4 py-10"
     >
-      <.icon name="hero-check-circle" class="mx-auto mb-3 size-8 text-success" />
-      All {@closed_count} entries for this station are closed.
+      <.icon
+        :if={@filter == :open}
+        name="hero-check-circle"
+        class="mx-auto mb-3 size-8 text-success"
+      />
+      <%= if @filter == :open do %>
+        All {@closed_count} entries for this station are closed.
+      <% else %>
+        All {@open_count} entries for this station are open.
+      <% end %>
       <:action>
         <.button
           id="journal-view-all"
@@ -607,7 +668,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           size="sm"
           class="min-h-11 text-primary"
           phx-click="set_journal_filter"
-          phx-value-journal-filter="all"
+          phx-value-journal_filter="all"
         >
           View all entries
         </.button>
@@ -656,10 +717,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     )
   end
 
-  defp target_presentation(%JournalEntry{} = entry, targets) do
+  defp target_presentation(%JournalEntry{} = entry, targets, station_name) do
     target_key = if entry.target_type == "pin", do: entry.stop_level_id, else: entry.target_id
     target = Map.get(targets, target_key)
-    label = target_label(entry, target, target_key)
+    label = target_label(entry, target, target_key, station_name)
 
     {edit_event, edit_label} =
       case {entry.target_type, target} do
@@ -677,17 +738,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     }
   end
 
-  defp target_label(%{target_type: "station"}, _target, _key), do: "Station"
+  defp target_label(%{target_type: "station"}, _target, _key, _station_name), do: "Station"
 
-  defp target_label(%{target_type: type}, target, key) do
+  defp target_label(%{target_type: type}, target, key, station_name) do
     kind = type |> to_string() |> String.capitalize()
 
     case presentation_label(target) do
       nil when is_nil(key) -> "#{kind} (removed)"
       nil -> "#{kind} · #{key} (removed)"
-      label -> "#{kind} · #{label}"
+      label -> "#{kind} · #{strip_station_prefix(label, station_name)}"
     end
   end
+
+  # Child-stop names conventionally embed the parent station name
+  # ("Olney Transportation Center Entrance A"). Inside that station's own
+  # journal the prefix is redundant, so drop it and keep the distinguishing
+  # tail ("Entrance A"). Falls back to the full label when it does not match.
+  defp strip_station_prefix(label, station_name)
+       when is_binary(label) and is_binary(station_name) and station_name != "" do
+    if String.starts_with?(label, station_name) do
+      label
+      |> binary_part(byte_size(station_name), byte_size(label) - byte_size(station_name))
+      |> String.trim_leading()
+      |> String.trim_leading("-")
+      |> String.trim_leading("·")
+      |> String.trim()
+      |> case do
+        "" -> label
+        rest -> rest
+      end
+    else
+      label
+    end
+  end
+
+  defp strip_station_prefix(label, _station_name), do: label
 
   defp presentation_label(nil), do: nil
 

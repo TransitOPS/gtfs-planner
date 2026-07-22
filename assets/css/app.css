@@ -158,6 +158,14 @@ body {
   overflow: visible;
 }
 
+/* The diagram action strip is the last child of #sub-header-wrapper and carries
+   its own full-bleed bottom border (needed while it is sticky and the wrapper
+   has scrolled away). Drop the wrapper's own border-b in that case so the two
+   rules don't stack into a double line in mismatched colors. */
+#sub-header-wrapper:has(#diagram-action-strip) {
+  border-bottom-width: 0;
+}
+
 /* ── Immersive editing modes (Add stop / Connect / Align) ──
    Entering an editing mode hides the global header and station sub-nav so the
    action strip + canvas fill the viewport. `display: none` (not an off-screen
@@ -304,7 +312,7 @@ body {
 }
 
 #station-journal-panel [data-role="journal-entry"],
-#station-journal-panel [data-role="journal-excerpt"],
+#station-journal-panel [data-role="journal-note"],
 #station-journal-panel [id^="journal-entry-target-"] {
   min-width: 0;
   overflow-wrap: anywhere;

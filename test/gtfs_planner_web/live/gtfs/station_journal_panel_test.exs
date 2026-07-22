@@ -11,7 +11,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.JournalPhoto
   alias GtfsPlanner.Repo
-  alias GtfsPlannerWeb.Gtfs.StationDiagramLive
 
   setup do
     organization = organization_fixture()
@@ -132,7 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     refute Regex.match?(~r/--diagram-journal-open\s*:/, css)
   end
 
-  test "open, filter, and expansion keep the server-owned stream authoritative", context do
+  test "open and filter changes keep the server-owned stream authoritative", context do
     first_id = Ecto.UUID.generate()
     second_id = Ecto.UUID.generate()
 
@@ -154,57 +153,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert opened.journal_rendered_entry_ids == MapSet.new([first_id, second_id])
     assert_push_event(view, "journal-panel-preference", %{open: true})
 
-    socket = :sys.get_state(view.pid).socket
-
-    assert {:noreply, expanded_socket} =
-             StationDiagramLive.handle_event(
-               "select_journal_entry",
-               %{"id" => first_id},
-               socket
-             )
-
-    assert expanded_socket.assigns.journal_expanded_id == first_id
-    refute expanded_socket.assigns.streams.journal_entries.reset?
-
-    assert [{"journal-entries-" <> ^first_id, -1, first_entry, nil, false}] =
-             expanded_socket.assigns.streams.journal_entries.inserts
-
-    assert Ecto.assoc_loaded?(first_entry.photos)
-
-    assert {:noreply, switched_socket} =
-             StationDiagramLive.handle_event(
-               "select_journal_entry",
-               %{"id" => second_id},
-               expanded_socket
-             )
-
-    assert switched_socket.assigns.journal_expanded_id == second_id
-    refute switched_socket.assigns.streams.journal_entries.reset?
-
-    assert MapSet.new(
-             Enum.map(switched_socket.assigns.streams.journal_entries.inserts, fn {
-                                                                                    dom_id,
-                                                                                    -1,
-                                                                                    entry,
-                                                                                    nil,
-                                                                                    false
-                                                                                  } ->
-               assert Ecto.assoc_loaded?(entry.photos)
-               dom_id
-             end)
-           ) ==
-             MapSet.new(["journal-entries-#{first_id}", "journal-entries-#{second_id}"])
-
-    render_hook(view, "select_journal_entry", %{"id" => first_id})
-    first_selector = "#journal-entry-toggle-#{first_id}"
-    assert_push_event(view, "journal-focus", %{selector: ^first_selector})
+    assert has_element?(view, "#journal-entries-#{first_id} [data-role='journal-note']")
+    assert has_element?(view, "#journal-close-entry-#{first_id}")
+    refute has_element?(view, "#journal-entry-toggle-#{first_id}")
 
     render_hook(view, "set_journal_filter", %{"journal_filter" => "all"})
     render_async(view, 5_000)
 
     filtered = assigns(view)
     assert filtered.journal_filter == :all
-    assert filtered.journal_expanded_id == nil
     assert filtered.journal_undo_ids == MapSet.new()
     assert filtered.journal_pending_new_ids == MapSet.new()
   end
@@ -281,6 +238,130 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert reopened.journal_rendered_signature == reopened.journal_observed_signature
     assert signature_photo_ids(reopened, entry_id) == [photo_id]
     assert_push_event(view, "journal-focus", %{selector: ^close_selector})
+  end
+
+  test "the photo viewer opens in-app, absorbs Escape, and returns focus", context do
+    entry_id = Ecto.UUID.generate()
+    photo_id = Ecto.UUID.generate()
+
+    sync_entries(context.scope, [entry_attrs(entry_id, ~U[2026-07-18 12:00:00.000000Z])])
+
+    Repo.insert!(%JournalPhoto{
+      id: photo_id,
+      journal_entry_id: entry_id,
+      filename: "journal-photo.jpg",
+      content_type: "image/jpeg",
+      byte_size: 10,
+      sha256: :crypto.hash(:sha256, "journal-photo"),
+      captured_at: ~U[2026-07-18 12:01:00.000000Z]
+    })
+
+    view = open_loaded_journal(context)
+
+    render_hook(view, "open_journal_photo", %{"photo_id" => photo_id, "entry_id" => entry_id})
+
+    viewer = assigns(view).journal_photo_viewer
+    assert viewer.photo_id == photo_id
+    assert viewer.entry_id == entry_id
+    assert viewer.index == 1
+    assert viewer.count == 1
+    assert viewer.src =~ "journal-photo.jpg"
+    assert has_element?(view, "#journal-photo-viewer[role='dialog']")
+    assert_push_event(view, "journal-focus", %{selector: "#journal-photo-viewer-close"})
+
+    render_hook(view, "close_journal", %{})
+
+    after_escape = assigns(view)
+    assert after_escape.journal_photo_viewer == nil
+    assert after_escape.journal_panel_open?
+    photo_selector = "#journal-photo-#{photo_id}"
+    assert_push_event(view, "journal-focus", %{selector: ^photo_selector})
+
+    render_hook(view, "close_journal", %{})
+    refute assigns(view).journal_panel_open?
+  end
+
+  test "an unknown photo fails soft without opening the viewer", context do
+    entry_id = Ecto.UUID.generate()
+    sync_entries(context.scope, [entry_attrs(entry_id, ~U[2026-07-18 12:00:00.000000Z])])
+
+    view = open_loaded_journal(context)
+
+    render_hook(view, "open_journal_photo", %{
+      "photo_id" => Ecto.UUID.generate(),
+      "entry_id" => entry_id
+    })
+
+    failed = assigns(view)
+    assert failed.journal_photo_viewer == nil
+    assert failed.journal_error_message == "The journal entry could not be changed."
+  end
+
+  test "editing from a journal entry carries the note into the drawer", context do
+    entry_id = Ecto.UUID.generate()
+
+    node =
+      stop_fixture(context.organization.id, context.gtfs_version.id, %{
+        stop_id: "JOURNAL_CONTEXT_NODE",
+        stop_name: "Journal Context Node",
+        location_type: 3,
+        parent_station: context.station.stop_id,
+        level_id: context.level.level_id,
+        diagram_coordinate: %{"x" => 12.0, "y" => 24.0}
+      })
+
+    sync_entries(context.scope, [
+      %{
+        id: entry_id,
+        target_type: "node",
+        target_id: node.id,
+        body: "Confirm signage before export.",
+        captured_at: ~U[2026-07-18 12:00:00.000000Z]
+      }
+    ])
+
+    view = open_loaded_journal(context)
+
+    render_hook(view, "edit_child_stop", %{"id" => node.id, "journal_entry_id" => entry_id})
+
+    after_edit = assigns(view)
+    refute after_edit.journal_panel_open?
+    assert after_edit.journal_form_context.entry_id == entry_id
+    assert after_edit.journal_form_context.body == "Confirm signage before export."
+    assert has_element?(view, "#journal-form-context")
+    assert render(view) =~ "Confirm signage before export."
+
+    render_hook(view, "close_drawer", %{})
+    assert assigns(view).journal_form_context == nil
+    refute has_element?(view, "#journal-form-context")
+
+    render_hook(view, "edit_child_stop", %{"id" => node.id})
+    assert assigns(view).journal_form_context == nil
+    refute has_element?(view, "#journal-form-context")
+  end
+
+  test "the closed filter shows only settled closed entries", context do
+    open_id = Ecto.UUID.generate()
+    closed_id = Ecto.UUID.generate()
+
+    sync_entries(context.scope, [
+      entry_attrs(open_id, ~U[2026-07-18 12:00:00.000000Z]),
+      entry_attrs(closed_id, ~U[2026-07-18 12:10:00.000000Z])
+    ])
+
+    view = open_loaded_journal(context)
+
+    render_hook(view, "close_journal_entry", %{"id" => closed_id})
+    settle_journal(view)
+
+    render_hook(view, "set_journal_filter", %{"journal_filter" => "closed"})
+    render_async(view, 5_000)
+
+    filtered = assigns(view)
+    assert filtered.journal_filter == :closed
+    assert filtered.journal_visible_count == 1
+    assert has_element?(view, "#journal-entries-#{closed_id}")
+    refute has_element?(view, "#journal-entries-#{open_id}")
   end
 
   test "missing and foreign mutation IDs preserve the row snapshot and tenant data", context do
@@ -482,7 +563,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert after_failure.journal_rendered_entry_ids == before.journal_rendered_entry_ids
     assert after_failure.journal_rendered_signature == before.journal_rendered_signature
     assert after_failure.journal_observed_signature == before.journal_observed_signature
-    assert after_failure.journal_expanded_id == before.journal_expanded_id
     assert after_failure.journal_undo_ids == before.journal_undo_ids
   end
 

@@ -38,7 +38,7 @@ function installMatchMedia() {
 function listMarkup() {
   return `
     <div id="journal-entry-list">
-      <button id="journal-entry-toggle-entry-1" type="button">Entry</button>
+      <article id="journal-entries-entry-1" tabindex="-1">Entry</article>
     </div>`;
 }
 
@@ -333,7 +333,7 @@ describe("JournalPanelHook", () => {
       hook.mounted();
       const list = hook.el.querySelector("#journal-entry-list");
       list.scrollTo = vi.fn();
-      hook.handlers.get("journal-focus")({ selector: "#journal-entry-toggle-entry-1" });
+      hook.handlers.get("journal-focus")({ selector: "#journal-entries-entry-1" });
       hook.handlers.get("journal-scroll-top")({});
 
       hook.destroyed();

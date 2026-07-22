@@ -47,27 +47,15 @@ async function chooseJournalFilter(panel, value) {
   await expect(radio).toBeChecked();
   await expect(radio).toBeFocused();
 
-  if (value === "all") {
-    await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
-  } else {
+  if (value === "open") {
     await expect(journalRow(panel, CLOSED_ENTRY_ID)).toHaveCount(0);
+  } else {
+    await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
   }
 }
 
 function journalRow(panel, entryId) {
   return panel.locator(`[data-role="journal-entry"][data-entry-id="${entryId}"]`);
-}
-
-async function expandEntry(panel, entryId) {
-  const toggle = panel.locator(`#journal-entry-toggle-${entryId}`);
-
-  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
-    await toggle.click();
-  }
-
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(toggle).toBeFocused();
-  return journalRow(panel, entryId);
 }
 
 async function expectFocusInsidePage(page) {
@@ -172,23 +160,27 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
   const panel = await openJournal(page);
   await chooseJournalFilter(panel, "all");
 
-  const row = await expandEntry(panel, PHOTO_ENTRY_ID);
+  const row = journalRow(panel, PHOTO_ENTRY_ID);
   await expect(row.locator(`#journal-entry-target-${PHOTO_ENTRY_ID}`)).toContainText(
     "Node · Platform A North",
   );
-  await expect(row.locator(`#journal-captured-at-${PHOTO_ENTRY_ID} time`)).toHaveAttribute(
+  await expect(row.locator("time")).toHaveAttribute(
     "datetime",
     "2026-07-21T14:32:00.000000Z",
   );
-  await expect(row.locator(`#journal-entry-photo-count-${PHOTO_ENTRY_ID}`)).toContainText("1");
+  await expect(row.locator('[data-role="journal-note"]')).toBeVisible();
   await expect(row.getByRole("button", { name: "Edit node" })).toBeVisible();
   await expect(row.getByRole("button", { name: "Close entry" })).toBeVisible();
+  await expect(row.locator(`#journal-entry-toggle-${PHOTO_ENTRY_ID}`)).toHaveCount(0);
   await expect(row.getByText("Show on floorplan", { exact: true })).toHaveCount(0);
 
-  const photo = row.locator('a[id^="journal-photo-"]');
+  const photo = row.locator('button[id^="journal-photo-"]');
   await expect(photo).toHaveCount(1);
-  await expect(photo).toHaveAttribute("target", "_blank");
-  await expect(photo).toHaveAttribute("href", /\/uploads\/field-captures\/.+\.png$/);
+  await expect(photo).toHaveAttribute("phx-click", "open_journal_photo");
+  await expect(photo.locator("img")).toHaveAttribute(
+    "src",
+    /\/uploads\/field-captures\/.+\.png$/,
+  );
   await expect
     .poll(() => photo.locator("img").evaluate((image) => image.complete && image.naturalWidth > 0))
     .toBe(true);
@@ -201,7 +193,7 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
   });
 });
 
-test("keeps focus through expansion, close, Undo, reopen, and filter resets", async ({
+test("keeps focus through close, Undo, reopen, and filter resets", async ({
   page,
 }) => {
   const panel = await openJournal(page);
@@ -211,20 +203,15 @@ test("keeps focus through expansion, close, Undo, reopen, and filter resets", as
     .locator('[data-role="journal-entry"]')
     .evaluateAll((rows) => rows.map((row) => row.dataset.entryId));
 
-  let row = await expandEntry(panel, PHOTO_ENTRY_ID);
-  await expandEntry(panel, SECOND_OPEN_ENTRY_ID);
-  await expect(row.locator(`#journal-entry-detail-${PHOTO_ENTRY_ID}`)).toHaveCount(0);
-  await expect(panel.locator(`#journal-entry-toggle-${SECOND_OPEN_ENTRY_ID}`)).toBeFocused();
+  let row = journalRow(panel, PHOTO_ENTRY_ID);
+  await row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`).click();
+  await expect(row.locator(`#journal-undo-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
+  await expect(row.locator('button[id^="journal-photo-"] img')).toBeVisible();
   expect(
     await panel
       .locator('[data-role="journal-entry"]')
       .evaluateAll((rows) => rows.map((row) => row.dataset.entryId)),
   ).toEqual(originalOrder);
-
-  row = await expandEntry(panel, PHOTO_ENTRY_ID);
-  await row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`).click();
-  await expect(row.locator(`#journal-undo-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
-  await expect(row.locator('a[id^="journal-photo-"] img')).toBeVisible();
 
   await row.locator(`#journal-undo-entry-${PHOTO_ENTRY_ID}`).click();
   await expect(row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
@@ -235,19 +222,81 @@ test("keeps focus through expansion, close, Undo, reopen, and filter resets", as
   await expect(journalRow(panel, PHOTO_ENTRY_ID)).toHaveCount(0);
   await chooseJournalFilter(panel, "all");
 
-  row = await expandEntry(panel, PHOTO_ENTRY_ID);
+  row = journalRow(panel, PHOTO_ENTRY_ID);
   await expect(row).toHaveAttribute("data-entry-state", "closed");
   await row.locator(`#journal-reopen-entry-${PHOTO_ENTRY_ID}`).click();
   await expect(row).toHaveAttribute("data-entry-state", "open");
   await expect(row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
-  await expect(row.locator('a[id^="journal-photo-"] img')).toBeVisible();
+  await expect(row.locator('button[id^="journal-photo-"] img')).toBeVisible();
   await expectFocusInsidePage(page);
+});
+
+test("filters the queue by open and closed states", async ({ page }) => {
+  const panel = await openJournal(page);
+
+  await chooseJournalFilter(panel, "closed");
+  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
+  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toHaveCount(0);
+  await expect(journalRow(panel, SECOND_OPEN_ENTRY_ID)).toHaveCount(0);
+
+  await chooseJournalFilter(panel, "open");
+  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
+
+  await chooseJournalFilter(panel, "all");
+  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
+  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
+});
+
+test("carries the journal note into the edit drawer", async ({ page }) => {
+  const panel = await openJournal(page);
+  const row = journalRow(panel, PHOTO_ENTRY_ID);
+  const note = (await row.locator('[data-role="journal-note"]').innerText()).trim();
+
+  await row.getByRole("button", { name: "Edit node" }).click();
+  await expect(page.locator("#station-journal-panel")).toHaveCount(0);
+
+  const contextBox = page.locator("#journal-form-context");
+  await expect(contextBox).toBeVisible();
+  await expect(contextBox).toContainText("Journal entry");
+  await expect(contextBox).toContainText(note.slice(0, 30));
+
+  await page.locator("#child-stop-drawer-close").click();
+  await expect(contextBox).toHaveCount(0);
+});
+
+test("opens photos in an in-app viewer instead of a raw file tab", async ({ page }) => {
+  const panel = await openJournal(page);
+  const row = journalRow(panel, PHOTO_ENTRY_ID);
+  const thumbnail = row.locator('button[id^="journal-photo-"]').first();
+
+  await thumbnail.click();
+
+  const viewer = page.locator("#journal-photo-viewer");
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toHaveAttribute("aria-modal", "true");
+  await expect(viewer.locator("img")).toBeVisible();
+  await expect(viewer.locator("#journal-photo-viewer-close")).toBeFocused();
+  await expect(viewer.locator("#journal-photo-viewer-original")).toHaveAttribute(
+    "href",
+    /\/uploads\/field-captures\/.+\.png$/,
+  );
+
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+  await expect(panel).toBeVisible();
+  await expect(thumbnail).toBeFocused();
+
+  await thumbnail.click();
+  await expect(viewer).toBeVisible();
+  await viewer.locator("#journal-photo-viewer-backdrop").click({ position: { x: 8, y: 8 } });
+  await expect(viewer).toHaveCount(0);
+  await expect(panel).toBeVisible();
 });
 
 test("returns focus after Escape, header close, and Align restoration", async ({ page }) => {
   let panel = await openJournal(page);
 
-  await panel.locator(`#journal-entry-toggle-${PHOTO_ENTRY_ID}`).focus();
+  await panel.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`).focus();
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(page.locator("#journal-trigger")).toBeFocused();
@@ -316,19 +365,19 @@ test("keeps scrolled rows stable and applies one identity-based pending entry", 
   expect(sentJournalScrollFrames).toHaveLength(1);
 
   await panel.locator("#journal-pending-entries").click();
-  const newToggle = panel.locator(`#journal-entry-toggle-${PENDING_ENTRY_ID}`);
-  await expect(newToggle).toBeVisible();
-  await expect(newToggle).toBeFocused();
+  const newRow = panel.locator(`#journal-entries-${PENDING_ENTRY_ID}`);
+  await expect(newRow).toBeVisible();
+  await expect(newRow).toBeFocused();
   await expect(panel.locator("#journal-pending-entries")).toHaveCount(0);
   await expect.poll(() => list.evaluate((element) => element.scrollTop <= 8)).toBe(true);
   await expect.poll(() => sentJournalScrollFrames.length).toBe(2);
 });
 
 for (const width of [1280, 1440, 1920]) {
-  test(`keeps the 340px push layout and 44px targets at ${width}px`, async ({ page }) => {
+  test(`keeps the 340px push layout and minimum targets at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const panel = await openJournal(page);
-    await expandEntry(panel, PHOTO_ENTRY_ID);
+    await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
 
     const layout = await page.evaluate(() => {
       const panel = document.querySelector("#station-journal-panel");
@@ -350,11 +399,8 @@ for (const width of [1280, 1440, 1920]) {
     expect(layout.listOverflowY).toBe("auto");
     expect(layout.bodyOverflow).toBeLessThanOrEqual(2);
 
-    const targetBoxes = await page
-      .locator(
-        `#journal-trigger, #journal-panel-close, #journal-entry-toggle-${PHOTO_ENTRY_ID}, #journal-photo-${"00000000-0000-4000-8000-0000000007a1"}, #journal-close-entry-${PHOTO_ENTRY_ID}, #journal-filter label`,
-      )
-      .evaluateAll((targets) =>
+    const measureBoxes = (locator) =>
+      locator.evaluateAll((targets) =>
         targets.map((target) => ({
           id: target.id || target.getAttribute("for"),
           width: target.getBoundingClientRect().width,
@@ -362,10 +408,30 @@ for (const width of [1280, 1440, 1920]) {
         })),
       );
 
-    expect(targetBoxes.length).toBeGreaterThanOrEqual(7);
-    for (const box of targetBoxes) {
+    const standaloneBoxes = await measureBoxes(
+      page.locator(
+        `#journal-panel-close, #journal-photo-${"00000000-0000-4000-8000-0000000007a1"}`,
+      ),
+    );
+
+    expect(standaloneBoxes.length).toBeGreaterThanOrEqual(2);
+    for (const box of standaloneBoxes) {
       expect(box.width, `${box.id} width`).toBeGreaterThanOrEqual(44);
       expect(box.height, `${box.id} height`).toBeGreaterThanOrEqual(44);
+    }
+
+    // Compact inline controls trade the 44px square for a quieter queue; they
+    // must still clear WCAG 2.5.8's 24px minimum with generous width.
+    const compactBoxes = await measureBoxes(
+      page.locator(
+        `#journal-trigger, #journal-close-entry-${PHOTO_ENTRY_ID}, #journal-filter label`,
+      ),
+    );
+
+    expect(compactBoxes.length).toBeGreaterThanOrEqual(5);
+    for (const box of compactBoxes) {
+      expect(box.width, `${box.id} width`).toBeGreaterThanOrEqual(44);
+      expect(box.height, `${box.id} height`).toBeGreaterThanOrEqual(28);
     }
   });
 }
@@ -394,7 +460,8 @@ test("keeps independent panel scrolling in Add and Connect", async ({ page }) =>
 test("disables journal motion when reduced motion is requested", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const panel = await openJournal(page);
-  const row = await expandEntry(panel, PHOTO_ENTRY_ID);
+  const row = journalRow(panel, PHOTO_ENTRY_ID);
+  await expect(row).toBeVisible();
 
   const motion = await page.evaluate((entryId) => {
     const panel = document.querySelector("#station-journal-panel");
