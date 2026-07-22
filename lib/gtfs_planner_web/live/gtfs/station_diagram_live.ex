@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.DiagramPalette
+  alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
   alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
   alias LiveSelect.Component, as: LiveSelectComponent
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -425,6 +426,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:other_level_markers_cache, %{})
     |> assign(:other_level_counts_cache, %{})
     |> assign(:other_levels, [])
+    |> project_and_stream_journal_markers()
   end
 
   defp load_level_data(socket, level) do
@@ -504,6 +506,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:other_level_counts_cache, %{})
     |> assign_other_levels()
     |> push_child_stop_markers()
+    |> project_and_stream_journal_markers()
   end
 
   defp assign_other_levels(socket) do
@@ -4877,7 +4880,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> Organizations.list_users_in_organization()
       |> Map.new(fn %{user: user} -> {user.id, user} end)
 
-    targets = fetch_journal_targets(source, scope)
+    {presentations, target_snapshots} = fetch_journal_targets_and_snapshots(source, scope)
+    marker_index = StationJournalMarkers.build_index(entries, target_snapshots)
     zone = source.resolve_display_zone(scope.organization_id, scope.gtfs_version_id)
     {local_times, now} = localize_journal_times(source, entries, zone)
 
@@ -4888,37 +4892,71 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       entry_ids: MapSet.new(entries, & &1.id),
       signature: journal_signature(entries),
       authors: authors,
-      targets: targets,
+      targets: presentations,
+      marker_index: marker_index,
       zone: zone,
       local_times: local_times,
       now: now
     }
   end
 
-  defp fetch_journal_targets(source, %JournalScope{} = scope) do
-    node_targets =
-      scope.organization_id
-      |> source.list_child_stops_for_parent(scope.gtfs_version_id, scope.station_id)
-      |> Map.new(fn stop -> {stop.id, %{label: target_label(stop.stop_name, stop.stop_id)}} end)
+  defp fetch_journal_targets_and_snapshots(source, %JournalScope{} = scope) do
+    child_stops =
+      source.list_child_stops_for_parent(
+        scope.organization_id,
+        scope.gtfs_version_id,
+        scope.station_id
+      )
 
-    pathway_targets =
-      scope.organization_id
-      |> source.list_pathways_for_station(scope.gtfs_version_id, scope.station_id)
-      |> Map.new(fn pathway ->
+    pathways =
+      source.list_pathways_for_station(
+        scope.organization_id,
+        scope.gtfs_version_id,
+        scope.station_id
+      )
+
+    stop_levels =
+      source.list_stop_levels_for_station(
+        scope.organization_id,
+        scope.gtfs_version_id,
+        scope.station_id
+      )
+
+    node_presentations =
+      Map.new(child_stops, fn stop ->
+        {stop.id, %{label: target_label(stop.stop_name, stop.stop_id)}}
+      end)
+
+    node_snapshots = Map.new(child_stops, fn stop -> {stop.id, stop} end)
+
+    pathway_presentations =
+      Map.new(pathways, fn pathway ->
         {pathway.id, %{label: target_label(pathway.pathway_id, pathway.id)}}
       end)
 
-    pin_targets =
-      scope.organization_id
-      |> source.list_stop_levels_for_station(scope.gtfs_version_id, scope.station_id)
-      |> Map.new(fn stop_level ->
+    pathway_snapshots = Map.new(pathways, fn pw -> {pw.id, pw} end)
+
+    pin_presentations =
+      Map.new(stop_levels, fn stop_level ->
         label = target_label(stop_level.level.level_name, stop_level.level.level_id)
         {stop_level.id, %{label: label}}
       end)
 
-    node_targets
-    |> Map.merge(pathway_targets)
-    |> Map.merge(pin_targets)
+    stop_level_snapshots = Map.new(stop_levels, fn sl -> {sl.id, sl} end)
+
+    presentations =
+      node_presentations
+      |> Map.merge(pathway_presentations)
+      |> Map.merge(pin_presentations)
+
+    target_snapshots = %{
+      presentations: presentations,
+      nodes: node_snapshots,
+      pathways: pathway_snapshots,
+      stop_levels: stop_level_snapshots
+    }
+
+    {presentations, target_snapshots}
   end
 
   defp target_label(primary, _fallback) when is_binary(primary) and primary != "", do: primary
@@ -4970,9 +5008,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp apply_journal_payload(socket, %{intent: :counts_only}, payload) do
+    marker_index =
+      Map.get(payload, :marker_index) ||
+        StationJournalMarkers.build_index([], %{
+          presentations: %{},
+          nodes: %{},
+          pathways: %{},
+          stop_levels: %{}
+        })
+
     socket
     |> assign_journal_counts(payload)
     |> assign(:journal_observed_signature, payload.signature)
+    |> assign(:journal_marker_index, marker_index)
+    |> assign(:journal_floorplan_entry_ids, marker_index.floorplan_entry_ids)
+    |> project_and_stream_journal_markers()
     |> finish_journal_load()
   end
 
@@ -4996,6 +5046,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         do: MapSet.intersection(pending_ids, payload.entry_ids),
         else: MapSet.new()
 
+    marker_index =
+      Map.get(payload, :marker_index) ||
+        StationJournalMarkers.build_index([], %{
+          presentations: %{},
+          nodes: %{},
+          pathways: %{},
+          stop_levels: %{}
+        })
+
     socket
     |> assign_journal_counts(payload)
     |> assign(:journal_filter, request.filter)
@@ -5008,6 +5067,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_observed_signature, payload.signature)
     |> assign(:journal_authors, payload.authors)
     |> assign(:journal_targets, payload.targets)
+    |> assign(:journal_marker_index, marker_index)
+    |> assign(:journal_floorplan_entry_ids, marker_index.floorplan_entry_ids)
+    |> project_and_stream_journal_markers()
     |> assign(:journal_local_times, payload.local_times)
     |> assign(:journal_display_zone, payload.zone)
     |> assign(:journal_now, payload.now)
@@ -5018,11 +5080,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp apply_journal_payload(socket, %{intent: :observe_scrolled}, payload) do
     pending_ids = MapSet.difference(payload.entry_ids, socket.assigns.journal_rendered_entry_ids)
 
+    marker_index =
+      Map.get(payload, :marker_index) ||
+        StationJournalMarkers.build_index([], %{
+          presentations: %{},
+          nodes: %{},
+          pathways: %{},
+          stop_levels: %{}
+        })
+
     socket
     |> assign_journal_counts(payload)
     |> assign(:journal_observed_signature, payload.signature)
     |> assign(:journal_pending_new_ids, pending_ids)
+    |> assign(:journal_marker_index, marker_index)
+    |> assign(:journal_floorplan_entry_ids, marker_index.floorplan_entry_ids)
+    |> project_and_stream_journal_markers()
     |> finish_journal_load()
+  end
+
+  defp project_and_stream_journal_markers(socket) do
+    index = socket.assigns[:journal_marker_index]
+
+    if index do
+      active_level_id = socket.assigns[:active_level] && socket.assigns.active_level.id
+
+      active_stop_level_id =
+        socket.assigns[:active_stop_level] && socket.assigns.active_stop_level.id
+
+      geometry = %{
+        active_level_id: active_level_id,
+        active_stop_level_id: active_stop_level_id,
+        child_stops: socket.assigns[:child_stops_list] || [],
+        pathways: socket.assigns[:pathways_list] || [],
+        focused_marker_id: nil
+      }
+
+      markers = StationJournalMarkers.project(index, geometry)
+
+      socket
+      |> assign(:journal_focused_marker_id, nil)
+      |> stream(:journal_markers, markers, reset: true)
+    else
+      socket
+      |> assign(:journal_focused_marker_id, nil)
+      |> stream(:journal_markers, [], reset: true)
+    end
   end
 
   defp assign_journal_counts(socket, payload) do
@@ -5712,6 +5815,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> stream(:pathways, same_level_pathways, reset: true)
     |> assign(:pathway_pair_counts, pathway_pair_counts)
+    |> project_and_stream_journal_markers()
   end
 
   # Stream the decorated same-level members of the affected unordered pairs for

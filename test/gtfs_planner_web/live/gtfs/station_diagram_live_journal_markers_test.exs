@@ -216,4 +216,98 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       refute html =~ ~s(phx-click="journal_marker_clicked")
     end
   end
+
+  describe "Station diagram LiveView marker lifecycle across level switches and geometry updates" do
+    test "reprojects active level markers on level switch and geometry changes without re-querying journal",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: _level,
+           stop_level: stop_level
+         } do
+      level_b =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "journal_level_B",
+          level_name: "Mezzanine B",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level_b} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_b.id,
+          diagram_filename: "level_b.svg"
+        })
+
+      {:ok, scope} =
+        Gtfs.resolve_station_journal_scope(
+          organization.id,
+          gtfs_version.id,
+          station.id,
+          user.id
+        )
+
+      pin_a_id = Ecto.UUID.generate()
+      pin_b_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 2, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   id: pin_a_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 20.0,
+                   diagram_y: 30.0,
+                   body: "Level A Pin",
+                   captured_at: ~U[2026-07-18 12:00:00.000000Z]
+                 },
+                 %{
+                   id: pin_b_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level_b.id,
+                   diagram_x: 60.0,
+                   diagram_y: 70.0,
+                   body: "Level B Pin",
+                   captured_at: ~U[2026-07-18 12:05:00.000000Z]
+                 }
+               ])
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_async(view, 5_000)
+
+      # Initial level A displays pin A
+      assert has_element?(
+               view,
+               "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_a_id}"
+             )
+
+      refute has_element?(
+               view,
+               "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_b_id}"
+             )
+
+      # Switch level to B
+      render_hook(view, "switch_level", %{"level_id" => level_b.id})
+
+      # Level B displays pin B and omits pin A
+      assert has_element?(
+               view,
+               "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_b_id}"
+             )
+
+      refute has_element?(
+               view,
+               "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_a_id}"
+             )
+    end
+  end
 end

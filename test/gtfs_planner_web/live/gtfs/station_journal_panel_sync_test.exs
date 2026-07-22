@@ -530,6 +530,79 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert final.journal_request == nil
   end
 
+  test "initial counts-only load populates markers while keeping panel closed and observe-scrolled updates markers",
+       context do
+    scope = scope(context)
+    pin_id = Ecto.UUID.generate()
+
+    sync_entries(scope, [
+      journal_attrs(pin_id, "pin", ~U[2026-07-18 12:00:00.000000Z], %{
+        stop_level_id: context.stop_level.id,
+        diagram_x: 30.0,
+        diagram_y: 40.0
+      })
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    initial = assigns(view)
+    refute initial.journal_panel_open?
+    assert initial.journal_marker_index != nil
+    assert MapSet.member?(initial.journal_floorplan_entry_ids, pin_id)
+
+    assert has_element?(
+             view,
+             "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_id}"
+           )
+
+    render_hook(view, "open_journal", %{})
+    render_async(view, 5_000)
+
+    full = assigns(view)
+    assert full.journal_marker_index != nil
+    assert full.journal_loaded_once?
+
+    assert has_element?(
+             view,
+             "#journal-markers-svg #journal-markers-svg-journal-marker-pin-#{pin_id}"
+           )
+  end
+
+  test "first load failure leaves markers empty and refresh failure preserves accepted markers",
+       context do
+    control_journal_source()
+    view = open_diagram(context)
+
+    first_req = await_journal_request(context.station.id)
+    release_journal(first_req, {:error, :db_down})
+    render_async(view, 5_000)
+
+    failed_initial = assigns(view)
+    assert failed_initial.journal_state == :error
+    assert failed_initial.journal_marker_index == nil
+    refute has_element?(view, "#journal-markers-svg [data-journal-marker]")
+
+    render_hook(view, "refresh_journal", %{})
+    ok_req = await_journal_request(context.station.id)
+    release_journal(ok_req, :real)
+    render_async(view, 5_000)
+
+    accepted = assigns(view)
+    assert accepted.journal_state == :ready
+    assert accepted.journal_marker_index != nil
+
+    render_hook(view, "refresh_journal", %{})
+    fail_req = await_journal_request(context.station.id)
+    release_journal(fail_req, {:error, :timeout})
+    render_async(view, 5_000)
+
+    refresh_failed = assigns(view)
+    assert refresh_failed.journal_state == :error
+    assert refresh_failed.journal_refresh_error? == true
+    assert refresh_failed.journal_marker_index == accepted.journal_marker_index
+  end
+
   defp station_with_level(organization_id, gtfs_version_id, suffix) do
     station =
       stop_fixture(organization_id, gtfs_version_id, %{

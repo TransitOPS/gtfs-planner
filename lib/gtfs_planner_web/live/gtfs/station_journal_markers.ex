@@ -241,8 +241,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp project_group_coordinates(%{kind: :pin} = group, active_level_id, _geometry) do
-    if group.stop_level_id == active_level_id do
+  defp project_group_coordinates(%{kind: :pin} = group, active_level_id, geometry) do
+    active_stop_level_id = normalize_id(geometry[:active_stop_level_id])
+
+    if group.stop_level_id == active_level_id or
+         (not is_nil(active_stop_level_id) and group.stop_level_id == active_stop_level_id) do
       {:ok, group.x, group.y}
     else
       :error
@@ -301,17 +304,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     target_type = Map.get(entry, :target_type) || Map.get(entry, "target_type")
 
     case target_type do
-      type when type in ["pin", :pin] -> classify_pin(entry)
+      type when type in ["pin", :pin] -> classify_pin(entry, targets)
       type when type in ["node", :node] -> classify_node(entry, targets)
       type when type in ["pathway", :pathway] -> classify_pathway(entry, targets)
       _ -> :error
     end
   end
 
-  defp classify_pin(entry) do
+  defp classify_pin(entry, targets) do
     stop_level_id = Map.get(entry, :stop_level_id) || Map.get(entry, "stop_level_id")
     dx = Map.get(entry, :diagram_x) || Map.get(entry, "diagram_x")
     dy = Map.get(entry, :diagram_y) || Map.get(entry, "diagram_y")
+
+    resolved_level_id =
+      case get_stop_level(targets, stop_level_id) do
+        {:ok, sl} -> Map.get(sl, :level_id) || Map.get(sl, "level_id") || stop_level_id
+        :error -> stop_level_id
+      end
 
     with false <- is_nil(stop_level_id),
          {:ok, x} <- validate_coordinate(dx),
@@ -320,7 +329,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
        %{
          kind: :pin,
          target_id: nil,
-         stop_level_id: normalize_id(stop_level_id),
+         stop_level_id: normalize_id(resolved_level_id),
          x: x,
          y: y,
          entries: []
@@ -658,9 +667,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
 
   defp resolve_entry_level_id(group, entry, targets) do
     case group.kind do
-      :pin -> normalize_id(group.stop_level_id || entry.stop_level_id)
-      :node -> resolve_node_entry_level_id(group.target_id, targets)
-      :pathway -> resolve_pathway_entry_level_id(group.target_id, targets)
+      :pin ->
+        raw_id = group.stop_level_id || entry.stop_level_id
+
+        case get_stop_level(targets, raw_id) do
+          {:ok, sl} -> normalize_id(Map.get(sl, :level_id) || Map.get(sl, "level_id") || raw_id)
+          :error -> normalize_id(raw_id)
+        end
+
+      :node ->
+        resolve_node_entry_level_id(group.target_id, targets)
+
+      :pathway ->
+        resolve_pathway_entry_level_id(group.target_id, targets)
+    end
+  end
+
+  defp get_stop_level(targets, target_id) when not is_nil(target_id) do
+    stop_levels = Map.get(targets, :stop_levels) || Map.get(targets, "stop_levels") || %{}
+    norm_id = normalize_id(target_id)
+
+    case Map.get(stop_levels, target_id) || Map.get(stop_levels, norm_id) do
+      nil -> search_stop_level_map(stop_levels, norm_id)
+      sl -> {:ok, sl}
+    end
+  end
+
+  defp get_stop_level(_targets, _target_id), do: :error
+
+  defp search_stop_level_map(stop_levels, norm_id) do
+    case Enum.find(stop_levels, fn {_k, v} ->
+           id = normalize_id(Map.get(v, :id) || Map.get(v, "id"))
+           id == norm_id
+         end) do
+      {_k, sl} -> {:ok, sl}
+      nil -> :error
     end
   end
 

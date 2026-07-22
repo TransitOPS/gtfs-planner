@@ -1445,7 +1445,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 stroke-linejoin="round"
               />
             </g>
-
           <% _node_or_pathway -> %>
             <circle
               data-journal-dot="true"

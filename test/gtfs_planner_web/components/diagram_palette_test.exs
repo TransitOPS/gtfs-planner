@@ -59,4 +59,3 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     assert DiagramPalette.contrast_ratio(halo_color, journal_color) >= 4.5
   end
 end
-
