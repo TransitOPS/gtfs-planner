@@ -1044,12 +1044,44 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         actor_id: Ecto.UUID.generate()
       }
 
-      {:ok, scope_a: scope_a, scope_b: scope_b}
+      ver_a_2 = gtfs_version_fixture(org_a.id)
+
+      station_a_2 =
+        stop_fixture(org_a.id, ver_a_2.id,
+          stop_id: "station_a2_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      scope_c = %Scope{
+        organization_id: org_a.id,
+        gtfs_version_id: ver_a_2.id,
+        station_id: station_a_2.id,
+        station_stop_id: station_a_2.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      station_a_3 =
+        stop_fixture(org_a.id, ver_a.id,
+          stop_id: "station_a3_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      scope_d = %Scope{
+        organization_id: org_a.id,
+        gtfs_version_id: ver_a.id,
+        station_id: station_a_3.id,
+        station_stop_id: station_a_3.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      {:ok, scope_a: scope_a, scope_b: scope_b, scope_c: scope_c, scope_d: scope_d}
     end
 
     test "subscribes and receives notifications for synced entries", %{
       scope_a: scope_a,
-      scope_b: scope_b
+      scope_b: scope_b,
+      scope_c: scope_c,
+      scope_d: scope_d
     } do
       assert :ok = Gtfs.subscribe_station_journal(scope_a)
 
@@ -1077,8 +1109,22 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
       refute_receive {:station_journal_changed, _}
 
-      # Scope B mutations do not notify Scope A subscriber
+      # Foreign organization (Scope B) mutations do not notify Scope A subscriber
       Gtfs.sync_journal_entries(scope_b, [
+        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station"})
+      ])
+
+      refute_receive {:station_journal_changed, _}
+
+      # Foreign GTFS version (Scope C) mutations do not notify Scope A subscriber
+      Gtfs.sync_journal_entries(scope_c, [
+        entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station"})
+      ])
+
+      refute_receive {:station_journal_changed, _}
+
+      # Foreign station (Scope D) mutations do not notify Scope A subscriber
+      Gtfs.sync_journal_entries(scope_d, [
         entry_attrs(%{id: Ecto.UUID.generate(), target_type: "station"})
       ])
 
@@ -1154,6 +1200,53 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
                  upload
                )
 
+      refute_receive {:station_journal_changed, _}
+    end
+
+    test "refresh_pin_coordinates_for_stop_level/3 remains notification-free", %{
+      scope_a: scope_a
+    } do
+      assert :ok = Gtfs.subscribe_station_journal(scope_a)
+
+      level =
+        level_fixture(scope_a.organization_id, scope_a.gtfs_version_id, level_id: "L1_NOTIF")
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: scope_a.organization_id,
+          gtfs_version_id: scope_a.gtfs_version_id,
+          stop_id: scope_a.station_id,
+          level_id: level.id
+        })
+
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1} =
+               Gtfs.sync_journal_entries(scope_a, [
+                 entry_attrs(%{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 40.0
+                 })
+               ])
+
+      station_id_a = scope_a.station_id
+      assert_receive {:station_journal_changed, ^station_id_a}
+
+      {:ok, aligned_stop_level} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      assert {:ok, 1} =
+               Gtfs.refresh_pin_coordinates_for_stop_level(aligned_stop_level, 1000, 800)
+
+      # CRIT-005: refresh_pin_coordinates_for_stop_level must not broadcast
       refute_receive {:station_journal_changed, _}
     end
   end
