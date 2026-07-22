@@ -304,20 +304,69 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
       assert enr_meta.row_count == 2
 
       for {measurements, meta} <- events do
-        assert is_integer(measurements.duration)
-        assert measurements.duration >= 0
-
-        assert is_integer(meta.row_count)
-        assert meta.row_count >= 0
-        assert meta.phase in [:primary, :route_enrichment]
-        assert meta.outcome in [:ok, :unavailable]
-
-        refute Map.has_key?(meta, :organization_id)
-        refute Map.has_key?(meta, :gtfs_version_id)
-        refute Map.has_key?(meta, :search)
-        refute Map.has_key?(meta, :route_id)
-        refute Map.has_key?(meta, :stop_id)
+        assert_safe_phase_event(measurements, meta)
       end
+    end
+
+    test "route enrichment unavailable preserves primary rows and emits ordered events", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stop = stop_fixture(org.id, version.id, %{stop_id: "st1", location_type: 1})
+
+      handler_id = make_ref()
+      test_pid = self()
+
+      with_started_unreachable_repo(fn unreachable_repo ->
+        :telemetry.attach(
+          handler_id,
+          @phase_event,
+          fn _event, measurements, meta, _config ->
+            send(test_pid, {:catalog_phase_event, measurements, meta})
+
+            if meta.phase == :primary and meta.outcome == :ok do
+              Repo.put_dynamic_repo(unreachable_repo)
+            end
+          end,
+          %{}
+        )
+
+        on_exit(fn -> :telemetry.detach(handler_id) end)
+
+        previous = Repo.get_dynamic_repo()
+
+        try do
+          capture_log(fn ->
+            result = Gtfs.load_stop_catalog(org.id, version.id, page: 1, per_page: 50)
+            send(test_pid, {:catalog_result, result})
+          end)
+        after
+          Repo.put_dynamic_repo(previous)
+        end
+
+        assert_receive {:catalog_result, {:partial, page, :route_enrichment_unavailable}}
+        assert page.total_count == 1
+        assert page.page == 1
+        assert Enum.map(page.rows, & &1.id) == [stop.id]
+        assert page.available_routes == []
+        assert page.routes_by_stop == %{}
+      end)
+
+      events = receive_all_events([])
+
+      assert [
+               {primary_measurements,
+                %{phase: :primary, outcome: :ok, row_count: 1} = primary_metadata},
+               {enrichment_measurements,
+                %{
+                  phase: :route_enrichment,
+                  outcome: :unavailable,
+                  row_count: 1
+                } = enrichment_metadata}
+             ] = events
+
+      assert_safe_phase_event(primary_measurements, primary_metadata)
+      assert_safe_phase_event(enrichment_measurements, enrichment_metadata)
     end
 
     test "primary unavailable emits only the primary event with :unavailable outcome", %{
@@ -347,10 +396,11 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
       events = receive_all_events([])
       assert length(events) == 1
 
-      [{_measurements, meta}] = events
+      [{measurements, meta}] = events
       assert meta.phase == :primary
       assert meta.outcome == :unavailable
       assert meta.row_count == 0
+      assert_safe_phase_event(measurements, meta)
     end
   end
 
@@ -481,7 +531,30 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
     end
   end
 
+  defp assert_safe_phase_event(measurements, metadata) do
+    assert MapSet.new(Map.keys(measurements)) == MapSet.new([:duration])
+    assert MapSet.new(Map.keys(metadata)) == MapSet.new([:outcome, :phase, :row_count])
+
+    assert is_integer(measurements.duration)
+    assert measurements.duration >= 0
+    assert is_integer(metadata.row_count)
+    assert metadata.row_count >= 0
+  end
+
   defp with_unreachable_repo(fun) do
+    with_started_unreachable_repo(fn pid ->
+      previous = GtfsPlanner.Repo.get_dynamic_repo()
+      GtfsPlanner.Repo.put_dynamic_repo(pid)
+
+      try do
+        fun.()
+      after
+        GtfsPlanner.Repo.put_dynamic_repo(previous)
+      end
+    end)
+  end
+
+  defp with_started_unreachable_repo(fun) do
     {:ok, pid} =
       GtfsPlanner.Repo.start_link(
         name: nil,
@@ -498,13 +571,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
         log: false
       )
 
-    previous = GtfsPlanner.Repo.get_dynamic_repo()
-    GtfsPlanner.Repo.put_dynamic_repo(pid)
-
     try do
-      fun.()
+      fun.(pid)
     after
-      GtfsPlanner.Repo.put_dynamic_repo(previous)
       Supervisor.stop(pid)
     end
   end

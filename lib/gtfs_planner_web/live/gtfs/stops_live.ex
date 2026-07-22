@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> assign(:available_routes, [])
      |> assign(:route_id, nil)
      |> assign(:direction_id, nil)
+     |> assign(:canonical_patch_identity, nil)
      |> stream(:stops, [])}
   end
 
@@ -81,12 +82,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       |> assign(:route_id, route_id)
       |> assign(:direction_id, direction_id)
 
-    if connected?(socket) do
-      organization_id
-      |> Gtfs.load_stop_catalog(gtfs_version_id, opts)
-      |> apply_catalog_result(socket, page)
-    else
-      {:noreply, socket}
+    canonical_patch_identity = {gtfs_version_id, opts}
+
+    cond do
+      not connected?(socket) ->
+        {:noreply, socket}
+
+      socket.assigns.canonical_patch_identity == canonical_patch_identity ->
+        {:noreply, assign(socket, :canonical_patch_identity, nil)}
+
+      true ->
+        organization_id
+        |> Gtfs.load_stop_catalog(gtfs_version_id, opts)
+        |> apply_catalog_result(socket, opts)
     end
   end
 
@@ -301,18 +309,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               label="Route"
               prompt="All routes"
               disabled={@stops_state == :loading}
-              options={
-                Enum.map(@available_routes, fn r ->
-                  display =
-                    if r.route_short_name do
-                      "#{r.route_short_name} (#{r.route_id})"
-                    else
-                      r.route_id
-                    end
-
-                  {display, r.route_id}
-                end)
-              }
+              options={route_options(@available_routes, @route_id)}
             />
           </div>
           <%= if @route_id && @route_id != "" do %>
@@ -546,7 +543,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
             routes_by_stop: routes_by_stop
           }},
          socket,
-         page
+         opts
        ) do
     stops_with_routes =
       Enum.map(stops, fn s ->
@@ -562,7 +559,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       |> assign(:stops_state, :ready)
       |> stream(:stops, stops_with_routes, reset: true)
 
-    maybe_patch_page(socket, canonical_page, page)
+    maybe_patch_page(socket, canonical_page, opts)
   end
 
   defp apply_catalog_result(
@@ -574,7 +571,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
             available_routes: available_routes
           }, :route_enrichment_unavailable},
          socket,
-         page
+         opts
        ) do
     stops_with_empty_routes =
       Enum.map(stops, fn s -> Map.put(s, :routes, []) end)
@@ -588,10 +585,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       |> assign(:stops_state, :route_enrichment_unavailable)
       |> stream(:stops, stops_with_empty_routes, reset: true)
 
-    maybe_patch_page(socket, canonical_page, page)
+    maybe_patch_page(socket, canonical_page, opts)
   end
 
-  defp apply_catalog_result({:error, :unavailable}, socket, _page) do
+  defp apply_catalog_result({:error, :unavailable}, socket, _opts) do
     {:noreply,
      socket
      |> assign(:stops_empty?, true)
@@ -599,17 +596,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> stream(:stops, [], reset: true)}
   end
 
-  defp maybe_patch_page(socket, canonical_page, page) when canonical_page != page do
-    query_params = build_query_params(socket, canonical_page)
+  defp maybe_patch_page(socket, canonical_page, opts) do
+    if canonical_page != Keyword.fetch!(opts, :page) do
+      query_params = build_query_params(socket, canonical_page)
 
-    {:noreply,
-     push_patch(socket,
-       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/stops?#{query_params}"
-     )}
-  end
+      canonical_patch_identity =
+        {socket.assigns.current_gtfs_version.id, Keyword.replace!(opts, :page, canonical_page)}
 
-  defp maybe_patch_page(socket, _canonical_page, _page) do
-    {:noreply, socket}
+      {:noreply,
+       socket
+       |> assign(:canonical_patch_identity, canonical_patch_identity)
+       |> push_patch(
+         to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/stops?#{query_params}"
+       )}
+    else
+      {:noreply, socket}
+    end
   end
 
   defp has_active_constraints?(assigns) do
@@ -635,6 +637,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     |> maybe_put("sort_by", socket.assigns.sort_by)
     |> maybe_put("sort_dir", socket.assigns.sort_dir)
     |> Map.put("page", page)
+  end
+
+  defp route_options(available_routes, selected_route_id) do
+    options =
+      Enum.map(available_routes, fn route ->
+        display =
+          if route.route_short_name do
+            "#{route.route_short_name} (#{route.route_id})"
+          else
+            route.route_id
+          end
+
+        {display, route.route_id}
+      end)
+
+    if selected_route_id in [nil, ""] or
+         Enum.any?(available_routes, &(&1.route_id == selected_route_id)) do
+      options
+    else
+      [{selected_route_id, selected_route_id} | options]
+    end
   end
 
   defp accessibility_status(%{wheelchair_boarding: 1}), do: :accessible

@@ -205,6 +205,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert has_element?(view, "#stops-retry")
     end
 
+    test "keeps a URL-selected route visible when the catalog is unavailable", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:error, :unavailable} end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?route_id=BOOKMARKED")
+
+      assert has_element?(view, "#stops-unavailable")
+      assert has_element?(view, "#route_id option[value='BOOKMARKED'][selected]", "BOOKMARKED")
+    end
+
     test "retry restores rows after unavailable", %{
       conn: conn,
       user: user,
@@ -319,6 +336,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
   describe "StopsLive page clamping" do
     setup :shared_setup
+    setup :set_mox_global
 
     test "out-of-range page patches to canonical page", %{
       conn: conn,
@@ -337,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           })
         end)
 
-      stub_catalog(fn opts ->
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
         page = Keyword.get(opts, :page, 1)
         per_page = Keyword.get(opts, :per_page, 50)
         total = 75
@@ -354,11 +372,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=999")
 
-      # Connected render triggers push_patch to canonical page=2 which
-      # live/2 processes internally; assert the rendered content reflects it.
-      html = render(view)
-      assert html =~ "CL051"
-      refute html =~ "CL001"
+      assert has_element?(view, "a", "CL051")
+      refute has_element?(view, "a", "CL001")
+      assert has_element?(view, "button[phx-click='paginate'][phx-value-page='1']", "Previous")
+
+      assert has_element?(
+               view,
+               "button[phx-click='paginate'][phx-value-page='3'][disabled]",
+               "Next"
+             )
+
+      # live/2 consumes mount-time patches before returning the view, so there is
+      # no stable assert_patch/2 observation point here. The exact Mox expectation
+      # proves the canonical patch did not trigger a second catalog read, while
+      # the DOM assertions prove that the loaded result is canonical page 2.
     end
   end
 
@@ -789,6 +816,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       connected = render(view)
       assert connected =~ "URLVAL1"
+    end
+
+    test "disconnected loading keeps a URL-selected route visible", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops?route_id=BOOKMARKED")
+
+      assert conn.status == 200
+      doc = LazyHTML.from_fragment(conn.resp_body)
+
+      assert Enum.count(LazyHTML.query(doc, "#route_id option[value='BOOKMARKED'][selected]")) ==
+               1
     end
 
     test "loading keeps URL-derived sort and pagination controls visible and disabled", %{
