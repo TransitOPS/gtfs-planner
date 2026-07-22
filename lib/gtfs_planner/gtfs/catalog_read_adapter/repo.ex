@@ -24,6 +24,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
 
   @default_per_page 25
 
+  @phase_event [:gtfs_planner, :stop_catalog, :phase]
+
   @impl true
   def load_route_catalog(organization_id, gtfs_version_id, opts) do
     run(fn ->
@@ -98,27 +100,50 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   end
 
   defp primary_stop_page(organization_id, gtfs_version_id, opts, per_page) do
-    run(fn ->
-      total_count = Gtfs.count_stations(organization_id, gtfs_version_id, opts)
-      page = canonical_page(opts[:page], total_count, per_page)
+    {duration, result} =
+      measure(fn ->
+        run(fn ->
+          total_count = Gtfs.count_stations(organization_id, gtfs_version_id, opts)
+          page = canonical_page(opts[:page], total_count, per_page)
 
-      rows =
-        Gtfs.list_stations(organization_id, gtfs_version_id, Keyword.put(opts, :page, page))
+          rows =
+            Gtfs.list_stations(
+              organization_id,
+              gtfs_version_id,
+              Keyword.put(opts, :page, page)
+            )
 
-      %{rows: rows, total_count: total_count, page: page}
-    end)
-  end
+          %{rows: rows, total_count: total_count, page: page}
+        end)
+      end)
 
-  # Route enrichment is classified separately from the primary stop read so its
-  # failure yields a `:partial` page that keeps the loaded stop rows rather than
-  # discarding them.
-  defp merge_route_enrichment(page, organization_id, gtfs_version_id) do
-    case run(fn -> route_enrichment(organization_id, gtfs_version_id, page.rows) end) do
-      {:ok, enrichment} ->
-        {:ok, Map.merge(page, enrichment)}
+    case result do
+      {:ok, page} ->
+        emit_phase(:primary, :ok, duration, length(page.rows))
+        {:ok, page}
 
       {:error, :unavailable} ->
-        {:partial, Map.merge(page, empty_enrichment()), :route_enrichment_unavailable}
+        emit_phase(:primary, :unavailable, duration, 0)
+        {:error, :unavailable}
+    end
+  end
+
+  defp merge_route_enrichment(page, organization_id, gtfs_version_id) do
+    {duration, result} =
+      measure(fn ->
+        run(fn -> route_enrichment(organization_id, gtfs_version_id, page.rows) end)
+      end)
+
+    case result do
+      {:ok, enrichment} ->
+        enriched = Map.merge(page, enrichment)
+        emit_phase(:route_enrichment, :ok, duration, length(enriched.rows))
+        {:ok, enriched}
+
+      {:error, :unavailable} ->
+        partial = Map.merge(page, empty_enrichment())
+        emit_phase(:route_enrichment, :unavailable, duration, length(partial.rows))
+        {:partial, partial, :route_enrichment_unavailable}
     end
   end
 
@@ -162,5 +187,19 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     {:ok, query.()}
   rescue
     DBConnection.ConnectionError -> {:error, :unavailable}
+  end
+
+  defp measure(fun) do
+    start = System.monotonic_time()
+    result = fun.()
+    {System.monotonic_time() - start, result}
+  end
+
+  defp emit_phase(phase, outcome, duration, row_count) do
+    :telemetry.execute(
+      @phase_event,
+      %{duration: duration},
+      %{phase: phase, outcome: outcome, row_count: row_count}
+    )
   end
 end

@@ -544,6 +544,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
     default: nil,
     doc: "LiveComponent target for sort events"
 
+  attr :disabled, :boolean,
+    default: false,
+    doc: "disables sortable header controls while preserving the table structure"
+
   slot :col, required: true do
     attr :label, :string, required: true
     attr :align, :string, doc: "\"left\" (default) or \"right\""
@@ -580,6 +584,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 phx-click={col[:sort_event]}
                 phx-value-key={col[:sort_key]}
                 phx-target={@sort_target}
+                disabled={@disabled}
               >
                 {col[:label]}
                 <span
@@ -681,12 +686,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :entity, :string, default: nil, doc: "optional noun appended to the count, e.g. \"routes\""
   attr :event, :string, default: "paginate", doc: "event name emitted by Previous and Next"
   attr :target, :any, default: nil, doc: "LiveComponent target for pagination events"
+  attr :disabled, :boolean, default: false, doc: "disables both pagination controls"
 
   def pagination(assigns) do
     total = max(assigns.total, 0)
     per_page = max(assigns.per_page, 1)
     max_page = max(div(total + per_page - 1, per_page), 1)
-    page = assigns.page |> max(1) |> min(max_page)
+
+    page =
+      if assigns.disabled do
+        max(assigns.page, 1)
+      else
+        assigns.page |> max(1) |> min(max_page)
+      end
 
     start_item = if total == 0, do: 0, else: (page - 1) * per_page + 1
     end_item = min(page * per_page, total)
@@ -714,7 +726,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           phx-click={@event}
           phx-value-page={@page - 1}
           phx-target={@target}
-          disabled={!@has_prev}
+          disabled={@disabled or !@has_prev}
         >
           Previous
         </button>
@@ -724,7 +736,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           phx-click={@event}
           phx-value-page={@page + 1}
           phx-target={@target}
-          disabled={!@has_next}
+          disabled={@disabled or !@has_next}
         >
           Next
         </button>

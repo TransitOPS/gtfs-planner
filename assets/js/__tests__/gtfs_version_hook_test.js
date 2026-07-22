@@ -103,13 +103,18 @@ describe("GtfsVersionHook", () => {
       expect(spy).toHaveBeenCalledWith("v2");
     });
 
-    it("does not redirect on mount even when storage has a value", () => {
+    it("synchronizes storage from data-current-version on mount without pushEvent or navigation", () => {
       localStorage.setItem(STORAGE_KEY, "v2");
-      const hook = makeHook();
+      const hook = makeHook({ current: "v1" });
+
+      const hrefSetter = vi.fn();
+      Object.defineProperty(window.location, "href", { set: hrefSetter, configurable: true });
+
       hook.mounted();
 
-      expect(hook.pushEvent).toHaveBeenCalledWith("gtfs_version_loaded", { version_id: "v2" });
-      expect(window.location.href).not.toContain("v2");
+      expect(localStorage.getItem(STORAGE_KEY)).toBe("v1");
+      expect(hook.pushEvent).not.toHaveBeenCalled();
+      expect(hrefSetter).not.toHaveBeenCalled();
     });
 
     it("rebinds to new option buttons after the inner DOM is patched", () => {
@@ -266,14 +271,14 @@ describe("GtfsVersionHook", () => {
       expect(hrefSetter).toHaveBeenCalledWith("/gtfs/v2/stations");
     });
 
-    it("storage read failure on mount does not throw or redirect", () => {
-      vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-        throw new DOMException("SecurityError");
+    it("storage write failure on mount does not throw", () => {
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("QuotaExceededError");
       });
 
       const hook = makeHook();
       expect(() => hook.mounted()).not.toThrow();
-      expect(hook.pushEvent).toHaveBeenCalledWith("gtfs_version_loaded", { version_id: null });
+      expect(hook.pushEvent).not.toHaveBeenCalled();
     });
   });
 

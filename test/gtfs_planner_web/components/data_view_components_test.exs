@@ -220,6 +220,22 @@ defmodule GtfsPlannerWeb.DataViewComponentsTest do
       btn = LazyHTML.query(doc, "th button")
       assert LazyHTML.attribute(btn, "phx-target") == ["my-target"]
     end
+
+    test "disabled table preserves sortable headers and disables their controls" do
+      assigns = %{rows: [], disabled: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="t" rows={@rows} disabled={@disabled}>
+          <:col label="Name" sort="desc" sort_event="sort" sort_key="name">Name</:col>
+        </.table>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "th[aria-sort='descending']")) == 1
+      assert Enum.count(LazyHTML.query(doc, "th button[disabled]")) == 1
+    end
   end
 
   describe "table/1 — alignment" do
@@ -621,6 +637,27 @@ defmodule GtfsPlannerWeb.DataViewComponentsTest do
         end)
 
       assert LazyHTML.attribute(next_btn, "disabled") == [""]
+    end
+
+    test "explicitly disables both controls and preserves the supplied page values" do
+      assigns = %{page: 3, per_page: 10, total: 0, disabled: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination
+          page={@page}
+          per_page={@per_page}
+          total={@total}
+          disabled={@disabled}
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      buttons = LazyHTML.query(doc, "button[disabled]")
+
+      assert Enum.count(buttons) == 2
+      assert html =~ "phx-value-page=\"2\""
+      assert html =~ "phx-value-page=\"4\""
     end
   end
 

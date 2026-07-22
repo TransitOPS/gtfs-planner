@@ -205,6 +205,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert has_element?(view, "#stops-retry")
     end
 
+    test "keeps a URL-selected route visible when the catalog is unavailable", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:error, :unavailable} end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?route_id=BOOKMARKED")
+
+      assert has_element?(view, "#stops-unavailable")
+      assert has_element?(view, "#route_id option[value='BOOKMARKED'][selected]", "BOOKMARKED")
+    end
+
     test "retry restores rows after unavailable", %{
       conn: conn,
       user: user,
@@ -220,7 +237,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       stub_catalog(fn _opts ->
         count = :atomics.add_get(call_count, 1, 1)
 
-        if count <= 2 do
+        if count <= 1 do
           {:error, :unavailable}
         else
           {:ok, stop_page([stop], 1, 1, [], %{})}
@@ -297,7 +314,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       stub_catalog(fn _opts ->
         count = :atomics.add_get(call_count, 1, 1)
 
-        if count <= 2 do
+        if count <= 1 do
           {:partial, stop_page([stop], 1, 1, [], %{}), :route_enrichment_unavailable}
         else
           {:ok, stop_page([stop], 1, 1, [route], %{stop.stop_id => [route]})}
@@ -319,6 +336,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
   describe "StopsLive page clamping" do
     setup :shared_setup
+    setup :set_mox_global
 
     test "out-of-range page patches to canonical page", %{
       conn: conn,
@@ -337,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           })
         end)
 
-      stub_catalog(fn opts ->
+      catalog_result = fn opts ->
         page = Keyword.get(opts, :page, 1)
         per_page = Keyword.get(opts, :per_page, 50)
         total = 75
@@ -350,15 +368,49 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           |> Enum.take(per_page)
 
         {:ok, stop_page(rows, total, canonical, [], %{})}
+      end
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
+        catalog_result.(opts)
       end)
 
-      assert {:error, {:live_redirect, %{to: redirected_to}}} =
-               live(conn, "/gtfs/#{version.id}/stops?page=999")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=999")
 
-      assert redirected_to =~ "page=2"
-
-      {:ok, view, _html} = live(conn, redirected_to)
       assert has_element?(view, "a", "CL051")
+      refute has_element?(view, "a", "CL001")
+      assert has_element?(view, "button[phx-click='paginate'][phx-value-page='1']", "Previous")
+
+      assert has_element?(
+               view,
+               "button[phx-click='paginate'][phx-value-page='3'][disabled]",
+               "Next"
+             )
+
+      # live/2 consumes mount-time patches before returning the view, so there is
+      # no stable assert_patch/2 observation point here. The exact Mox expectation
+      # proves the canonical patch did not trigger a second catalog read, while
+      # the DOM assertions prove that the loaded result is canonical page 2.
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
+        catalog_result.(opts)
+      end)
+
+      render_patch(view, "/gtfs/#{version.id}/stops?page=999")
+
+      requested_path = assert_patch(view)
+      requested_uri = URI.parse(requested_path)
+
+      assert requested_uri.path == "/gtfs/#{version.id}/stops"
+      assert URI.decode_query(requested_uri.query)["page"] == "999"
+
+      canonical_path = assert_patch(view)
+      canonical_uri = URI.parse(canonical_path)
+
+      assert canonical_uri.path == "/gtfs/#{version.id}/stops"
+      assert URI.decode_query(canonical_uri.query)["page"] == "2"
+
+      assert has_element?(view, "a", "CL051")
+      refute has_element?(view, "a", "CL001")
     end
   end
 
@@ -613,6 +665,228 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         assert html =~ "Stops"
         refute_redirected(view)
       end
+    end
+  end
+
+  describe "StopsLive loading lifecycle" do
+    setup :shared_setup
+    setup :set_mox_global
+
+    test "disconnected render shows loading without calling adapter", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-loading")) == 1
+
+      assert Enum.count(
+               LazyHTML.query(doc, "#stops-loading[aria-busy='true'][aria-live='polite']")
+             ) == 1
+
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-first-use-empty"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-constrained-empty"))
+    end
+
+    test "connected render calls adapter once and transitions to ready", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "LOAD1",
+          stop_name: "Loaded Stop",
+          parent_station: nil
+        })
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, _opts ->
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      html = render(view)
+      assert html =~ "LOAD1"
+      refute html =~ "id=\"stops-loading\""
+    end
+
+    test "loading prevents empty-state rendering", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-loading")) == 1
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-first-use-empty"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-constrained-empty"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-unavailable"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-enrichment-warning"))
+      assert Enum.count(LazyHTML.query(doc, "tbody#stops")) == 1
+      assert Enum.empty?(LazyHTML.query(doc, "tbody#stops tr"))
+    end
+
+    test "loading state disables filter selects and search input", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      route_select = LazyHTML.query(doc, "select#route_id")
+      refute Enum.empty?(route_select)
+      route_select_el = Enum.at(route_select, 0)
+      assert not is_nil(LazyHTML.attribute(route_select_el, "disabled"))
+
+      access_select = LazyHTML.query(doc, "select#wheelchair_boarding")
+      refute Enum.empty?(access_select)
+      access_select_el = Enum.at(access_select, 0)
+      assert not is_nil(LazyHTML.attribute(access_select_el, "disabled"))
+
+      search_input = LazyHTML.query(doc, "input#search")
+      refute Enum.empty?(search_input)
+      search_input_el = Enum.at(search_input, 0)
+      assert not is_nil(LazyHTML.attribute(search_input_el, "disabled"))
+    end
+
+    test "controls re-enable and table renders after loading resolves", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "RELOAD1",
+          stop_name: "Reload Stop",
+          parent_station: nil
+        })
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, _opts ->
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-container")
+      assert has_element?(view, "a", "RELOAD1")
+
+      refute has_element?(view, "#route_id[disabled]")
+      refute has_element?(view, "#search[disabled]")
+    end
+
+    test "loading guard preserves URL-derived filter values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "URLVAL1",
+          stop_name: "URL Value Stop",
+          parent_station: nil
+        })
+
+      conn = get(conn, "/gtfs/#{version.id}/stops?search=testsearch&wheelchair_boarding=1")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-loading")) == 1
+      assert Enum.count(LazyHTML.query(doc, "input#search[value='testsearch']")) == 1
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, opts ->
+        assert Keyword.get(opts, :search) == "testsearch"
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?search=testsearch&wheelchair_boarding=1")
+
+      connected = render(view)
+      assert connected =~ "URLVAL1"
+    end
+
+    test "disconnected loading keeps a URL-selected route visible", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops?route_id=BOOKMARKED")
+
+      assert conn.status == 200
+      doc = LazyHTML.from_fragment(conn.resp_body)
+
+      assert Enum.count(LazyHTML.query(doc, "#route_id option[value='BOOKMARKED'][selected]")) ==
+               1
+    end
+
+    test "loading keeps URL-derived sort and pagination controls visible and disabled", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn =
+        get(
+          conn,
+          "/gtfs/#{version.id}/stops?sort_by=stop_id&sort_dir=desc&page=3"
+        )
+
+      assert conn.status == 200
+      doc = LazyHTML.from_fragment(conn.resp_body)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-container")) == 1
+      assert Enum.count(LazyHTML.query(doc, "th[aria-sort='descending']")) == 1
+      assert Enum.count(LazyHTML.query(doc, "th button[disabled]")) == 3
+      assert Enum.count(LazyHTML.query(doc, "button[phx-click='paginate'][disabled]")) == 2
+
+      assert Enum.count(LazyHTML.query(doc, "button[phx-click='paginate'][phx-value-page='2']")) ==
+               1
+
+      assert Enum.count(LazyHTML.query(doc, "button[phx-click='paginate'][phx-value-page='4']")) ==
+               1
     end
   end
 
