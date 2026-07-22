@@ -184,6 +184,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       status = LazyHTML.query(d, "#journal-status")
       assert LazyHTML.attribute(status, "role") == ["status"]
       assert LazyHTML.attribute(status, "aria-live") == ["polite"]
+      assert Enum.empty?(LazyHTML.query(d, "#journal-target-scope"))
+    end
+
+    test "renders #journal-target-scope and #journal-clear-target-scope button when target scope is active" do
+      target_scope = %{target_type: :node, target_id: @target_id, label: "Node · Busway Central"}
+
+      d =
+        render_panel(
+          journal_target_scope: target_scope,
+          journal_scoped_open_count: 2,
+          journal_scoped_closed_count: 1,
+          journal_open_count: 10,
+          journal_closed_count: 5
+        )
+        |> doc()
+
+      scope_bar = LazyHTML.query(d, "#journal-target-scope")
+      assert LazyHTML.text(scope_bar) =~ "Node · Busway Central"
+
+      clear_btn = LazyHTML.query(d, "#journal-clear-target-scope")
+      assert LazyHTML.attribute(clear_btn, "phx-click") == ["clear_journal_target_scope"]
+      assert LazyHTML.text(clear_btn) =~ "Show all entries"
+
+      # Scoped filter counts are used in header summary and segmented control
+      assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() =~ "2 open · 1 closed"
     end
 
     test "renders each entry complete — note, photos, metadata, and actions — with no disclosure" do

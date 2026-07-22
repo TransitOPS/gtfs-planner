@@ -156,6 +156,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   attr :journal_live_message, :string, default: nil
   attr :journal_error_message, :string, default: nil
 
+  attr :journal_target_scope, :map, default: nil
+  attr :journal_scoped_open_count, :integer, default: nil
+  attr :journal_scoped_closed_count, :integer, default: nil
+
   @doc """
   Renders the complete journal panel shell and its ready/non-ideal states.
 
@@ -164,11 +168,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   this component never needs a duplicate full entry collection.
   """
   def journal_panel(assigns) do
+    open_count = assigns.journal_scoped_open_count || assigns.journal_open_count
+    closed_count = assigns.journal_scoped_closed_count || assigns.journal_closed_count
+
+    assigns =
+      assigns
+      |> assign(:display_open_count, open_count)
+      |> assign(:display_closed_count, closed_count)
+
     flags = panel_flags(assigns)
 
     filter_options = [
-      {"Open (#{assigns.journal_open_count})", "open"},
-      {"Closed (#{assigns.journal_closed_count})", "closed"},
+      {"Open (#{open_count})", "open"},
+      {"Closed (#{closed_count})", "closed"},
       {"All (#{flags.total_count})", "all"}
     ]
 
@@ -198,7 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           id="journal-count-summary"
           class="min-w-0 text-xs tabular-nums text-base-content/70"
         >
-          {@journal_open_count} open · {@journal_closed_count} closed
+          {@display_open_count} open · {@display_closed_count} closed
         </span>
         <.button
           id="journal-panel-close"
@@ -212,6 +224,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           <.icon name="hero-x-mark" class="size-4" />
         </.button>
       </header>
+
+      <div
+        :if={@journal_target_scope}
+        id="journal-target-scope"
+        class="flex items-center justify-between gap-2 border-y border-base-300 bg-base-200/50 px-4 py-2 text-xs"
+      >
+        <span class="min-w-0 truncate font-medium text-base-content/80">
+          {@journal_target_scope.label}
+        </span>
+        <.button
+          id="journal-clear-target-scope"
+          type="button"
+          variant="quiet"
+          size="sm"
+          class="h-auto min-h-0 shrink-0 p-0 font-normal text-primary underline hover:bg-transparent"
+          phx-click="clear_journal_target_scope"
+        >
+          Show all entries
+        </.button>
+      </div>
 
       <div :if={@first_loading?} class="journal-loading-delay px-4 pb-3" aria-hidden="true">
         <div class="h-9 w-36 rounded-md bg-base-200"></div>

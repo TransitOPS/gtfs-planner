@@ -603,6 +603,99 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert refresh_failed.journal_marker_index == accepted.journal_marker_index
   end
 
+  test "activating a pin marker opens panel, clears entity scope, and pushes focus to exact row",
+       context do
+    scope = scope(context)
+    pin_id = Ecto.UUID.generate()
+
+    sync_entries(scope, [
+      journal_attrs(pin_id, "pin", ~U[2026-07-18 12:00:00.000000Z], %{
+        stop_level_id: context.stop_level.id,
+        diagram_x: 40.0,
+        diagram_y: 50.0
+      })
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    refute assigns(view).journal_panel_open?
+
+    render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-pin-#{pin_id}"})
+    render_async(view, 5_000)
+
+    state = assigns(view)
+    assert state.journal_panel_open?
+    assert state.journal_target_scope == nil
+    expected_selector = "#journal-entries-#{pin_id}"
+    assert_push_event(view, "journal-focus", %{selector: ^expected_selector})
+    assert has_element?(view, "#journal-entries-#{pin_id}")
+  end
+
+  test "activating a node marker opens entity-scoped subset with target scope bar and scoped counts",
+       context do
+    scope = scope(context)
+
+    node =
+      stop_fixture(context.organization.id, context.gtfs_version.id, %{
+        stop_id: "SYNC_NODE",
+        stop_name: "Mezzanine Entrance",
+        location_type: 0,
+        parent_station: context.station.stop_id,
+        level_id: context.level.level_id,
+        diagram_coordinate: %{x: 30.0, y: 30.0}
+      })
+
+    entry1 = Ecto.UUID.generate()
+    entry2 = Ecto.UUID.generate()
+
+    sync_entries(scope, [
+      journal_attrs(entry1, "node", ~U[2026-07-18 12:00:00.000000Z], %{target_id: node.id}),
+      journal_attrs(entry2, "node", ~U[2026-07-18 12:10:00.000000Z], %{target_id: node.id})
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-node-#{node.id}"})
+    render_async(view, 5_000)
+
+    state = assigns(view)
+    assert state.journal_panel_open?
+    assert state.journal_target_scope != nil
+    assert state.journal_target_scope.target_id == node.id
+    assert state.journal_scoped_open_count == 2
+    assert state.journal_open_count == 2
+
+    assert has_element?(view, "#journal-target-scope")
+    assert has_element?(view, "#journal-clear-target-scope")
+    expected_entry2_selector = "#journal-entries-#{entry2}"
+    assert_push_event(view, "journal-focus", %{selector: ^expected_entry2_selector})
+
+    # Clearing target scope restores station entries
+    render_hook(view, "clear_journal_target_scope", %{})
+    render_async(view, 5_000)
+
+    cleared = assigns(view)
+    assert cleared.journal_target_scope == nil
+    refute has_element?(view, "#journal-target-scope")
+  end
+
+  test "forged or stale marker clicks are inert and do not mutate panel state", context do
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    initial = assigns(view)
+    refute initial.journal_panel_open?
+
+    render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-pin-forged-id"})
+    _ = :sys.get_state(view.pid)
+
+    after_click = assigns(view)
+    refute after_click.journal_panel_open?
+    assert after_click.journal_target_scope == nil
+  end
+
   defp station_with_level(organization_id, gtfs_version_id, suffix) do
     station =
       stop_fixture(organization_id, gtfs_version_id, %{

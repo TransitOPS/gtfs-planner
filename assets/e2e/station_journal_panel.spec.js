@@ -573,3 +573,38 @@ test("preserves the repository 200 percent zoom overflow contract", async ({ pag
   expect(zoomed.panelWidth).toBe("340px");
   expect(zoomed.body).toBeLessThanOrEqual(zoomed.viewport + 2);
 });
+
+test("Package 03 marker to panel scoping and clear action", async ({ page }) => {
+  await mkdir(pkg3ArtifactRoot, { recursive: true });
+  await loginAndGoToDiagram(page);
+
+  const diagramPage = page.locator("#diagram-page");
+  await expect(diagramPage).toBeVisible();
+
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await expect(nodeMarker).toBeVisible();
+  await nodeMarker.click();
+
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+  await expectFocusInsidePage(page);
+
+  const scopeBar = panel.locator("#journal-target-scope");
+  await expect(scopeBar).toBeVisible();
+
+  const clearBtn = panel.locator("#journal-clear-target-scope");
+  await expect(clearBtn).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  const screenshotPath = resolve(pkg3ArtifactRoot, "production-marker-to-panel.png");
+  console.log("SAVING SCREENSHOT TO:", screenshotPath);
+  const buf = await page.screenshot({
+    animations: "disabled",
+  });
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(screenshotPath, buf);
+  console.log("SCREENSHOT WRITTEN BYTES:", buf.length);
+
+  await clearBtn.click();
+  await expect(scopeBar).toHaveCount(0);
+});
