@@ -66,7 +66,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelStatesTest do
     refute loading.journal_loaded_once?
     assert loading.journal_request.intent == :counts_only
     assert loading.journal_request.reason == :station_load
-    assert has_element?(view, "#diagram-page")
+
+    assert has_element?(
+             view,
+             "#diagram-page[phx-hook='JournalPanelHook'][data-user-id='#{context.user.id}']:not([phx-update='ignore'])"
+           )
+
     assert has_element?(view, "#diagram-canvas-wrapper")
 
     release_journal(task, :real)

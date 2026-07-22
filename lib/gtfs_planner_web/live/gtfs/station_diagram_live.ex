@@ -961,7 +961,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     ~H"""
     <div
       id="diagram-page"
+      phx-hook="JournalPanelHook"
       style={DiagramPalette.css_custom_properties()}
+      data-user-id={@current_user.id}
       data-immersive={if @mode in [:add, :connect, :map], do: "true"}
     >
       <Layouts.app
