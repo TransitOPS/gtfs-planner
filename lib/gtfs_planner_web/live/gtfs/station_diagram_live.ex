@@ -382,10 +382,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply, assign(socket, :station_editing_status, status)}
   end
 
-  # Step 4 owns the refresh policy for these broadcasts. Subscribing in this
-  # step must nevertheless be safe: scoped and foreign messages are inert
-  # until that policy is installed, rather than crashing the LiveView.
   @impl true
+  def handle_info(
+        {:station_journal_changed, station_id},
+        %{assigns: %{journal_scope: %JournalScope{station_id: station_id}}} = socket
+      ) do
+    intent = journal_pubsub_intent(socket)
+
+    {:noreply, load_journal(socket, intent, :pubsub, socket.assigns.journal_filter)}
+  end
+
   def handle_info({:station_journal_changed, _station_id}, socket), do: {:noreply, socket}
 
   defp load_level_data(socket, nil) do
@@ -1268,16 +1274,128 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event(
+        "open_journal",
+        _params,
+        %{assigns: %{journal_scope: %JournalScope{}}} = socket
+      ) do
+    {:noreply, open_journal_panel(socket, persist?: true)}
+  end
+
+  def handle_event("open_journal", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("close_journal", _params, socket) do
+    {:noreply,
+     close_journal_panel(socket,
+       persist?: true,
+       focus_selector: "#journal-trigger"
+     )}
+  end
+
+  @impl true
+  def handle_event(
+        "set_journal_filter",
+        %{"journal_filter" => filter},
+        %{assigns: %{journal_scope: %JournalScope{}}} = socket
+      )
+      when filter in ["open", "all"] do
+    filter = String.to_existing_atom(filter)
+
+    {:noreply,
+     socket
+     |> assign(:journal_undo_ids, MapSet.new())
+     |> assign(:journal_expanded_id, nil)
+     |> assign(:journal_pending_new_ids, MapSet.new())
+     |> load_journal(:full, :filter, filter)}
+  end
+
+  def handle_event("set_journal_filter", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
+        "select_journal_entry",
+        %{"id" => entry_id},
+        %{assigns: %{journal_scope: %JournalScope{}}} = socket
+      ) do
+    {:noreply, select_journal_entry(socket, entry_id)}
+  end
+
+  def handle_event("select_journal_entry", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
+        "close_journal_entry",
+        %{"id" => entry_id},
+        %{assigns: %{journal_scope: %JournalScope{}}} = socket
+      ) do
+    {:noreply, mutate_journal_entry(socket, entry_id, :close)}
+  end
+
+  def handle_event("close_journal_entry", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
+        "reopen_journal_entry",
+        %{"id" => entry_id},
+        %{assigns: %{journal_scope: %JournalScope{}}} = socket
+      ) do
+    {:noreply, mutate_journal_entry(socket, entry_id, :reopen)}
+  end
+
+  def handle_event("reopen_journal_entry", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
+        "undo_journal_close",
+        %{"id" => entry_id},
+        %{assigns: %{journal_scope: %JournalScope{}}} = socket
+      ) do
+    {:noreply, mutate_journal_entry(socket, entry_id, :undo)}
+  end
+
+  def handle_event("undo_journal_close", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
         "refresh_journal",
         _params,
         %{assigns: %{journal_scope: %JournalScope{}}} = socket
       ) do
     reason = if socket.assigns.journal_loaded_once?, do: :refresh, else: :retry
 
-    {:noreply, load_journal(socket, :full, reason, socket.assigns.journal_filter)}
+    {:noreply,
+     socket
+     |> assign(:journal_undo_ids, MapSet.new())
+     |> load_journal(:full, reason, socket.assigns.journal_filter)}
   end
 
   def handle_event("refresh_journal", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("journal_scroll_state", %{"at_top" => at_top}, socket)
+      when is_boolean(at_top) do
+    {:noreply, update_journal_scroll_state(socket, at_top)}
+  end
+
+  def handle_event("journal_scroll_state", %{"at_top" => at_top}, socket)
+      when at_top in ["true", "false"] do
+    {:noreply, update_journal_scroll_state(socket, at_top == "true")}
+  end
+
+  def handle_event("journal_scroll_state", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("restore_journal_panel", %{"open" => open?}, socket)
+      when is_boolean(open?) do
+    {:noreply, restore_journal_panel(socket, open?)}
+  end
+
+  def handle_event("restore_journal_panel", %{"open" => open?}, socket)
+      when open? in ["true", "false"] do
+    {:noreply, restore_journal_panel(socket, open? == "true")}
+  end
+
+  def handle_event("restore_journal_panel", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event(
@@ -1455,6 +1573,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         socket =
           socket
+          |> transition_journal_mode(mode_atom)
           |> assign(:mode, mode_atom)
           |> assign(:dragging_stop_id, nil)
           |> reset_reposition_state()
@@ -1839,7 +1958,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket =
       case stop_diagram_point(stop) do
         {:ok, pending_xy} ->
-          open_edit_sidebar(socket, stop, pending_xy)
+          socket
+          |> close_journal_panel(persist?: false)
+          |> open_edit_sidebar(stop, pending_xy)
 
         :error ->
           put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
@@ -2196,30 +2317,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:noreply, socket}
     else
       pathway = Gtfs.get_pathway_with_stops!(id)
-      pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)
-      form = to_form(pathway_form_params(pathway))
-
-      active_pathway_tab =
-        case pathway_pair do
-          [_first_pathway, second_pathway] ->
-            if pathway.id == second_pathway.id or pathway.pathway_id == second_pathway.pathway_id do
-              :second
-            else
-              :first
-            end
-
-          _ ->
-            :first
-        end
 
       {:noreply,
        socket
-       |> assign(:editing_pathway_pair, pathway_pair)
-       |> assign(:active_pathway_tab, active_pathway_tab)
-       |> assign(:pathway_form_dirty, false)
-       |> assign(:editing_pathway, pathway)
-       |> assign(:pathway_form, form)
-       |> assign(:show_pathway_drawer, true)}
+       |> close_journal_panel(persist?: false)
+       |> open_pathway_drawer(pathway)}
     end
   end
 
@@ -4215,6 +4317,329 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_error_message, nil)
   end
 
+  defp journal_pubsub_intent(socket) do
+    cond do
+      not socket.assigns.journal_panel_open? -> :counts_only
+      socket.assigns.journal_at_top? -> :full
+      true -> :observe_scrolled
+    end
+  end
+
+  defp open_journal_panel(socket, opts) do
+    persist? = Keyword.fetch!(opts, :persist?)
+
+    if journal_panel_allowed?(socket) and not socket.assigns.journal_panel_open? do
+      socket =
+        socket
+        |> assign(:journal_panel_open?, true)
+        |> assign(:journal_restore_after_align?, false)
+        |> load_journal(:full, :open, socket.assigns.journal_filter)
+
+      if persist? do
+        push_event(socket, "journal-panel-preference", %{open: true})
+      else
+        socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp close_journal_panel(socket, opts) do
+    persist? = Keyword.fetch!(opts, :persist?)
+    focus_selector = Keyword.get(opts, :focus_selector)
+    was_open? = socket.assigns.journal_panel_open?
+
+    socket =
+      socket
+      |> assign(:journal_panel_open?, false)
+      |> maybe_cancel_hidden_journal_load(was_open?)
+
+    socket =
+      if persist? and was_open? do
+        push_event(socket, "journal-panel-preference", %{open: false})
+      else
+        socket
+      end
+
+    if was_open? and is_binary(focus_selector) do
+      push_event(socket, "journal-focus", %{selector: focus_selector})
+    else
+      socket
+    end
+  end
+
+  defp maybe_cancel_hidden_journal_load(
+         %{assigns: %{journal_request: %{intent: intent}}} = socket,
+         true
+       )
+       when intent in [:full, :observe_scrolled] do
+    socket
+    |> cancel_async(@journal_load_key)
+    |> assign(:journal_request, nil)
+    |> assign(:journal_state, if(socket.assigns.journal_loaded_once?, do: :ready, else: :idle))
+  end
+
+  defp maybe_cancel_hidden_journal_load(socket, _was_open?), do: socket
+
+  defp journal_panel_allowed?(%{assigns: %{journal_scope: %JournalScope{}, mode: mode}}),
+    do: mode in [:view, :add, :connect]
+
+  defp journal_panel_allowed?(_socket), do: false
+
+  defp restore_journal_panel(socket, false) do
+    close_journal_panel(socket, persist?: false)
+  end
+
+  defp restore_journal_panel(socket, true) do
+    open_journal_panel(socket, persist?: false)
+  end
+
+  defp update_journal_scroll_state(socket, at_top?) do
+    socket = assign(socket, :journal_at_top?, at_top?)
+
+    if at_top? and socket.assigns.journal_panel_open? and
+         socket.assigns.journal_observed_signature != socket.assigns.journal_rendered_signature do
+      load_journal(socket, :full, :returned_to_top, socket.assigns.journal_filter)
+    else
+      socket
+    end
+  end
+
+  defp select_journal_entry(socket, entry_id) do
+    with {:ok, entry_id} <- Ecto.UUID.cast(entry_id),
+         {:ok, payload} <- safe_fetch_journal_payload(socket.assigns.journal_scope),
+         %{} <- journal_payload_entry(payload, entry_id) do
+      previous_id = socket.assigns.journal_expanded_id
+      expanded_id = if previous_id == entry_id, do: nil, else: entry_id
+
+      socket
+      |> assign_journal_presentation(payload)
+      |> assign(:journal_expanded_id, expanded_id)
+      |> assign(:journal_error_message, nil)
+      |> restream_journal_rows(payload, [previous_id, entry_id])
+    else
+      _ -> journal_action_failed(socket)
+    end
+  end
+
+  defp mutate_journal_entry(socket, entry_id, transition) do
+    with {:ok, entry_id} <- Ecto.UUID.cast(entry_id),
+         {:ok, _entry} <-
+           run_journal_transition(socket.assigns.journal_scope, entry_id, transition) do
+      refresh_mutated_journal_entry(socket, entry_id, transition)
+    else
+      _ -> journal_action_failed(socket)
+    end
+  end
+
+  defp run_journal_transition(scope, entry_id, :close) do
+    Gtfs.close_journal_entry(scope, entry_id)
+  rescue
+    exception ->
+      Logger.error("station_journal_close_failed", reason: Exception.message(exception))
+      {:error, exception}
+  end
+
+  defp run_journal_transition(scope, entry_id, transition) when transition in [:reopen, :undo] do
+    Gtfs.reopen_journal_entry(scope, entry_id)
+  rescue
+    exception ->
+      Logger.error("station_journal_reopen_failed", reason: Exception.message(exception))
+      {:error, exception}
+  end
+
+  defp refresh_mutated_journal_entry(socket, entry_id, transition) do
+    with {:ok, payload} <- safe_fetch_journal_payload(socket.assigns.journal_scope),
+         %{} = entry <- journal_payload_entry(payload, entry_id) do
+      undo_ids =
+        journal_undo_ids_after_transition(socket.assigns.journal_undo_ids, entry_id, transition)
+
+      socket
+      |> assign(:journal_undo_ids, undo_ids)
+      |> assign_authoritative_mutation_snapshot(payload, entry_id)
+      |> stream_insert(:journal_entries, entry)
+      |> assign(:journal_state, :ready)
+      |> assign(:journal_refresh_error?, false)
+      |> assign(:journal_error_message, nil)
+      |> assign(:journal_live_message, journal_transition_message(transition))
+      |> push_event("journal-focus", %{
+        selector: journal_transition_focus_selector(entry_id, transition)
+      })
+    else
+      _ -> journal_mutation_refresh_failed(socket)
+    end
+  end
+
+  defp journal_undo_ids_after_transition(undo_ids, entry_id, :close),
+    do: MapSet.put(undo_ids, entry_id)
+
+  defp journal_undo_ids_after_transition(undo_ids, entry_id, transition)
+       when transition in [:reopen, :undo],
+       do: MapSet.delete(undo_ids, entry_id)
+
+  defp journal_transition_message(:close), do: "Entry closed."
+
+  defp journal_transition_message(transition) when transition in [:reopen, :undo],
+    do: "Entry reopened."
+
+  defp journal_transition_focus_selector(entry_id, :close),
+    do: "#journal-undo-entry-#{entry_id}"
+
+  defp journal_transition_focus_selector(entry_id, transition)
+       when transition in [:reopen, :undo],
+       do: "#journal-close-entry-#{entry_id}"
+
+  defp assign_authoritative_mutation_snapshot(socket, payload, entry_id) do
+    socket =
+      socket
+      |> assign_journal_presentation(payload)
+      |> assign(:journal_visible_count, journal_visible_count(socket, payload))
+
+    if socket.assigns.journal_at_top? do
+      socket
+      |> assign(:journal_rendered_entry_ids, payload.entry_ids)
+      |> assign(:journal_pending_new_ids, MapSet.new())
+      |> assign(:journal_rendered_signature, payload.signature)
+      |> assign(:journal_observed_signature, payload.signature)
+    else
+      socket
+      |> assign(
+        :journal_rendered_signature,
+        replace_journal_signature_entry(
+          socket.assigns.journal_rendered_signature,
+          payload.signature,
+          entry_id
+        )
+      )
+      |> assign(:journal_observed_signature, payload.signature)
+      |> assign(
+        :journal_pending_new_ids,
+        MapSet.difference(payload.entry_ids, socket.assigns.journal_rendered_entry_ids)
+      )
+    end
+  end
+
+  defp replace_journal_signature_entry(rendered_signature, payload_signature, entry_id) do
+    case Enum.find(payload_signature, &(elem(&1, 0) == entry_id)) do
+      nil ->
+        rendered_signature
+
+      replacement ->
+        Enum.map(rendered_signature, &if(elem(&1, 0) == entry_id, do: replacement, else: &1))
+    end
+  end
+
+  defp journal_visible_count(socket, payload) do
+    payload.entries
+    |> visible_journal_entries(socket.assigns.journal_filter, socket.assigns.journal_undo_ids)
+    |> length()
+  end
+
+  defp assign_journal_presentation(socket, payload) do
+    socket
+    |> assign_journal_counts(payload)
+    |> assign(:journal_authors, payload.authors)
+    |> assign(:journal_targets, payload.targets)
+    |> assign(:journal_local_times, payload.local_times)
+    |> assign(:journal_display_zone, payload.zone)
+    |> assign(:journal_now, payload.now)
+  end
+
+  defp restream_journal_rows(socket, payload, entry_ids) do
+    entry_ids
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.reduce(socket, fn entry_id, socket ->
+      case journal_payload_entry(payload, entry_id) do
+        nil -> socket
+        entry -> stream_insert(socket, :journal_entries, entry)
+      end
+    end)
+  end
+
+  defp journal_payload_entry(payload, entry_id) do
+    Enum.find(payload.entries, &(&1.id == entry_id))
+  end
+
+  defp safe_fetch_journal_payload(scope) do
+    {:ok, fetch_journal_payload(scope, %{})}
+  rescue
+    exception ->
+      Logger.error("station_journal_refresh_failed", reason: Exception.message(exception))
+      {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp journal_action_failed(socket) do
+    socket
+    |> assign(:journal_error_message, "The journal entry could not be changed.")
+    |> assign(:journal_live_message, "The journal entry was not changed. Try again.")
+  end
+
+  defp journal_mutation_refresh_failed(socket) do
+    socket
+    |> assign(:journal_state, :error)
+    |> assign(:journal_refresh_error?, true)
+    |> assign(
+      :journal_error_message,
+      "The entry changed, but the journal could not be refreshed."
+    )
+    |> assign(
+      :journal_live_message,
+      "The entry changed. Refresh the journal to see its latest state."
+    )
+  end
+
+  defp transition_journal_mode(socket, :map) do
+    restore? = socket.assigns.journal_panel_open?
+
+    socket
+    |> close_journal_panel(persist?: false)
+    |> assign(:journal_restore_after_align?, restore?)
+  end
+
+  defp transition_journal_mode(%{assigns: %{mode: :map}} = socket, next_mode)
+       when next_mode in [:view, :add, :connect] do
+    restore? = socket.assigns.journal_restore_after_align?
+    socket = assign(socket, :journal_restore_after_align?, false)
+
+    if restore? and match?(%JournalScope{}, socket.assigns.journal_scope) do
+      socket
+      |> assign(:journal_panel_open?, true)
+      |> load_journal(:full, :open, socket.assigns.journal_filter)
+    else
+      socket
+    end
+  end
+
+  defp transition_journal_mode(socket, _next_mode), do: socket
+
+  defp open_pathway_drawer(socket, pathway) do
+    pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)
+    form = to_form(pathway_form_params(pathway))
+
+    active_pathway_tab =
+      case pathway_pair do
+        [_first_pathway, second_pathway] ->
+          if pathway.id == second_pathway.id or pathway.pathway_id == second_pathway.pathway_id,
+            do: :second,
+            else: :first
+
+        _ ->
+          :first
+      end
+
+    socket
+    |> assign(:editing_pathway_pair, pathway_pair)
+    |> assign(:active_pathway_tab, active_pathway_tab)
+    |> assign(:pathway_form_dirty, false)
+    |> assign(:editing_pathway, pathway)
+    |> assign(:pathway_form, form)
+    |> assign(:show_pathway_drawer, true)
+  end
+
   defp setup_station_journal(socket) do
     %{
       current_organization: %{id: organization_id},
@@ -4427,6 +4852,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     entries =
       visible_journal_entries(payload.entries, request.filter, socket.assigns.journal_undo_ids)
 
+    pending_ids = socket.assigns.journal_pending_new_ids
+
     socket =
       if reset_journal_stream?(socket, request, payload) do
         stream(socket, :journal_entries, entries, reset: true)
@@ -4449,6 +4876,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_display_zone, payload.zone)
     |> assign(:journal_now, payload.now)
     |> finish_journal_load()
+    |> apply_journal_refresh_effects(request, entries, pending_ids)
   end
 
   defp apply_journal_payload(socket, %{intent: :observe_scrolled}, payload) do
@@ -4487,6 +4915,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     request.reason in [:filter, :retry, :refresh] or
       payload.signature != socket.assigns.journal_rendered_signature
   end
+
+  defp apply_journal_refresh_effects(socket, request, entries, pending_ids)
+       when request.reason in [:refresh, :returned_to_top] do
+    socket = push_event(socket, "journal-scroll-top", %{})
+
+    case Enum.find(entries, &MapSet.member?(pending_ids, &1.id)) do
+      nil ->
+        socket
+
+      entry ->
+        push_event(socket, "journal-focus", %{selector: "#journal-entry-toggle-#{entry.id}"})
+    end
+  end
+
+  defp apply_journal_refresh_effects(socket, _request, _entries, _pending_ids), do: socket
 
   # ---------------------------------------------------------------------------
   # Scoped history lifecycle

@@ -41,7 +41,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.JournalPhoto
   alias GtfsPlanner.Gtfs.StationJournal.Scope
+  alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.StationDiagramLive
 
   @controlled_source __MODULE__.ControlledJournalSource
@@ -321,6 +323,193 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert assigns(view).journal_state == :ready
   end
 
+  test "a scoped broadcast refreshes only counts while the panel is closed", context do
+    existing_id = Ecto.UUID.generate()
+    new_id = Ecto.UUID.generate()
+    scope = scope(context)
+
+    sync_entries(scope, [
+      journal_attrs(existing_id, "station", ~U[2026-07-18 12:00:00.000000Z])
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+    render_hook(view, "refresh_journal", %{})
+    render_async(view, 5_000)
+
+    before = assigns(view)
+    refute before.journal_panel_open?
+    assert before.journal_rendered_entry_ids == MapSet.new([existing_id])
+
+    sync_entries(scope, [journal_attrs(new_id, "station", ~U[2026-07-18 12:01:00.000000Z])])
+    settle_journal(view)
+
+    counted = assigns(view)
+    refute counted.journal_panel_open?
+    assert counted.journal_open_count == 2
+    assert counted.journal_closed_count == 0
+    assert counted.journal_rendered_entry_ids == before.journal_rendered_entry_ids
+    assert counted.journal_rendered_signature == before.journal_rendered_signature
+    assert Enum.map(counted.journal_observed_signature, &elem(&1, 0)) == [new_id, existing_id]
+  end
+
+  test "at-top changed and identical PubSub snapshots refresh once without pending work",
+       context do
+    entry_id = Ecto.UUID.generate()
+    scope = scope(context)
+
+    sync_entries(scope, [
+      journal_attrs(entry_id, "station", ~U[2026-07-18 12:00:00.000000Z])
+    ])
+
+    view = open_loaded_journal(context)
+    before = assigns(view)
+
+    sync_entries(scope, [
+      journal_attrs(entry_id, "station", ~U[2026-07-18 12:00:00.000000Z], %{
+        body: "Authoritative update"
+      })
+    ])
+
+    settle_journal(view)
+
+    changed = assigns(view)
+    assert changed.journal_panel_open?
+    assert changed.journal_at_top?
+    assert changed.journal_rendered_signature != before.journal_rendered_signature
+    assert changed.journal_rendered_signature == changed.journal_observed_signature
+    assert changed.journal_pending_new_ids == MapSet.new()
+
+    broadcast_journal(scope)
+    settle_journal(view)
+
+    identical = assigns(view)
+    assert identical.journal_rendered_signature == changed.journal_rendered_signature
+    assert identical.journal_observed_signature == changed.journal_observed_signature
+    assert identical.journal_pending_new_ids == MapSet.new()
+    assert identical.journal_visible_count == 1
+  end
+
+  test "scrolled PubSub derives pending IDs and stays idempotent across repeat and photo-only updates",
+       context do
+    existing_id = Ecto.UUID.generate()
+    new_id = Ecto.UUID.generate()
+    photo_id = Ecto.UUID.generate()
+    scope = scope(context)
+
+    sync_entries(scope, [
+      journal_attrs(existing_id, "station", ~U[2026-07-18 12:00:00.000000Z])
+    ])
+
+    view = open_loaded_journal(context)
+    render_hook(view, "journal_scroll_state", %{"at_top" => false})
+    refute assigns(view).journal_at_top?
+
+    sync_entries(scope, [journal_attrs(new_id, "station", ~U[2026-07-18 12:01:00.000000Z])])
+    settle_journal(view)
+
+    first_observation = assigns(view)
+    assert first_observation.journal_pending_new_ids == MapSet.new([new_id])
+    assert first_observation.journal_rendered_entry_ids == MapSet.new([existing_id])
+
+    assert first_observation.journal_rendered_signature !=
+             first_observation.journal_observed_signature
+
+    broadcast_journal(scope)
+    settle_journal(view)
+    assert assigns(view).journal_pending_new_ids == MapSet.new([new_id])
+
+    Repo.insert!(%JournalPhoto{
+      id: photo_id,
+      journal_entry_id: existing_id,
+      filename: "scrolled-photo.jpg",
+      content_type: "image/jpeg",
+      byte_size: 10,
+      sha256: :crypto.hash(:sha256, "scrolled-photo"),
+      captured_at: ~U[2026-07-18 12:02:00.000000Z]
+    })
+
+    broadcast_journal(scope)
+    settle_journal(view)
+
+    photo_observation = assigns(view)
+    assert photo_observation.journal_pending_new_ids == MapSet.new([new_id])
+
+    assert signature_photo_ids(photo_observation.journal_observed_signature, existing_id) == [
+             photo_id
+           ]
+
+    assert signature_photo_ids(photo_observation.journal_rendered_signature, existing_id) == []
+
+    render_hook(view, "journal_scroll_state", %{"at_top" => true})
+    render_async(view, 5_000)
+
+    refreshed = assigns(view)
+    assert refreshed.journal_at_top?
+    assert refreshed.journal_pending_new_ids == MapSet.new()
+    assert refreshed.journal_rendered_entry_ids == MapSet.new([existing_id, new_id])
+    assert refreshed.journal_rendered_signature == refreshed.journal_observed_signature
+    assert_push_event(view, "journal-scroll-top", %{})
+    new_entry_selector = "#journal-entry-toggle-#{new_id}"
+    assert_push_event(view, "journal-focus", %{selector: ^new_entry_selector})
+  end
+
+  test "foreign station messages cannot change the current journal snapshot", context do
+    entry_id = Ecto.UUID.generate()
+    scope = scope(context)
+    sync_entries(scope, [journal_attrs(entry_id, "station", ~U[2026-07-18 12:00:00.000000Z])])
+
+    view = open_loaded_journal(context)
+    before = assigns(view)
+    foreign_station_id = Ecto.UUID.generate()
+
+    send(view.pid, {:station_journal_changed, foreign_station_id})
+    _ = :sys.get_state(view.pid)
+
+    after_foreign = assigns(view)
+    assert after_foreign.journal_request == nil
+    assert after_foreign.journal_load_generation == before.journal_load_generation
+    assert after_foreign.journal_rendered_entry_ids == before.journal_rendered_entry_ids
+    assert after_foreign.journal_rendered_signature == before.journal_rendered_signature
+    assert after_foreign.journal_observed_signature == before.journal_observed_signature
+    assert after_foreign.journal_pending_new_ids == before.journal_pending_new_ids
+  end
+
+  test "closing the panel invalidates its held full request before a late completion", context do
+    entry_id = Ecto.UUID.generate()
+    scope = scope(context)
+    sync_entries(scope, [journal_attrs(entry_id, "station", ~U[2026-07-18 12:00:00.000000Z])])
+    control_journal_source()
+
+    view = open_diagram(context)
+    initial_task = await_journal_request(context.station.id)
+    release_journal(initial_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "open_journal", %{})
+    held_task = await_journal_request(context.station.id)
+    held_generation = assigns(view).journal_load_generation
+
+    render_hook(view, "close_journal", %{})
+
+    closed = assigns(view)
+    refute closed.journal_panel_open?
+    assert closed.journal_request == nil
+    assert closed.journal_state == :idle
+    assert closed.journal_rendered_signature == []
+
+    held_ref = Process.monitor(held_task)
+    release_journal(held_task, :real)
+    assert_receive {:DOWN, ^held_ref, :process, ^held_task, _reason}, 5_000
+    _ = :sys.get_state(view.pid)
+
+    after_late = assigns(view)
+    assert after_late.journal_load_generation == held_generation
+    assert after_late.journal_request == nil
+    assert after_late.journal_rendered_signature == []
+    assert after_late.journal_visible_count == 0
+  end
+
   test "a station reset invalidates the old request and rebuilds trusted scope",
        %{
          conn: conn,
@@ -419,6 +608,66 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
       live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
     view
+  end
+
+  defp open_diagram(context) do
+    open_diagram(
+      context.conn,
+      context.user,
+      context.organization,
+      context.gtfs_version,
+      context.station
+    )
+  end
+
+  defp open_loaded_journal(context) do
+    view = open_diagram(context)
+    render_async(view, 5_000)
+    render_hook(view, "open_journal", %{})
+    render_async(view, 5_000)
+    view
+  end
+
+  defp scope(context) do
+    {:ok, scope} =
+      Gtfs.resolve_station_journal_scope(
+        context.organization.id,
+        context.gtfs_version.id,
+        context.station.id,
+        context.user.id
+      )
+
+    scope
+  end
+
+  defp sync_entries(scope, entries) do
+    assert %{synced_count: synced_count, errors: []} = Gtfs.sync_journal_entries(scope, entries)
+    assert synced_count == length(entries)
+  end
+
+  defp broadcast_journal(scope) do
+    topic =
+      "station_journal:#{scope.organization_id}:#{scope.gtfs_version_id}:#{scope.station_id}"
+
+    assert :ok =
+             Phoenix.PubSub.broadcast(
+               GtfsPlanner.PubSub,
+               topic,
+               {:station_journal_changed, scope.station_id}
+             )
+  end
+
+  defp settle_journal(view) do
+    _ = :sys.get_state(view.pid)
+    render_async(view, 5_000)
+    _ = :sys.get_state(view.pid)
+  end
+
+  defp signature_photo_ids(signature, entry_id) do
+    {_id, _updated_at, _closed_at, photo_ids} =
+      Enum.find(signature, &(elem(&1, 0) == entry_id))
+
+    photo_ids
   end
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
