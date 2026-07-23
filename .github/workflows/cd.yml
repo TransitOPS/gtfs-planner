@@ -1,7 +1,7 @@
 name: Deploy
 run-name: Deploy ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }} to ${{ inputs.environment || 'dev' }} environment
 concurrency:
-  group: cd-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }}-${{ inputs.environment || 'dev' }}
+  group: cd-${{ github.event_name == 'workflow_run' && 'main' || inputs.version }}-${{ inputs.environment || 'dev' }}
   cancel-in-progress: true
 
 on:

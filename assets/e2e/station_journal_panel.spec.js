@@ -163,6 +163,15 @@ test("renders the production journal shell", async ({ page }) => {
   });
 });
 
+test("starts closed on a fresh Floorplan visit after being opened", async ({ page }) => {
+  await openJournal(page);
+
+  await page.reload();
+
+  await expect(page.locator("#journal-trigger")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#station-journal-panel")).toHaveCount(0);
+});
+
 test("renders the production ideal hierarchy and canonical photo", async ({ page }) => {
   await mkdir(artifactRoot, { recursive: true });
   await page.emulateMedia({ reducedMotion: "reduce" });

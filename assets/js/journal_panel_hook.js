@@ -4,14 +4,12 @@ const SCROLL_DEBOUNCE_MS = 50;
 /**
  * Browser-only adapter for the station journal panel.
  *
- * LiveView owns every journal state transition. This hook restores and stores
- * explicit preferences, reports the current scroll threshold, and performs
- * focus/scroll effects against the latest patched DOM.
+ * LiveView owns every journal state transition. This hook reports the current
+ * scroll threshold and performs focus/scroll effects against the latest
+ * patched DOM.
  */
 const JournalPanelHook = {
   mounted() {
-    const userId = this.el.dataset.userId;
-    this.storageKey = userId ? `journal_panel_open:${userId}` : null;
     this.boundList = null;
     this.scrollHandler = null;
     this.scrollTimer = null;
@@ -21,7 +19,6 @@ const JournalPanelHook = {
     this.serverEventRefs = [];
 
     this.registerServerEvents();
-    this.restorePreference();
     this.bindList();
   },
 
@@ -36,16 +33,10 @@ const JournalPanelHook = {
     this.clearFocusTimer();
     this.removeServerEvents();
     this.lastAtTop = null;
-    this.storageKey = null;
   },
 
   registerServerEvents() {
     this.serverEventRefs = [
-      this.handleEvent("journal-panel-preference", ({ open }) => {
-        if (typeof open === "boolean" && this.storageKey) {
-          this.safeSetItem(this.storageKey, String(open));
-        }
-      }),
       this.handleEvent("journal-focus", ({ selector } = {}) => {
         if (typeof selector !== "string" || selector.length === 0) return;
         this.scheduleFocus(selector);
@@ -59,31 +50,6 @@ const JournalPanelHook = {
       this.serverEventRefs?.forEach((ref) => this.removeHandleEvent(ref));
     }
     this.serverEventRefs = [];
-  },
-
-  restorePreference() {
-    if (!this.storageKey) return;
-
-    const stored = this.safeGetItem(this.storageKey);
-    if (stored === "true" || stored === "false") {
-      this.pushEvent("restore_journal_panel", { open: stored === "true" });
-    }
-  },
-
-  safeGetItem(key) {
-    try {
-      return window.localStorage.getItem(key);
-    } catch (_error) {
-      return null;
-    }
-  },
-
-  safeSetItem(key, value) {
-    try {
-      window.localStorage.setItem(key, value);
-    } catch (_error) {
-      // Storage can be unavailable in private or policy-restricted contexts.
-    }
   },
 
   bindList() {
@@ -195,7 +161,9 @@ const JournalPanelHook = {
 
   reducedMotion() {
     try {
-      return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+      return (
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+      );
     } catch (_error) {
       return false;
     }

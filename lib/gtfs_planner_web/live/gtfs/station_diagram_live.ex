@@ -1023,7 +1023,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       id="diagram-page"
       phx-hook="JournalPanelHook"
       style={DiagramPalette.css_custom_properties()}
-      data-user-id={@current_user.id}
       data-immersive={if @mode in [:add, :connect, :map], do: "true"}
     >
       <Layouts.app
@@ -1403,7 +1402,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         _params,
         %{assigns: %{journal_scope: %JournalScope{}}} = socket
       ) do
-    {:noreply, open_journal_panel(socket, persist?: true, clear_scope?: true)}
+    {:noreply, open_journal_panel(socket, clear_scope?: true)}
   end
 
   def handle_event("open_journal", _params, socket), do: {:noreply, socket}
@@ -1447,7 +1446,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     else
       {:noreply,
        close_journal_panel(socket,
-         persist?: true,
          focus_selector: "#journal-trigger"
        )}
     end
@@ -1562,19 +1560,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   def handle_event("journal_scroll_state", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event("restore_journal_panel", %{"open" => open?}, socket)
-      when is_boolean(open?) do
-    {:noreply, restore_journal_panel(socket, open?)}
-  end
-
-  def handle_event("restore_journal_panel", %{"open" => open?}, socket)
-      when open? in ["true", "false"] do
-    {:noreply, restore_journal_panel(socket, open? == "true")}
-  end
-
-  def handle_event("restore_journal_panel", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event(
@@ -2147,7 +2132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           journal_context = journal_form_context(socket, params["journal_entry_id"])
 
           socket
-          |> close_journal_panel(persist?: false)
+          |> close_journal_panel()
           |> open_edit_sidebar(stop, pending_xy)
           |> assign(:journal_form_context, journal_context)
 
@@ -2510,7 +2495,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       {:noreply,
        socket
-       |> close_journal_panel(persist?: false)
+       |> close_journal_panel()
        |> open_pathway_drawer(pathway)
        |> assign(:journal_form_context, journal_context)}
     end
@@ -4731,7 +4716,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp open_journal_panel(socket, opts) do
-    persist? = Keyword.fetch!(opts, :persist?)
     clear_scope? = Keyword.get(opts, :clear_scope?, false)
     reason = Keyword.get(opts, :reason, :open)
 
@@ -4745,29 +4729,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     if journal_panel_allowed?(socket) and
          (not socket.assigns.journal_panel_open? or reason != :open) do
-      was_open? = socket.assigns.journal_panel_open?
-
-      socket =
-        socket
-        |> assign(:journal_panel_open?, true)
-        |> assign(:journal_restore_after_align?, false)
-        |> load_journal(:full, reason, filter,
-          target_scope: target_scope,
-          focus_entry_id: focus_entry_id
-        )
-
-      if persist? and not was_open? do
-        push_event(socket, "journal-panel-preference", %{open: true})
-      else
-        socket
-      end
+      socket
+      |> assign(:journal_panel_open?, true)
+      |> assign(:journal_restore_after_align?, false)
+      |> load_journal(:full, reason, filter,
+        target_scope: target_scope,
+        focus_entry_id: focus_entry_id
+      )
     else
       socket
     end
   end
 
-  defp close_journal_panel(socket, opts) do
-    persist? = Keyword.fetch!(opts, :persist?)
+  defp close_journal_panel(socket, opts \\ []) do
     focus_selector = Keyword.get(opts, :focus_selector)
     was_open? = socket.assigns.journal_panel_open?
 
@@ -4780,13 +4754,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> assign(:journal_focused_marker_id, nil)
       |> project_and_stream_journal_markers()
       |> maybe_cancel_hidden_journal_load(was_open?)
-
-    socket =
-      if persist? and was_open? do
-        push_event(socket, "journal-panel-preference", %{open: false})
-      else
-        socket
-      end
 
     if was_open? and is_binary(focus_selector) do
       push_event(socket, "journal-focus", %{selector: focus_selector})
@@ -4812,14 +4779,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     do: mode in [:view, :add, :connect]
 
   defp journal_panel_allowed?(_socket), do: false
-
-  defp restore_journal_panel(socket, false) do
-    close_journal_panel(socket, persist?: false)
-  end
-
-  defp restore_journal_panel(socket, true) do
-    open_journal_panel(socket, persist?: false)
-  end
 
   defp update_journal_scroll_state(socket, at_top?) do
     socket = assign(socket, :journal_at_top?, at_top?)
@@ -4924,7 +4883,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     restore? = socket.assigns.journal_panel_open?
 
     socket
-    |> close_journal_panel(persist?: false)
+    |> close_journal_panel()
     |> assign(:journal_restore_after_align?, restore?)
   end
 
@@ -5480,7 +5439,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(:journal_pending_new_ids, MapSet.new())
     |> open_journal_panel(
-      persist?: true,
       reason: :marker_click,
       target_scope: target_scope,
       focus_entry_id: marker.focus_entry_id
@@ -7117,7 +7075,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     socket =
       open_journal_panel(socket,
-        persist?: true,
         clear_scope?: true,
         filter: :all,
         reason: :deep_link,
