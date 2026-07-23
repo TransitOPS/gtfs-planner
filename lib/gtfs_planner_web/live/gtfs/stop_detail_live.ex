@@ -4,6 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
+  require Logger
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
@@ -132,6 +133,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:editing_status_state, :ready)
      |> assign(:editing_error, nil)}
   end
+
+  @impl true
+  def handle_info(
+        {:station_journal_changed, station_id},
+        %{assigns: %{journal_scope: %{station_id: station_id}}} = socket
+      ) do
+    {:noreply, load_journal_summary(socket)}
+  end
+
+  def handle_info({:station_journal_changed, _station_id}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -376,10 +387,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
            ) do
         {:ok, scope} ->
           socket
+          |> subscribe_journal_if_connected(scope)
           |> assign(:journal_scope, scope)
           |> start_journal_load(scope)
 
         {:error, _reason} ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp subscribe_journal_if_connected(socket, scope) do
+    if connected?(socket) do
+      case Gtfs.subscribe_station_journal(scope) do
+        :ok ->
+          socket
+
+        {:error, reason} ->
+          Logger.warning("station_journal_subscription_failed", reason: inspect(reason))
           socket
       end
     else

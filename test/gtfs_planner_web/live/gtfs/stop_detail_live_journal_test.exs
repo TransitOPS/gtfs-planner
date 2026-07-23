@@ -291,6 +291,94 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
     end
   end
 
+  describe "journal summary live refresh via PubSub" do
+    test "committed mutation publishes through scoped PubSub and updates rendered summary",
+         context do
+      seed_journal_entries(context)
+      view = open_details(context)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-open-count", "3 open")
+      assert has_element?(view, "#journal-closed-count", "4 closed")
+
+      Gtfs.sync_journal_entries(context.scope, [
+        %{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          body: "Live refresh entry",
+          captured_at: DateTime.utc_now()
+        }
+      ])
+
+      _ = :sys.get_state(view.pid)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-open-count", "4 open")
+      assert has_element?(view, "#journal-closed-count", "4 closed")
+
+      html =
+        view
+        |> element("#journal-recent-entry-list")
+        |> render()
+
+      assert html =~ "Live refresh entry"
+    end
+
+    test "foreign-station notification leaves rendered summary unchanged", context do
+      seed_journal_entries(context)
+      view = open_details(context)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-open-count", "3 open")
+
+      html_before =
+        view
+        |> element("#station-journal-summary")
+        |> render()
+
+      send(view.pid, {:station_journal_changed, "foreign-station-id"})
+      _ = :sys.get_state(view.pid)
+
+      html_after =
+        view
+        |> element("#station-journal-summary")
+        |> render()
+
+      assert html_before == html_after
+    end
+
+    test "failed notification refresh preserves snapshot then successful refresh replaces it",
+         context do
+      seed_journal_entries(context)
+      control_journal_source()
+      view = open_details(context)
+      initial_task = await_journal_request(context.station.id)
+      release_journal(initial_task, :real)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-open-count", "3 open")
+      assert has_element?(view, "#journal-recent-entry-list")
+
+      send(view.pid, {:station_journal_changed, context.station.id})
+      failed_task = await_journal_request(context.station.id)
+      release_journal(failed_task, {:raise, "pubsub refresh failed"})
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-summary-stale-warning")
+      assert has_element?(view, "#journal-open-count", "3 open")
+      assert has_element?(view, "#journal-recent-entry-list")
+
+      send(view.pid, {:station_journal_changed, context.station.id})
+      success_task = await_journal_request(context.station.id)
+      release_journal(success_task, :real)
+      render_async(view, 5_000)
+
+      refute has_element?(view, "#journal-summary-stale-warning")
+      assert has_element?(view, "#journal-open-count", "3 open")
+      assert has_element?(view, "#journal-recent-entry-list")
+    end
+  end
+
   describe "journal summary localized time" do
     test "uses relative_time formatting for capture times", context do
       Gtfs.sync_journal_entries(context.scope, [
