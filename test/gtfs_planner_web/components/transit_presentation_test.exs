@@ -264,6 +264,32 @@ defmodule GtfsPlannerWeb.Components.TransitPresentationTest do
       refute html =~ "phx-submit"
     end
 
+    test "names an empty-string value instead of rendering nothing" do
+      assigns =
+        diff_row_assigns(:modify, :applied)
+        |> Map.merge(%{
+          changes: [%{label: "Stop description", key: "stop_desc", before: "Old text", after: ""}],
+          expanded?: true
+        })
+
+      html =
+        rendered_to_string(~H"""
+        <TransitPresentation.version_diff_row
+          id={@id}
+          action={@action}
+          entity_label={@entity_label}
+          natural_key={@natural_key}
+          status={@status}
+          changes={@changes}
+          expanded?={@expanded?}
+        />
+        """)
+
+      assert html =~ ~s(data-role="version-diff-after" data-value-kind="empty")
+      assert html =~ ~s(aria-label="Empty value")
+      assert html =~ "Empty"
+    end
+
     test "omits an empty disclosure and optional content" do
       assigns = diff_row_assigns(:add, :pending)
 

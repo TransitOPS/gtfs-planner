@@ -135,9 +135,9 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       data-expanded={to_string(@expanded?)}
       data-edited={to_string(@edited?)}
       aria-labelledby={"#{@id}-title"}
-      class={["border-b border-base-300 py-4 text-sm last:border-b-0", @class]}
+      class={["@container border-b border-base-300 py-4 text-sm last:border-b-0", @class]}
     >
-      <div class="grid gap-3 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(0,2fr)_auto] sm:items-start sm:gap-4">
+      <div class="grid gap-3 @2xl:grid-cols-[minmax(8rem,0.8fr)_minmax(0,2fr)_auto] @2xl:items-start @2xl:gap-4">
         <div data-role="version-diff-action" class="flex items-center gap-2 font-medium">
           <span data-version-diff-action-symbol aria-hidden="true">
             <.icon name={@action_icon} class={["size-4 shrink-0", @action_tone]} />
@@ -182,7 +182,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
           </p>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2 sm:justify-end">
+        <div class="flex flex-wrap items-center gap-2 @2xl:justify-end">
           <span
             data-role="version-diff-status"
             class={["inline-flex items-center gap-1.5 font-medium", @status_tone]}
@@ -224,7 +224,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
             :for={row <- @rows}
             data-role="version-diff-change"
             data-change-key={row.key}
-            class="grid gap-1 sm:grid-cols-[minmax(9rem,1fr)_minmax(0,2fr)] sm:gap-3"
+            class="grid gap-1 @lg:grid-cols-[minmax(9rem,1fr)_minmax(0,2fr)] @lg:gap-3"
           >
             <dt class="font-medium text-base-content/80">
               <span data-role="version-diff-change-label">{row.label}</span>
@@ -241,18 +241,20 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
                 data-role="version-diff-before"
                 data-value-kind={row.before.kind}
                 aria-label={row.before.label}
-                class="break-words text-base-content/60"
+                class="block break-words text-base-content/60 @lg:inline"
               >
                 {row.before.text}
               </span>
-              <span class="px-1 text-base-content/50" aria-hidden="true">→</span>
-              <span
-                data-role="version-diff-after"
-                data-value-kind={row.after.kind}
-                aria-label={row.after.label}
-                class="break-words"
-              >
-                {row.after.text}
+              <span class="block @lg:inline">
+                <span class="pr-1 text-base-content/50 @lg:px-1" aria-hidden="true">→</span>
+                <span
+                  data-role="version-diff-after"
+                  data-value-kind={row.after.kind}
+                  aria-label={row.after.label}
+                  class="break-words"
+                >
+                  {row.after.text}
+                </span>
               </span>
             </dd>
           </div>
@@ -330,6 +332,10 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
 
   defp diff_value(value) when is_number(value),
     do: %{kind: "number", text: to_string(value), label: nil}
+
+  # An empty string renders as nothing at all, which reads as a missing row
+  # rather than a recorded value. Name it instead.
+  defp diff_value(""), do: %{kind: "empty", text: "Empty", label: "Empty value"}
 
   defp diff_value(value) when is_binary(value), do: %{kind: "string", text: value, label: nil}
 

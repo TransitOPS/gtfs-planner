@@ -90,6 +90,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
 
   defp doc(html), do: LazyHTML.from_fragment(html)
 
+  defp attrs_of(d, selector, name),
+    do: d |> LazyHTML.query(selector) |> LazyHTML.attribute(name)
+
   describe "author_label/1" do
     test "compacts roster users and email strings without exposing the domain" do
       assert StationJournalComponents.author_label(%User{email: "alex.rivera@example.com"}) ==
@@ -509,6 +512,297 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
 
       assert Enum.count(LazyHTML.query(d, "#journal-refresh-retry[phx-click='refresh_journal']")) ==
                1
+    end
+  end
+
+  describe "entity_journal_panel/1" do
+    defp entity_panel_assigns(overrides) do
+      base = [
+        entity_type: "stop",
+        entity_id: "stop-1",
+        entity_label: "stop",
+        journal_scope: @scope,
+        journal_entries: [{"drawer-journal-entry-#{@entry_id}", entry()}],
+        journal_state: :ready,
+        journal_entries_exist?: true,
+        journal_error_fallback?: false,
+        journal_authors: %{@author_id => %User{email: "alex.rivera@example.com"}},
+        journal_local_times: %{
+          {@entry_id, :captured} => ~N[2026-07-16 14:32:00]
+        },
+        journal_now: ~N[2026-07-18 14:35:00]
+      ]
+
+      Keyword.merge(base, overrides)
+    end
+
+    defp render_entity_panel(overrides \\ []) do
+      render_component(
+        &StationJournalComponents.entity_journal_panel/1,
+        entity_panel_assigns(overrides)
+      )
+    end
+
+    test "renders the panel with stable entity-prefixed IDs" do
+      d = doc(render_entity_panel())
+
+      panel = LazyHTML.query(d, "#drawer-journal-stop-stop-1")
+      assert LazyHTML.attribute(panel, "data-role") == ["entity-journal-panel"]
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-stop-entry-list")) == 1
+      assert attrs_of(d, "#drawer-journal-stop-entry-list", "phx-update") == ["stream"]
+    end
+
+    test "renders a ready entry card with note, author, and time" do
+      d = doc(render_entity_panel())
+
+      row = LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")
+      assert LazyHTML.attribute(row, "data-role") == ["entity-journal-entry"]
+
+      note = LazyHTML.query(row, "[data-role='journal-note']")
+      assert LazyHTML.text(note) =~ "Confirm the field note before the next export."
+
+      assert LazyHTML.text(row) =~ "A. Rivera"
+      assert LazyHTML.text(row) =~ "2d ago"
+
+      time = LazyHTML.query(row, "time")
+      assert LazyHTML.attribute(time, "datetime") == ["2026-07-16T18:32:00Z"]
+    end
+
+    test "renders photo thumbnails as new-tab links to their scoped public path" do
+      d = doc(render_entity_panel())
+
+      photo_link = LazyHTML.query(d, "#entity-journal-photo-#{@photo_id}")
+      assert LazyHTML.attribute(photo_link, "target") == ["_blank"]
+      assert LazyHTML.attribute(photo_link, "rel") == ["noopener noreferrer"]
+
+      assert LazyHTML.attribute(photo_link, "href") == [
+               "/uploads/field-captures/#{@scope.organization_id}/OLNEY_TC/#{@photo_id}.jpg"
+             ]
+
+      img = LazyHTML.query(photo_link, "img")
+
+      assert LazyHTML.attribute(img, "src") == [
+               "/uploads/field-captures/#{@scope.organization_id}/OLNEY_TC/#{@photo_id}.jpg"
+             ]
+    end
+
+    test "renders no-note fallback when body is empty" do
+      no_note = entry(%{body: ""})
+
+      d =
+        doc(
+          render_entity_panel(journal_entries: [{"drawer-journal-entry-#{@entry_id}", no_note}])
+        )
+
+      row = LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")
+      assert LazyHTML.text(row) =~ "No note provided"
+    end
+
+    test "renders initial loading state with skeleton" do
+      d =
+        doc(
+          render_entity_panel(
+            journal_entries: [],
+            journal_state: :initial_loading,
+            journal_entries_exist?: false
+          )
+        )
+
+      loading = LazyHTML.query(d, "#drawer-journal-stop-loading")
+
+      assert Enum.count(loading) == 1
+      assert LazyHTML.text(loading) =~ "Loading journal entries"
+      assert LazyHTML.attribute(loading, "aria-busy") == ["true"]
+      assert LazyHTML.attribute(loading, "class") |> List.first() =~ "journal-loading-delay"
+
+      assert Enum.empty?(LazyHTML.query(d, "[data-role='entity-journal-entry']"))
+    end
+
+    test "renders empty state for ready with zero entries" do
+      d =
+        doc(
+          render_entity_panel(
+            journal_entries: [],
+            journal_state: :ready,
+            journal_entries_exist?: false
+          )
+        )
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-stop-empty")) == 1
+
+      assert LazyHTML.query(d, "#drawer-journal-stop-empty") |> LazyHTML.text() =~
+               "No journal entries for this stop"
+
+      assert Enum.empty?(LazyHTML.query(d, "[data-role='entity-journal-entry']"))
+    end
+
+    test "empty state uses the entity label" do
+      d =
+        doc(
+          render_entity_panel(
+            entity_type: "pathway",
+            entity_id: "pw-1",
+            entity_label: "pathway",
+            journal_entries: [],
+            journal_state: :ready,
+            journal_entries_exist?: false
+          )
+        )
+
+      assert LazyHTML.query(d, "#drawer-journal-pathway-empty") |> LazyHTML.text() =~
+               "No journal entries for this pathway"
+    end
+
+    test "renders refreshing state while retaining prior rows" do
+      d =
+        doc(
+          render_entity_panel(
+            journal_state: :refreshing,
+            journal_entries_exist?: true
+          )
+        )
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-stop-refreshing")) == 1
+
+      assert LazyHTML.query(d, "#drawer-journal-stop-refreshing") |> LazyHTML.text() =~
+               "Refreshing journal entries"
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")) == 1
+    end
+
+    test "renders initial error with callout and retry" do
+      d =
+        doc(
+          render_entity_panel(
+            journal_entries: [],
+            journal_state: :error,
+            journal_entries_exist?: false,
+            journal_error_fallback?: false
+          )
+        )
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-stop-error")) == 1
+
+      assert LazyHTML.query(d, "#drawer-journal-stop-error") |> LazyHTML.text() =~
+               "Journal entries could not load"
+
+      retry = LazyHTML.query(d, "#drawer-journal-stop-retry")
+      assert LazyHTML.attribute(retry, "phx-click") == ["retry_drawer_journal"]
+    end
+
+    test "renders stale error preserving rows and offering retry" do
+      d =
+        doc(
+          render_entity_panel(
+            journal_state: :error,
+            journal_entries_exist?: true,
+            journal_error_fallback?: true
+          )
+        )
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-stop-stale-error")) == 1
+
+      assert LazyHTML.query(d, "#drawer-journal-stop-stale-error") |> LazyHTML.text() =~
+               "Journal entries may be out of date"
+
+      assert Enum.count(LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")) == 1
+
+      retry = LazyHTML.query(d, "#drawer-journal-stop-retry")
+      assert LazyHTML.attribute(retry, "phx-click") == ["retry_drawer_journal"]
+    end
+
+    test "omits target label (the chip is absent)" do
+      d = doc(render_entity_panel())
+
+      row = LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")
+
+      # No target-related elements should exist
+      assert Enum.empty?(LazyHTML.query(row, "#journal-entry-target-#{@entry_id}"))
+      refute LazyHTML.text(row) =~ "Busway Central"
+    end
+
+    test "has no lifecycle, status, or action controls" do
+      d = doc(render_entity_panel())
+
+      row = LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")
+
+      # No status data attributes
+      assert LazyHTML.attribute(row, "data-entry-state") == []
+      refute LazyHTML.attribute(row, "class") |> List.first() =~ "opacity"
+
+      # No lifecycle controls
+      assert Enum.empty?(LazyHTML.query(d, "#journal-close-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-reopen-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-undo-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-delete-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-undo-strip-#{@entry_id}"))
+
+      # No filter
+      assert Enum.empty?(LazyHTML.query(d, "[phx-change^='filter']"))
+
+      # No marker navigation
+      assert Enum.empty?(LazyHTML.query(d, "#journal-show-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "[phx-click='show_journal_entry_on_floorplan']"))
+
+      # No panel handoff
+      assert Enum.empty?(LazyHTML.query(d, "[phx-click^='show_journal']"))
+      refute LazyHTML.text(row) =~ "Show in journal panel"
+
+      # No status-related copy
+      refute LazyHTML.text(row) =~ "Open"
+      refute LazyHTML.text(row) =~ "Closed"
+      refute LazyHTML.text(row) =~ "Completed"
+      refute LazyHTML.text(row) =~ "Status"
+    end
+
+    test "multiple entries render in stream order" do
+      second_id = @closed_entry_id
+
+      second =
+        entry(%{
+          id: second_id,
+          body: "Second entry note.",
+          captured_at: ~U[2026-07-17 15:00:00Z],
+          photos: []
+        })
+
+      d =
+        doc(
+          render_entity_panel(
+            journal_entries: [
+              {"drawer-journal-entry-#{@entry_id}", entry()},
+              {"drawer-journal-entry-#{second_id}", second}
+            ],
+            journal_local_times: %{
+              {@entry_id, :captured} => ~N[2026-07-16 14:32:00],
+              {second_id, :captured} => ~N[2026-07-17 15:00:00]
+            }
+          )
+        )
+
+      rows = LazyHTML.query(d, "[data-role='entity-journal-entry']")
+      assert Enum.count(rows) == 2
+
+      ids = LazyHTML.attribute(rows, "id")
+      assert ids == ["drawer-journal-entry-#{@entry_id}", "drawer-journal-entry-#{second_id}"]
+    end
+
+    test "handles unknown author gracefully" do
+      d =
+        doc(render_entity_panel(journal_authors: %{}))
+
+      row = LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")
+      assert LazyHTML.text(row) =~ "Unknown"
+    end
+
+    test "handles missing local time gracefully" do
+      d =
+        doc(render_entity_panel(journal_local_times: %{}))
+
+      row = LazyHTML.query(d, "#drawer-journal-entry-#{@entry_id}")
+      time = LazyHTML.query(row, "time")
+      assert LazyHTML.attribute(time, "datetime") == ["2026-07-16T18:32:00Z"]
     end
   end
 end

@@ -204,6 +204,19 @@ defmodule GtfsPlanner.Gtfs do
     do: StationJournal.sync_entries(scope, entries)
 
   @spec list_station_journal(Scope.t(), keyword()) :: [JournalEntry.t()]
+  @doc """
+  Returns a list of journal entries for the given scope.
+
+  ## Options
+    * `:status` - `:all` (default) or `:open` to filter by closure state
+    * `:order` - `:asc` (default) or `:desc` for entry sort direction
+    * `:limit` - positive integer or `nil` (default) to cap returned entries
+    * `:target` - `{"node", uuid}` or `{"pathway", uuid}` to filter by exact
+      target type and target ID; `nil` (default) returns all target types
+
+  Raises `ArgumentError` for unknown options, invalid values, or malformed
+  target tuples.
+  """
   def list_station_journal(%Scope{} = scope, opts \\ []),
     do: StationJournal.list_entries(scope, opts)
 

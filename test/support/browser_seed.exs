@@ -584,6 +584,99 @@ case Accounts.register_first_admin(%{
       "Browser seed: 6 Package 03 journal entries (multi-entry node, multi-level pins, pathways, crowded stop)"
     )
 
+    # ── Package 04 entity drawer journal fixtures ──
+    #
+    # deterministic node/pathway entries for the entity drawer Journal tab.
+    # Requires a node entry on browser_child_a (Platform A North), a pathway
+    # entry on browser_pathway (Elevator), a zero-entry stop, legacy
+    # closed-valued entries (already seeded in Package 02 as 702), and a
+    # photo fixture on one node entry.
+    pkg4_journal_entries = [
+      %{
+        id: "00000000-0000-4000-8000-000000000721",
+        target_type: "node",
+        target_id: browser_child_a.id,
+        body:
+          "Platform A North: surface near staircase is dry, tactile strip intact, no trip hazards observed.",
+        captured_at: ~U[2026-07-22 08:15:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000722",
+        target_type: "node",
+        target_id: browser_child_a.id,
+        body:
+          "Signage above Platform A North is securely mounted and legible from both approach directions.",
+        captured_at: ~U[2026-07-22 09:30:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000723",
+        target_type: "pathway",
+        target_id: browser_pathway.id,
+        body:
+          "Elevator call button responsive, door sensor operates within spec, interior lighting adequate.",
+        captured_at: ~U[2026-07-22 10:00:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000724",
+        target_type: "node",
+        target_id: browser_child_b.id,
+        body: "Platform B South bench clearances measured and recorded. Rest area is clean.",
+        captured_at: ~U[2026-07-22 09:00:00Z]
+      }
+    ]
+
+    %{synced_count: 4, errors: []} =
+      Gtfs.sync_journal_entries(journal_scope, pkg4_journal_entries)
+
+    # Attach a photo to one node entry for the photo-link test
+    pkg4_photo_path =
+      Path.join(
+        System.tmp_dir!(),
+        "gtfs-planner-browser-journal-pkg4-#{System.unique_integer([:positive])}.png"
+      )
+
+    File.write!(pkg4_photo_path, one_pixel_png)
+
+    try do
+      {:ok, _pkg4_photo} =
+        Gtfs.create_journal_photo(
+          journal_scope,
+          %{
+            id: "00000000-0000-4000-8000-0000000007b1",
+            journal_entry_id: "00000000-0000-4000-8000-000000000721",
+            captured_at: ~U[2026-07-22 08:15:00Z],
+            width: 1,
+            height: 1
+          },
+          %{
+            path: pkg4_photo_path,
+            filename: "browser-pkg4-journal-photo.png",
+            content_type: "image/png"
+          }
+        )
+    after
+      File.rm(pkg4_photo_path)
+    end
+
+    # Create a zero-entry entity (stop with no journal entries) for the
+    # empty-state test. browser_child_c already exists but has station entries
+    # targeting it as a whole, so create a dedicated fresh node.
+    {:ok, _browser_zero_entry_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EMPTY_JOURNAL_STOP",
+        stop_name: "Empty Journal Node",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 25, "y" => 75},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    IO.puts(
+      "Browser seed: 4 Package 04 journal entries (multi-entry node, pathway, photo, zero-entry stop)"
+    )
+
     # A long-named, long-id, unconnected generic node. It fails the isolated
     # node check, so the report renders a failed-check detail whose value must
     # wrap rather than truncate at 320 px. No diagram coordinate: it stays off
