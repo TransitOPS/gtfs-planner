@@ -210,6 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_h, nil)
      |> assign(:map_generation, "unmounted")
      |> assign(:map_state, :initializing)
+     |> assign(:alignment_preview, nil)
      |> assign(:coordinate_preview, nil)
      |> assign(:coordinate_confirmation, false)
      |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))
@@ -2991,6 +2992,77 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("infer_alignment", _params, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_event("preview_alignment", _params, socket) do
+    stop_level = socket.assigns.active_stop_level
+    image_w = socket.assigns.floorplan_image_w
+    image_h = socket.assigns.floorplan_image_h
+
+    cond do
+      is_nil(stop_level) ->
+        {:noreply,
+         assign(socket, :alignment_preview, %{
+           status: :error,
+           reason: :alignment_prerequisites_missing,
+           message: infer_alignment_error_message(:alignment_prerequisites_missing)
+         })}
+
+      is_nil(image_w) or is_nil(image_h) or image_w <= 0 or image_h <= 0 ->
+        {:noreply,
+         assign(socket, :alignment_preview, %{
+           status: :error,
+           reason: :invalid_input,
+           message: infer_alignment_error_message(:invalid_input)
+         })}
+
+      true ->
+        case Gtfs.infer_level_alignment(stop_level, image_w, image_h) do
+          {:ok, %{inferred_alignment: inferred}} ->
+            generation = socket.assigns.map_generation
+
+            preview = %{
+              status: :ready,
+              alignment: %{
+                center_lat: inferred.center_lat,
+                center_lon: inferred.center_lon,
+                scale_mpp: inferred.scale_mpp,
+                rotation_deg: inferred.rotation_deg
+              },
+              anchor_count: inferred.anchor_count,
+              rmse_meters: inferred.rmse_meters,
+              generation: generation
+            }
+
+            {:noreply,
+             socket
+             |> assign(:alignment_preview, preview)
+             |> push_event("apply_preview_transform", %{
+               generation: generation,
+               center_lat: inferred.center_lat,
+               center_lon: inferred.center_lon,
+               scale_mpp: inferred.scale_mpp,
+               rotation_deg: inferred.rotation_deg
+             })}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket, :alignment_preview, %{
+               status: :error,
+               reason: reason,
+               message: infer_alignment_error_message(reason)
+             })}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("restore_saved_alignment", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:alignment_preview, nil)
+     |> push_event("restore_saved_transform", %{generation: socket.assigns.map_generation})}
+  end
+
+  @impl true
   def handle_event("scale_line_click", _params, socket) do
     stop_level = socket.assigns.active_stop_level
 
@@ -4260,6 +4332,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:map_state, :initializing)
     |> assign(:floorplan_image_w, nil)
     |> assign(:floorplan_image_h, nil)
+    |> assign(:alignment_preview, nil)
     |> clear_coordinate_preview()
   end
 
@@ -4324,7 +4397,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:active_stop_level, updated)
+             |> assign(:alignment_preview, nil)
              |> load_station_stop_levels_cache()
+             |> push_event("alignment_saved", %{
+               generation: socket.assigns.map_generation,
+               center_lat: updated.floorplan_center_lat,
+               center_lon: updated.floorplan_center_lon,
+               scale_mpp: updated.floorplan_scale_mpp,
+               rotation_deg: updated.floorplan_rotation_deg
+             })
              |> put_flash(:info, "Alignment saved")}
 
           {:error, %Ecto.Changeset{} = changeset} ->
