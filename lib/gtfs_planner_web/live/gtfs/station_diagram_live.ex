@@ -1100,6 +1100,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
                   map_generation={@map_generation}
                   map_state={@map_state}
+                  alignment_preview={@alignment_preview}
                   coordinate_preview={@coordinate_preview}
                   coordinate_confirmation={@coordinate_confirmation}
                   coordinate_apply_form={@coordinate_apply_form}
@@ -3061,6 +3062,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:alignment_preview, nil)
      |> push_event("restore_saved_transform", %{generation: socket.assigns.map_generation})}
   end
+
+  @impl true
+  def handle_event("alignment_preview_adjusted", %{"generation" => generation}, socket) do
+    if current_map_generation?(socket, generation) and
+         match?(%{status: :ready}, socket.assigns.alignment_preview) do
+      {:noreply, assign(socket, :alignment_preview, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("alignment_preview_adjusted", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("scale_line_click", _params, socket) do

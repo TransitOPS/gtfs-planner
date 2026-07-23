@@ -24,6 +24,7 @@ alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
@@ -267,6 +268,39 @@ case Accounts.register_first_admin(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id
       })
+
+    browser_seed_alignment = %{
+      center_lat: 40.0390,
+      center_lon: -75.1440,
+      scale_mpp: 0.5,
+      rotation_deg: 0.0
+    }
+
+    browser_image_w = 1
+    browser_image_h = 1
+
+    for {stop, svg_x, svg_y} <- [
+          {browser_child_a, 30.0, 40.0},
+          {browser_child_b, 70.0, 60.0},
+          {browser_child_c, 50.0, 25.0}
+        ] do
+      {:ok, {lat, lon}} =
+        FloorplanTransform.svg_to_lat_lon(
+          browser_seed_alignment,
+          browser_image_w,
+          browser_image_h,
+          %{x: svg_x, y: svg_y}
+        )
+
+      stop
+      |> Ecto.Changeset.change(%{
+        stop_lat: Decimal.from_float(Float.round(lat, 7)),
+        stop_lon: Decimal.from_float(Float.round(lon, 7))
+      })
+      |> Repo.update!()
+    end
+
+    IO.puts("Browser seed: anchor lat/lon derived from known alignment for three child stops")
 
     IO.puts(
       "Browser seed: diagram ready — /gtfs/#{diagram_version.id}/stops/BROWSER_STATION/diagram"

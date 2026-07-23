@@ -529,4 +529,247 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       assert after_stop_level.floorplan_rotation_deg == before_stop_level.floorplan_rotation_deg
     end
   end
+
+  describe "assisted alignment cluster rendering" do
+    setup context do
+      context = base_setup(context)
+
+      anchor_stops =
+        create_anchor_stops(
+          context,
+          Enum.map(@anchor_points, fn point ->
+            {lat, lon} = anchor_lat_lon(point)
+            {point, lat, lon}
+          end)
+        )
+
+      Map.put(context, :anchor_stops, anchor_stops)
+    end
+
+    test "idle state renders helper copy with anchor count and enabled preview button", context do
+      view = mount_map_view(context)
+
+      assert has_element?(view, "#map-alignment-preview-auto")
+      assert has_element?(view, "#map-alignment-assisted")
+      assert has_element?(view, "#map-alignment-assisted", "Uses 3 stops")
+      assert has_element?(view, "#map-alignment-restore-saved")
+      refute has_element?(view, "#auto-alignment-status")
+      refute has_element?(view, "#auto-alignment-error")
+    end
+
+    test "preview button is disabled when map state is fatal", context do
+      view = mount_map_view(context)
+
+      render_hook(view, "map_state", %{
+        "generation" => map_generation(view),
+        "state" => "fatal"
+      })
+
+      assert has_element?(view, "#map-alignment-preview-auto[disabled]")
+    end
+
+    test "preview button is not disabled solely for low anchor count", context do
+      view = mount_map_view(context)
+
+      refute has_element?(view, "#map-alignment-preview-auto[disabled]")
+    end
+
+    test "successful preview renders unsaved status with one-decimal fit and anchor count",
+         context do
+      view = mount_map_view(context)
+
+      html = render_hook(view, "preview_alignment", %{})
+
+      assert has_element?(view, "#auto-alignment-status[role='status'][aria-live='polite']")
+      assert html =~ "Unsaved auto-alignment preview"
+      assert html =~ "Estimated fit error"
+      assert html =~ ~r/\d+\.\d m/
+      assert has_element?(view, "#auto-alignment-fit-description")
+    end
+
+    test "restore button clears ready status from DOM", context do
+      view = mount_map_view(context)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "restore_saved_alignment", %{})
+      refute has_element?(view, "#auto-alignment-status")
+    end
+
+    test "Reset control is absent from transform controls", context do
+      view = mount_map_view(context)
+
+      refute has_element?(view, "[data-map-transform-action='reset']")
+      refute has_element?(view, "#map-transform-reset-fine")
+    end
+
+    test "successful save clears preview status from DOM", context do
+      view = mount_map_view(context)
+      generation = map_generation(view)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "save_alignment", %{
+        "generation" => generation,
+        "center_lat" => 40.7128,
+        "center_lon" => -74.0060,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 0.0
+      })
+
+      refute has_element?(view, "#auto-alignment-status")
+    end
+  end
+
+  describe "assisted alignment error rendering" do
+    setup context do
+      base_setup(context)
+    end
+
+    test "insufficient anchors renders inline error with recovery copy", context do
+      _anchor_stops =
+        create_anchor_stops(
+          context,
+          Enum.take(@anchor_points, 2)
+          |> Enum.map(fn point ->
+            {lat, lon} = anchor_lat_lon(point)
+            {point, lat, lon}
+          end)
+        )
+
+      view = mount_map_view(context)
+
+      html = render_hook(view, "preview_alignment", %{})
+
+      assert has_element?(view, "#auto-alignment-error[role='alert']")
+      assert html =~ "Not enough anchor stops to infer alignment"
+
+      assert html =~
+               "Place more stops with both a floorplan position and map coordinates, then try again."
+
+      refute has_element?(view, "#auto-alignment-status")
+    end
+
+    test "high residual renders inline error with recovery copy", context do
+      _anchor_stops =
+        create_anchor_stops(
+          context,
+          [
+            {@anchor_points |> Enum.at(0), 40.7128, -74.0060},
+            {@anchor_points |> Enum.at(1), 40.7129, -74.0061},
+            {@anchor_points |> Enum.at(2), 40.7200, -74.0100}
+          ]
+        )
+
+      view = mount_map_view(context)
+
+      html = render_hook(view, "preview_alignment", %{})
+
+      assert has_element?(view, "#auto-alignment-error[role='alert']")
+      assert html =~ "Inferred alignment residual exceeds tolerance"
+      assert html =~ "Check the anchor stops"
+    end
+  end
+
+  describe "alignment_preview_adjusted dirty handling" do
+    setup context do
+      context = base_setup(context)
+
+      anchor_stops =
+        create_anchor_stops(
+          context,
+          Enum.map(@anchor_points, fn point ->
+            {lat, lon} = anchor_lat_lon(point)
+            {point, lat, lon}
+          end)
+        )
+
+      Map.put(context, :anchor_stops, anchor_stops)
+    end
+
+    test "current-generation dirty event clears ready preview from DOM", context do
+      view = mount_map_view(context)
+      generation = map_generation(view)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "alignment_preview_adjusted", %{"generation" => generation})
+      refute has_element?(view, "#auto-alignment-status")
+    end
+
+    test "stale generation dirty event leaves ready preview visible", context do
+      view = mount_map_view(context)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "alignment_preview_adjusted", %{"generation" => "stale-generation"})
+      assert has_element?(view, "#auto-alignment-status")
+    end
+
+    test "malformed payload is a no-op", context do
+      view = mount_map_view(context)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "alignment_preview_adjusted", %{})
+      assert has_element?(view, "#auto-alignment-status")
+    end
+
+    test "dirty event with no active preview is a no-op", context do
+      view = mount_map_view(context)
+      generation = map_generation(view)
+
+      render_hook(view, "alignment_preview_adjusted", %{"generation" => generation})
+      refute has_element?(view, "#auto-alignment-status")
+    end
+
+    test "level switch clears preview and rotates generation", context do
+      %{organization: organization, gtfs_version: gtfs_version, station: station} = context
+
+      {:ok, level2} =
+        Gtfs.create_level(%{
+          level_id: "align_level_2",
+          level_name: "Alignment Level 2",
+          level_index: 1.0,
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id
+        })
+
+      {:ok, _stop_level2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level2.id,
+          diagram_filename: "align-diagram-2.png"
+        })
+
+      view = mount_map_view(context)
+      generation_before = map_generation(view)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "switch_level", %{"level_id" => level2.id})
+
+      refute has_element?(view, "#auto-alignment-status")
+      generation_after = map_generation(view)
+      assert generation_after != generation_before
+    end
+
+    test "mode switch clears preview", context do
+      view = mount_map_view(context)
+
+      render_hook(view, "preview_alignment", %{})
+      assert has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      refute has_element?(view, "#auto-alignment-status")
+    end
+  end
 end
