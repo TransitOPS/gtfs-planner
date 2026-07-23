@@ -614,6 +614,15 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
           location_type: 1
         )
 
+      child =
+        stop_fixture(organization.id, version.id,
+          stop_id: "platform_#{System.unique_integer([:positive])}",
+          parent_station: station.stop_id,
+          level_id: "L1"
+        )
+
+      pathway = pathway_fixture(organization.id, version.id, child.stop_id, child.stop_id)
+
       scope = %Scope{
         organization_id: organization.id,
         gtfs_version_id: version.id,
@@ -622,7 +631,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         actor_id: Ecto.UUID.generate()
       }
 
-      {:ok, scope: scope}
+      {:ok, scope: scope, child: child, pathway: pathway}
     end
 
     test "default list_station_journal/1 is equivalent to status: :all, order: :asc, limit: nil",
@@ -786,6 +795,248 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
       composed_entries = Gtfs.list_station_journal(scope, status: :open, order: :desc, limit: 2)
       assert Enum.map(composed_entries, & &1.id) == [e4_id, e3_id]
+    end
+
+    test "target: node/pathway returns only matching entries within org/version/station scope",
+         %{
+           scope: scope,
+           child: child,
+           pathway: pathway
+         } do
+      node_1_id = Ecto.UUID.generate()
+      node_2_id = Ecto.UUID.generate()
+      path_1_id = Ecto.UUID.generate()
+      station_id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{
+          id: node_1_id,
+          target_type: "node",
+          target_id: child.id,
+          captured_at: ~U[2026-07-13 10:00:00Z]
+        }),
+        entry_attrs(%{
+          id: node_2_id,
+          target_type: "node",
+          target_id: child.id,
+          captured_at: ~U[2026-07-13 11:00:00Z]
+        }),
+        entry_attrs(%{
+          id: path_1_id,
+          target_type: "pathway",
+          target_id: pathway.id,
+          captured_at: ~U[2026-07-13 12:00:00Z]
+        }),
+        entry_attrs(%{
+          id: station_id,
+          target_type: "station",
+          captured_at: ~U[2026-07-13 09:00:00Z]
+        })
+      ])
+
+      node_entries = Gtfs.list_station_journal(scope, target: {"node", child.id})
+      assert length(node_entries) == 2
+      assert Enum.map(node_entries, & &1.id) == [node_1_id, node_2_id]
+      assert Enum.all?(node_entries, &(&1.target_type == "node" and &1.target_id == child.id))
+
+      pathway_entries = Gtfs.list_station_journal(scope, target: {"pathway", pathway.id})
+      assert length(pathway_entries) == 1
+      assert [path_1_id] == Enum.map(pathway_entries, & &1.id)
+      assert hd(pathway_entries).target_type == "pathway"
+
+      all_entries = Gtfs.list_station_journal(scope)
+      assert length(all_entries) == 4
+    end
+
+    test "target: same-ID type separation returns only the matching type entry", %{
+      scope: scope
+    } do
+      shared_id = Ecto.UUID.generate()
+      node_entry_id = Ecto.UUID.generate()
+      pathway_entry_id = Ecto.UUID.generate()
+
+      JournalEntry.create_changeset(
+        %JournalEntry{},
+        entry_attrs(%{
+          id: node_entry_id,
+          target_type: "node",
+          target_id: shared_id
+        }),
+        scope
+      )
+      |> Repo.insert!()
+
+      JournalEntry.create_changeset(
+        %JournalEntry{},
+        entry_attrs(%{
+          id: pathway_entry_id,
+          target_type: "pathway",
+          target_id: shared_id
+        }),
+        scope
+      )
+      |> Repo.insert!()
+
+      node_result = Gtfs.list_station_journal(scope, target: {"node", shared_id})
+      assert length(node_result) == 1
+      assert hd(node_result).id == node_entry_id
+      assert hd(node_result).target_type == "node"
+
+      pathway_result = Gtfs.list_station_journal(scope, target: {"pathway", shared_id})
+      assert length(pathway_result) == 1
+      assert hd(pathway_result).id == pathway_entry_id
+      assert hd(pathway_result).target_type == "pathway"
+    end
+
+    test "target selection composes with status all, desc order, limit, and photo preload", %{
+      scope: scope,
+      child: child
+    } do
+      e1_id = Ecto.UUID.generate()
+      e2_id = Ecto.UUID.generate()
+      e3_id = Ecto.UUID.generate()
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{
+          id: e1_id,
+          target_type: "node",
+          target_id: child.id,
+          captured_at: ~U[2026-07-13 10:00:00.000000Z]
+        }),
+        entry_attrs(%{
+          id: e2_id,
+          target_type: "node",
+          target_id: child.id,
+          captured_at: ~U[2026-07-13 11:00:00.000000Z]
+        }),
+        entry_attrs(%{
+          id: e3_id,
+          target_type: "node",
+          target_id: child.id,
+          captured_at: ~U[2026-07-13 12:00:00.000000Z]
+        })
+      ])
+
+      {:ok, _closed} = Gtfs.close_journal_entry(scope, e1_id)
+
+      p1 =
+        Repo.insert!(%JournalPhoto{
+          id: Ecto.UUID.generate(),
+          journal_entry_id: e3_id,
+          filename: "1.jpg",
+          content_type: "image/jpeg",
+          byte_size: 10,
+          sha256: :crypto.strong_rand_bytes(32),
+          captured_at: ~U[2026-07-13 08:00:00.000000Z]
+        })
+
+      p2 =
+        Repo.insert!(%JournalPhoto{
+          id: Ecto.UUID.generate(),
+          journal_entry_id: e3_id,
+          filename: "2.jpg",
+          content_type: "image/jpeg",
+          byte_size: 10,
+          sha256: :crypto.strong_rand_bytes(32),
+          captured_at: ~U[2026-07-13 09:00:00.000000Z]
+        })
+
+      result =
+        Gtfs.list_station_journal(scope,
+          target: {"node", child.id},
+          status: :all,
+          order: :desc,
+          limit: 2
+        )
+
+      assert length(result) == 2
+      assert Enum.map(result, & &1.id) == [e3_id, e2_id]
+
+      [top | _] = result
+      assert Enum.map(top.photos, & &1.id) == [p1.id, p2.id]
+      refute is_nil(top.photos)
+
+      legacy_result =
+        Gtfs.list_station_journal(scope, target: {"node", child.id}, status: :all)
+
+      assert length(legacy_result) == 3
+      assert Enum.map(legacy_result, & &1.id) == [e1_id, e2_id, e3_id]
+    end
+
+    test "target: cross-scope isolation returns empty when targeting foreign station", %{
+      scope: scope,
+      child: child
+    } do
+      other_org = organization_fixture()
+      other_ver = gtfs_version_fixture(other_org.id)
+
+      other_station =
+        stop_fixture(other_org.id, other_ver.id,
+          stop_id: "station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      other_child =
+        stop_fixture(other_org.id, other_ver.id,
+          stop_id: "platform_#{System.unique_integer([:positive])}",
+          parent_station: other_station.stop_id,
+          level_id: "L1"
+        )
+
+      other_scope = %Scope{
+        organization_id: other_org.id,
+        gtfs_version_id: other_ver.id,
+        station_id: other_station.id,
+        station_stop_id: other_station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      Gtfs.sync_journal_entries(other_scope, [
+        entry_attrs(%{
+          id: Ecto.UUID.generate(),
+          target_type: "node",
+          target_id: other_child.id,
+          captured_at: ~U[2026-07-13 10:00:00Z]
+        })
+      ])
+
+      Gtfs.sync_journal_entries(scope, [
+        entry_attrs(%{
+          id: Ecto.UUID.generate(),
+          target_type: "node",
+          target_id: child.id,
+          captured_at: ~U[2026-07-13 11:00:00Z]
+        })
+      ])
+
+      result =
+        Gtfs.list_station_journal(scope, target: {"node", other_child.id})
+
+      assert result == []
+    end
+
+    test "raises ArgumentError for invalid target selectors", %{
+      scope: scope
+    } do
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, target: {"invalid_type", Ecto.UUID.generate()})
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, target: {"node", "not-a-uuid"})
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, target: :not_a_tuple)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, target: {"node"})
+      end
+
+      assert_raise ArgumentError, fn ->
+        Gtfs.list_station_journal(scope, target: {"node", "uuid", "extra"})
+      end
     end
 
     test "raises ArgumentError for unknown options, non-keyword lists, or invalid values", %{

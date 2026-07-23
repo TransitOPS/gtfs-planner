@@ -97,9 +97,11 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     status = Keyword.get(opts, :status, :all)
     order = Keyword.get(opts, :order, :asc)
     limit = Keyword.get(opts, :limit, nil)
+    target = Keyword.get(opts, :target, nil)
 
     scope
     |> base_entries_query()
+    |> filter_by_target(target)
     |> filter_by_status(status)
     |> sort_by_order(order)
     |> limit_entries(limit)
@@ -615,6 +617,16 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     )
   end
 
+  defp filter_by_target(query, nil), do: query
+
+  defp filter_by_target(query, {type, id}) do
+    {:ok, uuid} = cast_uuid(id)
+
+    from(entry in query,
+      where: entry.target_type == ^type and entry.target_id == ^uuid
+    )
+  end
+
   defp filter_by_status(query, :all), do: query
   defp filter_by_status(query, :open), do: where(query, [entry], is_nil(entry.closed_at))
 
@@ -642,32 +654,49 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
       raise ArgumentError, "options must be a keyword list"
     end
 
-    allowed_keys = [:status, :order, :limit]
+    allowed_keys = [:status, :order, :limit, :target]
 
     for {key, val} <- opts do
       if key not in allowed_keys do
         raise ArgumentError, "unknown option: #{inspect(key)}"
       end
 
-      case key do
-        :status ->
-          if val not in [:open, :all] do
-            raise ArgumentError, "invalid :status option: #{inspect(val)}"
-          end
-
-        :order ->
-          if val not in [:asc, :desc] do
-            raise ArgumentError, "invalid :order option: #{inspect(val)}"
-          end
-
-        :limit ->
-          unless is_nil(val) or (is_integer(val) and val > 0) do
-            raise ArgumentError, "invalid :limit option: #{inspect(val)}"
-          end
-      end
+      validate_opt!(key, val)
     end
 
     opts
+  end
+
+  defp validate_opt!(:status, val) do
+    if val not in [:open, :all] do
+      raise ArgumentError, "invalid :status option: #{inspect(val)}"
+    end
+  end
+
+  defp validate_opt!(:order, val) do
+    if val not in [:asc, :desc] do
+      raise ArgumentError, "invalid :order option: #{inspect(val)}"
+    end
+  end
+
+  defp validate_opt!(:limit, val) do
+    unless is_nil(val) or (is_integer(val) and val > 0) do
+      raise ArgumentError, "invalid :limit option: #{inspect(val)}"
+    end
+  end
+
+  defp validate_opt!(:target, {type, id}) when type in ["node", "pathway"] do
+    case cast_uuid(id) do
+      {:ok, _uuid} ->
+        :ok
+
+      :error ->
+        raise ArgumentError, "invalid :target id: #{inspect(id)}"
+    end
+  end
+
+  defp validate_opt!(:target, val) do
+    raise ArgumentError, "invalid :target option: #{inspect(val)}"
   end
 
   defp topic(%Scope{} = scope) do
