@@ -2983,40 +2983,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> push_event("retry_map_alignment", %{generation: socket.assigns.map_generation})}
   end
 
+  # The former one-click infer-and-persist event is deliberately inert. The
+  # replacement preview path (Package 07) exposes read-only inference through
+  # "preview_alignment"; this clause remains as a compatibility boundary for
+  # stale clients, matching the established "save_and_apply_alignment" pattern.
   @impl true
-  def handle_event("infer_alignment", _params, socket) do
-    stop_level = socket.assigns.active_stop_level
-    image_w = socket.assigns.floorplan_image_w
-    image_h = socket.assigns.floorplan_image_h
-
-    if is_nil(stop_level) or is_nil(image_w) or is_nil(image_h) do
-      {:noreply,
-       put_flash(socket, :error, "Infer alignment requires an active level and floorplan image")}
-    else
-      case Gtfs.save_inferred_level_alignment(stop_level, image_w, image_h) do
-        {:ok, updated, %{inferred_alignment: %{anchor_count: n, rmse_meters: rmse}}} ->
-          rmse_str = :erlang.float_to_binary(rmse, decimals: 2)
-          socket = assign(socket, :active_stop_level, updated)
-
-          case Gtfs.apply_alignment_to_child_stops(updated, image_w, image_h) do
-            {:ok, count} ->
-              {:noreply,
-               socket
-               |> refresh_lists()
-               |> put_flash(
-                 :info,
-                 "Set lat/lon for #{count} child stops (#{n} anchors, RMSE #{rmse_str} m)"
-               )}
-
-            {:error, reason} ->
-              {:noreply, put_flash(socket, :error, apply_alignment_error_message(reason))}
-          end
-
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, infer_alignment_error_message(reason))}
-      end
-    end
-  end
+  def handle_event("infer_alignment", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("scale_line_click", _params, socket) do
