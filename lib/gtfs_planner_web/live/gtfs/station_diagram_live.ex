@@ -53,6 +53,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @history_key :history_load
   @journal_load_key :journal_load
+  @drawer_journal_load_key :drawer_journal_load
+
+  @type drawer_journal_state ::
+          :idle | :initial_loading | :ready | :refreshing | :error
+  @type drawer_journal_request :: %{
+          scope_key: {Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()},
+          generation: pos_integer(),
+          entity_type: :stop | :pathway,
+          entity_id: Ecto.UUID.t(),
+          target: {:node | :pathway, Ecto.UUID.t()}
+        }
 
   @type journal_filter :: :open | :closed | :all
   @type journal_state :: :idle | :loading | :ready | :error
@@ -107,8 +118,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> stream_configure(:journal_markers,
        dom_id: fn marker -> marker.id end
      )
+     |> stream_configure(:drawer_journal_entries,
+       dom_id: fn entry -> "drawer-journal-entry-#{entry.id}" end
+     )
      |> assign(:journal_load_generation, 0)
      |> reset_journal()
+     |> reset_drawer_journal()
      |> assign(:mode, :view)
      |> assign(:station_editing_status, nil)
      |> assign(:show_diagram_upload_drawer, false)
@@ -260,6 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> reset_history()
           |> cancel_async(@journal_load_key)
           |> reset_journal()
+          |> reset_drawer_journal()
           |> assign(:stop_id, stop_id)
           |> assign(:station, station)
           |> assign(:levels, levels)
@@ -406,9 +422,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:station_journal_changed, station_id},
         %{assigns: %{journal_scope: %JournalScope{station_id: station_id}}} = socket
       ) do
+    # Continue existing station-panel refresh
     intent = journal_pubsub_intent(socket)
 
-    {:noreply, load_journal(socket, intent, :pubsub, socket.assigns.journal_filter)}
+    socket =
+      socket
+      |> load_journal(intent, :pubsub, socket.assigns.journal_filter)
+      |> maybe_refresh_drawer_journal_on_pubsub()
+
+    {:noreply, socket}
   end
 
   def handle_info({:station_journal_changed, _station_id}, socket), do: {:noreply, socket}
@@ -1388,6 +1410,63 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  # ============================================================================
+  # Drawer Journal Events
+  # ============================================================================
+
+  @impl true
+  def handle_event(
+        "show_drawer_journal",
+        %{"entity_type" => entity_type, "entity_id" => entity_id},
+        socket
+      )
+      when entity_type in ["stop", "pathway"] do
+    if drawer_open_for?(socket, entity_type, entity_id) and
+         entity_belongs_to_current_station?(socket, entity_type, entity_id) do
+      target = draw_map_entity_to_target(entity_type, entity_id)
+
+      {:noreply,
+       socket
+       |> assign(:history_open_for, nil)
+       |> assign(:history_state, :idle)
+       |> assign(:history_entries, [])
+       |> assign(:rollback_preview, nil)
+       |> start_drawer_journal_load(entity_type |> String.to_atom(), entity_id, target,
+         state: :initial_loading
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("show_drawer_journal", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("retry_drawer_journal", _params, socket) do
+    case socket.assigns.drawer_journal_request do
+      %{entity_type: entity_type, entity_id: entity_id, target: target} ->
+        state =
+          if socket.assigns.drawer_journal_loaded_once?, do: :refreshing, else: :initial_loading
+
+        {:noreply,
+         start_drawer_journal_load(socket, entity_type, entity_id, target, state: state)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("show_details", _params, socket) do
+    {:noreply,
+     socket
+     |> cancel_and_reset_drawer_journal()
+     |> assign(:history_open_for, nil)
+     |> assign(:history_state, :idle)
+     |> assign(:history_entries, [])
+     |> assign(:rollback_preview, nil)}
+  end
+
   @impl true
   def handle_event("show_journal_entry_on_floorplan", %{"id" => entry_id}, socket) do
     {:noreply, show_journal_entry_on_floorplan(socket, entry_id)}
@@ -1760,6 +1839,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      socket
+     |> cancel_and_reset_drawer_journal()
      |> reset_reposition_state()
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
@@ -1997,6 +2077,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      socket
+     |> cancel_and_reset_drawer_journal()
      |> assign(:placement_status, "Placement cancelled")
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
@@ -2401,6 +2482,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       {:noreply,
        socket
+       |> cancel_and_reset_drawer_journal()
        |> assign(:active_pathway_tab, active_tab)
        |> assign(:pathway_form_dirty, false)
        |> assign(:editing_pathway, pathway)
@@ -2544,6 +2626,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("close_pathway_drawer", _params, socket) do
     {:noreply,
      socket
+     |> cancel_and_reset_drawer_journal()
      |> assign(:show_pathway_drawer, false)
      |> assign(:editing_pathway_pair, [])
      |> assign(:active_pathway_tab, :first)
@@ -3917,6 +4000,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if entity_belongs_to_current_station?(socket, type, id) do
       {:noreply,
        socket
+       |> cancel_and_reset_drawer_journal()
        |> assign(:history_open_for, {type, id})
        |> assign(:history_entries, [])
        |> assign_history_filter("all")
@@ -4060,6 +4144,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # mutate journal state. Observable task failures are caught in the task and
   # returned with their request; cancellation and superseded exits are inert.
   def handle_async(@journal_load_key, {:exit, _reason}, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_async(@drawer_journal_load_key, {:ok, {request, result}}, socket) do
+    if request == socket.assigns.drawer_journal_request do
+      {:noreply, apply_drawer_journal_result(socket, request, result)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Task exits do not carry the complete request identity; cancellation and
+  # superseded exits are inert. Observable task failures are caught in the task.
+  def handle_async(@drawer_journal_load_key, {:exit, _reason}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_async(@history_key, {:ok, {:loaded, scope, result}}, socket) do
@@ -4391,6 +4488,236 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_now, nil)
     |> assign(:journal_live_message, nil)
     |> assign(:journal_error_message, nil)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Scoped drawer-journal lifecycle
+  # ---------------------------------------------------------------------------
+
+  defp reset_drawer_journal(socket) do
+    socket
+    |> stream(:drawer_journal_entries, [], reset: true)
+    |> assign(:drawer_journal_generation, 0)
+    |> assign(:drawer_journal_request, nil)
+    |> assign(:drawer_journal_state, :idle)
+    |> assign(:drawer_journal_open_for, nil)
+    |> assign(:drawer_journal_loaded_once?, false)
+    |> assign(:drawer_journal_refresh_error?, false)
+    |> assign(:drawer_journal_error_message, nil)
+    |> assign(:drawer_journal_total_count, 0)
+    |> assign(:drawer_journal_authors, %{})
+    |> assign(:drawer_journal_targets, %{})
+    |> assign(:drawer_journal_local_times, %{})
+    |> assign(:drawer_journal_display_zone, nil)
+    |> assign(:drawer_journal_now, nil)
+  end
+
+  defp cancel_and_reset_drawer_journal(socket) do
+    socket
+    |> cancel_async(@drawer_journal_load_key)
+    |> reset_drawer_journal()
+  end
+
+  defp drawer_open_for?(socket, "stop", entity_id) do
+    socket.assigns.selected_stop_id == entity_id
+  end
+
+  defp drawer_open_for?(socket, "pathway", entity_id) do
+    (socket.assigns.show_pathway_drawer and
+       socket.assigns.editing_pathway) &&
+      socket.assigns.editing_pathway.id == entity_id
+  end
+
+  defp drawer_open_for?(_socket, _entity_type, _entity_id), do: false
+
+  defp draw_map_entity_to_target("stop", id), do: {"node", id}
+  defp draw_map_entity_to_target("pathway", id), do: {"pathway", id}
+
+  defp start_drawer_journal_load(socket, entity_type, entity_id, target, opts) do
+    state = Keyword.fetch!(opts, :state)
+    generation = socket.assigns.drawer_journal_generation + 1
+
+    scope_key = drawer_journal_scope_key(socket)
+
+    request = %{
+      scope_key: scope_key,
+      generation: generation,
+      entity_type: entity_type,
+      entity_id: entity_id,
+      target: target
+    }
+
+    socket
+    |> cancel_async(@drawer_journal_load_key)
+    |> assign(:drawer_journal_generation, generation)
+    |> assign(:drawer_journal_request, request)
+    |> assign(:drawer_journal_state, state)
+    |> assign(:drawer_journal_refresh_error?, false)
+    |> assign(:drawer_journal_error_message, nil)
+    |> assign(:drawer_journal_open_for, {Atom.to_string(entity_type), entity_id})
+    |> then(fn s ->
+      case state do
+        :initial_loading ->
+          stream(s, :drawer_journal_entries, [], reset: true)
+
+        _ ->
+          s
+      end
+    end)
+    |> start_async(@drawer_journal_load_key, fn ->
+      run_drawer_journal_load(request)
+    end)
+  end
+
+  defp drawer_journal_scope_key(socket) do
+    %{
+      current_organization: %{id: organization_id},
+      current_gtfs_version: %{id: gtfs_version_id},
+      station: %{id: station_id}
+    } = socket.assigns
+
+    {organization_id, gtfs_version_id, station_id}
+  end
+
+  # Runs in the task process. Only the request identity is captured, never the socket.
+  defp run_drawer_journal_load(request) do
+    result =
+      try do
+        {:ok, fetch_drawer_journal_payload(request)}
+      rescue
+        exception -> {:error, exception}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    {request, result}
+  end
+
+  defp fetch_drawer_journal_payload(%{
+         scope_key: {organization_id, gtfs_version_id, station_id},
+         target: {target_type, target_id}
+       }) do
+    source = journal_source()
+
+    entries =
+      source.list_station_journal(
+        %JournalScope{
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          station_id: station_id,
+          station_stop_id: nil,
+          actor_id: nil
+        },
+        target: {target_type, target_id},
+        status: :all,
+        order: :desc
+      )
+
+    authors =
+      source.resolve_display_zone(organization_id, gtfs_version_id)
+      |> then(fn _zone ->
+        organization_id
+        |> Organizations.list_users_in_organization()
+        |> Map.new(fn %{user: user} -> {user.id, user} end)
+      end)
+
+    {presentations, _snapshots} =
+      fetch_drawer_journal_targets(source, organization_id, gtfs_version_id, station_id)
+
+    zone = source.resolve_display_zone(organization_id, gtfs_version_id)
+    {local_times, now} = localize_journal_times(source, entries, zone)
+
+    %{
+      entries: entries,
+      total_count: length(entries),
+      authors: authors,
+      targets: presentations,
+      zone: zone,
+      local_times: local_times,
+      now: now
+    }
+  end
+
+  defp fetch_drawer_journal_targets(source, organization_id, gtfs_version_id, station_id) do
+    child_stops =
+      source.list_child_stops_for_parent(
+        organization_id,
+        gtfs_version_id,
+        station_id
+      )
+
+    pathways =
+      source.list_pathways_for_station(
+        organization_id,
+        gtfs_version_id,
+        station_id
+      )
+
+    node_presentations =
+      Map.new(child_stops, fn stop ->
+        {stop.id, %{label: target_label(stop.stop_name, stop.stop_id)}}
+      end)
+
+    pathway_presentations =
+      Map.new(pathways, fn pathway ->
+        {pathway.id, %{label: target_label(pathway.pathway_id, pathway.id)}}
+      end)
+
+    presentations =
+      Map.merge(node_presentations, pathway_presentations)
+
+    target_snapshots = %{
+      presentations: presentations,
+      nodes: Map.new(child_stops, fn stop -> {stop.id, stop} end),
+      pathways: Map.new(pathways, fn pw -> {pw.id, pw} end)
+    }
+
+    {presentations, target_snapshots}
+  end
+
+  defp apply_drawer_journal_result(socket, _request, {:ok, payload}) do
+    socket
+    |> stream(:drawer_journal_entries, payload.entries, reset: true)
+    |> assign(:drawer_journal_total_count, payload.total_count)
+    |> assign(:drawer_journal_authors, payload.authors)
+    |> assign(:drawer_journal_targets, payload.targets)
+    |> assign(:drawer_journal_local_times, payload.local_times)
+    |> assign(:drawer_journal_display_zone, payload.zone)
+    |> assign(:drawer_journal_now, payload.now)
+    |> assign(:drawer_journal_loaded_once?, true)
+    |> assign(:drawer_journal_refresh_error?, false)
+    |> assign(:drawer_journal_error_message, nil)
+    |> assign(:drawer_journal_state, :ready)
+  end
+
+  defp apply_drawer_journal_result(socket, _request, {:error, _reason}) do
+    loaded_once? = socket.assigns.drawer_journal_loaded_once?
+
+    if loaded_once? do
+      socket
+      |> assign(:drawer_journal_state, :error)
+      |> assign(:drawer_journal_refresh_error?, true)
+      |> assign(:drawer_journal_error_message, "Journal entries could not be refreshed.")
+    else
+      socket
+      |> assign(:drawer_journal_state, :error)
+      |> assign(:drawer_journal_refresh_error?, false)
+      |> assign(:drawer_journal_error_message, "Journal entries could not be loaded.")
+    end
+  end
+
+  defp maybe_refresh_drawer_journal_on_pubsub(socket) do
+    if socket.assigns.drawer_journal_state in [:ready, :refreshing, :error] do
+      case socket.assigns.drawer_journal_request do
+        %{entity_type: entity_type, entity_id: entity_id, target: target} ->
+          start_drawer_journal_load(socket, entity_type, entity_id, target, state: :refreshing)
+
+        _ ->
+          socket
+      end
+    else
+      socket
+    end
   end
 
   defp journal_pubsub_intent(socket) do
@@ -6910,6 +7237,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # restreaming. Save flows perform their own targeted stream/list repairs.
   defp close_child_stop_drawer_after_save(socket) do
     socket
+    |> cancel_and_reset_drawer_journal()
     |> reset_reposition_state()
     |> assign(:pending_xy, nil)
     |> assign(:selected_stop_id, nil)
@@ -6922,6 +7250,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # without reloading entities or changing persisted data.
   defp close_pathway_drawer_after_save(socket) do
     socket
+    |> cancel_and_reset_drawer_journal()
     |> assign(:show_pathway_drawer, false)
     |> assign(:editing_pathway_pair, [])
     |> assign(:active_pathway_tab, :first)
