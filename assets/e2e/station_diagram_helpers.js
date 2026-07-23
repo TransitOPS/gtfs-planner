@@ -45,6 +45,7 @@ export async function selectSeededDiagramLevel(page, levelId = "BROWSER_L1") {
   await expect(page.locator("#level-control-panel")).toBeVisible();
   await option.click();
   await expect(option).toHaveAttribute("aria-current", "true");
+  await expect(trigger).toBeFocused();
 }
 
 export async function selectDiagramMode(page, mode) {

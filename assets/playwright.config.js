@@ -7,7 +7,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   testDir: "./e2e",
 
-  retries: process.env.CI ? 1 : 0,
+  // The browser suite intentionally shares one reset-and-seeded database and
+  // includes stateful journeys. Retrying an individual test against mutated
+  // state can hide the original failure or fail for the wrong reason. CI
+  // workflow reruns rebuild the database from scratch.
+  retries: 0,
 
   workers: 1,
 
@@ -22,7 +26,7 @@ export default defineConfig({
 
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:4002",
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
 

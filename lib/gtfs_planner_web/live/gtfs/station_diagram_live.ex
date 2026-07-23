@@ -4953,11 +4953,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp journal_mode_focus_transition?(_socket, _next_mode), do: false
 
-  defp maybe_focus_journal_mode(socket, mode, true) do
+  defp maybe_focus_journal_mode(socket, mode, _restore_mode_focus?) do
     push_event(socket, "journal-focus", %{selector: "#diagram-mode-option-#{mode}"})
   end
-
-  defp maybe_focus_journal_mode(socket, _mode, false), do: socket
 
   defp open_pathway_drawer(socket, pathway) do
     pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)

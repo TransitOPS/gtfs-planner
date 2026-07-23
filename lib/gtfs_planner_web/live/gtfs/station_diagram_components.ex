@@ -385,6 +385,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-click={
               @close_panel
               |> JS.push("switch_level", value: %{level_id: level.id})
+              |> JS.focus(to: "#level-control-trigger")
             }
           >
             <span class="flex items-center gap-2">

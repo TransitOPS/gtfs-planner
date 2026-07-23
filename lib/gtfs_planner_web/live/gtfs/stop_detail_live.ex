@@ -954,12 +954,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           </div>
 
           <%= if @journal_scope do %>
-            <div class="mt-8" id="station-journal-summary">
+            <div
+              class="mt-8"
+              id="station-journal-summary"
+              aria-busy={to_string(@journal_state == :loading)}
+            >
               <div class="flex items-center gap-3 mb-4">
                 <h2 class="text-lg font-semibold">Journal</h2>
-                <%= if not @journal_entries_empty? and
-                          (@journal_state == :ready or
-                             (@journal_state == :error and @journal_loaded_once?)) do %>
+                <%= if not @journal_entries_empty? and @journal_loaded_once? do %>
                   <span
                     id="station-journal-open-count"
                     class="border border-base-300 rounded-full px-2.5 py-0.5 text-xs"
@@ -971,12 +973,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   </span>
                   <button
                     id="journal-summary-refresh"
-                    phx-click="retry_journal"
+                    phx-click={@journal_state != :loading && "retry_journal"}
                     class="ml-auto btn btn-ghost size-11 min-h-11 min-w-11 p-0 text-base-content/50 hover:text-base-content"
                     aria-label="Refresh journal entries"
                     title="Refresh journal entries"
+                    aria-busy={to_string(@journal_state == :loading)}
+                    aria-disabled={to_string(@journal_state == :loading)}
                   >
-                    <.icon name="hero-arrow-path" class="size-3.5" />
+                    <.icon
+                      name="hero-arrow-path"
+                      class={["size-3.5", @journal_state == :loading && "animate-spin"]}
+                    />
                   </button>
                 <% end %>
               </div>
@@ -998,12 +1005,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                     kind="warning"
                     title="Journal unavailable"
                     id="station-journal-unavailable"
+                    role="alert"
                   >
                     Journal entries could not be loaded. Please try again.
                     <button
                       id="station-journal-retry"
                       phx-click="retry_journal"
-                      class="btn btn-sm btn-outline mt-2"
+                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
                     >
                       Retry
                     </button>
@@ -1014,12 +1022,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                     kind="warning"
                     title="Journal may be out of date"
                     id="station-journal-refresh-warning"
+                    role="status"
+                    aria-live="polite"
                   >
                     The last successful journal snapshot remains available.
                     <button
                       id="station-journal-retry"
                       phx-click="retry_journal"
-                      class="btn btn-sm btn-outline mt-2"
+                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
                     >
                       Retry
                     </button>
@@ -1036,12 +1046,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                     kind="warning"
                     title="Journal may be out of date"
                     id="station-journal-refresh-warning"
+                    role="status"
+                    aria-live="polite"
                   >
                     The last saved entries remain available.
                     <button
                       id="station-journal-retry"
                       phx-click="retry_journal"
-                      class="btn btn-sm btn-outline mt-2"
+                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
                     >
                       Retry
                     </button>
@@ -1134,7 +1146,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         <.link
           id="journal-footer-link"
           navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open"}
-          class="text-sm text-primary hover:underline"
+          class="inline-flex min-h-11 items-center text-sm text-primary hover:underline"
         >
           Open journal in Floorplans →
         </.link>

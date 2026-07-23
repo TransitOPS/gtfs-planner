@@ -144,7 +144,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       assert has_element?(
                view,
-               ~s(a#journal-footer-link[href="/gtfs/#{context.gtfs_version.id}/stops/#{context.station.stop_id}/diagram?journal=open"])
+               ~s(a#journal-footer-link[href="/gtfs/#{context.gtfs_version.id}/stops/#{context.station.stop_id}/diagram?journal=open"][class~="min-h-11"])
              )
     end
 
@@ -347,8 +347,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       release_journal(task, {:raise, "journal read failed"})
       render_async(view, 5_000)
 
-      assert has_element?(view, "#station-journal-unavailable")
-      assert has_element?(view, "#station-journal-retry")
+      assert has_element?(view, "#station-journal-unavailable[role='alert']")
+
+      assert has_element?(
+               view,
+               "#station-journal-retry[class~='min-h-11'][class~='min-w-11']"
+             )
 
       render_click(element(view, "#station-journal-retry"))
       retry_task = await_journal_request(context.station.id)
@@ -373,10 +377,24 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       render_click(element(view, "#journal-summary-refresh"))
       failed_task = await_journal_request(context.station.id)
+
+      assert has_element?(view, "#station-journal-summary[aria-busy='true']")
+      assert has_element?(view, "#station-journal-open-count")
+      assert has_element?(view, "#station-journal-summary-list")
+
+      assert has_element?(
+               view,
+               "#journal-summary-refresh[aria-disabled='true'][aria-busy='true']"
+             )
+
       release_journal(failed_task, {:raise, "refresh failed"})
       render_async(view, 5_000)
 
-      assert has_element?(view, "#station-journal-refresh-warning")
+      assert has_element?(
+               view,
+               "#station-journal-refresh-warning[role='status'][aria-live='polite']"
+             )
+
       assert has_element?(view, "#station-journal-open-count")
       assert has_element?(view, "#station-journal-summary-list")
     end
@@ -396,12 +414,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       release_journal(failed_task, {:raise, "empty refresh failed"})
       render_async(view, 5_000)
 
-      assert has_element?(view, "#station-journal-refresh-warning")
+      assert has_element?(
+               view,
+               "#station-journal-refresh-warning[role='status'][aria-live='polite']"
+             )
+
       assert has_element?(view, "#station-journal-empty")
       refute has_element?(view, "#station-journal-open-count")
       refute has_element?(view, "#station-journal-closed-count")
       refute has_element?(view, "#journal-summary-refresh")
-      assert has_element?(view, "#station-journal-retry")
+
+      assert has_element?(
+               view,
+               "#station-journal-retry[class~='min-h-11'][class~='min-w-11']"
+             )
+
       refute has_element?(view, "#journal-footer-link")
       refute has_element?(view, "[data-role='journal-summary-entry']")
     end
@@ -469,7 +496,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       release_journal(failed_task, {:raise, "pubsub refresh failed"})
       render_async(view, 5_000)
 
-      assert has_element?(view, "#station-journal-refresh-warning")
+      assert has_element?(
+               view,
+               "#station-journal-refresh-warning[role='status'][aria-live='polite']"
+             )
+
       assert has_element?(view, "#station-journal-open-count", "3 open")
       assert has_element?(view, "#station-journal-summary-list")
 
