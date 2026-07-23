@@ -1195,8 +1195,18 @@ const MapAlignmentHook = {
       case "down": this.transform.ty += amount; break;
       case "rotate-left": this.transform.rotation -= rotation; break;
       case "rotate-right": this.transform.rotation += rotation; break;
-      case "scale-down": this.transform.scale = clamp(this.transform.scale / scale, SCALE_MIN, SCALE_MAX); break;
-      case "scale-up": this.transform.scale = clamp(this.transform.scale * scale, SCALE_MIN, SCALE_MAX); break;
+      case "scale-down": {
+        const nextScale = clamp(this.transform.scale / scale, SCALE_MIN, SCALE_MAX);
+        if (nextScale === this.transform.scale) return;
+        this.transform.scale = nextScale;
+        break;
+      }
+      case "scale-up": {
+        const nextScale = clamp(this.transform.scale * scale, SCALE_MIN, SCALE_MAX);
+        if (nextScale === this.transform.scale) return;
+        this.transform.scale = nextScale;
+        break;
+      }
       default: return;
     }
     this._markUserAdjusted();

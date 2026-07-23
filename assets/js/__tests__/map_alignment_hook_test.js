@@ -2452,6 +2452,42 @@ describe("map_alignment_hook saved/preview state machine", () => {
       restore();
     });
 
+    it.each([
+      ["scale-down", 0.25],
+      ["scale-up", 4],
+    ])("%s at its clamp boundary is a true no-op", (action, boundaryScale) => {
+      const { hook, restore } = mountDirtyHook();
+      const initialTransform = { tx: 10, ty: 20, rotation: 30, scale: boundaryScale };
+      hook.transform = {...initialTransform};
+      hook._previewActive = true;
+      hook._applyTransform = vi.fn();
+
+      hook._adjustTransform(action, false);
+
+      expect(hook.transform).toEqual(initialTransform);
+      expect(hook._previewActive).toBe(true);
+      expect(alignmentDirtyCalls(hook)).toHaveLength(0);
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+
+      restore();
+    });
+
+    it("effective scale button mutations dirty the preview exactly once", () => {
+      const { hook, restore } = mountDirtyHook();
+      hook._previewActive = true;
+      hook._applyTransform = vi.fn();
+
+      hook._adjustTransform("scale-up", false);
+      hook._adjustTransform("scale-up", false);
+
+      expect(hook.transform.scale).toBeCloseTo(1.0201);
+      expect(hook._previewActive).toBe(false);
+      expect(alignmentDirtyCalls(hook)).toHaveLength(1);
+      expect(hook._applyTransform).toHaveBeenCalledTimes(2);
+
+      restore();
+    });
+
     it("center-map preserves _previewActive and does not report dirty", () => {
       const { hook, mapInstance, restore } = mountDirtyHook();
       hook._previewActive = true;
