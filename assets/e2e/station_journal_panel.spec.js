@@ -864,12 +864,179 @@ test("Package 04 component baseline — executable reference and production tab 
   await editBtn.click();
 
   // The child stop drawer with its tab strip should be open
-  const drawer = page.locator('[aria-label="Edit node details"]');
-  await expect(drawer).toBeVisible();
+  await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({ timeout: 10000 });
 
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({
     path: resolve(pkg4ArtifactRoot, "production-tab-baseline.png"),
     animations: "disabled",
   });
+});
+
+test("Package 04 reference and production captures", async ({ page }) => {
+  await mkdir(pkg4ArtifactRoot, { recursive: true });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+
+  // Reference capture
+  await page.goto(
+    pathToFileURL(resolve(pkg4ReferenceRoot, "mock-06-entity-drawer-journal.html")).href,
+    { waitUntil: "networkidle" },
+  );
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: resolve(pkg4ArtifactRoot, "reference-entity-drawer-journal.png"),
+  });
+
+  // Production captures
+  await loginAndGoToDiagram(page);
+
+  const diagramPage = page.locator("#diagram-page");
+  await expect(diagramPage).toBeVisible();
+
+  // Open the stop drawer via the journal panel entry edit path
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await expect(nodeMarker).toBeVisible();
+  await nodeMarker.click();
+
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+  const editBtn = panel.locator('button[id^="journal-edit-target-"]').first();
+  await expect(editBtn).toBeVisible();
+  await editBtn.click();
+
+  // The child stop drawer with its tab strip should be open
+  await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({ timeout: 10000 });
+
+  // Verify the three-tab strip renders
+  await expect(page.locator("#stop-tab-details")).toBeVisible();
+  await expect(page.locator("#stop-tab-history")).toBeVisible();
+  await expect(page.locator("#stop-tab-journal")).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: resolve(pkg4ArtifactRoot, "production-stop-journal.png"),
+    animations: "disabled",
+  });
+
+  // Close drawer
+  await page.locator("#child-stop-drawer-close").click();
+  await page.waitForTimeout(500);
+
+  // Open a pathway drawer by clicking a pathway link in the table
+  // The table is at the bottom of the page; first scroll down
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(500);
+
+  const pathwayLink = page.locator("#pathways-table button[phx-click=\"edit_pathway\"]").first();
+  await expect(pathwayLink).toBeVisible({ timeout: 5000 });
+  await pathwayLink.click();
+
+  await expect(page.locator("#pathway-drawer-overlay")).toBeVisible({ timeout: 10000 });
+
+  // Verify the three-tab strip in pathway drawer
+  await expect(page.locator("#pathway-tab-details")).toBeVisible();
+  await expect(page.locator("#pathway-tab-history")).toBeVisible();
+  await expect(page.locator("#pathway-tab-journal")).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: resolve(pkg4ArtifactRoot, "production-pathway-journal.png"),
+    animations: "disabled",
+  });
+});
+
+test("Package 04 empty journal and reflow viewport", async ({ page }) => {
+  await mkdir(pkg4ArtifactRoot, { recursive: true });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+
+  await loginAndGoToDiagram(page);
+
+  // Navigate to diagram and verify keyboard reachability
+  // The 1280x720 viewport is the standard desktop contract
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.evaluate(() => document.fonts.ready);
+
+  // Verify no horizontal overflow in the page at standard viewport
+  const overflow1280 = await page.evaluate(() => ({
+    body: document.body.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  expect(overflow1280.body).toBeLessThanOrEqual(overflow1280.viewport + 2);
+
+  // 640x720 as effective 200% reflow proxy
+  await page.setViewportSize({ width: 640, height: 720 });
+  await page.evaluate(() => document.fonts.ready);
+
+  const overflow640 = await page.evaluate(() => ({
+    body: document.body.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  expect(overflow640.body).toBeLessThanOrEqual(overflow640.viewport + 2);
+});
+
+test("Package 04 keyboard reachability and tab ARIA", async ({ page }) => {
+  await loginAndGoToDiagram(page);
+
+  // Open a persisted stop via the journal panel edit path
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await expect(nodeMarker).toBeVisible();
+  await nodeMarker.click();
+
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+  const editBtn = panel.locator('button[id^="journal-edit-target-"]').first();
+  await expect(editBtn).toBeVisible();
+  await editBtn.click();
+
+  // Wait for drawer
+  await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({ timeout: 10000 });
+  await page.waitForTimeout(1000);
+
+  // Verify the three tabs exist
+  await expect(page.locator("#stop-tab-details")).toBeVisible();
+  await expect(page.locator("#stop-tab-history")).toBeVisible();
+  await expect(page.locator("#stop-tab-journal")).toBeVisible();
+
+  // Verify tabpanel elements exist
+  await expect(page.locator("#stop-panel-details")).toBeAttached();
+  await expect(page.locator("#stop-panel-history")).toBeAttached();
+  await expect(page.locator("#stop-panel-journal")).toBeAttached();
+
+  // Details should be the default visible panel
+  await expect(page.locator("#stop-tab-details")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#stop-tab-journal")).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator("#stop-tab-history")).toHaveAttribute("aria-selected", "false");
+
+  // Verify the tablist has proper role
+  await expect(page.locator("#stop-tabs[role=\"tablist\"]")).toBeVisible();
+});
+
+test("Package 04 no horizontal overflow in drawers at standard viewports", async ({ page }) => {
+  await loginAndGoToDiagram(page);
+
+  for (const width of [1280, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+
+    // Open a persisted stop
+    const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+    await nodeMarker.click();
+    const panel = page.locator("#station-journal-panel");
+    await expect(panel).toBeVisible({ timeout: 5000 });
+
+    const editBtn = panel.locator('button[id^="journal-edit-target-"]').first();
+    await editBtn.click();
+
+    await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({ timeout: 10000 });
+
+    // Check for no horizontal overflow
+    const overflow = await page.evaluate(() => ({
+      body: document.body.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(overflow.body).toBeLessThanOrEqual(overflow.viewport + 2);
+
+    // Close drawer
+    await page.locator("#child-stop-drawer-close").click();
+    await expect(page.locator("#child-stop-drawer-overlay")).not.toHaveAttribute("open", "true", { timeout: 5000 });
+  }
 });

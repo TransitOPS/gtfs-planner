@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   import GtfsPlannerWeb.CoreComponents
 
   import GtfsPlannerWeb.Gtfs.StationJournalComponents,
-    only: [journal_trigger: 1, journal_context_box: 1]
+    only: [journal_trigger: 1, journal_context_box: 1, entity_journal_panel: 1]
 
   import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
@@ -3218,6 +3218,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
   attr :journal_context, :any, default: nil
+  attr :drawer_journal_entries, :any, default: nil
+  attr :drawer_journal_open_for, :any, default: nil
+  attr :drawer_journal_state, :atom, default: :idle
+  attr :drawer_journal_total_count, :integer, default: 0
+  attr :drawer_journal_loaded_once?, :boolean, default: false
+  attr :drawer_journal_refresh_error?, :boolean, default: false
+  attr :drawer_journal_error_message, :string, default: nil
+  attr :drawer_journal_authors, :map, default: %{}
+  attr :drawer_journal_targets, :map, default: %{}
+  attr :drawer_journal_local_times, :map, default: %{}
+  attr :drawer_journal_display_zone, :any, default: nil
+  attr :drawer_journal_now, :any, default: nil
+  attr :drawer_journal_scope, :any, default: nil
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -3241,12 +3254,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       show_history_tabs and
         assigns.history_open_for == {"stop", assigns.selected_stop_id}
 
+    journal_active =
+      show_history_tabs and
+        assigns.drawer_journal_open_for == {"stop", assigns.selected_stop_id}
+
     assigns =
       assigns
       |> assign(:drawer_title, drawer_title)
       |> assign(:show_toggle, show_toggle)
       |> assign(:show_history_tabs, show_history_tabs)
       |> assign(:history_active, history_active)
+      |> assign(:journal_active, journal_active)
 
     ~H"""
     <.drawer
@@ -3290,13 +3308,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         entity_type="stop"
         entity_id={@selected_stop_id}
         history_active={@history_active}
+        show_journal={true}
+        journal_active={@journal_active}
+        journal_count={@drawer_journal_total_count}
       />
 
       <div
         id="stop-panel-details"
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "stop-tab-details"}
-        hidden={@history_active}
+        hidden={@history_active || @journal_active}
       >
         <.journal_context_box context={@journal_context} />
 
@@ -3340,6 +3361,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           today={@history_today}
           now={@history_now}
           rollback_preview={@rollback_preview}
+        />
+      </div>
+
+      <div
+        :if={@show_history_tabs}
+        id="stop-panel-journal"
+        role="tabpanel"
+        aria-labelledby="stop-tab-journal"
+        hidden={!@journal_active}
+      >
+        <.entity_journal_panel
+          :if={@journal_active}
+          entity_type="stop"
+          entity_id={@selected_stop_id}
+          entity_label="stop"
+          journal_entries={@drawer_journal_entries}
+          journal_state={@drawer_journal_state}
+          journal_entries_exist?={@drawer_journal_total_count > 0}
+          journal_error_fallback?={@drawer_journal_refresh_error?}
+          journal_scope={@drawer_journal_scope}
+          journal_authors={@drawer_journal_authors}
+          journal_local_times={@drawer_journal_local_times}
+          journal_now={@drawer_journal_now}
         />
       </div>
     </.drawer>
@@ -4032,6 +4076,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :history_now, :any, default: nil
   attr :rollback_preview, :any, default: nil
   attr :journal_context, :any, default: nil
+  attr :drawer_journal_entries, :any, default: nil
+  attr :drawer_journal_open_for, :any, default: nil
+  attr :drawer_journal_state, :atom, default: :idle
+  attr :drawer_journal_total_count, :integer, default: 0
+  attr :drawer_journal_loaded_once?, :boolean, default: false
+  attr :drawer_journal_refresh_error?, :boolean, default: false
+  attr :drawer_journal_error_message, :string, default: nil
+  attr :drawer_journal_authors, :map, default: %{}
+  attr :drawer_journal_targets, :map, default: %{}
+  attr :drawer_journal_local_times, :map, default: %{}
+  attr :drawer_journal_display_zone, :any, default: nil
+  attr :drawer_journal_now, :any, default: nil
+  attr :drawer_journal_scope, :any, default: nil
 
   def pathway_drawer(assigns) do
     pathway_id = assigns.editing_pathway && Map.get(assigns.editing_pathway, :id)
@@ -4040,10 +4097,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     history_active =
       show_history_tabs and assigns.history_open_for == {"pathway", pathway_id}
 
+    journal_active =
+      show_history_tabs and assigns.drawer_journal_open_for == {"pathway", pathway_id}
+
     assigns =
       assigns
       |> assign(:show_history_tabs, show_history_tabs)
       |> assign(:history_active, history_active)
+      |> assign(:journal_active, journal_active)
       |> assign(:pathway_id, pathway_id)
 
     ~H"""
@@ -4118,13 +4179,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         entity_type="pathway"
         entity_id={@pathway_id}
         history_active={@history_active}
+        show_journal={true}
+        journal_active={@journal_active}
+        journal_count={@drawer_journal_total_count}
       />
 
       <div
         id="pathway-panel-details"
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "pathway-tab-details"}
-        hidden={@history_active}
+        hidden={@history_active || @journal_active}
       >
         <.journal_context_box :if={@open} context={@journal_context} />
 
@@ -4163,6 +4227,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           today={@history_today}
           now={@history_now}
           rollback_preview={@rollback_preview}
+        />
+      </div>
+
+      <div
+        :if={@show_history_tabs}
+        id="pathway-panel-journal"
+        role="tabpanel"
+        aria-labelledby="pathway-tab-journal"
+        hidden={!@journal_active}
+      >
+        <.entity_journal_panel
+          :if={@journal_active}
+          entity_type="pathway"
+          entity_id={@pathway_id}
+          entity_label="pathway"
+          journal_entries={@drawer_journal_entries}
+          journal_state={@drawer_journal_state}
+          journal_entries_exist?={@drawer_journal_total_count > 0}
+          journal_error_fallback?={@drawer_journal_refresh_error?}
+          journal_scope={@drawer_journal_scope}
+          journal_authors={@drawer_journal_authors}
+          journal_local_times={@drawer_journal_local_times}
+          journal_now={@drawer_journal_now}
         />
       </div>
     </.drawer>

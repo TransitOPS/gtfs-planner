@@ -1179,6 +1179,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           history_now={@history_now}
           rollback_preview={@rollback_preview}
           journal_context={@journal_form_context}
+          drawer_journal_entries={@streams.drawer_journal_entries}
+          drawer_journal_open_for={@drawer_journal_open_for}
+          drawer_journal_state={@drawer_journal_state}
+          drawer_journal_total_count={@drawer_journal_total_count}
+          drawer_journal_loaded_once?={@drawer_journal_loaded_once?}
+          drawer_journal_refresh_error?={@drawer_journal_refresh_error?}
+          drawer_journal_error_message={@drawer_journal_error_message}
+          drawer_journal_authors={@drawer_journal_authors}
+          drawer_journal_targets={@drawer_journal_targets}
+          drawer_journal_local_times={@drawer_journal_local_times}
+          drawer_journal_display_zone={@drawer_journal_display_zone}
+          drawer_journal_now={@drawer_journal_now}
+          drawer_journal_scope={@journal_scope}
         />
 
         <.pathway_drawer
@@ -1201,6 +1214,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           history_now={@history_now}
           rollback_preview={@rollback_preview}
           journal_context={@journal_form_context}
+          drawer_journal_entries={@streams.drawer_journal_entries}
+          drawer_journal_open_for={@drawer_journal_open_for}
+          drawer_journal_state={@drawer_journal_state}
+          drawer_journal_total_count={@drawer_journal_total_count}
+          drawer_journal_loaded_once?={@drawer_journal_loaded_once?}
+          drawer_journal_refresh_error?={@drawer_journal_refresh_error?}
+          drawer_journal_error_message={@drawer_journal_error_message}
+          drawer_journal_authors={@drawer_journal_authors}
+          drawer_journal_targets={@drawer_journal_targets}
+          drawer_journal_local_times={@drawer_journal_local_times}
+          drawer_journal_display_zone={@drawer_journal_display_zone}
+          drawer_journal_now={@drawer_journal_now}
+          drawer_journal_scope={@journal_scope}
         />
 
         <.ruler_drawer

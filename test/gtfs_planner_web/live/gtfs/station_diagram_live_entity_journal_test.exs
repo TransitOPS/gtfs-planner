@@ -1064,4 +1064,615 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
   end
 
   defp release_journal(task_pid, result), do: send(task_pid, {:journal_release, result})
+
+  # ============================================================================
+  # Rendered-LiveView: persisted stop drawer renders Journal tab
+  # ============================================================================
+
+  test "persisted stop drawer renders Journal tab and badge", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Entry about child stop",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    assert has_element?(view, "#stop-tab-details")
+    assert has_element?(view, "#stop-tab-history")
+    assert has_element?(view, "#stop-tab-journal")
+    assert has_element?(view, "#stop-panel-journal")
+    assert has_element?(view, "#stop-panel-details")
+    assert has_element?(view, "#stop-panel-journal")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: add/new stop drawer does NOT render Journal tab
+  # ============================================================================
+
+  test "add stop drawer does not render Journal tab", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    # Simulate add mode with a pending click but no selected_stop_id
+    render_hook(view, "canvas_click", %{"x" => "25.0", "y" => "35.0"})
+
+    # Details panel is present but no tabs since selected_stop_id is nil
+    refute has_element?(view, "#stop-tab-journal")
+    refute has_element?(view, "#stop-panel-journal")
+    refute has_element?(view, "#stop-tab-details")
+    refute has_element?(view, "#stop-tab-history")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: reposition stop drawer does NOT render Journal tab
+  # ============================================================================
+
+  test "reposition stop drawer does not render Journal tab", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    # Trigger canvas click and then enter reposition mode
+    render_hook(view, "canvas_click", %{"x" => "25.0", "y" => "35.0"})
+    render_hook(view, "enter_reposition_mode", %{})
+
+    # In reposition mode with no selected_stop_id, Journal tab should be absent
+    refute has_element?(view, "#stop-tab-journal")
+    refute has_element?(view, "#stop-panel-journal")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: persisted pathway drawer renders Journal tab
+  # ============================================================================
+
+  test "persisted pathway drawer renders Journal tab", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "pathway",
+                 target_id: context.pathway.id,
+                 body: "Pathway entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_pathway", %{"id" => context.pathway.id})
+
+    assert has_element?(view, "#pathway-tab-details")
+    assert has_element?(view, "#pathway-tab-history")
+    assert has_element?(view, "#pathway-tab-journal")
+    assert has_element?(view, "#pathway-panel-journal")
+    refute has_element?(view, "#pathway-panel-details[hidden]")
+    assert has_element?(view, "#pathway-panel-journal[hidden]")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: level editor does NOT have Journal tab
+  # ============================================================================
+
+  test "level editor does not render Journal tab", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "open_edit_level", %{})
+
+    # Level sidebar uses history_tab_strip without show_journal, so no Journal tab
+    refute has_element?(view, "#level-tab-journal")
+    refute has_element?(view, "#level-panel-journal")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: mutual tab exclusion in stop drawer
+  # ============================================================================
+
+  test "stop drawer mutual tab exclusion — selecting Journal hides Details and History",
+       context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Mutual exclusion test entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    # Initially Details is active
+    refute has_element?(view, "#stop-panel-details[hidden]")
+    assert has_element?(view, "#stop-panel-history[hidden]")
+    assert has_element?(view, "#stop-panel-journal[hidden]")
+
+    # Select Journal
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, :real)
+    render_async(view, 5_000)
+
+    # After Journal is active
+    assert has_element?(view, "#stop-panel-details[hidden]")
+    assert has_element?(view, "#stop-panel-history[hidden]")
+    refute has_element?(view, "#stop-panel-journal[hidden]")
+    assert has_element?(view, ~S([data-role="entity-journal-panel"]))
+
+    # Switch back to Details
+    render_hook(view, "show_details", %{})
+    _ = :sys.get_state(view.pid)
+
+    refute has_element?(view, "#stop-panel-details[hidden]")
+    assert has_element?(view, "#stop-panel-journal[hidden]")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: drawer journal loading state
+  # ============================================================================
+
+  test "drawer journal loading state renders skeleton without hiding form", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Loading test entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    # Before releasing the task, we're in loading state
+    _task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    # Loading skeleton should be present inside the journal panel
+    assert has_element?(view, ~S([data-role="entity-journal-panel"]))
+    # The details form should still be usable (hidden but not the form)
+    refute has_element?(view, "#stop-panel-journal[hidden]")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: drawer journal ready with entries
+  # ============================================================================
+
+  test "drawer journal ready state renders entry cards with data", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Ready state entry with note",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, :real)
+    render_async(view, 5_000)
+
+    # Entry card should be present
+    entry_card_sel = "#drawer-journal-entry-#{entry_id}"
+    assert has_element?(view, entry_card_sel)
+    # Note body should be present
+    entry_list_sel = "#drawer-journal-stop-entry-list"
+    assert has_element?(view, entry_list_sel)
+    # No lifecycle controls
+    refute has_element?(view, "[data-entry-state]")
+    # Badge in tab
+    assert has_element?(view, "#stop-tab-journal")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: drawer journal empty state
+  # ============================================================================
+
+  test "drawer journal empty state shows empty message", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, :real)
+    render_async(view, 5_000)
+
+    # Empty state should be visible
+    assert has_element?(view, "#drawer-journal-stop-empty")
+    # No entry cards
+    refute has_element?(view, "[data-role=\"entity-journal-entry\"]")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: drawer journal initial error state
+  # ============================================================================
+
+  test "drawer journal initial error state shows error with retry", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, {:raise, "drawer journal failed"})
+    render_async(view, 5_000)
+
+    # Error state with retry
+    assert has_element?(view, "#drawer-journal-stop-error")
+    assert has_element?(view, "#drawer-journal-stop-retry")
+
+    # Form inputs still usable (details panel hidden but exists)
+    assert has_element?(view, "#child-stop-form")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: no lifecycle/status/filter/delete/marker/panel-handoff UI
+  # ============================================================================
+
+  test "drawer journal panel omits lifecycle and navigation controls", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Control-free entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, :real)
+    render_async(view, 5_000)
+
+    # No status filter or close/reopen/undo/delete buttons
+    filter_sel = "#drawer-journal-stop-#{context.child_stop.id}-filter"
+    refute has_element?(view, filter_sel)
+    refute has_element?(view, ~S([id^="journal-close-entry-"]))
+    refute has_element?(view, ~S([id^="journal-reopen-entry-"]))
+    refute has_element?(view, ~S([id^="journal-undo-entry-"]))
+    refute has_element?(view, ~S([id^="journal-delete-entry-"]))
+    # No data-entry-state attributes
+    refute has_element?(view, ~S([data-entry-state]))
+    # No Show in journal panel actions
+    refute has_element?(view, ~S([id^="journal-show-entry-"]))
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: journal-origin edit shows context box and no-reopen
+  # ============================================================================
+
+  test "journal-origin stop edit closes station panel and opens drawer", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Journal origin entry note",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    # Simulate opening from a journal entry
+    render_hook(view, "edit_child_stop", %{
+      "id" => context.child_stop.id,
+      "journal_entry_id" => entry_id
+    })
+
+    # Station journal panel should be closed
+    refute assigns(view).journal_panel_open?
+    # Drawer should be open for editing the selected stop
+    assert assigns(view).selected_stop_id == context.child_stop.id
+  end
+
+  test "journal-origin save does not reopen station panel", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Journal origin entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{
+      "id" => context.child_stop.id,
+      "journal_entry_id" => entry_id
+    })
+
+    # Save the stop
+    params = %{
+      "x" => "50.0",
+      "y" => "30.0",
+      "stop_id" => context.child_stop.stop_id,
+      "stop_name" => "Updated After Journal",
+      "location_type" => "0",
+      "level_id" => context.level.level_id,
+      "wheelchair_boarding" => "0",
+      "platform_code" => "",
+      "stop_lat" => "",
+      "stop_lon" => ""
+    }
+
+    render_hook(view, "save_child_stop", params)
+    _ = :sys.get_state(view.pid)
+
+    # Station panel should still be closed
+    state = assigns(view)
+    refute state.journal_panel_open?
+    assert state.drawer_journal_state == :idle
+  end
+
+  test "journal-origin cancel does not reopen station panel", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Journal origin entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{
+      "id" => context.child_stop.id,
+      "journal_entry_id" => entry_id
+    })
+
+    # Close the drawer (cancel)
+    render_hook(view, "close_drawer", %{})
+    _ = :sys.get_state(view.pid)
+
+    state = assigns(view)
+    refute state.journal_panel_open?
+  end
+
+  test "journal-origin pathway edit closes station panel and opens drawer", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "pathway",
+                 target_id: context.pathway.id,
+                 body: "Journal pathway entry",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_pathway", %{
+      "id" => context.pathway.id,
+      "journal_entry_id" => entry_id
+    })
+
+    refute assigns(view).journal_panel_open?
+    assert assigns(view).editing_pathway.id == context.pathway.id
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: form inputs usable during journal error
+  # ============================================================================
+
+  test "form inputs remain usable during drawer journal error state", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, {:raise, "drawer journal failed"})
+    render_async(view, 5_000)
+
+    # Form should still be accessible
+    assert has_element?(view, "#child-stop-form")
+    # Save/Cancel buttons present
+    assert has_element?(view, "button[phx-click=\"close_drawer\"]")
+  end
+
+  # ============================================================================
+  # Rendered-LiveView: pathway pair switch resets drawer journal
+  # ============================================================================
+
+  test "pathway pair switch resets drawer journal stream", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "pathway",
+                 target_id: context.pathway.id,
+                 body: "Pathway entry for pair switch test",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_pathway", %{"id" => context.pathway.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "pathway",
+      "entity_id" => context.pathway.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"pathway", context.pathway.id})
+
+    release_journal(drawer_task, :real)
+    render_async(view, 5_000)
+
+    assert assigns(view).drawer_journal_state == :ready
+
+    # Close the pathway drawer — should reset
+    render_hook(view, "close_pathway_drawer", %{})
+    _ = :sys.get_state(view.pid)
+
+    state = assigns(view)
+    assert state.drawer_journal_state == :idle
+    assert is_nil(state.drawer_journal_request)
+  end
 end
