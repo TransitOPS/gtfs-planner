@@ -151,7 +151,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     loaded = assigns(view)
 
     assert loaded.journal_loaded_once?
-    assert loaded.journal_visible_count == 3
+    assert loaded.journal_visible_count == 4
     assert loaded.journal_open_count == 3
     assert loaded.journal_closed_count == 1
     assert loaded.journal_rendered_signature == loaded.journal_observed_signature
@@ -189,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
       generation: socket.assigns.journal_load_generation + 1,
       intent: :observe_scrolled,
       reason: :pubsub,
-      filter: :open
+      filter: :all
     }
 
     socket = put_in(socket.assigns.journal_request, observe_request)
@@ -248,13 +248,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert current_request.generation == 3
     assert current_request.intent == :full
     assert current_request.reason == :retry
-    assert current_request.filter == :open
 
     mismatches = [
       %{current_request | generation: current_request.generation - 1},
       %{current_request | intent: :counts_only},
       %{current_request | reason: :refresh},
-      %{current_request | filter: :all},
       %{
         current_request
         | scope_key: {Ecto.UUID.generate(), Ecto.UUID.generate(), Ecto.UUID.generate()}
@@ -509,7 +507,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert reset.journal_visible_count == 0
     assert reset.journal_rendered_entry_ids == MapSet.new()
     assert reset.journal_pending_new_ids == MapSet.new()
-    assert reset.journal_undo_ids == MapSet.new()
     assert reset.journal_authors == %{}
     assert reset.journal_targets == %{}
 
@@ -528,6 +525,185 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert final.journal_scope.station_id == station_b.id
     assert final.journal_state == :ready
     assert final.journal_request == nil
+  end
+
+  test "initial counts-only load populates markers while keeping panel closed and observe-scrolled updates markers",
+       context do
+    scope = scope(context)
+    pin_id = Ecto.UUID.generate()
+
+    sync_entries(scope, [
+      journal_attrs(pin_id, "pin", ~U[2026-07-18 12:00:00.000000Z], %{
+        stop_level_id: context.stop_level.id,
+        diagram_x: 30.0,
+        diagram_y: 40.0
+      })
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    initial = assigns(view)
+    refute initial.journal_panel_open?
+    assert initial.journal_marker_index != nil
+    assert MapSet.member?(initial.journal_floorplan_entry_ids, pin_id)
+
+    assert has_element?(
+             view,
+             "#journal-markers-svg #journal-marker-pin-#{pin_id}"
+           )
+
+    render_hook(view, "open_journal", %{})
+    render_async(view, 5_000)
+
+    full = assigns(view)
+    assert full.journal_marker_index != nil
+    assert full.journal_loaded_once?
+
+    assert has_element?(
+             view,
+             "#journal-markers-svg #journal-marker-pin-#{pin_id}"
+           )
+  end
+
+  test "first load failure leaves markers empty and refresh failure preserves accepted markers",
+       context do
+    control_journal_source()
+    view = open_diagram(context)
+
+    first_req = await_journal_request(context.station.id)
+    release_journal(first_req, {:error, :db_down})
+    render_async(view, 5_000)
+
+    failed_initial = assigns(view)
+    assert failed_initial.journal_state == :error
+    assert failed_initial.journal_marker_index == nil
+    refute has_element?(view, "#journal-markers-svg [data-journal-marker]")
+
+    render_hook(view, "refresh_journal", %{})
+    ok_req = await_journal_request(context.station.id)
+    release_journal(ok_req, :real)
+    render_async(view, 5_000)
+
+    accepted = assigns(view)
+    assert accepted.journal_state == :ready
+    assert accepted.journal_marker_index != nil
+
+    render_hook(view, "refresh_journal", %{})
+    fail_req = await_journal_request(context.station.id)
+    release_journal(fail_req, {:error, :timeout})
+    render_async(view, 5_000)
+
+    refresh_failed = assigns(view)
+    assert refresh_failed.journal_state == :error
+    assert refresh_failed.journal_refresh_error? == true
+    assert refresh_failed.journal_marker_index == accepted.journal_marker_index
+  end
+
+  test "activating a pin marker opens panel, clears entity scope, and pushes focus to exact row",
+       context do
+    scope = scope(context)
+    pin_id = Ecto.UUID.generate()
+
+    sync_entries(scope, [
+      journal_attrs(pin_id, "pin", ~U[2026-07-18 12:00:00.000000Z], %{
+        stop_level_id: context.stop_level.id,
+        diagram_x: 40.0,
+        diagram_y: 50.0
+      })
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    refute assigns(view).journal_panel_open?
+
+    render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-pin-#{pin_id}"})
+    render_async(view, 5_000)
+
+    state = assigns(view)
+    assert state.journal_panel_open?
+    assert state.journal_target_scope == nil
+    expected_selector = "#journal-entries-#{pin_id}"
+    assert_push_event(view, "journal-focus", %{selector: ^expected_selector})
+    assert_push_event(view, "journal-panel-preference", %{open: true})
+    assert has_element?(view, "#journal-entries-#{pin_id}")
+  end
+
+  test "activating a node marker opens entity-scoped subset with target scope bar and scoped counts",
+       context do
+    scope = scope(context)
+
+    node =
+      stop_fixture(context.organization.id, context.gtfs_version.id, %{
+        stop_id: "SYNC_NODE",
+        stop_name: "Mezzanine Entrance",
+        location_type: 0,
+        parent_station: context.station.stop_id,
+        level_id: context.level.level_id,
+        diagram_coordinate: %{x: 30.0, y: 30.0}
+      })
+
+    entry1 = Ecto.UUID.generate()
+    entry2 = Ecto.UUID.generate()
+    other_pin_id = Ecto.UUID.generate()
+
+    sync_entries(scope, [
+      journal_attrs(entry1, "node", ~U[2026-07-18 12:00:00.000000Z], %{target_id: node.id}),
+      journal_attrs(entry2, "node", ~U[2026-07-18 12:10:00.000000Z], %{target_id: node.id}),
+      journal_attrs(other_pin_id, "pin", ~U[2026-07-18 12:20:00.000000Z], %{
+        stop_level_id: context.stop_level.id,
+        diagram_x: 40.0,
+        diagram_y: 50.0
+      })
+    ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    render_hook(view, "open_journal", %{})
+    render_async(view, 5_000)
+    assert has_element?(view, "#journal-entries-#{other_pin_id}")
+
+    render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-node-#{node.id}"})
+    render_async(view, 5_000)
+
+    state = assigns(view)
+    assert state.journal_panel_open?
+    assert state.journal_target_scope != nil
+    assert state.journal_target_scope.target_id == node.id
+    assert state.journal_scoped_open_count == 2
+    assert state.journal_open_count == 3
+
+    assert has_element?(view, "#journal-target-scope")
+    assert has_element?(view, "#journal-clear-target-scope")
+    refute has_element?(view, "#journal-entries-#{other_pin_id}")
+    expected_entry2_selector = "#journal-entries-#{entry2}"
+    assert_push_event(view, "journal-focus", %{selector: ^expected_entry2_selector})
+
+    # Clearing target scope restores station entries
+    render_hook(view, "clear_journal_target_scope", %{})
+    render_async(view, 5_000)
+
+    cleared = assigns(view)
+    assert cleared.journal_target_scope == nil
+    refute has_element?(view, "#journal-target-scope")
+    assert has_element?(view, "#journal-entries-#{other_pin_id}")
+  end
+
+  test "forged or stale marker clicks are inert and do not mutate panel state", context do
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    initial = assigns(view)
+    refute initial.journal_panel_open?
+
+    render_hook(view, "journal_marker_clicked", %{"id" => "journal-marker-pin-forged-id"})
+    _ = :sys.get_state(view.pid)
+
+    after_click = assigns(view)
+    refute after_click.journal_panel_open?
+    assert after_click.journal_target_scope == nil
   end
 
   defp station_with_level(organization_id, gtfs_version_id, suffix) do
@@ -550,7 +726,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
         stop_id: station.id,
-        level_id: level.id
+        level_id: level.id,
+        diagram_filename: "journal_level_#{suffix}.svg"
       })
 
     {station, level, stop_level}

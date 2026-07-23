@@ -1326,6 +1326,70 @@ const DiagramCanvasHook = {
       marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
     });
 
+    overlay.querySelectorAll("[data-journal-pin]").forEach((pin) => {
+      const cx = parseFloat(pin.getAttribute("data-center-x"));
+      const cy = parseFloat(pin.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      pin.setAttribute("transform", `translate(${cx}, ${cy}) scale(${1 / iconScale})`);
+    });
+
+    overlay.querySelectorAll("[data-journal-dot]").forEach((dot) => {
+      const cx = parseFloat(dot.getAttribute("data-center-x"));
+      const cy = parseFloat(dot.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      dot.setAttribute("cx", `${cx}`);
+      dot.setAttribute("cy", `${cy}`);
+      dot.setAttribute("r", `${OVERLAY_BASE.circleR / iconScale}`);
+      dot.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
+    });
+
+    overlay.querySelectorAll("[data-journal-ring]").forEach((ring) => {
+      const cx = parseFloat(ring.getAttribute("data-center-x"));
+      const cy = parseFloat(ring.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      ring.setAttribute("cx", `${cx}`);
+      ring.setAttribute("cy", `${cy}`);
+      ring.setAttribute("r", `${(OVERLAY_BASE.circleR * 2.2) / iconScale}`);
+      ring.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
+      ring.setAttribute(
+        "stroke-dasharray",
+        `${0.4 / iconScale} ${0.3 / iconScale}`
+      );
+    });
+
+    overlay.querySelectorAll("[data-journal-hit-target]").forEach((hitTarget) => {
+      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
+      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
+      const kind = hitTarget.getAttribute("data-journal-kind");
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      const rawSize = OVERLAY_BASE.hitTargetSize / scale;
+      const halfRaw = rawSize / 2;
+
+      const x = cx - halfRaw;
+      const y = kind === "pin" ? cy - halfRaw * 1.5 : cy - halfRaw;
+
+      hitTarget.setAttribute("x", `${x}`);
+      hitTarget.setAttribute("y", `${y}`);
+      hitTarget.setAttribute("width", `${rawSize}`);
+      hitTarget.setAttribute("height", `${rawSize}`);
+    });
+
     overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
       const cx = parseFloat(label.getAttribute("data-center-x"));
       const cy = parseFloat(label.getAttribute("data-center-y"));

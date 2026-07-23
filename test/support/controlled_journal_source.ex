@@ -11,6 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.ControlledJournalSource do
     receive do
       {:journal_release, :real} -> Gtfs.list_station_journal(scope, opts)
       {:journal_release, {:raise, message}} -> raise message
+      {:journal_release, {:error, reason}} -> raise "controlled journal error: #{inspect(reason)}"
       {:journal_release, entries} when is_list(entries) -> entries
     after
       10_000 -> raise "controlled journal request timed out"

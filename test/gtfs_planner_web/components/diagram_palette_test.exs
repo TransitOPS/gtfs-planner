@@ -5,18 +5,19 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
 
   @required_roles ~w(
     active_stop fallback_stop other_level_stop
-    pathway_forward pathway_reverse pathway_inactive
+    pathway_forward pathway_inactive
     label label_halo ruler focus selection building_outline error degraded
     journal_open
   )a
 
   test "defines every named diagram role with a semantic CSS variable and non-color cue" do
     assert Map.keys(DiagramPalette.roles()) |> Enum.sort() == Enum.sort(@required_roles)
+    refute Map.has_key?(DiagramPalette.roles(), :pathway_reverse)
 
     assert DiagramPalette.roles().journal_open == %{
              css_variable: "--diagram-journal-open",
              color: "#B45309",
-             cue: "left accent, target label, and text state"
+             cue: "open marker, quiet dot, left accent, and text state"
            }
 
     for role <- @required_roles do
@@ -28,7 +29,14 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     end
   end
 
-  test "serializes CSS variables in a stable role order" do
+  test "owns #B45309 uniquely for journal_open and serializes CSS variables in a stable role order" do
+    amber_roles =
+      DiagramPalette.roles()
+      |> Enum.filter(fn {_role, meta} -> meta.color == "#B45309" end)
+      |> Enum.map(&elem(&1, 0))
+
+    assert amber_roles == [:journal_open]
+
     declarations = DiagramPalette.css_custom_properties()
 
     assert declarations == DiagramPalette.css_custom_properties()
@@ -36,13 +44,18 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     assert declarations =~ "--diagram-label-halo: #FFFFFF"
     assert declarations =~ "--diagram-degraded: #6B7280"
     assert declarations =~ "--diagram-journal-open: #B45309"
+    refute declarations =~ "--diagram-pathway-reverse"
 
     variables = DiagramPalette.css_variables()
     assert Enum.map(variables, &elem(&1, 0)) == Enum.sort(Enum.map(variables, &elem(&1, 0)))
   end
 
-  test "fixed label and halo fixtures meet the documented contrast floor" do
+  test "fixed label, halo, and journal open tokens meet the documented contrast floor" do
     assert DiagramPalette.contrast_ratio("#1F2937", "#FFFFFF") >= 4.5
     assert DiagramPalette.contrast_ratio("#FFFFFF", "#1F2937") >= 4.5
+
+    halo_color = DiagramPalette.roles().label_halo.color
+    journal_color = DiagramPalette.roles().journal_open.color
+    assert DiagramPalette.contrast_ratio(halo_color, journal_color) >= 4.5
   end
 end

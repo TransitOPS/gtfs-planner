@@ -29,11 +29,6 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
       color: "#FF00FF",
       cue: "solid line with forward arrow"
     },
-    pathway_reverse: %{
-      css_variable: "--diagram-pathway-reverse",
-      color: "#B45309",
-      cue: "dashed line with reverse arrow"
-    },
     pathway_inactive: %{
       css_variable: "--diagram-pathway-inactive",
       color: "#6B7280",
@@ -74,7 +69,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
     journal_open: %{
       css_variable: "--diagram-journal-open",
       color: "#B45309",
-      cue: "left accent, target label, and text state"
+      cue: "open marker, quiet dot, left accent, and text state"
     }
   }
 

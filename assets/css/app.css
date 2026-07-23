@@ -391,6 +391,14 @@ body {
   cursor: default !important;
 }
 
+/* Suppress the browser-native SVG focus ring on canvas groups. The engine
+   paints it around the group's bounding box in SVG coordinates, so the zoom
+   transform inflates it into a massive blue donut/pill over the floorplan.
+   The paired indicator below is the sole focus treatment. */
+#diagram-overlay g[tabindex]:focus {
+  outline: none;
+}
+
 /* Paired SVG-native focus indicator that stays visible over any floorplan color.
    The dark stroke paints reliably on SVG geometry across browser engines; the
    white halo traces that same hit-target geometry for dark imagery. */
@@ -488,6 +496,24 @@ body {
 
 #diagram-page [data-ruler-label] {
   fill: var(--diagram-ruler) !important;
+}
+
+#diagram-page [data-journal-pin-body],
+#diagram-page [data-journal-dot],
+#diagram-page [data-journal-aggregate-dot] {
+  fill: var(--diagram-journal-open) !important;
+  stroke: var(--diagram-label-halo) !important;
+}
+
+#diagram-page [data-journal-pin-head] {
+  fill: var(--diagram-label-halo) !important;
+}
+
+#diagram-page [data-journal-ring],
+#diagram-page [data-journal-landing-ring],
+#diagram-page [data-journal-focus-ring] {
+  fill: none !important;
+  stroke: var(--diagram-journal-open) !important;
 }
 
 /* ── Native dialog overlay presentation ── */

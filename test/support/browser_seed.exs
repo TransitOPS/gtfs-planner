@@ -440,6 +440,150 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: 12 journal entries with one closed entry and canonical photo")
 
+    # ── Package 03 multi-level marker fixtures ──
+    #
+    # A second level with its own stop_level and diagram image so markers can
+    # be tested across levels. Cross-level pathways must NOT produce markers.
+    {:ok, level2} =
+      Gtfs.create_level(%{
+        level_id: "BROWSER_L2",
+        level_name: "Browser Level 2",
+        level_index: 1.0,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, stop_level2} =
+      Gtfs.create_stop_level(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        stop_id: station.id,
+        level_id: level2.id,
+        diagram_filename: "browser_seed_diagram_l2.png"
+      })
+
+    :ok =
+      DiagramStorage.store_import_image(
+        org.id,
+        diagram_version.id,
+        station.stop_id,
+        stop_level2.diagram_filename,
+        one_pixel_png
+      )
+
+    {:ok, browser_child_d} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_STOP_D",
+        stop_name: "Mezzanine Landing D",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level2.level_id,
+        diagram_coordinate: %{"x" => 45, "y" => 55},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, browser_crowded_stop} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_CROWDED_STOP",
+        stop_name: "Northbound Interchange Platform With Extended Name For Crowding Verification",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 85, "y" => 30},
+        wheelchair_boarding: 1,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, browser_same_level_pw} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_PW_SAME_LEVEL",
+        from_stop_id: "BROWSER_STOP_A",
+        to_stop_id: "BROWSER_STOP_B",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        traversal_time: 20,
+        length: Decimal.new("8.0")
+      })
+
+    {:ok, _browser_cross_level_pw} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_PW_CROSS_LEVEL",
+        from_stop_id: "BROWSER_STOP_A",
+        to_stop_id: "BROWSER_STOP_D",
+        pathway_mode: 5,
+        is_bidirectional: false,
+        traversal_time: 60,
+        length: Decimal.new("25.0")
+      })
+
+    IO.puts("Browser seed: multi-level fixtures (L2, crowded stop, same/cross-level pathways)")
+
+    pkg3_journal_entries = [
+      %{
+        id: "00000000-0000-4000-8000-000000000711",
+        target_type: "node",
+        target_id: browser_child_a.id,
+        body: "Second observation on Platform A: handrail bracket loose near the north end.",
+        captured_at: ~U[2026-07-21 15:00:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000712",
+        target_type: "pin",
+        stop_level_id: stop_level2.id,
+        diagram_x: 60.0,
+        diagram_y: 42.0,
+        body: "Mezzanine level pin: verify emergency exit signage illumination.",
+        captured_at: ~U[2026-07-21 11:30:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000713",
+        target_type: "pathway",
+        target_id: browser_same_level_pw.id,
+        body: "Same-level corridor between platforms: floor surface even, no trip hazards.",
+        captured_at: ~U[2026-07-21 10:15:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000714",
+        target_type: "pathway",
+        target_id: browser_pathway.id,
+        body: "Elevator shaft interior: lighting adequate, no water ingress observed.",
+        captured_at: ~U[2026-07-20 16:00:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000715",
+        target_type: "node",
+        target_id: browser_crowded_stop.id,
+        body:
+          "Crowded platform inspection: tactile paving intact, wayfinding signage legible, bench clearances within tolerance, waste receptacles secured, lighting uniform across full platform length.",
+        captured_at: ~U[2026-07-20 09:45:00Z]
+      },
+      %{
+        id: "00000000-0000-4000-8000-000000000716",
+        target_type: "pin",
+        stop_level_id: stop_level.id,
+        diagram_x: 20.0,
+        diagram_y: 70.0,
+        body: "South concourse pin: drainage grate secure, no standing water.",
+        captured_at: ~U[2026-07-19 14:00:00Z]
+      }
+    ]
+
+    %{synced_count: 6, errors: []} =
+      Gtfs.sync_journal_entries(journal_scope, pkg3_journal_entries)
+
+    {:ok, _closed_pkg3_pin} =
+      Gtfs.close_journal_entry(journal_scope, "00000000-0000-4000-8000-000000000712")
+
+    IO.puts(
+      "Browser seed: 6 Package 03 journal entries (multi-entry node, multi-level pins, pathways, crowded stop)"
+    )
+
     # A long-named, long-id, unconnected generic node. It fails the isolated
     # node check, so the report renders a failed-check detail whose value must
     # wrap rather than truncate at 320 px. No diagram coordinate: it stays off
