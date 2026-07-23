@@ -1,7 +1,7 @@
 name: Deploy
 run-name: Deploy ${{inputs.version || 'main' }} to ${{ inputs.environment || 'dev' }} environment
 concurrency:
-  group: cd-${{inputs.version || 'main' }}-${{ inputs.environment || 'dev' }}
+  group: cd-${{ inputs.environment || 'dev' }}
   cancel-in-progress: true
 
 on:

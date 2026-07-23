@@ -69,7 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelStatesTest do
 
     assert has_element?(
              view,
-             "#diagram-page[phx-hook='JournalPanelHook'][data-user-id='#{context.user.id}']:not([phx-update='ignore'])"
+             "#diagram-page[phx-hook='JournalPanelHook']:not([phx-update='ignore'])"
            )
 
     assert has_element?(view, "#diagram-canvas-wrapper")

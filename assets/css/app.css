@@ -213,7 +213,7 @@ body {
 /* Stack mode: present each row as a labeled record on narrow screens.
    Headers stay in the DOM; CSS hides them visually and turns each cell
    into a labeled block using its data-label attribute. */
-@media (max-width: 639px) {
+@media (max-width: 640px) {
   .ds-stack-table thead {
     position: absolute;
     width: 1px;
@@ -258,6 +258,11 @@ body {
   .ds-stack-table tbody td[data-label="Actions"]::before {
     display: none;
   }
+}
+
+#user-menu-panel [role="menuitem"]:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 /* Custom override for LiveSelect input text color to ensure theme compatibility */

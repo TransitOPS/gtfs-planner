@@ -4,11 +4,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
+  require Logger
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.TransitPresentation
+  alias GtfsPlannerWeb.Gtfs.StationJournalComponents
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @journal_load_key :journal_summary_load
 
   @impl true
   def mount(_params, _session, socket) do
@@ -27,10 +31,24 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:child_stops_empty?, true)
      |> assign(:levels_empty?, true)
      |> assign(:pathways_empty?, true)
+     |> assign(:journal_scope, nil)
+     |> assign(:journal_state, :idle)
+     |> assign(:journal_loaded_once?, false)
+     |> assign(:journal_refresh_error?, false)
+     |> assign(:journal_open_count, 0)
+     |> assign(:journal_closed_count, 0)
+     |> assign(:journal_entries_empty?, true)
+     |> assign(:journal_targets, %{})
+     |> assign(:journal_local_times, %{})
+     |> assign(:journal_now, nil)
      |> stream(:child_stops, [])
      |> stream_configure(:levels, dom_id: fn %{level: level} -> "level-#{level.level_id}" end)
      |> stream(:levels, [])
-     |> stream(:pathways, [])}
+     |> stream(:pathways, [])
+     |> stream_configure(:journal_recent_entries,
+       dom_id: fn entry -> "station-journal-summary-#{entry.id}" end
+     )
+     |> stream(:journal_recent_entries, [])}
   end
 
   @impl true
@@ -63,6 +81,54 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   end
 
   @impl true
+  def handle_async(@journal_load_key, {:ok, {:ok, payload}}, socket) do
+    socket =
+      socket
+      |> assign(:journal_state, :ready)
+      |> assign(:journal_loaded_once?, true)
+      |> assign(:journal_refresh_error?, false)
+      |> assign(:journal_open_count, payload.open_count)
+      |> assign(:journal_closed_count, payload.closed_count)
+      |> assign(:journal_entries_empty?, payload.entries == [])
+      |> assign(:journal_targets, payload.targets)
+      |> assign(:journal_local_times, payload.local_times)
+      |> assign(:journal_now, payload.now)
+      |> stream(:journal_recent_entries, payload.recent_entries, reset: true)
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_async(@journal_load_key, {:ok, {:error, _exception}}, socket) do
+    socket =
+      if socket.assigns.journal_loaded_once? do
+        socket
+        |> assign(:journal_state, :error)
+        |> assign(:journal_refresh_error?, true)
+      else
+        socket
+        |> assign(:journal_state, :error)
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_async(@journal_load_key, {:exit, _reason}, socket) do
+    socket =
+      if socket.assigns.journal_loaded_once? do
+        socket
+        |> assign(:journal_state, :error)
+        |> assign(:journal_refresh_error?, true)
+      else
+        socket
+        |> assign(:journal_state, :error)
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:station_editing_status_updated, status}, socket) do
     {:noreply,
      socket
@@ -70,6 +136,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:editing_status_state, :ready)
      |> assign(:editing_error, nil)}
   end
+
+  @impl true
+  def handle_info(
+        {:station_journal_changed, station_id},
+        %{assigns: %{journal_scope: %{station_id: station_id}}} = socket
+      ) do
+    {:noreply, load_journal_summary(socket)}
+  end
+
+  def handle_info({:station_journal_changed, _station_id}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -112,6 +188,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   @impl true
   def handle_event("retry_pathways", _params, socket) do
     {:noreply, load_pathways_region(socket)}
+  end
+
+  @impl true
+  def handle_event("retry_journal", _params, socket) do
+    {:noreply, load_journal_summary(socket)}
   end
 
   @impl true
@@ -211,6 +292,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     |> apply_levels_region(regions.levels)
     |> apply_pathways_region(regions.pathways)
     |> apply_editing_status_region(regions.editing_status)
+    |> setup_journal_scope()
   end
 
   defp load_child_stops_region(socket) do
@@ -290,6 +372,195 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   defp apply_editing_status_region(socket, {:error, :unavailable}) do
     assign(socket, :editing_status_state, :unavailable)
+  end
+
+  defp setup_journal_scope(socket) do
+    stop = socket.assigns.stop
+
+    if stop.location_type == 1 do
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      actor_id = socket.assigns.current_user.id
+
+      case Gtfs.resolve_station_journal_scope(
+             organization_id,
+             gtfs_version_id,
+             stop.id,
+             actor_id
+           ) do
+        {:ok, scope} ->
+          socket
+          |> subscribe_journal_if_connected(scope)
+          |> assign(:journal_scope, scope)
+          |> start_journal_load(scope)
+
+        {:error, _reason} ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp subscribe_journal_if_connected(socket, scope) do
+    if connected?(socket) do
+      case journal_source().subscribe_station_journal(scope) do
+        :ok ->
+          socket
+
+        {:error, reason} ->
+          Logger.warning("station_journal_subscription_failed", reason: inspect(reason))
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp start_journal_load(socket, scope) do
+    source = journal_source()
+
+    socket
+    |> assign(:journal_state, :loading)
+    |> start_async(@journal_load_key, fn ->
+      run_journal_summary_load(source, scope)
+    end)
+  end
+
+  defp run_journal_summary_load(source, scope) do
+    entries = source.list_station_journal(scope, status: :all, order: :desc)
+
+    open_count = Enum.count(entries, &is_nil(&1.closed_at))
+    closed_count = Enum.count(entries, &(not is_nil(&1.closed_at)))
+
+    recent_entries = Enum.take(entries, 3)
+
+    targets = fetch_journal_targets(source, scope, recent_entries)
+    zone = source.resolve_display_zone(scope.organization_id, scope.gtfs_version_id)
+    {local_times, now} = localize_journal_times(source, recent_entries, zone)
+
+    {:ok,
+     %{
+       entries: entries,
+       open_count: open_count,
+       closed_count: closed_count,
+       recent_entries: recent_entries,
+       targets: targets,
+       local_times: local_times,
+       now: now
+     }}
+  rescue
+    exception -> {:error, exception}
+  end
+
+  defp load_journal_summary(socket) do
+    scope = socket.assigns.journal_scope
+    start_journal_load(socket, scope)
+  end
+
+  defp fetch_journal_targets(source, scope, entries) do
+    target_types = MapSet.new(entries, & &1.target_type)
+
+    child_stops =
+      if MapSet.member?(target_types, "node") do
+        source.list_child_stops_for_parent(
+          scope.organization_id,
+          scope.gtfs_version_id,
+          scope.station_id
+        )
+      else
+        []
+      end
+
+    pathways =
+      if MapSet.member?(target_types, "pathway") do
+        source.list_pathways_for_station(
+          scope.organization_id,
+          scope.gtfs_version_id,
+          scope.station_id
+        )
+      else
+        []
+      end
+
+    stop_levels =
+      if MapSet.member?(target_types, "pin") do
+        source.list_stop_levels_for_station(
+          scope.organization_id,
+          scope.gtfs_version_id,
+          scope.station_id
+        )
+      else
+        []
+      end
+
+    node_presentations =
+      Map.new(child_stops, fn stop ->
+        {stop.id, %{label: journal_target_label(stop.stop_name, stop.stop_id)}}
+      end)
+
+    pathway_presentations =
+      Map.new(pathways, fn pathway ->
+        {pathway.id, %{label: journal_target_label(pathway.pathway_id, pathway.id)}}
+      end)
+
+    pin_presentations =
+      Map.new(stop_levels, fn stop_level ->
+        label = journal_target_label(stop_level.level.level_name, stop_level.level.level_id)
+        {stop_level.id, %{label: label}}
+      end)
+
+    node_presentations
+    |> Map.merge(pathway_presentations)
+    |> Map.merge(pin_presentations)
+  end
+
+  defp journal_target_label(primary, _fallback) when is_binary(primary) and primary != "",
+    do: primary
+
+  defp journal_target_label(_primary, fallback), do: to_string(fallback)
+
+  defp localize_journal_times(source, entries, zone) do
+    tagged_times =
+      Enum.map(entries, fn entry -> {{entry.id, :captured}, entry.captured_at} end)
+
+    [now | localized_times] =
+      source.localize_display_times(
+        [DateTime.utc_now() | Enum.map(tagged_times, &elem(&1, 1))],
+        zone
+      )
+
+    local_times =
+      tagged_times
+      |> Enum.zip(localized_times)
+      |> Map.new(fn {{{entry_id, kind}, _utc}, local} -> {{entry_id, kind}, local} end)
+
+    {local_times, now}
+  end
+
+  defp journal_source do
+    Application.get_env(:gtfs_planner, :station_journal_source, Gtfs)
+  end
+
+  defp journal_target_presentation(entry, targets) do
+    target_key = if entry.target_type == "pin", do: entry.stop_level_id, else: entry.target_id
+    target = Map.get(targets, target_key)
+
+    label =
+      case {entry.target_type, target} do
+        {"station", _} -> "Station"
+        {type, nil} -> String.capitalize(type)
+        {type, %{label: label}} -> "#{String.capitalize(type)} · #{label}"
+      end
+
+    %{label: label}
+  end
+
+  defp journal_local_time(entry, local_times) do
+    case Map.get(local_times, {entry.id, :captured}) do
+      %NaiveDateTime{} = local -> local
+      _ -> entry.captured_at |> DateTime.to_naive()
+    end
   end
 
   defp editing_status_owner?(nil, _current_user), do: false
@@ -681,10 +952,206 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                 </.table>
             <% end %>
           </div>
+
+          <%= if @journal_scope do %>
+            <div
+              class="mt-8"
+              id="station-journal-summary"
+              aria-busy={to_string(@journal_state == :loading)}
+            >
+              <div class="flex items-center gap-3 mb-4">
+                <h2 class="text-lg font-semibold">Journal</h2>
+                <%= if not @journal_entries_empty? and @journal_loaded_once? do %>
+                  <span
+                    id="station-journal-open-count"
+                    class="border border-base-300 rounded-full px-2.5 py-0.5 text-xs"
+                  >
+                    {@journal_open_count} open
+                  </span>
+                  <span id="station-journal-closed-count" class="text-sm text-base-content/50">
+                    {@journal_closed_count} closed
+                  </span>
+                  <button
+                    id="journal-summary-refresh"
+                    phx-click={@journal_state != :loading && "retry_journal"}
+                    class="ml-auto btn btn-ghost size-11 min-h-11 min-w-11 p-0 text-base-content/50 hover:text-base-content"
+                    aria-label="Refresh journal entries"
+                    title="Refresh journal entries"
+                    aria-busy={to_string(@journal_state == :loading)}
+                    aria-disabled={to_string(@journal_state == :loading)}
+                  >
+                    <.icon
+                      name="hero-arrow-path"
+                      class={["size-3.5", @journal_state == :loading && "animate-spin"]}
+                    />
+                  </button>
+                <% end %>
+              </div>
+
+              <%= cond do %>
+                <% @journal_state == :loading and not @journal_loaded_once? -> %>
+                  <.skeleton
+                    id="journal-summary-loading"
+                    label="Loading journal entries"
+                    rows={3}
+                    role="status"
+                    aria-live="polite"
+                    aria-busy="true"
+                    aria-atomic="true"
+                    class="journal-loading-delay bg-base-100 border border-base-300 rounded-box p-4"
+                  />
+                <% @journal_state == :error and not @journal_loaded_once? -> %>
+                  <.callout
+                    kind="warning"
+                    title="Journal unavailable"
+                    id="station-journal-unavailable"
+                    role="alert"
+                  >
+                    Journal entries could not be loaded. Please try again.
+                    <button
+                      id="station-journal-retry"
+                      phx-click="retry_journal"
+                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
+                    >
+                      Retry
+                    </button>
+                  </.callout>
+                <% @journal_state == :error and @journal_loaded_once? and
+                     @journal_entries_empty? -> %>
+                  <.callout
+                    kind="warning"
+                    title="Journal may be out of date"
+                    id="station-journal-refresh-warning"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    The last successful journal snapshot remains available.
+                    <button
+                      id="station-journal-retry"
+                      phx-click="retry_journal"
+                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
+                    >
+                      Retry
+                    </button>
+                  </.callout>
+                  <.empty_state
+                    title="No journal entries"
+                    id="station-journal-empty"
+                    class="mt-3 bg-base-100"
+                  >
+                    Notes and photos captured at this station with the Pathways field companion appear here for review.
+                  </.empty_state>
+                <% @journal_state == :error and @journal_loaded_once? -> %>
+                  <.callout
+                    kind="warning"
+                    title="Journal may be out of date"
+                    id="station-journal-refresh-warning"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    The last saved entries remain available.
+                    <button
+                      id="station-journal-retry"
+                      phx-click="retry_journal"
+                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
+                    >
+                      Retry
+                    </button>
+                  </.callout>
+                  <.journal_summary_rows
+                    entries={@streams.journal_recent_entries}
+                    targets={@journal_targets}
+                    local_times={@journal_local_times}
+                    now={@journal_now}
+                    gtfs_version_id={@current_gtfs_version.id}
+                    stop_id={@stop.stop_id}
+                  />
+                <% @journal_entries_empty? -> %>
+                  <.empty_state
+                    title="No journal entries"
+                    id="station-journal-empty"
+                    class="bg-base-100"
+                  >
+                    Notes and photos captured at this station with the Pathways field companion appear here for review.
+                  </.empty_state>
+                <% true -> %>
+                  <.journal_summary_rows
+                    entries={@streams.journal_recent_entries}
+                    targets={@journal_targets}
+                    local_times={@journal_local_times}
+                    now={@journal_now}
+                    gtfs_version_id={@current_gtfs_version.id}
+                    stop_id={@stop.stop_id}
+                  />
+              <% end %>
+            </div>
+          <% end %>
         <% _ -> %>
           <div></div>
       <% end %>
     </Layouts.app>
+    """
+  end
+
+  attr :entries, :any, required: true
+  attr :targets, :map, required: true
+  attr :local_times, :map, required: true
+  attr :now, :any, required: true
+  attr :gtfs_version_id, :any, required: true
+  attr :stop_id, :string, required: true
+
+  defp journal_summary_rows(assigns) do
+    ~H"""
+    <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
+      <div
+        id="station-journal-summary-list"
+        phx-update="stream"
+        class="divide-y divide-base-200 text-sm"
+      >
+        <.link
+          :for={{dom_id, entry} <- @entries}
+          id={dom_id}
+          data-role="journal-summary-entry"
+          navigate={
+            "/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open&entry_id=#{entry.id}"
+          }
+          class="flex min-h-11 items-center gap-3 px-4 py-3 text-base-content transition-colors hover:bg-base-200/50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
+        >
+          <span class="inline-flex max-w-32 shrink-0 items-center gap-1 truncate rounded-full border border-base-300 px-2.5 py-0.5 text-xs">
+            {journal_target_presentation(entry, @targets).label}
+          </span>
+          <span class={[
+            "min-w-0 flex-1 truncate",
+            if(is_nil(entry.closed_at), do: "text-base-content/80", else: "text-base-content/70")
+          ]}>
+            {entry.body}
+          </span>
+          <span
+            :if={not is_nil(entry.closed_at)}
+            class="rounded-full border border-base-300 bg-base-200 px-2 py-0.5 text-xs font-medium text-base-content/80"
+          >
+            Closed
+          </span>
+          <span class="ml-auto text-base-content/60 text-xs shrink-0">
+            <time datetime={DateTime.to_iso8601(entry.captured_at)}>
+              {StationJournalComponents.relative_time(
+                journal_local_time(entry, @local_times),
+                @now
+              )}
+            </time>
+          </span>
+        </.link>
+      </div>
+      <div class="border-t border-base-200 px-4 py-2.5">
+        <.link
+          id="journal-footer-link"
+          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open"}
+          class="inline-flex min-h-11 items-center text-sm text-primary hover:underline"
+        >
+          Open journal in Floorplans →
+        </.link>
+      </div>
+    </div>
     """
   end
 end

@@ -6,6 +6,18 @@ const USER = {
   password: "DiagramTest123!",
 };
 
+async function waitForLiveView(page) {
+  await page.waitForSelector("[data-phx-main]", { state: "attached" });
+  await page.waitForFunction(() => {
+    const main = document.querySelector("[data-phx-main]");
+    return (
+      main &&
+      !main.hasAttribute("data-phx-pending") &&
+      window.liveSocket?.isConnected()
+    );
+  });
+}
+
 async function logInAndOpenImport(page) {
   await page.goto("/users/log_in");
 
@@ -19,6 +31,25 @@ async function logInAndOpenImport(page) {
   await page.locator("#app-header a[href$='/import']").first().click();
   await page.waitForURL(/\/gtfs\/[^/]+\/import$/);
   await page.waitForSelector("#gtfs-import-upload");
+  await waitForLiveView(page);
+}
+
+async function selectVersion(page, name) {
+  const trigger = page.locator("#gtfs-version-trigger");
+  if ((await trigger.textContent()).includes(name)) return;
+
+  await trigger.click();
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: name });
+  const versionId = await option.getAttribute("data-version-id");
+
+  await Promise.all([
+    page.waitForURL(new RegExp(`/gtfs/${versionId}/import$`)),
+    option.click(),
+  ]);
+  await waitForLiveView(page);
+  await expect(trigger).toContainText(name);
 }
 
 test("import upload presentation stays usable at desktop and mobile widths", async ({
@@ -50,23 +81,34 @@ test("import upload presentation stays usable at desktop and mobile widths", asy
 
 test("durable diff review remains readable at desktop and mobile widths", async ({ page }) => {
   for (const viewport of [
-    { name: "desktop", width: 1280, height: 900 },
-    { name: "mobile", width: 375, height: 812 },
+    {
+      name: "desktop",
+      width: 1280,
+      height: 900,
+      version: "Catalog Empty Version",
+    },
+    {
+      name: "mobile",
+      width: 375,
+      height: 812,
+      version: "Catalog Routes Only Version",
+    },
   ]) {
     await page.setViewportSize(viewport);
     await logInAndOpenImport(page);
+    await selectVersion(page, viewport.version);
 
     await page.locator("#diff-upload-input input").setInputFiles({
       name: "levels.txt",
       mimeType: "text/plain",
-      buffer: Buffer.from("level_id,level_index,level_name\\nVISUAL,1.0,Visual Review"),
+      buffer: Buffer.from("level_id,level_index,level_name\nVISUAL,1.0,Visual Review"),
     });
 
     await page.locator("#diff-compute-btn").click();
     await page.locator("#diff-decisions [data-version-diff-row]").waitFor();
 
     await expect(page.locator("#diff-decisions")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
 
     await page.screenshot({

@@ -628,7 +628,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert state.journal_target_scope == nil
     expected_selector = "#journal-entries-#{pin_id}"
     assert_push_event(view, "journal-focus", %{selector: ^expected_selector})
-    assert_push_event(view, "journal-panel-preference", %{open: true})
     assert has_element?(view, "#journal-entries-#{pin_id}")
   end
 

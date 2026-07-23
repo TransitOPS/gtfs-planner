@@ -145,6 +145,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
 
     view = open_diagram(context)
     render_async(view, 5_000)
+    refute has_element?(view, "#station-journal-panel")
 
     render_hook(view, "open_journal", %{})
     render_async(view, 5_000)
@@ -157,7 +158,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert opened.journal_visible_count == 2
     assert opened.journal_rendered_entry_ids == MapSet.new([open_id, closed_id])
     assert opened.journal_pending_new_ids == MapSet.new()
-    assert_push_event(view, "journal-panel-preference", %{open: true})
 
     assert has_element?(view, "#journal-entries-#{open_id} [data-role='journal-note']")
     assert has_element?(view, "#journal-entries-#{closed_id} [data-role='journal-note']")
@@ -331,12 +331,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert [%{id: ^foreign_id, closed_at: nil}] = Gtfs.list_station_journal(other_scope)
   end
 
-  test "Align restoration and browser preference restore stay server-owned", context do
+  test "Align restoration stays server-owned for a panel opened on the current page", context do
     entry_id = Ecto.UUID.generate()
     sync_entries(context.scope, [entry_attrs(entry_id, ~U[2026-07-18 12:00:00.000000Z])])
 
     view = open_loaded_journal(context)
-    assert_push_event(view, "journal-panel-preference", %{open: true})
 
     render_hook(view, "switch_mode", %{"mode" => "map"})
 
@@ -344,11 +343,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert aligned.mode == :map
     refute aligned.journal_panel_open?
     assert aligned.journal_restore_after_align?
-    refute_push_event(view, "journal-panel-preference", %{open: false})
     assert_push_event(view, "journal-focus", %{selector: "#diagram-mode-option-map"})
-
-    render_hook(view, "restore_journal_panel", %{"open" => true})
-    refute assigns(view).journal_panel_open?
 
     render_hook(view, "switch_mode", %{"mode" => "view"})
     render_async(view, 5_000)
@@ -357,16 +352,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     assert restored.mode == :view
     assert restored.journal_panel_open?
     refute restored.journal_restore_after_align?
-    refute_push_event(view, "journal-panel-preference", %{open: true})
     assert_push_event(view, "journal-focus", %{selector: "#diagram-mode-option-view"})
-
-    render_hook(view, "restore_journal_panel", %{"open" => false})
-    refute assigns(view).journal_panel_open?
-
-    render_hook(view, "restore_journal_panel", %{"open" => true})
-    render_async(view, 5_000)
-    assert assigns(view).journal_panel_open?
-    refute_push_event(view, "journal-panel-preference", %{open: true})
   end
 
   test "scoped node and pathway edit events close the panel before opening existing drawers",

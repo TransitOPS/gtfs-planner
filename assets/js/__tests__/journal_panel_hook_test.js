@@ -2,26 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import JournalPanelHook from "../journal_panel_hook.js";
 
-const USER_ID = "11111111-2222-3333-4444-555555555555";
-const STORAGE_KEY = `journal_panel_open:${USER_ID}`;
 const SCROLL_DEBOUNCE_MS = 50;
 
 let activeHooks = [];
-let originalLocalStorageDescriptor;
 let originalMatchMediaDescriptor;
-let storage;
 let mediaMatches;
-
-function freshStorage() {
-  const values = new Map();
-
-  return {
-    getItem: vi.fn((key) => values.get(key) ?? null),
-    setItem: vi.fn((key, value) => values.set(key, String(value))),
-    removeItem: vi.fn((key) => values.delete(key)),
-    clear: vi.fn(() => values.clear()),
-  };
-}
 
 function installMatchMedia() {
   Object.defineProperty(window, "matchMedia", {
@@ -42,9 +27,9 @@ function listMarkup() {
     </div>`;
 }
 
-function makeHook({ userId = USER_ID, withList = true } = {}) {
+function makeHook({ withList = true } = {}) {
   document.body.innerHTML = `
-    <div id="diagram-page" ${userId ? `data-user-id="${userId}"` : ""}>
+    <div id="diagram-page">
       ${withList ? listMarkup() : ""}
     </div>`;
 
@@ -71,14 +56,11 @@ describe("JournalPanelHook", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     document.body.innerHTML = "";
-    originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
-    originalMatchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
-    storage = freshStorage();
+    originalMatchMediaDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "matchMedia",
+    );
     mediaMatches = false;
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      value: storage,
-    });
     installMatchMedia();
   });
 
@@ -88,11 +70,6 @@ describe("JournalPanelHook", () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    if (originalLocalStorageDescriptor) {
-      Object.defineProperty(window, "localStorage", originalLocalStorageDescriptor);
-    } else {
-      delete window.localStorage;
-    }
     if (originalMatchMediaDescriptor) {
       Object.defineProperty(window, "matchMedia", originalMatchMediaDescriptor);
     } else {
@@ -101,96 +78,12 @@ describe("JournalPanelHook", () => {
     document.body.innerHTML = "";
   });
 
-  describe("preference storage", () => {
-    it.each([
-      ["true", true],
-      ["false", false],
-    ])("restores the valid stored boolean %s", (stored, expected) => {
-      storage.setItem(STORAGE_KEY, stored);
-      const hook = makeHook();
+  it("does not request that the panel open when the page mounts", () => {
+    const hook = makeHook();
 
-      hook.mounted();
+    hook.mounted();
 
-      expect(hook.pushEvent).toHaveBeenCalledOnce();
-      expect(hook.pushEvent).toHaveBeenCalledWith("restore_journal_panel", { open: expected });
-    });
-
-    it.each([null, "", "TRUE", "1", "null", "{\"open\":true}"])(
-      "ignores missing or invalid stored preference %s",
-      (stored) => {
-        if (stored !== null) storage.setItem(STORAGE_KEY, stored);
-        const hook = makeHook();
-
-        hook.mounted();
-
-        expect(hook.pushEvent).not.toHaveBeenCalled();
-      },
-    );
-
-    it("contains storage read exceptions", () => {
-      storage.getItem.mockImplementation(() => {
-        throw new DOMException("SecurityError");
-      });
-      const hook = makeHook();
-
-      expect(() => hook.mounted()).not.toThrow();
-      expect(hook.pushEvent).not.toHaveBeenCalled();
-    });
-
-    it("writes only explicit boolean server preference events under the current user key", () => {
-      const hook = makeHook();
-      hook.mounted();
-      const preference = hook.handlers.get("journal-panel-preference");
-      storage.setItem.mockClear();
-
-      hook.updated();
-      hook.updated();
-      expect(storage.setItem).not.toHaveBeenCalled();
-
-      preference({ open: true });
-      preference({ open: false });
-      preference({ open: "true" });
-      preference({});
-
-      expect(storage.setItem).toHaveBeenCalledTimes(2);
-      expect(storage.setItem).toHaveBeenNthCalledWith(1, STORAGE_KEY, "true");
-      expect(storage.setItem).toHaveBeenNthCalledWith(2, STORAGE_KEY, "false");
-    });
-
-    it("contains preference write exceptions", () => {
-      storage.setItem.mockImplementation(() => {
-        throw new DOMException("QuotaExceededError");
-      });
-      const hook = makeHook();
-      hook.mounted();
-
-      expect(() => hook.handlers.get("journal-panel-preference")({ open: true })).not.toThrow();
-    });
-
-    it("restores once on the stable mount and not on Align-style updates", () => {
-      storage.setItem(STORAGE_KEY, "true");
-      const hook = makeHook();
-      hook.mounted();
-
-      hook.pushEvent.mockClear();
-      hook.el.innerHTML = "";
-      hook.updated();
-      hook.el.innerHTML = listMarkup();
-      hook.updated();
-
-      expect(hook.pushEvent).not.toHaveBeenCalledWith("restore_journal_panel", expect.anything());
-    });
-
-    it("does not manufacture a storage key or restore event without a user id", () => {
-      const hook = makeHook({ userId: null });
-
-      hook.mounted();
-      hook.handlers.get("journal-panel-preference")({ open: true });
-
-      expect(storage.getItem).not.toHaveBeenCalled();
-      expect(storage.setItem).not.toHaveBeenCalled();
-      expect(hook.pushEvent).not.toHaveBeenCalled();
-    });
+    expect(hook.pushEvent).not.toHaveBeenCalled();
   });
 
   describe("scroll fact reporting", () => {
@@ -228,7 +121,9 @@ describe("JournalPanelHook", () => {
       hook.updated();
 
       expect(hook.pushEvent).toHaveBeenCalledOnce();
-      expect(hook.pushEvent).toHaveBeenCalledWith("journal_scroll_state", { at_top: true });
+      expect(hook.pushEvent).toHaveBeenCalledWith("journal_scroll_state", {
+        at_top: true,
+      });
       hook.pushEvent.mockClear();
 
       scroll(oldList, 0);
@@ -238,7 +133,9 @@ describe("JournalPanelHook", () => {
       scroll(newList, 20);
       vi.advanceTimersByTime(SCROLL_DEBOUNCE_MS);
       expect(hook.pushEvent).toHaveBeenCalledOnce();
-      expect(hook.pushEvent).toHaveBeenCalledWith("journal_scroll_state", { at_top: false });
+      expect(hook.pushEvent).toHaveBeenCalledWith("journal_scroll_state", {
+        at_top: false,
+      });
     });
 
     it("does not stack a listener on the same list across repeated updates", () => {
@@ -268,7 +165,10 @@ describe("JournalPanelHook", () => {
       scroll(list, 0);
       vi.advanceTimersByTime(SCROLL_DEBOUNCE_MS);
 
-      expect(hook.pushEvent).not.toHaveBeenCalledWith("journal_scroll_state", expect.anything());
+      expect(hook.pushEvent).not.toHaveBeenCalledWith(
+        "journal_scroll_state",
+        expect.anything(),
+      );
     });
   });
 
@@ -283,13 +183,17 @@ describe("JournalPanelHook", () => {
       hook.el.innerHTML = listMarkup();
       const newList = hook.el.querySelector("#journal-entry-list");
       newList.scrollTop = 20;
-      const scrollTo = vi.fn(({ top }) => { newList.scrollTop = top; });
+      const scrollTo = vi.fn(({ top }) => {
+        newList.scrollTop = top;
+      });
       newList.scrollTo = scrollTo;
       hook.handlers.get("journal-scroll-top")({});
       vi.runAllTimers();
 
       expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
-      expect(hook.pushEvent).toHaveBeenCalledWith("journal_scroll_state", { at_top: true });
+      expect(hook.pushEvent).toHaveBeenCalledWith("journal_scroll_state", {
+        at_top: true,
+      });
     });
 
     it("uses instant scrolling for reduced motion and tolerates a missing list", () => {
@@ -314,7 +218,8 @@ describe("JournalPanelHook", () => {
       hook.mounted();
       const focus = hook.handlers.get("journal-focus");
 
-      hook.el.innerHTML = '<button id="journal-undo-entry-1" type="button">Undo</button>';
+      hook.el.innerHTML =
+        '<button id="journal-undo-entry-1" type="button">Undo</button>';
       const undo = hook.el.querySelector("#journal-undo-entry-1");
       focus({ selector: "#journal-undo-entry-1" });
       expect(document.activeElement).not.toBe(undo);
@@ -333,14 +238,15 @@ describe("JournalPanelHook", () => {
       hook.mounted();
       const list = hook.el.querySelector("#journal-entry-list");
       list.scrollTo = vi.fn();
-      hook.handlers.get("journal-focus")({ selector: "#journal-entries-entry-1" });
+      hook.handlers.get("journal-focus")({
+        selector: "#journal-entries-entry-1",
+      });
       hook.handlers.get("journal-scroll-top")({});
 
       hook.destroyed();
       vi.runAllTimers();
 
       expect(hook.removeHandleEvent.mock.calls).toEqual([
-        ["ref:journal-panel-preference"],
         ["ref:journal-focus"],
         ["ref:journal-scroll-top"],
       ]);

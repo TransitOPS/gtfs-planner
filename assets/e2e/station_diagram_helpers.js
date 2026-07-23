@@ -18,7 +18,8 @@ export async function loginAndGoToDiagram(page) {
   await expect(diagramVersion).toHaveCount(1);
 
   const versionId = await diagramVersion.getAttribute("data-version-id");
-  if (!versionId) throw new Error("Browser E2E Version is missing its version ID");
+  if (!versionId)
+    throw new Error("Browser E2E Version is missing its version ID");
 
   await page.goto(`/gtfs/${versionId}/stops`);
   await page.waitForURL("**/stops");
@@ -29,6 +30,22 @@ export async function loginAndGoToDiagram(page) {
   await page.waitForURL("**/stops/**");
   await page.getByRole("link", { name: "Floorplans" }).click();
   await expect(page.locator("#diagram-page")).toBeVisible();
+  await selectSeededDiagramLevel(page);
+}
+
+export async function selectSeededDiagramLevel(page, levelId = "BROWSER_L1") {
+  const trigger = page.locator("#level-control-trigger");
+  const option = page.locator(
+    `#level-control-panel [data-level-id="${levelId}"]`,
+  );
+
+  if ((await option.getAttribute("aria-current")) === "true") return;
+
+  await trigger.click();
+  await expect(page.locator("#level-control-panel")).toBeVisible();
+  await option.click();
+  await expect(option).toHaveAttribute("aria-current", "true");
+  await expect(trigger).toBeFocused();
 }
 
 export async function selectDiagramMode(page, mode) {

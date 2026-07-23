@@ -296,6 +296,11 @@ test.describe("account navigation", () => {
       await waitForLiveView(page);
       await expect(header).toBeVisible();
 
+      const trigger = page.locator("#user-menu [data-user-menu-trigger]");
+      await trigger.click();
+      await expect(trigger).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator("#user-menu-panel")).toBeVisible();
+
       await expect(header).toHaveScreenshot(
         `account-header-${label}.png`,
         {

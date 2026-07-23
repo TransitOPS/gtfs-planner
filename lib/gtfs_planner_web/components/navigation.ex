@@ -160,7 +160,7 @@ defmodule GtfsPlannerWeb.Navigation do
           navigate="/users/settings"
           role="menuitem"
           class={[
-            "flex items-center gap-2 min-h-11 px-3 py-2 text-sm focus:outline-none focus:bg-base-200",
+            "flex items-center gap-2 min-h-11 px-3 py-2 text-sm focus:bg-base-200 focus:outline-2 focus:outline-offset-[-2px] focus:outline-primary",
             if(path_family_active?(@current_path, ["users", "settings"]),
               do: "font-semibold text-base-content bg-base-200",
               else: "text-base-content/80 hover:bg-base-200 hover:text-base-content"
@@ -174,7 +174,7 @@ defmodule GtfsPlannerWeb.Navigation do
           href="/users/log_out"
           method="delete"
           role="menuitem"
-          class="flex items-center gap-2 min-h-11 px-3 py-2 text-sm text-base-content/80 hover:bg-base-200 hover:text-base-content focus:outline-none focus:bg-base-200"
+          class="flex items-center gap-2 min-h-11 px-3 py-2 text-sm text-base-content/80 hover:bg-base-200 hover:text-base-content focus:bg-base-200 focus:outline-2 focus:outline-offset-[-2px] focus:outline-primary"
         >
           <.icon name="hero-arrow-right-on-rectangle" class="w-4 h-4 flex-none" /> Log out
         </.link>

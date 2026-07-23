@@ -220,6 +220,37 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
     end
   end
 
+  describe "distance_meters/2 AC-1: zero distance" do
+    test "identical coordinates return exactly 0.0" do
+      point = {40.75, -73.99}
+
+      assert FloorplanTransform.distance_meters(point, point) === 0.0
+    end
+  end
+
+  describe "distance_meters/2 AC-1: one degree of latitude" do
+    test "one degree latitude offset returns approximately 111_111 meters" do
+      a = {0.0, 0.0}
+      b = {1.0, 0.0}
+
+      result = FloorplanTransform.distance_meters(a, b)
+
+      assert_in_delta result, 111_111.0, 1.0
+    end
+  end
+
+  describe "distance_meters/2 AC-1: longitude scaled by cosine of mean latitude" do
+    test "one degree longitude at 60 degrees latitude is halved" do
+      a = {60.0, 0.0}
+      b = {60.0, 1.0}
+
+      result = FloorplanTransform.distance_meters(a, b)
+
+      expected = 111_111.0 * :math.cos(60.0 * :math.pi() / 180.0)
+      assert_in_delta result, expected, 1.0
+    end
+  end
+
   describe "svg_to_lat_lon/4 AC 9: invalid point" do
     test "missing y" do
       assert {:error, :invalid_point} =

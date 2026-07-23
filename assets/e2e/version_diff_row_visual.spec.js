@@ -23,20 +23,31 @@ test("version-diff row remains readable and operable at desktop and mobile width
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/design/tables");
-    await page.waitForSelector("#ds-version-diff-row-demo [data-version-diff-row]");
+    await page.waitForSelector(
+      "#ds-version-diff-row-demo [data-version-diff-row]",
+    );
 
-    const row = page.locator("#ds-version-diff-row-demo [data-version-diff-row]");
+    const row = page.locator(
+      "#ds-version-diff-row-demo [data-version-diff-row]",
+    );
     const action = page.locator("#ds-version-diff-row-action");
     const disclosure = row.locator("summary");
 
-    await expect(row).toContainText("Changed");
+    await expect(
+      row.locator('[data-role="version-diff-action"]'),
+    ).toContainText("Modified");
+    await expect(
+      row.locator('[data-role="version-diff-action"] [aria-label="Changed"]'),
+    ).toBeVisible();
     await expect(row).toContainText("Approved");
     await expect(row).toContainText("Latitude");
     await expect(action).toHaveCSS("min-height", "44px");
-    const layout = await page.locator("#ds-version-diff-row-demo").evaluate((el) => ({
-      clientWidth: el.clientWidth,
-      scrollWidth: el.scrollWidth,
-    }));
+    const layout = await page
+      .locator("#ds-version-diff-row-demo")
+      .evaluate((el) => ({
+        clientWidth: el.clientWidth,
+        scrollWidth: el.scrollWidth,
+      }));
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
 
     await disclosure.focus();
