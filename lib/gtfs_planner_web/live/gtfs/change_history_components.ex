@@ -103,7 +103,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     ~H"""
     <div
       id={"#{@entity_type}-tabs"}
-      class="flex gap-6 mb-4 border-b border-base-300"
+      class="flex gap-1 mb-4 border-b border-base-300"
       role="tablist"
       aria-orientation="horizontal"
       phx-hook="TablistHook"
@@ -116,14 +116,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         aria-selected={to_string(@details_active?)}
         aria-controls={"#{@entity_type}-panel-details"}
         tabindex={if @details_active?, do: "0", else: "-1"}
-        class={[
-          "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
-          if(@details_active?,
-            do: "text-base-content font-medium border-base-content",
-            else: "text-base-content/70 hover:text-base-content border-transparent"
-          )
-        ]}
+        class={tab_class(@details_active?)}
       >
         Details
       </button>
@@ -137,14 +130,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         aria-selected={to_string(@history_active)}
         aria-controls={"#{@entity_type}-panel-history"}
         tabindex={if @history_active, do: "0", else: "-1"}
-        class={[
-          "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
-          if(@history_active,
-            do: "text-base-content font-medium border-base-content",
-            else: "text-base-content/70 hover:text-base-content border-transparent"
-          )
-        ]}
+        class={tab_class(@history_active)}
       >
         History
       </button>
@@ -159,18 +145,12 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         aria-selected={to_string(@journal_active)}
         aria-controls={"#{@entity_type}-panel-journal"}
         tabindex={if @journal_active, do: "0", else: "-1"}
-        class={[
-          "py-3 text-sm bg-transparent border-0 -mb-px border-b-2 inline-flex items-center gap-1.5",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
-          if(@journal_active,
-            do: "text-base-content font-medium border-base-content",
-            else: "text-base-content/70 hover:text-base-content border-transparent"
-          )
-        ]}
+        class={[tab_class(@journal_active), "inline-flex items-center gap-1.5"]}
       >
         Journal
         <span
           :if={@show_badge?}
+          data-role="journal-tab-count"
           class="border border-control-border bg-base-100 rounded-full px-1.5 text-xs leading-4 tabular-nums text-base-content/70"
         >
           {@journal_count}
@@ -178,6 +158,22 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       </button>
     </div>
     """
+  end
+
+  # One tab's treatment. The selected tab is not a target, so it keeps the
+  # default cursor and no hover paint; the others advertise themselves with a
+  # pointer cursor and a hover fill over their own hit area.
+  defp tab_class(active?) do
+    [
+      "px-3 py-3 text-sm bg-transparent border-0 -mb-px border-b-2 rounded-t-sm transition-colors",
+      "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
+      if(active?,
+        do: "cursor-default text-base-content font-medium border-base-content",
+        else:
+          "cursor-pointer border-transparent text-base-content/70 " <>
+            "hover:bg-base-200 hover:text-base-content hover:border-base-content/30"
+      )
+    ]
   end
 
   @doc """

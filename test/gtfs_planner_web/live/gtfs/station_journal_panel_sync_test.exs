@@ -200,6 +200,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     payload = %{
       open_count: 2,
       closed_count: 1,
+      target_counts: %{{"node", "observed-node"} => 2},
       entry_ids: MapSet.new([existing_id, new_id]),
       signature: [{new_id, ~U[2026-07-18 12:00:00.000000Z], nil, []}]
     }
@@ -213,6 +214,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
 
     assert observed_socket.assigns.journal_open_count == 2
     assert observed_socket.assigns.journal_closed_count == 1
+    assert observed_socket.assigns.journal_target_counts == payload.target_counts
     assert observed_socket.assigns.journal_pending_new_ids == MapSet.new([existing_id, new_id])
     assert observed_socket.assigns.journal_observed_signature == payload.signature
     assert observed_socket.assigns.journal_rendered_signature == rendered_signature

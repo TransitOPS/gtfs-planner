@@ -3230,6 +3230,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :drawer_journal_display_zone, :any, default: nil
   attr :drawer_journal_now, :any, default: nil
   attr :drawer_journal_scope, :any, default: nil
+  attr :journal_target_counts, :map, default: %{}
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -3264,6 +3265,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:show_history_tabs, show_history_tabs)
       |> assign(:history_active, history_active)
       |> assign(:journal_active, journal_active)
+      |> assign(
+        :journal_count,
+        entity_journal_count(
+          journal_active and assigns.drawer_journal_loaded_once?,
+          assigns.drawer_journal_total_count,
+          assigns.journal_target_counts,
+          {"node", assigns.selected_stop_id}
+        )
+      )
 
     ~H"""
     <.drawer
@@ -3309,7 +3319,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         history_active={@history_active}
         show_journal={true}
         journal_active={@journal_active}
-        journal_count={@drawer_journal_total_count}
+        journal_count={@journal_count}
       />
 
       <div
@@ -4087,6 +4097,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :drawer_journal_display_zone, :any, default: nil
   attr :drawer_journal_now, :any, default: nil
   attr :drawer_journal_scope, :any, default: nil
+  attr :journal_target_counts, :map, default: %{}
 
   def pathway_drawer(assigns) do
     pathway_id = assigns.editing_pathway && Map.get(assigns.editing_pathway, :id)
@@ -4104,6 +4115,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:history_active, history_active)
       |> assign(:journal_active, journal_active)
       |> assign(:pathway_id, pathway_id)
+      |> assign(
+        :journal_count,
+        entity_journal_count(
+          journal_active and assigns.drawer_journal_loaded_once?,
+          assigns.drawer_journal_total_count,
+          assigns.journal_target_counts,
+          {"pathway", pathway_id}
+        )
+      )
 
     ~H"""
     <.drawer
@@ -4179,7 +4199,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         history_active={@history_active}
         show_journal={true}
         journal_active={@journal_active}
-        journal_count={@drawer_journal_total_count}
+        journal_count={@journal_count}
       />
 
       <div
@@ -5778,4 +5798,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp present_text?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_text?(_), do: false
+
+  # The Journal tab must state its count from any tab, so the badge reads the
+  # station journal snapshot until the entity panel has loaded its own exact
+  # count for this entity.
+  defp entity_journal_count(true, loaded_count, _target_counts, _target), do: loaded_count
+
+  defp entity_journal_count(false, _loaded_count, target_counts, target),
+    do: Map.get(target_counts, target, 0)
 end

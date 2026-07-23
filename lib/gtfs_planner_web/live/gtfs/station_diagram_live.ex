@@ -1191,6 +1191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           drawer_journal_local_times={@drawer_journal_local_times}
           drawer_journal_display_zone={@drawer_journal_display_zone}
           drawer_journal_now={@drawer_journal_now}
+          journal_target_counts={@journal_target_counts}
           drawer_journal_scope={@journal_scope}
         />
 
@@ -1225,6 +1226,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           drawer_journal_local_times={@drawer_journal_local_times}
           drawer_journal_display_zone={@drawer_journal_display_zone}
           drawer_journal_now={@drawer_journal_now}
+          journal_target_counts={@journal_target_counts}
           drawer_journal_scope={@journal_scope}
         />
 
@@ -1442,10 +1444,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event(
         "show_drawer_journal",
-        %{"entity_type" => entity_type, "entity_id" => entity_id},
+        %{"entity-type" => entity_type, "entity-id" => entity_id},
         socket
       )
-      when entity_type in ["stop", "pathway"] do
+      when entity_type in ["stop", "pathway"] and is_binary(entity_id) do
     if drawer_open_for?(socket, entity_type, entity_id) and
          entity_belongs_to_current_station?(socket, entity_type, entity_id) do
       target = draw_map_entity_to_target(entity_type, entity_id)
@@ -4494,6 +4496,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_request, nil)
     |> assign(:journal_open_count, 0)
     |> assign(:journal_closed_count, 0)
+    |> assign(:journal_target_counts, %{})
     |> assign(:journal_visible_count, 0)
     |> assign(:journal_loaded_once?, false)
     |> assign(:journal_refresh_error?, false)
@@ -5089,6 +5092,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       entries: entries,
       open_count: Enum.count(entries, &is_nil(&1.closed_at)),
       closed_count: Enum.count(entries, &(not is_nil(&1.closed_at))),
+      # Per-target totals let a drawer show its Journal count before the tab is
+      # ever activated. Derived from the snapshot already read here, so the
+      # badge costs no extra query and refreshes with the station journal.
+      target_counts: Enum.frequencies_by(entries, &{&1.target_type, &1.target_id}),
       entry_ids: MapSet.new(entries, & &1.id),
       signature: journal_signature(entries),
       authors: authors,
@@ -5336,6 +5343,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(:journal_open_count, payload.open_count)
     |> assign(:journal_closed_count, payload.closed_count)
+    |> assign(:journal_target_counts, payload.target_counts)
   end
 
   defp finish_journal_load(socket) do

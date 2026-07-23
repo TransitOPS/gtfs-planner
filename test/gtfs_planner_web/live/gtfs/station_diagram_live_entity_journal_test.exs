@@ -125,8 +125,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     # Capture the request identity before releasing
@@ -150,6 +150,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     # Request identity is preserved on success for PubSub refresh
     assert ready.drawer_journal_request.entity_type == :stop
     assert ready.drawer_journal_request.target == {"node", context.child_stop.id}
+  end
+
+  test "the Journal tab states the entity's entry count before it is activated", context do
+    assert %{synced_count: 2, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: Ecto.UUID.generate(),
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "First entry about the child stop",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               },
+               %{
+                 id: Ecto.UUID.generate(),
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Second entry about the child stop",
+                 captured_at: ~U[2026-07-18 13:00:00.000000Z]
+               }
+             ])
+
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    html = render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    # The Journal panel was never opened, so the count comes from the station
+    # snapshot rather than the entity load.
+    assert assigns(view).drawer_journal_state == :idle
+    assert html =~ ~s(data-role="journal-tab-count")
+
+    assert view |> element("#stop-tab-journal [data-role='journal-tab-count']") |> render() =~ "2"
+    assert view |> element("#stop-tab-journal") |> render() =~ ~s(aria-selected="false")
+  end
+
+  test "the Journal tab omits the count badge for an entity with no entries", context do
+    view = open_diagram(context)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    refute has_element?(view, "#stop-tab-journal [data-role='journal-tab-count']")
+  end
+
+  test "clicking the rendered Journal tab starts the drawer journal load", context do
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    view |> element("#stop-tab-journal") |> render_click()
+
+    loading = assigns(view)
+
+    assert loading.drawer_journal_state == :initial_loading
+    assert loading.drawer_journal_request.target == {"node", context.child_stop.id}
   end
 
   # ============================================================================
@@ -179,8 +238,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_pathway", %{"id" => context.pathway.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "pathway",
-      "entity_id" => context.pathway.id
+      "entity-type" => "pathway",
+      "entity-id" => context.pathway.id
     })
 
     loading = assigns(view)
@@ -222,8 +281,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -242,8 +301,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     assert after_stop_switch.drawer_journal_total_count == 0
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.second_child.id
+      "entity-type" => "stop",
+      "entity-id" => context.second_child.id
     })
 
     second_drawer_task =
@@ -289,8 +348,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     first_task =
@@ -355,8 +414,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.second_child.id
+      "entity-type" => "stop",
+      "entity-id" => context.second_child.id
     })
 
     status = assigns(view)
@@ -386,8 +445,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_async(view, 5_000)
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => foreign_stop.id
+      "entity-type" => "stop",
+      "entity-id" => foreign_stop.id
     })
 
     status = assigns(view)
@@ -421,8 +480,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     _drawer_task =
@@ -465,8 +524,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -550,8 +609,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -613,8 +672,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -663,8 +722,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -723,8 +782,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     first_task =
@@ -786,8 +845,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -833,8 +892,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -887,8 +946,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -943,8 +1002,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_pathway", %{"id" => context.pathway.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "pathway",
-      "entity_id" => context.pathway.id
+      "entity-type" => "pathway",
+      "entity-id" => context.pathway.id
     })
 
     drawer_task =
@@ -992,8 +1051,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1054,8 +1113,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1302,8 +1361,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
 
     # Select Journal
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1353,8 +1412,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     # Before releasing the task, we're in loading state
@@ -1394,8 +1453,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1430,8 +1489,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1460,8 +1519,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1505,8 +1564,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1688,8 +1747,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "stop",
-      "entity_id" => context.child_stop.id
+      "entity-type" => "stop",
+      "entity-id" => context.child_stop.id
     })
 
     drawer_task =
@@ -1731,8 +1790,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_hook(view, "edit_pathway", %{"id" => context.pathway.id})
 
     render_hook(view, "show_drawer_journal", %{
-      "entity_type" => "pathway",
-      "entity_id" => context.pathway.id
+      "entity-type" => "pathway",
+      "entity-id" => context.pathway.id
     })
 
     drawer_task =
