@@ -1521,7 +1521,7 @@ describe("map_alignment_hook recenter marks control", () => {
     const known = { tx: 11, ty: 22, rotation: 33, scale: 4 };
     hook.transform = known;
     hook._applyTransform = vi.fn();
-    const alignment = { centerLat: 40.7, centerLon: -74.0, scaleMpp: 0.5, rotationDeg: 15 };
+    const alignment = { center_lat: 40.7, center_lon: -74.0, scale_mpp: 0.5, rotation_deg: 15 };
 
     hook._restoreOverlayAlignment(hook.overlay, alignment, hook.overlay.querySelector("img"), "active");
 
@@ -1552,10 +1552,10 @@ describe("map_alignment_hook saved-alignment restore guard", () => {
     Object.defineProperty(img, "naturalHeight", { value: 100, configurable: true });
 
     const alignment = {
-      centerLat: 40.7,
-      centerLon: -74.0,
-      scaleMpp: 0.5,
-      rotationDeg: 15,
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.5,
+      rotation_deg: 15,
     };
 
     const hook = {
@@ -1825,5 +1825,730 @@ describe("map_alignment_hook generation bridge", () => {
       window.removeEventListener("online", hook._onOnline);
       window.removeEventListener("offline", hook._onOffline);
     }
+  });
+});
+
+describe("map_alignment_hook saved/preview state machine", () => {
+  function buildPartialHook({
+    generation = "gen-1",
+    savedAlignment = null,
+    previewActive = false,
+    imageDims = { w: 1000, h: 500 },
+    canvasDims = { w: 400, h: 200 },
+    metersPerPx = 0.5,
+  } = {}) {
+    const img = document.createElement("img");
+    Object.defineProperty(img, "complete", { value: true, configurable: true });
+    Object.defineProperty(img, "naturalWidth", { value: imageDims.w, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: imageDims.h, configurable: true });
+
+    const overlay = document.createElement("div");
+    overlay.appendChild(img);
+
+    const leafletEl = document.createElement("div");
+    leafletEl.getBoundingClientRect = () => ({
+      width: canvasDims.w,
+      height: canvasDims.h,
+      left: 0,
+      top: 0,
+    });
+
+    const latLngToContainerPoint = vi.fn(([lat, lon]) => ({ x: lon, y: lat }));
+    const containerPointToLatLng = vi.fn(([x, y]) => ({ lat: y, lng: x }));
+    const distance = vi.fn(() => metersPerPx);
+
+    const hook = {
+      ...MapAlignmentHook,
+      generation,
+      savedAlignment,
+      _previewActive: previewActive,
+      overlay,
+      leafletEl,
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [],
+      _logger: { warn: vi.fn(), error: vi.fn() },
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+      leafletMap: {
+        latLngToContainerPoint,
+        containerPointToLatLng,
+        distance,
+      },
+    };
+
+    return { hook, img, overlay, leafletEl, latLngToContainerPoint };
+  }
+
+  describe("_cssTransformForAlignment", () => {
+    it("computes a transform from a snake_case alignment and the supplied image", () => {
+      const { hook, img } = buildPartialHook({
+        canvasDims: { w: 400, h: 200 },
+        imageDims: { w: 1000, h: 500 },
+        metersPerPx: 0.5,
+      });
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 10 };
+      const result = hook._cssTransformForAlignment(alignment, img);
+
+      expect(result).not.toBeNull();
+      expect(result.rotation).toBe(10);
+      expect(result.tx).toBe(100 - 200);
+      expect(result.ty).toBe(50 - 100);
+      expect(result.scale).toBeGreaterThan(0);
+    });
+
+    it("produces different scales for different image dimensions with the same alignment", () => {
+      const { hook } = buildPartialHook({
+        canvasDims: { w: 400, h: 200 },
+        metersPerPx: 0.5,
+      });
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+
+      const imgA = document.createElement("img");
+      Object.defineProperty(imgA, "naturalWidth", { value: 1000, configurable: true });
+      Object.defineProperty(imgA, "naturalHeight", { value: 500, configurable: true });
+
+      const imgB = document.createElement("img");
+      Object.defineProperty(imgB, "naturalWidth", { value: 2000, configurable: true });
+      Object.defineProperty(imgB, "naturalHeight", { value: 1000, configurable: true });
+
+      const resultA = hook._cssTransformForAlignment(alignment, imgA);
+      const resultB = hook._cssTransformForAlignment(alignment, imgB);
+
+      expect(resultA).not.toBeNull();
+      expect(resultB).not.toBeNull();
+      expect(resultA.scale).not.toBe(resultB.scale);
+    });
+
+    it("returns null when the image has no natural dimensions", () => {
+      const { hook } = buildPartialHook();
+
+      const badImg = document.createElement("img");
+      Object.defineProperty(badImg, "naturalWidth", { value: 0, configurable: true });
+      Object.defineProperty(badImg, "naturalHeight", { value: 0, configurable: true });
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      expect(hook._cssTransformForAlignment(alignment, badImg)).toBeNull();
+    });
+
+    it("returns null when the leaflet map is unavailable", () => {
+      const { hook, img } = buildPartialHook();
+      hook.leafletMap = null;
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      expect(hook._cssTransformForAlignment(alignment, img)).toBeNull();
+    });
+
+    it("returns null when the canvas rect has zero dimensions", () => {
+      const { hook, img, leafletEl } = buildPartialHook();
+      leafletEl.getBoundingClientRect = () => ({ width: 0, height: 0, left: 0, top: 0 });
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      expect(hook._cssTransformForAlignment(alignment, img)).toBeNull();
+    });
+  });
+
+  describe("apply_preview_transform", () => {
+    it("applies a valid current-generation preview and marks preview active", () => {
+      const { hook, img } = buildPartialHook({ generation: "gen-1" });
+      hook._applyTransform = vi.fn();
+
+      hook.handleEvent("apply_preview_transform", (payload) =>
+        hook._handleApplyPreviewTransform(payload)
+      );
+
+      hook._handleApplyPreviewTransform({
+        generation: "gen-1",
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      });
+
+      expect(hook._previewActive).toBe(true);
+      expect(hook.transform.rotation).toBe(10);
+      expect(hook._applyTransform).toHaveBeenCalled();
+    });
+
+    it("cancels pending saved restore on valid preview application", () => {
+      const disposer = vi.fn();
+      const { hook } = buildPartialHook({ generation: "gen-1" });
+      hook._overlayRestoreDisposers = [disposer];
+      hook._applyTransform = vi.fn();
+
+      hook._handleApplyPreviewTransform({
+        generation: "gen-1",
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 5,
+      });
+
+      expect(disposer).toHaveBeenCalled();
+      expect(hook._userAdjustedTransform).toBe(true);
+    });
+
+    it("rejects a stale generation without changing state", () => {
+      const { hook } = buildPartialHook({ generation: "gen-2" });
+      hook.transform = { tx: 1, ty: 2, rotation: 3, scale: 1.5 };
+      hook._applyTransform = vi.fn();
+
+      hook._handleApplyPreviewTransform({
+        generation: "gen-old",
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      });
+
+      expect(hook._previewActive).toBe(false);
+      expect(hook.transform).toEqual({ tx: 1, ty: 2, rotation: 3, scale: 1.5 });
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+    });
+
+    it("rejects an invalid alignment payload (non-finite scale)", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1" });
+      hook._applyTransform = vi.fn();
+
+      hook._handleApplyPreviewTransform({
+        generation: "gen-1",
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: -1,
+        rotation_deg: 10,
+      });
+
+      expect(hook._previewActive).toBe(false);
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+      expect(hook._logger.warn).toHaveBeenCalled();
+    });
+
+    it("rejects when the image is not ready (null geometry)", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1" });
+      const badImg = hook.overlay.querySelector("img");
+      Object.defineProperty(badImg, "naturalWidth", { value: 0, configurable: true });
+      hook._applyTransform = vi.fn();
+
+      hook._handleApplyPreviewTransform({
+        generation: "gen-1",
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      });
+
+      expect(hook._previewActive).toBe(false);
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("restore_saved_transform", () => {
+    it("restores the newest saved alignment", () => {
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: { center_lat: 60, center_lon: 110, scale_mpp: 0.3, rotation_deg: 20 },
+      });
+      hook._applyTransform = vi.fn();
+
+      hook._handleRestoreSavedTransform({ generation: "gen-1" });
+
+      expect(hook.transform.rotation).toBe(20);
+      expect(hook._previewActive).toBe(false);
+      expect(hook._applyTransform).toHaveBeenCalled();
+    });
+
+    it("applies identity when no saved alignment exists", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1", savedAlignment: null });
+      hook.transform = { tx: 99, ty: 88, rotation: 45, scale: 2 };
+      hook._applyTransform = vi.fn();
+
+      hook._handleRestoreSavedTransform({ generation: "gen-1" });
+
+      expect(hook.transform).toEqual({ tx: 0, ty: 0, rotation: 0, scale: 1 });
+      expect(hook._previewActive).toBe(false);
+      expect(hook._applyTransform).toHaveBeenCalled();
+    });
+
+    it("rejects a stale generation", () => {
+      const { hook } = buildPartialHook({
+        generation: "gen-2",
+        savedAlignment: { center_lat: 60, center_lon: 110, scale_mpp: 0.3, rotation_deg: 20 },
+      });
+      hook.transform = { tx: 5, ty: 5, rotation: 5, scale: 1 };
+      hook._applyTransform = vi.fn();
+
+      hook._handleRestoreSavedTransform({ generation: "gen-old" });
+
+      expect(hook.transform).toEqual({ tx: 5, ty: 5, rotation: 5, scale: 1 });
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("alignment_saved", () => {
+    it("updates savedAlignment with the persisted payload", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1", savedAlignment: null });
+
+      hook._handleAlignmentSaved({
+        generation: "gen-1",
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.15,
+        rotation_deg: 5,
+      });
+
+      expect(hook.savedAlignment).toEqual({
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.15,
+        rotation_deg: 5,
+      });
+    });
+
+    it("rejects a stale generation without updating savedAlignment", () => {
+      const original = { center_lat: 1, center_lon: 2, scale_mpp: 0.1, rotation_deg: 0 };
+      const { hook } = buildPartialHook({ generation: "gen-2", savedAlignment: original });
+
+      hook._handleAlignmentSaved({
+        generation: "gen-old",
+        center_lat: 99,
+        center_lon: 99,
+        scale_mpp: 99,
+        rotation_deg: 99,
+      });
+
+      expect(hook.savedAlignment).toEqual(original);
+    });
+
+    it("does not change transform or _previewActive", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+      hook.transform = { tx: 10, ty: 20, rotation: 30, scale: 2 };
+
+      hook._handleAlignmentSaved({
+        generation: "gen-1",
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.15,
+        rotation_deg: 5,
+      });
+
+      expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
+      expect(hook._previewActive).toBe(true);
+    });
+  });
+
+  describe("_markPreviewDirty", () => {
+    it("pushes alignment_preview_adjusted once and clears _previewActive", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+
+      hook._markPreviewDirty();
+
+      expect(hook.pushEvent).toHaveBeenCalledWith("alignment_preview_adjusted", {
+        generation: "gen-1",
+      });
+      expect(hook._previewActive).toBe(false);
+    });
+
+    it("does not push again on a second call (one-shot)", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+
+      hook._markPreviewDirty();
+      hook._markPreviewDirty();
+
+      expect(hook.pushEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not push when _previewActive is false", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: false });
+
+      hook._markPreviewDirty();
+
+      expect(hook.pushEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("dirty reporting from pointer and button paths", () => {
+    function mountDirtyHook() {
+      document.body.innerHTML = `
+        <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16" data-map-generation="gen-dirty">
+          <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+          <div id="map-alignment-leaflet"></div>
+          <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+          <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+          <input id="map-alignment-lat-input" value="40.7128" />
+          <input id="map-alignment-lon-input" value="-74.0060" />
+          <button id="map-alignment-apply-center"></button>
+          <input id="map-alignment-opacity" value="0.7" />
+          <input id="map-alignment-zoom" value="16" />
+          <button id="map-alignment-save"></button>
+          <button id="map-alignment-apply"></button>
+          <div id="map-alignment-pins-active"></div>
+          <button data-map-transform-action="left"></button>
+        </div>
+      `;
+
+      const root = document.getElementById("root");
+      const overlay = document.getElementById("map-alignment-overlay");
+      const activeImg = document.getElementById("active-img");
+      const leafletEl = document.getElementById("map-alignment-leaflet");
+      const rotateHandle = document.getElementById("map-alignment-rotate-handle");
+      const scaleHandle = document.getElementById("map-alignment-scale-handle");
+
+      leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+      overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+      Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+      Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+      Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+      const mapInstance = {
+        on: vi.fn(),
+        off: vi.fn(),
+        remove: vi.fn(),
+        invalidateSize: vi.fn(),
+        setZoom: vi.fn(),
+        getZoom: vi.fn(() => 16),
+        getMinZoom: vi.fn(() => 16),
+        getMaxZoom: vi.fn(() => 22),
+        setView: vi.fn(),
+        latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        distance: vi.fn(() => 1),
+        removeLayer: vi.fn(),
+      };
+
+      const originalL = window.L;
+      const originalFetch = global.fetch;
+      global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+      window.L = {
+        map: vi.fn(() => mapInstance),
+        tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+        geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+      };
+
+      const hook = {
+        ...MapAlignmentHook,
+        el: root,
+        pushEvent: vi.fn(),
+        handleEvent: vi.fn(),
+      };
+
+      hook.mounted();
+
+      const restore = () => {
+        window.L = originalL;
+        global.fetch = originalFetch;
+      };
+
+      return { hook, overlay, rotateHandle, scaleHandle, mapInstance, restore };
+    }
+
+    it("translate pointerdown reports dirty once during active preview", () => {
+      const { hook, overlay, restore } = mountDirtyHook();
+      hook._previewActive = true;
+
+      const event = new Event("pointerdown", { bubbles: true });
+      event.button = 0;
+      event.clientX = 100;
+      event.clientY = 50;
+      overlay.dispatchEvent(event);
+
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+      expect(dirtyCalls).toHaveLength(1);
+      expect(dirtyCalls[0][1]).toEqual({ generation: "gen-dirty" });
+      expect(hook._previewActive).toBe(false);
+
+      restore();
+    });
+
+    it("rotate pointerdown reports dirty once during active preview", () => {
+      const { hook, rotateHandle, restore } = mountDirtyHook();
+      hook._previewActive = true;
+
+      const event = new Event("pointerdown", { bubbles: true });
+      event.button = 0;
+      event.clientX = 200;
+      event.clientY = 75;
+      rotateHandle.dispatchEvent(event);
+
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+      expect(dirtyCalls).toHaveLength(1);
+      expect(hook._previewActive).toBe(false);
+
+      restore();
+    });
+
+    it("scale pointerdown reports dirty once during active preview", () => {
+      const { hook, scaleHandle, restore } = mountDirtyHook();
+      hook._previewActive = true;
+
+      const event = new Event("pointerdown", { bubbles: true });
+      event.button = 0;
+      event.clientX = 200;
+      event.clientY = 75;
+      scaleHandle.dispatchEvent(event);
+
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+      expect(dirtyCalls).toHaveLength(1);
+      expect(hook._previewActive).toBe(false);
+
+      restore();
+    });
+
+    it("transform button mutation reports dirty once during active preview", () => {
+      const { hook, restore } = mountDirtyHook();
+      hook._previewActive = true;
+
+      hook._adjustTransform("left", false);
+
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+      expect(dirtyCalls).toHaveLength(1);
+      expect(hook._previewActive).toBe(false);
+
+      restore();
+    });
+
+    it("center-map preserves _previewActive and does not report dirty", () => {
+      const { hook, mapInstance, restore } = mountDirtyHook();
+      hook._previewActive = true;
+
+      hook._onApplyCenter();
+
+      expect(hook._previewActive).toBe(true);
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+      expect(dirtyCalls).toHaveLength(0);
+
+      restore();
+    });
+
+    it("zoom preserves _previewActive and does not report dirty", () => {
+      const { hook, restore } = mountDirtyHook();
+      hook._previewActive = true;
+
+      hook._handleZoomSliderInput({ target: { value: "17" } });
+
+      expect(hook._previewActive).toBe(true);
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+      expect(dirtyCalls).toHaveLength(0);
+
+      restore();
+    });
+  });
+
+  describe("mount normalization", () => {
+    it("normalizes dataset alignment to snake_case savedAlignment and initializes _previewActive", () => {
+      document.body.innerHTML = `
+        <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16"
+             data-map-generation="gen-mount"
+             data-align-center-lat="40.7" data-align-center-lon="-74.0"
+             data-align-scale-mpp="0.25" data-align-rotation-deg="15">
+          <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+          <div id="map-alignment-leaflet"></div>
+          <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+          <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+          <input id="map-alignment-lat-input" value="40.7128" />
+          <input id="map-alignment-lon-input" value="-74.0060" />
+          <button id="map-alignment-apply-center"></button>
+          <input id="map-alignment-opacity" value="0.7" />
+          <input id="map-alignment-zoom" value="16" />
+          <button id="map-alignment-save"></button>
+          <button id="map-alignment-apply"></button>
+          <div id="map-alignment-pins-active"></div>
+        </div>
+      `;
+
+      const root = document.getElementById("root");
+      const overlay = document.getElementById("map-alignment-overlay");
+      const activeImg = document.getElementById("active-img");
+      const leafletEl = document.getElementById("map-alignment-leaflet");
+
+      leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+      overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+      Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+      Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+      Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+      const mapInstance = {
+        on: vi.fn(),
+        off: vi.fn(),
+        remove: vi.fn(),
+        invalidateSize: vi.fn(),
+        setZoom: vi.fn(),
+        getZoom: vi.fn(() => 16),
+        getMinZoom: vi.fn(() => 16),
+        getMaxZoom: vi.fn(() => 22),
+        setView: vi.fn(),
+        latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        distance: vi.fn(() => 1),
+        removeLayer: vi.fn(),
+      };
+
+      const originalL = window.L;
+      const originalFetch = global.fetch;
+      global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+      window.L = {
+        map: vi.fn(() => mapInstance),
+        tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+        geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+      };
+
+      const hook = {
+        ...MapAlignmentHook,
+        el: root,
+        pushEvent: vi.fn(),
+        handleEvent: vi.fn(),
+      };
+
+      hook.mounted();
+
+      expect(hook.savedAlignment).toEqual({
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.25,
+        rotation_deg: 15,
+      });
+      expect(hook._previewActive).toBe(false);
+
+      window.L = originalL;
+      global.fetch = originalFetch;
+    });
+
+    it("sets savedAlignment to null when dataset alignment is absent", () => {
+      document.body.innerHTML = `
+        <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16"
+             data-map-generation="gen-mount">
+          <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+          <div id="map-alignment-leaflet"></div>
+          <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+          <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+          <input id="map-alignment-lat-input" value="40.7128" />
+          <input id="map-alignment-lon-input" value="-74.0060" />
+          <button id="map-alignment-apply-center"></button>
+          <input id="map-alignment-opacity" value="0.7" />
+          <input id="map-alignment-zoom" value="16" />
+          <button id="map-alignment-save"></button>
+          <button id="map-alignment-apply"></button>
+          <div id="map-alignment-pins-active"></div>
+        </div>
+      `;
+
+      const root = document.getElementById("root");
+      const overlay = document.getElementById("map-alignment-overlay");
+      const activeImg = document.getElementById("active-img");
+      const leafletEl = document.getElementById("map-alignment-leaflet");
+
+      leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+      overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+      Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+      Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+      Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+      const mapInstance = {
+        on: vi.fn(),
+        off: vi.fn(),
+        remove: vi.fn(),
+        invalidateSize: vi.fn(),
+        setZoom: vi.fn(),
+        getZoom: vi.fn(() => 16),
+        getMinZoom: vi.fn(() => 16),
+        getMaxZoom: vi.fn(() => 22),
+        setView: vi.fn(),
+        latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        distance: vi.fn(() => 1),
+        removeLayer: vi.fn(),
+      };
+
+      const originalL = window.L;
+      const originalFetch = global.fetch;
+      global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+      window.L = {
+        map: vi.fn(() => mapInstance),
+        tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+        geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+      };
+
+      const hook = {
+        ...MapAlignmentHook,
+        el: root,
+        pushEvent: vi.fn(),
+        handleEvent: vi.fn(),
+      };
+
+      hook.mounted();
+
+      expect(hook.savedAlignment).toBeNull();
+      expect(hook._previewActive).toBe(false);
+
+      window.L = originalL;
+      global.fetch = originalFetch;
+    });
+  });
+
+  describe("reset action removal", () => {
+    it("does not apply identity for the reset action", () => {
+      const { hook } = buildPartialHook({ generation: "gen-1" });
+      hook.transform = { tx: 10, ty: 20, rotation: 30, scale: 2 };
+      hook._applyTransform = vi.fn();
+
+      hook._adjustTransform("reset", false);
+
+      expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("_restoreOverlayAlignment delegates to _cssTransformForAlignment", () => {
+    it("uses the shared helper with the active image for saved restore", () => {
+      const { hook, img } = buildPartialHook({
+        generation: "gen-1",
+        canvasDims: { w: 400, h: 200 },
+        imageDims: { w: 1000, h: 500 },
+        metersPerPx: 0.5,
+      });
+      hook._userAdjustedTransform = false;
+      hook._applyTransform = vi.fn();
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 10 };
+      hook._restoreOverlayAlignment(hook.overlay, alignment, img, "active");
+
+      expect(hook.transform.rotation).toBe(10);
+      expect(hook._applyTransform).toHaveBeenCalled();
+    });
+  });
+
+  describe("_applyOtherLevelOverlayTransform delegates to _cssTransformForAlignment", () => {
+    it("uses the shared helper with the other-level image", () => {
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        canvasDims: { w: 400, h: 200 },
+        metersPerPx: 0.5,
+      });
+
+      const otherImg = document.createElement("img");
+      Object.defineProperty(otherImg, "naturalWidth", { value: 2000, configurable: true });
+      Object.defineProperty(otherImg, "naturalHeight", { value: 1000, configurable: true });
+
+      const el = document.createElement("div");
+      el.appendChild(otherImg);
+
+      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 5 };
+      hook._applyOtherLevelOverlayTransform(el, alignment);
+
+      expect(el.style.transform).toContain("rotate(5deg)");
+    });
   });
 });
