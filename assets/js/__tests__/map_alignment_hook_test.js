@@ -2317,6 +2317,21 @@ describe("map_alignment_hook saved/preview state machine", () => {
       return { hook, overlay, rotateHandle, scaleHandle, mapInstance, restore };
     }
 
+    function dispatchPointer(target, type, clientX, clientY) {
+      const event = new Event(type, { bubbles: true });
+      event.button = 0;
+      event.clientX = clientX;
+      event.clientY = clientY;
+      event.pointerId = 1;
+      target.dispatchEvent(event);
+    }
+
+    function alignmentDirtyCalls(hook) {
+      return hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted"
+      );
+    }
+
     it("registers and dispatches the preview, restore, and save bridge callbacks", () => {
       const { hook, restore } = mountDirtyHook();
       const callbacks = Object.fromEntries(hook.handleEvent.mock.calls);
@@ -2344,60 +2359,80 @@ describe("map_alignment_hook saved/preview state machine", () => {
       restore();
     });
 
-    it("translate pointerdown reports dirty once during active preview", () => {
+    it("translate click stays clean until the first effective pointermove", () => {
       const { hook, overlay, restore } = mountDirtyHook();
       hook._previewActive = true;
 
-      const event = new Event("pointerdown", { bubbles: true });
-      event.button = 0;
-      event.clientX = 100;
-      event.clientY = 50;
-      overlay.dispatchEvent(event);
+      dispatchPointer(overlay, "pointerdown", 100, 50);
+      dispatchPointer(overlay, "pointermove", 100, 50);
+      dispatchPointer(overlay, "pointerup", 100, 50);
 
-      const dirtyCalls = hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
-      );
+      expect(alignmentDirtyCalls(hook)).toHaveLength(0);
+      expect(hook._previewActive).toBe(true);
+      expect(hook.transform).toMatchObject({ tx: 0, ty: 0 });
+
+      dispatchPointer(overlay, "pointerdown", 100, 50);
+      dispatchPointer(overlay, "pointermove", 110, 55);
+      dispatchPointer(overlay, "pointermove", 120, 60);
+      dispatchPointer(overlay, "pointerup", 120, 60);
+
+      const dirtyCalls = alignmentDirtyCalls(hook);
       expect(dirtyCalls).toHaveLength(1);
       expect(dirtyCalls[0][1]).toEqual({ generation: "gen-dirty" });
       expect(hook._previewActive).toBe(false);
+      expect(hook.transform).toMatchObject({ tx: 20, ty: 10 });
 
       restore();
     });
 
-    it("rotate pointerdown reports dirty once during active preview", () => {
+    it("rotate click stays clean until the first effective pointermove", () => {
       const { hook, rotateHandle, restore } = mountDirtyHook();
       hook._previewActive = true;
 
-      const event = new Event("pointerdown", { bubbles: true });
-      event.button = 0;
-      event.clientX = 200;
-      event.clientY = 75;
-      rotateHandle.dispatchEvent(event);
+      dispatchPointer(rotateHandle, "pointerdown", 200, 75);
+      dispatchPointer(rotateHandle, "pointermove", 200, 75);
+      dispatchPointer(rotateHandle, "pointerup", 200, 75);
 
-      const dirtyCalls = hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
-      );
+      expect(alignmentDirtyCalls(hook)).toHaveLength(0);
+      expect(hook._previewActive).toBe(true);
+      expect(hook.transform.rotation).toBe(0);
+
+      dispatchPointer(rotateHandle, "pointerdown", 200, 75);
+      dispatchPointer(rotateHandle, "pointermove", 150, 125);
+      dispatchPointer(rotateHandle, "pointermove", 100, 75);
+      dispatchPointer(rotateHandle, "pointerup", 100, 75);
+
+      const dirtyCalls = alignmentDirtyCalls(hook);
       expect(dirtyCalls).toHaveLength(1);
+      expect(dirtyCalls[0][1]).toEqual({ generation: "gen-dirty" });
       expect(hook._previewActive).toBe(false);
+      expect(hook.transform.rotation).toBeCloseTo(180);
 
       restore();
     });
 
-    it("scale pointerdown reports dirty once during active preview", () => {
+    it("scale click stays clean until the first effective pointermove", () => {
       const { hook, scaleHandle, restore } = mountDirtyHook();
       hook._previewActive = true;
 
-      const event = new Event("pointerdown", { bubbles: true });
-      event.button = 0;
-      event.clientX = 200;
-      event.clientY = 75;
-      scaleHandle.dispatchEvent(event);
+      dispatchPointer(scaleHandle, "pointerdown", 200, 75);
+      dispatchPointer(scaleHandle, "pointermove", 200, 75);
+      dispatchPointer(scaleHandle, "pointerup", 200, 75);
 
-      const dirtyCalls = hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
-      );
+      expect(alignmentDirtyCalls(hook)).toHaveLength(0);
+      expect(hook._previewActive).toBe(true);
+      expect(hook.transform.scale).toBe(1);
+
+      dispatchPointer(scaleHandle, "pointerdown", 200, 75);
+      dispatchPointer(scaleHandle, "pointermove", 250, 75);
+      dispatchPointer(scaleHandle, "pointermove", 300, 75);
+      dispatchPointer(scaleHandle, "pointerup", 300, 75);
+
+      const dirtyCalls = alignmentDirtyCalls(hook);
       expect(dirtyCalls).toHaveLength(1);
+      expect(dirtyCalls[0][1]).toEqual({ generation: "gen-dirty" });
       expect(hook._previewActive).toBe(false);
+      expect(hook.transform.scale).toBe(3);
 
       restore();
     });

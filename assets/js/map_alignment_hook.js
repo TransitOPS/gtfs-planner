@@ -380,7 +380,6 @@ const MapAlignmentHook = {
       if (e.button !== undefined && e.button !== 0) return;
 
       this._markUserAdjusted();
-      this._markPreviewDirty();
       this._translateState = {
         startX: e.clientX,
         startY: e.clientY,
@@ -398,8 +397,12 @@ const MapAlignmentHook = {
       if (!this._translateState) return;
       const dx = e.clientX - this._translateState.startX;
       const dy = e.clientY - this._translateState.startY;
-      this.transform.tx = this._translateState.baseTx + dx;
-      this.transform.ty = this._translateState.baseTy + dy;
+      const nextTx = this._translateState.baseTx + dx;
+      const nextTy = this._translateState.baseTy + dy;
+      if (nextTx === this.transform.tx && nextTy === this.transform.ty) return;
+      this._markPreviewDirty();
+      this.transform.tx = nextTx;
+      this.transform.ty = nextTy;
       this._applyTransform();
     };
     this._onOverlayPointerUp = (e) => {
@@ -421,7 +424,6 @@ const MapAlignmentHook = {
       if (e.button !== undefined && e.button !== 0) return;
 
       this._markUserAdjusted();
-      this._markPreviewDirty();
       const center = overlayCenter(overlay);
       const startAngle = Math.atan2(e.clientY - center.y, e.clientX - center.x);
       this._rotateState = {
@@ -442,7 +444,10 @@ const MapAlignmentHook = {
       const {centerX, centerY, startAngle, baseRotation} = this._rotateState;
       const angle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
       const deltaDeg = (angle - startAngle) * (180 / Math.PI);
-      this.transform.rotation = baseRotation + deltaDeg;
+      const nextRotation = baseRotation + deltaDeg;
+      if (nextRotation === this.transform.rotation) return;
+      this._markPreviewDirty();
+      this.transform.rotation = nextRotation;
       this._applyTransform();
     };
     this._onRotatePointerUp = (e) => {
@@ -469,7 +474,6 @@ const MapAlignmentHook = {
       if (!(initialDistance > 0)) return;
 
       this._markUserAdjusted();
-      this._markPreviewDirty();
       this._scaleState = {
         centerX: center.x,
         centerY: center.y,
@@ -490,7 +494,10 @@ const MapAlignmentHook = {
       const dy = e.clientY - centerY;
       const distance = Math.sqrt(dx * dx + dy * dy);
       const ratio = distance / initialDistance;
-      this.transform.scale = clamp(baseScale * ratio, SCALE_MIN, SCALE_MAX);
+      const nextScale = clamp(baseScale * ratio, SCALE_MIN, SCALE_MAX);
+      if (nextScale === this.transform.scale) return;
+      this._markPreviewDirty();
+      this.transform.scale = nextScale;
       this._applyTransform();
     };
     this._onScalePointerUp = (e) => {

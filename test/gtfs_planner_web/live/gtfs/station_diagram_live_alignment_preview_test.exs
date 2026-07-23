@@ -172,7 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
     end)
   end
 
-  defp mount_map_view(context) do
+  defp mount_map_view_without_image_size(context) do
     %{
       conn: conn,
       user: user,
@@ -188,6 +188,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
     render_hook(view, "switch_mode", %{"mode" => "map"})
+
+    view
+  end
+
+  defp mount_map_view(context) do
+    view = mount_map_view_without_image_size(context)
     set_image_natural_size(view, @image_w, @image_h)
 
     view
@@ -758,6 +764,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
              )
     end
 
+    test "preview button stays disabled while image dimensions are missing or non-positive",
+         context do
+      view = mount_map_view_without_image_size(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-preview-auto[disabled][aria-describedby='map-auto-alignment-disabled-reason']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-auto-alignment-disabled-reason",
+               "Floorplan image is not ready. Preview auto-alignment after it loads."
+             )
+
+      set_image_natural_size(view, 0, @image_h)
+
+      assert has_element?(
+               view,
+               "#map-alignment-preview-auto[disabled][aria-describedby='map-auto-alignment-disabled-reason']"
+             )
+
+      set_image_natural_size(view, @image_w, -1)
+
+      assert has_element?(
+               view,
+               "#map-alignment-preview-auto[disabled][aria-describedby='map-auto-alignment-disabled-reason']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-auto-alignment-disabled-reason",
+               "Floorplan image is not ready. Preview auto-alignment after it loads."
+             )
+    end
+
     test "preview button is not disabled solely for low anchor count",
          %{anchor_stops: anchor_stops} = context do
       anchor_stops
@@ -920,6 +962,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       assert has_element?(view, "#auto-alignment-status")
     end
 
+    test "current-generation dirty event leaves an error preview unchanged",
+         %{anchor_stops: anchor_stops} = context do
+      anchor_stops
+      |> Enum.drop(1)
+      |> Enum.each(&Repo.delete!/1)
+
+      view = mount_map_view(context)
+      generation = map_generation(view)
+
+      render_hook(view, "preview_alignment", %{})
+
+      assert has_element?(
+               view,
+               "#auto-alignment-error[role='alert']",
+               "Not enough anchor stops to infer alignment"
+             )
+
+      render_hook(view, "alignment_preview_adjusted", %{"generation" => generation})
+
+      assert has_element?(
+               view,
+               "#auto-alignment-error[role='alert']",
+               "Not enough anchor stops to infer alignment"
+             )
+
+      refute has_element?(view, "#auto-alignment-status")
+    end
+
     test "malformed payload is a no-op", context do
       view = mount_map_view(context)
 
@@ -972,13 +1042,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       assert generation_after != generation_before
     end
 
-    test "mode switch clears preview", context do
+    test "map to view to map clears preview and rotates generation", context do
       view = mount_map_view(context)
+      generation_before = map_generation(view)
 
       render_hook(view, "preview_alignment", %{})
       assert has_element?(view, "#auto-alignment-status")
 
       render_hook(view, "switch_mode", %{"mode" => "view"})
+      refute has_element?(view, "#auto-alignment-status")
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      generation_after = map_generation(view)
+
+      assert generation_after != generation_before
       refute has_element?(view, "#auto-alignment-status")
     end
   end
