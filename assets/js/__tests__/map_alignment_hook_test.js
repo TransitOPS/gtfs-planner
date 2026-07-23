@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
@@ -1829,6 +1829,14 @@ describe("map_alignment_hook generation bridge", () => {
 });
 
 describe("map_alignment_hook saved/preview state machine", () => {
+  const originalLeaflet = window.L;
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    window.L = originalLeaflet;
+    global.fetch = originalFetch;
+  });
+
   function buildPartialHook({
     generation = "gen-1",
     savedAlignment = null,
@@ -2084,6 +2092,25 @@ describe("map_alignment_hook saved/preview state machine", () => {
       expect(hook.transform).toEqual({ tx: 5, ty: 5, rotation: 5, scale: 1 });
       expect(hook._applyTransform).not.toHaveBeenCalled();
     });
+
+    it("leaves active preview state unchanged when saved geometry is not ready", () => {
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: { center_lat: 60, center_lon: 110, scale_mpp: 0.3, rotation_deg: 20 },
+        previewActive: true,
+      });
+      const badImg = hook.overlay.querySelector("img");
+      Object.defineProperty(badImg, "naturalWidth", { value: 0, configurable: true });
+      hook.transform = { tx: 5, ty: 5, rotation: 5, scale: 1 };
+      hook._applyTransform = vi.fn();
+
+      hook._handleRestoreSavedTransform({ generation: "gen-1" });
+
+      expect(hook.transform).toEqual({ tx: 5, ty: 5, rotation: 5, scale: 1 });
+      expect(hook._previewActive).toBe(true);
+      expect(hook._applyTransform).not.toHaveBeenCalled();
+      expect(hook._logger.warn).toHaveBeenCalled();
+    });
   });
 
   describe("alignment_saved", () => {
@@ -2121,7 +2148,30 @@ describe("map_alignment_hook saved/preview state machine", () => {
       expect(hook.savedAlignment).toEqual(original);
     });
 
-    it("does not change transform or _previewActive", () => {
+    it("rejects an invalid current-generation payload without changing state", () => {
+      const original = { center_lat: 1, center_lon: 2, scale_mpp: 0.1, rotation_deg: 0 };
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: original,
+        previewActive: true,
+      });
+      hook.transform = { tx: 10, ty: 20, rotation: 30, scale: 2 };
+
+      hook._handleAlignmentSaved({
+        generation: "gen-1",
+        center_lat: 999,
+        center_lon: -74.0,
+        scale_mpp: 0.15,
+        rotation_deg: 5,
+      });
+
+      expect(hook.savedAlignment).toEqual(original);
+      expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
+      expect(hook._previewActive).toBe(true);
+      expect(hook._logger.warn).toHaveBeenCalled();
+    });
+
+    it("keeps the persisted transform and clears _previewActive", () => {
       const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
       hook.transform = { tx: 10, ty: 20, rotation: 30, scale: 2 };
 
@@ -2134,7 +2184,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
       });
 
       expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
-      expect(hook._previewActive).toBe(true);
+      expect(hook._previewActive).toBe(false);
     });
   });
 
@@ -2242,6 +2292,33 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
       return { hook, overlay, rotateHandle, scaleHandle, mapInstance, restore };
     }
+
+    it("registers and dispatches the preview, restore, and save bridge callbacks", () => {
+      const { hook, restore } = mountDirtyHook();
+      const callbacks = Object.fromEntries(hook.handleEvent.mock.calls);
+      const applyPayload = {
+        generation: "gen-dirty",
+        center_lat: 40.7,
+        center_lon: -74,
+        scale_mpp: 0.25,
+        rotation_deg: 5,
+      };
+      const restorePayload = { generation: "gen-dirty" };
+      const savedPayload = {...applyPayload, rotation_deg: 8};
+      hook._handleApplyPreviewTransform = vi.fn();
+      hook._handleRestoreSavedTransform = vi.fn();
+      hook._handleAlignmentSaved = vi.fn();
+
+      callbacks.apply_preview_transform(applyPayload);
+      callbacks.restore_saved_transform(restorePayload);
+      callbacks.alignment_saved(savedPayload);
+
+      expect(hook._handleApplyPreviewTransform).toHaveBeenCalledWith(applyPayload);
+      expect(hook._handleRestoreSavedTransform).toHaveBeenCalledWith(restorePayload);
+      expect(hook._handleAlignmentSaved).toHaveBeenCalledWith(savedPayload);
+
+      restore();
+    });
 
     it("translate pointerdown reports dirty once during active preview", () => {
       const { hook, overlay, restore } = mountDirtyHook();

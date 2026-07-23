@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { loginAndGoToDiagram, selectDiagramMode } from "./station_diagram_helpers";
+import { readPendingStates, watchPendingState } from "./browser_helpers";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -47,6 +48,94 @@ test.describe("assisted alignment", () => {
     "../../.specs/journal-07/visual-references/mock-05-align-mode-v2.html",
   );
 
+  async function exerciseProductionPreview(page, viewport, artifactName) {
+    await page.setViewportSize(viewport);
+    await loginAndGoToDiagram(page);
+    await selectDiagramMode(page, "map");
+
+    const canvas = page.locator('[phx-hook="MapAlignment"]');
+    const previewBtn = page.locator("#map-alignment-preview-auto");
+    const restoreBtn = page.locator("#map-alignment-restore-saved");
+    const overlay = page.locator("#map-alignment-overlay");
+    const status = page.locator("#auto-alignment-status");
+    const fitValue = page.locator("#auto-alignment-fit-value");
+    const fitDescription = page.locator("#auto-alignment-fit-description");
+
+    await expect(canvas).toBeVisible();
+    const canvasBox = await canvas.boundingBox();
+    expect(canvasBox.width).toBeGreaterThan(400);
+    expect(canvasBox.height).toBeGreaterThan(200);
+
+    for (const target of [previewBtn, restoreBtn]) {
+      await expect(target).toBeVisible();
+      const box = await target.boundingBox();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+
+    const savedTransform = await overlay.evaluate((element) => element.style.transform);
+    expect(savedTransform).toBe("none");
+    await watchPendingState(page, "#map-alignment-preview-auto");
+    await previewBtn.click();
+
+    await expect(status).toBeVisible({ timeout: 10000 });
+    await expect(status).toContainText("Unsaved auto-alignment preview");
+    await expect(fitValue).toBeVisible();
+    await expect(fitValue).toContainText("Estimated fit error");
+    await expect(fitValue.locator("strong")).toHaveText(/\d+\.\d m/);
+    await expect(fitDescription).toContainText("RMSE measures the typical anchor mismatch");
+
+    const pendingStates = await readPendingStates(page);
+    expect(
+      pendingStates.some(
+        ({ disabled, text }) => disabled && text === "Previewing…",
+      ),
+    ).toBe(true);
+    await expect(previewBtn).toBeEnabled();
+    await expect(previewBtn).toHaveText("Preview auto-alignment");
+    await expect
+      .poll(() =>
+        previewBtn.evaluate((element) =>
+          element.classList.contains("phx-click-loading"),
+        ),
+      )
+      .toBe(false);
+
+    await expect
+      .poll(() => overlay.evaluate((element) => element.style.transform))
+      .not.toBe(savedTransform);
+
+    const statusZIndex = await status.evaluate((element) =>
+      Number.parseInt(window.getComputedStyle(element).zIndex, 10),
+    );
+    expect(statusZIndex).toBeGreaterThan(5);
+
+    const overflow = await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth >
+        document.documentElement.clientWidth,
+    );
+    expect(overflow).toBe(false);
+
+    await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: "instant" }));
+    await previewBtn.evaluate((element) => element.blur());
+    await page.mouse.move(8, 8);
+    await previewBtn.evaluate((element) =>
+      Promise.all(element.getAnimations().map((animation) => animation.finished)),
+    );
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    await page.screenshot({
+      path: path.join(artifactsDir, artifactName),
+      fullPage: false,
+    });
+
+    await restoreBtn.click();
+    await expect(status).not.toBeVisible();
+    await expect
+      .poll(() => overlay.evaluate((element) => element.style.transform))
+      .toBe("none");
+  }
+
   test("renders the copied reference and captures the assisted alignment region", async ({
     page,
   }) => {
@@ -66,60 +155,19 @@ test.describe("assisted alignment", () => {
   });
 
   test("production preview and restore flow at 1280x900", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await loginAndGoToDiagram(page);
-    await selectDiagramMode(page, "map");
-
-    await expect(page.locator("#map-alignment-preview-auto")).toBeVisible();
-    await expect(page.locator("#map-alignment-restore-saved")).toBeVisible();
-
-    const previewBtn = page.locator("#map-alignment-preview-auto");
-    const box = await previewBtn.boundingBox();
-    expect(box.height).toBeGreaterThanOrEqual(44);
-
-    await previewBtn.click();
-    await expect(page.locator("#auto-alignment-status")).toBeVisible({ timeout: 10000 });
-    await expect(page.locator("#auto-alignment-status")).toContainText(
-      "Unsaved auto-alignment preview",
+    await exerciseProductionPreview(
+      page,
+      { width: 1280, height: 900 },
+      "production-assisted-alignment-1280.png",
     );
-
-    const restoreBtn = page.locator("#map-alignment-restore-saved");
-    const restoreBox = await restoreBtn.boundingBox();
-    expect(restoreBox.height).toBeGreaterThanOrEqual(44);
-
-    await restoreBtn.click();
-    await expect(page.locator("#auto-alignment-status")).not.toBeVisible();
-
-    fs.mkdirSync(artifactsDir, { recursive: true });
-    await page.screenshot({
-      path: path.join(artifactsDir, "production-assisted-alignment-1280.png"),
-      fullPage: false,
-    });
   });
 
   test("production preview and restore flow at 1440x1000", async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await loginAndGoToDiagram(page);
-    await selectDiagramMode(page, "map");
-
-    await expect(page.locator("#map-alignment-preview-auto")).toBeVisible();
-
-    await page.locator("#map-alignment-preview-auto").click();
-    await expect(page.locator("#auto-alignment-status")).toBeVisible({ timeout: 10000 });
-
-    const overflow = await page.evaluate(() => {
-      return document.documentElement.scrollWidth > document.documentElement.clientWidth;
-    });
-    expect(overflow).toBe(false);
-
-    await page.locator("#map-alignment-restore-saved").click();
-    await expect(page.locator("#auto-alignment-status")).not.toBeVisible();
-
-    fs.mkdirSync(artifactsDir, { recursive: true });
-    await page.screenshot({
-      path: path.join(artifactsDir, "production-assisted-alignment-1440.png"),
-      fullPage: false,
-    });
+    await exerciseProductionPreview(
+      page,
+      { width: 1440, height: 1000 },
+      "production-assisted-alignment-1440.png",
+    );
   });
 
   test("controls are keyboard reachable in focus order", async ({ page }) => {
@@ -127,10 +175,14 @@ test.describe("assisted alignment", () => {
     await loginAndGoToDiagram(page);
     await selectDiagramMode(page, "map");
 
-    await page.locator("#map-alignment-preview-auto").focus();
-    await expect(page.locator("#map-alignment-preview-auto")).toBeFocused();
+    const precedingControl = page.locator("#map-transform-scale-up-coarse");
+    await precedingControl.click();
+    await expect(precedingControl).toBeFocused();
 
-    await page.locator("#map-alignment-restore-saved").focus();
+    await page.keyboard.press("Tab");
     await expect(page.locator("#map-alignment-restore-saved")).toBeFocused();
+
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#map-alignment-preview-auto")).toBeFocused();
   });
 });

@@ -799,14 +799,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           assigns.image_natural_height
         )
       )
+      |> assign(
+        :auto_alignment_disabled_reason,
+        auto_alignment_disabled_reason(
+          assigns.map_state,
+          assigns.image_natural_width,
+          assigns.image_natural_height
+        )
+      )
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
     <div>
-      <div class="relative">
+      <div class="relative flex min-h-0 flex-1">
         <div
           id={@canvas_id}
-          class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
+          class="map-canvas relative min-h-0 flex-1 bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
           phx-hook="MapAlignment"
           phx-update="ignore"
           data-active-level-id={@active_level && @active_level.level_id}
@@ -883,7 +891,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           id="auto-alignment-status"
           role="status"
           aria-live="polite"
-          class="absolute top-4 left-4 inline-flex items-center gap-2 bg-info/10 border border-info/40 rounded-md px-3 py-2 text-sm text-info-content"
+          aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
+          class="absolute z-10 top-4 left-4 inline-flex items-center gap-2 bg-info border border-info rounded-md px-3 py-2 text-sm text-info-content shadow-sm"
         >
           <strong class="font-medium">Unsaved auto-alignment preview</strong>
         </div>
@@ -988,32 +997,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </div>
           <% end %>
 
-          <div
+          <fieldset
             id="map-alignment-transform-controls"
-            class="flex flex-wrap gap-1"
-            aria-label="Floorplan transform controls"
+            class="flex flex-col gap-1"
           >
-            <button
-              :for={{label, action, coarse} <- transform_controls()}
-              id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
-              type="button"
-              class="btn btn-sm min-h-11 min-w-11"
-              data-map-transform-action={action}
-              data-map-transform-coarse={to_string(coarse)}
-              title={label}
-            >
-              {label}
-            </button>
-          </div>
-
-          <button
-            id="map-alignment-restore-saved"
-            type="button"
-            class="btn btn-sm btn-ghost min-h-11 text-primary"
-            phx-click="restore_saved_alignment"
-          >
-            Restore saved alignment
-          </button>
+            <legend class="text-xs font-medium text-base-content/80">Floorplan transform</legend>
+            <div class="flex flex-wrap items-center gap-1">
+              <button
+                :for={{label, action, coarse} <- transform_controls()}
+                id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
+                type="button"
+                class="btn btn-sm min-h-11 min-w-11"
+                data-map-transform-action={action}
+                data-map-transform-coarse={to_string(coarse)}
+                title={label}
+              >
+                {label}
+              </button>
+              <button
+                id="map-alignment-restore-saved"
+                type="button"
+                class="btn btn-sm btn-ghost min-h-11 text-primary"
+                phx-click="restore_saved_alignment"
+              >
+                Restore saved alignment
+              </button>
+            </div>
+          </fieldset>
 
           <fieldset
             id="map-alignment-assisted"
@@ -1026,25 +1036,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <button
               id="map-alignment-preview-auto"
               type="button"
-              class="btn btn-sm min-h-11 w-full mt-2 border border-primary text-primary"
+              class="btn btn-sm btn-outline btn-primary min-h-11 w-full mt-2 phx-click-loading:opacity-60"
               phx-click="preview_alignment"
+              phx-disable-with="Previewing…"
               disabled={
                 @map_state == :fatal or
                   invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
               }
-              aria-describedby="map-alignment-disabled-reason"
+              aria-describedby={
+                if @auto_alignment_disabled_reason,
+                  do: "map-auto-alignment-disabled-reason"
+              }
             >
               Preview auto-alignment
             </button>
+            <p
+              :if={@auto_alignment_disabled_reason}
+              id="map-auto-alignment-disabled-reason"
+              class="mt-2 text-xs text-base-content/70"
+            >
+              {@auto_alignment_disabled_reason}
+            </p>
             <%= if @alignment_preview && @alignment_preview.status == :ready do %>
-              <div class="mt-2 text-xs text-base-content/70">
+              <div id="auto-alignment-fit-value" class="mt-2 text-xs text-base-content/70">
                 Estimated fit error ·
                 <strong class="text-base-content">
                   {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
                 </strong>
               </div>
               <div class="mt-1 text-xs text-base-content/60" id="auto-alignment-fit-description">
-                Computed from {@alignment_preview.anchor_count} anchor stops. Lower is better.
+                Computed from {@alignment_preview.anchor_count} anchor stops. RMSE measures the typical anchor mismatch; lower is better.
               </div>
             <% end %>
             <%= if @alignment_preview && @alignment_preview.status == :error do %>
@@ -1225,6 +1246,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp map_controls_disabled_reason(_map_state, width, height) do
     if invalid_floorplan_image_dims?(width, height),
       do: "Floorplan image is not ready. Preview coordinates after it loads.",
+      else: nil
+  end
+
+  defp auto_alignment_disabled_reason(:fatal, _width, _height),
+    do: "Map service is unavailable. Retry the map before previewing auto-alignment."
+
+  defp auto_alignment_disabled_reason(_map_state, width, height) do
+    if invalid_floorplan_image_dims?(width, height),
+      do: "Floorplan image is not ready. Preview auto-alignment after it loads.",
       else: nil
   end
 

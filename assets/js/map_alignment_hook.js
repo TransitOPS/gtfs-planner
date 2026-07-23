@@ -1026,11 +1026,11 @@ const MapAlignmentHook = {
     if (this.savedAlignment) {
       const img = this.overlay ? this.overlay.querySelector("img") : null;
       const result = this._cssTransformForAlignment(this.savedAlignment, img);
-      if (result) {
-        this.transform = result;
-      } else {
-        this.transform = {...IDENTITY_TRANSFORM};
+      if (!result) {
+        this._logger.warn("MapAlignment: restore_saved_transform rejected (geometry not ready)");
+        return;
       }
+      this.transform = result;
     } else {
       this.transform = {...IDENTITY_TRANSFORM};
     }
@@ -1045,12 +1045,18 @@ const MapAlignmentHook = {
       return;
     }
 
+    if (!this._isValidAlignmentPayload(payload)) {
+      this._logger.warn("MapAlignment: alignment_saved rejected (invalid payload)", {payload});
+      return;
+    }
+
     this.savedAlignment = {
       center_lat: payload.center_lat,
       center_lon: payload.center_lon,
       scale_mpp: payload.scale_mpp,
       rotation_deg: payload.rotation_deg,
     };
+    this._previewActive = false;
   },
 
   _applyTransform() {
