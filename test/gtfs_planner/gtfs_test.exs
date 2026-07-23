@@ -3408,20 +3408,23 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
-  describe "save_and_apply_stop_level_alignment/4" do
+  describe "save_and_apply_stop_level_alignment/5" do
+    @describetag :audited_alignment_apply
+
     setup do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
+      user = GtfsPlanner.AccountsFixtures.user_fixture()
 
       station =
         stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "STATION_SAVE_APPLY",
+          stop_id: "STATION_AUDITED_APPLY",
           location_type: 1
         })
 
       level =
         level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "L_SAVE_APPLY",
+          level_id: "L_AUDITED_APPLY",
           level_index: 0.0
         })
 
@@ -3433,70 +3436,329 @@ defmodule GtfsPlanner.GtfsTest do
           level_id: level.id
         })
 
+      audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
       %{
         organization: organization,
         gtfs_version: gtfs_version,
         station: station,
         level: level,
-        stop_level: stop_level
+        stop_level: stop_level,
+        audit_ctx: audit_ctx,
+        user: user
       }
     end
 
-    test "saves active alignment and applies child coordinates atomically", %{
+    test "applies reviewed alignment with fingerprint, returns changed/unchanged/unplaced counts",
+         %{
+           organization: org,
+           gtfs_version: version,
+           station: station,
+           level: level,
+           stop_level: stop_level,
+           audit_ctx: audit_ctx
+         } do
+      changed_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_CHANGED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      {:ok, proposed_sl} =
+        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        |> Ecto.Changeset.apply_action(:update)
+
+      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+
+      {:ok, {same_lat, same_lon}} =
+        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+
+      _unchanged_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_UNCHANGED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 60, y: 48},
+          stop_lat: Decimal.from_float(same_lat),
+          stop_lon: Decimal.from_float(same_lon)
+        })
+
+      _unplaced_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_UNPLACED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: nil,
+          stop_lat: Decimal.new("5.0"),
+          stop_lon: Decimal.new("6.0")
+        })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+
+      assert {:ok,
+              %{
+                active_stop_level: updated_sl,
+                apply_result: %{
+                  updated_stop_count: 1,
+                  unchanged_count: 1,
+                  unplaced_count: 1
+                }
+              }} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert updated_sl.id == stop_level.id
+      assert updated_sl.floorplan_center_lat == 40.7128
+
+      reloaded = Repo.get!(Stop, changed_stop.id)
+      assert_in_delta Decimal.to_float(reloaded.stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded.stop_lon), -74.006, 1.0e-9
+    end
+
+    test "returns :invalid_input when fingerprint is missing", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      attrs = Map.delete(reviewed_apply_attrs(), :fingerprint)
+
+      assert {:error, :invalid_input} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+    end
+
+    test "returns :stale_review when fingerprint does not match", %{
       organization: org,
       gtfs_version: version,
       station: station,
       level: level,
-      stop_level: stop_level
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
     } do
-      # Precondition for Step 16 behavior: old active alignment is incomplete
-      refute GtfsPlanner.Gtfs.StopLevel.alignment_complete?(stop_level)
+      stop_fixture(org.id, version.id, %{
+        stop_id: "AUDITED_STALE",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40},
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
 
-      child_stop =
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("0", 64))
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:error, :stale_review} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "returns :not_found when stop level is outside audit scope", %{
+      audit_ctx: audit_ctx
+    } do
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+
+      other_station =
+        stop_fixture(other_org.id, other_version.id, %{
+          stop_id: "STATION_OTHER_ORG",
+          location_type: 1
+        })
+
+      other_level =
+        level_fixture(other_org.id, other_version.id, %{
+          level_id: "L_OTHER_ORG",
+          level_index: 0.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: other_org.id,
+          gtfs_version_id: other_version.id,
+          stop_id: other_station.id,
+          level_id: other_level.id
+        })
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
+
+      assert {:error, :not_found} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 other_stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+    end
+
+    test "inserts one strict updated ChangeLog per changed stop with exact changed_fields", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      changed_stop =
         stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_PLATFORM",
+          stop_id: "AUDITED_LOG_CHANGED",
           location_type: 0,
           parent_station: station.stop_id,
           level_id: level.level_id,
-          # The painted image center in width-normalized diagram units is
-          # (50, 50 * h/w) — (50, 40) for a 1000x800 image.
-          diagram_coordinate: %{x: 50, y: 40}
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("10.5"),
+          stop_lon: Decimal.new("20.5")
         })
 
-      attrs = %{
-        floorplan_center_lat: 40.7128,
-        floorplan_center_lon: -74.0060,
-        floorplan_scale_mpp: 0.25,
-        floorplan_rotation_deg: 0.0
-      }
+      {:ok, proposed_sl} =
+        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        |> Ecto.Changeset.apply_action(:update)
 
-      assert {:ok,
-              %{
-                active_stop_level: updated,
-                apply_result: %{
-                  touched_stop_count: 1
-                }
-              }} =
-               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
 
-      assert updated.id == stop_level.id
-      assert updated.floorplan_center_lat == 40.7128
-      assert updated.floorplan_center_lon == -74.0060
-      assert updated.floorplan_scale_mpp == 0.25
-      assert updated.floorplan_rotation_deg == 0.0
+      {:ok, {same_lat, same_lon}} =
+        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
 
-      reloaded_child_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
-      assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lat), 40.7128, 1.0e-9
-      assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lon), -74.0060, 1.0e-9
+      unchanged_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_LOG_UNCHANGED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 60, y: 48},
+          stop_lat: Decimal.from_float(same_lat),
+          stop_lon: Decimal.from_float(same_lon)
+        })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+
+      assert {:ok, %{apply_result: %{updated_stop_count: 1}}} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          org.id,
+          version.id,
+          "stop",
+          changed_stop.id
+        )
+
+      assert length(logs) == 1
+      log = hd(logs)
+      assert log.action == "updated"
+      assert log.actor_email == audit_ctx.actor_email
+      assert log.station_stop_id == station.stop_id
+
+      assert Map.has_key?(log.changed_fields, "stop_lat")
+      assert Map.has_key?(log.changed_fields, "stop_lon")
+      assert log.changed_fields["stop_lat"]["from"] == "10.5"
+      assert log.changed_fields["stop_lon"]["from"] == "20.5"
+
+      assert log.snapshot["stop_lat"] == "10.5"
+      assert log.snapshot["stop_lon"] == "20.5"
+      assert log.snapshot["stop_name"] == changed_stop.stop_name
+
+      unchanged_logs =
+        Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", unchanged_stop.id)
+
+      assert unchanged_logs == []
     end
 
-    test "refreshes pin geography on alignment and re-alignment without changing its return shape",
-         %{
-           organization: organization,
-           gtfs_version: version,
-           station: station,
-           stop_level: stop_level
-         } do
+    test "rolls back all writes when audit context has nil actor_email", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_ROLLBACK_EMAIL",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+      bad_ctx = %{audit_ctx | actor_email: nil}
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800, bad_ctx)
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+
+      reloaded = Repo.get!(Stop, child.id)
+      assert Decimal.equal?(reloaded.stop_lat, Decimal.new("1.0"))
+      assert Decimal.equal?(reloaded.stop_lon, Decimal.new("2.0"))
+
+      assert Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id) == []
+
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "refreshes pin geography atomically within the transaction", %{
+      organization: organization,
+      gtfs_version: version,
+      station: station,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
       scope = %Scope{
         organization_id: organization.id,
         gtfs_version_id: version.id,
@@ -3521,213 +3783,196 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
 
-      attrs = %{
-        floorplan_center_lat: 40.7128,
-        floorplan_center_lon: -74.0060,
-        floorplan_scale_mpp: 0.25,
-        floorplan_rotation_deg: 0.0
-      }
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
 
-      assert {:ok, %{active_stop_level: updated, apply_result: %{touched_stop_count: 0}}} =
-               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
 
-      refreshed = Repo.get!(JournalEntry, pin_id)
-      assert refreshed.diagram_x == 50.0
-      assert refreshed.diagram_y == 40.0
-      assert_in_delta refreshed.lat, 40.7128, 1.0e-9
-      assert_in_delta refreshed.lon, -74.0060, 1.0e-9
-
-      realigned_attrs = %{attrs | floorplan_center_lat: 40.7138}
-      updated_id = updated.id
-
-      assert {:ok,
-              %{active_stop_level: %{id: ^updated_id}, apply_result: %{touched_stop_count: 0}}} =
-               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, realigned_attrs, 1000, 800)
-
-      realigned = Repo.get!(JournalEntry, pin_id)
-      assert realigned.diagram_x == 50.0
-      assert realigned.diagram_y == 40.0
-      assert_in_delta realigned.lat, 40.7138, 1.0e-9
-      assert_in_delta realigned.lon, -74.0060, 1.0e-9
-    end
-
-    test "returns :not_found when active stop level does not exist" do
-      assert {:error, :not_found} =
-               Gtfs.save_and_apply_stop_level_alignment(
-                 Ecto.UUID.generate(),
-                 %{
-                   floorplan_center_lat: 40.7128,
-                   floorplan_center_lon: -74.0060,
-                   floorplan_scale_mpp: 0.25,
-                   floorplan_rotation_deg: 0.0
-                 },
-                 1000,
-                 800
-               )
-    end
-
-    test "returns :invalid_image_dims when dimensions are invalid", %{stop_level: stop_level} do
-      assert {:error, :invalid_image_dims} =
+      assert {:ok, _} =
                Gtfs.save_and_apply_stop_level_alignment(
                  stop_level.id,
-                 %{
-                   floorplan_center_lat: 40.7128,
-                   floorplan_center_lon: -74.0060,
-                   floorplan_scale_mpp: 0.25,
-                   floorplan_rotation_deg: 0.0
-                 },
-                 0,
-                 800
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
                )
+
+      refreshed = Repo.get!(JournalEntry, pin_id)
+      assert_in_delta refreshed.lat, 40.7128, 1.0e-9
+      assert_in_delta refreshed.lon, -74.006, 1.0e-9
     end
 
-    test "updates only active level data", %{
-      organization: org,
-      gtfs_version: version,
-      station: station,
-      level: active_level,
-      stop_level: active_stop_level
-    } do
-      other_level =
-        level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_OTHER",
-          level_index: 1.0
-        })
-
-      {:ok, other_stop_level} =
-        Gtfs.create_stop_level(%{
-          organization_id: org.id,
-          gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: other_level.id
-        })
-
-      {:ok, other_stop_level} =
-        Gtfs.update_stop_level_alignment(other_stop_level, %{
-          floorplan_center_lat: 40.6,
-          floorplan_center_lon: -73.9,
-          floorplan_scale_mpp: 0.5,
-          floorplan_rotation_deg: 10.0
-        })
-
-      active_child =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_ACTIVE_ONLY_CHILD",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: active_level.level_id,
-          # Image center for a 1000x800 image in width-normalized units.
-          diagram_coordinate: %{x: 50, y: 40},
-          stop_lat: Decimal.new("1.0"),
-          stop_lon: Decimal.new("2.0")
-        })
-
-      other_child =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_OTHER_LEVEL_CHILD",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: other_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50},
-          stop_lat: Decimal.new("3.0"),
-          stop_lon: Decimal.new("4.0")
-        })
-
-      attrs = %{
-        floorplan_center_lat: 41.1111,
-        floorplan_center_lon: -73.2222,
-        floorplan_scale_mpp: 0.3,
-        floorplan_rotation_deg: 5.0
-      }
-
-      assert {:ok,
-              %{
-                active_stop_level: updated,
-                apply_result: %{touched_stop_count: 1}
-              }} =
-               Gtfs.save_and_apply_stop_level_alignment(active_stop_level.id, attrs, 1000, 800)
-
-      assert updated.id == active_stop_level.id
-      assert updated.floorplan_center_lat == attrs.floorplan_center_lat
-      assert updated.floorplan_center_lon == attrs.floorplan_center_lon
-      assert updated.floorplan_scale_mpp == attrs.floorplan_scale_mpp
-      assert updated.floorplan_rotation_deg == attrs.floorplan_rotation_deg
-
-      reloaded_other_stop_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, other_stop_level.id)
-
-      assert reloaded_other_stop_level.floorplan_center_lat ==
-               other_stop_level.floorplan_center_lat
-
-      assert reloaded_other_stop_level.floorplan_center_lon ==
-               other_stop_level.floorplan_center_lon
-
-      assert reloaded_other_stop_level.floorplan_scale_mpp == other_stop_level.floorplan_scale_mpp
-
-      assert reloaded_other_stop_level.floorplan_rotation_deg ==
-               other_stop_level.floorplan_rotation_deg
-
-      reloaded_active_child = Repo.get!(GtfsPlanner.Gtfs.Stop, active_child.id)
-      reloaded_other_child = Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id)
-
-      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lat),
-                      attrs.floorplan_center_lat,
-                      1.0e-9
-
-      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lon),
-                      attrs.floorplan_center_lon,
-                      1.0e-9
-
-      assert Decimal.equal?(reloaded_other_child.stop_lat, Decimal.new("3.0"))
-      assert Decimal.equal?(reloaded_other_child.stop_lon, Decimal.new("4.0"))
-    end
-
-    test "ignores active child stops without normalizable diagram_coordinate", %{
+    test "publishes one stop-level and one stop broadcast per changed stop only", %{
       organization: org,
       gtfs_version: version,
       station: station,
       level: level,
-      stop_level: stop_level
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
     } do
-      valid_child =
+      stop_fixture(org.id, version.id, %{
+        stop_id: "AUDITED_BROADCAST_CHANGED",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40},
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      {:ok, proposed_sl} =
+        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        |> Ecto.Changeset.apply_action(:update)
+
+      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+
+      {:ok, {same_lat, same_lon}} =
+        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "AUDITED_BROADCAST_UNCHANGED",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 60, y: 48},
+        stop_lat: Decimal.from_float(same_lat),
+        stop_lon: Decimal.from_float(same_lon)
+      })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:ok, _} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert_receive {[:stop_levels, :updated], _sl_msg}
+      assert_receive {[:stops, :updated], _stop_msg}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "rollback via ChangeLog restores prior coordinates from the full snapshot", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      child =
         stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_VALID_COORD",
+          stop_id: "AUDITED_ROLLBACK_COORD",
           location_type: 0,
           parent_station: station.stop_id,
           level_id: level.level_id,
-          # Image center for a 1000x800 image in width-normalized units.
+          stop_name: "Original Name",
           diagram_coordinate: %{x: 50, y: 40},
-          stop_lat: Decimal.new("1.0"),
-          stop_lon: Decimal.new("2.0")
+          stop_lat: Decimal.new("10.0"),
+          stop_lon: Decimal.new("20.0")
         })
 
-      bad_coord_child =
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+
+      assert {:ok, _} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      reloaded = Repo.get!(Stop, child.id)
+      assert_in_delta Decimal.to_float(reloaded.stop_lat), 40.7128, 1.0e-9
+
+      [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id)
+      assert log.action == "updated"
+      assert log.snapshot["stop_name"] == "Original Name"
+
+      assert {:ok, restored} = Gtfs.rollback_entity(log, audit_ctx)
+      assert Decimal.equal?(restored.stop_lat, Decimal.new("10.0"))
+      assert Decimal.equal?(restored.stop_lon, Decimal.new("20.0"))
+      assert restored.stop_name == "Original Name"
+
+      [rolled_back_log | _] =
+        Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id)
+
+      assert rolled_back_log.action == "rolled_back"
+    end
+
+    test "cross-field snapshot preserves full pre-mutation state for rollback", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      child =
         stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_BAD_COORD",
+          stop_id: "AUDITED_CROSS_FIELD",
           location_type: 0,
           parent_station: station.stop_id,
           level_id: level.level_id,
-          diagram_coordinate: %{foo: "bar"},
-          stop_lat: Decimal.new("3.0"),
-          stop_lon: Decimal.new("4.0")
+          stop_name: "Cross Field Stop",
+          platform_code: "PF1",
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("30.0"),
+          stop_lon: Decimal.new("40.0")
         })
 
-      attrs = %{
-        floorplan_center_lat: 40.7128,
-        floorplan_center_lon: -74.0060,
-        floorplan_scale_mpp: 0.25,
-        floorplan_rotation_deg: 0.0
-      }
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
 
-      assert {:ok, %{apply_result: %{touched_stop_count: 1}}} =
-               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
 
-      reloaded_valid = Repo.get!(GtfsPlanner.Gtfs.Stop, valid_child.id)
-      assert_in_delta Decimal.to_float(reloaded_valid.stop_lat), 40.7128, 1.0e-9
-      assert_in_delta Decimal.to_float(reloaded_valid.stop_lon), -74.0060, 1.0e-9
+      assert {:ok, _} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
 
-      reloaded_bad = Repo.get!(GtfsPlanner.Gtfs.Stop, bad_coord_child.id)
-      assert Decimal.equal?(reloaded_bad.stop_lat, Decimal.new("3.0"))
-      assert Decimal.equal?(reloaded_bad.stop_lon, Decimal.new("4.0"))
+      [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id)
+
+      assert log.snapshot["stop_name"] == "Cross Field Stop"
+      assert log.snapshot["platform_code"] == "PF1"
+      assert log.snapshot["stop_lat"] == "30.0"
+      assert log.snapshot["stop_lon"] == "40.0"
+      assert log.snapshot["diagram_coordinate"] == %{"x" => 50.0, "y" => 40.0}
+
+      assert {:ok, restored} = Gtfs.rollback_entity(log, audit_ctx)
+      assert restored.stop_name == "Cross Field Stop"
+      assert restored.platform_code == "PF1"
+      assert Decimal.equal?(restored.stop_lat, Decimal.new("30.0"))
+      assert Decimal.equal?(restored.stop_lon, Decimal.new("40.0"))
+    end
+
+    test "the old /4 public function is no longer exported" do
+      refute function_exported?(Gtfs, :save_and_apply_stop_level_alignment, 4)
+    end
+
+    test "Package 07 inference functions remain callable", %{stop_level: stop_level} do
+      assert {:error, _} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
+      assert {:error, _} = Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
+
+      assert {:error, :alignment_missing} =
+               Gtfs.apply_alignment_to_child_stops(stop_level, 1000, 800)
     end
   end
 
@@ -4029,6 +4274,16 @@ defmodule GtfsPlanner.GtfsTest do
       floorplan_center_lon: -74.006,
       floorplan_scale_mpp: 0.25,
       floorplan_rotation_deg: 0.0
+    }
+  end
+
+  defp reviewed_apply_attrs do
+    %{
+      floorplan_center_lat: 40.7128,
+      floorplan_center_lon: -74.006,
+      floorplan_scale_mpp: 0.25,
+      floorplan_rotation_deg: 0.0,
+      fingerprint: String.duplicate("0", 64)
     }
   end
 

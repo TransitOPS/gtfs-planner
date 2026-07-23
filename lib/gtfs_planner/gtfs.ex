@@ -1247,139 +1247,255 @@ defmodule GtfsPlanner.Gtfs do
 
   defp serialization_failure?(_), do: false
 
-  @doc """
-  Saves floorplan alignment for an active stop_level and applies it to the
-  active level child stops in a single transaction.
+  @type reviewed_alignment_attrs :: %{
+          floorplan_center_lat: number(),
+          floorplan_center_lon: number(),
+          floorplan_scale_mpp: number(),
+          floorplan_rotation_deg: number(),
+          fingerprint: String.t()
+        }
 
-  Returns `{:ok, %{active_stop_level: stop_level, apply_result: result}}`
-  on success, where `result` includes only active-level apply data.
+  @doc """
+  Saves a reviewed floorplan alignment and applies it to changed child stops
+  within the audit context scope.
+
+  Verifies the review fingerprint under a `FOR UPDATE` lock before any write.
+  Only stops whose derived coordinates differ (via `Decimal.compare/2`) are
+  updated and audited. Publishes broadcasts after commit.
   """
   @spec save_and_apply_stop_level_alignment(
           Ecto.UUID.t(),
-          map(),
+          reviewed_alignment_attrs(),
           pos_integer(),
-          pos_integer()
+          pos_integer(),
+          AuditContext.t()
         ) ::
           {:ok,
            %{
              active_stop_level: StopLevel.t(),
              apply_result: %{
-               touched_stop_count: non_neg_integer()
+               updated_stop_count: non_neg_integer(),
+               unchanged_count: non_neg_integer(),
+               unplaced_count: non_neg_integer()
              }
            }}
           | {:error,
              :not_found
              | :invalid_input
+             | :stale_review
+             | :busy
              | :alignment_missing
              | :invalid_image_dims
              | {:transform, atom()}
              | Ecto.Changeset.t()
              | term()}
   def save_and_apply_stop_level_alignment(
-        active_stop_level_id,
-        proposed_alignment_attrs,
+        stop_level_id,
+        reviewed_attrs,
         image_w,
-        image_h
+        image_h,
+        %AuditContext{} = audit_ctx
       )
-      when is_binary(active_stop_level_id) and is_map(proposed_alignment_attrs) do
-    Logger.debug(fn ->
-      "[ALIGN_APPLY_DEBUG] start save_and_apply_stop_level_alignment " <>
-        inspect(%{
-          active_stop_level_id: active_stop_level_id,
-          proposed_alignment_attrs: proposed_alignment_attrs,
-          image_w: image_w,
-          image_h: image_h
-        })
-    end)
+      when is_binary(stop_level_id) and is_map(reviewed_attrs) do
+    with {:ok, fingerprint} <- extract_review_fingerprint(reviewed_attrs),
+         :ok <- validate_positive_image_dims(image_w, image_h) do
+      alignment_attrs = Map.delete(reviewed_attrs, :fingerprint)
 
-    with :ok <- validate_positive_image_dims(image_w, image_h) do
-      transaction_result =
-        Repo.transaction(fn ->
-          case load_stop_level_for_update(active_stop_level_id) do
-            nil ->
-              Repo.rollback(:not_found)
-
-            %StopLevel{} = active_stop_level ->
-              old_alignment_snapshot = stop_level_alignment_snapshot(active_stop_level)
-
-              Logger.debug(fn ->
-                "[ALIGN_APPLY_DEBUG] active_stop_level_loaded " <>
-                  inspect(%{
-                    active_stop_level_id: active_stop_level.id,
-                    old_alignment_snapshot: old_alignment_snapshot
-                  })
-              end)
-
-              with {:ok, updated_stop_level} <-
-                     active_stop_level
-                     |> StopLevel.alignment_changeset(proposed_alignment_attrs)
-                     |> Repo.update(),
-                   {:ok, active_derived} <-
-                     derive_child_stop_coords(updated_stop_level, image_w, image_h),
-                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived),
-                   {:ok, _refreshed_pin_count} <-
-                     refresh_pin_coordinates_for_stop_level(updated_stop_level, image_w, image_h) do
-                Logger.debug(fn ->
-                  "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
-                    inspect(%{
-                      active_stop_level_id: updated_stop_level.id,
-                      updated_alignment_snapshot:
-                        stop_level_alignment_snapshot(updated_stop_level)
-                    })
-                end)
-
-                apply_result = %{
-                  touched_stop_count: length(active_updated_stops)
-                }
-
-                %{
-                  active_stop_level: updated_stop_level,
-                  active_updated_stops: active_updated_stops,
-                  apply_result: apply_result
-                }
-              else
-                {:error, reason} ->
-                  Logger.warning(fn ->
-                    "[ALIGN_APPLY_DEBUG] transaction_rollback " <>
-                      inspect(%{active_stop_level_id: active_stop_level.id, reason: reason})
-                  end)
-
-                  Repo.rollback(reason)
-              end
-          end
-        end)
-
-      case transaction_result do
-        {:ok,
-         %{
-           active_stop_level: updated_stop_level,
-           active_updated_stops: active_updated_stops,
-           apply_result: apply_result
-         }} ->
-          broadcast({:ok, updated_stop_level}, [:stop_levels, :updated])
-
-          Enum.each(active_updated_stops, fn stop ->
-            broadcast({:ok, stop}, [:stops, :updated])
-          end)
-
-          {:ok,
-           %{
-             active_stop_level: updated_stop_level,
-             apply_result: apply_result
-           }}
-
-        {:error, reason} ->
-          Logger.warning(fn ->
-            "[ALIGN_APPLY_DEBUG] save_and_apply_failed " <>
-              inspect(%{active_stop_level_id: active_stop_level_id, reason: reason})
-          end)
-
-          {:error, reason}
-      end
+      stop_level_id
+      |> apply_reviewed_with_retries(
+        alignment_attrs,
+        image_w,
+        image_h,
+        fingerprint,
+        audit_ctx,
+        3
+      )
+      |> publish_reviewed_result()
     end
   end
 
-  def save_and_apply_stop_level_alignment(_, _, _, _), do: {:error, :invalid_input}
+  def save_and_apply_stop_level_alignment(_, _, _, _, _), do: {:error, :invalid_input}
+
+  defp extract_review_fingerprint(%{fingerprint: fp}) when is_binary(fp) and byte_size(fp) > 0,
+    do: {:ok, fp}
+
+  defp extract_review_fingerprint(_), do: {:error, :invalid_input}
+
+  defp apply_reviewed_with_retries(
+         stop_level_id,
+         alignment_attrs,
+         image_w,
+         image_h,
+         fingerprint,
+         audit_ctx,
+         attempts_remaining
+       )
+       when attempts_remaining > 0 do
+    tx_fn = fn ->
+      apply_reviewed_alignment_in_tx(
+        stop_level_id,
+        alignment_attrs,
+        image_w,
+        image_h,
+        fingerprint,
+        audit_ctx
+      )
+    end
+
+    case Repo.transaction(tx_fn, isolation: :serializable) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, reason} when attempts_remaining > 1 ->
+        if serialization_failure?(reason) do
+          apply_reviewed_with_retries(
+            stop_level_id,
+            alignment_attrs,
+            image_w,
+            image_h,
+            fingerprint,
+            audit_ctx,
+            attempts_remaining - 1
+          )
+        else
+          {:error, reason}
+        end
+
+      {:error, reason} ->
+        if serialization_failure?(reason), do: {:error, :busy}, else: {:error, reason}
+    end
+  end
+
+  defp publish_reviewed_result({:ok, result}) do
+    %{
+      active_stop_level: stop_level,
+      changed_stops: changed_stops,
+      updated_stop_count: updated_count,
+      unchanged_count: unchanged_count,
+      unplaced_count: unplaced_count
+    } = result
+
+    broadcast({:ok, stop_level}, [:stop_levels, :updated])
+
+    Enum.each(changed_stops, fn stop ->
+      broadcast({:ok, stop}, [:stops, :updated])
+    end)
+
+    {:ok,
+     %{
+       active_stop_level: stop_level,
+       apply_result: %{
+         updated_stop_count: updated_count,
+         unchanged_count: unchanged_count,
+         unplaced_count: unplaced_count
+       }
+     }}
+  end
+
+  defp publish_reviewed_result({:error, reason}), do: {:error, reason}
+
+  defp apply_reviewed_alignment_in_tx(
+         stop_level_id,
+         proposed_alignment,
+         image_w,
+         image_h,
+         expected_fingerprint,
+         %AuditContext{} = audit_ctx
+       ) do
+    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx) do
+      nil ->
+        Repo.rollback(:not_found)
+
+      %StopLevel{} = stop_level ->
+        with {:ok, projection} <-
+               build_alignment_projection(
+                 stop_level.id,
+                 proposed_alignment,
+                 image_w,
+                 image_h,
+                 lock: "FOR UPDATE"
+               ),
+             :ok <- verify_review_fingerprint(projection, expected_fingerprint),
+             {:ok, updated_stop_level} <-
+               stop_level
+               |> StopLevel.alignment_changeset(proposed_alignment)
+               |> Repo.update(),
+             {:ok, changed_stops} <-
+               persist_changed_stops_with_audit(
+                 projection,
+                 audit_ctx
+               ),
+             {:ok, _pin_count} <-
+               StationJournal.refresh_pin_coordinates_for_stop_level(
+                 updated_stop_level,
+                 image_w,
+                 image_h
+               ) do
+          %{
+            active_stop_level: updated_stop_level,
+            changed_stops: changed_stops,
+            updated_stop_count: length(changed_stops),
+            unchanged_count: projection.unchanged_count,
+            unplaced_count: projection.unplaced_count
+          }
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+    end
+  end
+
+  defp load_stop_level_for_update_scoped(stop_level_id, %AuditContext{} = audit_ctx) do
+    from(sl in StopLevel,
+      where:
+        sl.id == ^stop_level_id and
+          sl.organization_id == ^audit_ctx.organization_id and
+          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp verify_review_fingerprint(projection, expected_fingerprint) do
+    if projection.fingerprint == expected_fingerprint,
+      do: :ok,
+      else: {:error, :stale_review}
+  end
+
+  defp persist_changed_stops_with_audit(projection, %AuditContext{} = audit_ctx) do
+    projection.rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, updated_stops} ->
+      persist_row_if_changed(row, updated_stops, audit_ctx)
+    end)
+    |> case do
+      {:ok, stops} -> {:ok, Enum.reverse(stops)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp persist_row_if_changed(row, updated_stops, audit_ctx) do
+    classification =
+      classify_coordinate_change(row.old_lat, row.old_lon, row.new_lat, row.new_lon)
+
+    if classification.changed? do
+      case update_and_audit_stop(row.stop, classification.changed_attrs, audit_ctx) do
+        {:ok, updated_stop} -> {:cont, {:ok, [updated_stop | updated_stops]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    else
+      {:cont, {:ok, updated_stops}}
+    end
+  end
+
+  defp update_and_audit_stop(%Stop{} = stop, changed_attrs, %AuditContext{} = audit_ctx) do
+    with {:ok, updated_stop} <-
+           stop
+           |> Stop.changeset(changed_attrs)
+           |> Repo.update(),
+         {:ok, _log} <-
+           record_change_in_transaction(audit_ctx, :stop, stop, "updated", changed_attrs) do
+      {:ok, updated_stop}
+    end
+  end
 
   defp load_stop_level_for_update(stop_level_id) when is_binary(stop_level_id) do
     from(sl in StopLevel, where: sl.id == ^stop_level_id, lock: "FOR UPDATE")
@@ -1439,23 +1555,6 @@ defmodule GtfsPlanner.Gtfs do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp persist_derived_coords_in_tx(derived) when is_list(derived) do
-    derived
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, updated_stops} ->
-      case update_derived_stop_coords(entry) do
-        {:ok, updated_stop} ->
-          {:cont, {:ok, [updated_stop | updated_stops]}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, updated_stops} -> {:ok, Enum.reverse(updated_stops)}
-      {:error, _} = error -> error
     end
   end
 
