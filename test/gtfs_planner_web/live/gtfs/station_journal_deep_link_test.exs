@@ -557,8 +557,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
 
       render_async(view, 5_000)
 
-      html = render(view)
-      assert html =~ "Deep Link Child"
+      assert has_element?(view, "dialog#child-stop-drawer-overlay[data-open='true']")
+      assert has_element?(view, "aside#child-stop-drawer")
+
+      assert has_element?(
+               view,
+               "#child-stop-form input[name='stop_name'][value='Deep Link Child']"
+             )
 
       refute has_element?(view, "#station-journal-panel")
 

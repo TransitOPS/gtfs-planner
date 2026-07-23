@@ -371,9 +371,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <button
             :for={level <- @levels}
             id={"level-option-#{level.id}"}
-            type="submit"
+            type="button"
             name="level_id"
             value={level.id}
+            data-level-id={level.level_id}
             class={[
               "flex items-center justify-between w-full px-3 py-2 min-h-11 hover:bg-base-200",
               @active_level && level.id == @active_level.id &&
@@ -381,7 +382,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               @active_level && level.id == @active_level.id && "aria-current-true"
             ]}
             aria-current={@active_level && level.id == @active_level.id && "true"}
-            phx-click={@close_panel}
+            phx-click={
+              @close_panel
+              |> JS.push("switch_level", value: %{level_id: level.id})
+            }
           >
             <span class="flex items-center gap-2">
               {level.level_name || level.level_id}

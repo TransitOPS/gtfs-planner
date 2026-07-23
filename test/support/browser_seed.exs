@@ -471,7 +471,7 @@ case Accounts.register_first_admin(%{
         one_pixel_png
       )
 
-    {:ok, browser_child_d} =
+    {:ok, _browser_child_d} =
       Gtfs.create_stop(%{
         stop_id: "BROWSER_STOP_D",
         stop_name: "Mezzanine Landing D",
@@ -628,6 +628,9 @@ case Accounts.register_first_admin(%{
     %{synced_count: 4, errors: []} =
       Gtfs.sync_journal_entries(journal_scope, pkg4_journal_entries)
 
+    {:ok, _closed_summary_entry} =
+      Gtfs.close_journal_entry(journal_scope, "00000000-0000-4000-8000-000000000724")
+
     # Attach a photo to one node entry for the photo-link test
     pkg4_photo_path =
       Path.join(
@@ -674,7 +677,7 @@ case Accounts.register_first_admin(%{
       })
 
     IO.puts(
-      "Browser seed: 4 Package 04 journal entries (multi-entry node, pathway, photo, zero-entry stop)"
+      "Browser seed: 4 Package 04 journal entries (multi-entry node, pathway, photo, recent closed entry, zero-entry stop)"
     )
 
     # A long-named, long-id, unconnected generic node. It fails the isolated
@@ -1280,6 +1283,12 @@ case Accounts.register_first_admin(%{
       )
 
     IO.puts("Browser seed: routes-only version #{routes_only_version.id} with ready export")
+
+    diagram_version
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"

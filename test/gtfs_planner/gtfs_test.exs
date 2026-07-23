@@ -3764,6 +3764,51 @@ defmodule GtfsPlanner.GtfsTest do
                )
     end
 
+    test "returns :not_found for another version in the audited organization", %{
+      organization: organization,
+      audit_ctx: audit_ctx
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+
+      other_station =
+        stop_fixture(organization.id, other_version.id, %{
+          stop_id: "STATION_OTHER_VERSION",
+          location_type: 1
+        })
+
+      other_level =
+        level_fixture(organization.id, other_version.id, %{
+          level_id: "L_OTHER_VERSION",
+          level_index: 0.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: other_version.id,
+          stop_id: other_station.id,
+          level_id: other_level.id
+        })
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:error, :not_found} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 other_stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert Repo.get!(StopLevel, other_stop_level.id).floorplan_center_lat == nil
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
     test "inserts one strict updated ChangeLog per changed stop with exact changed_fields", %{
       organization: org,
       gtfs_version: version,
@@ -4193,6 +4238,13 @@ defmodule GtfsPlanner.GtfsTest do
       [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id)
       assert log.action == "updated"
       assert log.snapshot["stop_name"] == "Original Name"
+
+      assert {:ok, renamed} =
+               Stop
+               |> Repo.get!(child.id)
+               |> Gtfs.update_stop(%{stop_name: "Later Unrelated Name"})
+
+      assert renamed.stop_name == "Later Unrelated Name"
 
       assert {:ok, restored} = Gtfs.rollback_entity(log, audit_ctx)
       assert Decimal.equal?(restored.stop_lat, Decimal.new("10.0"))

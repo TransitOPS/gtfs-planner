@@ -27,8 +27,8 @@ async function loginAndGoToDiagram(page) {
   // Click the station name link to navigate to the detail page
   await stationRow.getByRole("link").first().click();
   await page.waitForURL("**/stops/**");
-  // Click the "Diagram" sub-nav tab
-  await page.locator("a", { hasText: "Diagram" }).click();
+  // Click the "Floorplans" sub-nav tab
+  await page.getByRole("link", { name: "Floorplans", exact: true }).click();
   await page.waitForSelector("#diagram-page");
 }
 
@@ -62,7 +62,7 @@ test.describe("Diagram keyboard navigation", () => {
     // Tab into the page content and toward the diagram stops.
     // First, click somewhere in the diagram area to set focus context.
     await page.locator("#diagram-canvas-wrapper").click();
-    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
+    await tabUntilFocused(page, "#diagram-overlay g[data-stop-id][tabindex]");
 
     const focused = await page.evaluate(() => {
       const ae = document.activeElement;
@@ -80,7 +80,7 @@ test.describe("Diagram keyboard navigation", () => {
   }) => {
     await page.waitForSelector("#diagram-overlay");
     await page.locator("#diagram-canvas-wrapper").click();
-    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
+    await tabUntilFocused(page, "#diagram-overlay g[data-stop-id][tabindex]");
 
     // Press Enter to activate the focused stop
     await page.keyboard.press("Enter");
@@ -93,7 +93,7 @@ test.describe("Diagram keyboard navigation", () => {
   test("Escape closes the child stop drawer when open", async ({ page }) => {
     await page.waitForSelector("#diagram-overlay");
     await page.locator("#diagram-canvas-wrapper").click();
-    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
+    await tabUntilFocused(page, "#diagram-overlay g[data-stop-id][tabindex]");
     await page.keyboard.press("Enter");
     await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({
       timeout: 5000,
@@ -130,8 +130,8 @@ test.describe("Diagram mode switching via keyboard", () => {
     await expect(addMode).toBeChecked();
     await page.waitForTimeout(500);
 
-    // The mode hint should change to "Click diagram to add a child stop"
-    await expect(page.locator("text=Click diagram to add a child stop")).toBeVisible({
+    // The mode hint should explain how to place the child stop on the floorplan.
+    await expect(page.getByText("Click floorplan to add a child stop")).toBeVisible({
       timeout: 3000,
     });
 
@@ -159,8 +159,8 @@ test.describe("Diagram mode switching via keyboard", () => {
     await expect(connectMode).toBeChecked();
     await page.waitForTimeout(500);
 
-    // The connect from-select should appear
-    await expect(page.locator("#connect-from-form")).toBeVisible({
+    // Connect mode starts by asking the editor to choose a source stop.
+    await expect(page.getByText("Click a stop to start a connection")).toBeVisible({
       timeout: 3000,
     });
 
@@ -295,8 +295,10 @@ test.describe("Diagram focus indicator", () => {
     // SVG hit-target geometry that carries the cross-engine focus indicator.
     await page.locator("#diagram-canvas-wrapper").click();
 
-    const focusedGroup = page.locator("#diagram-overlay g[tabindex]:focus-visible");
-    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
+    const focusedGroup = page.locator(
+      "#diagram-overlay g[data-stop-id][tabindex]:focus-visible",
+    );
+    await tabUntilFocused(page, "#diagram-overlay g[data-stop-id][tabindex]");
     await expect(focusedGroup).toHaveCount(1);
 
     const ring = await focusedGroup.evaluate((el) => {
@@ -345,16 +347,13 @@ test.describe("Diagram reduced-motion accessibility", () => {
     const overlay = page.locator("#diagram-overlay");
     await expect(overlay).toBeVisible({ timeout: 5000 });
 
-    // Tab to stops — should work without transition delay
-    await page.locator("#diagram-canvas-wrapper").click();
-    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
-
-    const hasFocusedStop = await page.evaluate(() => {
-      const ae = document.activeElement;
-      const overlay = document.getElementById("diagram-overlay");
-      return overlay ? overlay.contains(ae) : false;
-    });
-    expect(hasFocusedStop).toBe(true);
+    // Focus a stop directly so the reduced-motion workflow is independent of
+    // how 200% browser zoom changes the number of preceding tab stops.
+    const stop = page
+      .locator("#diagram-overlay g[data-stop-id][tabindex]")
+      .first();
+    await stop.focus();
+    await expect(stop).toBeFocused();
 
     // Open edit drawer via keyboard
     await page.keyboard.press("Enter");
@@ -392,10 +391,10 @@ test.describe("Diagram reduced-motion accessibility", () => {
     await page.waitForSelector("#diagram-overlay");
 
     await page.locator("#diagram-canvas-wrapper").click();
-    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
+    await tabUntilFocused(page, "#diagram-overlay g[data-stop-id][tabindex]");
 
     const focusMotion = await page
-      .locator("#diagram-overlay g[tabindex]:focus-visible")
+      .locator("#diagram-overlay g[data-stop-id][tabindex]:focus-visible")
       .evaluate((group) => {
         const geometry = group.querySelector(
           "[data-stop-hit-target], [data-pathway-hit], [data-cross-level-badge-hit]",

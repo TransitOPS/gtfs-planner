@@ -4066,6 +4066,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert state.socket.assigns.diagram_error == "Malformed level selection request"
     end
 
+    test "level disclosure buttons switch the active level", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      level_b =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L2_BUTTON_SWITCH",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_b.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#level-option-#{level_b.id}")
+      |> render_click()
+
+      assert has_element?(view, "#level-option-#{level_b.id}[aria-current='true']")
+    end
+
     test "switching levels updates data-canvas-key on the SVG element", %{
       conn: conn,
       user: user,

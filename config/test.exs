@@ -46,6 +46,10 @@ config :gtfs_planner,
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 
+config :gtfs_planner,
+       :reviewed_apply_transaction,
+       GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 

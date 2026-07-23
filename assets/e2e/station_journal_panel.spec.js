@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import {
   loginAndGoToDiagram,
   selectDiagramMode,
@@ -9,11 +9,8 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(here, "../..");
-const referenceRoot = resolve(repositoryRoot, ".specs/journal-02/visual-references");
 const artifactRoot = resolve(repositoryRoot, ".artifacts/journal-02");
-const pkg3ReferenceRoot = resolve(repositoryRoot, ".specs/journal-03/visual-references");
 const pkg3ArtifactRoot = resolve(repositoryRoot, ".artifacts/journal-03");
-const pkg4ReferenceRoot = resolve(repositoryRoot, ".specs/journal-04/visual-references");
 const pkg4ArtifactRoot = resolve(repositoryRoot, ".artifacts/journal-04");
 
 const PHOTO_ENTRY_ID = "00000000-0000-4000-8000-000000000701";
@@ -107,19 +104,8 @@ async function apiJournalWriter(page) {
   };
 }
 
-test("Package 03 marker palette resolves amber token and captures reference", async ({ page }) => {
+test("Package 03 marker palette resolves amber token and captures production", async ({ page }) => {
   await mkdir(pkg3ArtifactRoot, { recursive: true });
-
-  await page.goto(
-    pathToFileURL(resolve(pkg3ReferenceRoot, "mock-02-floorplans-view.html")).href,
-    { waitUntil: "networkidle" },
-  );
-  await page.evaluate(() => document.fonts.ready);
-
-  const referenceHeading = page.getByText("Mock 02 · Floorplans — View mode, journal closed", { exact: false });
-  await expect(referenceHeading).toBeVisible();
-
-  await page.screenshot({ path: resolve(pkg3ArtifactRoot, "reference-marker-palette.png") });
 
   await loginAndGoToDiagram(page);
 
@@ -139,17 +125,6 @@ test("Package 03 marker palette resolves amber token and captures reference", as
 
 test("Package 03 marker shell and legend", async ({ page }) => {
   await mkdir(pkg3ArtifactRoot, { recursive: true });
-
-  await page.goto(
-    pathToFileURL(resolve(pkg3ReferenceRoot, "mock-02-floorplans-view.html")).href,
-    { waitUntil: "networkidle" }
-  );
-  await page.evaluate(() => document.fonts.ready);
-
-  const referenceHeading = page.getByText("Mock 02 · Floorplans — View mode, journal closed", { exact: false });
-  await expect(referenceHeading).toBeVisible();
-
-  await page.screenshot({ path: resolve(pkg3ArtifactRoot, "reference-marker-anatomy.png") });
 
   await loginAndGoToDiagram(page);
 
@@ -174,43 +149,18 @@ test("Package 03 marker shell and legend", async ({ page }) => {
   });
 });
 
-test("renders copied journal references", async ({ page }) => {
+test("renders the production journal shell", async ({ page }) => {
   await mkdir(artifactRoot, { recursive: true });
+  const panel = await openJournal(page);
 
-  await page.goto(
-    pathToFileURL(resolve(referenceRoot, "mock-03-floorplans-journal-open.html")).href,
-    { waitUntil: "networkidle" },
-  );
-  await page.evaluate(() => document.fonts.ready);
+  await expect(page.locator("#journal-trigger")).toHaveAttribute("aria-expanded", "true");
+  await expect(panel).toHaveAttribute("aria-label", "Station journal");
+  await expect(panel.getByRole("heading", { name: "Journal", exact: true })).toBeVisible();
 
-  const journalHeading = page.getByRole("heading", { name: "Journal", exact: true }).first();
-  const idealRegion = journalHeading.locator(
-    'xpath=ancestor::div[contains(@class, "w-[1360px]")][1]',
-  );
-
-  await expect(journalHeading).toBeVisible();
-  await expect(page.getByRole("button", { name: /Journal/ })).toHaveAttribute(
-    "aria-expanded",
-    "true",
-  );
-  await expect(idealRegion.locator('aside[aria-label="Station journal"]')).toBeVisible();
-  await idealRegion.screenshot({ path: resolve(artifactRoot, "reference-ideal.png") });
-
-  await page.goto(
-    pathToFileURL(resolve(referenceRoot, "mock-04-journal-panel-states.html")).href,
-    { waitUntil: "networkidle" },
-  );
-  await page.evaluate(() => document.fonts.ready);
-
-  const statesRegion = page.getByText("1 · LOADING", { exact: false }).locator(
-    'xpath=ancestor::div[contains(@class, "grid-cols-4")][1]',
-  );
-
-  await expect(page.getByText("1 · LOADING", { exact: false })).toBeVisible();
-  await expect(page.getByText("2 · FIRST-USE EMPTY", { exact: false })).toBeVisible();
-  await expect(page.getByText("3 · FILTERED EMPTY", { exact: false })).toBeVisible();
-  await expect(page.getByText("4 · ERROR", { exact: false })).toBeVisible();
-  await statesRegion.screenshot({ path: resolve(artifactRoot, "reference-states.png") });
+  await panel.screenshot({
+    path: resolve(artifactRoot, "production-shell.png"),
+    animations: "disabled",
+  });
 });
 
 test("renders the production ideal hierarchy and canonical photo", async ({ page }) => {
@@ -825,32 +775,16 @@ test("Package 03 captures stable reference-governed screenshots", async ({ page 
   });
 });
 
-test("Package 04 component baseline — executable reference and production tab strip", async ({ page }) => {
+test("Package 04 component baseline — production tab strip", async ({ page }) => {
   await mkdir(pkg4ArtifactRoot, { recursive: true });
 
-  // Capture the executable reference drawer
-  await page.goto(
-    pathToFileURL(resolve(pkg4ReferenceRoot, "mock-06-entity-drawer-journal.html")).href,
-    { waitUntil: "networkidle" },
-  );
-  await page.evaluate(() => document.fonts.ready);
-
-  const referenceHeading = page.getByText("Mock 06 · Journal inside an entity edit drawer", {
-    exact: false,
-  });
-  await expect(referenceHeading).toBeVisible();
-
-  await page.screenshot({
-    path: resolve(pkg4ArtifactRoot, "reference-entity-drawer-journal.png"),
-  });
-
-  // Capture the current production stop/pathway tab strip baseline
+  // Capture the current production stop tab strip baseline.
   await loginAndGoToDiagram(page);
 
   const diagramPage = page.locator("#diagram-page");
   await expect(diagramPage).toBeVisible();
 
-  // Open a child stop drawer to capture its current two-tab strip
+  // Open a child stop drawer to capture its current three-tab strip.
   const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
   await expect(nodeMarker).toBeVisible();
   await nodeMarker.click();
@@ -873,21 +807,10 @@ test("Package 04 component baseline — executable reference and production tab 
   });
 });
 
-test("Package 04 reference and production captures", async ({ page }) => {
+test("Package 04 production stop and pathway captures", async ({ page }) => {
   await mkdir(pkg4ArtifactRoot, { recursive: true });
   await page.emulateMedia({ reducedMotion: "reduce" });
 
-  // Reference capture
-  await page.goto(
-    pathToFileURL(resolve(pkg4ReferenceRoot, "mock-06-entity-drawer-journal.html")).href,
-    { waitUntil: "networkidle" },
-  );
-  await page.evaluate(() => document.fonts.ready);
-  await page.screenshot({
-    path: resolve(pkg4ArtifactRoot, "reference-entity-drawer-journal.png"),
-  });
-
-  // Production captures
   await loginAndGoToDiagram(page);
 
   const diagramPage = page.locator("#diagram-page");

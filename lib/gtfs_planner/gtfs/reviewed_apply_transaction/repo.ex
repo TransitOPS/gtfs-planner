@@ -6,5 +6,10 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.Repo do
   alias GtfsPlanner.Repo
 
   @impl true
-  def run(transaction), do: Repo.transaction(transaction, isolation: :serializable)
+  def run(transaction) do
+    Repo.transaction(fn ->
+      Repo.query!("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+      transaction.()
+    end)
+  end
 end

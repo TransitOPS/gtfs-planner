@@ -961,19 +961,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                           (@journal_state == :ready or
                              (@journal_state == :error and @journal_loaded_once?)) do %>
                   <span
-                    id="journal-open-count"
+                    id="station-journal-open-count"
                     class="border border-base-300 rounded-full px-2.5 py-0.5 text-xs"
                   >
                     {@journal_open_count} open
                   </span>
-                  <span id="journal-closed-count" class="text-sm text-base-content/50">
+                  <span id="station-journal-closed-count" class="text-sm text-base-content/50">
                     {@journal_closed_count} closed
                   </span>
                   <button
                     id="journal-summary-refresh"
                     phx-click="retry_journal"
-                    class="ml-auto btn btn-ghost btn-xs min-h-0 h-auto px-2 py-1 text-base-content/50 hover:text-base-content"
+                    class="ml-auto btn btn-ghost size-11 min-h-11 min-w-11 p-0 text-base-content/50 hover:text-base-content"
                     aria-label="Refresh journal entries"
+                    title="Refresh journal entries"
                   >
                     <.icon name="hero-arrow-path" class="size-3.5" />
                   </button>
@@ -996,11 +997,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   <.callout
                     kind="warning"
                     title="Journal unavailable"
-                    id="journal-summary-unavailable"
+                    id="station-journal-unavailable"
                   >
                     Journal entries could not be loaded. Please try again.
                     <button
-                      id="journal-summary-retry"
+                      id="station-journal-retry"
                       phx-click="retry_journal"
                       class="btn btn-sm btn-outline mt-2"
                     >
@@ -1012,11 +1013,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   <.callout
                     kind="warning"
                     title="Journal may be out of date"
-                    id="journal-summary-stale-warning"
+                    id="station-journal-refresh-warning"
                   >
                     The last successful journal snapshot remains available.
                     <button
-                      id="journal-summary-retry"
+                      id="station-journal-retry"
                       phx-click="retry_journal"
                       class="btn btn-sm btn-outline mt-2"
                     >
@@ -1025,7 +1026,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   </.callout>
                   <.empty_state
                     title="No journal entries"
-                    id="journal-summary-empty"
+                    id="station-journal-empty"
                     class="mt-3 bg-base-100"
                   >
                     Notes and photos captured at this station with the Pathways field companion appear here for review.
@@ -1034,11 +1035,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   <.callout
                     kind="warning"
                     title="Journal may be out of date"
-                    id="journal-summary-stale-warning"
+                    id="station-journal-refresh-warning"
                   >
                     The last saved entries remain available.
                     <button
-                      id="journal-summary-retry"
+                      id="station-journal-retry"
                       phx-click="retry_journal"
                       class="btn btn-sm btn-outline mt-2"
                     >
@@ -1056,7 +1057,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                 <% @journal_entries_empty? -> %>
                   <.empty_state
                     title="No journal entries"
-                    id="journal-summary-empty"
+                    id="station-journal-empty"
                     class="bg-base-100"
                   >
                     Notes and photos captured at this station with the Pathways field companion appear here for review.

@@ -20,14 +20,16 @@ async function logIn(page, user = EDITOR_USER) {
   await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
 }
 
-async function getVersionId(page) {
-  const href = await page
-    .locator('#app-header nav a[href*="/gtfs/"]')
-    .first()
-    .getAttribute("href");
-  const match = href && href.match(/\/gtfs\/([^/]+)\//);
-  if (!match) throw new Error("No /gtfs/ version link found: " + href);
-  return match[1];
+async function getVersionId(page, versionName = "Browser E2E Version") {
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: versionName });
+
+  await expect(option).toHaveCount(1);
+
+  const versionId = await option.getAttribute("data-version-id");
+  if (!versionId) throw new Error(`${versionName} is missing its version ID`);
+  return versionId;
 }
 
 async function bodyFitsViewport(page) {
@@ -374,7 +376,8 @@ test.describe("Empty and partial catalog states", () => {
     await versionSelect.selectOption({ label: "Catalog Routes Only Version" });
     await page.waitForTimeout(1000);
 
-    await page.goto(`/gtfs/${await getVersionId(page)}/routes`);
+    const versionId = await getVersionId(page, "Catalog Routes Only Version");
+    await page.goto(`/gtfs/${versionId}/routes`);
     await page.waitForSelector("table#routes, #routes-first-use-empty", {
       timeout: 5000,
     });
@@ -399,12 +402,12 @@ test.describe("Reduced motion contracts", () => {
 test.describe("Stable ID contracts", () => {
   test("route catalog table has stable ID", async ({ page }) => {
     await openRouteCatalog(page);
-    await expect(page.locator("table#routes")).toBeAttached();
+    await expect(page.locator("#routes-container table")).toBeAttached();
   });
 
   test("stop catalog table has stable ID", async ({ page }) => {
     await openStopCatalog(page);
-    await expect(page.locator("table#stops")).toBeAttached();
+    await expect(page.locator("#stops-container table")).toBeAttached();
   });
 
   test("stop catalog filter form has stable ID", async ({ page }) => {

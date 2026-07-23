@@ -66,12 +66,13 @@ test.describe("Station Details Journal Summary", () => {
     const journalSummary = page.locator("#station-journal-summary");
     await expect(journalSummary).toBeVisible({ timeout: 10_000 });
 
-    await expect(page.locator("#journal-open-count")).toBeVisible();
-    await expect(page.locator("#journal-closed-count")).toBeVisible();
+    await expect(page.locator("#station-journal-open-count")).toBeVisible();
+    await expect(page.locator("#station-journal-closed-count")).toBeVisible();
     await expect(page.locator("#station-journal-summary-list")).toBeVisible();
 
     const entries = page.locator('[data-role="journal-summary-entry"]');
     await expect(entries).not.toHaveCount(0);
+    await expect(entries.filter({ hasText: "Closed" })).not.toHaveCount(0);
 
     const footerLink = page.locator("#journal-footer-link");
     await expect(footerLink).toBeVisible();

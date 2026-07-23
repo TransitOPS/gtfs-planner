@@ -212,9 +212,9 @@ test.describe("Organizations trial responsive behavior", () => {
   });
 });
 
-// ── Routes trial (scroll table) ──
+// ── Routes trial (stacked table) ──
 test.describe("Routes trial responsive behavior", () => {
-  test("scroll table at 320px: local overflow, no body clipping", async ({
+  test("stacked table at 320px: labeled rows, no body clipping", async ({
     page,
   }) => {
     await loginAsEditor(page);
@@ -228,11 +228,28 @@ test.describe("Routes trial responsive behavior", () => {
     const tbodyCount = await page.locator("tbody#routes").count();
     expect(tbodyCount).toBe(1);
 
-    const container = page.locator("#routes-container");
-    const overflow = await container.evaluate((el) => {
-      return window.getComputedStyle(el).overflowX;
+    await expect(table).toHaveClass(/ds-stack-table/);
+
+    const responsiveLayout = await page
+      .locator("tbody#routes tr")
+      .first()
+      .evaluate((row) => {
+        const firstCell = row.querySelector("td[data-label]");
+
+        return {
+          rowDisplay: window.getComputedStyle(row).display,
+          cellDisplay: firstCell
+            ? window.getComputedStyle(firstCell).display
+            : null,
+          label: firstCell?.getAttribute("data-label"),
+        };
+      });
+
+    expect(responsiveLayout).toEqual({
+      rowDisplay: "block",
+      cellDisplay: "flex",
+      label: "Route ID",
     });
-    expect(overflow).toBe("auto");
 
     const bodyOverflow = await page.evaluate(() => {
       return document.body.scrollWidth <= window.innerWidth;
@@ -328,30 +345,25 @@ test.describe("Focus and target sizes", () => {
   test("all interactive elements have visible focus", async ({ page }) => {
     await loginAsAdmin(page);
 
-    // Find all focusable elements
-    const focusable = page.locator(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
+    // Exercise real keyboard focus so :focus-visible styles are active. Calling
+    // element.focus() uses the browser's pointer/programmatic focus heuristic
+    // and can intentionally suppress focus-visible rings on buttons.
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press("Tab");
 
-    const count = await focusable.count();
-    expect(count).toBeGreaterThan(0);
+      const focused = page.locator(":focus-visible");
+      await expect(focused).toHaveCount(1);
 
-    // Check a sample of elements for focus visibility
-    for (let i = 0; i < Math.min(count, 5); i++) {
-      const element = focusable.nth(i);
-      await element.focus();
-
-      const hasFocusStyles = await element.evaluate((el) => {
+      const hasFocusStyles = await focused.evaluate((el) => {
         const styles = window.getComputedStyle(el);
-        // Check for focus-visible or outline
+
         return (
-          styles.outlineStyle !== "none" ||
-          styles.boxShadow !== "none" ||
-          el.classList.contains("focus-visible:ring-2")
+          (styles.outlineStyle !== "none" &&
+            Number.parseFloat(styles.outlineWidth) > 0) ||
+          styles.boxShadow !== "none"
         );
       });
 
-      // At least some focus indication should be present
       expect(hasFocusStyles).toBe(true);
     }
   });
