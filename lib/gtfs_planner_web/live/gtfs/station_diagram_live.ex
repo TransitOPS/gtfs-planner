@@ -2906,7 +2906,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     case socket.assigns.coordinate_preview do
       %{generation: generation} = preview ->
         if current_map_generation?(socket, generation) do
-          case Gtfs.apply_stop_level_coordinate_preview(Map.delete(preview, :generation)) do
+          case Gtfs.apply_stop_level_coordinate_preview(
+                 Map.delete(preview, :generation),
+                 socket.assigns.audit_ctx
+               ) do
             {:ok, %{active_stop_level: updated, touched_stop_count: count}} ->
               {:noreply,
                socket

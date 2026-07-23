@@ -3977,9 +3977,12 @@ defmodule GtfsPlanner.GtfsTest do
   end
 
   describe "alignment coordinate previews" do
+    @describetag :alignment_coordinate_preview
+
     setup do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
+      user = GtfsPlanner.AccountsFixtures.user_fixture()
 
       station =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -4001,12 +4004,22 @@ defmodule GtfsPlanner.GtfsTest do
           level_id: level.id
         })
 
+      audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
       %{
         organization: organization,
         gtfs_version: gtfs_version,
         station: station,
         level: level,
-        stop_level: stop_level
+        stop_level: stop_level,
+        audit_ctx: audit_ctx,
+        user: user
       }
     end
 
@@ -4091,7 +4104,8 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: gtfs_version,
       station: station,
       level: level,
-      stop_level: stop_level
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
     } do
       child =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -4116,11 +4130,20 @@ defmodule GtfsPlanner.GtfsTest do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
 
-      assert {:error, :stale_preview} = Gtfs.apply_stop_level_coordinate_preview(preview)
+      assert {:error, :stale_preview} =
+               Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
 
       assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
       assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lat, Decimal.new("1.0"))
       assert Repo.get!(Stop, changed_child.id).diagram_coordinate == %{"x" => 55, "y" => 40}
+
+      assert Gtfs.list_change_logs_for_entity(
+               organization.id,
+               gtfs_version.id,
+               "stop",
+               child.id
+             ) == []
+
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
     end
@@ -4130,7 +4153,8 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: gtfs_version,
       station: station,
       level: level,
-      stop_level: stop_level
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
     } do
       child =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -4141,6 +4165,26 @@ defmodule GtfsPlanner.GtfsTest do
           diagram_coordinate: %{x: 50, y: 40},
           stop_lat: Decimal.new("1.0"),
           stop_lon: Decimal.new("2.0")
+        })
+
+      {:ok, proposed_sl} =
+        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, preview_alignment_attrs())
+        |> Ecto.Changeset.apply_action(:update)
+
+      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+
+      {:ok, {same_lat, same_lon}} =
+        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+
+      unchanged_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_APPLY_UNCHANGED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 60, y: 48},
+          stop_lat: Decimal.from_float(same_lat),
+          stop_lon: Decimal.from_float(same_lon)
         })
 
       scope = %Scope{
@@ -4177,24 +4221,43 @@ defmodule GtfsPlanner.GtfsTest do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
 
       assert {:ok, %{active_stop_level: updated, rows: rows, touched_stop_count: 1}} =
-               Gtfs.apply_stop_level_coordinate_preview(preview)
+               Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
 
       assert updated.id == stop_level.id
-      assert [row] = rows
-      assert row.stop_id == child.id
-      assert_in_delta row.new_lat, 40.7128, 1.0e-9
-      assert_in_delta row.new_lon, -74.006, 1.0e-9
+      assert length(rows) == 2
+      changed_row = Enum.find(rows, &(&1.stop_id == child.id))
+      assert_in_delta changed_row.new_lat, 40.7128, 1.0e-9
+      assert_in_delta changed_row.new_lon, -74.006, 1.0e-9
       assert_receive {[:stop_levels, :updated], %{id: updated_id}}
       assert updated_id == stop_level.id
       assert_receive {[:stops, :updated], %{id: child_id}}
       assert child_id == child.id
+      refute_receive {[:stops, :updated], _}
 
       assert_in_delta Decimal.to_float(Repo.get!(Stop, child.id).stop_lat), 40.7128, 1.0e-9
       assert_in_delta Decimal.to_float(Repo.get!(Stop, child.id).stop_lon), -74.006, 1.0e-9
       assert_in_delta Repo.get!(JournalEntry, pin_id).lat, 40.7128, 1.0e-9
       assert_in_delta Repo.get!(JournalEntry, pin_id).lon, -74.006, 1.0e-9
 
-      assert {:error, :stale_preview} = Gtfs.apply_stop_level_coordinate_preview(preview)
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", child.id)
+
+      assert log.action == "updated"
+      assert log.actor_email == audit_ctx.actor_email
+      assert log.station_stop_id == station.stop_id
+      assert Map.has_key?(log.changed_fields, "stop_lat")
+      assert Map.has_key?(log.changed_fields, "stop_lon")
+
+      assert Gtfs.list_change_logs_for_entity(
+               organization.id,
+               gtfs_version.id,
+               "stop",
+               unchanged_stop.id
+             ) == []
+
+      assert {:error, :stale_preview} =
+               Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
+
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
     end
@@ -4204,7 +4267,8 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: gtfs_version,
       station: station,
       level: level,
-      stop_level: stop_level
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
     } do
       child =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -4257,12 +4321,21 @@ defmodule GtfsPlanner.GtfsTest do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
 
-      assert {:error, %Ecto.Changeset{}} = Gtfs.apply_stop_level_coordinate_preview(preview)
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
 
       assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
       assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lat, Decimal.new("1.0"))
       assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lon, Decimal.new("2.0"))
       assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
+
+      assert Gtfs.list_change_logs_for_entity(
+               organization.id,
+               gtfs_version.id,
+               "stop",
+               child.id
+             ) == []
+
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
     end

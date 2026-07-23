@@ -928,7 +928,7 @@ defmodule GtfsPlanner.Gtfs do
 
   The fingerprint binds the proposed alignment, image dimensions, and every
   eligible stop input used to derive the preview. It is verified again from a
-  serializable snapshot before `apply_stop_level_coordinate_preview/1` writes.
+  serializable snapshot before `apply_stop_level_coordinate_preview/2` writes.
   """
   @spec preview_stop_level_coordinate_application(
           Ecto.UUID.t(),
@@ -966,14 +966,15 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Applies a previously generated coordinate preview in a bounded serializable
-  transaction.
+  transaction within the audit context scope.
 
-  The preview must still match the transaction snapshot before any write. A
-  PostgreSQL serialization failure retries the whole compare-and-apply attempt
-  up to three times; exhausted retries return `:busy` without publishing a
-  broadcast from an aborted attempt.
+  The preview must still match the transaction snapshot before any write. Only
+  stops whose derived coordinates differ are updated and audited. A PostgreSQL
+  serialization failure retries the whole compare-and-apply attempt up to three
+  times; exhausted retries return `:busy` without publishing a broadcast from an
+  aborted attempt.
   """
-  @spec apply_stop_level_coordinate_preview(alignment_preview()) ::
+  @spec apply_stop_level_coordinate_preview(alignment_preview(), AuditContext.t()) ::
           {:ok,
            %{
              active_stop_level: StopLevel.t(),
@@ -981,91 +982,42 @@ defmodule GtfsPlanner.Gtfs do
              touched_stop_count: non_neg_integer()
            }}
           | {:error, :stale_preview | :busy | :not_found | :invalid_input | term()}
-  def apply_stop_level_coordinate_preview(preview) when is_map(preview) do
+  def apply_stop_level_coordinate_preview(preview, %AuditContext{} = audit_ctx)
+      when is_map(preview) do
     with :ok <- validate_alignment_preview(preview) do
-      preview
-      |> apply_preview_with_retries(3)
+      preview.stop_level_id
+      |> apply_reviewed_with_retries(
+        preview.proposed_alignment,
+        preview.image_width,
+        preview.image_height,
+        preview.fingerprint,
+        audit_ctx,
+        3
+      )
       |> publish_preview_result()
     end
   end
 
-  def apply_stop_level_coordinate_preview(_), do: {:error, :invalid_input}
-
-  defp apply_preview_with_retries(preview, attempts_remaining) when attempts_remaining > 0 do
-    case Repo.transaction(fn -> apply_preview_in_transaction(preview) end,
-           isolation: :serializable
-         ) do
-      {:ok, result} ->
-        {:ok, result}
-
-      {:error, reason} when attempts_remaining > 1 ->
-        if serialization_failure?(reason) do
-          apply_preview_with_retries(preview, attempts_remaining - 1)
-        else
-          {:error, reason}
-        end
-
-      {:error, reason} ->
-        if serialization_failure?(reason), do: {:error, :busy}, else: {:error, reason}
-    end
-  end
+  def apply_stop_level_coordinate_preview(_, _), do: {:error, :invalid_input}
 
   defp publish_preview_result({:ok, result}) do
-    %{active_stop_level: stop_level, updated_stops: stops} = result
+    %{active_stop_level: stop_level, changed_stops: changed_stops, rows: rows} = result
     broadcast({:ok, stop_level}, [:stop_levels, :updated])
 
-    Enum.each(stops, fn stop ->
+    Enum.each(changed_stops, fn stop ->
       broadcast({:ok, stop}, [:stops, :updated])
     end)
 
     {:ok,
      %{
        active_stop_level: stop_level,
-       rows: public_preview_rows(result.rows),
-       touched_stop_count: length(stops)
+       rows: public_preview_rows(rows),
+       touched_stop_count: length(changed_stops)
      }}
   end
 
+  defp publish_preview_result({:error, :stale_review}), do: {:error, :stale_preview}
   defp publish_preview_result({:error, reason}), do: {:error, reason}
-
-  defp apply_preview_in_transaction(preview) do
-    case load_stop_level_for_update(preview.stop_level_id) do
-      nil ->
-        Repo.rollback(:not_found)
-
-      %StopLevel{} = stop_level ->
-        with {:ok, proposed_stop_level} <-
-               proposed_stop_level(stop_level, preview.proposed_alignment),
-             {:ok, rows} <-
-               preview_rows(
-                 proposed_stop_level,
-                 eligible_child_stops(stop_level, lock: "FOR UPDATE"),
-                 preview.image_width,
-                 preview.image_height
-               ),
-             unplaced_count <- count_unplaced_on_level(stop_level, lock: "FOR UPDATE"),
-             :ok <- verify_preview_fingerprint(preview, stop_level, rows, unplaced_count),
-             {:ok, updated_stop_level} <-
-               stop_level
-               |> StopLevel.alignment_changeset(preview.proposed_alignment)
-               |> Repo.update(),
-             {:ok, updated_stops} <- persist_preview_rows_in_tx(rows),
-             {:ok, _refreshed_pin_count} <-
-               StationJournal.refresh_pin_coordinates_for_stop_level(
-                 updated_stop_level,
-                 preview.image_width,
-                 preview.image_height
-               ) do
-          %{
-            active_stop_level: updated_stop_level,
-            updated_stops: updated_stops,
-            rows: rows
-          }
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-    end
-  end
 
   defp validate_alignment_preview(%{
          stop_level_id: stop_level_id,
@@ -1147,31 +1099,6 @@ defmodule GtfsPlanner.Gtfs do
     }
   end
 
-  defp verify_preview_fingerprint(preview, stop_level, rows, unplaced_count) do
-    current_fingerprint =
-      alignment_preview_fingerprint(
-        stop_level,
-        stop_level_alignment_snapshot_from_preview(preview.proposed_alignment),
-        preview.image_width,
-        preview.image_height,
-        rows,
-        unplaced_count
-      )
-
-    if current_fingerprint == preview.fingerprint,
-      do: :ok,
-      else: {:error, :stale_preview}
-  end
-
-  defp stop_level_alignment_snapshot_from_preview(proposed_alignment) do
-    %{
-      floorplan_center_lat: Map.get(proposed_alignment, :floorplan_center_lat),
-      floorplan_center_lon: Map.get(proposed_alignment, :floorplan_center_lon),
-      floorplan_scale_mpp: Map.get(proposed_alignment, :floorplan_scale_mpp),
-      floorplan_rotation_deg: Map.get(proposed_alignment, :floorplan_rotation_deg)
-    }
-  end
-
   defp alignment_preview_fingerprint(
          stop_level,
          proposed_alignment,
@@ -1222,20 +1149,6 @@ defmodule GtfsPlanner.Gtfs do
     do: Enum.map(value, &canonical_preview_value/1)
 
   defp canonical_preview_value(value), do: value
-
-  defp persist_preview_rows_in_tx(rows) do
-    rows
-    |> Enum.reduce_while({:ok, []}, fn row, {:ok, updated_stops} ->
-      case update_derived_stop_coords(row) do
-        {:ok, updated_stop} -> {:cont, {:ok, [updated_stop | updated_stops]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, updated_stops} -> {:ok, Enum.reverse(updated_stops)}
-      {:error, _} = error -> error
-    end
-  end
 
   defp public_preview_rows(rows) do
     Enum.map(rows, &Map.drop(&1, [:stop]))
@@ -1434,6 +1347,7 @@ defmodule GtfsPlanner.Gtfs do
           %{
             active_stop_level: updated_stop_level,
             changed_stops: changed_stops,
+            rows: projection.rows,
             updated_stop_count: length(changed_stops),
             unchanged_count: projection.unchanged_count,
             unplaced_count: projection.unplaced_count
@@ -1495,11 +1409,6 @@ defmodule GtfsPlanner.Gtfs do
            record_change_in_transaction(audit_ctx, :stop, stop, "updated", changed_attrs) do
       {:ok, updated_stop}
     end
-  end
-
-  defp load_stop_level_for_update(stop_level_id) when is_binary(stop_level_id) do
-    from(sl in StopLevel, where: sl.id == ^stop_level_id, lock: "FOR UPDATE")
-    |> Repo.one()
   end
 
   defp stop_level_alignment_snapshot(%StopLevel{} = stop_level) do

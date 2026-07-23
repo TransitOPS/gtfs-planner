@@ -195,6 +195,132 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - audited coordinate preview apply" do
+    @describetag :alignment_audit_apply
+
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_APPLY_STATION",
+          stop_name: "Audit Apply Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "audit_apply_level",
+          level_name: "Audit Apply Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        stop_level: stop_level
+      }
+    end
+
+    test "preview-to-apply through production handlers records an attributed audit row", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_APPLY_CHILD",
+          stop_name: "Audit Apply Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 40.0},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      generation = current_map_generation(view)
+
+      render_hook(view, "set_image_natural_size", %{
+        "generation" => generation,
+        "w" => "1000",
+        "h" => "800"
+      })
+
+      render_hook(view, "preview_coordinate_application", %{
+        "generation" => generation,
+        "center_lat" => "40.7128",
+        "center_lon" => "-74.006",
+        "scale_mpp" => "0.25",
+        "rotation_deg" => "0"
+      })
+
+      assert has_element?(view, "#coordinate-preview")
+      assert has_element?(view, "#coordinate-preview-row-#{child.id}")
+
+      view
+      |> element("#confirm-coordinate-preview")
+      |> render_click()
+
+      assert has_element?(view, "#coordinate-preview-confirmation-form")
+
+      view
+      |> form("#coordinate-preview-confirmation-form", %{
+        "coordinate_preview" => %{"phrase" => "APPLY"}
+      })
+      |> render_submit()
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
+      assert_in_delta Decimal.to_float(reloaded.stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded.stop_lon), -74.006, 1.0e-9
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", child.id)
+
+      assert log.action == "updated"
+      assert log.actor_email == user.email
+      assert log.actor_id == user.id
+      assert log.station_stop_id == station.stop_id
+      assert Map.has_key?(log.changed_fields, "stop_lat")
+      assert Map.has_key?(log.changed_fields, "stop_lon")
+    end
+  end
+
+  defp current_map_generation(view) do
+    html = render(view)
+    [generation] = Regex.run(~r/data-map-generation="([^"]+)"/, html, capture: :all_but_first)
+    generation
+  end
+
   describe "StationDiagramLive - child stop editing" do
     setup do
       organization = organization_fixture()
