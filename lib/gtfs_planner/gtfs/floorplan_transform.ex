@@ -35,6 +35,15 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransform do
   @meters_per_degree_lat 111_111.0
   @cos_epsilon 1.0e-9
 
+  @spec distance_meters({number(), number()}, {number(), number()}) :: float()
+  def distance_meters({lat1, lon1}, {lat2, lon2}) do
+    mean_lat_rad = deg_to_rad((lat1 + lat2) / 2.0)
+    lat_m = (lat2 - lat1) * @meters_per_degree_lat
+    lon_m = (lon2 - lon1) * @meters_per_degree_lat * :math.cos(mean_lat_rad)
+
+    :math.sqrt(lat_m * lat_m + lon_m * lon_m)
+  end
+
   @spec svg_to_lat_lon(alignment(), pos_integer(), pos_integer(), svg_point()) ::
           {:ok, {float(), float()}} | {:error, error_reason()}
   def svg_to_lat_lon(alignment, image_w, image_h, svg_point) do
