@@ -5019,6 +5019,365 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "preview_stop_level_alignment/4" do
+    @describetag :alignment_review
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_ALIGN_REVIEW",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_ALIGN_REVIEW",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        stop_level: stop_level
+      }
+    end
+
+    test "returns ordered changes with exact current/proposed values and distance", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      later_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REVIEW_PLATFORM_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 60, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      earlier_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REVIEW_PLATFORM_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("3.0"),
+          stop_lon: Decimal.new("4.0")
+        })
+
+      attrs = preview_alignment_attrs()
+
+      assert {:ok, review} =
+               Gtfs.preview_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      assert length(review.changes) == 2
+      assert Enum.map(review.changes, & &1.stop_id) == Enum.sort([earlier_stop.id, later_stop.id])
+
+      first = Enum.find(review.changes, &(&1.stop_id == earlier_stop.id))
+      assert first.stop_external_id == "REVIEW_PLATFORM_A"
+      assert Decimal.equal?(first.current.lat, Decimal.new("3.0"))
+      assert Decimal.equal?(first.current.lon, Decimal.new("4.0"))
+      assert is_float(first.proposed.lat)
+      assert is_float(first.proposed.lon)
+      assert_in_delta first.proposed.lat, 40.7128, 1.0e-9
+      assert_in_delta first.proposed.lon, -74.006, 1.0e-9
+      assert is_float(first.distance_meters)
+      assert first.distance_meters > 0
+
+      assert review.unchanged_count == 0
+      assert review.unplaced_count == 0
+      assert is_binary(review.fingerprint)
+      assert byte_size(review.fingerprint) == 64
+      assert review.fingerprint == String.downcase(review.fingerprint)
+    end
+
+    test "returns nil distance when current axis is nil", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_NIL_LAT",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40},
+        stop_lat: nil,
+        stop_lon: Decimal.new("2.0")
+      })
+
+      assert {:ok, review} =
+               Gtfs.preview_stop_level_alignment(
+                 stop_level.id,
+                 preview_alignment_attrs(),
+                 1000,
+                 800
+               )
+
+      assert [change] = review.changes
+      assert change.current.lat == nil
+      assert Decimal.equal?(change.current.lon, Decimal.new("2.0"))
+      assert change.distance_meters == nil
+    end
+
+    test "excludes numerically equal coordinates with different Decimal scales", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, proposed_stop_level} =
+        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(
+          stop_level,
+          preview_alignment_attrs()
+        )
+        |> Ecto.Changeset.apply_action(:update)
+
+      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_stop_level)
+
+      {:ok, {lat, lon}} =
+        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 50, y: 40})
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_SAME_COORD",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40},
+        stop_lat: Decimal.from_float(lat),
+        stop_lon: Decimal.from_float(lon)
+      })
+
+      assert {:ok, review} =
+               Gtfs.preview_stop_level_alignment(
+                 stop_level.id,
+                 preview_alignment_attrs(),
+                 1000,
+                 800
+               )
+
+      assert review.changes == []
+      assert review.unchanged_count == 1
+      assert review.unplaced_count == 0
+    end
+
+    test "counts unplaced stops with nil or non-normalizable diagram coordinates", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_PLACED",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40},
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_NIL_COORD",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: nil,
+        stop_lat: Decimal.new("3.0"),
+        stop_lon: Decimal.new("4.0")
+      })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_BAD_COORD",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{foo: "bar"},
+        stop_lat: Decimal.new("5.0"),
+        stop_lon: Decimal.new("6.0")
+      })
+
+      assert {:ok, review} =
+               Gtfs.preview_stop_level_alignment(
+                 stop_level.id,
+                 preview_alignment_attrs(),
+                 1000,
+                 800
+               )
+
+      assert length(review.changes) == 1
+      assert review.unchanged_count == 0
+      assert review.unplaced_count == 2
+    end
+
+    test "repeated calls are deterministic and pure", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_PURE",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40},
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      attrs = preview_alignment_attrs()
+
+      assert {:ok, review1} =
+               Gtfs.preview_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      assert {:ok, review2} =
+               Gtfs.preview_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      assert review1 == review2
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "legacy preview derives from the same projection", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REVIEW_LEGACY_PARITY",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_LEGACY_UNPLACED",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: nil,
+        stop_lat: Decimal.new("3.0"),
+        stop_lon: Decimal.new("4.0")
+      })
+
+      attrs = preview_alignment_attrs()
+
+      assert {:ok, review} =
+               Gtfs.preview_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      assert {:ok, legacy} =
+               Gtfs.preview_stop_level_coordinate_application(stop_level.id, attrs, 1000, 800)
+
+      assert legacy.fingerprint == review.fingerprint
+      assert legacy.stop_count == 1
+      assert [row] = legacy.rows
+      assert row.stop_id == child.id
+      assert_in_delta row.new_lat, Enum.at(review.changes, 0).proposed.lat, 1.0e-15
+      assert_in_delta row.new_lon, Enum.at(review.changes, 0).proposed.lon, 1.0e-15
+      assert Map.has_key?(legacy, :proposed_alignment)
+      assert Map.has_key?(legacy, :stop_level_id)
+      assert Map.has_key?(legacy, :level_id)
+      assert Map.has_key?(legacy, :image_width)
+      assert Map.has_key?(legacy, :image_height)
+    end
+
+    test "returns :not_found for missing stop level" do
+      assert {:error, :not_found} =
+               Gtfs.preview_stop_level_alignment(Ecto.UUID.generate(), %{}, 1000, 800)
+    end
+
+    test "returns :invalid_input for non-binary id" do
+      assert {:error, :invalid_input} =
+               Gtfs.preview_stop_level_alignment(123, %{}, 1000, 800)
+    end
+
+    test "returns :invalid_image_dims for non-positive dimensions", %{
+      stop_level: stop_level
+    } do
+      assert {:error, :invalid_image_dims} =
+               Gtfs.preview_stop_level_alignment(stop_level.id, %{}, 0, 800)
+
+      assert {:error, :invalid_image_dims} =
+               Gtfs.preview_stop_level_alignment(stop_level.id, %{}, 1000, -1)
+    end
+
+    test "returns changeset error for invalid alignment", %{
+      stop_level: stop_level
+    } do
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.preview_stop_level_alignment(
+                 stop_level.id,
+                 %{floorplan_center_lat: "bad"},
+                 1000,
+                 800
+               )
+    end
+
+    test "returns :alignment_missing when alignment fields are nil", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "REVIEW_MISSING_ALIGN",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{x: 50, y: 40}
+      })
+
+      assert {:error, :alignment_missing} =
+               Gtfs.preview_stop_level_alignment(
+                 stop_level.id,
+                 %{
+                   floorplan_center_lat: nil,
+                   floorplan_center_lon: nil,
+                   floorplan_scale_mpp: nil,
+                   floorplan_rotation_deg: nil
+                 },
+                 1000,
+                 800
+               )
+    end
+  end
+
   defp station_editing_status_count(organization_id, gtfs_version_id, station_id) do
     from(s in StationEditingStatus,
       where:

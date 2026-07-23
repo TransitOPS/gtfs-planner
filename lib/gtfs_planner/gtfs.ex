@@ -722,6 +722,206 @@ defmodule GtfsPlanner.Gtfs do
           rows: [map()]
         }
 
+  @type coordinate_change :: %{
+          stop_id: Ecto.UUID.t(),
+          stop_external_id: String.t(),
+          current: %{lat: Decimal.t() | nil, lon: Decimal.t() | nil},
+          proposed: %{lat: float(), lon: float()},
+          distance_meters: float() | nil
+        }
+
+  @type coordinate_review :: %{
+          changes: [coordinate_change()],
+          unchanged_count: non_neg_integer(),
+          unplaced_count: non_neg_integer(),
+          fingerprint: String.t()
+        }
+
+  @doc """
+  Returns a read-only coordinate review for applying a floorplan alignment to
+  the eligible child stops on a stop level.
+
+  The review classifies each eligible stop as changed or unchanged using
+  `Decimal.compare/2`, reports unplaced stops on the scoped level, and produces
+  a deterministic fingerprint that binds all projection inputs including the
+  unplaced count.
+  """
+  @spec preview_stop_level_alignment(Ecto.UUID.t(), map(), pos_integer(), pos_integer()) ::
+          {:ok, coordinate_review()}
+          | {:error,
+             :not_found
+             | :invalid_input
+             | :alignment_missing
+             | :invalid_image_dims
+             | {:transform, atom()}
+             | Ecto.Changeset.t()}
+  def preview_stop_level_alignment(stop_level_id, proposed_alignment, image_w, image_h)
+      when is_binary(stop_level_id) and is_map(proposed_alignment) do
+    with {:ok, projection} <-
+           build_alignment_projection(stop_level_id, proposed_alignment, image_w, image_h) do
+      {:ok,
+       %{
+         changes: projection.changes,
+         unchanged_count: projection.unchanged_count,
+         unplaced_count: projection.unplaced_count,
+         fingerprint: projection.fingerprint
+       }}
+    end
+  end
+
+  def preview_stop_level_alignment(_, _, _, _), do: {:error, :invalid_input}
+
+  defp build_alignment_projection(
+         stop_level_id,
+         proposed_alignment,
+         image_w,
+         image_h,
+         options \\ []
+       ) do
+    with :ok <- validate_positive_image_dims(image_w, image_h),
+         %StopLevel{} = stop_level <- Repo.get(StopLevel, stop_level_id),
+         {:ok, proposed_stop_level} <- proposed_stop_level(stop_level, proposed_alignment),
+         {:ok, rows} <-
+           preview_rows(
+             proposed_stop_level,
+             eligible_child_stops(stop_level, options),
+             image_w,
+             image_h
+           ) do
+      unplaced_count = count_unplaced_on_level(stop_level, options)
+      normalized_alignment = stop_level_alignment_snapshot(proposed_stop_level)
+      {changes, unchanged_count} = classify_projection_rows(rows)
+
+      fingerprint =
+        alignment_preview_fingerprint(
+          stop_level,
+          normalized_alignment,
+          image_w,
+          image_h,
+          rows,
+          unplaced_count
+        )
+
+      {:ok,
+       %{
+         stop_level: stop_level,
+         proposed_stop_level: proposed_stop_level,
+         normalized_alignment: normalized_alignment,
+         rows: rows,
+         changes: changes,
+         unchanged_count: unchanged_count,
+         unplaced_count: unplaced_count,
+         fingerprint: fingerprint
+       }}
+    else
+      nil -> {:error, :not_found}
+      {:error, :invalid_image_dims} = error -> error
+      {:error, :alignment_missing} = error -> error
+      {:error, %Ecto.Changeset{} = changeset} -> {:error, changeset}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp classify_projection_rows(rows) do
+    Enum.reduce(rows, {[], 0}, fn row, {changes, unchanged} ->
+      case classify_coordinate_change(row.old_lat, row.old_lon, row.new_lat, row.new_lon) do
+        %{changed?: true} = classification ->
+          change = %{
+            stop_id: row.stop_id,
+            stop_external_id: row.stop_code,
+            current: %{lat: row.old_lat, lon: row.old_lon},
+            proposed: %{lat: row.new_lat, lon: row.new_lon},
+            distance_meters: classification.distance_meters
+          }
+
+          {[change | changes], unchanged}
+
+        %{changed?: false} ->
+          {changes, unchanged + 1}
+      end
+    end)
+    |> then(fn {changes, unchanged} -> {Enum.reverse(changes), unchanged} end)
+  end
+
+  defp classify_coordinate_change(old_lat, old_lon, new_lat, new_lon) do
+    lat_changed? = axis_changed?(old_lat, new_lat)
+    lon_changed? = axis_changed?(old_lon, new_lon)
+
+    distance =
+      if is_nil(old_lat) or is_nil(old_lon) do
+        nil
+      else
+        FloorplanTransform.distance_meters(
+          {Decimal.to_float(old_lat), Decimal.to_float(old_lon)},
+          {new_lat, new_lon}
+        )
+      end
+
+    %{
+      changed?: lat_changed? or lon_changed?,
+      lat_changed?: lat_changed?,
+      lon_changed?: lon_changed?,
+      distance_meters: distance,
+      changed_attrs:
+        %{}
+        |> then(fn attrs ->
+          if lat_changed?, do: Map.put(attrs, :stop_lat, Decimal.from_float(new_lat)), else: attrs
+        end)
+        |> then(fn attrs ->
+          if lon_changed?, do: Map.put(attrs, :stop_lon, Decimal.from_float(new_lon)), else: attrs
+        end)
+    }
+  end
+
+  defp axis_changed?(nil, _proposed), do: true
+
+  defp axis_changed?(%Decimal{} = current, proposed) when is_float(proposed),
+    do: Decimal.compare(current, Decimal.from_float(proposed)) != :eq
+
+  defp count_unplaced_on_level(%StopLevel{} = stop_level, options) do
+    case level_scoped_descendants_base(stop_level, options) do
+      nil ->
+        0
+
+      base_query ->
+        base_query
+        |> Repo.all()
+        |> Enum.count(fn stop ->
+          is_nil(stop.diagram_coordinate) or
+            is_nil(Coordinates.normalize_point(stop.diagram_coordinate))
+        end)
+    end
+  end
+
+  defp level_scoped_descendants_base(%StopLevel{} = stop_level, options) do
+    case Repo.get(Stop, stop_level.stop_id) do
+      %Stop{} = station ->
+        descendants =
+          descendant_stop_ids_query(
+            station.organization_id,
+            station.gtfs_version_id,
+            station.stop_id
+          )
+
+        query =
+          from(stop in Stop,
+            where:
+              stop.stop_id in subquery(descendants) and
+                stop.organization_id == ^stop_level.organization_id and
+                stop.gtfs_version_id == ^stop_level.gtfs_version_id and
+                stop.level_id == ^level_external_id(stop_level.level_id),
+            order_by: [asc: stop.id]
+          )
+
+        if Keyword.get(options, :lock) == "FOR UPDATE",
+          do: from(stop in query, lock: "FOR UPDATE"),
+          else: query
+
+      nil ->
+        nil
+    end
+  end
+
   @doc """
   Returns a read-only, fingerprinted preview of applying a floorplan alignment
   to the eligible child stops on a stop level.
@@ -746,37 +946,19 @@ defmodule GtfsPlanner.Gtfs do
         image_h
       )
       when is_binary(stop_level_id) and is_map(proposed_alignment) do
-    with :ok <- validate_positive_image_dims(image_w, image_h),
-         %StopLevel{} = stop_level <- Repo.get(StopLevel, stop_level_id),
-         {:ok, proposed_stop_level} <- proposed_stop_level(stop_level, proposed_alignment),
-         {:ok, rows} <-
-           preview_rows(proposed_stop_level, eligible_child_stops(stop_level), image_w, image_h) do
-      normalized_alignment = stop_level_alignment_snapshot(proposed_stop_level)
-
+    with {:ok, projection} <-
+           build_alignment_projection(stop_level_id, proposed_alignment, image_w, image_h) do
       {:ok,
        %{
-         stop_level_id: stop_level.id,
-         level_id: stop_level.level_id,
+         stop_level_id: projection.stop_level.id,
+         level_id: projection.stop_level.level_id,
          image_width: image_w,
          image_height: image_h,
-         proposed_alignment: normalized_alignment,
-         fingerprint:
-           alignment_preview_fingerprint(
-             stop_level,
-             normalized_alignment,
-             image_w,
-             image_h,
-             rows
-           ),
-         stop_count: length(rows),
-         rows: public_preview_rows(rows)
+         proposed_alignment: projection.normalized_alignment,
+         fingerprint: projection.fingerprint,
+         stop_count: length(projection.rows),
+         rows: public_preview_rows(projection.rows)
        }}
-    else
-      nil -> {:error, :not_found}
-      {:error, :invalid_image_dims} = error -> error
-      {:error, :alignment_missing} = error -> error
-      {:error, %Ecto.Changeset{} = changeset} -> {:error, changeset}
-      {:error, _} = error -> error
     end
   end
 
@@ -861,7 +1043,8 @@ defmodule GtfsPlanner.Gtfs do
                  preview.image_width,
                  preview.image_height
                ),
-             :ok <- verify_preview_fingerprint(preview, stop_level, rows),
+             unplaced_count <- count_unplaced_on_level(stop_level, lock: "FOR UPDATE"),
+             :ok <- verify_preview_fingerprint(preview, stop_level, rows, unplaced_count),
              {:ok, updated_stop_level} <-
                stop_level
                |> StopLevel.alignment_changeset(preview.proposed_alignment)
@@ -906,38 +1089,16 @@ defmodule GtfsPlanner.Gtfs do
     |> Ecto.Changeset.apply_action(:update)
   end
 
-  defp eligible_child_stops(%StopLevel{} = stop_level, options \\ []) do
-    case Repo.get(Stop, stop_level.stop_id) do
-      %Stop{} = station ->
-        descendants =
-          descendant_stop_ids_query(
-            station.organization_id,
-            station.gtfs_version_id,
-            station.stop_id
-          )
-
-        query =
-          from(stop in Stop,
-            where:
-              stop.stop_id in subquery(descendants) and
-                stop.organization_id == ^stop_level.organization_id and
-                stop.gtfs_version_id == ^stop_level.gtfs_version_id and
-                stop.level_id == ^level_external_id(stop_level.level_id) and
-                not is_nil(stop.diagram_coordinate),
-            order_by: [asc: stop.id]
-          )
-
-        query =
-          if Keyword.get(options, :lock) == "FOR UPDATE",
-            do: from(stop in query, lock: "FOR UPDATE"),
-            else: query
-
-        query
-        |> Repo.all()
-        |> Enum.filter(&(not is_nil(Coordinates.normalize_point(&1.diagram_coordinate))))
-
+  defp eligible_child_stops(%StopLevel{} = stop_level, options) do
+    case level_scoped_descendants_base(stop_level, options) do
       nil ->
         []
+
+      base_query ->
+        base_query
+        |> where([stop], not is_nil(stop.diagram_coordinate))
+        |> Repo.all()
+        |> Enum.filter(&(not is_nil(Coordinates.normalize_point(&1.diagram_coordinate))))
     end
   end
 
@@ -986,14 +1147,15 @@ defmodule GtfsPlanner.Gtfs do
     }
   end
 
-  defp verify_preview_fingerprint(preview, stop_level, rows) do
+  defp verify_preview_fingerprint(preview, stop_level, rows, unplaced_count) do
     current_fingerprint =
       alignment_preview_fingerprint(
         stop_level,
         stop_level_alignment_snapshot_from_preview(preview.proposed_alignment),
         preview.image_width,
         preview.image_height,
-        rows
+        rows,
+        unplaced_count
       )
 
     if current_fingerprint == preview.fingerprint,
@@ -1010,7 +1172,14 @@ defmodule GtfsPlanner.Gtfs do
     }
   end
 
-  defp alignment_preview_fingerprint(stop_level, proposed_alignment, image_w, image_h, rows) do
+  defp alignment_preview_fingerprint(
+         stop_level,
+         proposed_alignment,
+         image_w,
+         image_h,
+         rows,
+         unplaced_count
+       ) do
     payload = %{
       stop_level: %{id: stop_level.id, level_id: stop_level.level_id},
       proposed_alignment: proposed_alignment,
@@ -1026,7 +1195,8 @@ defmodule GtfsPlanner.Gtfs do
             stop_lon: row.old_lon
           }
         end),
-      stop_count: length(rows)
+      stop_count: length(rows),
+      unplaced_count: unplaced_count
     }
 
     payload
