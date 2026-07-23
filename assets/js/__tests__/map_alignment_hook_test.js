@@ -2437,6 +2437,72 @@ describe("map_alignment_hook saved/preview state machine", () => {
       restore();
     });
 
+    it.each([
+      ["below the minimum", 0.2, 175],
+      ["above the maximum", 5, 250],
+    ])(
+      "scale pointer movement outward from %s is a true no-op",
+      (_position, initialScale, outwardClientX) => {
+        const { hook, scaleHandle, restore } = mountDirtyHook();
+        const initialTransform = { tx: 10, ty: 20, rotation: 30, scale: initialScale };
+        hook.transform = {...initialTransform};
+        hook._previewActive = true;
+        hook._applyTransform = vi.fn();
+
+        dispatchPointer(scaleHandle, "pointerdown", 200, 75);
+        dispatchPointer(scaleHandle, "pointermove", outwardClientX, 75);
+        dispatchPointer(scaleHandle, "pointerup", outwardClientX, 75);
+
+        expect(hook.transform).toEqual(initialTransform);
+        expect(hook._previewActive).toBe(true);
+        expect(alignmentDirtyCalls(hook)).toHaveLength(0);
+        expect(hook._applyTransform).not.toHaveBeenCalled();
+
+        restore();
+      }
+    );
+
+    it.each([
+      ["below the minimum", 0.2, 205, 0.25, 225, 0.3, "increase"],
+      ["above the maximum", 5, 195, 4, 185, 3.5, "decrease"],
+    ])(
+      "scale pointer movement inward from %s moves in the requested direction and dirties once",
+      (
+        _position,
+        initialScale,
+        boundaryClientX,
+        boundaryScale,
+        inwardClientX,
+        expectedScale,
+        direction
+      ) => {
+        const { hook, scaleHandle, restore } = mountDirtyHook();
+        hook.transform.scale = initialScale;
+        hook._previewActive = true;
+        hook._applyTransform = vi.fn();
+
+        dispatchPointer(scaleHandle, "pointerdown", 200, 75);
+        dispatchPointer(scaleHandle, "pointermove", boundaryClientX, 75);
+
+        expect(hook.transform.scale).toBeCloseTo(boundaryScale);
+
+        dispatchPointer(scaleHandle, "pointermove", inwardClientX, 75);
+        dispatchPointer(scaleHandle, "pointerup", inwardClientX, 75);
+
+        expect(hook.transform.scale).toBeCloseTo(expectedScale);
+        if (direction === "increase") {
+          expect(hook.transform.scale).toBeGreaterThan(initialScale);
+        } else {
+          expect(hook.transform.scale).toBeLessThan(initialScale);
+        }
+        expect(hook._previewActive).toBe(false);
+        expect(alignmentDirtyCalls(hook)).toHaveLength(1);
+        expect(hook._applyTransform).toHaveBeenCalledTimes(2);
+
+        restore();
+      }
+    );
+
     it("transform button mutation reports dirty once during active preview", () => {
       const { hook, restore } = mountDirtyHook();
       hook._previewActive = true;
@@ -2451,6 +2517,56 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
       restore();
     });
+
+    it.each([
+      ["scale-down", 0.2],
+      ["scale-up", 5],
+    ])(
+      "%s outward from an out-of-range scale is a true no-op",
+      (action, initialScale) => {
+        const { hook, restore } = mountDirtyHook();
+        const initialTransform = { tx: 10, ty: 20, rotation: 30, scale: initialScale };
+        hook.transform = {...initialTransform};
+        hook._previewActive = true;
+        hook._applyTransform = vi.fn();
+
+        hook._adjustTransform(action, false);
+
+        expect(hook.transform).toEqual(initialTransform);
+        expect(hook._previewActive).toBe(true);
+        expect(alignmentDirtyCalls(hook)).toHaveLength(0);
+        expect(hook._applyTransform).not.toHaveBeenCalled();
+
+        restore();
+      }
+    );
+
+    it.each([
+      ["scale-up", 0.2, 0.25, "increase"],
+      ["scale-down", 5, 4, "decrease"],
+    ])(
+      "%s inward from an out-of-range scale moves in the requested direction and dirties once",
+      (action, initialScale, expectedScale, direction) => {
+        const { hook, restore } = mountDirtyHook();
+        hook.transform.scale = initialScale;
+        hook._previewActive = true;
+        hook._applyTransform = vi.fn();
+
+        hook._adjustTransform(action, false);
+
+        expect(hook.transform.scale).toBeCloseTo(expectedScale);
+        if (direction === "increase") {
+          expect(hook.transform.scale).toBeGreaterThan(initialScale);
+        } else {
+          expect(hook.transform.scale).toBeLessThan(initialScale);
+        }
+        expect(hook._previewActive).toBe(false);
+        expect(alignmentDirtyCalls(hook)).toHaveLength(1);
+        expect(hook._applyTransform).toHaveBeenCalledTimes(1);
+
+        restore();
+      }
+    );
 
     it.each([
       ["scale-down", 0.25],

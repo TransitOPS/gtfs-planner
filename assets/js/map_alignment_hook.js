@@ -118,6 +118,14 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function clampScaleInDirection(current, candidate) {
+  if (candidate === current) return current;
+  if (candidate < current && current <= SCALE_MIN) return current;
+  if (candidate > current && current >= SCALE_MAX) return current;
+
+  return clamp(candidate, SCALE_MIN, SCALE_MAX);
+}
+
 function parseAlignmentPayload(centerLatRaw, centerLonRaw, scaleMppRaw, rotationDegRaw) {
   const centerLat = parseFloat(centerLatRaw);
   const centerLon = parseFloat(centerLonRaw);
@@ -494,7 +502,10 @@ const MapAlignmentHook = {
       const dy = e.clientY - centerY;
       const distance = Math.sqrt(dx * dx + dy * dy);
       const ratio = distance / initialDistance;
-      const nextScale = clamp(baseScale * ratio, SCALE_MIN, SCALE_MAX);
+      const nextScale = clampScaleInDirection(
+        this.transform.scale,
+        baseScale * ratio
+      );
       if (nextScale === this.transform.scale) return;
       this._markPreviewDirty();
       this.transform.scale = nextScale;
@@ -1196,13 +1207,19 @@ const MapAlignmentHook = {
       case "rotate-left": this.transform.rotation -= rotation; break;
       case "rotate-right": this.transform.rotation += rotation; break;
       case "scale-down": {
-        const nextScale = clamp(this.transform.scale / scale, SCALE_MIN, SCALE_MAX);
+        const nextScale = clampScaleInDirection(
+          this.transform.scale,
+          this.transform.scale / scale
+        );
         if (nextScale === this.transform.scale) return;
         this.transform.scale = nextScale;
         break;
       }
       case "scale-up": {
-        const nextScale = clamp(this.transform.scale * scale, SCALE_MIN, SCALE_MAX);
+        const nextScale = clampScaleInDirection(
+          this.transform.scale,
+          this.transform.scale * scale
+        );
         if (nextScale === this.transform.scale) return;
         this.transform.scale = nextScale;
         break;
