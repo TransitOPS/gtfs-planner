@@ -208,6 +208,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
   end
 
   describe "journal summary empty state" do
+    test "shows loading without an empty state until the initial load completes", context do
+      control_journal_source()
+      view = open_details(context)
+      task = await_journal_request(context.station.id)
+
+      assert has_element?(
+               view,
+               "#journal-summary-loading[role='status'][aria-live='polite'][aria-busy='true']",
+               "Loading journal entries"
+             )
+
+      refute has_element?(view, "#journal-summary-empty")
+
+      release_journal(task, :real)
+      render_async(view, 5_000)
+
+      refute has_element?(view, "#journal-summary-loading")
+      assert has_element?(view, "#journal-summary-empty")
+    end
+
     test "renders empty state without a create CTA for stations with no entries", context do
       view = open_details(context)
       render_async(view, 5_000)

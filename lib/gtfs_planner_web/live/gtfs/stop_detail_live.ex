@@ -538,7 +538,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         {type, %{label: label}} -> "#{String.capitalize(type)} · #{label}"
       end
 
-    %{label: label, closed?: not is_nil(entry.closed_at)}
+    %{label: label}
   end
 
   defp journal_local_time(entry, local_times) do
@@ -964,6 +964,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
               </div>
 
               <%= cond do %>
+                <% @journal_state == :loading and not @journal_loaded_once? -> %>
+                  <.skeleton
+                    id="journal-summary-loading"
+                    label="Loading journal entries"
+                    rows={3}
+                    role="status"
+                    aria-live="polite"
+                    aria-busy="true"
+                    aria-atomic="true"
+                    class="journal-loading-delay bg-base-100 border border-base-300 rounded-box p-4"
+                  />
                 <% @journal_state == :error and not @journal_loaded_once? -> %>
                   <.callout
                     kind="warning"
