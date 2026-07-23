@@ -78,8 +78,28 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   attr :entity_type, :string, required: true
   attr :entity_id, :string, required: true
   attr :history_active, :boolean, required: true
+  attr :show_journal, :boolean, default: false
+  attr :journal_active, :boolean, default: false
+  attr :journal_count, :integer, default: 0
 
   def history_tab_strip(assigns) do
+    details_active? = !assigns.history_active && !assigns.journal_active
+
+    details_click =
+      cond do
+        details_active? -> nil
+        assigns.show_journal -> "show_details"
+        true -> "hide_history"
+      end
+
+    assigns =
+      assigns
+      |> assign(:details_active?, details_active?)
+      |> assign(:details_click, details_click)
+      |> assign(:history_click, if(assigns.history_active, do: nil, else: "show_history"))
+      |> assign(:journal_click, if(assigns.journal_active, do: nil, else: "show_drawer_journal"))
+      |> assign(:show_badge?, assigns.journal_count > 0)
+
     ~H"""
     <div
       id={"#{@entity_type}-tabs"}
@@ -92,16 +112,16 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         id={"#{@entity_type}-tab-details"}
         type="button"
         role="tab"
-        phx-click={if @history_active, do: "hide_history"}
-        aria-selected={if @history_active, do: "false", else: "true"}
+        phx-click={@details_click}
+        aria-selected={to_string(@details_active?)}
         aria-controls={"#{@entity_type}-panel-details"}
-        tabindex={if @history_active, do: "-1", else: "0"}
+        tabindex={if @details_active?, do: "0", else: "-1"}
         class={[
           "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
-          if(@history_active,
-            do: "text-base-content/70 hover:text-base-content border-transparent",
-            else: "text-base-content font-medium border-base-content"
+          if(@details_active?,
+            do: "text-base-content font-medium border-base-content",
+            else: "text-base-content/70 hover:text-base-content border-transparent"
           )
         ]}
       >
@@ -111,10 +131,10 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         id={"#{@entity_type}-tab-history"}
         type="button"
         role="tab"
-        phx-click={if @history_active, do: nil, else: "show_history"}
+        phx-click={@history_click}
         phx-value-entity-type={@entity_type}
         phx-value-entity-id={@entity_id}
-        aria-selected={if @history_active, do: "true", else: "false"}
+        aria-selected={to_string(@history_active)}
         aria-controls={"#{@entity_type}-panel-history"}
         tabindex={if @history_active, do: "0", else: "-1"}
         class={[
@@ -127,6 +147,34 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         ]}
       >
         History
+      </button>
+      <button
+        :if={@show_journal}
+        id={"#{@entity_type}-tab-journal"}
+        type="button"
+        role="tab"
+        phx-click={@journal_click}
+        phx-value-entity-type={@entity_type}
+        phx-value-entity-id={@entity_id}
+        aria-selected={to_string(@journal_active)}
+        aria-controls={"#{@entity_type}-panel-journal"}
+        tabindex={if @journal_active, do: "0", else: "-1"}
+        class={[
+          "py-3 text-sm bg-transparent border-0 -mb-px border-b-2 inline-flex items-center gap-1.5",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
+          if(@journal_active,
+            do: "text-base-content font-medium border-base-content",
+            else: "text-base-content/70 hover:text-base-content border-transparent"
+          )
+        ]}
+      >
+        Journal
+        <span
+          :if={@show_badge?}
+          class="border border-control-border bg-base-100 rounded-full px-1.5 text-xs leading-4 tabular-nums text-base-content/70"
+        >
+          {@journal_count}
+        </span>
       </button>
     </div>
     """

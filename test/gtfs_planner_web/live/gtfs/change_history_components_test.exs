@@ -353,6 +353,234 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     assert attrs_of(d, "#stop-tabs [role='tab']", "tabindex") == ["0", "-1"]
   end
 
+  describe "history_tab_strip/1 three-tab semantics" do
+    test "defaults to two tabs with no journal" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false
+          )
+        )
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "id") ==
+               ["stop-tab-details", "stop-tab-history"]
+
+      assert Enum.empty?(LazyHTML.query(d, "#stop-tab-journal"))
+    end
+
+    test "renders journal tab as third tab when show_journal is true" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "id") ==
+               ["stop-tab-details", "stop-tab-history", "stop-tab-journal"]
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "aria-controls") ==
+               ["stop-panel-details", "stop-panel-history", "stop-panel-journal"]
+    end
+
+    test "Details is active only when neither history nor journal is active" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "aria-selected") ==
+               ["true", "false", "false"]
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "tabindex") == ["0", "-1", "-1"]
+    end
+
+    test "Journal is active when journal_active is true" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: true,
+            journal_count: 5
+          )
+        )
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "aria-selected") ==
+               ["false", "false", "true"]
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "tabindex") == ["-1", "-1", "0"]
+    end
+
+    test "History is active when history_active is true (mutual exclusion)" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: true,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "aria-selected") ==
+               ["false", "true", "false"]
+
+      assert attrs_of(d, "#stop-tabs [role='tab']", "tabindex") == ["-1", "0", "-1"]
+    end
+
+    test "journal click sends show_drawer_journal" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tab-journal", "phx-click") == ["show_drawer_journal"]
+      assert attrs_of(d, "#stop-tab-journal", "phx-value-entity-type") == ["stop"]
+      assert attrs_of(d, "#stop-tab-journal", "phx-value-entity-id") == ["stop-1"]
+    end
+
+    test "active journal tab has no click event" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: true,
+            journal_count: 2
+          )
+        )
+
+      assert attrs_of(d, "#stop-tab-journal", "phx-click") == []
+    end
+
+    test "details click sends show_details when a secondary tab is active (three-tab mode)" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: true,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tab-details", "phx-click") == ["show_details"]
+    end
+
+    test "details click sends hide_history in default two-tab mode" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: true,
+            show_journal: false,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tab-details", "phx-click") == ["hide_history"]
+    end
+
+    test "details click is absent when already active" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#stop-tab-details", "phx-click") == []
+    end
+
+    test "renders a nonzero badge and omits it at zero" do
+      nonzero =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 3
+          )
+        )
+
+      badge = LazyHTML.query(nonzero, "#stop-tab-journal span")
+      assert LazyHTML.text(badge) |> String.trim() == "3"
+
+      zero =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "stop",
+            entity_id: "stop-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert Enum.empty?(LazyHTML.query(zero, "#stop-tab-journal span"))
+    end
+
+    test "pathway tab strip receives the same three-tab structure" do
+      d =
+        doc(
+          render_component(&ChangeHistoryComponents.history_tab_strip/1,
+            entity_type: "pathway",
+            entity_id: "pw-1",
+            history_active: false,
+            show_journal: true,
+            journal_active: false,
+            journal_count: 0
+          )
+        )
+
+      assert attrs_of(d, "#pathway-tabs [role='tab']", "id") ==
+               ["pathway-tab-details", "pathway-tab-history", "pathway-tab-journal"]
+
+      assert attrs_of(d, "#pathway-tabs [role='tab']", "aria-controls") ==
+               ["pathway-panel-details", "pathway-panel-history", "pathway-panel-journal"]
+    end
+  end
+
   describe "display_name/1" do
     test "extracts and titlecases the local part of an email" do
       assert ChangeHistoryComponents.__test_display_name__("ryan.mahoney@example.com") ==

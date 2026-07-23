@@ -13,6 +13,8 @@ const referenceRoot = resolve(repositoryRoot, ".specs/journal-02/visual-referenc
 const artifactRoot = resolve(repositoryRoot, ".artifacts/journal-02");
 const pkg3ReferenceRoot = resolve(repositoryRoot, ".specs/journal-03/visual-references");
 const pkg3ArtifactRoot = resolve(repositoryRoot, ".artifacts/journal-03");
+const pkg4ReferenceRoot = resolve(repositoryRoot, ".specs/journal-04/visual-references");
+const pkg4ArtifactRoot = resolve(repositoryRoot, ".artifacts/journal-04");
 
 const PHOTO_ENTRY_ID = "00000000-0000-4000-8000-000000000701";
 const CLOSED_ENTRY_ID = "00000000-0000-4000-8000-000000000702";
@@ -819,6 +821,55 @@ test("Package 03 captures stable reference-governed screenshots", async ({ page 
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({
     path: resolve(pkg3ArtifactRoot, "production-markers-entity-scope.png"),
+    animations: "disabled",
+  });
+});
+
+test("Package 04 component baseline — executable reference and production tab strip", async ({ page }) => {
+  await mkdir(pkg4ArtifactRoot, { recursive: true });
+
+  // Capture the executable reference drawer
+  await page.goto(
+    pathToFileURL(resolve(pkg4ReferenceRoot, "mock-06-entity-drawer-journal.html")).href,
+    { waitUntil: "networkidle" },
+  );
+  await page.evaluate(() => document.fonts.ready);
+
+  const referenceHeading = page.getByText("Mock 06 · Journal inside an entity edit drawer", {
+    exact: false,
+  });
+  await expect(referenceHeading).toBeVisible();
+
+  await page.screenshot({
+    path: resolve(pkg4ArtifactRoot, "reference-entity-drawer-journal.png"),
+  });
+
+  // Capture the current production stop/pathway tab strip baseline
+  await loginAndGoToDiagram(page);
+
+  const diagramPage = page.locator("#diagram-page");
+  await expect(diagramPage).toBeVisible();
+
+  // Open a child stop drawer to capture its current two-tab strip
+  const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
+  await expect(nodeMarker).toBeVisible();
+  await nodeMarker.click();
+
+  // Open the edit drawer from a scoped journal entry
+  const panel = page.locator("#station-journal-panel");
+  await expect(panel).toBeVisible();
+
+  const editBtn = panel.locator('button[id^="journal-edit-target-"]').first();
+  await expect(editBtn).toBeVisible();
+  await editBtn.click();
+
+  // The child stop drawer with its tab strip should be open
+  const drawer = page.locator('[aria-label="Edit node details"]');
+  await expect(drawer).toBeVisible();
+
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: resolve(pkg4ArtifactRoot, "production-tab-baseline.png"),
     animations: "disabled",
   });
 });

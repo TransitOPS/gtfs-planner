@@ -748,6 +748,234 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
 
   defp zone_title(local, _zone), do: absolute_time(local)
 
+  attr :entity_type, :string, required: true
+  attr :entity_id, :string, required: true
+  attr :entity_label, :string, required: true
+  attr :journal_entries, :any, required: true
+
+  attr :journal_state, :atom,
+    default: :idle,
+    values: [:idle, :initial_loading, :ready, :refreshing, :error]
+
+  attr :journal_entries_exist?, :boolean, default: false
+  attr :journal_error_fallback?, :boolean, default: false
+  attr :journal_scope, Scope, required: true
+  attr :journal_authors, :map, default: %{}
+  attr :journal_local_times, :map, default: %{}
+  attr :journal_now, :any, default: nil
+
+  @doc """
+  Renders an entity-scoped journal panel for a stop or pathway edit drawer.
+
+  Consumes `journal_entries` stream tuples directly under a `phx-update="stream"`
+  parent. Each card renders the note body, zero or more photo thumbnails linked
+  to the scoped public path (new tab), author byline, and localized capture
+  time — without a target chip, lifecycle controls, status indicators, or
+  panel-handoff actions.
+  """
+  def entity_journal_panel(assigns) do
+    now = assigns.journal_now || NaiveDateTime.utc_now()
+
+    assigns =
+      assigns
+      |> assign(:now, now)
+      |> assign(:id_prefix, "drawer-journal-#{assigns.entity_type}")
+      |> assign(:panel_id, "drawer-journal-#{assigns.entity_type}-#{assigns.entity_id}")
+      |> assign(:loading?, assigns.journal_state == :initial_loading)
+      |> assign(:refreshing?, assigns.journal_state == :refreshing)
+      |> assign(
+        :initial_error?,
+        assigns.journal_state == :error and not assigns.journal_error_fallback?
+      )
+      |> assign(
+        :stale_error?,
+        assigns.journal_state == :error and assigns.journal_error_fallback?
+      )
+      |> assign(
+        :show_entries?,
+        assigns.journal_state not in [:idle, :initial_loading] and assigns.journal_entries_exist?
+      )
+      |> assign(
+        :show_empty?,
+        assigns.journal_state == :ready and not assigns.journal_entries_exist?
+      )
+
+    ~H"""
+    <div
+      id={@panel_id}
+      data-role="entity-journal-panel"
+      class="space-y-3"
+    >
+      <.entity_journal_loading :if={@loading?} id_prefix={@id_prefix} />
+
+      <div
+        :if={@refreshing?}
+        id={"#{@id_prefix}-refreshing"}
+        class="flex items-center gap-2 border border-base-300 bg-base-200 px-3 py-2 text-sm text-base-content"
+      >
+        <.icon name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
+        <span>Refreshing journal entries</span>
+      </div>
+
+      <.callout
+        :if={@initial_error?}
+        kind="error"
+        id={"#{@id_prefix}-error"}
+        title="Journal entries could not load"
+      >
+        <p>
+          The journal for this {@entity_label} did not load. The form and other tabs are unaffected.
+        </p>
+        <div class="mt-3">
+          <.button
+            id={"#{@id_prefix}-retry"}
+            size="sm"
+            phx-click="retry_drawer_journal"
+            class="min-h-11"
+          >
+            Retry
+          </.button>
+        </div>
+      </.callout>
+
+      <.callout
+        :if={@stale_error?}
+        kind="error"
+        id={"#{@id_prefix}-stale-error"}
+        title="Journal entries may be out of date"
+      >
+        <p>
+          The journal for this {@entity_label} failed to refresh. The last saved entries remain available.
+        </p>
+        <div class="mt-3">
+          <.button
+            id={"#{@id_prefix}-retry"}
+            size="sm"
+            phx-click="retry_drawer_journal"
+            class="min-h-11"
+          >
+            Retry
+          </.button>
+        </div>
+      </.callout>
+
+      <.empty_state
+        :if={@show_empty?}
+        id={"#{@id_prefix}-empty"}
+        title={"No journal entries for this #{@entity_label}"}
+      >
+        Notes and photos captured in the field for this {@entity_label} appear here once they are synced.
+      </.empty_state>
+
+      <div
+        :if={@show_entries?}
+        id={"#{@id_prefix}-entry-list"}
+        phx-update="stream"
+        class="space-y-2.5"
+      >
+        <.entity_journal_card
+          :for={{dom_id, entry} <- @journal_entries}
+          id={dom_id}
+          entry={entry}
+          scope={@journal_scope}
+          author={Map.get(@journal_authors, entry.author_id)}
+          captured_local={entity_local_time(entry, @journal_local_times)}
+          now={@now}
+        />
+      </div>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :entry, JournalEntry, required: true
+  attr :scope, Scope, required: true
+  attr :author, :any, default: nil
+  attr :captured_local, NaiveDateTime, required: true
+  attr :now, NaiveDateTime, required: true
+
+  defp entity_journal_card(assigns) do
+    photos = loaded_photos(assigns.entry.photos)
+
+    assigns =
+      assigns
+      |> assign(:photos, photos)
+      |> assign(:photo_count, length(photos))
+      |> assign(:byline, author_label(assigns.author))
+      |> assign(:relative_capture, relative_time(assigns.captured_local, assigns.now))
+
+    ~H"""
+    <article
+      id={@id}
+      data-role="entity-journal-entry"
+      class="bg-white border border-gray-200 rounded-lg px-4 py-3"
+    >
+      <p
+        data-role="journal-note"
+        class="text-sm text-gray-800 leading-relaxed break-words [overflow-wrap:anywhere]"
+      >
+        {note_body(@entry.body)}
+      </p>
+
+      <div :if={@photo_count > 0} class="flex flex-wrap gap-1.5 mt-2.5">
+        <a
+          :for={photo <- @photos}
+          id={"entity-journal-photo-#{photo.id}"}
+          href={PhotoStorage.public_path(@scope, photo)}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="block size-14 shrink-0 overflow-hidden rounded-md border border-base-300 bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          aria-label={"View journal photo #{photo.id}"}
+        >
+          <img
+            src={PhotoStorage.public_path(@scope, photo)}
+            alt="Journal photo"
+            loading="lazy"
+            decoding="async"
+            class="h-full w-full object-cover"
+          />
+        </a>
+      </div>
+
+      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-base-content/70">
+        <span class="min-w-0 truncate">
+          <span>{@byline}</span>
+          <span aria-hidden="true">·</span>
+          <time datetime={DateTime.to_iso8601(@entry.captured_at)}>
+            {@relative_capture}
+          </time>
+        </span>
+      </div>
+    </article>
+    """
+  end
+
+  attr :id_prefix, :string, required: true
+
+  defp entity_journal_loading(assigns) do
+    ~H"""
+    <.skeleton
+      id={"#{@id_prefix}-loading"}
+      label="Loading journal entries"
+      rows={3}
+    />
+    """
+  end
+
+  defp entity_local_time(entry, local_times) do
+    case Map.get(local_times, {entry.id, :captured}) do
+      %NaiveDateTime{} = local ->
+        local
+
+      _ ->
+        entry.captured_at
+        |> case do
+          %DateTime{} = dt -> DateTime.to_naive(dt)
+          _ -> nil
+        end
+    end
+  end
+
   defp title_token(token) do
     token
     |> String.downcase()
