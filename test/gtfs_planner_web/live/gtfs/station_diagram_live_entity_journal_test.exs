@@ -199,6 +199,69 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     assert ready.drawer_journal_total_count == 1
   end
 
+  test "opening another persisted entity resets the previous drawer journal", context do
+    entry_id = Ecto.UUID.generate()
+
+    assert %{synced_count: 1, errors: []} =
+             Gtfs.sync_journal_entries(context.scope, [
+               %{
+                 id: entry_id,
+                 target_type: "node",
+                 target_id: context.child_stop.id,
+                 body: "Entry about first stop",
+                 captured_at: ~U[2026-07-18 12:00:00.000000Z]
+               }
+             ])
+
+    control_journal_source()
+    view = open_diagram(context)
+    station_task = await_station_journal_request(context.station.id)
+    release_journal(station_task, :real)
+    render_async(view, 5_000)
+
+    render_hook(view, "edit_child_stop", %{"id" => context.child_stop.id})
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.child_stop.id
+    })
+
+    drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.child_stop.id})
+
+    release_journal(drawer_task, :real)
+    render_async(view, 5_000)
+    assert assigns(view).drawer_journal_total_count == 1
+
+    render_hook(view, "edit_child_stop", %{"id" => context.second_child.id})
+
+    after_stop_switch = assigns(view)
+    assert after_stop_switch.selected_stop_id == context.second_child.id
+    assert after_stop_switch.drawer_journal_state == :idle
+    assert is_nil(after_stop_switch.drawer_journal_request)
+    assert after_stop_switch.drawer_journal_total_count == 0
+
+    render_hook(view, "show_drawer_journal", %{
+      "entity_type" => "stop",
+      "entity_id" => context.second_child.id
+    })
+
+    second_drawer_task =
+      await_drawer_journal_request(context.station.id, {"node", context.second_child.id})
+
+    release_journal(second_drawer_task, :real)
+    render_async(view, 5_000)
+    assert assigns(view).drawer_journal_state == :ready
+
+    render_hook(view, "edit_pathway", %{"id" => context.pathway.id})
+
+    after_pathway_switch = assigns(view)
+    assert after_pathway_switch.editing_pathway.id == context.pathway.id
+    assert after_pathway_switch.drawer_journal_state == :idle
+    assert is_nil(after_pathway_switch.drawer_journal_request)
+    assert after_pathway_switch.drawer_journal_total_count == 0
+  end
+
   # ============================================================================
   # Only complete current request accepted for result mutation
   # ============================================================================
@@ -851,6 +914,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
   test "pathway pair switch cancels and resets drawer journal", context do
     entry_id = Ecto.UUID.generate()
 
+    second_pathway =
+      pathway_fixture(
+        context.organization.id,
+        context.gtfs_version.id,
+        context.second_child.stop_id,
+        context.child_stop.stop_id,
+        %{pathway_id: "entity-journal-second-pathway"}
+      )
+
     assert %{synced_count: 1, errors: []} =
              Gtfs.sync_journal_entries(context.scope, [
                %{
@@ -882,11 +954,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
     render_async(view, 5_000)
 
     assert assigns(view).drawer_journal_state == :ready
+    assert assigns(view).editing_pathway.id == context.pathway.id
 
-    render_hook(view, "close_pathway_drawer", %{})
+    render_hook(view, "switch_pathway_tab", %{"tab" => "second"})
 
     state = assigns(view)
+    assert state.editing_pathway.id == second_pathway.id
     assert state.drawer_journal_state == :idle
+    assert is_nil(state.drawer_journal_request)
+    assert state.drawer_journal_total_count == 0
   end
 
   # ============================================================================
@@ -1629,10 +1705,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
   end
 
   # ============================================================================
-  # Rendered-LiveView: pathway pair switch resets drawer journal
+  # Rendered-LiveView: closing pathway drawer resets drawer journal
   # ============================================================================
 
-  test "pathway pair switch resets drawer journal stream", context do
+  test "closing pathway drawer resets drawer journal stream", context do
     entry_id = Ecto.UUID.generate()
 
     assert %{synced_count: 1, errors: []} =
@@ -1667,7 +1743,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
 
     assert assigns(view).drawer_journal_state == :ready
 
-    # Close the pathway drawer — should reset
     render_hook(view, "close_pathway_drawer", %{})
     _ = :sys.get_state(view.pid)
 

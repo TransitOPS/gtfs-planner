@@ -62,7 +62,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           generation: pos_integer(),
           entity_type: :stop | :pathway,
           entity_id: Ecto.UUID.t(),
-          target: {:node | :pathway, Ecto.UUID.t()}
+          target: {String.t(), Ecto.UUID.t()}
         }
 
   @type journal_filter :: :open | :closed | :all
@@ -275,6 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> reset_history()
           |> cancel_async(@journal_load_key)
           |> reset_journal()
+          |> cancel_async(@drawer_journal_load_key)
           |> reset_drawer_journal()
           |> assign(:stop_id, stop_id)
           |> assign(:station, station)
@@ -1187,7 +1188,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           drawer_journal_refresh_error?={@drawer_journal_refresh_error?}
           drawer_journal_error_message={@drawer_journal_error_message}
           drawer_journal_authors={@drawer_journal_authors}
-          drawer_journal_targets={@drawer_journal_targets}
           drawer_journal_local_times={@drawer_journal_local_times}
           drawer_journal_display_zone={@drawer_journal_display_zone}
           drawer_journal_now={@drawer_journal_now}
@@ -1222,7 +1222,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           drawer_journal_refresh_error?={@drawer_journal_refresh_error?}
           drawer_journal_error_message={@drawer_journal_error_message}
           drawer_journal_authors={@drawer_journal_authors}
-          drawer_journal_targets={@drawer_journal_targets}
           drawer_journal_local_times={@drawer_journal_local_times}
           drawer_journal_display_zone={@drawer_journal_display_zone}
           drawer_journal_now={@drawer_journal_now}
@@ -4532,7 +4531,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:drawer_journal_error_message, nil)
     |> assign(:drawer_journal_total_count, 0)
     |> assign(:drawer_journal_authors, %{})
-    |> assign(:drawer_journal_targets, %{})
     |> assign(:drawer_journal_local_times, %{})
     |> assign(:drawer_journal_display_zone, nil)
     |> assign(:drawer_journal_now, nil)
@@ -4639,66 +4637,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         order: :desc
       )
 
-    authors =
-      source.resolve_display_zone(organization_id, gtfs_version_id)
-      |> then(fn _zone ->
-        organization_id
-        |> Organizations.list_users_in_organization()
-        |> Map.new(fn %{user: user} -> {user.id, user} end)
-      end)
-
-    {presentations, _snapshots} =
-      fetch_drawer_journal_targets(source, organization_id, gtfs_version_id, station_id)
-
     zone = source.resolve_display_zone(organization_id, gtfs_version_id)
+
+    authors =
+      organization_id
+      |> Organizations.list_users_in_organization()
+      |> Map.new(fn %{user: user} -> {user.id, user} end)
+
     {local_times, now} = localize_journal_times(source, entries, zone)
 
     %{
       entries: entries,
       total_count: length(entries),
       authors: authors,
-      targets: presentations,
       zone: zone,
       local_times: local_times,
       now: now
     }
-  end
-
-  defp fetch_drawer_journal_targets(source, organization_id, gtfs_version_id, station_id) do
-    child_stops =
-      source.list_child_stops_for_parent(
-        organization_id,
-        gtfs_version_id,
-        station_id
-      )
-
-    pathways =
-      source.list_pathways_for_station(
-        organization_id,
-        gtfs_version_id,
-        station_id
-      )
-
-    node_presentations =
-      Map.new(child_stops, fn stop ->
-        {stop.id, %{label: target_label(stop.stop_name, stop.stop_id)}}
-      end)
-
-    pathway_presentations =
-      Map.new(pathways, fn pathway ->
-        {pathway.id, %{label: target_label(pathway.pathway_id, pathway.id)}}
-      end)
-
-    presentations =
-      Map.merge(node_presentations, pathway_presentations)
-
-    target_snapshots = %{
-      presentations: presentations,
-      nodes: Map.new(child_stops, fn stop -> {stop.id, stop} end),
-      pathways: Map.new(pathways, fn pw -> {pw.id, pw} end)
-    }
-
-    {presentations, target_snapshots}
   end
 
   defp apply_drawer_journal_result(socket, _request, {:ok, payload}) do
@@ -4706,7 +4661,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream(:drawer_journal_entries, payload.entries, reset: true)
     |> assign(:drawer_journal_total_count, payload.total_count)
     |> assign(:drawer_journal_authors, payload.authors)
-    |> assign(:drawer_journal_targets, payload.targets)
     |> assign(:drawer_journal_local_times, payload.local_times)
     |> assign(:drawer_journal_display_zone, payload.zone)
     |> assign(:drawer_journal_now, payload.now)
@@ -4999,6 +4953,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     socket
+    |> cancel_and_reset_drawer_journal()
     |> assign(:editing_pathway_pair, pathway_pair)
     |> assign(:active_pathway_tab, active_pathway_tab)
     |> assign(:pathway_form_dirty, false)
@@ -7209,6 +7164,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       })
 
     socket
+    |> cancel_and_reset_drawer_journal()
     |> reset_reposition_state()
     |> stream_insert(:child_stops, stop)
     |> assign(:pending_xy, pending_xy)
@@ -7500,7 +7456,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp do_remove_from_diagram(stop_id, socket) do
-    socket = clear_confirmation(socket)
+    socket =
+      socket
+      |> clear_confirmation()
+      |> cancel_and_reset_drawer_journal()
+
     org_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
@@ -7527,7 +7487,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp do_delete_child_stop(stop_id, socket) do
-    socket = clear_confirmation(socket)
+    socket =
+      socket
+      |> clear_confirmation()
+      |> cancel_and_reset_drawer_journal()
+
     org_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
@@ -7595,6 +7559,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp delete_pathway_and_refresh(socket, pathway) do
+    socket = cancel_and_reset_drawer_journal(socket)
+
     case Gtfs.delete_pathway(pathway) do
       {:ok, _deleted_pathway} ->
         Gtfs.record_change(socket.assigns.audit_ctx, :pathway, pathway, "deleted", %{})
@@ -7619,6 +7585,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
 
     refreshed_socket
+    |> cancel_and_reset_drawer_journal()
     |> assign(:show_pathway_drawer, true)
     |> assign(:editing_pathway_pair, [refreshed_pathway])
     |> assign(:active_pathway_tab, :first)
@@ -7629,6 +7596,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp update_pathway_drawer(refreshed_socket, _remaining_siblings) do
     refreshed_socket
+    |> cancel_and_reset_drawer_journal()
     |> assign(:show_pathway_drawer, false)
     |> assign(:editing_pathway_pair, [])
     |> assign(:active_pathway_tab, :first)

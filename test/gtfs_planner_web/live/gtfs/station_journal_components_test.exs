@@ -609,10 +609,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
           )
         )
 
-      assert Enum.count(LazyHTML.query(d, "#drawer-journal-stop-loading")) == 1
+      loading = LazyHTML.query(d, "#drawer-journal-stop-loading")
 
-      assert LazyHTML.query(d, "#drawer-journal-stop-loading") |> LazyHTML.text() =~
-               "Loading journal entries"
+      assert Enum.count(loading) == 1
+      assert LazyHTML.text(loading) =~ "Loading journal entries"
+      assert LazyHTML.attribute(loading, "aria-busy") == ["true"]
+      assert LazyHTML.attribute(loading, "class") |> List.first() =~ "journal-loading-delay"
 
       assert Enum.empty?(LazyHTML.query(d, "[data-role='entity-journal-entry']"))
     end

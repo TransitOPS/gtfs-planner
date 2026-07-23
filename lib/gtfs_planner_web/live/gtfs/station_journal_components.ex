@@ -958,6 +958,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       id={"#{@id_prefix}-loading"}
       label="Loading journal entries"
       rows={3}
+      class="journal-loading-delay"
+      aria-busy="true"
     />
     """
   end

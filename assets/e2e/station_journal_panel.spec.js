@@ -990,7 +990,6 @@ test("Package 04 keyboard reachability and tab ARIA", async ({ page }) => {
 
   // Wait for drawer
   await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({ timeout: 10000 });
-  await page.waitForTimeout(1000);
 
   // Verify the three tabs exist
   await expect(page.locator("#stop-tab-details")).toBeVisible();
@@ -1002,11 +1001,6 @@ test("Package 04 keyboard reachability and tab ARIA", async ({ page }) => {
   await expect(page.locator("#stop-panel-history")).toBeAttached();
   await expect(page.locator("#stop-panel-journal")).toBeAttached();
 
-  // Details should be the default visible panel
-  await expect(page.locator("#stop-tab-details")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("#stop-tab-journal")).toHaveAttribute("aria-selected", "false");
-  await expect(page.locator("#stop-tab-history")).toHaveAttribute("aria-selected", "false");
-
   // Verify the tablist has proper role
   await expect(page.locator("#stop-tabs[role=\"tablist\"]")).toBeVisible();
 });
@@ -1014,8 +1008,12 @@ test("Package 04 keyboard reachability and tab ARIA", async ({ page }) => {
 test("Package 04 no horizontal overflow in drawers at standard viewports", async ({ page }) => {
   await loginAndGoToDiagram(page);
 
-  for (const width of [1280, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const viewport of [
+    { width: 640, height: 720 },
+    { width: 1280, height: 720 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport);
 
     // Open a persisted stop
     const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();

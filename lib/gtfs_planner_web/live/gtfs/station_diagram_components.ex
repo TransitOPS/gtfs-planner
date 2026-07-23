@@ -3226,7 +3226,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :drawer_journal_refresh_error?, :boolean, default: false
   attr :drawer_journal_error_message, :string, default: nil
   attr :drawer_journal_authors, :map, default: %{}
-  attr :drawer_journal_targets, :map, default: %{}
   attr :drawer_journal_local_times, :map, default: %{}
   attr :drawer_journal_display_zone, :any, default: nil
   attr :drawer_journal_now, :any, default: nil
@@ -4084,7 +4083,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :drawer_journal_refresh_error?, :boolean, default: false
   attr :drawer_journal_error_message, :string, default: nil
   attr :drawer_journal_authors, :map, default: %{}
-  attr :drawer_journal_targets, :map, default: %{}
   attr :drawer_journal_local_times, :map, default: %{}
   attr :drawer_journal_display_zone, :any, default: nil
   attr :drawer_journal_now, :any, default: nil
