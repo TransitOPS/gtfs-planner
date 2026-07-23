@@ -50,20 +50,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
   end
 
   defp read_only_boundary_snapshot(stop_level, anchor_stops) do
-    stop_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+    stop_level =
+      if stop_level do
+        Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      end
 
     %{
       alignment:
-        Map.take(stop_level, [
-          :floorplan_center_lat,
-          :floorplan_center_lon,
-          :floorplan_scale_mpp,
-          :floorplan_rotation_deg
-        ]),
+        if(stop_level,
+          do:
+            Map.take(stop_level, [
+              :floorplan_center_lat,
+              :floorplan_center_lon,
+              :floorplan_scale_mpp,
+              :floorplan_rotation_deg
+            ])
+        ),
+      stop_level_count: Repo.aggregate(GtfsPlanner.Gtfs.StopLevel, :count),
       stop_coordinates:
         Enum.map(anchor_stops, fn stop ->
           stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
-          {stop.id, stop.stop_lat, stop.stop_lon}
+          {stop.id, stop.stop_lat, stop.stop_lon, stop.diagram_coordinate}
         end),
       change_log_count: Repo.aggregate(ChangeLog, :count)
     }
@@ -76,6 +83,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
   defp refute_flash_messages(view) do
     refute has_element?(view, "#flash-info")
     refute has_element?(view, "#flash-error")
+  end
+
+  defp render_preview_error_with_read_only_assertions(
+         view,
+         stop_level,
+         anchor_stops
+       ) do
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+    before_boundary = read_only_boundary_snapshot(stop_level, anchor_stops)
+    html = render_hook(view, "preview_alignment", %{})
+
+    assert_read_only_boundary(before_boundary, stop_level, anchor_stops)
+    refute_push_event(view, "apply_preview_transform", %{})
+    refute_push_event(view, "alignment_saved", %{})
+    refute_flash_messages(view)
+    refute_receive {[:stop_levels, :updated], _}, 100
+    refute_receive {[:stops, :updated], _}, 100
+
+    html
   end
 
   defp base_setup(_context) do
@@ -237,6 +265,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
 
       refute_push_event(view, "apply_preview_transform", %{})
       refute_push_event(view, "alignment_saved", %{})
+    end
+
+    test "infer_alignment with an invalid anchor remains inert",
+         %{stop_level: stop_level, anchor_stops: anchor_stops} = context do
+      [invalid_anchor | _] = anchor_stops
+
+      invalid_anchor
+      |> Ecto.Changeset.change(diagram_coordinate: nil)
+      |> Repo.update!()
+
+      anchor_stops = Enum.map(anchor_stops, &Repo.reload!/1)
+      view = mount_map_view(context)
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      before_boundary = read_only_boundary_snapshot(stop_level, anchor_stops)
+      render_hook(view, "infer_alignment", %{})
+
+      assert_read_only_boundary(before_boundary, stop_level, anchor_stops)
+      refute_flash_messages(view)
+      refute_push_event(view, "apply_preview_transform", %{})
+      refute_push_event(view, "alignment_saved", %{})
+      refute_receive {[:stop_levels, :updated], _}, 100
+      refute_receive {[:stops, :updated], _}, 100
     end
   end
 
@@ -443,6 +496,68 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       refute_receive {[:stop_levels, :updated], _}, 100
       refute_receive {[:stops, :updated], _}, 100
     end
+
+    test "degenerate anchor geometry produces the generic error without writes or recovery copy",
+         %{stop_level: stop_level} = context do
+      point = %{x: 30.0, y: 40.0}
+
+      anchor_stops =
+        create_anchor_stops(context, [
+          {point, 40.7128, -74.0060},
+          {point, 40.7129, -74.0059},
+          {point, 40.7130, -74.0058}
+        ])
+
+      view = mount_map_view(context)
+
+      html =
+        render_preview_error_with_read_only_assertions(
+          view,
+          stop_level,
+          anchor_stops
+        )
+
+      assert has_element?(view, "#auto-alignment-error[role='alert']")
+      assert html =~ "Anchor stops are too close together to infer alignment"
+
+      refute html =~
+               "Place more stops with both a floorplan position and map coordinates, then try again."
+
+      refute html =~ "Check the anchor stops' positions, then try again."
+      refute has_element?(view, "#auto-alignment-status")
+    end
+
+    test "missing active stop-level prerequisites produce the generic error without writes or recovery copy",
+         %{stop_level: stop_level} = context do
+      anchor_stops =
+        create_anchor_stops(
+          context,
+          Enum.map(@anchor_points, fn point ->
+            {lat, lon} = anchor_lat_lon(point)
+            {point, lat, lon}
+          end)
+        )
+
+      assert {:ok, _deleted_stop_level} = Gtfs.delete_stop_level(stop_level)
+
+      view = mount_map_view(context)
+
+      html =
+        render_preview_error_with_read_only_assertions(
+          view,
+          stop_level,
+          anchor_stops
+        )
+
+      assert has_element?(view, "#auto-alignment-error[role='alert']")
+      assert html =~ "Active level is missing required alignment data"
+
+      refute html =~
+               "Place more stops with both a floorplan position and map coordinates, then try again."
+
+      refute html =~ "Check the anchor stops' positions, then try again."
+      refute has_element?(view, "#auto-alignment-status")
+    end
   end
 
   describe "restore_saved_alignment" do
@@ -609,6 +724,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
                "#map-alignment-preview-auto.btn-outline.btn-primary[phx-disable-with='Previewing…']"
              )
 
+      assert has_element?(
+               view,
+               "#map-alignment-preview-status",
+               "Coordinate-change preview not ready"
+             )
+
+      assert has_element?(view, "div.mt-3.flex.flex-wrap.items-start")
+
       refute has_element?(view, "#auto-alignment-status")
       refute has_element?(view, "#auto-alignment-error")
     end
@@ -657,6 +780,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
                view,
                "#auto-alignment-status[role='status'][aria-live='polite'][aria-describedby='auto-alignment-fit-value auto-alignment-fit-description']",
                "Unsaved auto-alignment preview"
+             )
+
+      assert has_element?(
+               view,
+               "#auto-alignment-status.bg-blue-50.border-blue-200.text-blue-900"
              )
 
       assert has_element?(view, "#auto-alignment-fit-value", "Estimated fit error")

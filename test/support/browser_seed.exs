@@ -186,6 +186,8 @@ case Accounts.register_first_admin(%{
         stop_id: "BROWSER_STATION",
         stop_name: "Browser Test Station",
         location_type: 1,
+        stop_lat: Decimal.new("40.0390"),
+        stop_lon: Decimal.new("-75.1440"),
         organization_id: org.id,
         gtfs_version_id: diagram_version.id
       })
@@ -213,9 +215,15 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: stop_level #{stop_level.id} with diagram")
 
     # The route deliberately serves only files that exist within the versioned,
-    # publication-scoped namespace. Store a tiny valid raster at the exact
-    # filename referenced above so browser tests exercise the real canvas,
-    # upload replacement, and map image loading paths.
+    # publication-scoped namespace. Store a recognizable 100 × 80 raster at
+    # the exact filename referenced above so screenshots exercise visible
+    # floorplan placement and transformation, not only the canvas plumbing.
+    browser_floorplan_png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAGQAAABQCAMAAADY1yDdAAAATlBMVEX4+vzU2d6gqLKJkp5/iZZaZXbg5OhSXm8zQVVbaX19i59TYXVwhJ/G1enb6v6/2/7I1+uMlJ+nyPtTh/ElY+tEUWNOXnU1Q1dmkvHd5/z/zQfsAAAB10lEQVRYw+2Z2bKCMAyGlUULIoRFxfd/0YMVSsBiSqEZPMN/wzIpHyVpSpvDYZeFjp5PKQiHCsgW3hEjTmfhRudTz2guo5jSRSRY4kK2iJrnKkrTj2tKKhZJ1isRMd3k2vSl84cRwwbyorR+8URkYG8FSSPhvSG+tAcDnwwgpE9AvpmPITEdK0MIqVgHkbGdN1KB3p6/74UjSEjY6yH59/HaQGAA+W7+IxAA5xAAe4hPQrLln2uHbA9CRxcXpCirsjCB5PaQonqpsIfQPoGslJDSpeMhq95yCgGOngCDT+ZE14+MeIZUv2Q+cZpWAvkLdRHhd93EHf0K38WNsG+fGnSv6FKh+g7uhCAZihsAfByfY+Hb2ALdn4Jk0B27gadHjB+sPddDkFQKMdHEe5AQlQwXiISotO4SwtKTWT6xhai0PkNj/9OQqfExSfi0T5hHvEaPlXMXSxbe6vS7Q7a0dNgWZMH6ZDHEZOnAEF0TkLSu6nQ9COggqZx30vUgoIHUElKb+cTW8e2/gFlPbCH6niyHDJYOzzk+MYaM1yfPVaOLZTDukFmQNXJXvzstd6pzvHud5/od7k+7rr0ewrBX77jqwFI/YakEsdS0eKpzLHXGA0vF9D/oDzmmzPWTS7UHAAAAAElFTkSuQmCC"
+      )
+
+    # Other browser fixtures intentionally use a minimal image payload.
     one_pixel_png =
       Base.decode64!(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqXQAAAABJRU5ErkJggg=="
@@ -227,7 +235,7 @@ case Accounts.register_first_admin(%{
         diagram_version.id,
         station.stop_id,
         stop_level.diagram_filename,
-        one_pixel_png
+        browser_floorplan_png
       )
 
     # Create child stops with diagram coordinates
@@ -276,8 +284,8 @@ case Accounts.register_first_admin(%{
       rotation_deg: 0.0
     }
 
-    browser_image_w = 1
-    browser_image_h = 1
+    browser_image_w = 100
+    browser_image_h = 80
 
     for {stop, svg_x, svg_y} <- [
           {browser_child_a, 30.0, 40.0},

@@ -819,7 +819,7 @@ describe("map_alignment_hook preview status", () => {
     document.body.innerHTML = `
       <div id="root" data-active-level-id="${activeLevelId}">
         <div id="map-alignment-pins-active"></div>
-        <span id="map-alignment-preview-status" aria-live="polite">Preview not ready</span>
+        <span id="map-alignment-preview-status" aria-live="polite">Coordinate-change preview not ready</span>
       </div>
     `;
 
@@ -871,6 +871,15 @@ describe("map_alignment_hook preview status", () => {
     expect(statusEl.textContent).toBe(
       "2 anchored to floorplan · 1 positioned from map"
     );
+  });
+
+  it("names the coordinate-change workflow when marker preview is not ready", () => {
+    const { hook, statusEl } = buildStatusHook();
+    hook._naturalSizeImg = { naturalWidth: 0, naturalHeight: 0 };
+
+    hook._syncPreviewStatus();
+
+    expect(statusEl.textContent).toBe("Coordinate-change preview not ready");
   });
 });
 
@@ -2016,19 +2025,34 @@ describe("map_alignment_hook saved/preview state machine", () => {
       expect(hook._applyTransform).not.toHaveBeenCalled();
     });
 
-    it("rejects an invalid alignment payload (non-finite scale)", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1" });
+    it.each([
+      ["non-finite latitude", { center_lat: Number.NaN }],
+      ["non-finite longitude", { center_lon: Number.POSITIVE_INFINITY }],
+      ["non-finite scale", { scale_mpp: Number.NEGATIVE_INFINITY }],
+      ["non-finite rotation", { rotation_deg: Number.NaN }],
+      ["latitude below range", { center_lat: -90.1 }],
+      ["latitude above range", { center_lat: 90.1 }],
+      ["longitude below range", { center_lon: -180.1 }],
+      ["longitude above range", { center_lon: 180.1 }],
+      ["zero scale", { scale_mpp: 0 }],
+      ["negative scale", { scale_mpp: -0.1 }],
+    ])("rejects %s without changing transform or preview state", (_label, invalidField) => {
+      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+      const initialTransform = { tx: 1, ty: 2, rotation: 3, scale: 1.5 };
+      hook.transform = { ...initialTransform };
       hook._applyTransform = vi.fn();
 
       hook._handleApplyPreviewTransform({
         generation: "gen-1",
         center_lat: 50,
         center_lon: 100,
-        scale_mpp: -1,
+        scale_mpp: 0.25,
         rotation_deg: 10,
+        ...invalidField,
       });
 
-      expect(hook._previewActive).toBe(false);
+      expect(hook.transform).toEqual(initialTransform);
+      expect(hook._previewActive).toBe(true);
       expect(hook._applyTransform).not.toHaveBeenCalled();
       expect(hook._logger.warn).toHaveBeenCalled();
     });

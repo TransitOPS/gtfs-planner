@@ -60,7 +60,7 @@ const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
 
 // Preview status copy (operator-facing, plain language). Shown before the
 // floorplan image is ready or after the active marker layer is cleared.
-const PREVIEW_STATUS_NOT_READY = "Preview not ready";
+const PREVIEW_STATUS_NOT_READY = "Coordinate-change preview not ready";
 const MAP_STATES = new Set([
   "initializing",
   "ready",

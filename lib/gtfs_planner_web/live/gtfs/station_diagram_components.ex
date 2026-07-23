@@ -892,7 +892,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           role="status"
           aria-live="polite"
           aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
-          class="absolute z-10 top-4 left-4 inline-flex items-center gap-2 bg-info border border-info rounded-md px-3 py-2 text-sm text-info-content shadow-sm"
+          class="absolute z-10 top-4 left-4 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-900 shadow-sm"
         >
           <strong class="font-medium">Unsaved auto-alignment preview</strong>
         </div>
@@ -908,7 +908,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </span>
           </div>
         </div>
-        <div class="mt-3 flex flex-wrap items-end gap-x-8 gap-y-4">
+        <div class="mt-3 flex flex-wrap items-start gap-x-8 gap-y-4">
           <fieldset class="flex items-end gap-2">
             <legend class="sr-only">Map center</legend>
             <div class="flex flex-col gap-1">
@@ -1095,7 +1095,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               class="text-xs text-base-content/70"
               aria-live="polite"
             >
-              Preview not ready
+              Coordinate-change preview not ready
             </span>
             <button
               id="map-alignment-save"

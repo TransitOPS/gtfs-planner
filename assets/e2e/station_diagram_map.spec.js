@@ -60,11 +60,21 @@ test.describe("assisted alignment", () => {
     const status = page.locator("#auto-alignment-status");
     const fitValue = page.locator("#auto-alignment-fit-value");
     const fitDescription = page.locator("#auto-alignment-fit-description");
+    const floorplanImage = overlay.locator("img");
 
     await expect(canvas).toBeVisible();
     const canvasBox = await canvas.boundingBox();
     expect(canvasBox.width).toBeGreaterThan(400);
     expect(canvasBox.height).toBeGreaterThan(200);
+    await expect(floorplanImage).toBeVisible();
+    await expect
+      .poll(() =>
+        floorplanImage.evaluate((image) => ({
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        })),
+      )
+      .toEqual({ width: 100, height: 80 });
 
     for (const target of [previewBtn, restoreBtn]) {
       await expect(target).toBeVisible();
