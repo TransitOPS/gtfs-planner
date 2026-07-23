@@ -78,6 +78,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           | :returned_to_top
           | :marker_click
           | :clear_scope
+          | :deep_link
   @type journal_request :: %{
           scope_key: {Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()},
           generation: pos_integer(),
@@ -85,7 +86,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           reason: journal_load_reason(),
           filter: journal_filter(),
           target_scope: map() | nil,
-          focus_entry_id: Ecto.UUID.t() | nil
+          focus_entry_id: Ecto.UUID.t() | :malformed | nil
         }
   @type journal_payload :: %{
           entries: [GtfsPlanner.Gtfs.JournalEntry.t()],
@@ -225,7 +226,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_params(%{"stop_id" => stop_id} = params, _uri, socket) do
     if same_station_already_loaded?(socket, stop_id) do
-      {:noreply, maybe_open_child_stop_from_params(socket, params)}
+      socket =
+        socket
+        |> maybe_open_child_stop_from_params(params)
+        |> maybe_open_journal_from_params(params)
+
+      {:noreply, socket}
     else
       socket = discard_pending_diagram_upload(socket)
       load_station_and_levels(socket, stop_id, params)
@@ -323,6 +329,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> load_level_data(active_level)
           |> maybe_open_child_stop_from_params(params)
           |> setup_station_journal()
+          |> maybe_open_journal_from_params(params)
 
         {:noreply, socket}
     end
@@ -406,6 +413,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_info(:clear_edit_child_stop_param, socket) do
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    {:noreply,
+     push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+  end
+
+  @impl true
+  def handle_info(:clear_journal_params, socket) do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
 
@@ -5026,7 +5042,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 :pubsub,
                 :returned_to_top,
                 :marker_click,
-                :clear_scope
+                :clear_scope,
+                :deep_link
               ] and
               filter in [:open, :closed, :all] do
     generation = socket.assigns.journal_load_generation + 1
@@ -5279,10 +5296,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> finish_journal_load()
       |> apply_journal_refresh_effects(request, entries, pending_ids)
 
-    if focus_entry_id && Enum.any?(entries, &(&1.id == focus_entry_id)) do
-      push_event(socket, "journal-focus", %{selector: "#journal-entries-#{focus_entry_id}"})
-    else
-      socket
+    cond do
+      is_binary(focus_entry_id) && Enum.any?(entries, &(&1.id == focus_entry_id)) ->
+        push_event(socket, "journal-focus", %{selector: "#journal-entries-#{focus_entry_id}"})
+
+      focus_entry_id && request.reason == :deep_link ->
+        put_flash(
+          socket,
+          :error,
+          "Journal entry not found. It may have been removed. The journal is open with all current entries."
+        )
+
+      true ->
+        socket
     end
   end
 
@@ -5360,7 +5386,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     # in even when the data signature is unchanged since the last render.
     # Otherwise the reopened panel renders empty until another reason forces a
     # reset.
-    request.reason in [:open, :retry, :refresh, :marker_click, :clear_scope] or
+    request.reason in [:open, :retry, :refresh, :marker_click, :clear_scope, :deep_link] or
       payload.signature != socket.assigns.journal_rendered_signature
   end
 
@@ -7072,6 +7098,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp maybe_open_child_stop_from_params(socket, _params), do: socket
+
+  defp maybe_open_journal_from_params(socket, %{"edit_child_stop_id" => _}), do: socket
+
+  defp maybe_open_journal_from_params(socket, %{"journal" => "open"} = params) do
+    focus_entry_id =
+      case Map.get(params, "entry_id") do
+        nil ->
+          nil
+
+        raw ->
+          case Ecto.UUID.cast(raw) do
+            {:ok, uuid} -> uuid
+            :error -> :malformed
+          end
+      end
+
+    socket =
+      open_journal_panel(socket,
+        persist?: true,
+        clear_scope?: true,
+        filter: :all,
+        reason: :deep_link,
+        focus_entry_id: focus_entry_id
+      )
+
+    if connected?(socket), do: send(self(), :clear_journal_params)
+
+    socket
+  end
+
+  defp maybe_open_journal_from_params(socket, _params), do: socket
 
   defp resolve_child_stop_intent(socket, id) do
     with {:ok, stop} <- fetch_intent_stop(socket, id),
