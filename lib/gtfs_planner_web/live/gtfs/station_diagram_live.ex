@@ -1029,7 +1029,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             stop_search_form={@stop_search_form}
             station={@station}
             journal_scope={@journal_scope}
-            journal_open_count={@journal_open_count}
+            journal_entry_count={@journal_open_count + @journal_closed_count}
             journal_panel_open?={@journal_panel_open?}
           />
           <section
@@ -1082,13 +1082,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   station_name={@station && @station.stop_name}
                   journal_entries={@streams.journal_entries}
                   journal_state={@journal_state}
-                  journal_filter={@journal_filter}
                   journal_loaded_once?={@journal_loaded_once?}
                   journal_refresh_error?={@journal_refresh_error?}
                   journal_open_count={@journal_open_count}
                   journal_closed_count={@journal_closed_count}
                   journal_visible_count={@journal_visible_count}
-                  journal_undo_ids={@journal_undo_ids}
                   journal_pending_new_ids={@journal_pending_new_ids}
                   journal_new_entry_ids={@journal_new_entry_ids}
                   journal_photo_viewer={@journal_photo_viewer}
@@ -1369,7 +1367,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       ) do
     {:noreply,
      socket
-     |> assign(:journal_undo_ids, MapSet.new())
      |> assign(:journal_pending_new_ids, MapSet.new())
      |> load_journal(:full, :clear_scope, socket.assigns.journal_filter, target_scope: nil)}
   end
@@ -1400,24 +1397,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event(
-        "set_journal_filter",
-        %{"journal_filter" => filter},
-        %{assigns: %{journal_scope: %JournalScope{}}} = socket
-      )
-      when filter in ["open", "closed", "all"] do
-    filter = String.to_existing_atom(filter)
-
-    {:noreply,
-     socket
-     |> assign(:journal_undo_ids, MapSet.new())
-     |> assign(:journal_pending_new_ids, MapSet.new())
-     |> load_journal(:full, :filter, filter, target_scope: socket.assigns[:journal_target_scope])}
-  end
-
-  def handle_event("set_journal_filter", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event(
         "open_journal_photo",
         %{"photo_id" => photo_id, "entry_id" => entry_id},
         %{assigns: %{journal_scope: %JournalScope{}}} = socket
@@ -1434,39 +1413,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event(
-        "close_journal_entry",
-        %{"id" => entry_id},
-        %{assigns: %{journal_scope: %JournalScope{}}} = socket
-      ) do
-    {:noreply, mutate_journal_entry(socket, entry_id, :close)}
-  end
-
-  def handle_event("close_journal_entry", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event(
-        "reopen_journal_entry",
-        %{"id" => entry_id},
-        %{assigns: %{journal_scope: %JournalScope{}}} = socket
-      ) do
-    {:noreply, mutate_journal_entry(socket, entry_id, :reopen)}
-  end
-
-  def handle_event("reopen_journal_entry", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event(
-        "undo_journal_close",
-        %{"id" => entry_id},
-        %{assigns: %{journal_scope: %JournalScope{}}} = socket
-      ) do
-    {:noreply, mutate_journal_entry(socket, entry_id, :undo)}
-  end
-
-  def handle_event("undo_journal_close", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event(
         "refresh_journal",
         _params,
         %{assigns: %{journal_scope: %JournalScope{}}} = socket
@@ -1475,7 +1421,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      socket
-     |> assign(:journal_undo_ids, MapSet.new())
      |> load_journal(:full, reason, socket.assigns.journal_filter,
        target_scope: socket.assigns[:journal_target_scope]
      )}
@@ -4422,7 +4367,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_floorplan_entry_ids, MapSet.new())
     |> assign(:journal_scope, nil)
     |> assign(:journal_panel_open?, false)
-    |> assign(:journal_filter, :open)
+    |> assign(:journal_filter, :all)
     |> assign(:journal_state, :idle)
     |> assign(:journal_request, nil)
     |> assign(:journal_open_count, 0)
@@ -4430,7 +4375,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_visible_count, 0)
     |> assign(:journal_loaded_once?, false)
     |> assign(:journal_refresh_error?, false)
-    |> assign(:journal_undo_ids, MapSet.new())
     |> assign(:journal_rendered_entry_ids, MapSet.new())
     |> assign(:journal_pending_new_ids, MapSet.new())
     |> assign(:journal_new_entry_ids, MapSet.new())
@@ -4627,129 +4571,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp mutate_journal_entry(socket, entry_id, transition) do
-    with {:ok, entry_id} <- Ecto.UUID.cast(entry_id),
-         {:ok, _entry} <-
-           run_journal_transition(socket.assigns.journal_scope, entry_id, transition) do
-      refresh_mutated_journal_entry(socket, entry_id, transition)
-    else
-      _ -> journal_action_failed(socket)
-    end
-  end
-
-  defp run_journal_transition(scope, entry_id, :close) do
-    Gtfs.close_journal_entry(scope, entry_id)
-  rescue
-    exception ->
-      Logger.error("station_journal_close_failed", reason: Exception.message(exception))
-      {:error, exception}
-  end
-
-  defp run_journal_transition(scope, entry_id, transition) when transition in [:reopen, :undo] do
-    Gtfs.reopen_journal_entry(scope, entry_id)
-  rescue
-    exception ->
-      Logger.error("station_journal_reopen_failed", reason: Exception.message(exception))
-      {:error, exception}
-  end
-
-  defp refresh_mutated_journal_entry(socket, entry_id, transition) do
-    with {:ok, payload} <- safe_fetch_journal_payload(socket.assigns.journal_scope),
-         %{} = entry <- journal_payload_entry(payload, entry_id) do
-      undo_ids =
-        journal_undo_ids_after_transition(socket.assigns.journal_undo_ids, entry_id, transition)
-
-      socket
-      |> assign(:journal_undo_ids, undo_ids)
-      |> assign_authoritative_mutation_snapshot(payload, entry_id)
-      |> stream_insert(:journal_entries, entry)
-      |> assign(:journal_state, :ready)
-      |> assign(:journal_refresh_error?, false)
-      |> assign(:journal_error_message, nil)
-      |> assign(:journal_live_message, journal_transition_message(transition))
-      |> push_event("journal-focus", %{
-        selector: journal_transition_focus_selector(entry_id, transition)
-      })
-    else
-      _ -> journal_mutation_refresh_failed(socket)
-    end
-  end
-
-  defp journal_undo_ids_after_transition(undo_ids, entry_id, :close),
-    do: MapSet.put(undo_ids, entry_id)
-
-  defp journal_undo_ids_after_transition(undo_ids, entry_id, transition)
-       when transition in [:reopen, :undo],
-       do: MapSet.delete(undo_ids, entry_id)
-
-  defp journal_transition_message(:close), do: "Entry closed."
-
-  defp journal_transition_message(transition) when transition in [:reopen, :undo],
-    do: "Entry reopened."
-
-  defp journal_transition_focus_selector(entry_id, :close),
-    do: "#journal-undo-entry-#{entry_id}"
-
-  defp journal_transition_focus_selector(entry_id, transition)
-       when transition in [:reopen, :undo],
-       do: "#journal-close-entry-#{entry_id}"
-
-  defp assign_authoritative_mutation_snapshot(socket, payload, entry_id) do
-    socket =
-      socket
-      |> assign_journal_presentation(payload)
-      |> assign(:journal_visible_count, journal_visible_count(socket, payload))
-
-    if socket.assigns.journal_at_top? do
-      socket
-      |> assign(:journal_rendered_entry_ids, payload.entry_ids)
-      |> assign(:journal_pending_new_ids, MapSet.new())
-      |> assign(:journal_rendered_signature, payload.signature)
-      |> assign(:journal_observed_signature, payload.signature)
-    else
-      socket
-      |> assign(
-        :journal_rendered_signature,
-        replace_journal_signature_entry(
-          socket.assigns.journal_rendered_signature,
-          payload.signature,
-          entry_id
-        )
-      )
-      |> assign(:journal_observed_signature, payload.signature)
-      |> assign(
-        :journal_pending_new_ids,
-        MapSet.difference(payload.entry_ids, socket.assigns.journal_rendered_entry_ids)
-      )
-    end
-  end
-
-  defp replace_journal_signature_entry(rendered_signature, payload_signature, entry_id) do
-    case Enum.find(payload_signature, &(elem(&1, 0) == entry_id)) do
-      nil ->
-        rendered_signature
-
-      replacement ->
-        Enum.map(rendered_signature, &if(elem(&1, 0) == entry_id, do: replacement, else: &1))
-    end
-  end
-
-  defp journal_visible_count(socket, payload) do
-    payload.entries
-    |> visible_journal_entries(socket.assigns.journal_filter, socket.assigns.journal_undo_ids)
-    |> length()
-  end
-
-  defp assign_journal_presentation(socket, payload) do
-    socket
-    |> assign_journal_counts(payload)
-    |> assign(:journal_authors, payload.authors)
-    |> assign(:journal_targets, payload.targets)
-    |> assign(:journal_local_times, payload.local_times)
-    |> assign(:journal_display_zone, payload.zone)
-    |> assign(:journal_now, payload.now)
-  end
-
   defp journal_payload_entry(payload, entry_id) do
     Enum.find(payload.entries, &(&1.id == entry_id))
   end
@@ -4768,20 +4589,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(:journal_error_message, "The journal entry could not be changed.")
     |> assign(:journal_live_message, "The journal entry was not changed. Try again.")
-  end
-
-  defp journal_mutation_refresh_failed(socket) do
-    socket
-    |> assign(:journal_state, :error)
-    |> assign(:journal_refresh_error?, true)
-    |> assign(
-      :journal_error_message,
-      "The entry changed, but the journal could not be refreshed."
-    )
-    |> assign(
-      :journal_live_message,
-      "The entry changed. Refresh the journal to see its latest state."
-    )
   end
 
   defp transition_journal_mode(socket, :map) do
@@ -5112,8 +4919,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     scoped_open_count = Enum.count(target_entries, &is_nil(&1.closed_at))
     scoped_closed_count = Enum.count(target_entries, &(not is_nil(&1.closed_at)))
 
-    entries =
-      visible_journal_entries(target_entries, request.filter, socket.assigns.journal_undo_ids)
+    entries = target_entries
 
     pending_ids = socket.assigns.journal_pending_new_ids
 
@@ -5232,29 +5038,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:journal_error_message, nil)
   end
 
-  defp visible_journal_entries(entries, :all, _undo_ids), do: entries
-
-  defp visible_journal_entries(entries, :open, undo_ids) do
-    Enum.filter(entries, fn entry ->
-      is_nil(entry.closed_at) or MapSet.member?(undo_ids, entry.id)
-    end)
-  end
-
-  # Entries in the undo window still count as open, so they stay out of the
-  # closed queue until the undo affordance expires.
-  defp visible_journal_entries(entries, :closed, undo_ids) do
-    Enum.filter(entries, fn entry ->
-      not is_nil(entry.closed_at) and not MapSet.member?(undo_ids, entry.id)
-    end)
-  end
-
   defp reset_journal_stream?(socket, request, payload) do
     # `:open` always remounts the panel — and with it a fresh, empty
     # `#journal-entry-list` stream container — so the entries must be streamed
     # in even when the data signature is unchanged since the last render.
-    # Otherwise the reopened panel renders empty until another reason (a filter
-    # change) forces a reset.
-    request.reason in [:open, :filter, :retry, :refresh, :marker_click, :clear_scope] or
+    # Otherwise the reopened panel renders empty until another reason forces a
+    # reset.
+    request.reason in [:open, :retry, :refresh, :marker_click, :clear_scope] or
       payload.signature != socket.assigns.journal_rendered_signature
   end
 
@@ -5307,19 +5097,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp strip_station_prefix(label, _station_name), do: label
 
-  defp find_entry_state(%{groups: groups}, entry_id) when is_map(groups) do
-    Enum.find_value(groups, :open, &find_entry_state_in_group(&1, entry_id))
-  end
-
-  defp find_entry_state(_index, _entry_id), do: :open
-
-  defp find_entry_state_in_group({_key, group}, entry_id) do
-    case Map.get(group.entry_metadata, entry_id) do
-      %{state: state} -> state
-      nil -> nil
-    end
-  end
-
   defp filter_journal_entries_by_target(entries, nil), do: entries
 
   defp filter_journal_entries_by_target(entries, %{target_type: type, target_id: target_id}) do
@@ -5356,25 +5133,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp do_activate_journal_marker(socket, index, marker) do
     target_scope = marker_target_scope(socket, index, marker)
-    focus_entry_id = marker.focus_entry_id
-    entry_state = marker_focus_entry_state(index, focus_entry_id, marker.state)
-
-    adjusted_filter =
-      case {socket.assigns.journal_filter, entry_state} do
-        {:open, :closed} -> :all
-        {:closed, :open} -> :all
-        {filter, _} -> filter
-      end
 
     socket
-    |> assign(:journal_undo_ids, MapSet.new())
     |> assign(:journal_pending_new_ids, MapSet.new())
     |> open_journal_panel(
       persist?: true,
       reason: :marker_click,
-      filter: adjusted_filter,
       target_scope: target_scope,
-      focus_entry_id: focus_entry_id
+      focus_entry_id: marker.focus_entry_id
     )
   end
 
@@ -5464,13 +5230,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp marker_target_scope(_socket, _index, _marker), do: nil
-
-  defp marker_focus_entry_state(index, focus_entry_id, fallback_state) do
-    case StationJournalMarkers.locate_entry(index, focus_entry_id) do
-      {:ok, _loc} -> find_entry_state(index, focus_entry_id)
-      _ -> fallback_state
-    end
-  end
 
   # ---------------------------------------------------------------------------
   # Scoped history lifecycle
@@ -7181,6 +6940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> stream(:child_stops, child_stops, reset: true)
     |> stream(:pathways, same_level_pathways, reset: true)
+    |> project_and_stream_journal_markers()
     |> assign(:pathway_pair_counts, pathway_pair_counts)
   end
 

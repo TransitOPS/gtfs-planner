@@ -90,7 +90,6 @@ function makeJournalGroup(
     id,
     "data-journal-marker": "true",
     "data-journal-kind": "pin",
-    "data-journal-state": "open",
     "data-center-x": "50",
     "data-center-y": "50",
     tabindex,

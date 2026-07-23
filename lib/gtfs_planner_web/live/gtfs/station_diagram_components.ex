@@ -110,7 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :stop_search_form, :any, required: true
   attr :station, :any, required: true
   attr :journal_scope, :any, default: nil
-  attr :journal_open_count, :integer, default: 0
+  attr :journal_entry_count, :integer, default: 0
   attr :journal_panel_open?, :boolean, default: false
 
   def diagram_action_strip(assigns) do
@@ -215,7 +215,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
         <.journal_trigger
           :if={@journal_scope && @mode in [:view, :add, :connect]}
-          open_count={@journal_open_count}
+          entry_count={@journal_entry_count}
           panel_open?={@journal_panel_open?}
         />
 
@@ -1399,13 +1399,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         id={dom_id}
         data-journal-marker="true"
         data-journal-kind={marker.kind}
-        data-journal-state={marker.state}
         data-journal-target-id={marker.target_id}
         data-center-x={marker.x}
         data-center-y={marker.y}
         class={[
           "journal-marker-group",
-          if(@mode == :view, do: "cursor-pointer focus:outline-none", else: "pointer-events-none")
+          if(@mode == :view,
+            do: "pointer-events-auto cursor-pointer focus:outline-none",
+            else: "pointer-events-none"
+          )
         ]}
         tabindex={if @mode == :view, do: "0"}
         role={if @mode == :view, do: "button"}
@@ -1424,25 +1426,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               transform={"translate(#{marker.x}, #{marker.y})"}
             >
               <path
-                data-journal-pin-body={if marker.state == :open, do: "true"}
-                data-journal-closed-body={if marker.state == :closed, do: "true"}
+                data-journal-pin-body="true"
                 d="M 0 0 C -0.4 -0.56 -0.72 -0.88 -0.72 -1.28 A 0.72 0.72 0 1 1 0.72 -1.28 C 0.72 -0.88 0.4 -0.56 0 0 Z"
                 stroke-width="0.12"
               />
               <circle
-                :if={marker.state == :open}
                 data-journal-pin-head="true"
                 cx="0"
                 cy="-1.28"
                 r="0.24"
-              />
-              <path
-                :if={marker.state == :closed}
-                data-journal-closed-glyph="true"
-                d="M -0.2 -1.28 L -0.05 -1.13 L 0.25 -1.43"
-                stroke-width="0.1"
-                stroke-linecap="round"
-                stroke-linejoin="round"
               />
             </g>
           <% _node_or_pathway -> %>
@@ -3124,26 +3116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               />
               <circle cx="0" cy="-12.8" r="2.4" fill="var(--diagram-label-halo)" />
             </svg>
-            <span>Open Pin</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="20" class="shrink-0" viewBox="-8 -20 16 22">
-              <path
-                d="M 0 0 C -4 -5.6 -7.2 -8.8 -7.2 -12.8 A 7.2 7.2 0 1 1 7.2 -12.8 C 7.2 -8.8 4 -5.6 0 0 Z"
-                fill="var(--diagram-label-halo)"
-                stroke="var(--diagram-journal-open)"
-                stroke-width="1.2"
-              />
-              <path
-                d="M -2 -12.8 L -0.5 -11.3 L 2.5 -14.3"
-                fill="none"
-                stroke="var(--diagram-journal-open)"
-                stroke-width="1.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <span>Closed Pin</span>
+            <span>Entry Pin</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="14" class="shrink-0">

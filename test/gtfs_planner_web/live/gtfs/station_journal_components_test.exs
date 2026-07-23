@@ -60,13 +60,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       journal_scope: @scope,
       journal_entries: [{"journal-entries-#{@entry_id}", entry()}],
       journal_state: :ready,
-      journal_filter: :open,
       journal_loaded_once?: true,
       journal_refresh_error?: false,
       journal_open_count: 1,
       journal_closed_count: 0,
       journal_visible_count: 1,
-      journal_undo_ids: MapSet.new(),
       journal_pending_new_ids: MapSet.new(),
       journal_authors: %{@author_id => %User{email: "alex.rivera@example.com"}},
       journal_targets: %{@target_id => %{label: "Busway Central"}},
@@ -130,7 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
     test "exposes the panel relationship, state, and count as a compact link-style trigger" do
       html =
         render_component(&StationJournalComponents.journal_trigger/1,
-          open_count: 3,
+          entry_count: 3,
           panel_open?: false
         )
 
@@ -149,7 +147,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
     test "acts as the close control when the panel is already open" do
       html =
         render_component(&StationJournalComponents.journal_trigger/1,
-          open_count: 0,
+          entry_count: 0,
           panel_open?: true
         )
 
@@ -161,25 +159,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
   end
 
   describe "journal_panel/1 ready presentation" do
-    test "renders the 340px panel hierarchy, native filters, close control, and polite status" do
-      d = render_panel() |> doc()
+    test "renders the 340px panel hierarchy, close control, entry count, and polite status" do
+      html = render_panel()
+      d = doc(html)
       panel = LazyHTML.query(d, "aside#station-journal-panel")
 
       assert LazyHTML.attribute(panel, "aria-label") == ["Station journal"]
       assert LazyHTML.attribute(panel, "class") |> List.first() =~ "w-[340px]"
       assert Enum.count(LazyHTML.query(d, "#journal-panel-close[phx-click='close_journal']")) == 1
-      assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() =~ "1 open"
 
-      assert Enum.count(LazyHTML.query(d, "#journal-filter input[type='radio']")) == 3
+      assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() |> String.trim() ==
+               "1 entry"
 
-      assert LazyHTML.attribute(
-               LazyHTML.query(d, "#journal-filter-option-open"),
-               "checked"
-             ) == [""]
-
-      assert LazyHTML.attribute(LazyHTML.query(d, "#journal-filter-form"), "phx-change") == [
-               "set_journal_filter"
-             ]
+      # Completion-status filtering was removed: no segmented control, no filter event.
+      assert Enum.empty?(LazyHTML.query(d, "#journal-filter"))
+      refute html =~ "set_journal_filter"
 
       status = LazyHTML.query(d, "#journal-status")
       assert LazyHTML.attribute(status, "role") == ["status"]
@@ -207,16 +201,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert LazyHTML.attribute(clear_btn, "phx-click") == ["clear_journal_target_scope"]
       assert LazyHTML.text(clear_btn) =~ "Show all entries"
 
-      # Scoped filter counts are used in header summary and segmented control
-      assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() =~ "2 open · 1 closed"
-
-      all_filter_label =
-        d
-        |> LazyHTML.query("label[for='journal-filter-option-all']")
-        |> LazyHTML.text()
-
-      assert all_filter_label =~ "All (3)"
-      refute all_filter_label =~ "All (15)"
+      # Header summary sums the scoped counts, not the station-wide ones.
+      summary = LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text()
+      assert summary |> String.trim() == "3 entries"
+      refute summary =~ "15"
     end
 
     test "renders each entry complete — note, photos, metadata, and actions — with no disclosure" do
@@ -248,7 +236,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
 
       assert LazyHTML.attribute(edit, "phx-click") == ["edit_child_stop"]
       assert LazyHTML.attribute(edit, "phx-value-id") == [@target_id]
-      assert Enum.count(LazyHTML.query(row, "#journal-close-entry-#{@entry_id}")) == 1
 
       assert Enum.empty?(LazyHTML.query(row, "[phx-click='show_journal_entry']"))
       refute html =~ "Show on floorplan"
@@ -267,7 +254,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
             {"journal-entries-#{ineligible_id}", closed}
           ],
           journal_floorplan_entry_ids: MapSet.new([eligible_id]),
-          journal_filter: :all,
+          journal_closed_count: 1,
           journal_visible_count: 2
         )
 
@@ -281,7 +268,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert Enum.empty?(LazyHTML.query(d, "#journal-show-entry-#{ineligible_id}"))
     end
 
-    test "suppresses edit actions for removed targets and exposes reopen for closed rows" do
+    test "suppresses edit actions for removed targets" do
       closed =
         entry(%{
           id: @closed_entry_id,
@@ -291,47 +278,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
           photos: []
         })
 
-      html =
+      d =
         render_panel(
           journal_entries: [{"journal-entries-#{@closed_entry_id}", closed}],
           journal_open_count: 0,
           journal_closed_count: 1,
-          journal_filter: :all,
           journal_targets: %{},
           journal_local_times: %{
-            {@closed_entry_id, :captured} => ~N[2026-07-16 14:32:00],
-            {@closed_entry_id, :closed} => ~N[2026-07-17 11:00:00]
+            {@closed_entry_id, :captured} => ~N[2026-07-16 14:32:00]
           }
         )
-
-      d = doc(html)
+        |> doc()
 
       assert LazyHTML.query(d, "#journal-entry-target-#{@closed_entry_id}") |> LazyHTML.text() =~
                "(removed)"
 
       assert Enum.empty?(LazyHTML.query(d, "#journal-edit-target-#{@closed_entry_id}"))
-      assert Enum.count(LazyHTML.query(d, "#journal-reopen-entry-#{@closed_entry_id}")) == 1
     end
 
-    test "replaces mutation actions with an Undo strip for a temporarily closed row" do
-      closed = entry(%{closed_at: ~U[2026-07-18 18:00:00Z]})
+    test "renders closed entries identically to open ones, with no status affordances" do
+      closed = entry(%{closed_at: ~U[2026-07-17 15:00:00Z]})
 
-      d =
+      html =
         render_panel(
           journal_entries: [{"journal-entries-#{@entry_id}", closed}],
-          journal_undo_ids: MapSet.new([@entry_id]),
-          journal_local_times: %{
-            {@entry_id, :captured} => ~N[2026-07-16 14:32:00],
-            {@entry_id, :closed} => ~N[2026-07-18 14:00:00]
-          }
+          journal_open_count: 0,
+          journal_closed_count: 1
         )
-        |> doc()
 
-      undo = LazyHTML.query(d, "#journal-undo-entry-#{@entry_id}")
+      d = doc(html)
+      row = LazyHTML.query(d, "#journal-entries-#{@entry_id}")
 
-      assert LazyHTML.attribute(undo, "phx-click") == ["undo_journal_close"]
-      assert Enum.empty?(LazyHTML.query(d, "#journal-reopen-entry-#{@entry_id}"))
+      # The edit-target action still renders; closed state suppresses nothing.
+      assert Enum.count(LazyHTML.query(row, "#journal-edit-target-#{@entry_id}")) == 1
+
+      # Completion-status affordances were removed for closed rows.
+      assert LazyHTML.attribute(row, "data-entry-state") == []
+      refute LazyHTML.attribute(row, "class") |> List.first() =~ "opacity-70"
+      refute html =~ "Closed ·"
       assert Enum.empty?(LazyHTML.query(d, "#journal-close-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-reopen-entry-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-undo-strip-#{@entry_id}"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-undo-entry-#{@entry_id}"))
     end
 
     test "scopes the arrival highlight to entries flagged as new" do
@@ -449,7 +437,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert Enum.count(LazyHTML.query(loading, "[data-role='journal-skeleton-row']")) == 3
     end
 
-    test "first-use empty explains the source without filter or false CTA" do
+    test "first-use empty explains the source without a false CTA" do
       html =
         render_panel(
           journal_entries: [],
@@ -463,12 +451,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert Enum.count(LazyHTML.query(d, "#journal-empty-first-use")) == 1
       assert Enum.count(LazyHTML.query(d, "#journal-empty-first-use .journal-empty-icon")) == 1
       assert Enum.count(LazyHTML.query(d, "#journal-empty-first-use .journal-empty-copy")) == 1
-      assert Enum.empty?(LazyHTML.query(d, "#journal-filter"))
       assert Enum.empty?(LazyHTML.query(d, "#journal-empty-first-use button"))
       refute html =~ "Add entry"
     end
 
-    test "filtered empty keeps the filter and offers the single useful next action" do
+    test "stays in the ready state when entries exist but none are visible" do
       d =
         render_panel(
           journal_entries: [],
@@ -478,30 +465,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
         )
         |> doc()
 
-      view_all = LazyHTML.query(d, "#journal-view-all")
+      panel = LazyHTML.query(d, "aside#station-journal-panel")
 
-      assert Enum.count(LazyHTML.query(d, "#journal-filter")) == 1
-      assert LazyHTML.attribute(view_all, "phx-click") == ["set_journal_filter"]
-      assert LazyHTML.attribute(view_all, "phx-value-journal_filter") == ["all"]
-      assert Enum.count(LazyHTML.query(d, "#journal-empty-filtered .hero-check-circle")) == 1
-    end
-
-    test "closed-filter empty explains the open queue and offers the same next action" do
-      d =
-        render_panel(
-          journal_entries: [],
-          journal_filter: :closed,
-          journal_open_count: 5,
-          journal_closed_count: 0,
-          journal_visible_count: 0
-        )
-        |> doc()
-
-      empty = LazyHTML.query(d, "#journal-empty-filtered")
-
-      assert LazyHTML.text(empty) =~ "No closed entries"
-      assert LazyHTML.text(empty) =~ "All 5 entries for this station are open."
-      assert Enum.count(LazyHTML.query(d, "#journal-view-all")) == 1
+      assert LazyHTML.attribute(panel, "data-state") == ["ready"]
+      assert Enum.empty?(LazyHTML.query(d, "#journal-empty-filtered"))
+      assert Enum.empty?(LazyHTML.query(d, "#journal-empty-first-use"))
     end
 
     test "first-load error is contained, announced, and recoverable" do

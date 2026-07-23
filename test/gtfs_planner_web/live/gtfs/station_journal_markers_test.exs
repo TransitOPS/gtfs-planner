@@ -7,13 +7,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
   alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
 
   describe "build_index/2 and project/2 for pins" do
-    test "projects open and closed pins with valid finite 0.0..100.0 coordinates on active level" do
+    test "projects all pins with valid finite 0.0..100.0 coordinates on active level" do
       level_id = Ecto.UUID.generate()
       other_level_id = Ecto.UUID.generate()
 
       now = DateTime.utc_now()
 
-      open_pin = %JournalEntry{
+      noted_pin = %JournalEntry{
         id: Ecto.UUID.generate(),
         target_type: "pin",
         stop_level_id: level_id,
@@ -54,40 +54,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
         stop_levels: %{}
       }
 
-      index = StationJournalMarkers.build_index([open_pin, closed_pin, off_level_pin], targets)
+      index = StationJournalMarkers.build_index([noted_pin, closed_pin, off_level_pin], targets)
 
       geometry = %{
         active_level_id: level_id,
         child_stops: [],
         pathways: [],
-        focused_marker_id: "journal-marker-pin-#{open_pin.id}"
+        focused_marker_id: "journal-marker-pin-#{noted_pin.id}"
       }
 
       markers = StationJournalMarkers.project(index, geometry)
 
       assert length(markers) == 2
 
-      # Ordered by stable ID string
-      [_m1, _m2] = Enum.sort_by(markers, & &1.id)
-
-      open_marker = Enum.find(markers, &(&1.id == "journal-marker-pin-#{open_pin.id}"))
-      assert open_marker.kind == :pin
-      assert open_marker.state == :open
-      assert open_marker.open_count == 1
-      assert open_marker.total_count == 1
-      assert open_marker.x == 45.5
-      assert open_marker.y == 60.0
-      assert open_marker.accessible_name == "Journal entry: First line note"
-      assert open_marker.focused? == true
+      noted_marker = Enum.find(markers, &(&1.id == "journal-marker-pin-#{noted_pin.id}"))
+      assert noted_marker.kind == :pin
+      assert noted_marker.total_count == 1
+      assert noted_marker.x == 45.5
+      assert noted_marker.y == 60.0
+      assert noted_marker.accessible_name == "Journal entry: First line note"
+      assert noted_marker.focused? == true
 
       closed_marker = Enum.find(markers, &(&1.id == "journal-marker-pin-#{closed_pin.id}"))
       assert closed_marker.kind == :pin
-      assert closed_marker.state == :closed
-      assert closed_marker.open_count == 0
       assert closed_marker.total_count == 1
       assert closed_marker.x == 10.0
       assert closed_marker.y == 20.0
-      assert closed_marker.accessible_name == "Journal entry, closed: No note provided"
+      assert closed_marker.accessible_name == "Journal entry: No note provided"
       assert closed_marker.focused? == false
     end
 
@@ -151,13 +144,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
   end
 
   describe "build_index/2 and project/2 for nodes" do
-    test "aggregates node entries once with counts, newest-open focus, tie breaks, and (+0.75, -0.75) offset" do
+    test "aggregates node entries once with recency ordering, id tie break, and (+0.75, -0.75) offset" do
       level_id = Ecto.UUID.generate()
       node_id = Ecto.UUID.generate()
       t1 = DateTime.utc_now()
       t2 = DateTime.add(t1, 60, :second)
 
-      # 3 entries on same node: 2 open, 1 closed
+      # 3 entries on same node: two share captured_at/inserted_at t2, one is older
       e_closed = %JournalEntry{
         id: "e-closed-1",
         target_type: "node",
@@ -203,12 +196,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       refute Map.has_key?(group, :entries)
 
-      assert group.entry_metadata == %{
-               "e-closed-1" => %{state: :closed},
-               "e-open-new" => %{state: :open},
-               "e-open-old" => %{state: :open}
-             }
-
       geometry = %{
         active_level_id: level_id,
         child_stops: [node_stop],
@@ -221,25 +208,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
       assert marker.id == "journal-marker-node-#{node_id}"
       assert marker.kind == :node
       assert marker.target_id == node_id
-      assert marker.open_count == 2
       assert marker.total_count == 3
-      assert marker.state == :open
       # Check (+0.75, -0.75) offset
       assert marker.x == 40.75
       assert marker.y == 49.25
-      # Check sorting of entry_ids: open entries first, sorted by captured_at desc
-      assert marker.entry_ids == ["e-open-new", "e-open-old", "e-closed-1"]
+      # Pure recency ordering: captured_at desc, then inserted_at desc, then id desc.
+      # e-open-new and e-closed-1 tie on both timestamps, so id desc decides.
+      assert marker.entry_ids == ["e-open-new", "e-closed-1", "e-open-old"]
       assert marker.focus_entry_id == "e-open-new"
-      assert marker.accessible_name == "Journal: 2 open of 3 entries · Platform 1 Area"
+      assert marker.accessible_name == "Journal: 3 entries · Platform 1 Area"
     end
 
-    test "removes node dot when all open entries are closed or target is unplaced/removed" do
+    test "projects node marker and floorplan locator when the group has only closed entries" do
       level_id = Ecto.UUID.generate()
       node_id = Ecto.UUID.generate()
       now = DateTime.utc_now()
 
       closed_entry = %JournalEntry{
-        id: Ecto.UUID.generate(),
+        id: "closed-e-1",
         target_type: "node",
         target_id: node_id,
         captured_at: now,
@@ -271,8 +257,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
         focused_marker_id: nil
       }
 
-      # No open entries -> no node marker projected
-      assert StationJournalMarkers.project(index, geometry) == []
+      [marker] = StationJournalMarkers.project(index, geometry)
+
+      assert marker.id == "journal-marker-node-#{node_id}"
+      assert marker.kind == :node
+      assert marker.total_count == 1
+      assert marker.entry_ids == ["closed-e-1"]
+      assert marker.focus_entry_id == "closed-e-1"
+      assert marker.x == 40.75
+      assert marker.y == 49.25
+      assert marker.accessible_name == "Journal: 1 entry · Platform 1"
+
+      # Closed entries are floorplan-locatable
+      assert MapSet.member?(index.floorplan_entry_ids, "closed-e-1")
+
+      assert {:ok, locator} = StationJournalMarkers.locate_entry(index, "closed-e-1")
+      assert locator.marker_id == "journal-marker-node-#{node_id}"
+      assert locator.level_id == level_id
     end
   end
 
@@ -340,7 +341,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
       # Horizontal segment dx=60, dy=0 -> dx>0 -> perpendicular offset with negative y is (0, -0.75)
       assert marker.x == 50.0
       assert marker.y == 49.25
-      assert marker.accessible_name == "Journal: 1 open of 1 entries · Stairs to Mezzanine"
+      assert marker.accessible_name == "Journal: 1 entry · Stairs to Mezzanine"
     end
 
     test "omits cross-level and zero-length pathways" do

@@ -151,7 +151,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     loaded = assigns(view)
 
     assert loaded.journal_loaded_once?
-    assert loaded.journal_visible_count == 3
+    assert loaded.journal_visible_count == 4
     assert loaded.journal_open_count == 3
     assert loaded.journal_closed_count == 1
     assert loaded.journal_rendered_signature == loaded.journal_observed_signature
@@ -189,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
       generation: socket.assigns.journal_load_generation + 1,
       intent: :observe_scrolled,
       reason: :pubsub,
-      filter: :open
+      filter: :all
     }
 
     socket = put_in(socket.assigns.journal_request, observe_request)
@@ -248,13 +248,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert current_request.generation == 3
     assert current_request.intent == :full
     assert current_request.reason == :retry
-    assert current_request.filter == :open
 
     mismatches = [
       %{current_request | generation: current_request.generation - 1},
       %{current_request | intent: :counts_only},
       %{current_request | reason: :refresh},
-      %{current_request | filter: :all},
       %{
         current_request
         | scope_key: {Ecto.UUID.generate(), Ecto.UUID.generate(), Ecto.UUID.generate()}
@@ -509,7 +507,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
     assert reset.journal_visible_count == 0
     assert reset.journal_rendered_entry_ids == MapSet.new()
     assert reset.journal_pending_new_ids == MapSet.new()
-    assert reset.journal_undo_ids == MapSet.new()
     assert reset.journal_authors == %{}
     assert reset.journal_targets == %{}
 

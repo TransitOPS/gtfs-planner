@@ -147,17 +147,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     sorted_entries = sort_entries(group.entries)
     entry_ids = Enum.map(sorted_entries, & &1.id)
 
-    entry_metadata =
-      Map.new(sorted_entries, fn entry ->
-        {entry.id, %{state: if(is_nil(entry.closed_at), do: :open, else: :closed)}}
-      end)
-
     focus_entry_id = List.first(entry_ids)
-    open_count = Enum.count(sorted_entries, &is_nil(&1.closed_at))
     total_count = length(sorted_entries)
-    state = if open_count > 0, do: :open, else: :closed
 
-    acc_name = build_accessible_name(group, sorted_entries, open_count, total_count, targets)
+    acc_name = build_accessible_name(group, sorted_entries, total_count, targets)
 
     processed = %{
       id: marker_key,
@@ -167,30 +160,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
       x: group[:x],
       y: group[:y],
       entry_ids: entry_ids,
-      entry_metadata: entry_metadata,
       focus_entry_id: focus_entry_id,
-      open_count: open_count,
       total_count: total_count,
-      state: state,
       accessible_name: acc_name
     }
 
     {marker_key, processed}
   end
 
-  defp build_accessible_name(%{kind: :pin}, [pin_entry | _], _open, _total, _targets) do
-    excerpt = extract_note_excerpt(pin_entry.body)
-
-    if is_nil(pin_entry.closed_at) do
-      "Journal entry: #{excerpt}"
-    else
-      "Journal entry, closed: #{excerpt}"
-    end
+  defp build_accessible_name(%{kind: :pin}, [pin_entry | _], _total, _targets) do
+    "Journal entry: #{extract_note_excerpt(pin_entry.body)}"
   end
 
-  defp build_accessible_name(group, _entries, open_count, total_count, targets) do
+  defp build_accessible_name(group, _entries, total_count, targets) do
     label = resolve_target_label(targets, group.kind, group.target_id)
-    "Journal: #{open_count} open of #{total_count} entries · #{label}"
+    noun = if total_count == 1, do: "entry", else: "entries"
+    "Journal: #{total_count} #{noun} · #{label}"
   end
 
   defp build_entry_to_marker(groups) do
@@ -203,11 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
 
   defp build_floorplan_entry_ids(groups) do
     Enum.reduce(groups, MapSet.new(), fn {_key, group}, set_acc ->
-      if group.kind == :pin or group.open_count > 0 do
-        Enum.into(group.entry_ids, set_acc)
-      else
-        set_acc
-      end
+      Enum.into(group.entry_ids, set_acc)
     end)
   end
 
@@ -242,9 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
             target_id: group.target_id,
             entry_ids: group.entry_ids,
             focus_entry_id: group.focus_entry_id,
-            open_count: group.open_count,
             total_count: group.total_count,
-            state: if(group.kind == :pin, do: group.state, else: :open),
             x: x,
             y: y,
             accessible_name: group.accessible_name,
@@ -269,19 +248,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   end
 
   defp project_group_coordinates(%{kind: :node} = group, level_ids, geometry) do
-    if group.open_count > 0 do
-      project_node_coordinates(group.target_id, level_ids, geometry[:child_stops])
-    else
-      :error
-    end
+    project_node_coordinates(group.target_id, level_ids, geometry[:child_stops])
   end
 
   defp project_group_coordinates(%{kind: :pathway} = group, level_ids, geometry) do
-    if group.open_count > 0 do
-      project_pathway_coordinates(group.target_id, level_ids, geometry)
-    else
-      :error
-    end
+    project_pathway_coordinates(group.target_id, level_ids, geometry)
   end
 
   defp project_node_coordinates(target_id, {active_level_id, active_level_token}, child_stops) do
@@ -597,14 +568,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   end
 
   defp entry_order_less?(a, b) do
-    a_closed? = not is_nil(a.closed_at)
-    b_closed? = not is_nil(b.closed_at)
-
-    if a_closed? != b_closed? do
-      not a_closed?
-    else
-      compare_timestamps_and_id(a, b)
-    end
+    compare_timestamps_and_id(a, b)
   end
 
   defp compare_timestamps_and_id(a, b) do

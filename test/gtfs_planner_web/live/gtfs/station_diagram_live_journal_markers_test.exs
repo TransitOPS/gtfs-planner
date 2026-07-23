@@ -81,9 +81,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(id="journal-markers-svg")
       assert html =~ ~s(phx-update="stream")
 
-      # Legend contains the three Journal rows
-      assert html =~ "Open Pin"
-      assert html =~ "Closed Pin"
+      # Legend contains the two Journal rows
+      assert html =~ "Entry Pin"
       assert html =~ "Entity Dot"
     end
   end
@@ -100,9 +99,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
           target_id: nil,
           entry_ids: [pin_id],
           focus_entry_id: pin_id,
-          open_count: 1,
           total_count: 1,
-          state: :open,
           x: 45.0,
           y: 60.0,
           accessible_name: "Journal entry: Check platform sign",
@@ -114,12 +111,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
           target_id: node_id,
           entry_ids: [Ecto.UUID.generate()],
           focus_entry_id: Ecto.UUID.generate(),
-          open_count: 2,
           total_count: 3,
-          state: :open,
           x: 25.0,
           y: 35.0,
-          accessible_name: "Journal: 2 open of 3 entries · North Entrance",
+          accessible_name: "Journal: 3 entries · North Entrance",
           focused?: false
         }
       ]
@@ -148,7 +143,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(id="journal-marker-pin-#{pin_id}")
       assert html =~ ~s(data-journal-marker)
       assert html =~ ~s(data-journal-kind="pin")
-      assert html =~ ~s(data-journal-state="open")
+      refute html =~ "data-journal-state"
       assert html =~ ~s(data-center-x="45.0")
       assert html =~ ~s(data-center-y="60.0")
       assert html =~ ~s(aria-label="Journal entry: Check platform sign")
@@ -157,7 +152,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(phx-click="journal_marker_clicked")
       assert html =~ ~s(phx-value-id="journal-marker-pin-#{pin_id}")
 
-      # Open pin sub-elements
+      # Pin sub-elements
       assert html =~ ~s(data-journal-pin-body)
       assert html =~ ~s(data-journal-pin-head)
       assert html =~ ~s(data-journal-ring)
@@ -167,7 +162,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(id="journal-marker-node-#{node_id}")
       assert html =~ ~s(data-journal-kind="node")
       assert html =~ ~s(data-journal-dot)
-      assert html =~ ~s(aria-label="Journal: 2 open of 3 entries · North Entrance")
+      assert html =~ ~s(aria-label="Journal: 3 entries · North Entrance")
     end
 
     test "renders inert markup without role, tabindex, or click event in add/connect modes" do
@@ -179,12 +174,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
         target_id: nil,
         entry_ids: [pin_id],
         focus_entry_id: pin_id,
-        open_count: 0,
         total_count: 1,
-        state: :closed,
         x: 50.0,
         y: 50.0,
-        accessible_name: "Journal entry, closed: Resolved note",
+        accessible_name: "Journal entry: Resolved note",
         focused?: false
       }
 
@@ -204,10 +197,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
         </svg>
         """)
 
-      # Closed pin hollow body & glyph attributes
-      assert html =~ ~s(data-journal-state="closed")
-      assert html =~ ~s(data-journal-closed-body)
-      assert html =~ ~s(data-journal-closed-glyph)
+      # Solid pin body and head render in every mode
+      assert html =~ ~s(data-journal-pin-body)
+      assert html =~ ~s(data-journal-pin-head)
 
       # Inert in add mode
       assert html =~ ~s(pointer-events-none)
@@ -433,10 +425,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
 
       render_async(view, 5_000)
 
-      # Open journal panel and switch filter to all
+      # Open journal panel
       render_click(element(view, "#journal-trigger"))
-      render_async(view, 5_000)
-      render_change(element(view, "#journal-filter-form"), %{"journal_filter" => "all"})
       render_async(view, 5_000)
 
       # Click Show on floorplan for pin on Level B

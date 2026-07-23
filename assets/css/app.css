@@ -509,18 +509,6 @@ body {
   fill: var(--diagram-label-halo) !important;
 }
 
-#diagram-page g[data-journal-state="closed"] [data-journal-pin-body],
-#diagram-page [data-journal-closed-body] {
-  fill: var(--diagram-label-halo) !important;
-  stroke: var(--diagram-journal-open) !important;
-}
-
-#diagram-page [data-journal-closed-glyph],
-#diagram-page [data-journal-glyph] {
-  fill: none !important;
-  stroke: var(--diagram-journal-open) !important;
-}
-
 #diagram-page [data-journal-ring],
 #diagram-page [data-journal-landing-ring],
 #diagram-page [data-journal-focus-ring] {

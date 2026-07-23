@@ -131,14 +131,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     refute Regex.match?(~r/--diagram-journal-open\s*:/, css)
   end
 
-  test "open and filter changes keep the server-owned stream authoritative", context do
-    first_id = Ecto.UUID.generate()
-    second_id = Ecto.UUID.generate()
+  test "opening the panel streams every entry, closed included, from the server-owned stream",
+       context do
+    open_id = Ecto.UUID.generate()
+    closed_id = Ecto.UUID.generate()
 
     sync_entries(context.scope, [
-      entry_attrs(first_id, ~U[2026-07-18 12:00:00.000000Z]),
-      entry_attrs(second_id, ~U[2026-07-18 12:10:00.000000Z])
+      entry_attrs(open_id, ~U[2026-07-18 12:00:00.000000Z]),
+      entry_attrs(closed_id, ~U[2026-07-18 12:10:00.000000Z])
     ])
+
+    assert {:ok, _closed} = Gtfs.close_journal_entry(context.scope, closed_id)
 
     view = open_diagram(context)
     render_async(view, 5_000)
@@ -148,96 +151,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
 
     opened = assigns(view)
     assert opened.journal_panel_open?
-    assert opened.journal_filter == :open
+    assert opened.journal_filter == :all
+    assert opened.journal_open_count == 1
+    assert opened.journal_closed_count == 1
     assert opened.journal_visible_count == 2
-    assert opened.journal_rendered_entry_ids == MapSet.new([first_id, second_id])
+    assert opened.journal_rendered_entry_ids == MapSet.new([open_id, closed_id])
+    assert opened.journal_pending_new_ids == MapSet.new()
     assert_push_event(view, "journal-panel-preference", %{open: true})
 
-    assert has_element?(view, "#journal-entries-#{first_id} [data-role='journal-note']")
-    assert has_element?(view, "#journal-close-entry-#{first_id}")
-    refute has_element?(view, "#journal-entry-toggle-#{first_id}")
-
-    render_hook(view, "set_journal_filter", %{"journal_filter" => "all"})
-    render_async(view, 5_000)
-
-    filtered = assigns(view)
-    assert filtered.journal_filter == :all
-    assert filtered.journal_undo_ids == MapSet.new()
-    assert filtered.journal_pending_new_ids == MapSet.new()
-  end
-
-  test "close, Undo, and reopen refetch the photo-preloaded row and update counts once",
-       context do
-    entry_id = Ecto.UUID.generate()
-    photo_id = Ecto.UUID.generate()
-
-    sync_entries(context.scope, [entry_attrs(entry_id, ~U[2026-07-18 12:00:00.000000Z])])
-
-    Repo.insert!(%JournalPhoto{
-      id: photo_id,
-      journal_entry_id: entry_id,
-      filename: "journal-photo.jpg",
-      content_type: "image/jpeg",
-      byte_size: 10,
-      sha256: :crypto.hash(:sha256, "journal-photo"),
-      captured_at: ~U[2026-07-18 12:01:00.000000Z]
-    })
-
-    view = open_loaded_journal(context)
-
-    render_hook(view, "close_journal_entry", %{"id" => entry_id})
-    settle_journal(view)
-
-    closed = assigns(view)
-    assert closed.journal_open_count == 0
-    assert closed.journal_closed_count == 1
-    assert closed.journal_visible_count == 1
-    assert closed.journal_undo_ids == MapSet.new([entry_id])
-    assert closed.journal_rendered_signature == closed.journal_observed_signature
-    assert signature_photo_ids(closed, entry_id) == [photo_id]
-    assert %NaiveDateTime{} = closed.journal_local_times[{entry_id, :closed}]
-    undo_selector = "#journal-undo-entry-#{entry_id}"
-    assert_push_event(view, "journal-focus", %{selector: ^undo_selector})
-
-    [closed_entry] = Gtfs.list_station_journal(context.scope, status: :all, order: :desc)
-    assert closed_entry.id == entry_id
-    assert Ecto.assoc_loaded?(closed_entry.photos)
-    assert Enum.map(closed_entry.photos, & &1.id) == [photo_id]
-
-    render_hook(view, "undo_journal_close", %{"id" => entry_id})
-    settle_journal(view)
-
-    reopened_by_undo = assigns(view)
-    assert reopened_by_undo.journal_open_count == 1
-    assert reopened_by_undo.journal_closed_count == 0
-    assert reopened_by_undo.journal_undo_ids == MapSet.new()
-    assert signature_photo_ids(reopened_by_undo, entry_id) == [photo_id]
-    close_selector = "#journal-close-entry-#{entry_id}"
-    assert_push_event(view, "journal-focus", %{selector: ^close_selector})
-
-    render_hook(view, "close_journal_entry", %{"id" => entry_id})
-    settle_journal(view)
-    assert assigns(view).journal_undo_ids == MapSet.new([entry_id])
-
-    render_hook(view, "refresh_journal", %{})
-    render_async(view, 5_000)
-    assert assigns(view).journal_undo_ids == MapSet.new()
-    assert assigns(view).journal_visible_count == 0
-
-    render_hook(view, "set_journal_filter", %{"journal_filter" => "all"})
-    render_async(view, 5_000)
-    assert assigns(view).journal_undo_ids == MapSet.new()
-
-    render_hook(view, "reopen_journal_entry", %{"id" => entry_id})
-    settle_journal(view)
-
-    reopened = assigns(view)
-    assert reopened.journal_open_count == 1
-    assert reopened.journal_closed_count == 0
-    assert reopened.journal_visible_count == 1
-    assert reopened.journal_rendered_signature == reopened.journal_observed_signature
-    assert signature_photo_ids(reopened, entry_id) == [photo_id]
-    assert_push_event(view, "journal-focus", %{selector: ^close_selector})
+    assert has_element?(view, "#journal-entries-#{open_id} [data-role='journal-note']")
+    assert has_element?(view, "#journal-entries-#{closed_id} [data-role='journal-note']")
   end
 
   test "the photo viewer opens in-app, absorbs Escape, and returns focus", context do
@@ -340,7 +263,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     refute has_element?(view, "#journal-form-context")
   end
 
-  test "the closed filter shows only settled closed entries", context do
+  test "closed entries render like open entries with no filter or completion controls",
+       context do
     open_id = Ecto.UUID.generate()
     closed_id = Ecto.UUID.generate()
 
@@ -349,22 +273,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
       entry_attrs(closed_id, ~U[2026-07-18 12:10:00.000000Z])
     ])
 
+    assert {:ok, _closed} = Gtfs.close_journal_entry(context.scope, closed_id)
+
     view = open_loaded_journal(context)
 
-    render_hook(view, "close_journal_entry", %{"id" => closed_id})
-    settle_journal(view)
+    assert has_element?(view, "#journal-trigger-count", "2")
+    assert has_element?(view, "#journal-count-summary", "2 entries")
+    assert has_element?(view, "#journal-entries-#{open_id}[data-role='journal-entry']")
+    assert has_element?(view, "#journal-entries-#{closed_id}[data-role='journal-entry']")
 
-    render_hook(view, "set_journal_filter", %{"journal_filter" => "closed"})
-    render_async(view, 5_000)
-
-    filtered = assigns(view)
-    assert filtered.journal_filter == :closed
-    assert filtered.journal_visible_count == 1
-    assert has_element?(view, "#journal-entries-#{closed_id}")
-    refute has_element?(view, "#journal-entries-#{open_id}")
+    refute has_element?(view, "#journal-filter")
+    refute has_element?(view, "[data-entry-state]")
+    refute has_element?(view, "#journal-close-entry-#{open_id}")
+    refute has_element?(view, "#journal-reopen-entry-#{closed_id}")
+    refute has_element?(view, "#journal-undo-entry-#{closed_id}")
+    refute has_element?(view, "#journal-entries-#{closed_id}.opacity-70")
+    refute render(view) =~ "Closed ·"
   end
 
-  test "missing and foreign mutation IDs preserve the row snapshot and tenant data", context do
+  test "the panel shows only this station's entries on open and refresh", context do
     entry_id = Ecto.UUID.generate()
     sync_entries(context.scope, [entry_attrs(entry_id, ~U[2026-07-18 12:00:00.000000Z])])
 
@@ -387,17 +314,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
     sync_entries(other_scope, [entry_attrs(foreign_id, ~U[2026-07-18 12:05:00.000000Z])])
 
     view = open_loaded_journal(context)
-    before = assigns(view)
 
-    render_hook(view, "close_journal_entry", %{"id" => Ecto.UUID.generate()})
-    missing = assigns(view)
-    assert_journal_snapshot_preserved(before, missing)
-    assert missing.journal_error_message == "The journal entry could not be changed."
-    assert missing.journal_live_message == "The journal entry was not changed. Try again."
+    opened = assigns(view)
+    assert opened.journal_visible_count == 1
+    assert opened.journal_rendered_entry_ids == MapSet.new([entry_id])
+    assert has_element?(view, "#journal-entries-#{entry_id}")
+    refute has_element?(view, "#journal-entries-#{foreign_id}")
 
-    render_hook(view, "close_journal_entry", %{"id" => foreign_id})
-    foreign = assigns(view)
-    assert_journal_snapshot_preserved(before, foreign)
+    render_hook(view, "refresh_journal", %{})
+    render_async(view, 5_000)
+
+    refreshed = assigns(view)
+    assert refreshed.journal_visible_count == 1
+    assert refreshed.journal_rendered_entry_ids == MapSet.new([entry_id])
+    refute has_element?(view, "#journal-entries-#{foreign_id}")
     assert [%{id: ^foreign_id, closed_at: nil}] = Gtfs.list_station_journal(other_scope)
   end
 
@@ -541,29 +471,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
       body: "Journal entry #{id}",
       captured_at: captured_at
     }
-  end
-
-  defp signature_photo_ids(assigns, entry_id) do
-    {_id, _updated_at, _closed_at, photo_ids} =
-      Enum.find(assigns.journal_rendered_signature, &(elem(&1, 0) == entry_id))
-
-    photo_ids
-  end
-
-  defp settle_journal(view) do
-    _ = :sys.get_state(view.pid)
-    render_async(view, 5_000)
-    _ = :sys.get_state(view.pid)
-  end
-
-  defp assert_journal_snapshot_preserved(before, after_failure) do
-    assert after_failure.journal_open_count == before.journal_open_count
-    assert after_failure.journal_closed_count == before.journal_closed_count
-    assert after_failure.journal_visible_count == before.journal_visible_count
-    assert after_failure.journal_rendered_entry_ids == before.journal_rendered_entry_ids
-    assert after_failure.journal_rendered_signature == before.journal_rendered_signature
-    assert after_failure.journal_observed_signature == before.journal_observed_signature
-    assert after_failure.journal_undo_ids == before.journal_undo_ids
   end
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns

@@ -15,7 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   use Phoenix.Component
 
   import GtfsPlannerWeb.CoreComponents,
-    only: [button: 1, callout: 1, empty_state: 1, icon: 1, segmented_control: 1, skeleton: 1]
+    only: [button: 1, callout: 1, empty_state: 1, icon: 1, skeleton: 1]
 
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Gtfs
@@ -98,7 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     Calendar.strftime(local, "%b %-d, %Y") <> " · " <> Gtfs.format_display_time(local)
   end
 
-  attr :open_count, :integer, required: true
+  attr :entry_count, :integer, required: true
   attr :panel_open?, :boolean, required: true
 
   @doc """
@@ -124,7 +124,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         id="journal-trigger-count"
         class="inline-flex min-w-4 items-center justify-center rounded-full border border-control-border bg-base-100 px-1.5 text-[11px] leading-4 tabular-nums text-base-content"
       >
-        {@open_count}
+        {@entry_count}
       </span>
     </button>
     """
@@ -138,13 +138,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     values: [:idle, :loading, :ready, :error]
 
   attr :station_name, :string, default: nil
-  attr :journal_filter, :atom, default: :open, values: [:open, :closed, :all]
   attr :journal_loaded_once?, :boolean, default: false
   attr :journal_refresh_error?, :boolean, default: false
   attr :journal_open_count, :integer, default: 0
   attr :journal_closed_count, :integer, default: 0
   attr :journal_visible_count, :integer, default: 0
-  attr :journal_undo_ids, :any, default: MapSet.new()
   attr :journal_pending_new_ids, :any, default: MapSet.new()
   attr :journal_new_entry_ids, :any, default: MapSet.new()
   attr :journal_photo_viewer, :any, default: nil
@@ -169,26 +167,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   this component never needs a duplicate full entry collection.
   """
   def journal_panel(assigns) do
-    open_count = assigns.journal_scoped_open_count || assigns.journal_open_count
-    closed_count = assigns.journal_scoped_closed_count || assigns.journal_closed_count
-
-    assigns =
-      assigns
-      |> assign(:display_open_count, open_count)
-      |> assign(:display_closed_count, closed_count)
-
     flags = panel_flags(assigns)
-
-    filter_options = [
-      {"Open (#{open_count})", "open"},
-      {"Closed (#{closed_count})", "closed"},
-      {"All (#{flags.total_count})", "all"}
-    ]
 
     assigns =
       assigns
       |> assign(flags)
-      |> assign(:filter_options, filter_options)
       |> assign(:pending_count, collection_count(assigns.journal_pending_new_ids))
       |> assign(:panel_state, panel_state(assigns, flags.first_loading?, flags.first_load_error?))
       |> assign(:now, assigns.journal_now || NaiveDateTime.utc_now())
@@ -211,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           id="journal-count-summary"
           class="min-w-0 text-xs tabular-nums text-base-content/70"
         >
-          {@display_open_count} open · {@display_closed_count} closed
+          {@total_count} {if @total_count == 1, do: "entry", else: "entries"}
         </span>
         <.button
           id="journal-panel-close"
@@ -244,28 +227,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         >
           Show all entries
         </.button>
-      </div>
-
-      <div :if={@first_loading?} class="journal-loading-delay px-4 pb-3" aria-hidden="true">
-        <div class="h-9 w-36 rounded-md bg-base-200"></div>
-      </div>
-
-      <div
-        :if={!@first_loading? and !@first_load_error? and @total_count > 0}
-        class="px-4 pb-3"
-      >
-        <.segmented_control
-          id="journal-filter"
-          name="journal_filter"
-          legend="Filter journal entries"
-          legend_class="sr-only"
-          options={@filter_options}
-          value={Atom.to_string(@journal_filter)}
-          event="set_journal_filter"
-          appearance={:joined}
-          size={:sm}
-          emphasis={:quiet}
-        />
       </div>
 
       <div :if={@pending_count > 0} class="border-y border-info/30 bg-info/10 px-3 py-2">
@@ -311,12 +272,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <.loading_state :if={@first_loading?} />
       <.load_error_state :if={@first_load_error?} />
       <.first_use_empty_state :if={@first_use_empty?} />
-      <.filtered_empty_state
-        :if={@filtered_empty?}
-        filter={@journal_filter}
-        open_count={@journal_open_count}
-        closed_count={@journal_closed_count}
-      />
 
       <div
         :if={@journal_visible_count > 0}
@@ -329,13 +284,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           id={dom_id}
           entry={entry}
           scope={@journal_scope}
-          undo?={collection_member?(@journal_undo_ids, entry.id)}
           new?={collection_member?(@journal_new_entry_ids, entry.id)}
           show_on_floorplan?={collection_member?(@journal_floorplan_entry_ids, entry.id)}
           author={Map.get(@journal_authors, entry.author_id)}
           target={target_presentation(entry, @journal_targets, @station_name)}
           captured_local={local_time(entry, :captured, @journal_local_times)}
-          closed_local={local_time(entry, :closed, @journal_local_times)}
           now={@now}
           zone={@journal_display_zone}
         />
@@ -452,8 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       first_loading?: first_loading?(assigns),
       first_load_error?: first_load_error?(assigns),
       stale_error?: stale_error?(assigns),
-      first_use_empty?: first_use_empty?(assigns, total_count),
-      filtered_empty?: filtered_empty?(assigns, total_count)
+      first_use_empty?: first_use_empty?(assigns, total_count)
     }
   end
 
@@ -471,21 +423,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   defp first_use_empty?(assigns, total_count),
     do: assigns.journal_state == :ready and assigns.journal_loaded_once? and total_count == 0
 
-  defp filtered_empty?(assigns, total_count),
-    do:
-      assigns.journal_state == :ready and assigns.journal_filter in [:open, :closed] and
-        assigns.journal_visible_count == 0 and total_count > 0
-
   attr :id, :string, required: true
   attr :entry, JournalEntry, required: true
   attr :scope, Scope, required: true
-  attr :undo?, :boolean, required: true
   attr :new?, :boolean, default: false
   attr :show_on_floorplan?, :boolean, default: false
   attr :author, :any, default: nil
   attr :target, :map, required: true
   attr :captured_local, NaiveDateTime, required: true
-  attr :closed_local, :any, default: nil
   attr :now, NaiveDateTime, required: true
   attr :zone, :any, default: nil
 
@@ -493,13 +438,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   # queue never hides content or controls behind an unlabeled disclosure click.
   defp journal_entry_row(assigns) do
     photos = loaded_photos(assigns.entry.photos)
-    closed? = not is_nil(assigns.entry.closed_at)
 
     assigns =
       assigns
       |> assign(:photos, photos)
       |> assign(:photo_count, length(photos))
-      |> assign(:closed?, closed?)
       |> assign(:byline, author_label(assigns.author))
       |> assign(:relative_capture, relative_time(assigns.captured_local, assigns.now))
       |> assign(:zone_title, zone_title(assigns.captured_local, assigns.zone))
@@ -509,13 +452,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       id={@id}
       data-role="journal-entry"
       data-entry-id={@entry.id}
-      data-entry-state={if @closed?, do: "closed", else: "open"}
       tabindex="-1"
       class={[
         "bg-base-100 px-4 py-3 transition-colors",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
-        @new? && "journal-entry-motion",
-        @closed? && !@undo? && "opacity-70"
+        @new? && "journal-entry-motion"
       ]}
     >
       <div class="flex items-start gap-2 text-xs">
@@ -525,12 +466,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         >
           <.icon name={@target.icon} class="size-3.5 shrink-0" />
           <span class="truncate">{@target.label}</span>
-        </span>
-        <span
-          :if={@closed? && @closed_local}
-          class="ml-auto shrink-0 text-base-content/60"
-        >
-          Closed · {short_date(@closed_local)}
         </span>
       </div>
 
@@ -571,7 +506,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           </time>
         </span>
 
-        <span :if={!@undo?} class="ml-auto flex shrink-0 items-center gap-1">
+        <span class="ml-auto flex shrink-0 items-center gap-1">
           <.button
             :if={@show_on_floorplan?}
             id={"journal-show-entry-#{@entry.id}"}
@@ -598,52 +533,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           >
             {@target.edit_label}
           </.button>
-
-          <.button
-            :if={!@closed?}
-            id={"journal-close-entry-#{@entry.id}"}
-            type="button"
-            variant="quiet"
-            size="sm"
-            class="text-xs"
-            phx-click="close_journal_entry"
-            phx-value-id={@entry.id}
-          >
-            Close entry
-          </.button>
-
-          <.button
-            :if={@closed?}
-            id={"journal-reopen-entry-#{@entry.id}"}
-            type="button"
-            variant="quiet"
-            size="sm"
-            class="text-xs"
-            phx-click="reopen_journal_entry"
-            phx-value-id={@entry.id}
-          >
-            Reopen entry
-          </.button>
         </span>
-      </div>
-
-      <div
-        :if={@undo?}
-        id={"journal-undo-strip-#{@entry.id}"}
-        class="mt-2 flex min-h-11 items-center gap-2 border-l-4 border-success bg-success/10 px-3 py-1.5"
-      >
-        <span class="font-medium">Entry closed</span>
-        <.button
-          id={"journal-undo-entry-#{@entry.id}"}
-          type="button"
-          variant="quiet"
-          size="sm"
-          class="ml-auto text-success"
-          phx-click="undo_journal_close"
-          phx-value-id={@entry.id}
-        >
-          Undo
-        </.button>
       </div>
     </article>
     """
@@ -688,44 +578,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <span class="journal-empty-copy">
         Notes and photos captured at this station with the Pathways field companion appear here for review.
       </span>
-    </.empty_state>
-    """
-  end
-
-  attr :filter, :atom, required: true
-  attr :open_count, :integer, required: true
-  attr :closed_count, :integer, required: true
-
-  defp filtered_empty_state(assigns) do
-    ~H"""
-    <.empty_state
-      id="journal-empty-filtered"
-      title={if @filter == :open, do: "No open entries", else: "No closed entries"}
-      class="mx-4 mt-2 border-0 px-4 py-10"
-    >
-      <.icon
-        :if={@filter == :open}
-        name="hero-check-circle"
-        class="mx-auto mb-3 size-8 text-success"
-      />
-      <%= if @filter == :open do %>
-        All {@closed_count} entries for this station are closed.
-      <% else %>
-        All {@open_count} entries for this station are open.
-      <% end %>
-      <:action>
-        <.button
-          id="journal-view-all"
-          type="button"
-          variant="quiet"
-          size="sm"
-          class="min-h-11 text-primary"
-          phx-click="set_journal_filter"
-          phx-value-journal_filter="all"
-        >
-          View all entries
-        </.button>
-      </:action>
     </.empty_state>
     """
   end
@@ -857,7 +709,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   end
 
   defp utc_time(entry, :captured), do: entry.captured_at
-  defp utc_time(entry, :closed), do: entry.closed_at
 
   defp fallback_local_time(%DateTime{} = timestamp), do: DateTime.to_naive(timestamp)
   defp fallback_local_time(_timestamp), do: nil
@@ -881,9 +732,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   defp panel_state(%{journal_open_count: 0, journal_closed_count: 0}, _loading?, _error?),
     do: "empty"
 
-  defp panel_state(%{journal_visible_count: 0}, _first_loading?, _first_load_error?),
-    do: "filtered"
-
   defp panel_state(_assigns, _first_loading?, _first_load_error?), do: "ready"
 
   defp note_body(body) when is_binary(body) do
@@ -894,8 +742,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   end
 
   defp note_body(_body), do: "No note provided"
-
-  defp short_date(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 
   defp zone_title(local, %{timezone: timezone}) when is_binary(timezone),
     do: absolute_time(local) <> " " <> timezone

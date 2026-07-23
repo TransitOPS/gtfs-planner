@@ -44,19 +44,6 @@ async function openJournal(page) {
   return panel;
 }
 
-async function chooseJournalFilter(panel, value) {
-  const radio = panel.locator(`#journal-filter-option-${value}`);
-  await panel.locator(`label[for="journal-filter-option-${value}"]`).click();
-  await expect(radio).toBeChecked();
-  await expect(radio).toBeFocused();
-
-  if (value === "open") {
-    await expect(journalRow(panel, CLOSED_ENTRY_ID)).toHaveCount(0);
-  } else {
-    await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
-  }
-}
-
 function journalRow(panel, entryId) {
   return panel.locator(`[data-role="journal-entry"][data-entry-id="${entryId}"]`);
 }
@@ -176,8 +163,7 @@ test("Package 03 marker shell and legend", async ({ page }) => {
 
   const legendPanel = page.locator("#diagram-legend-panel");
   await expect(legendPanel).toBeVisible();
-  await expect(legendPanel.getByText("Open Pin")).toBeVisible();
-  await expect(legendPanel.getByText("Closed Pin")).toBeVisible();
+  await expect(legendPanel.getByText("Entry Pin")).toBeVisible();
   await expect(legendPanel.getByText("Entity Dot")).toBeVisible();
 
   await page.screenshot({
@@ -229,7 +215,6 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
   await mkdir(artifactRoot, { recursive: true });
   await page.emulateMedia({ reducedMotion: "reduce" });
   const panel = await openJournal(page);
-  await chooseJournalFilter(panel, "all");
 
   const row = journalRow(panel, PHOTO_ENTRY_ID);
   await expect(row.locator(`#journal-entry-target-${PHOTO_ENTRY_ID}`)).toContainText(
@@ -241,7 +226,6 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
   );
   await expect(row.locator('[data-role="journal-note"]')).toBeVisible();
   await expect(row.getByRole("button", { name: "Edit node" })).toBeVisible();
-  await expect(row.getByRole("button", { name: "Close entry" })).toBeVisible();
   await expect(row.locator(`#journal-entry-toggle-${PHOTO_ENTRY_ID}`)).toHaveCount(0);
   await expect(row.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`)).toBeVisible();
 
@@ -264,58 +248,17 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
   });
 });
 
-test("keeps focus through close, Undo, reopen, and filter resets", async ({
-  page,
-}) => {
-  const panel = await openJournal(page);
-  await chooseJournalFilter(panel, "all");
-
-  const originalOrder = await panel
-    .locator('[data-role="journal-entry"]')
-    .evaluateAll((rows) => rows.map((row) => row.dataset.entryId));
-
-  let row = journalRow(panel, PHOTO_ENTRY_ID);
-  await row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`).click();
-  await expect(row.locator(`#journal-undo-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
-  await expect(row.locator('button[id^="journal-photo-"] img')).toBeVisible();
-  expect(
-    await panel
-      .locator('[data-role="journal-entry"]')
-      .evaluateAll((rows) => rows.map((row) => row.dataset.entryId)),
-  ).toEqual(originalOrder);
-
-  await row.locator(`#journal-undo-entry-${PHOTO_ENTRY_ID}`).click();
-  await expect(row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
-
-  await row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`).click();
-  await expect(row.locator(`#journal-undo-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
-  await chooseJournalFilter(panel, "open");
-  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toHaveCount(0);
-  await chooseJournalFilter(panel, "all");
-
-  row = journalRow(panel, PHOTO_ENTRY_ID);
-  await expect(row).toHaveAttribute("data-entry-state", "closed");
-  await row.locator(`#journal-reopen-entry-${PHOTO_ENTRY_ID}`).click();
-  await expect(row).toHaveAttribute("data-entry-state", "open");
-  await expect(row.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`)).toBeFocused();
-  await expect(row.locator('button[id^="journal-photo-"] img')).toBeVisible();
-  await expectFocusInsidePage(page);
-});
-
-test("filters the queue by open and closed states", async ({ page }) => {
+test("shows every entry with no status controls", async ({ page }) => {
   const panel = await openJournal(page);
 
-  await chooseJournalFilter(panel, "closed");
-  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
-  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toHaveCount(0);
-  await expect(journalRow(panel, SECOND_OPEN_ENTRY_ID)).toHaveCount(0);
-
-  await chooseJournalFilter(panel, "open");
   await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
-
-  await chooseJournalFilter(panel, "all");
-  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
+  await expect(journalRow(panel, SECOND_OPEN_ENTRY_ID)).toBeVisible();
   await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
+
+  await expect(panel.locator("#journal-filter")).toHaveCount(0);
+  await expect(panel.locator('button[id^="journal-close-entry-"]')).toHaveCount(0);
+  await expect(panel.locator('button[id^="journal-reopen-entry-"]')).toHaveCount(0);
+  await expect(panel.locator("#journal-count-summary")).toContainText(/\d+ entries/);
 });
 
 test("carries the journal note into the edit drawer", async ({ page }) => {
@@ -367,7 +310,7 @@ test("opens photos in an in-app viewer instead of a raw file tab", async ({ page
 test("returns focus after Escape, header close, and Align restoration", async ({ page }) => {
   let panel = await openJournal(page);
 
-  await panel.locator(`#journal-close-entry-${PHOTO_ENTRY_ID}`).focus();
+  await panel.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`).focus();
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(page.locator("#journal-trigger")).toBeFocused();
@@ -495,11 +438,11 @@ for (const width of [1280, 1440, 1920]) {
     // must still clear WCAG 2.5.8's 24px minimum with generous width.
     const compactBoxes = await measureBoxes(
       page.locator(
-        `#journal-trigger, #journal-close-entry-${PHOTO_ENTRY_ID}, #journal-filter label`,
+        `#journal-trigger, #journal-show-entry-${PHOTO_ENTRY_ID}, #journal-edit-target-${PHOTO_ENTRY_ID}`,
       ),
     );
 
-    expect(compactBoxes.length).toBeGreaterThanOrEqual(5);
+    expect(compactBoxes.length).toBeGreaterThanOrEqual(3);
     for (const box of compactBoxes) {
       expect(box.width, `${box.id} width`).toBeGreaterThanOrEqual(44);
       expect(box.height, `${box.id} height`).toBeGreaterThanOrEqual(28);
@@ -584,7 +527,7 @@ test("Package 03 marker to panel scoping and clear action", async ({ page }) => 
 
   const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
   await expect(nodeMarker).toBeVisible();
-  await nodeMarker.click({ force: true });
+  await nodeMarker.click();
 
   const panel = page.locator("#station-journal-panel");
   await expect(panel).toBeVisible();
@@ -613,7 +556,6 @@ test("Package 03 marker to panel scoping and clear action", async ({ page }) => 
 test("Package 03 Show on floorplan", async ({ page }) => {
   await mkdir(pkg3ArtifactRoot, { recursive: true });
   const panel = await openJournal(page);
-  await chooseJournalFilter(panel, "all");
 
   const showBtn = panel.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`);
   await expect(showBtn).toBeVisible();
@@ -669,7 +611,7 @@ test("Package 03 entity scope shows scoped entries and clear restores station vi
 
   const targetId = await nodeMarkers.first().getAttribute("data-journal-target-id");
   expect(targetId).toBeTruthy();
-  await nodeMarkers.first().click({ force: true });
+  await nodeMarkers.first().click();
 
   const panel = page.locator("#station-journal-panel");
   await expect(panel).toBeVisible();
@@ -689,28 +631,8 @@ test("Package 03 entity scope shows scoped entries and clear restores station vi
   expect(allCount).toBeGreaterThan(count);
 });
 
-test("Package 03 filter states control marker visibility", async ({ page }) => {
-  const panel = await openJournal(page);
-
-  await chooseJournalFilter(panel, "open");
-  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toHaveCount(0);
-  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
-
-  const openMarkers = page.locator('#journal-markers-svg [data-journal-state="open"]');
-  await expect(openMarkers.first()).toBeVisible();
-
-  await chooseJournalFilter(panel, "closed");
-  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
-  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toHaveCount(0);
-
-  await chooseJournalFilter(panel, "all");
-  await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
-  await expect(journalRow(panel, CLOSED_ENTRY_ID)).toBeVisible();
-});
-
 test("Package 03 same-level Show on floorplan retains focus and renders one ring", async ({ page }) => {
   const panel = await openJournal(page);
-  await chooseJournalFilter(panel, "all");
 
   const showBtn = panel.locator(`#journal-show-entry-${PHOTO_ENTRY_ID}`);
   await expect(showBtn).toBeVisible();
@@ -725,7 +647,6 @@ test("Package 03 same-level Show on floorplan retains focus and renders one ring
 
 test("Package 03 other-level Show on floorplan switches level and renders ring", async ({ page }) => {
   const panel = await openJournal(page);
-  await chooseJournalFilter(panel, "all");
 
   const showBtn = panel.locator(`#journal-show-entry-${L2_PIN_ENTRY_ID}`);
   await expect(showBtn).toBeVisible();
@@ -743,15 +664,14 @@ test("Package 03 other-level Show on floorplan switches level and renders ring",
 test("Package 03 markers visible but inert in Add and Connect modes", async ({ page }) => {
   await loginAndGoToDiagram(page);
 
-  const markerSvg = page.locator("#journal-markers-svg");
-  await expect(markerSvg).toBeAttached();
+  const markers = page.locator("#journal-markers-svg [data-journal-marker]");
+  await expect(markers.first()).toBeVisible();
+  const markerCount = await markers.count();
 
   for (const mode of ["add", "connect"]) {
     await selectDiagramMode(page, mode);
 
-    const markers = page.locator("#journal-markers-svg [data-journal-marker]");
-    const markerCount = await markers.count();
-    expect(markerCount).toBeGreaterThan(0);
+    await expect(markers).toHaveCount(markerCount);
 
     const firstMarker = markers.first();
     const pointerEvents = await firstMarker.evaluate(
@@ -788,16 +708,18 @@ test("Package 03 reduced motion keeps markers usable", async ({ page }) => {
   );
   expect(transition).toBe("0s");
 
-  await nodeMarker.click({ force: true });
+  await nodeMarker.click();
   const panel = page.locator("#station-journal-panel");
   await expect(panel).toBeVisible();
   await expectFocusInsidePage(page);
 });
 
 test("Package 03 panel scroll independent of canvas at multiple viewports", async ({ page }) => {
+  const panel = await openJournal(page);
+
   for (const width of [1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
-    const panel = await openJournal(page);
+    await expect(panel).toBeVisible();
 
     const list = panel.locator("#journal-entry-list");
     const scrolling = await list.evaluate((element) => ({
@@ -812,9 +734,6 @@ test("Package 03 panel scroll independent of canvas at multiple viewports", asyn
       () => document.body.scrollWidth - window.innerWidth,
     );
     expect(bodyOverflow).toBeLessThanOrEqual(2);
-
-    await page.locator("#journal-trigger").click();
-    await expect(panel).toHaveCount(0);
   }
 });
 
@@ -894,7 +813,7 @@ test("Package 03 captures stable reference-governed screenshots", async ({ page 
   });
 
   const nodeMarker = page.locator('#journal-markers-svg [data-journal-kind="node"]').first();
-  await nodeMarker.click({ force: true });
+  await nodeMarker.click();
   await expect(panel.locator("#journal-target-scope")).toBeVisible();
 
   await page.evaluate(() => document.fonts.ready);
