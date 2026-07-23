@@ -1,14 +1,12 @@
 name: Deploy
-run-name: Deploy ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }} to ${{ inputs.environment || 'dev' }} environment
+run-name: Deploy ${{inputs.version || 'main' }} to ${{ inputs.environment || 'dev' }} environment
 concurrency:
-  group: cd-${{ github.event_name == 'workflow_run' && 'main' || inputs.version }}-${{ inputs.environment || 'dev' }}
+  group: cd-${{inputs.version || 'main' }}-${{ inputs.environment || 'dev' }}
   cancel-in-progress: true
 
 on:
-  workflow_run:
-    workflows: ["CI"]
+  push:
     branches: ["main"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       environment:
@@ -34,10 +32,6 @@ env:
 jobs:
   build_publish:
     name: Build/publish
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.conclusion == 'success')
     runs-on: ${{ fromJSON(vars.GH_DOCKER_RUNNER_LABEL) }}
     timeout-minutes: 30
     env:
@@ -46,10 +40,8 @@ jobs:
       - name: Set environment configuration
         run: |
           echo "environment=${{ inputs.environment || 'dev' }}" >> $GITHUB_ENV
-          echo "version=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }}" >> $GITHUB_ENV
+          echo "version=${{ inputs.version || 'main' }}" >> $GITHUB_ENV
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }}
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
@@ -95,10 +87,8 @@ jobs:
       - name: Set environment configuration
         run: |
           echo "environment=${{ inputs.environment || 'dev' }}" >> $GITHUB_ENV
-          echo "version=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }}" >> $GITHUB_ENV
+          echo "version=${{ inputs.version || 'main' }}" >> $GITHUB_ENV
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.version }}
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
