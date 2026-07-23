@@ -483,6 +483,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
       refute has_element?(view2, "#station-journal-panel")
     end
 
+    test "same-station live patch opens, consumes, and does not replay journal intent", context do
+      entry_id = Ecto.UUID.generate()
+      closed_entry_id = Ecto.UUID.generate()
+
+      sync_entries(context.scope, [
+        %{
+          id: entry_id,
+          target_type: "node",
+          target_id: context.child_stop.id,
+          body: "Same-station patch entry",
+          captured_at: ~U[2026-07-20 10:00:00.000000Z]
+        },
+        %{
+          id: closed_entry_id,
+          target_type: "node",
+          target_id: context.child_stop.id,
+          body: "Closed same-station patch entry",
+          captured_at: ~U[2026-07-19 10:00:00.000000Z]
+        }
+      ])
+
+      assert {:ok, _entry} = Gtfs.close_journal_entry(context.scope, closed_entry_id)
+
+      conn = log_in_user(context.conn, context.user, organization: context.organization)
+      base_path = "/gtfs/#{context.gtfs_version.id}/stops/#{context.station.stop_id}/diagram"
+
+      {:ok, view, _html} = live(conn, base_path, on_error: :warn)
+      render_async(view, 5_000)
+      refute has_element?(view, "#station-journal-panel")
+
+      render_patch(view, "#{base_path}?journal=open&entry_id=#{entry_id}")
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#station-journal-panel")
+      assert has_element?(view, "#journal-entries-#{entry_id}")
+      assert has_element?(view, "#journal-entries-#{closed_entry_id}", "Closed")
+
+      expected_selector = "#journal-entries-#{entry_id}"
+      assert_push_event(view, "journal-focus", %{selector: ^expected_selector})
+      assert_patch(view, base_path)
+
+      render_hook(view, "close_journal", %{})
+      refute has_element?(view, "#station-journal-panel")
+
+      render_patch(view, base_path)
+      refute has_element?(view, "#station-journal-panel")
+    end
+
     test "simultaneous edit_child_stop_id and journal=open opens only child-stop drawer",
          context do
       entry_id = Ecto.UUID.generate()

@@ -9,3 +9,7 @@ Mox.defmock(GtfsPlanner.Organizations.AdminReadAdapterMock,
 Mox.defmock(GtfsPlanner.Gtfs.CatalogReadAdapterMock,
   for: GtfsPlanner.Gtfs.CatalogReadAdapter
 )
+
+Mox.defmock(GtfsPlanner.Gtfs.ReviewedApplyTransactionMock,
+  for: GtfsPlanner.Gtfs.ReviewedApplyTransaction
+)

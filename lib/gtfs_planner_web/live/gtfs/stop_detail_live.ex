@@ -45,6 +45,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> stream_configure(:levels, dom_id: fn %{level: level} -> "level-#{level.level_id}" end)
      |> stream(:levels, [])
      |> stream(:pathways, [])
+     |> stream_configure(:journal_recent_entries,
+       dom_id: fn entry -> "station-journal-summary-#{entry.id}" end
+     )
      |> stream(:journal_recent_entries, [])}
   end
 
@@ -401,7 +404,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   defp subscribe_journal_if_connected(socket, scope) do
     if connected?(socket) do
-      case Gtfs.subscribe_station_journal(scope) do
+      case journal_source().subscribe_station_journal(scope) do
         :ok ->
           socket
 
@@ -425,31 +428,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   end
 
   defp run_journal_summary_load(source, scope) do
-    try do
-      entries = source.list_station_journal(scope, status: :all, order: :desc)
+    entries = source.list_station_journal(scope, status: :all, order: :desc)
 
-      open_count = Enum.count(entries, &is_nil(&1.closed_at))
-      closed_count = Enum.count(entries, &(not is_nil(&1.closed_at)))
+    open_count = Enum.count(entries, &is_nil(&1.closed_at))
+    closed_count = Enum.count(entries, &(not is_nil(&1.closed_at)))
 
-      recent_entries = Enum.take(entries, 3)
+    recent_entries = Enum.take(entries, 3)
 
-      targets = fetch_journal_targets(source, scope)
-      zone = source.resolve_display_zone(scope.organization_id, scope.gtfs_version_id)
-      {local_times, now} = localize_journal_times(source, recent_entries, zone)
+    targets = fetch_journal_targets(source, scope, recent_entries)
+    zone = source.resolve_display_zone(scope.organization_id, scope.gtfs_version_id)
+    {local_times, now} = localize_journal_times(source, recent_entries, zone)
 
-      {:ok,
-       %{
-         entries: entries,
-         open_count: open_count,
-         closed_count: closed_count,
-         recent_entries: recent_entries,
-         targets: targets,
-         local_times: local_times,
-         now: now
-       }}
-    rescue
-      exception -> {:error, exception}
-    end
+    {:ok,
+     %{
+       entries: entries,
+       open_count: open_count,
+       closed_count: closed_count,
+       recent_entries: recent_entries,
+       targets: targets,
+       local_times: local_times,
+       now: now
+     }}
+  rescue
+    exception -> {:error, exception}
   end
 
   defp load_journal_summary(socket) do
@@ -457,27 +458,41 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     start_journal_load(socket, scope)
   end
 
-  defp fetch_journal_targets(source, scope) do
+  defp fetch_journal_targets(source, scope, entries) do
+    target_types = MapSet.new(entries, & &1.target_type)
+
     child_stops =
-      source.list_child_stops_for_parent(
-        scope.organization_id,
-        scope.gtfs_version_id,
-        scope.station_id
-      )
+      if MapSet.member?(target_types, "node") do
+        source.list_child_stops_for_parent(
+          scope.organization_id,
+          scope.gtfs_version_id,
+          scope.station_id
+        )
+      else
+        []
+      end
 
     pathways =
-      source.list_pathways_for_station(
-        scope.organization_id,
-        scope.gtfs_version_id,
-        scope.station_id
-      )
+      if MapSet.member?(target_types, "pathway") do
+        source.list_pathways_for_station(
+          scope.organization_id,
+          scope.gtfs_version_id,
+          scope.station_id
+        )
+      else
+        []
+      end
 
     stop_levels =
-      source.list_stop_levels_for_station(
-        scope.organization_id,
-        scope.gtfs_version_id,
-        scope.station_id
-      )
+      if MapSet.member?(target_types, "pin") do
+        source.list_stop_levels_for_station(
+          scope.organization_id,
+          scope.gtfs_version_id,
+          scope.station_id
+        )
+      else
+        []
+      end
 
     node_presentations =
       Map.new(child_stops, fn stop ->
@@ -534,7 +549,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     label =
       case {entry.target_type, target} do
         {"station", _} -> "Station"
-        {type, nil} -> "#{String.capitalize(type)} (removed)"
+        {type, nil} -> String.capitalize(type)
         {type, %{label: label}} -> "#{String.capitalize(type)} · #{label}"
       end
 
@@ -942,7 +957,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
             <div class="mt-8" id="station-journal-summary">
               <div class="flex items-center gap-3 mb-4">
                 <h2 class="text-lg font-semibold">Journal</h2>
-                <%= if @journal_state == :ready or (@journal_state == :error and @journal_loaded_once?) do %>
+                <%= if not @journal_entries_empty? and
+                          (@journal_state == :ready or
+                             (@journal_state == :error and @journal_loaded_once?)) do %>
                   <span
                     id="journal-open-count"
                     class="border border-base-300 rounded-full px-2.5 py-0.5 text-xs"
@@ -990,6 +1007,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                       Retry
                     </button>
                   </.callout>
+                <% @journal_state == :error and @journal_loaded_once? and
+                     @journal_entries_empty? -> %>
+                  <.callout
+                    kind="warning"
+                    title="Journal may be out of date"
+                    id="journal-summary-stale-warning"
+                  >
+                    The last successful journal snapshot remains available.
+                    <button
+                      id="journal-summary-retry"
+                      phx-click="retry_journal"
+                      class="btn btn-sm btn-outline mt-2"
+                    >
+                      Retry
+                    </button>
+                  </.callout>
+                  <.empty_state
+                    title="No journal entries"
+                    id="journal-summary-empty"
+                    class="mt-3 bg-base-100"
+                  >
+                    Notes and photos captured at this station with the Pathways field companion appear here for review.
+                  </.empty_state>
                 <% @journal_state == :error and @journal_loaded_once? -> %>
                   <.callout
                     kind="warning"
@@ -1050,21 +1090,36 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   defp journal_summary_rows(assigns) do
     ~H"""
     <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-      <div id="journal-recent-entry-list" phx-update="stream" class="divide-y divide-base-200 text-sm">
-        <div
+      <div
+        id="station-journal-summary-list"
+        phx-update="stream"
+        class="divide-y divide-base-200 text-sm"
+      >
+        <.link
           :for={{dom_id, entry} <- @entries}
           id={dom_id}
           data-role="journal-summary-entry"
-          class={[
-            "flex items-center gap-3 px-4 py-3 hover:bg-base-200/50",
-            not is_nil(entry.closed_at) && "opacity-60"
-          ]}
+          navigate={
+            "/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open&entry_id=#{entry.id}"
+          }
+          class="flex min-h-11 items-center gap-3 px-4 py-3 text-base-content transition-colors hover:bg-base-200/50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
         >
-          <span class="inline-flex items-center gap-1 border border-base-300 rounded-full px-2.5 py-0.5 text-xs shrink-0">
+          <span class="inline-flex max-w-32 shrink-0 items-center gap-1 truncate rounded-full border border-base-300 px-2.5 py-0.5 text-xs">
             {journal_target_presentation(entry, @targets).label}
           </span>
-          <span class="truncate text-base-content/80">{entry.body}</span>
-          <span class="ml-auto text-base-content/50 text-xs shrink-0">
+          <span class={[
+            "min-w-0 flex-1 truncate",
+            if(is_nil(entry.closed_at), do: "text-base-content/80", else: "text-base-content/70")
+          ]}>
+            {entry.body}
+          </span>
+          <span
+            :if={not is_nil(entry.closed_at)}
+            class="rounded-full border border-base-300 bg-base-200 px-2 py-0.5 text-xs font-medium text-base-content/80"
+          >
+            Closed
+          </span>
+          <span class="ml-auto text-base-content/60 text-xs shrink-0">
             <time datetime={DateTime.to_iso8601(entry.captured_at)}>
               {StationJournalComponents.relative_time(
                 journal_local_time(entry, @local_times),
@@ -1072,12 +1127,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
               )}
             </time>
           </span>
-        </div>
+        </.link>
       </div>
       <div class="border-t border-base-200 px-4 py-2.5">
         <.link
           id="journal-footer-link"
-          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram"}
+          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open"}
           class="text-sm text-primary hover:underline"
         >
           Open journal in Floorplans →

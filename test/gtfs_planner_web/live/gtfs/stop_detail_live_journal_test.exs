@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import ExUnit.CaptureLog
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -86,7 +87,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
   describe "journal summary ideal state" do
     test "renders open/closed counts and three newest rows with target labels and links",
          context do
-      seed_journal_entries(context)
+      [first, second, third | _rest] = seed_journal_entries(context)
       view = open_details(context)
       render_async(view, 5_000)
 
@@ -94,16 +95,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       assert has_element?(view, "#journal-open-count", "3 open")
       assert has_element?(view, "#journal-closed-count", "4 closed")
 
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
 
       assert has_element?(
                view,
-               "#journal-recent-entry-list [data-role='journal-summary-entry']"
+               "#station-journal-summary-list [data-role='journal-summary-entry']"
              )
 
       entries =
         view
-        |> element("#journal-recent-entry-list")
+        |> element("#station-journal-summary-list")
         |> render()
 
       assert entries =~ "Node · Journal Detail Node"
@@ -114,17 +115,38 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       assert has_element?(
                view,
-               ~s(a#journal-footer-link[href*="/diagram"])
+               ~s(a#station-journal-summary-#{first.id}[href="/gtfs/#{context.gtfs_version.id}/stops/#{context.station.stop_id}/diagram?journal=open&entry_id=#{first.id}"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(a#station-journal-summary-#{second.id}[href$="journal=open&entry_id=#{second.id}"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(a#station-journal-summary-#{third.id}[href$="journal=open&entry_id=#{third.id}"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(a#journal-footer-link[href="/gtfs/#{context.gtfs_version.id}/stops/#{context.station.stop_id}/diagram?journal=open"])
              )
     end
 
-    test "closed rows are de-emphasized with opacity", context do
-      seed_journal_entries(context)
+    test "closed rows expose textual status without whole-row opacity", context do
+      [first | _rest] = seed_journal_entries(context)
       view = open_details(context)
       render_async(view, 5_000)
 
-      html = render(view)
-      assert html =~ "opacity-60"
+      assert has_element?(view, "#station-journal-summary-#{first.id}", "Closed")
+
+      row_html =
+        view
+        |> element("#station-journal-summary-#{first.id}")
+        |> render()
+
+      refute row_html =~ "opacity-60"
     end
 
     test "station target rows show bare kind label", context do
@@ -156,7 +178,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       assert html =~ "Station"
     end
 
-    test "removed target degrades to bare kind with removed marker", context do
+    test "removed target degrades to the bare kind", context do
       removable_node =
         stop_fixture(context.organization.id, context.gtfs_version.id, %{
           stop_id: "JOURNAL_REMOVABLE_NODE",
@@ -195,15 +217,55 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       render_async(view, 5_000)
 
       assert has_element?(view, "#station-journal-summary")
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
 
       html =
         view
-        |> element("#journal-recent-entry-list")
+        |> element("#station-journal-summary-list")
         |> render()
 
       assert html =~ "Node"
-      assert html =~ "removed"
+      refute html =~ "Node (removed)"
+    end
+
+    test "loads only target families represented by recent entries", context do
+      Gtfs.sync_journal_entries(context.scope, [
+        %{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          body: "Newest station entry",
+          captured_at: ~U[2026-07-21 10:00:00Z]
+        },
+        %{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          body: "Second station entry",
+          captured_at: ~U[2026-07-20 10:00:00Z]
+        },
+        %{
+          id: Ecto.UUID.generate(),
+          target_type: "station",
+          body: "Third station entry",
+          captured_at: ~U[2026-07-19 10:00:00Z]
+        },
+        %{
+          id: Ecto.UUID.generate(),
+          target_type: "node",
+          target_id: context.child_node.id,
+          body: "Older node outside recent rows",
+          captured_at: ~U[2026-07-18 10:00:00Z]
+        }
+      ])
+
+      control_journal_source()
+      view = open_details(context)
+      task = await_journal_request(context.station.id)
+      release_journal(task, :real)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#station-journal-summary-list", "Newest station entry")
+      refute has_element?(view, "#station-journal-summary-list", "Older node outside recent rows")
+      refute_receive {:journal_target_lookup, _kind}
     end
   end
 
@@ -235,10 +297,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       assert has_element?(view, "#station-journal-summary")
       assert has_element?(view, "#journal-summary-empty")
 
-      html = render(view)
-      refute html =~ "Create"
-      refute html =~ "Add entry"
-      refute html =~ "New entry"
+      refute has_element?(view, "#journal-open-count")
+      refute has_element?(view, "#journal-closed-count")
+      refute has_element?(view, "#journal-summary-refresh")
+      refute has_element?(view, "#journal-footer-link")
+      refute has_element?(view, "[data-role='journal-summary-entry']")
+      refute has_element?(view, "#station-journal-summary a")
+      refute has_element?(view, "#station-journal-summary button")
     end
   end
 
@@ -298,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       render_async(view, 5_000)
 
       assert has_element?(view, "#journal-open-count")
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
 
       render_click(element(view, "#journal-summary-refresh"))
       failed_task = await_journal_request(context.station.id)
@@ -307,7 +372,32 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       assert has_element?(view, "#journal-summary-stale-warning")
       assert has_element?(view, "#journal-open-count")
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
+    end
+
+    test "preserves an empty snapshot without adding counts, controls, rows, or footer",
+         context do
+      control_journal_source()
+      view = open_details(context)
+      initial_task = await_journal_request(context.station.id)
+      release_journal(initial_task, :real)
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-summary-empty")
+
+      send(view.pid, {:station_journal_changed, context.station.id})
+      failed_task = await_journal_request(context.station.id)
+      release_journal(failed_task, {:raise, "empty refresh failed"})
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#journal-summary-stale-warning")
+      assert has_element?(view, "#journal-summary-empty")
+      refute has_element?(view, "#journal-open-count")
+      refute has_element?(view, "#journal-closed-count")
+      refute has_element?(view, "#journal-summary-refresh")
+      assert has_element?(view, "#journal-summary-retry")
+      refute has_element?(view, "#journal-footer-link")
+      refute has_element?(view, "[data-role='journal-summary-entry']")
     end
   end
 
@@ -338,7 +428,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       html =
         view
-        |> element("#journal-recent-entry-list")
+        |> element("#station-journal-summary-list")
         |> render()
 
       assert html =~ "Live refresh entry"
@@ -377,7 +467,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       render_async(view, 5_000)
 
       assert has_element?(view, "#journal-open-count", "3 open")
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
 
       send(view.pid, {:station_journal_changed, context.station.id})
       failed_task = await_journal_request(context.station.id)
@@ -386,7 +476,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       assert has_element?(view, "#journal-summary-stale-warning")
       assert has_element?(view, "#journal-open-count", "3 open")
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
 
       send(view.pid, {:station_journal_changed, context.station.id})
       success_task = await_journal_request(context.station.id)
@@ -395,7 +485,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
 
       refute has_element?(view, "#journal-summary-stale-warning")
       assert has_element?(view, "#journal-open-count", "3 open")
-      assert has_element?(view, "#journal-recent-entry-list")
+      assert has_element?(view, "#station-journal-summary-list")
+    end
+
+    test "subscription failure logs and still completes the source-backed initial read",
+         context do
+      seed_journal_entries(context)
+      control_journal_source()
+      set_journal_subscription_result({:error, :pubsub_unavailable})
+
+      log =
+        capture_log(fn ->
+          view = open_details(context)
+          assert_receive {:journal_subscription_requested, %Scope{}}
+          task = await_journal_request(context.station.id)
+          release_journal(task, :real)
+          render_async(view, 5_000)
+
+          assert has_element?(view, "#journal-open-count", "3 open")
+          assert has_element?(view, "#station-journal-summary-list")
+        end)
+
+      assert log =~ "station_journal_subscription_failed"
+      assert log =~ "pubsub_unavailable"
     end
   end
 
@@ -488,6 +600,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
     {:ok, _} = Gtfs.close_journal_entry(context.scope, second.id)
     {:ok, _} = Gtfs.close_journal_entry(context.scope, third.id)
     {:ok, _} = Gtfs.close_journal_entry(context.scope, Enum.at(entries, 3).id)
+
+    entries
   end
 
   defp open_details(context) do
@@ -513,6 +627,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
     on_exit(fn ->
       restore_env(:station_journal_source, source_before)
       restore_env(:station_journal_source_owner, owner_before)
+    end)
+  end
+
+  defp set_journal_subscription_result(result) do
+    result_before = Application.fetch_env(:gtfs_planner, :station_journal_subscription_result)
+    Application.put_env(:gtfs_planner, :station_journal_subscription_result, result)
+
+    on_exit(fn ->
+      restore_env(:station_journal_subscription_result, result_before)
     end)
   end
 

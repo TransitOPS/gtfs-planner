@@ -759,7 +759,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       {:ok, view, _html} = live(conn, ~p"/design/tables")
 
       assert has_element?(view, "#ds-version-diff-row-demo [data-version-diff-row]")
-      assert has_element?(view, "#ds-version-diff-row-demo [class*='sm:grid']")
+      assert has_element?(view, "#ds-version-diff-row-demo [class*='@2xl:grid']")
       assert has_element?(view, "#ds-version-diff-row-demo [aria-controls$='-details']")
       assert has_element?(view, "#ds-version-diff-row-demo #ds-version-diff-row-action.min-h-11")
 

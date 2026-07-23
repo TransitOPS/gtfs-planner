@@ -3,11 +3,14 @@ defmodule GtfsPlanner.GtfsTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+  alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.JournalEntry
-  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.StationEditingStatus
+  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopLevel
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -3410,6 +3413,7 @@ defmodule GtfsPlanner.GtfsTest do
 
   describe "save_and_apply_stop_level_alignment/5" do
     @describetag :audited_alignment_apply
+    setup :verify_on_exit!
 
     setup do
       organization = organization_fixture()
@@ -3476,13 +3480,13 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       {:ok, proposed_sl} =
-        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
         |> Ecto.Changeset.apply_action(:update)
 
-      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+      {:ok, alignment} = StopLevel.alignment_transform(proposed_sl)
 
       {:ok, {same_lat, same_lon}} =
-        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+        FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
 
       _unchanged_stop =
         stop_fixture(org.id, version.id, %{
@@ -3552,6 +3556,139 @@ defmodule GtfsPlanner.GtfsTest do
                )
     end
 
+    test "returns :invalid_input for fingerprints that are not 64 lowercase hex characters", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      invalid_fingerprints = [
+        String.duplicate("a", 63),
+        String.duplicate("a", 65),
+        String.duplicate("A", 64),
+        String.duplicate("g", 64),
+        ""
+      ]
+
+      for fingerprint <- invalid_fingerprints do
+        attrs = Map.put(reviewed_apply_attrs(), :fingerprint, fingerprint)
+
+        assert {:error, :invalid_input} =
+                 Gtfs.save_and_apply_stop_level_alignment(
+                   stop_level.id,
+                   attrs,
+                   1000,
+                   800,
+                   audit_ctx
+                 )
+      end
+
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
+    end
+
+    test "retries raised PostgreSQL serialization failures and succeeds on the third attempt", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      use_reviewed_apply_transaction_mock()
+      attempts = start_supervised!({Agent, fn -> 0 end})
+
+      expect(ReviewedApplyTransactionMock, :run, 3, fn _transaction ->
+        attempt = Agent.get_and_update(attempts, fn count -> {count + 1, count + 1} end)
+
+        if attempt < 3 do
+          raise postgrex_error("40001", "serialization failure")
+        else
+          {:error, :stale_review}
+        end
+      end)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
+
+      assert {:error, :stale_review} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert Agent.get(attempts, & &1) == 3
+    end
+
+    test "maps three raised PostgreSQL serialization failures to :busy", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      use_reviewed_apply_transaction_mock()
+
+      expect(ReviewedApplyTransactionMock, :run, 3, fn _transaction ->
+        raise postgrex_error("40001", "serialization failure")
+      end)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
+
+      assert {:error, :busy} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+    end
+
+    test "retries a serialization failure returned by a rolled-back transaction", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      use_reviewed_apply_transaction_mock()
+      attempts = start_supervised!({Agent, fn -> 0 end})
+
+      expect(ReviewedApplyTransactionMock, :run, 2, fn _transaction ->
+        attempt = Agent.get_and_update(attempts, fn count -> {count + 1, count + 1} end)
+
+        if attempt == 1,
+          do: {:error, postgrex_error("40001", "serialization failure")},
+          else: {:error, :stale_review}
+      end)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
+
+      assert {:error, :stale_review} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert Agent.get(attempts, & &1) == 2
+    end
+
+    test "re-raises non-serialization PostgreSQL exceptions", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      use_reviewed_apply_transaction_mock()
+
+      expect(ReviewedApplyTransactionMock, :run, fn _transaction ->
+        raise postgrex_error("23505", "unique violation")
+      end)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
+
+      assert_raise Postgrex.Error, fn ->
+        Gtfs.save_and_apply_stop_level_alignment(
+          stop_level.id,
+          attrs,
+          1000,
+          800,
+          audit_ctx
+        )
+      end
+    end
+
     test "returns :stale_review when fingerprint does not match", %{
       organization: org,
       gtfs_version: version,
@@ -3584,7 +3721,7 @@ defmodule GtfsPlanner.GtfsTest do
                  audit_ctx
                )
 
-      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
     end
@@ -3647,13 +3784,13 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       {:ok, proposed_sl} =
-        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
         |> Ecto.Changeset.apply_action(:update)
 
-      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+      {:ok, alignment} = StopLevel.alignment_transform(proposed_sl)
 
       {:ok, {same_lat, same_lon}} =
-        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+        FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
 
       unchanged_stop =
         stop_fixture(org.id, version.id, %{
@@ -3709,6 +3846,161 @@ defmodule GtfsPlanner.GtfsTest do
       assert unchanged_logs == []
     end
 
+    test "audits only the coordinate axis that changed", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      {:ok, proposed_stop_level} =
+        StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        |> Ecto.Changeset.apply_action(:update)
+
+      {:ok, alignment} = StopLevel.alignment_transform(proposed_stop_level)
+
+      {:ok, {same_lat, _new_lon}} =
+        FloorplanTransform.svg_to_lat_lon(
+          alignment,
+          1000,
+          800,
+          %{x: 50, y: 40}
+        )
+
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_ONE_AXIS",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.from_float(same_lat),
+          stop_lon: Decimal.new("0")
+        })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+
+      assert {:ok, %{apply_result: %{updated_stop_count: 1}}} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id)
+      assert Map.keys(log.changed_fields) == ["stop_lon"]
+      assert log.changed_fields["stop_lon"]["from"] == "0"
+    end
+
+    test "a later invalid stop changeset rolls back alignment, earlier stop audit, and pins", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      valid_stop =
+        %Stop{id: "00000000-0000-0000-0000-000000000001"}
+        |> Stop.changeset(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          stop_id: "AUDITED_VALID_BEFORE_FAILURE",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1"),
+          stop_lon: Decimal.new("2")
+        })
+        |> Repo.insert!()
+
+      invalid_stop =
+        %Stop{id: "ffffffff-ffff-ffff-ffff-ffffffffffff"}
+        |> Stop.changeset(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          stop_id: "AUDITED_INVALID_AFTER_WRITE",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 0},
+          stop_lat: Decimal.new("3"),
+          stop_lon: Decimal.new("4")
+        })
+        |> Repo.insert!()
+
+      scope = %Scope{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: audit_ctx.actor_id
+      }
+
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 40.0,
+                   captured_at: ~U[2026-07-13 12:00:00Z]
+                 }
+               ])
+
+      alignment_attrs = %{
+        floorplan_center_lat: 89.0,
+        floorplan_center_lon: 0.0,
+        floorplan_scale_mpp: 1000.0,
+        floorplan_rotation_deg: 0.0,
+        fingerprint: String.duplicate("0", 64)
+      }
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, alignment_attrs, 1000, 800)
+
+      attrs = Map.put(alignment_attrs, :fingerprint, review.fingerprint)
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
+
+      reloaded_valid = Repo.get!(Stop, valid_stop.id)
+      assert Decimal.equal?(reloaded_valid.stop_lat, Decimal.new("1"))
+      assert Decimal.equal?(reloaded_valid.stop_lon, Decimal.new("2"))
+
+      reloaded_invalid = Repo.get!(Stop, invalid_stop.id)
+      assert Decimal.equal?(reloaded_invalid.stop_lat, Decimal.new("3"))
+      assert Decimal.equal?(reloaded_invalid.stop_lon, Decimal.new("4"))
+
+      assert Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", valid_stop.id) == []
+      assert Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", invalid_stop.id) == []
+      assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
+
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
     test "rolls back all writes when audit context has nil actor_email", %{
       organization: org,
       gtfs_version: version,
@@ -3740,7 +4032,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert {:error, %Ecto.Changeset{}} =
                Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800, bad_ctx)
 
-      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
 
       reloaded = Repo.get!(Stop, child.id)
       assert Decimal.equal?(reloaded.stop_lat, Decimal.new("1.0"))
@@ -3821,13 +4113,13 @@ defmodule GtfsPlanner.GtfsTest do
       })
 
       {:ok, proposed_sl} =
-        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
+        StopLevel.alignment_changeset(stop_level, reviewed_apply_attrs())
         |> Ecto.Changeset.apply_action(:update)
 
-      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+      {:ok, alignment} = StopLevel.alignment_transform(proposed_sl)
 
       {:ok, {same_lat, same_lon}} =
-        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+        FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
 
       stop_fixture(org.id, version.id, %{
         stop_id: "AUDITED_BROADCAST_UNCHANGED",
@@ -3978,6 +4270,7 @@ defmodule GtfsPlanner.GtfsTest do
 
   describe "alignment coordinate previews" do
     @describetag :alignment_coordinate_preview
+    setup :verify_on_exit!
 
     setup do
       organization = organization_fixture()
@@ -4091,7 +4384,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.all?(preview.rows, &match?(%Decimal{}, &1.old_lon))
       assert is_binary(preview.fingerprint)
       assert byte_size(preview.fingerprint) == 64
-      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
       assert Decimal.equal?(Repo.get!(Stop, later_stop.id).stop_lat, Decimal.new("1.0"))
       assert Decimal.equal?(Repo.get!(Stop, earlier_stop.id).stop_lon, Decimal.new("4.0"))
       assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
@@ -4133,7 +4426,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert {:error, :stale_preview} =
                Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
 
-      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
       assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lat, Decimal.new("1.0"))
       assert Repo.get!(Stop, changed_child.id).diagram_coordinate == %{"x" => 55, "y" => 40}
 
@@ -4146,6 +4439,27 @@ defmodule GtfsPlanner.GtfsTest do
 
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
+    end
+
+    test "apply maps three raised PostgreSQL serialization failures to :busy", %{
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      assert {:ok, preview} =
+               Gtfs.preview_stop_level_coordinate_application(
+                 stop_level.id,
+                 preview_alignment_attrs(),
+                 1000,
+                 800
+               )
+
+      use_reviewed_apply_transaction_mock()
+
+      expect(ReviewedApplyTransactionMock, :run, 3, fn _transaction ->
+        raise postgrex_error("40001", "serialization failure")
+      end)
+
+      assert {:error, :busy} = Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
     end
 
     test "apply commits the preview's alignment, coordinates, and pins together", %{
@@ -4168,13 +4482,13 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       {:ok, proposed_sl} =
-        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(stop_level, preview_alignment_attrs())
+        StopLevel.alignment_changeset(stop_level, preview_alignment_attrs())
         |> Ecto.Changeset.apply_action(:update)
 
-      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_sl)
+      {:ok, alignment} = StopLevel.alignment_transform(proposed_sl)
 
       {:ok, {same_lat, same_lon}} =
-        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
+        FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 60, y: 48})
 
       unchanged_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -4324,7 +4638,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert {:error, %Ecto.Changeset{}} =
                Gtfs.apply_stop_level_coordinate_preview(preview, audit_ctx)
 
-      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
       assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lat, Decimal.new("1.0"))
       assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lon, Decimal.new("2.0"))
       assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
@@ -4358,6 +4672,33 @@ defmodule GtfsPlanner.GtfsTest do
       floorplan_rotation_deg: 0.0,
       fingerprint: String.duplicate("0", 64)
     }
+  end
+
+  defp use_reviewed_apply_transaction_mock do
+    previous = Application.fetch_env(:gtfs_planner, :reviewed_apply_transaction)
+
+    Application.put_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransactionMock
+    )
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, :reviewed_apply_transaction, value)
+        :error -> Application.delete_env(:gtfs_planner, :reviewed_apply_transaction)
+      end
+    end)
+  end
+
+  defp postgrex_error(code, message) do
+    Postgrex.Error.exception(
+      postgres: %{
+        code: code,
+        severity: "ERROR",
+        message: message
+      }
+    )
   end
 
   describe "derive_child_stop_coords/3" do
@@ -4782,7 +5123,7 @@ defmodule GtfsPlanner.GtfsTest do
     end
 
     test "returns {:error, :alignment_prerequisites_missing} when stop_level has no level_id" do
-      stop_level = %GtfsPlanner.Gtfs.StopLevel{level_id: nil}
+      stop_level = %StopLevel{level_id: nil}
 
       assert {:error, :alignment_prerequisites_missing} =
                Gtfs.infer_level_alignment(stop_level, 1000, 800)
@@ -5011,7 +5352,7 @@ defmodule GtfsPlanner.GtfsTest do
 
       :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
 
-      assert {:ok, %GtfsPlanner.Gtfs.StopLevel{} = updated, result} =
+      assert {:ok, %StopLevel{} = updated, result} =
                Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
 
       assert %{
@@ -5025,13 +5366,13 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_float(updated.floorplan_scale_mpp)
       assert is_float(updated.floorplan_rotation_deg)
 
-      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      persisted = GtfsPlanner.Repo.get(StopLevel, stop_level.id)
       assert persisted.floorplan_center_lat == updated.floorplan_center_lat
       assert persisted.floorplan_center_lon == updated.floorplan_center_lon
       assert persisted.floorplan_scale_mpp == updated.floorplan_scale_mpp
       assert persisted.floorplan_rotation_deg == updated.floorplan_rotation_deg
 
-      assert_receive {[:stop_levels, :updated], %GtfsPlanner.Gtfs.StopLevel{} = payload}, 500
+      assert_receive {[:stop_levels, :updated], %StopLevel{} = payload}, 500
       assert payload.id == updated.id
     end
 
@@ -5058,7 +5399,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert {:error, :insufficient_anchors} =
                Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
 
-      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      persisted = GtfsPlanner.Repo.get(StopLevel, stop_level.id)
       assert is_nil(persisted.floorplan_center_lat)
       assert is_nil(persisted.floorplan_center_lon)
       assert is_nil(persisted.floorplan_scale_mpp)
@@ -5075,7 +5416,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert {:error, :invalid_input} =
                Gtfs.save_inferred_level_alignment(stop_level, 0, 800)
 
-      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      persisted = GtfsPlanner.Repo.get(StopLevel, stop_level.id)
       assert is_nil(persisted.floorplan_center_lat)
       assert is_nil(persisted.floorplan_center_lon)
       assert is_nil(persisted.floorplan_scale_mpp)
@@ -5476,16 +5817,16 @@ defmodule GtfsPlanner.GtfsTest do
       stop_level: stop_level
     } do
       {:ok, proposed_stop_level} =
-        GtfsPlanner.Gtfs.StopLevel.alignment_changeset(
+        StopLevel.alignment_changeset(
           stop_level,
           preview_alignment_attrs()
         )
         |> Ecto.Changeset.apply_action(:update)
 
-      {:ok, alignment} = GtfsPlanner.Gtfs.StopLevel.alignment_transform(proposed_stop_level)
+      {:ok, alignment} = StopLevel.alignment_transform(proposed_stop_level)
 
       {:ok, {lat, lon}} =
-        GtfsPlanner.Gtfs.FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 50, y: 40})
+        FloorplanTransform.svg_to_lat_lon(alignment, 1000, 800, %{x: 50, y: 40})
 
       stop_fixture(organization.id, gtfs_version.id, %{
         stop_id: "REVIEW_SAME_COORD",
@@ -5590,7 +5931,7 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert review1 == review2
 
-      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Repo.get!(StopLevel, stop_level.id).floorplan_center_lat == nil
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
     end

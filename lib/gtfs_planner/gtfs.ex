@@ -37,6 +37,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal
@@ -55,6 +56,7 @@ defmodule GtfsPlanner.Gtfs do
   require Logger
 
   @default_catalog_read_adapter CatalogReadAdapter.Repo
+  @default_reviewed_apply_transaction ReviewedApplyTransaction.Repo
 
   @type list_stations_opts :: [
           route_id: String.t() | nil,
@@ -1229,8 +1231,11 @@ defmodule GtfsPlanner.Gtfs do
 
   def save_and_apply_stop_level_alignment(_, _, _, _, _), do: {:error, :invalid_input}
 
-  defp extract_review_fingerprint(%{fingerprint: fp}) when is_binary(fp) and byte_size(fp) > 0,
-    do: {:ok, fp}
+  defp extract_review_fingerprint(%{fingerprint: fp}) when is_binary(fp) do
+    if Regex.match?(~r/\A[0-9a-f]{64}\z/, fp),
+      do: {:ok, fp},
+      else: {:error, :invalid_input}
+  end
 
   defp extract_review_fingerprint(_), do: {:error, :invalid_input}
 
@@ -1255,9 +1260,23 @@ defmodule GtfsPlanner.Gtfs do
       )
     end
 
-    case Repo.transaction(tx_fn, isolation: :serializable) do
+    case run_reviewed_apply_transaction(tx_fn) do
       {:ok, result} ->
         {:ok, result}
+
+      {:serialization_failure, _exception} when attempts_remaining > 1 ->
+        apply_reviewed_with_retries(
+          stop_level_id,
+          alignment_attrs,
+          image_w,
+          image_h,
+          fingerprint,
+          audit_ctx,
+          attempts_remaining - 1
+        )
+
+      {:serialization_failure, _exception} ->
+        {:error, :busy}
 
       {:error, reason} when attempts_remaining > 1 ->
         if serialization_failure?(reason) do
@@ -1277,6 +1296,25 @@ defmodule GtfsPlanner.Gtfs do
       {:error, reason} ->
         if serialization_failure?(reason), do: {:error, :busy}, else: {:error, reason}
     end
+  end
+
+  defp run_reviewed_apply_transaction(transaction) do
+    reviewed_apply_transaction().run(transaction)
+  rescue
+    exception in Postgrex.Error ->
+      if serialization_failure?(exception) do
+        {:serialization_failure, exception}
+      else
+        reraise exception, __STACKTRACE__
+      end
+  end
+
+  defp reviewed_apply_transaction do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      @default_reviewed_apply_transaction
+    )
   end
 
   defp publish_reviewed_result({:ok, result}) do
