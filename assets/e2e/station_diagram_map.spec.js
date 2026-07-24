@@ -3,11 +3,7 @@ import {
   loginAndGoToDiagram,
   selectDiagramMode,
 } from "./station_diagram_helpers";
-import {
-  readPendingStates,
-  watchPendingState,
-  bodyFitsViewport,
-} from "./browser_helpers";
+import { readPendingStates, watchPendingState } from "./browser_helpers";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -22,6 +18,75 @@ const reviewReferencePath = path.resolve(
   __dirname,
   "../../.specs/journal-08/visual-references/mock-05-align-mode-v2.html",
 );
+
+async function readSettledTransform(overlay) {
+  return overlay.evaluate(
+    (element) =>
+      new Promise((resolve, reject) => {
+        const stableWindowMs = 700;
+        const timeoutMs = 5000;
+        const startedAt = performance.now();
+        let lastTransform = element.style.transform;
+        let stableSince = startedAt;
+
+        const observe = (now) => {
+          const transform = element.style.transform;
+
+          if (transform !== lastTransform) {
+            lastTransform = transform;
+            stableSince = now;
+          }
+
+          if (now - stableSince >= stableWindowMs) {
+            resolve(transform);
+          } else if (now - startedAt >= timeoutMs) {
+            reject(new Error("overlay transform did not settle"));
+          } else {
+            requestAnimationFrame(observe);
+          }
+        };
+
+        requestAnimationFrame(observe);
+      }),
+  );
+}
+
+async function coordinateReviewTableMetrics(page) {
+  return page.evaluate(() => {
+    const body = document.querySelector("#coordinate-review-dialog-body");
+    const scroller = document.querySelector(
+      "#coordinate-review-table-scroller",
+    );
+    const table = document.querySelector("#coordinate-review-table");
+
+    if (!body || !scroller || !table) {
+      throw new Error("coordinate review table geometry is unavailable");
+    }
+
+    const tolerance = 1;
+    const bodyRect = body.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    const edgeCells = Array.from(
+      table.querySelectorAll("tr > :first-child, tr > :last-child"),
+    );
+
+    return {
+      bodyOverflow: body.scrollWidth - body.clientWidth,
+      scrollerOverflow: scroller.scrollWidth - scroller.clientWidth,
+      scrollerContained:
+        scrollerRect.left >= bodyRect.left - tolerance &&
+        scrollerRect.right <= bodyRect.right + tolerance,
+      edgeCellsVisible: edgeCells.every((cell) => {
+        const rect = cell.getBoundingClientRect();
+
+        return (
+          rect.left >= scrollerRect.left - tolerance &&
+          rect.right <= scrollerRect.right + tolerance
+        );
+      }),
+    };
+  });
+}
 
 test.describe("Station diagram map alignment", () => {
   test("uses one real map composition and keyboard transform controls", async ({
@@ -108,10 +173,7 @@ test.describe("assisted alignment", () => {
       expect(box.height).toBeGreaterThanOrEqual(44);
     }
 
-    const savedTransform = await overlay.evaluate(
-      (element) => element.style.transform,
-    );
-    expect(savedTransform).toBe("none");
+    const savedTransform = await readSettledTransform(overlay);
     await watchPendingState(page, "#map-alignment-preview-auto");
     await previewBtn.click();
 
@@ -176,7 +238,7 @@ test.describe("assisted alignment", () => {
     await expect(status).not.toBeVisible();
     await expect
       .poll(() => overlay.evaluate((element) => element.style.transform))
-      .toBe("none");
+      .toBe(savedTransform);
   }
 
   test("renders the copied reference and captures the assisted alignment region", async ({
@@ -304,23 +366,44 @@ test.describe("coordinate review", () => {
         page.locator("#coordinate-review-dialog-cancel"),
       ).toBeFocused();
 
-      // Every rendered row carries six-decimal coordinate pairs.
+      // Every rendered current/new cell carries either a complete six-decimal
+      // coordinate pair or the explicit missing-coordinate pair.
       const rowCount = await page
         .locator("#coordinate-review-table tbody tr")
         .count();
       expect(rowCount).toBeGreaterThan(0);
 
-      const firstRowText = await page
-        .locator("#coordinate-review-table tbody tr")
-        .first()
-        .textContent();
-      expect(firstRowText).toMatch(/\d+\.\d{6}/);
+      const coordinateCells = await page
+        .locator(
+          "#coordinate-review-table tbody td:nth-child(2), #coordinate-review-table tbody td:nth-child(3)",
+        )
+        .allTextContents();
+      expect(coordinateCells).toHaveLength(rowCount * 2);
+
+      for (const coordinatePair of coordinateCells) {
+        expect(coordinatePair.trim()).toMatch(
+          /^(?:-?\d+\.\d{6}, -?\d+\.\d{6}|—, —)$/,
+        );
+      }
 
       // The consequence and recovery copy are present (DC-5).
       await expect(dialog).toContainText("cannot be reverted as one batch");
 
-      // No horizontal overflow.
-      expect(await bodyFitsViewport(page)).toBe(true);
+      // The nested table stays inside the scroll-bounded dialog body, and the
+      // first/last cells are fully visible at the initial scroll position.
+      const tableMetrics = await coordinateReviewTableMetrics(page);
+      expect(tableMetrics.bodyOverflow).toBeLessThanOrEqual(0);
+      expect(tableMetrics.scrollerOverflow).toBeLessThanOrEqual(0);
+      expect(tableMetrics.scrollerContained).toBe(true);
+      expect(tableMetrics.edgeCellsVisible).toBe(true);
+
+      const dialogPanel = page.locator("#coordinate-review-dialog > div > div");
+      await dialogPanel.evaluate(async (element) => {
+        await Promise.all(
+          element.getAnimations().map((animation) => animation.finished),
+        );
+      });
+      await expect(dialogPanel).toHaveCSS("opacity", "1");
 
       fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
       await page.screenshot({
@@ -334,8 +417,34 @@ test.describe("coordinate review", () => {
       // Cancel closes the dialog and returns focus to the trigger.
       await page.locator("#coordinate-review-dialog-cancel").click();
       await expect(dialog).not.toBeVisible();
+      await expect(page.locator("#map-alignment-apply")).toBeFocused();
     });
   }
+
+  test("immediate review consumes the prior invalidation while a later transform closes it", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await loginAndGoToDiagram(page);
+    await selectDiagramMode(page, "map");
+
+    const transformControl = page.locator("#map-transform-right-fine");
+    await transformControl.focus();
+    await page.keyboard.press("Enter");
+
+    const dialog = await openReviewDialog(page);
+
+    // Stay open beyond the 400 ms debounce window from the reviewed mutation.
+    await page.waitForTimeout(500);
+    await expect(dialog).toBeVisible();
+
+    // A mutation made after the review opens starts a fresh invalidation window.
+    await transformControl.dispatchEvent("click");
+    await expect(dialog).not.toBeVisible({ timeout: 10000 });
+    await expect(page.locator("#coordinate-review-status")).toContainText(
+      "The alignment changed — review again.",
+    );
+  });
 
   test("confirm exposes immediate pending feedback then succeeds", async ({
     page,

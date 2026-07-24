@@ -2994,7 +2994,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     # UX-only invalidation. Closes an open review and announces a re-review
     # prompt. The Package 06 fingerprint recheck remains the sole stale-write
     # fence; this event is never tested as a guarantee (INV-4).
-    if current_map_generation?(socket, generation) do
+    if current_map_generation?(socket, generation) and
+         not is_nil(socket.assigns.coordinate_review) do
       {:noreply,
        socket
        |> assign(:coordinate_review, nil)

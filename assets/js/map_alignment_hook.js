@@ -688,7 +688,13 @@ const MapAlignmentHook = {
         // pushes the displayed transform; the server rebinds it to the review
         // fingerprint and rebuilds the persisted payload from the stored
         // review-time values, never from later client state (INV-3, DC-1).
-        this._pushAlignmentEventIfValid("open_coordinate_review");
+        //
+        // Consume an invalidation queued by the transform being reviewed. If it
+        // were allowed to fire after the open event, it would immediately close
+        // the fresh review. Any later transform mutation starts a new timer.
+        this._pushAlignmentEventIfValid("open_coordinate_review", () =>
+          this._clearTransformInvalidationTimer(),
+        );
       };
       applyBtn.addEventListener("click", this._onApply);
     }
@@ -714,10 +720,7 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
-    if (this._transformInvalidationTimer) {
-      clearTimeout(this._transformInvalidationTimer);
-      this._transformInvalidationTimer = null;
-    }
+    this._clearTransformInvalidationTimer();
     if (this._viewFrame) {
       cancelAnimationFrame(this._viewFrame);
       this._viewFrame = null;
@@ -1175,9 +1178,7 @@ const MapAlignmentHook = {
   },
 
   _scheduleTransformInvalidation() {
-    if (this._transformInvalidationTimer) {
-      clearTimeout(this._transformInvalidationTimer);
-    }
+    this._clearTransformInvalidationTimer();
 
     this._transformInvalidationTimer = setTimeout(() => {
       this._transformInvalidationTimer = null;
@@ -1188,6 +1189,13 @@ const MapAlignmentHook = {
         generation: this.generation,
       });
     }, TRANSFORM_INVALIDATION_DEBOUNCE_MS);
+  },
+
+  _clearTransformInvalidationTimer() {
+    if (!this._transformInvalidationTimer) return;
+
+    clearTimeout(this._transformInvalidationTimer);
+    this._transformInvalidationTimer = null;
   },
 
   _handleApplyPreviewTransform(payload) {
@@ -1361,7 +1369,7 @@ const MapAlignmentHook = {
     statusEl.textContent = previewStatusText(diagramCount, geoCount);
   },
 
-  _pushAlignmentEventIfValid(eventName) {
+  _pushAlignmentEventIfValid(eventName, beforePush) {
     const payload = this._computeAlignment();
     if (!payload) return;
     if (!this._isValidAlignmentPayload(payload)) {
@@ -1374,6 +1382,8 @@ const MapAlignmentHook = {
       );
       return;
     }
+
+    if (beforePush) beforePush();
 
     this.pushEvent(
       eventName,

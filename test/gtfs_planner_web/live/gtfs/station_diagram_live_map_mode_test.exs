@@ -2775,6 +2775,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert assigns(view).coordinate_review == nil
     end
 
+    test "alignment_transform_changed is silent when no review is open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      alignment_transform_changed(view)
+
+      stored = assigns(view)
+      assert stored.coordinate_review == nil
+      assert stored.review_transform == nil
+      assert stored.coordinate_review_error == nil
+      assert stored.coordinate_review_status == nil
+      refute has_element?(view, "#coordinate-review-status")
+    end
+
     test "a queued duplicate apply_coordinate_review in one LiveView no-ops after success (AC-10, idempotency, INV-2)",
          %{
            organization: organization,
@@ -3132,6 +3158,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert has_element?(view, "#coordinate-review-dialog")
       assert has_element?(view, "#coordinate-review-row-#{changed.id}")
+      assert has_element?(view, "#coordinate-review-table-scroller.overflow-x-auto")
+      assert has_element?(view, "#coordinate-review-table thead th:nth-child(2).text-right")
+      assert has_element?(view, "#coordinate-review-table thead th:nth-child(3).text-right")
+      assert has_element?(view, "#coordinate-review-table tbody td:nth-child(2).text-right")
+      assert has_element?(view, "#coordinate-review-table tbody td:nth-child(3).text-right")
 
       # Title and confirm button carry the change count from one projection.
       assert html =~ "Update coordinates for 1 stop?"

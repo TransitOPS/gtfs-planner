@@ -3248,6 +3248,41 @@ describe("map_alignment_hook saved/preview state machine", () => {
       restore();
     });
 
+    it("consumes the reviewed transform's pending invalidation and schedules later changes", () => {
+      const { hook, restore } = mountInvalidationHook();
+      const applyBtn = document.getElementById("map-alignment-apply");
+
+      hook._computeAlignment = vi.fn(() => ({
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      }));
+
+      hook._adjustTransform("left", false);
+      expect(hook._transformInvalidationTimer).toBeTruthy();
+
+      applyBtn.dispatchEvent(new Event("click", { bubbles: true }));
+
+      expect(hook._transformInvalidationTimer).toBeNull();
+      expect(hook.pushEvent).toHaveBeenCalledWith("open_coordinate_review", {
+        generation: "gen-invalidation",
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      });
+
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(0);
+
+      hook._adjustTransform("left", false);
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(1);
+
+      restore();
+    });
+
     it("clears the stored timer in destroyed() and pushes nothing afterwards", () => {
       const { hook, restore } = mountInvalidationHook();
 

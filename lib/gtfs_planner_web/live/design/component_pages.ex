@@ -1436,28 +1436,28 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
             <thead>
               <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
                 <th scope="col" class="py-2 font-medium">Stop</th>
-                <th scope="col" class="py-2 font-medium">Current coordinates</th>
-                <th scope="col" class="py-2 font-medium">New coordinates</th>
+                <th scope="col" class="py-2 text-right font-medium">Current coordinates</th>
+                <th scope="col" class="py-2 text-right font-medium">New coordinates</th>
                 <th scope="col" class="py-2 text-right font-medium">Change</th>
               </tr>
             </thead>
             <tbody class="font-mono">
               <tr class="border-b border-base-200">
                 <td class="py-3">32095_node_west</td>
-                <td class="py-3 tabular-nums">40.038601, −75.144411</td>
-                <td class="py-3 tabular-nums">40.038615, −75.144392</td>
+                <td class="py-3 text-right tabular-nums">40.038601, −75.144411</td>
+                <td class="py-3 text-right tabular-nums">40.038615, −75.144392</td>
                 <td class="py-3 text-right tabular-nums">2.3 m</td>
               </tr>
               <tr class="border-b border-base-200">
                 <td class="py-3">32095_node_fare</td>
-                <td class="py-3 tabular-nums">40.038724, −75.144102</td>
-                <td class="py-3 tabular-nums">40.038711, −75.144116</td>
+                <td class="py-3 text-right tabular-nums">40.038724, −75.144102</td>
+                <td class="py-3 text-right tabular-nums">40.038711, −75.144116</td>
                 <td class="py-3 text-right tabular-nums">1.9 m</td>
               </tr>
               <tr>
                 <td class="py-3">32095_platform_b</td>
-                <td class="py-3 tabular-nums">—</td>
-                <td class="py-3 tabular-nums">40.038681, −75.144044</td>
+                <td class="py-3 text-right tabular-nums">—</td>
+                <td class="py-3 text-right tabular-nums">40.038681, −75.144044</td>
                 <td class="py-3 text-right tabular-nums">New</td>
               </tr>
             </tbody>

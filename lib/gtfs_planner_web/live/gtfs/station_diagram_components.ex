@@ -1192,17 +1192,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           >
             {@coordinate_review_error}
           </div>
-          <div class="mt-4 -mx-1 overflow-x-auto">
+          <div id="coordinate-review-table-scroller" class="mt-4 overflow-x-auto">
             <table id="coordinate-review-table" class="w-full text-sm border-collapse">
               <caption class="sr-only">
                 Proposed coordinate changes for {review_stop_count(@review_change_count)}
               </caption>
               <thead>
                 <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
-                  <th scope="col" class="py-2 pr-3 font-medium">Stop</th>
-                  <th scope="col" class="py-2 px-3 font-medium">Current coordinates</th>
-                  <th scope="col" class="py-2 px-3 font-medium">New coordinates</th>
-                  <th scope="col" class="py-2 pl-3 text-right font-medium">Change</th>
+                  <th scope="col" class="py-2 pr-3 pl-1 font-medium">Stop</th>
+                  <th scope="col" class="py-2 px-3 text-right font-medium">
+                    Current coordinates
+                  </th>
+                  <th scope="col" class="py-2 px-3 text-right font-medium">
+                    New coordinates
+                  </th>
+                  <th scope="col" class="py-2 pl-3 pr-1 text-right font-medium">Change</th>
                 </tr>
               </thead>
               <tbody class="font-mono">
@@ -1211,16 +1215,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   id={"coordinate-review-row-#{change.stop_id}"}
                   class="border-b border-base-200"
                 >
-                  <td class="py-3 pr-3 text-xs">
+                  <td class="py-3 pr-3 pl-1 text-xs">
                     {change.stop_external_id || change.stop_id}
                   </td>
-                  <td class="py-3 px-3 text-xs tabular-nums">
+                  <td class="py-3 px-3 text-right text-xs tabular-nums">
                     {review_coordinate(change.current.lat)}, {review_coordinate(change.current.lon)}
                   </td>
-                  <td class="py-3 px-3 text-xs tabular-nums">
+                  <td class="py-3 px-3 text-right text-xs tabular-nums">
                     {review_coordinate(change.proposed.lat)}, {review_coordinate(change.proposed.lon)}
                   </td>
-                  <td class="py-3 pl-3 text-right text-xs tabular-nums">
+                  <td class="py-3 pl-3 pr-1 text-right text-xs tabular-nums">
                     {review_distance(change.distance_meters)}
                   </td>
                 </tr>

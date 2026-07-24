@@ -873,6 +873,14 @@ test.describe("review dialog", () => {
         page.locator("#ds-demo-review-confirm-cancel"),
       ).toBeFocused();
 
+      const panel = page.locator("#ds-demo-review-confirm > div > div");
+      await panel.evaluate(async (element) => {
+        await Promise.all(
+          element.getAnimations().map((animation) => animation.finished),
+        );
+      });
+      await expect(panel).toHaveCSS("opacity", "1");
+
       await page.screenshot({
         path: resolve(
           __dirname,

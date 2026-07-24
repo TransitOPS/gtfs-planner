@@ -1456,6 +1456,26 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       assert headers == ["Stop", "Current coordinates", "New coordinates", "Change"]
 
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence thead th:nth-child(2).text-right"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence thead th:nth-child(3).text-right"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence tbody td:nth-child(2).text-right"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence tbody td:nth-child(3).text-right"
+             )
+
       # Recovery note renders above the table; usage guidance is present.
       assert has_element?(view, "#ds-demo-review-confirm-recovery")
       assert has_element?(view, "#ds-review-confirm-guidance")
