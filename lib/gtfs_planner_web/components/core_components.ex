@@ -1772,8 +1772,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   # Closed panel-width map for confirm_dialog. The default "sm" path returns
   # the byte-identical panel string; "lg" widens to the review width.
-  defp confirm_dialog_panel_class("sm"), do: "w-full max-w-sm border border-base-300 bg-base-100 p-5"
-  defp confirm_dialog_panel_class("lg"), do: "w-full max-w-2xl border border-base-300 bg-base-100 p-5"
+  defp confirm_dialog_panel_class("sm"),
+    do: "w-full max-w-sm border border-base-300 bg-base-100 p-5"
+
+  defp confirm_dialog_panel_class("lg"),
+    do: "w-full max-w-2xl border border-base-300 bg-base-100 p-5"
 
   # Closed body map for confirm_dialog. Only the large review body is scroll-
   # bounded at 60vh so the evidence rows render complete without truncation.
