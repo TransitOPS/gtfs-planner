@@ -539,3 +539,72 @@ test.describe("Presentation and motion", () => {
     expect(confirmPanelDuration).toBe("0s");
   });
 });
+
+// ── Confirmation dialog defaults (small danger) ──
+// Package 08 step 1 widens <.confirm_dialog> with size and confirm_variant.
+// The new axes default to the original small danger panel; this block is the
+// real-browser regression for that default contract at the package's two
+// declared viewports. The wide primary composition lands in step 2.
+test.describe("confirmation dialog defaults", () => {
+  for (const viewport of [
+    { width: 1280, height: 900 },
+    { width: 1440, height: 1000 },
+  ]) {
+    test(`opens through OverlayDialog, focuses Cancel, locks when pending, closes, and has no horizontal overflow at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport);
+      await loginAndGoToOverlays(page);
+
+      await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+      const drawer = page.locator("#ds-demo-drawer-overlay");
+      await expect(drawer).toBeVisible();
+
+      await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+      const confirm = page.locator("#ds-demo-confirm");
+      await expect(confirm).toBeVisible();
+      await expect(confirm).toHaveJSProperty("open", true);
+
+      // Cancel receives initial focus (cancel-first confirmation policy).
+      await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
+
+      // The panel keeps the small danger presentation at both viewports.
+      const panel = page.locator("#ds-demo-confirm > div > div");
+      const panelClass = await panel.getAttribute("class");
+      expect(panelClass).toContain("max-w-sm");
+      expect(panelClass).not.toContain("max-w-2xl");
+
+      const confirmBtn = page.locator("#ds-demo-confirm-confirm");
+      const confirmBtnClass = await confirmBtn.getAttribute("class");
+      expect(confirmBtnClass).toContain("bg-error");
+      expect(confirmBtnClass).toContain("text-error-content");
+      expect(confirmBtnClass).not.toContain("bg-primary");
+
+      // Click confirm to enter pending; both buttons lock and the dialog stays open.
+      await confirmBtn.click();
+      await expect(confirmBtn).toBeDisabled();
+      await expect(page.locator("#ds-demo-confirm-cancel")).toBeDisabled();
+      await expect(page.locator("#ds-demo-confirm[data-pending='true']")).toBeVisible();
+      await expect(confirm).toBeVisible();
+
+      // Recover via the demo's error path so the dialog remains interactive.
+      await page.locator("button:has-text(\"Simulate error\")").click();
+      await expect(confirmBtn).toBeEnabled();
+      await expect(page.locator("#ds-demo-confirm-cancel")).toBeEnabled();
+
+      // Close via Escape (hook routes through on_cancel).
+      await page.keyboard.press("Escape");
+      await expect(confirm).not.toBeVisible();
+
+      // No horizontal overflow anywhere on the overlays page after dismissal.
+      const overflow = await page.evaluate(() => {
+        return {
+          bodyScroll: document.body.scrollWidth - document.body.clientWidth,
+          htmlScroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      });
+      expect(overflow.bodyScroll).toBeLessThanOrEqual(0);
+      expect(overflow.htmlScroll).toBeLessThanOrEqual(0);
+    });
+  }
+});

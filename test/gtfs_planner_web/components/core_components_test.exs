@@ -527,6 +527,156 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ "phx-mounted"
       assert html =~ "phx-hook=\"OverlayDialog\""
     end
+
+    test "default panel and confirm button keep small danger classes" do
+      # AC-1: omitting size and confirm_variant renders byte-compatible small
+      # danger output — max-w-sm panel, no scroll body, danger confirm colors.
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      panel = LazyHTML.query(doc, "dialog#test-confirm > div > div")
+      panel_class = LazyHTML.attribute(panel, "class") |> List.first()
+      assert panel_class =~ "max-w-sm"
+      refute panel_class =~ "max-w-2xl"
+
+      body = LazyHTML.query(doc, "#test-confirm-body")
+      body_class = LazyHTML.attribute(body, "class") |> List.first()
+      refute body_class =~ "max-h-[60vh]"
+      refute body_class =~ "overflow-y-auto"
+
+      confirm = LazyHTML.query(doc, "#test-confirm-confirm")
+      confirm_class = LazyHTML.attribute(confirm, "class") |> List.first()
+      assert confirm_class =~ "bg-error"
+      assert confirm_class =~ "text-error-content"
+      refute confirm_class =~ "bg-primary"
+      refute confirm_class =~ "text-primary-content"
+    end
+
+    test "size lg renders max-w-2xl panel with scroll-bounded body" do
+      # AC-2: size="lg" produces the wide panel and the 60vh scroll body that
+      # hosts the evidence table without truncation (DC-6).
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Update coordinates?"
+          confirm_label="Update stops"
+          pending_label="Updating…"
+          on_confirm="update"
+          on_cancel="cancel"
+          size="lg"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      panel = LazyHTML.query(doc, "dialog#test-confirm > div > div")
+      panel_class = LazyHTML.attribute(panel, "class") |> List.first()
+      assert panel_class =~ "max-w-2xl"
+      refute panel_class =~ "max-w-sm"
+
+      body = LazyHTML.query(doc, "#test-confirm-body")
+      body_class = LazyHTML.attribute(body, "class") |> List.first()
+      assert body_class =~ "max-h-[60vh]"
+      assert body_class =~ "overflow-y-auto"
+    end
+
+    test "confirm_variant primary renders primary confirm colors" do
+      # AC-2: confirm_variant="primary" swaps the confirm button onto the
+      # primary token without widening the dialog.
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Update coordinates?"
+          confirm_label="Update stops"
+          pending_label="Updating…"
+          on_confirm="update"
+          on_cancel="cancel"
+          confirm_variant="primary"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      confirm =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#test-confirm-confirm")
+
+      confirm_class = LazyHTML.attribute(confirm, "class") |> List.first()
+      assert confirm_class =~ "bg-primary"
+      assert confirm_class =~ "text-primary-content"
+      refute confirm_class =~ "bg-error"
+      refute confirm_class =~ "text-error-content"
+    end
+
+    test "lg primary dialog retains alertdialog dismiss and pending semantics" do
+      # AC-2 + INV-1: the wide primary presentation is the same alertdialog;
+      # cancel-first dismissal and pending lockout survive the new axes.
+      assigns = %{open: true, pending: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Update coordinates?"
+          confirm_label="Update stops"
+          pending_label="Updating…"
+          on_confirm="update"
+          on_cancel="cancel"
+          pending={@pending}
+          size="lg"
+          confirm_variant="primary"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      dialog = LazyHTML.query(doc, "dialog#test-confirm")
+      assert LazyHTML.attribute(dialog, "role") == ["alertdialog"]
+      assert LazyHTML.attribute(dialog, "aria-modal") == ["true"]
+      assert LazyHTML.attribute(dialog, "data-pending") == ["true"]
+      assert LazyHTML.attribute(dialog, "inert") == []
+      assert LazyHTML.attribute(dialog, "aria-hidden") == []
+
+      confirm = LazyHTML.query(doc, "#test-confirm-confirm")
+      assert LazyHTML.attribute(confirm, "disabled") == [""]
+      assert LazyHTML.attribute(confirm, "phx-disable-with") == ["Updating…"]
+      assert html =~ "Updating…"
+      refute html =~ "Update stops"
+
+      cancel = LazyHTML.query(doc, "#test-confirm-cancel")
+      assert LazyHTML.attribute(cancel, "disabled") == [""]
+      assert LazyHTML.attribute(cancel, "data-dialog-dismiss") == [""]
+    end
   end
 
   describe "pagination/1" do
