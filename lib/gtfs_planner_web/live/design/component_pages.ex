@@ -1436,8 +1436,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
             <thead>
               <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
                 <th scope="col" class="py-2 font-medium">Stop</th>
-                <th scope="col" class="py-2 font-medium">Current</th>
-                <th scope="col" class="py-2 font-medium">New</th>
+                <th scope="col" class="py-2 font-medium">Current coordinates</th>
+                <th scope="col" class="py-2 font-medium">New coordinates</th>
                 <th scope="col" class="py-2 text-right font-medium">Change</th>
               </tr>
             </thead>

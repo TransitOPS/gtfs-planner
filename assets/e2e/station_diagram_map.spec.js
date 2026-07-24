@@ -67,10 +67,10 @@ test.describe("Station diagram map alignment", () => {
 });
 
 test.describe("assisted alignment", () => {
-  const artifactsDir = path.resolve(__dirname, "../../.artifacts/journal-07");
+  const artifactsDir = path.resolve(__dirname, "../../.artifacts/journal-08");
   const referencePath = path.resolve(
     __dirname,
-    "../../.specs/journal-07/visual-references/mock-05-align-mode-v2.html",
+    "../../.specs/journal-08/visual-references/mock-05-align-mode-v2.html",
   );
 
   async function exerciseProductionPreview(page, viewport, artifactName) {

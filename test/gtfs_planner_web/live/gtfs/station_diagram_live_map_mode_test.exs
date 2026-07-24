@@ -2129,7 +2129,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
                floorplan_center_lat: 40.7128,
                floorplan_center_lon: -74.006,
                floorplan_scale_mpp: 0.35,
-               floorplan_rotation_deg: 0.0
+               floorplan_rotation_deg: +0.0
              } = stored.review_transform
 
       assert %{
@@ -2334,128 +2334,146 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
             name: "Review Adapter Org"
           })
 
-        gtfs_version = gtfs_version_fixture(organization.id)
+        try do
+          gtfs_version = gtfs_version_fixture(organization.id)
 
-        user =
-          user_fixture(%{
-            email: "review-adapter-#{Ecto.UUID.generate()}@example.com"
-          })
+          user =
+            user_fixture(%{
+              email: "review-adapter-#{Ecto.UUID.generate()}@example.com"
+            })
 
-        Accounts.create_user_org_membership(%{
-          user_id: user.id,
-          organization_id: organization.id,
-          roles: ["pathways_studio_editor"]
-        })
-
-        station =
-          stop_fixture(organization.id, gtfs_version.id, %{
-            stop_id: "REVIEW_ADAPTER_STATION",
-            stop_name: "Review Adapter Station",
-            location_type: 1
-          })
-
-        level =
-          level_fixture(organization.id, gtfs_version.id, %{
-            level_id: "review_adapter_level",
-            level_name: "Review Adapter Level",
-            level_index: 0.0
-          })
-
-        {:ok, stop_level} =
-          Gtfs.create_stop_level(%{
+          Accounts.create_user_org_membership(%{
+            user_id: user.id,
             organization_id: organization.id,
-            gtfs_version_id: gtfs_version.id,
-            stop_id: station.id,
-            level_id: level.id
+            roles: ["pathways_studio_editor"]
           })
 
-        {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "review-adapter.png")
+          station =
+            stop_fixture(organization.id, gtfs_version.id, %{
+              stop_id: "REVIEW_ADAPTER_STATION",
+              stop_name: "Review Adapter Station",
+              location_type: 1
+            })
 
-        child_a =
-          stop_fixture(organization.id, gtfs_version.id, %{
-            stop_id: "ADAPTER_CHILD_A",
-            stop_name: "Adapter Child A",
-            location_type: 0,
-            parent_station: station.stop_id,
-            level_id: level.level_id,
-            diagram_coordinate: %{"x" => 50.0, "y" => 40.0},
-            stop_lat: Decimal.new("1.0"),
-            stop_lon: Decimal.new("2.0")
+          level =
+            level_fixture(organization.id, gtfs_version.id, %{
+              level_id: "review_adapter_level",
+              level_name: "Review Adapter Level",
+              level_index: 0.0
+            })
+
+          {:ok, stop_level} =
+            Gtfs.create_stop_level(%{
+              organization_id: organization.id,
+              gtfs_version_id: gtfs_version.id,
+              stop_id: station.id,
+              level_id: level.id
+            })
+
+          {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "review-adapter.png")
+
+          child_a =
+            stop_fixture(organization.id, gtfs_version.id, %{
+              stop_id: "ADAPTER_CHILD_A",
+              stop_name: "Adapter Child A",
+              location_type: 0,
+              parent_station: station.stop_id,
+              level_id: level.level_id,
+              diagram_coordinate: %{"x" => 50.0, "y" => 40.0},
+              stop_lat: Decimal.new("1.0"),
+              stop_lon: Decimal.new("2.0")
+            })
+
+          child_b =
+            stop_fixture(organization.id, gtfs_version.id, %{
+              stop_id: "ADAPTER_CHILD_B",
+              stop_name: "Adapter Child B",
+              location_type: 0,
+              parent_station: station.stop_id,
+              level_id: level.level_id,
+              diagram_coordinate: %{"x" => 70.0, "y" => 30.0},
+              stop_lat: Decimal.new("3.0"),
+              stop_lon: Decimal.new("4.0")
+            })
+
+          conn =
+            build_conn()
+            |> Plug.Conn.put_private(:phoenix_endpoint, GtfsPlannerWeb.Endpoint)
+            |> log_in_user(user, organization: organization)
+
+          {:ok, view, _html} =
+            live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram",
+              on_error: :warn
+            )
+
+          # The LiveView process spawns unlinked to the test process. Allow it to
+          # share the test's unboxed connection so the SERIALIZABLE wrapper can run.
+          Sandbox.allow(Repo, self(), view.pid)
+
+          render_hook(view, "switch_mode", %{"mode" => "map"})
+          set_image_natural_size(view, 1024, 768)
+          generation = map_generation(view)
+
+          assert_push_event(view, "set_active_child_stops", %{stops: _})
+
+          open_coordinate_review(view)
+
+          html = apply_coordinate_review(view)
+
+          # The success flash carries the count read from the nested
+          # apply_result.updated_stop_count (NOT touched_stop_count).
+          assert html =~ "Updated coordinates for 2 stops"
+
+          stored = assigns(view)
+          assert stored.coordinate_review == nil
+          assert stored.review_transform == nil
+          assert stored.active_stop_level.id == stop_level.id
+          assert_in_delta stored.active_stop_level.floorplan_center_lat, 40.7128, 1.0e-6
+
+          # Restore-saved must use the transform committed by the reviewed apply.
+          assert_push_event(view, "alignment_saved", %{
+            generation: ^generation,
+            center_lat: center_lat,
+            center_lon: center_lon,
+            scale_mpp: scale_mpp,
+            rotation_deg: rotation_deg
           })
 
-        child_b =
-          stop_fixture(organization.id, gtfs_version.id, %{
-            stop_id: "ADAPTER_CHILD_B",
-            stop_name: "Adapter Child B",
-            location_type: 0,
-            parent_station: station.stop_id,
-            level_id: level.level_id,
-            diagram_coordinate: %{"x" => 70.0, "y" => 30.0},
-            stop_lat: Decimal.new("3.0"),
-            stop_lon: Decimal.new("4.0")
-          })
+          assert_in_delta center_lat, 40.7128, 1.0e-6
+          assert_in_delta center_lon, -74.006, 1.0e-6
+          assert_in_delta scale_mpp, 0.35, 1.0e-6
+          assert_in_delta rotation_deg, 0.0, 1.0e-6
 
-        conn =
-          build_conn()
-          |> Plug.Conn.put_private(:phoenix_endpoint, GtfsPlannerWeb.Endpoint)
-          |> log_in_user(user, organization: organization)
+          # Active markers are re-pushed so pins reflect the persisted geography.
+          assert_push_event(view, "set_active_child_stops", %{stops: [_ | _]})
 
-        {:ok, view, _html} =
-          live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+          reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+          assert_in_delta reloaded_level.floorplan_center_lat, 40.7128, 1.0e-6
+          assert_in_delta reloaded_level.floorplan_center_lon, -74.006, 1.0e-6
 
-        # The LiveView process spawns unlinked to the test process. Allow it to
-        # share the test's unboxed connection so the SERIALIZABLE wrapper can run.
-        Sandbox.allow(Repo, self(), view.pid)
+          for child <- [child_a, child_b] do
+            reloaded_child = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
+            assert_in_delta Decimal.to_float(reloaded_child.stop_lat), 40.7128, 1.0e-3
+            assert_in_delta Decimal.to_float(reloaded_child.stop_lon), -74.006, 1.0e-3
+          end
 
-        render_hook(view, "switch_mode", %{"mode" => "map"})
-        set_image_natural_size(view, 1024, 768)
+          # Package 06 owns the per-changed-stop ChangeLog writes inside the apply
+          # transaction. The LiveView passes the mounted AuditContext unchanged;
+          # every log is attributed from the session, not forged by the LiveView.
+          for child <- [child_a, child_b] do
+            logs =
+              Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", child.id)
 
-        assert_push_event(view, "set_active_child_stops", %{stops: _})
-
-        open_coordinate_review(view)
-
-        html = apply_coordinate_review(view)
-
-        # The success flash carries the count read from the nested
-        # apply_result.updated_stop_count (NOT touched_stop_count).
-        assert html =~ "Updated coordinates for 2 stops"
-
-        stored = assigns(view)
-        assert stored.coordinate_review == nil
-        assert stored.review_transform == nil
-        assert stored.active_stop_level.id == stop_level.id
-        assert_in_delta stored.active_stop_level.floorplan_center_lat, 40.7128, 1.0e-6
-
-        # Active markers are re-pushed so pins reflect the persisted geography.
-        assert_push_event(view, "set_active_child_stops", %{stops: [_ | _]})
-
-        reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
-        assert_in_delta reloaded_level.floorplan_center_lat, 40.7128, 1.0e-6
-        assert_in_delta reloaded_level.floorplan_center_lon, -74.006, 1.0e-6
-
-        for child <- [child_a, child_b] do
-          reloaded_child = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
-          assert_in_delta Decimal.to_float(reloaded_child.stop_lat), 40.7128, 1.0e-3
-          assert_in_delta Decimal.to_float(reloaded_child.stop_lon), -74.006, 1.0e-3
+            assert length(logs) == 1
+            log = hd(logs)
+            assert log.action == "updated"
+            assert log.actor_id == user.id
+            assert log.actor_email == user.email
+            assert log.station_stop_id == station.stop_id
+          end
+        after
+          delete_review_adapter_fixtures!(organization.id)
         end
-
-        # Package 06 owns the per-changed-stop ChangeLog writes inside the apply
-        # transaction. The LiveView passes the mounted AuditContext unchanged;
-        # every log is attributed from the session, not forged by the LiveView.
-        for child <- [child_a, child_b] do
-          logs =
-            Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", child.id)
-
-          assert length(logs) == 1
-          log = hd(logs)
-          assert log.action == "updated"
-          assert log.actor_id == user.id
-          assert log.actor_email == user.email
-          assert log.station_stop_id == station.stop_id
-        end
-
-        # Cleanup so the unboxed writes do not leak across tests.
-        delete_review_adapter_fixtures!(organization.id)
       end)
     end
 
@@ -2465,7 +2483,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
            gtfs_version: gtfs_version,
            station: station,
            level: level,
-           stop_level: stop_level,
            user: user,
            conn: conn
          } do
@@ -3117,16 +3134,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#coordinate-review-row-#{changed.id}")
 
       # Title and confirm button carry the change count from one projection.
-      assert html =~ "Update coordinates for 1 stops?"
-      assert has_element?(view, "#coordinate-review-dialog-confirm", "Update 1 stops")
+      assert html =~ "Update coordinates for 1 stop?"
+      assert has_element?(view, "#coordinate-review-dialog-confirm", "Update 1 stop")
 
       # Count identities: placed = changed + unchanged; total = placed + unplaced.
       review = :sys.get_state(view.pid).socket.assigns.coordinate_review
       changed_count = length(review.changes)
       assert changed_count == 1
 
-      assert changed_count + review.unchanged_count + review.unplaced_count ==
-               changed_count + review.unchanged_count + review.unplaced_count
+      stored = assigns(view)
+
+      assert stored.child_stops_with_floorplan ==
+               changed_count + review.unchanged_count
+
+      assert stored.child_stops_total ==
+               stored.child_stops_with_floorplan + review.unplaced_count
+
+      assert has_element?(
+               view,
+               "[data-role='child-stop-coverage']",
+               "#{stored.child_stops_with_floorplan} of #{stored.child_stops_total} stops have floorplan placements · #{review.unplaced_count} without placement stay unchanged"
+             )
 
       # The consequence names the changed group; recovery copy is truthful (DC-5).
       assert html =~ "cannot be reverted as one batch"
@@ -3188,7 +3216,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       # With one changed stop and zero unchanged on the active level, the
       # "already match" clause must not appear.
-      assert html =~ "1 will receive new coordinates"
+      assert html =~ "1 stop will receive new coordinates"
       refute html =~ "0 already match"
     end
 
@@ -3455,10 +3483,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   # Cleanup helper for the production-adapter case. The ReviewedApplyTransaction.Repo
   # adapter commits through SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, which
   # cannot run inside the sandbox's outer transaction; the case therefore wraps
-  # its body in Sandbox.unboxed_run/2. Unboxed writes persist past test exit, so
-  # the case must delete what it created in dependency order. The user is
-  # created outside the unboxed block (in the describe setup) and is rolled back
-  # by the sandbox, so we only delete the unboxed-owned rows here.
+  # its body in Sandbox.unboxed_run/2. The case creates its own organization and
+  # user inside that block, so cleanup deletes every unboxed-owned row in
+  # dependency order, including user tokens and users.
   defp delete_review_adapter_fixtures!(organization_id) do
     import Ecto.Query
 

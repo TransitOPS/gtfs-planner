@@ -1162,8 +1162,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@coordinate_review}
           id="coordinate-review-dialog"
           open={@coordinate_review != nil}
-          title={"Update coordinates for #{@review_change_count} stops?"}
-          confirm_label={"Update #{@review_change_count} stops"}
+          title={"Update coordinates for #{review_stop_count(@review_change_count)}?"}
+          confirm_label={"Update #{review_stop_count(@review_change_count)}"}
           pending_label="Updating…"
           on_confirm="apply_coordinate_review"
           on_cancel="cancel_coordinate_review"
@@ -1195,7 +1195,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div class="mt-4 -mx-1 overflow-x-auto">
             <table id="coordinate-review-table" class="w-full text-sm border-collapse">
               <caption class="sr-only">
-                Proposed coordinate changes for {@review_change_count} stops
+                Proposed coordinate changes for {review_stop_count(@review_change_count)}
               </caption>
               <thead>
                 <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
@@ -1313,10 +1313,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # the consequence never lists "0 already match" (DC-4).
   defp review_consequence_clauses(changed, unchanged, unplaced) do
     []
-    |> append_if(changed > 0, "#{changed} will receive new coordinates.")
-    |> append_if(unchanged > 0, "#{unchanged} already match.")
-    |> append_if(unplaced > 0, "#{unplaced} without placement stay unchanged.")
+    |> append_if(changed > 0, review_changed_clause(changed))
+    |> append_if(unchanged > 0, review_unchanged_clause(unchanged))
+    |> append_if(unplaced > 0, review_unplaced_clause(unplaced))
   end
+
+  defp review_stop_count(1), do: "1 stop"
+  defp review_stop_count(count), do: "#{count} stops"
+
+  defp review_changed_clause(count),
+    do: "#{review_stop_count(count)} will receive new coordinates."
+
+  defp review_unchanged_clause(1), do: "1 stop already matches."
+  defp review_unchanged_clause(count), do: "#{count} stops already match."
+
+  defp review_unplaced_clause(1), do: "1 stop without placement stays unchanged."
+  defp review_unplaced_clause(count), do: "#{count} stops without placement stay unchanged."
 
   defp append_if(list, true, clause), do: list ++ [clause]
   defp append_if(list, false, _clause), do: list

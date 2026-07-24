@@ -2868,9 +2868,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
           {:ok, review} ->
             stamped_review =
-              review
-              |> Map.put(:generation, generation)
-              |> Map.put(:stop_level_id, stop_level.id)
+              Map.merge(review, %{generation: generation, stop_level_id: stop_level.id})
 
             {:noreply,
              socket
@@ -2952,6 +2950,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> load_station_stop_levels_cache()
            |> refresh_lists()
            |> push_child_stop_markers()
+           |> push_event("alignment_saved", %{
+             generation: socket.assigns.map_generation,
+             center_lat: updated.floorplan_center_lat,
+             center_lon: updated.floorplan_center_lon,
+             scale_mpp: updated.floorplan_scale_mpp,
+             rotation_deg: updated.floorplan_rotation_deg
+           })
            |> put_flash(:info, "Updated coordinates for #{count} stops")}
 
         {:error, reason} when reason in [:stale_review, :busy] ->

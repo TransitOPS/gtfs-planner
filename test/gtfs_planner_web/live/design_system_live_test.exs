@@ -1454,7 +1454,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         |> LazyHTML.query("#ds-demo-review-confirm-evidence thead th")
         |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
 
-      assert headers == ["Stop", "Current", "New", "Change"]
+      assert headers == ["Stop", "Current coordinates", "New coordinates", "Change"]
 
       # Recovery note renders above the table; usage guidance is present.
       assert has_element?(view, "#ds-demo-review-confirm-recovery")
