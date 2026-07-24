@@ -753,6 +753,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :other_levels_floorplan_count, :integer, default: 0
   attr :map_generation, :string, required: true
   attr :map_state, :atom, default: :initializing
+  attr :alignment_preview, :map, default: nil
   attr :coordinate_preview, :map, default: nil
   attr :coordinate_confirmation, :boolean, default: false
   attr :coordinate_apply_form, :any, required: true
@@ -798,83 +799,103 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           assigns.image_natural_height
         )
       )
+      |> assign(
+        :auto_alignment_disabled_reason,
+        auto_alignment_disabled_reason(
+          assigns.map_state,
+          assigns.image_natural_width,
+          assigns.image_natural_height
+        )
+      )
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
     <div>
-      <div
-        id={@canvas_id}
-        class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
-        phx-hook="MapAlignment"
-        phx-update="ignore"
-        data-active-level-id={@active_level && @active_level.level_id}
-        data-floorplan-url={@floorplan_url}
-        data-initial-lat={@initial_lat}
-        data-initial-lon={@initial_lon}
-        data-initial-zoom="19"
-        data-align-center-lat={if @has_alignment?, do: @align_center_lat}
-        data-align-center-lon={if @has_alignment?, do: @align_center_lon}
-        data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
-        data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
-        data-image-natural-width={@image_natural_width}
-        data-image-natural-height={@image_natural_height}
-        data-map-generation={@map_generation}
-      >
-        <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
+      <div class="relative flex min-h-0 flex-1">
         <div
-          id="map-other-overlays"
-          class="absolute inset-0"
-          style="z-index: 1; pointer-events: none;"
+          id={@canvas_id}
+          class="map-canvas relative min-h-0 flex-1 bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
+          phx-hook="MapAlignment"
+          phx-update="ignore"
+          data-active-level-id={@active_level && @active_level.level_id}
+          data-floorplan-url={@floorplan_url}
+          data-initial-lat={@initial_lat}
+          data-initial-lon={@initial_lon}
+          data-initial-zoom="19"
+          data-align-center-lat={if @has_alignment?, do: @align_center_lat}
+          data-align-center-lon={if @has_alignment?, do: @align_center_lon}
+          data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
+          data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
+          data-image-natural-width={@image_natural_width}
+          data-image-natural-height={@image_natural_height}
+          data-map-generation={@map_generation}
         >
+          <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
+          <div
+            id="map-other-overlays"
+            class="absolute inset-0"
+            style="z-index: 1; pointer-events: none;"
+          >
+          </div>
+          <div
+            id="map-alignment-overlay"
+            data-overlay-role="active"
+            data-editable-overlay="true"
+            class="absolute inset-0 cursor-move"
+            style="z-index: 2; transform-origin: center;"
+          >
+            <img
+              src={@floorplan_url}
+              alt="Level floorplan"
+              class="absolute inset-0 w-full h-full object-contain pointer-events-none"
+            />
+          </div>
+          <button
+            id="map-alignment-rotate-handle"
+            data-edit-target-overlay="active"
+            type="button"
+            title="Drag to rotate the floorplan"
+            aria-label="Rotate floorplan"
+            class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-base-content/70 hover:bg-base-200"
+            style="z-index: 3;"
+          >
+            <.icon name="hero-arrow-path" class="w-4 h-4" />
+          </button>
+          <div
+            id="map-other-pins"
+            class="absolute inset-0 pointer-events-none"
+            style="z-index: 4;"
+          >
+          </div>
+          <div
+            id="map-alignment-pins-active"
+            data-overlay-role="active"
+            class="absolute inset-0 pointer-events-none"
+            style="z-index: 5;"
+          >
+          </div>
+          <button
+            id="map-alignment-scale-handle"
+            data-edit-target-overlay="active"
+            type="button"
+            title="Drag to resize the floorplan"
+            aria-label="Resize floorplan"
+            class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-base-content/70 hover:bg-base-200"
+            style="z-index: 3;"
+          >
+            <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
+          </button>
         </div>
         <div
-          id="map-alignment-overlay"
-          data-overlay-role="active"
-          data-editable-overlay="true"
-          class="absolute inset-0 cursor-move"
-          style="z-index: 2; transform-origin: center;"
+          :if={@alignment_preview && @alignment_preview.status == :ready}
+          id="auto-alignment-status"
+          role="status"
+          aria-live="polite"
+          aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
+          class="absolute z-10 top-4 left-4 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-900 shadow-sm"
         >
-          <img
-            src={@floorplan_url}
-            alt="Level floorplan"
-            class="absolute inset-0 w-full h-full object-contain pointer-events-none"
-          />
+          <strong class="font-medium">Unsaved auto-alignment preview</strong>
         </div>
-        <button
-          id="map-alignment-rotate-handle"
-          data-edit-target-overlay="active"
-          type="button"
-          title="Drag to rotate the floorplan"
-          aria-label="Rotate floorplan"
-          class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-base-content/70 hover:bg-base-200"
-          style="z-index: 3;"
-        >
-          <.icon name="hero-arrow-path" class="w-4 h-4" />
-        </button>
-        <div
-          id="map-other-pins"
-          class="absolute inset-0 pointer-events-none"
-          style="z-index: 4;"
-        >
-        </div>
-        <div
-          id="map-alignment-pins-active"
-          data-overlay-role="active"
-          class="absolute inset-0 pointer-events-none"
-          style="z-index: 5;"
-        >
-        </div>
-        <button
-          id="map-alignment-scale-handle"
-          data-edit-target-overlay="active"
-          type="button"
-          title="Drag to resize the floorplan"
-          aria-label="Resize floorplan"
-          class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-base-content/70 hover:bg-base-200"
-          style="z-index: 3;"
-        >
-          <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
-        </button>
       </div>
       <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
         <div class="flex items-start justify-between gap-4">
@@ -887,7 +908,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </span>
           </div>
         </div>
-        <div class="mt-3 flex flex-wrap items-end gap-x-8 gap-y-4">
+        <div class="mt-3 flex flex-wrap items-start gap-x-8 gap-y-4">
           <fieldset class="flex items-end gap-2">
             <legend class="sr-only">Map center</legend>
             <div class="flex flex-col gap-1">
@@ -976,23 +997,97 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </div>
           <% end %>
 
-          <div
+          <fieldset
             id="map-alignment-transform-controls"
-            class="flex flex-wrap gap-1"
-            aria-label="Floorplan transform controls"
+            class="flex flex-col gap-1"
           >
+            <legend class="text-xs font-medium text-base-content/80">Floorplan transform</legend>
+            <div class="flex flex-wrap items-center gap-1">
+              <button
+                :for={{label, action, coarse} <- transform_controls()}
+                id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
+                type="button"
+                class="btn btn-sm min-h-11 min-w-11"
+                data-map-transform-action={action}
+                data-map-transform-coarse={to_string(coarse)}
+                title={label}
+              >
+                {label}
+              </button>
+              <button
+                id="map-alignment-restore-saved"
+                type="button"
+                class="btn btn-sm btn-ghost min-h-11 text-primary"
+                phx-click="restore_saved_alignment"
+              >
+                Restore saved alignment
+              </button>
+            </div>
+          </fieldset>
+
+          <fieldset
+            id="map-alignment-assisted"
+            class="border border-base-300 rounded-md px-4 pt-1 pb-3"
+          >
+            <legend class="text-xs font-medium text-base-content/60 px-1">Assisted alignment</legend>
+            <p class="text-xs text-base-content/70">
+              Uses {@anchor_count} stops that already have floorplan and map positions.
+            </p>
             <button
-              :for={{label, action, coarse} <- transform_controls()}
-              id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
+              id="map-alignment-preview-auto"
               type="button"
-              class="btn btn-sm min-h-11 min-w-11"
-              data-map-transform-action={action}
-              data-map-transform-coarse={to_string(coarse)}
-              title={label}
+              class="btn btn-sm btn-outline btn-primary min-h-11 w-full mt-2 phx-click-loading:opacity-60"
+              phx-click="preview_alignment"
+              phx-disable-with="Previewing…"
+              disabled={
+                @map_state == :fatal or
+                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+              }
+              aria-describedby={
+                if @auto_alignment_disabled_reason,
+                  do: "map-auto-alignment-disabled-reason"
+              }
             >
-              {label}
+              Preview auto-alignment
             </button>
-          </div>
+            <p
+              :if={@auto_alignment_disabled_reason}
+              id="map-auto-alignment-disabled-reason"
+              class="mt-2 text-xs text-base-content/70"
+            >
+              {@auto_alignment_disabled_reason}
+            </p>
+            <%= if @alignment_preview && @alignment_preview.status == :ready do %>
+              <div id="auto-alignment-fit-value" class="mt-2 text-xs text-base-content/70">
+                Estimated fit error ·
+                <strong class="text-base-content">
+                  {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
+                </strong>
+              </div>
+              <div class="mt-1 text-xs text-base-content/60" id="auto-alignment-fit-description">
+                Computed from {@alignment_preview.anchor_count} anchor stops. RMSE measures the typical anchor mismatch; lower is better.
+              </div>
+            <% end %>
+            <%= if @alignment_preview && @alignment_preview.status == :error do %>
+              <div
+                id="auto-alignment-error"
+                role="alert"
+                class="mt-2 text-xs text-error"
+              >
+                {@alignment_preview.message}
+              </div>
+              <%= if @alignment_preview.reason == :insufficient_anchors do %>
+                <p class="mt-1 text-xs text-base-content/70">
+                  Place more stops with both a floorplan position and map coordinates, then try again.
+                </p>
+              <% end %>
+              <%= if @alignment_preview.reason == :high_residual do %>
+                <p class="mt-1 text-xs text-base-content/70">
+                  Check the anchor stops' positions, then try again.
+                </p>
+              <% end %>
+            <% end %>
+          </fieldset>
 
           <div id="map-alignment-actions" class="ml-auto flex flex-wrap items-center gap-3">
             <span
@@ -1000,7 +1095,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               class="text-xs text-base-content/70"
               aria-live="polite"
             >
-              Preview not ready
+              Coordinate-change preview not ready
             </span>
             <button
               id="map-alignment-save"
@@ -1154,6 +1249,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       else: nil
   end
 
+  defp auto_alignment_disabled_reason(:fatal, _width, _height),
+    do: "Map service is unavailable. Retry the map before previewing auto-alignment."
+
+  defp auto_alignment_disabled_reason(_map_state, width, height) do
+    if invalid_floorplan_image_dims?(width, height),
+      do: "Floorplan image is not ready. Preview auto-alignment after it loads.",
+      else: nil
+  end
+
   defp map_state_message(:initializing), do: "Loading map…"
 
   defp map_state_message(:imagery_unavailable),
@@ -1178,8 +1282,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       {"↺", "rotate-left", false},
       {"↻", "rotate-right", true},
       {"−", "scale-down", false},
-      {"+", "scale-up", true},
-      {"Reset", "reset", false}
+      {"+", "scale-up", true}
     ]
   end
 

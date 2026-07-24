@@ -24,6 +24,7 @@ alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
@@ -185,6 +186,8 @@ case Accounts.register_first_admin(%{
         stop_id: "BROWSER_STATION",
         stop_name: "Browser Test Station",
         location_type: 1,
+        stop_lat: Decimal.new("40.0390"),
+        stop_lon: Decimal.new("-75.1440"),
         organization_id: org.id,
         gtfs_version_id: diagram_version.id
       })
@@ -212,9 +215,15 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: stop_level #{stop_level.id} with diagram")
 
     # The route deliberately serves only files that exist within the versioned,
-    # publication-scoped namespace. Store a tiny valid raster at the exact
-    # filename referenced above so browser tests exercise the real canvas,
-    # upload replacement, and map image loading paths.
+    # publication-scoped namespace. Store a recognizable 100 × 80 raster at
+    # the exact filename referenced above so screenshots exercise visible
+    # floorplan placement and transformation, not only the canvas plumbing.
+    browser_floorplan_png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAGQAAABQCAMAAADY1yDdAAAATlBMVEX4+vzU2d6gqLKJkp5/iZZaZXbg5OhSXm8zQVVbaX19i59TYXVwhJ/G1enb6v6/2/7I1+uMlJ+nyPtTh/ElY+tEUWNOXnU1Q1dmkvHd5/z/zQfsAAAB10lEQVRYw+2Z2bKCMAyGlUULIoRFxfd/0YMVSsBiSqEZPMN/wzIpHyVpSpvDYZeFjp5PKQiHCsgW3hEjTmfhRudTz2guo5jSRSRY4kK2iJrnKkrTj2tKKhZJ1isRMd3k2vSl84cRwwbyorR+8URkYG8FSSPhvSG+tAcDnwwgpE9AvpmPITEdK0MIqVgHkbGdN1KB3p6/74UjSEjY6yH59/HaQGAA+W7+IxAA5xAAe4hPQrLln2uHbA9CRxcXpCirsjCB5PaQonqpsIfQPoGslJDSpeMhq95yCgGOngCDT+ZE14+MeIZUv2Q+cZpWAvkLdRHhd93EHf0K38WNsG+fGnSv6FKh+g7uhCAZihsAfByfY+Hb2ALdn4Jk0B27gadHjB+sPddDkFQKMdHEe5AQlQwXiISotO4SwtKTWT6xhai0PkNj/9OQqfExSfi0T5hHvEaPlXMXSxbe6vS7Q7a0dNgWZMH6ZDHEZOnAEF0TkLSu6nQ9COggqZx30vUgoIHUElKb+cTW8e2/gFlPbCH6niyHDJYOzzk+MYaM1yfPVaOLZTDukFmQNXJXvzstd6pzvHud5/od7k+7rr0ewrBX77jqwFI/YakEsdS0eKpzLHXGA0vF9D/oDzmmzPWTS7UHAAAAAElFTkSuQmCC"
+      )
+
+    # Other browser fixtures intentionally use a minimal image payload.
     one_pixel_png =
       Base.decode64!(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqXQAAAABJRU5ErkJggg=="
@@ -226,7 +235,7 @@ case Accounts.register_first_admin(%{
         diagram_version.id,
         station.stop_id,
         stop_level.diagram_filename,
-        one_pixel_png
+        browser_floorplan_png
       )
 
     # Create child stops with diagram coordinates
@@ -267,6 +276,39 @@ case Accounts.register_first_admin(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id
       })
+
+    browser_seed_alignment = %{
+      center_lat: 40.0390,
+      center_lon: -75.1440,
+      scale_mpp: 0.5,
+      rotation_deg: 0.0
+    }
+
+    browser_image_w = 100
+    browser_image_h = 80
+
+    for {stop, svg_x, svg_y} <- [
+          {browser_child_a, 30.0, 40.0},
+          {browser_child_b, 70.0, 60.0},
+          {browser_child_c, 50.0, 25.0}
+        ] do
+      {:ok, {lat, lon}} =
+        FloorplanTransform.svg_to_lat_lon(
+          browser_seed_alignment,
+          browser_image_w,
+          browser_image_h,
+          %{x: svg_x, y: svg_y}
+        )
+
+      stop
+      |> Ecto.Changeset.change(%{
+        stop_lat: Decimal.from_float(Float.round(lat, 7)),
+        stop_lon: Decimal.from_float(Float.round(lon, 7))
+      })
+      |> Repo.update!()
+    end
+
+    IO.puts("Browser seed: anchor lat/lon derived from known alignment for three child stops")
 
     IO.puts(
       "Browser seed: diagram ready — /gtfs/#{diagram_version.id}/stops/BROWSER_STATION/diagram"

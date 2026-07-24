@@ -60,7 +60,7 @@ const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
 
 // Preview status copy (operator-facing, plain language). Shown before the
 // floorplan image is ready or after the active marker layer is cleared.
-const PREVIEW_STATUS_NOT_READY = "Preview not ready";
+const PREVIEW_STATUS_NOT_READY = "Coordinate-change preview not ready";
 const MAP_STATES = new Set([
   "initializing",
   "ready",
@@ -118,6 +118,14 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function clampScaleInDirection(current, candidate) {
+  if (candidate === current) return current;
+  if (candidate < current && current <= SCALE_MIN) return current;
+  if (candidate > current && current >= SCALE_MAX) return current;
+
+  return clamp(candidate, SCALE_MIN, SCALE_MAX);
+}
+
 function parseAlignmentPayload(centerLatRaw, centerLonRaw, scaleMppRaw, rotationDegRaw) {
   const centerLat = parseFloat(centerLatRaw);
   const centerLon = parseFloat(centerLonRaw);
@@ -173,9 +181,16 @@ const MapAlignmentHook = {
     const initialLon = parseFloat(root.dataset.initialLon);
     const initialZoom = parseInt(root.dataset.initialZoom, 10);
 
-    // Optional saved alignment. All four attrs must be present and parse to
-    // finite numbers; otherwise treat as absent and fall back to identity.
     const activeAlignment = readActiveAlignment(root);
+    this.savedAlignment = activeAlignment
+      ? {
+          center_lat: activeAlignment.centerLat,
+          center_lon: activeAlignment.centerLon,
+          scale_mpp: activeAlignment.scaleMpp,
+          rotation_deg: activeAlignment.rotationDeg,
+        }
+      : null;
+    this._previewActive = false;
 
     const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
     const leafletEl = root.querySelector("#map-alignment-leaflet");
@@ -317,6 +332,15 @@ const MapAlignmentHook = {
     this.handleEvent("set_other_levels", (payload) => {
       if (this._otherLevels) this._otherLevels.update(payload);
     });
+    this.handleEvent("apply_preview_transform", (payload) =>
+      this._handleApplyPreviewTransform(payload)
+    );
+    this.handleEvent("restore_saved_transform", (payload) =>
+      this._handleRestoreSavedTransform(payload)
+    );
+    this.handleEvent("alignment_saved", (payload) =>
+      this._handleAlignmentSaved(payload)
+    );
     this.pushEvent("map_ready", this._legacyTestMode ? {} : {generation: this.generation});
 
     if (zoomSlider) {
@@ -335,8 +359,8 @@ const MapAlignmentHook = {
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
-    if (activeAlignment) {
-      this._scheduleOverlayAlignmentRestore(overlay, activeAlignment, "active");
+    if (this.savedAlignment) {
+      this._scheduleOverlayAlignmentRestore(overlay, this.savedAlignment, "active");
     }
 
     this._rafId = requestAnimationFrame(() => {
@@ -381,8 +405,12 @@ const MapAlignmentHook = {
       if (!this._translateState) return;
       const dx = e.clientX - this._translateState.startX;
       const dy = e.clientY - this._translateState.startY;
-      this.transform.tx = this._translateState.baseTx + dx;
-      this.transform.ty = this._translateState.baseTy + dy;
+      const nextTx = this._translateState.baseTx + dx;
+      const nextTy = this._translateState.baseTy + dy;
+      if (nextTx === this.transform.tx && nextTy === this.transform.ty) return;
+      this._markPreviewDirty();
+      this.transform.tx = nextTx;
+      this.transform.ty = nextTy;
       this._applyTransform();
     };
     this._onOverlayPointerUp = (e) => {
@@ -424,7 +452,10 @@ const MapAlignmentHook = {
       const {centerX, centerY, startAngle, baseRotation} = this._rotateState;
       const angle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
       const deltaDeg = (angle - startAngle) * (180 / Math.PI);
-      this.transform.rotation = baseRotation + deltaDeg;
+      const nextRotation = baseRotation + deltaDeg;
+      if (nextRotation === this.transform.rotation) return;
+      this._markPreviewDirty();
+      this.transform.rotation = nextRotation;
       this._applyTransform();
     };
     this._onRotatePointerUp = (e) => {
@@ -471,7 +502,13 @@ const MapAlignmentHook = {
       const dy = e.clientY - centerY;
       const distance = Math.sqrt(dx * dx + dy * dy);
       const ratio = distance / initialDistance;
-      this.transform.scale = clamp(baseScale * ratio, SCALE_MIN, SCALE_MAX);
+      const nextScale = clampScaleInDirection(
+        this.transform.scale,
+        baseScale * ratio
+      );
+      if (nextScale === this.transform.scale) return;
+      this._markPreviewDirty();
+      this.transform.scale = nextScale;
       this._applyTransform();
     };
     this._onScalePointerUp = (e) => {
@@ -845,98 +882,67 @@ const MapAlignmentHook = {
     }
   },
 
-  _restoreOverlayAlignment(overlayEl, alignment, img, label) {
-    if (this._userAdjustedTransform) return;
-
+  _cssTransformForAlignment(alignment, image) {
     const map = this.leafletMap;
-    if (!map || !overlayEl || !img || !img.naturalWidth || !img.naturalHeight) {
-      this._logger.warn("MapAlignment: restore skipped, map or image not ready");
-      return;
-    }
+    if (!map || !alignment || !image || !image.naturalWidth || !image.naturalHeight) return null;
 
     const canvasRect = this._leafletRect();
-    if (!canvasRect) {
-      this._logger.warn("MapAlignment: restore skipped, leaflet container not ready", {label});
-      return;
-    }
+    if (!canvasRect) return null;
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
-    if (!(canvasW > 0) || !(canvasH > 0)) {
-      this._logger.warn("MapAlignment: restore skipped, canvas has zero size", {canvasW, canvasH});
-      return;
-    }
+    if (!(canvasW > 0) || !(canvasH > 0)) return null;
 
     const cx = canvasW / 2;
     const cy = canvasH / 2;
     const p0 = map.containerPointToLatLng([cx, cy]);
     const p1 = map.containerPointToLatLng([cx + 1, cy]);
     const metersPerCanvasPx = map.distance(p0, p1);
+    if (!(metersPerCanvasPx > 0)) return null;
 
-    const imgAspect = img.naturalWidth / img.naturalHeight;
-    const canvasAspect = canvasW / canvasH;
-    const containWidth =
-      canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
-    if (!(containWidth > 0)) return;
-
-    // Inverse of _computeAlignment: R = s_nat / (m / canvas_px).
-    const renderedPxPerImagePxNeeded = alignment.scaleMpp / metersPerCanvasPx;
-    const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
-
-    const alignedCenterPoint = map.latLngToContainerPoint([alignment.centerLat, alignment.centerLon]);
-
-    const restoredTransform = {
-      tx: alignedCenterPoint.x - canvasW / 2,
-      ty: alignedCenterPoint.y - canvasH / 2,
-      rotation: alignment.rotationDeg,
-      scale: scale
-    };
-
-    this.transform = restoredTransform;
-    this._applyTransform();
-  },
-
-  // Compute the CSS transform that places an alignment-described floorplan at
-  // the current map view and apply it to `el`. Mirrors _restoreOverlayAlignment
-  // but takes the server payload's snake_case alignment and targets the given
-  // element (used by the other-levels overlay manager via injected callback).
-  _applyOtherLevelOverlayTransform(el, alignment) {
-    const map = this.leafletMap;
-    if (!map || !el || !alignment) return;
-
-    const img = el.tagName === "IMG" ? el : el.querySelector("img");
-    if (!img || !img.naturalWidth || !img.naturalHeight) return;
-
-    const canvasRect = this._leafletRect();
-    if (!canvasRect) return;
-    const canvasW = canvasRect.width;
-    const canvasH = canvasRect.height;
-    if (!(canvasW > 0) || !(canvasH > 0)) return;
-
-    const cx = canvasW / 2;
-    const cy = canvasH / 2;
-    const p0 = map.containerPointToLatLng([cx, cy]);
-    const p1 = map.containerPointToLatLng([cx + 1, cy]);
-    const metersPerCanvasPx = map.distance(p0, p1);
-
-    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const imgAspect = image.naturalWidth / image.naturalHeight;
     const canvasAspect = canvasW / canvasH;
     const containWidth = canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
-    if (!(containWidth > 0) || !(metersPerCanvasPx > 0)) return;
+    if (!(containWidth > 0)) return null;
 
     const renderedPxPerImagePxNeeded = alignment.scale_mpp / metersPerCanvasPx;
-    const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
+    const scale = renderedPxPerImagePxNeeded / (containWidth / image.naturalWidth);
 
     const alignedCenterPoint = map.latLngToContainerPoint([
       alignment.center_lat,
-      alignment.center_lon
+      alignment.center_lon,
     ]);
 
-    this._applyOverlayTransform(el, {
+    return {
       tx: alignedCenterPoint.x - canvasW / 2,
       ty: alignedCenterPoint.y - canvasH / 2,
       rotation: alignment.rotation_deg,
-      scale: scale
-    });
+      scale,
+    };
+  },
+
+  _restoreOverlayAlignment(overlayEl, alignment, img, label) {
+    if (this._userAdjustedTransform) return;
+
+    const result = this._cssTransformForAlignment(alignment, img);
+    if (!result) {
+      this._logger.warn("MapAlignment: restore skipped, geometry not ready", {label});
+      return;
+    }
+
+    this.transform = result;
+    this._applyTransform();
+  },
+
+  _applyOtherLevelOverlayTransform(el, alignment) {
+    if (!el || !alignment) return;
+
+    const img = el.tagName === "IMG" ? el : el.querySelector("img");
+    if (!img) return;
+
+    const result = this._cssTransformForAlignment(alignment, img);
+    if (!result) return;
+
+    this._applyOverlayTransform(el, result);
   },
 
   _applyOverlayTransform(overlayEl, transform) {
@@ -990,6 +996,85 @@ const MapAlignmentHook = {
       });
       this._overlayRestoreDisposers = [];
     }
+  },
+
+  _markPreviewDirty() {
+    if (!this._previewActive) return;
+    this._previewActive = false;
+    this.pushEvent("alignment_preview_adjusted", {generation: this.generation});
+  },
+
+  _handleApplyPreviewTransform(payload) {
+    if (!payload || payload.generation !== this.generation) {
+      this._logger.warn("MapAlignment: apply_preview_transform rejected (stale generation)");
+      return;
+    }
+
+    if (!this._isValidAlignmentPayload(payload)) {
+      this._logger.warn("MapAlignment: apply_preview_transform rejected (invalid payload)", {payload});
+      return;
+    }
+
+    const img = this.overlay ? this.overlay.querySelector("img") : null;
+    const alignment = {
+      center_lat: payload.center_lat,
+      center_lon: payload.center_lon,
+      scale_mpp: payload.scale_mpp,
+      rotation_deg: payload.rotation_deg,
+    };
+
+    const result = this._cssTransformForAlignment(alignment, img);
+    if (!result) {
+      this._logger.warn("MapAlignment: apply_preview_transform rejected (geometry not ready)");
+      return;
+    }
+
+    this._markUserAdjusted();
+    this.transform = result;
+    this._previewActive = true;
+    this._applyTransform();
+  },
+
+  _handleRestoreSavedTransform(payload) {
+    if (!payload || payload.generation !== this.generation) {
+      this._logger.warn("MapAlignment: restore_saved_transform rejected (stale generation)");
+      return;
+    }
+
+    if (this.savedAlignment) {
+      const img = this.overlay ? this.overlay.querySelector("img") : null;
+      const result = this._cssTransformForAlignment(this.savedAlignment, img);
+      if (!result) {
+        this._logger.warn("MapAlignment: restore_saved_transform rejected (geometry not ready)");
+        return;
+      }
+      this.transform = result;
+    } else {
+      this.transform = {...IDENTITY_TRANSFORM};
+    }
+
+    this._previewActive = false;
+    this._applyTransform();
+  },
+
+  _handleAlignmentSaved(payload) {
+    if (!payload || payload.generation !== this.generation) {
+      this._logger.warn("MapAlignment: alignment_saved rejected (stale generation)");
+      return;
+    }
+
+    if (!this._isValidAlignmentPayload(payload)) {
+      this._logger.warn("MapAlignment: alignment_saved rejected (invalid payload)", {payload});
+      return;
+    }
+
+    this.savedAlignment = {
+      center_lat: payload.center_lat,
+      center_lon: payload.center_lon,
+      scale_mpp: payload.scale_mpp,
+      rotation_deg: payload.rotation_deg,
+    };
+    this._previewActive = false;
   },
 
   _applyTransform() {
@@ -1113,7 +1198,6 @@ const MapAlignmentHook = {
     const amount = coarse ? 10 : 2;
     const rotation = coarse ? 5 : 1;
     const scale = coarse ? 1.1 : 1.01;
-    this._markUserAdjusted();
 
     switch (action) {
       case "left": this.transform.tx -= amount; break;
@@ -1122,11 +1206,28 @@ const MapAlignmentHook = {
       case "down": this.transform.ty += amount; break;
       case "rotate-left": this.transform.rotation -= rotation; break;
       case "rotate-right": this.transform.rotation += rotation; break;
-      case "scale-down": this.transform.scale = clamp(this.transform.scale / scale, SCALE_MIN, SCALE_MAX); break;
-      case "scale-up": this.transform.scale = clamp(this.transform.scale * scale, SCALE_MIN, SCALE_MAX); break;
-      case "reset": this.transform = {...IDENTITY_TRANSFORM}; break;
+      case "scale-down": {
+        const nextScale = clampScaleInDirection(
+          this.transform.scale,
+          this.transform.scale / scale
+        );
+        if (nextScale === this.transform.scale) return;
+        this.transform.scale = nextScale;
+        break;
+      }
+      case "scale-up": {
+        const nextScale = clampScaleInDirection(
+          this.transform.scale,
+          this.transform.scale * scale
+        );
+        if (nextScale === this.transform.scale) return;
+        this.transform.scale = nextScale;
+        break;
+      }
       default: return;
     }
+    this._markUserAdjusted();
+    this._markPreviewDirty();
     this._applyTransform();
   },
 

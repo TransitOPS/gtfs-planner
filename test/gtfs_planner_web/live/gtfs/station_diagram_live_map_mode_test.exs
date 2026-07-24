@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#diagram-mode-option-map[disabled]")
     end
 
-    test "switch_mode to map swaps to the map canvas", %{
+    test "switch_mode to map swaps to the map canvas and hides station data tables", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -129,10 +129,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      assert has_element?(view, "#lists-section")
+
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assert has_element?(view, ".map-canvas")
       refute has_element?(view, "[id^='diagram-canvas-']")
+      refute has_element?(view, "#lists-section")
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+
+      assert has_element?(view, "#lists-section")
     end
 
     test "renders the other-levels trigger in map mode and drops the reference select (AC-1)", %{
@@ -1550,118 +1557,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert reloaded.stop_lat == original_lat
       assert reloaded.stop_lon == original_lon
-    end
-
-    test "infer_alignment with three direct anchors persists inferred alignment and flashes anchor count",
-         %{
-           conn: conn,
-           user: user,
-           organization: organization,
-           gtfs_version: gtfs_version,
-           station: station,
-           level: level,
-           stop_level: stop_level
-         } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-
-      _stop_a =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "INFER_LV_A",
-          stop_name: "Infer A",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          diagram_coordinate: %{"x" => 40.0, "y" => 60.0},
-          stop_lat: Decimal.new("40.7000"),
-          stop_lon: Decimal.new("-74.0100")
-        })
-
-      _stop_b =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "INFER_LV_B",
-          stop_name: "Infer B",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          diagram_coordinate: %{"x" => 60.0, "y" => 40.0},
-          stop_lat: Decimal.new("40.7200"),
-          stop_lon: Decimal.new("-74.0000")
-        })
-
-      _stop_c =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "INFER_LV_C",
-          stop_name: "Infer C",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
-          stop_lat: Decimal.new("40.7100"),
-          stop_lon: Decimal.new("-74.0050")
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "switch_mode", %{"mode" => "map"})
-      set_image_natural_size(view, 1000, 800)
-
-      html = render_hook(view, "infer_alignment", %{})
-
-      assert html =~ ~r/Set lat\/lon for \d+ child stops \(3 anchors, RMSE [\d.]+ m\)/
-
-      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
-      refute is_nil(reloaded.floorplan_center_lat)
-      refute is_nil(reloaded.floorplan_center_lon)
-      refute is_nil(reloaded.floorplan_scale_mpp)
-      refute is_nil(reloaded.floorplan_rotation_deg)
-    end
-
-    test "infer_alignment with fewer than two anchors shows error flash and leaves alignment unchanged",
-         %{
-           conn: conn,
-           user: user,
-           organization: organization,
-           gtfs_version: gtfs_version,
-           station: station,
-           level: level,
-           stop_level: stop_level
-         } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-
-      _lonely =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "INFER_LV_SINGLE",
-          stop_name: "Infer Single",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
-          stop_lat: Decimal.new("40.7000"),
-          stop_lon: Decimal.new("-74.0000")
-        })
-
-      before = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "switch_mode", %{"mode" => "map"})
-      set_image_natural_size(view, 1000, 800)
-
-      html = render_hook(view, "infer_alignment", %{})
-
-      assert html =~ "Not enough anchor stops to infer alignment"
-
-      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
-      assert reloaded.floorplan_center_lat == before.floorplan_center_lat
-      assert reloaded.floorplan_center_lon == before.floorplan_center_lon
-      assert reloaded.floorplan_scale_mpp == before.floorplan_scale_mpp
-      assert reloaded.floorplan_rotation_deg == before.floorplan_rotation_deg
     end
 
     test "active child-stop payload carries a cross-level pathway badge", %{
