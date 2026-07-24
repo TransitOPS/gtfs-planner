@@ -66,6 +66,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
   @handled_events ~w(
     demo_form_submit paginate open_drawer close_drawer
     open_confirm cancel_confirm run_confirm confirm_success confirm_error
+    open_review_confirm cancel_review_confirm run_review_confirm
+    review_confirm_success review_confirm_error
     live_select_change change address-form live_select_blur
     save_location delete_location count_strip_filter
   )
@@ -1389,7 +1391,233 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert "close_drawer" in handled
       assert "open_drawer" in handled
       assert "open_confirm" in handled
+      assert "open_review_confirm" in handled
       assert Enum.all?(events, &(&1 in @handled_events))
+    end
+
+    # Package 08 step 2: the wide primary review-dialog demo. The dialog shares
+    # no state with the destructive confirm demo above; open/pending/result are
+    # owned by separate review_confirm_* assigns and handlers in DesignSystemLive.
+    test "renders the review dialog demo closed with lg primary contract", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      # Opener, dialog, and result targets exist on the page.
+      assert has_element?(view, "#ds-review-confirm-open")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='false']")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[inert]")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[aria-hidden='true']")
+
+      # The panel widens to lg and the confirm button uses the primary palette.
+      panel_class =
+        view
+        |> element("dialog#ds-demo-review-confirm > div > div")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("div")
+        |> LazyHTML.attribute("class")
+        |> List.first()
+
+      assert panel_class =~ "max-w-2xl"
+      refute panel_class =~ "max-w-sm"
+
+      confirm_class =
+        view
+        |> element("#ds-demo-review-confirm-confirm")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.attribute("class")
+        |> List.first()
+
+      assert confirm_class =~ "bg-primary"
+      assert confirm_class =~ "text-primary-content"
+      refute confirm_class =~ "bg-error"
+
+      # Three semantic evidence rows in a documentation-only sample table.
+      rows =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-demo-review-confirm-evidence tbody tr")
+
+      assert Enum.count(rows) == 3
+
+      # Headers are terse, semantic, and right-align the change column.
+      headers =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-demo-review-confirm-evidence thead th")
+        |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+
+      assert headers == ["Stop", "Current coordinates", "New coordinates", "Change"]
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence thead th:nth-child(2).text-right"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence thead th:nth-child(3).text-right"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence tbody td:nth-child(2).text-right"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-demo-review-confirm-evidence tbody td:nth-child(3).text-right"
+             )
+
+      # Recovery note renders above the table; usage guidance is present.
+      assert has_element?(view, "#ds-demo-review-confirm-recovery")
+      assert has_element?(view, "#ds-review-confirm-guidance")
+
+      # aria-describedby wires the consequence copy into the alertdialog name.
+      assert has_element?(
+               view,
+               "dialog#ds-demo-review-confirm[aria-describedby='ds-demo-review-confirm-consequence']"
+             )
+    end
+
+    test "opening the review dialog produces one alertdialog and cancel closes it", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      # The destructive confirm demo stays closed independently.
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='false']")
+
+      view
+      |> element("#ds-review-confirm-open")
+      |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[role='alertdialog']")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[aria-modal='true']")
+      refute has_element?(view, "dialog#ds-demo-review-confirm[inert]")
+
+      # Only one alertdialog role on the page (the destructive demo stays closed).
+      html = render(view)
+      alertdialogs = LazyHTML.query(LazyHTML.from_fragment(html), "[role='alertdialog']")
+      assert Enum.count(alertdialogs) == 1
+
+      # Cancel closes the review dialog without disturbing the destructive demo.
+      render_click(view, "cancel_review_confirm", %{})
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='false']")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[inert]")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='false']")
+    end
+
+    test "review confirm enters durable pending with both actions disabled and recovery controls",
+         %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view
+      |> element("#ds-review-confirm-open")
+      |> render_click()
+
+      view
+      |> element("#ds-demo-review-confirm-confirm")
+      |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-pending='true']")
+      assert has_element?(view, "#ds-demo-review-confirm-confirm[disabled]")
+      assert has_element?(view, "#ds-demo-review-confirm-cancel[disabled]")
+      assert has_element?(view, "#ds-demo-review-confirm-confirm", "Updating…")
+
+      # The destructive confirm demo is not entangled with this pending state.
+      refute has_element?(view, "dialog#ds-demo-confirm[data-pending='true']")
+
+      # Explicit recovery controls render while pending.
+      assert has_element?(view, "button[phx-click='review_confirm_success']")
+      assert has_element?(view, "button[phx-click='review_confirm_error']")
+
+      # Error clears pending in place; the dialog stays open for retry.
+      view
+      |> element("button[phx-click='review_confirm_error']")
+      |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-pending='false']")
+      refute has_element?(view, "#ds-demo-review-confirm-confirm[disabled]")
+      refute has_element?(view, "#ds-demo-review-confirm-cancel[disabled]")
+      assert has_element?(view, "#ds-demo-review-confirm-confirm", "Update 3 stops")
+    end
+
+    test "review success closes the dialog and surfaces the result element", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view
+      |> element("#ds-review-confirm-open")
+      |> render_click()
+
+      view
+      |> element("#ds-demo-review-confirm-confirm")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='review_confirm_success']")
+      |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='false']")
+
+      assert has_element?(
+               view,
+               "dialog#ds-demo-review-confirm[data-return-focus-id='ds-review-confirm-result']"
+             )
+
+      assert has_element?(view, "#ds-review-confirm-result", "Coordinates updated.")
+    end
+
+    test "review dialog state is isolated from the destructive confirm state", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      # Put the destructive demo into pending success; the review demo must not
+      # move when the destructive one is touched, and vice versa.
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      view |> element("button[phx-click='open_confirm']") |> render_click()
+      view |> element("#ds-demo-confirm-confirm") |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-confirm[data-pending='true']")
+      refute has_element?(view, "dialog#ds-demo-review-confirm[data-pending='true']")
+
+      view |> element("#ds-review-confirm-open") |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-pending='true']")
+      refute has_element?(view, "dialog#ds-demo-review-confirm[data-pending='true']")
+
+      # Cancelling the review dialog leaves the destructive pending state intact.
+      render_click(view, "cancel_review_confirm", %{})
+
+      assert has_element?(view, "dialog#ds-demo-review-confirm[data-open='false']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-pending='true']")
     end
   end
 

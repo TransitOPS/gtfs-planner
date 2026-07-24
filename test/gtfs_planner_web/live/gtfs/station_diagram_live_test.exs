@@ -242,7 +242,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "preview-to-apply through production handlers records an attributed audit row", %{
+    test "review-to-apply through production handlers records an attributed audit row", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -276,7 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "h" => "800"
       })
 
-      render_hook(view, "preview_coordinate_application", %{
+      render_hook(view, "open_coordinate_review", %{
         "generation" => generation,
         "center_lat" => "40.7128",
         "center_lon" => "-74.006",
@@ -284,20 +284,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "rotation_deg" => "0"
       })
 
-      assert has_element?(view, "#coordinate-preview")
-      assert has_element?(view, "#coordinate-preview-row-#{child.id}")
+      assert has_element?(view, "#coordinate-review-dialog")
+      assert has_element?(view, "#coordinate-review-row-#{child.id}")
 
-      view
-      |> element("#confirm-coordinate-preview")
-      |> render_click()
-
-      assert has_element?(view, "#coordinate-preview-confirmation-form")
-
-      view
-      |> form("#coordinate-preview-confirmation-form", %{
-        "coordinate_preview" => %{"phrase" => "APPLY"}
-      })
-      |> render_submit()
+      render_hook(view, "apply_coordinate_review", %{})
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
       assert_in_delta Decimal.to_float(reloaded.stop_lat), 40.7128, 1.0e-9

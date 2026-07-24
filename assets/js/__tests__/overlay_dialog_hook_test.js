@@ -229,7 +229,8 @@ describe("OverlayDialog", () => {
       outer.id = "outside-btn";
       document.body.appendChild(outer);
 
-      const inner = '<div data-dialog-panel tabindex="-1" id="panel">Panel</div>';
+      const inner =
+        '<div data-dialog-panel tabindex="-1" id="panel">Panel</div>';
       const dialog = buildDialog({
         dataset: { open: "true", initialFocusId: "outside-btn" },
         innerHTML: inner,
@@ -301,7 +302,8 @@ describe("OverlayDialog", () => {
     });
 
     it("falls back to the explicit dialog panel when no focusable target matches", () => {
-      const inner = '<div data-dialog-panel tabindex="-1" id="panel">Fallback</div>';
+      const inner =
+        '<div data-dialog-panel tabindex="-1" id="panel">Fallback</div>';
       const dialog = buildDialog({
         dataset: { open: "true" },
         innerHTML: inner,
@@ -371,7 +373,10 @@ describe("OverlayDialog", () => {
       const dismissBtn = dialog.querySelector("[data-dialog-dismiss]");
       const clickSpy = vi.spyOn(dismissBtn, "click");
 
-      const event = new MouseEvent("click", { bubbles: false, cancelable: true });
+      const event = new MouseEvent("click", {
+        bubbles: false,
+        cancelable: true,
+      });
       Object.defineProperty(event, "target", {
         value: dialog,
         configurable: true,
@@ -390,7 +395,10 @@ describe("OverlayDialog", () => {
       const dismissBtn = dialog.querySelector("[data-dialog-dismiss]");
       const clickSpy = vi.spyOn(dismissBtn, "click");
 
-      const event = new MouseEvent("click", { bubbles: false, cancelable: true });
+      const event = new MouseEvent("click", {
+        bubbles: false,
+        cancelable: true,
+      });
       Object.defineProperty(event, "target", {
         value: dialog,
         configurable: true,
@@ -411,7 +419,10 @@ describe("OverlayDialog", () => {
       const clickSpy = vi.spyOn(dismissBtn, "click");
 
       const panel = dialog.querySelector("#panel");
-      const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+      const event = new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+      });
       Object.defineProperty(event, "target", {
         value: panel,
         configurable: true,
@@ -448,7 +459,10 @@ describe("OverlayDialog", () => {
       const dismissBtn = dialog.querySelector("[data-dialog-dismiss]");
       const clickSpy = vi.spyOn(dismissBtn, "click");
 
-      const event = new MouseEvent("click", { bubbles: false, cancelable: true });
+      const event = new MouseEvent("click", {
+        bubbles: false,
+        cancelable: true,
+      });
       Object.defineProperty(event, "target", {
         value: dialog,
         configurable: true,
@@ -700,6 +714,53 @@ describe("OverlayDialog", () => {
         new Event("cancel", { cancelable: true, bubbles: true }),
       );
       expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it("destroyed restores a connected explicit return target when the dialog is open", () => {
+      const returnTarget = document.createElement("button");
+      returnTarget.id = "return-target";
+      document.body.appendChild(returnTarget);
+
+      const dialog = buildDialog({
+        id: "test-dialog",
+        dataset: {
+          open: "true",
+          returnFocusId: "return-target",
+        },
+        innerHTML: closeButtonHTML("Close"),
+      });
+      const hook = makeHook(dialog);
+      hook.mounted();
+      closeStub.mockClear();
+      const returnSpy = vi.spyOn(returnTarget, "focus");
+
+      hook.destroyed();
+
+      expect(closeStub).toHaveBeenCalledTimes(1);
+      expect(returnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("destroyed does not restore an explicit target when the dialog is already closed", () => {
+      const returnTarget = document.createElement("button");
+      returnTarget.id = "return-target";
+      document.body.appendChild(returnTarget);
+
+      const dialog = buildDialog({
+        id: "test-dialog",
+        dataset: {
+          open: "false",
+          returnFocusId: "return-target",
+        },
+        innerHTML: closeButtonHTML("Close"),
+      });
+      const hook = makeHook(dialog);
+      hook.mounted();
+      const returnSpy = vi.spyOn(returnTarget, "focus");
+
+      hook.destroyed();
+
+      expect(closeStub).not.toHaveBeenCalled();
+      expect(returnSpy).not.toHaveBeenCalled();
     });
 
     it("destroyed is idempotent: repeated calls do not throw or re-close", () => {

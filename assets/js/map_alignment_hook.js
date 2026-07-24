@@ -42,8 +42,19 @@ import {
 
 const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
-const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
+const IDENTITY_TRANSFORM = Object.freeze({
+  tx: 0,
+  ty: 0,
+  rotation: 0,
+  scale: 1,
+});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
+
+// Advisory transform-invalidation debounce. Bursts of pointer/button/zoom
+// mutations coalesce into one generation-tagged `alignment_transform_changed`
+// push per window. The server uses it only to close visible review state; the
+// Package 06 fingerprint recheck remains the sole stale-write fence (INV-4).
+const TRANSFORM_INVALIDATION_DEBOUNCE_MS = 400;
 
 // Deterministic degraded-state opacity for geo-mode fallback pins (stops
 // positioned from stored geography rather than the floorplan image).
@@ -81,7 +92,9 @@ function shouldEnableMapAlignmentDiagnostics(root) {
   if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
 
   const nodeEnv =
-    typeof process !== "undefined" && process?.env ? process.env.NODE_ENV : undefined;
+    typeof process !== "undefined" && process?.env
+      ? process.env.NODE_ENV
+      : undefined;
 
   if (nodeEnv !== "production") return true;
 
@@ -111,7 +124,7 @@ function createMapAlignmentLogger(root) {
         return;
       }
       console.error(message, meta);
-    }
+    },
   };
 }
 function clamp(value, min, max) {
@@ -126,7 +139,12 @@ function clampScaleInDirection(current, candidate) {
   return clamp(candidate, SCALE_MIN, SCALE_MAX);
 }
 
-function parseAlignmentPayload(centerLatRaw, centerLonRaw, scaleMppRaw, rotationDegRaw) {
+function parseAlignmentPayload(
+  centerLatRaw,
+  centerLonRaw,
+  scaleMppRaw,
+  rotationDegRaw,
+) {
   const centerLat = parseFloat(centerLatRaw);
   const centerLon = parseFloat(centerLonRaw);
   const scaleMpp = parseFloat(scaleMppRaw);
@@ -142,7 +160,7 @@ function parseAlignmentPayload(centerLatRaw, centerLonRaw, scaleMppRaw, rotation
     return null;
   }
 
-  return {centerLat, centerLon, scaleMpp, rotationDeg};
+  return { centerLat, centerLon, scaleMpp, rotationDeg };
 }
 
 function readActiveAlignment(root) {
@@ -150,7 +168,7 @@ function readActiveAlignment(root) {
     root.dataset.alignCenterLat,
     root.dataset.alignCenterLon,
     root.dataset.alignScaleMpp,
-    root.dataset.alignRotationDeg
+    root.dataset.alignRotationDeg,
   );
 }
 
@@ -158,7 +176,7 @@ function overlayCenter(overlay) {
   const rect = overlay.getBoundingClientRect();
   return {
     x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2
+    y: rect.top + rect.height / 2,
   };
 }
 
@@ -172,7 +190,9 @@ const MapAlignmentHook = {
 
     const L = window.L;
     if (!L) {
-      this._logger.error("MapAlignmentHook: window.L (Leaflet) is not available");
+      this._logger.error(
+        "MapAlignmentHook: window.L (Leaflet) is not available",
+      );
       this._emitMapState("fatal");
       return;
     }
@@ -192,24 +212,30 @@ const MapAlignmentHook = {
       : null;
     this._previewActive = false;
 
-    const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
+    const overlay = root.querySelector(
+      "#map-alignment-overlay[data-editable-overlay='true']",
+    );
     const leafletEl = root.querySelector("#map-alignment-leaflet");
     const rotateHandle = root.querySelector(
-      "#map-alignment-rotate-handle[data-edit-target-overlay='active']"
+      "#map-alignment-rotate-handle[data-edit-target-overlay='active']",
     );
     const scaleHandle = root.querySelector(
-      "#map-alignment-scale-handle[data-edit-target-overlay='active']"
+      "#map-alignment-scale-handle[data-edit-target-overlay='active']",
     );
     const latInput = document.getElementById("map-alignment-lat-input");
     const lonInput = document.getElementById("map-alignment-lon-input");
-    const applyCenterBtn = document.getElementById("map-alignment-apply-center");
+    const applyCenterBtn = document.getElementById(
+      "map-alignment-apply-center",
+    );
     const opacitySlider = document.getElementById("map-alignment-opacity");
     const zoomSlider = document.getElementById("map-alignment-zoom");
     const saveBtn = document.getElementById("map-alignment-save");
     const applyBtn = document.getElementById("map-alignment-apply");
 
     if (!overlay || !leafletEl || !rotateHandle || !scaleHandle) {
-      this._logger.error("MapAlignmentHook: required active overlay edit elements are missing");
+      this._logger.error(
+        "MapAlignmentHook: required active overlay edit elements are missing",
+      );
       return;
     }
 
@@ -224,16 +250,22 @@ const MapAlignmentHook = {
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
-    this._previewStatusEl = document.getElementById("map-alignment-preview-status");
+    this._previewStatusEl = document.getElementById(
+      "map-alignment-preview-status",
+    );
     this._overlayRestoreDisposers = [];
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
 
-    this.transform = {...IDENTITY_TRANSFORM};
+    this.transform = { ...IDENTITY_TRANSFORM };
     this._userAdjustedTransform = false;
 
-    const mapCenterLat = activeAlignment ? activeAlignment.centerLat : initialLat;
-    const mapCenterLon = activeAlignment ? activeAlignment.centerLon : initialLon;
+    const mapCenterLat = activeAlignment
+      ? activeAlignment.centerLat
+      : initialLat;
+    const mapCenterLon = activeAlignment
+      ? activeAlignment.centerLon
+      : initialLon;
 
     // If LiveView reused a container that already had Leaflet initialized
     // (e.g., the previous hook's destroyed() did not run before re-mount),
@@ -257,7 +289,7 @@ const MapAlignmentHook = {
       dragging: false,
       boxZoom: false,
       zoomAnimation: false,
-      zoomSnap: 0.5
+      zoomSnap: 0.5,
     });
 
     // Esri World Imagery: free aerial tiles, no API key. URL uses z/y/x
@@ -270,8 +302,8 @@ const MapAlignmentHook = {
         maxZoom: 22,
         updateWhenIdle: false,
         updateWhenZooming: true,
-        attribution: "Imagery © Esri, Maxar, Earthstar Geographics"
-      }
+        attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+      },
     ).addTo(map);
 
     // Transparent reference layer with roads and road names tuned to overlay
@@ -284,8 +316,8 @@ const MapAlignmentHook = {
         maxZoom: 22,
         updateWhenIdle: false,
         updateWhenZooming: true,
-        attribution: "Roads © Esri"
-      }
+        attribution: "Roads © Esri",
+      },
     ).addTo(map);
 
     this.leafletMap = map;
@@ -302,13 +334,14 @@ const MapAlignmentHook = {
       this._otherLevels = createOtherLevelsLayers({
         overlaysRoot: otherOverlaysRoot,
         pinsRoot: otherPinsRoot,
-        applyOverlayTransform: (el, alignment) => this._applyOtherLevelOverlayTransform(el, alignment),
+        applyOverlayTransform: (el, alignment) =>
+          this._applyOtherLevelOverlayTransform(el, alignment),
         projectLatLng: (lat, lon) => {
           const pt = this.leafletMap.latLngToContainerPoint([lat, lon]);
-          return pt ? {x: pt.x, y: pt.y} : null;
+          return pt ? { x: pt.x, y: pt.y } : null;
         },
         symbolFor: symbolForLocationType,
-        paletteRoot: root.closest("#diagram-page")
+        paletteRoot: root.closest("#diagram-page"),
       });
       this._otherLevels.setOpacity(0.7);
     } else {
@@ -328,20 +361,25 @@ const MapAlignmentHook = {
     map.on("zoom", this._onMapViewChanged);
     map.on("viewreset", this._onMapViewChanged);
     map.on("resize", this._onMapViewChanged);
-    this.handleEvent("set_active_child_stops", (payload) => this._renderActiveChildStops(payload));
+    this.handleEvent("set_active_child_stops", (payload) =>
+      this._renderActiveChildStops(payload),
+    );
     this.handleEvent("set_other_levels", (payload) => {
       if (this._otherLevels) this._otherLevels.update(payload);
     });
     this.handleEvent("apply_preview_transform", (payload) =>
-      this._handleApplyPreviewTransform(payload)
+      this._handleApplyPreviewTransform(payload),
     );
     this.handleEvent("restore_saved_transform", (payload) =>
-      this._handleRestoreSavedTransform(payload)
+      this._handleRestoreSavedTransform(payload),
     );
     this.handleEvent("alignment_saved", (payload) =>
-      this._handleAlignmentSaved(payload)
+      this._handleAlignmentSaved(payload),
     );
-    this.pushEvent("map_ready", this._legacyTestMode ? {} : {generation: this.generation});
+    this.pushEvent(
+      "map_ready",
+      this._legacyTestMode ? {} : { generation: this.generation },
+    );
 
     if (zoomSlider) {
       zoomSlider.min = String(map.getMinZoom());
@@ -360,7 +398,11 @@ const MapAlignmentHook = {
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
     if (this.savedAlignment) {
-      this._scheduleOverlayAlignmentRestore(overlay, this.savedAlignment, "active");
+      this._scheduleOverlayAlignmentRestore(
+        overlay,
+        this.savedAlignment,
+        "active",
+      );
     }
 
     this._rafId = requestAnimationFrame(() => {
@@ -393,10 +435,14 @@ const MapAlignmentHook = {
         startY: e.clientY,
         baseTx: this.transform.tx,
         baseTy: this.transform.ty,
-        pointerId: e.pointerId
+        pointerId: e.pointerId,
       };
       if (overlay.setPointerCapture && e.pointerId !== undefined) {
-        try { overlay.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        try {
+          overlay.setPointerCapture(e.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
       e.preventDefault();
       e.stopPropagation();
@@ -408,15 +454,21 @@ const MapAlignmentHook = {
       const nextTx = this._translateState.baseTx + dx;
       const nextTy = this._translateState.baseTy + dy;
       if (nextTx === this.transform.tx && nextTy === this.transform.ty) return;
-      this._markPreviewDirty();
       this.transform.tx = nextTx;
       this.transform.ty = nextTy;
-      this._applyTransform();
+      this._transformDidChange({ previewAdjusted: true });
     };
     this._onOverlayPointerUp = (e) => {
       if (!this._translateState) return;
-      if (overlay.releasePointerCapture && this._translateState.pointerId !== undefined) {
-        try { overlay.releasePointerCapture(this._translateState.pointerId); } catch (_) { /* ignore */ }
+      if (
+        overlay.releasePointerCapture &&
+        this._translateState.pointerId !== undefined
+      ) {
+        try {
+          overlay.releasePointerCapture(this._translateState.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
       this._translateState = null;
     };
@@ -439,29 +491,39 @@ const MapAlignmentHook = {
         centerY: center.y,
         startAngle: startAngle,
         baseRotation: this.transform.rotation,
-        pointerId: e.pointerId
+        pointerId: e.pointerId,
       };
       if (rotateHandle.setPointerCapture && e.pointerId !== undefined) {
-        try { rotateHandle.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        try {
+          rotateHandle.setPointerCapture(e.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
       e.preventDefault();
       e.stopPropagation();
     };
     this._onRotatePointerMove = (e) => {
       if (!this._rotateState) return;
-      const {centerX, centerY, startAngle, baseRotation} = this._rotateState;
+      const { centerX, centerY, startAngle, baseRotation } = this._rotateState;
       const angle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
       const deltaDeg = (angle - startAngle) * (180 / Math.PI);
       const nextRotation = baseRotation + deltaDeg;
       if (nextRotation === this.transform.rotation) return;
-      this._markPreviewDirty();
       this.transform.rotation = nextRotation;
-      this._applyTransform();
+      this._transformDidChange({ previewAdjusted: true });
     };
     this._onRotatePointerUp = (e) => {
       if (!this._rotateState) return;
-      if (rotateHandle.releasePointerCapture && this._rotateState.pointerId !== undefined) {
-        try { rotateHandle.releasePointerCapture(this._rotateState.pointerId); } catch (_) { /* ignore */ }
+      if (
+        rotateHandle.releasePointerCapture &&
+        this._rotateState.pointerId !== undefined
+      ) {
+        try {
+          rotateHandle.releasePointerCapture(this._rotateState.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
       this._rotateState = null;
     };
@@ -487,34 +549,44 @@ const MapAlignmentHook = {
         centerY: center.y,
         initialDistance: initialDistance,
         baseScale: this.transform.scale,
-        pointerId: e.pointerId
+        pointerId: e.pointerId,
       };
       if (scaleHandle.setPointerCapture && e.pointerId !== undefined) {
-        try { scaleHandle.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        try {
+          scaleHandle.setPointerCapture(e.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
       e.preventDefault();
       e.stopPropagation();
     };
     this._onScalePointerMove = (e) => {
       if (!this._scaleState) return;
-      const {centerX, centerY, initialDistance, baseScale} = this._scaleState;
+      const { centerX, centerY, initialDistance, baseScale } = this._scaleState;
       const dx = e.clientX - centerX;
       const dy = e.clientY - centerY;
       const distance = Math.sqrt(dx * dx + dy * dy);
       const ratio = distance / initialDistance;
       const nextScale = clampScaleInDirection(
         this.transform.scale,
-        baseScale * ratio
+        baseScale * ratio,
       );
       if (nextScale === this.transform.scale) return;
-      this._markPreviewDirty();
       this.transform.scale = nextScale;
-      this._applyTransform();
+      this._transformDidChange({ previewAdjusted: true });
     };
     this._onScalePointerUp = (e) => {
       if (!this._scaleState) return;
-      if (scaleHandle.releasePointerCapture && this._scaleState.pointerId !== undefined) {
-        try { scaleHandle.releasePointerCapture(this._scaleState.pointerId); } catch (_) { /* ignore */ }
+      if (
+        scaleHandle.releasePointerCapture &&
+        this._scaleState.pointerId !== undefined
+      ) {
+        try {
+          scaleHandle.releasePointerCapture(this._scaleState.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
       this._scaleState = null;
     };
@@ -537,14 +609,19 @@ const MapAlignmentHook = {
 
       const cxBefore = canvasRect.width / 2 + this.transform.tx;
       const cyBefore = canvasRect.height / 2 + this.transform.ty;
-      const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
+      const worldCenter = this.leafletMap.containerPointToLatLng([
+        cxBefore,
+        cyBefore,
+      ]);
 
-      this.leafletMap.setView([lat, lon], this.leafletMap.getZoom(), { animate: false });
+      this.leafletMap.setView([lat, lon], this.leafletMap.getZoom(), {
+        animate: false,
+      });
 
       const newPt = this.leafletMap.latLngToContainerPoint(worldCenter);
       this.transform.tx = newPt.x - canvasRect.width / 2;
       this.transform.ty = newPt.y - canvasRect.height / 2;
-      this._applyTransform();
+      this._transformDidChange({ previewAdjusted: false });
 
       this._fetchBuildings(lat, lon);
     };
@@ -568,7 +645,9 @@ const MapAlignmentHook = {
       saveBtn.addEventListener("click", this._onSave);
     }
 
-    this._transformControls = Array.from(document.querySelectorAll("[data-map-transform-action]"));
+    this._transformControls = Array.from(
+      document.querySelectorAll("[data-map-transform-action]"),
+    );
     this._transformControls.forEach((control) => {
       const action = control.dataset.mapTransformAction;
       const coarse = control.dataset.mapTransformCoarse === "true";
@@ -586,9 +665,9 @@ const MapAlignmentHook = {
       if (!img || !img.naturalWidth || !img.naturalHeight) return;
       this._sentNaturalSize = true;
       this.pushEvent("set_image_natural_size", {
-        ...(this._legacyTestMode ? {} : {generation: this.generation}),
+        ...(this._legacyTestMode ? {} : { generation: this.generation }),
         w: img.naturalWidth,
-        h: img.naturalHeight
+        h: img.naturalHeight,
       });
       this._positionPins();
       this._syncApplyButtonState();
@@ -605,8 +684,16 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
-        this._pushAlignmentEventIfValid(
-          this._legacyTestMode ? "save_and_apply_alignment" : "preview_coordinate_application"
+        // The apply button always opens the evidence-first review. The hook
+        // pushes the displayed transform; the server rebinds it to the review
+        // fingerprint and rebuilds the persisted payload from the stored
+        // review-time values, never from later client state (INV-3, DC-1).
+        //
+        // Consume an invalidation queued by the transform being reviewed. If it
+        // were allowed to fire after the open event, it would immediately close
+        // the fresh review. Any later transform mutation starts a new timer.
+        this._pushAlignmentEventIfValid("open_coordinate_review", () =>
+          this._clearTransformInvalidationTimer(),
         );
       };
       applyBtn.addEventListener("click", this._onApply);
@@ -633,6 +720,7 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
+    this._clearTransformInvalidationTimer();
     if (this._viewFrame) {
       cancelAnimationFrame(this._viewFrame);
       this._viewFrame = null;
@@ -649,24 +737,54 @@ const MapAlignmentHook = {
     }
 
     if (this.overlay) {
-      this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
-      this.overlay.removeEventListener("pointermove", this._onOverlayPointerMove);
+      this.overlay.removeEventListener(
+        "pointerdown",
+        this._onOverlayPointerDown,
+      );
+      this.overlay.removeEventListener(
+        "pointermove",
+        this._onOverlayPointerMove,
+      );
       this.overlay.removeEventListener("pointerup", this._onOverlayPointerUp);
-      this.overlay.removeEventListener("pointercancel", this._onOverlayPointerUp);
+      this.overlay.removeEventListener(
+        "pointercancel",
+        this._onOverlayPointerUp,
+      );
     }
 
     if (this.rotateHandle) {
-      this.rotateHandle.removeEventListener("pointerdown", this._onRotatePointerDown);
-      this.rotateHandle.removeEventListener("pointermove", this._onRotatePointerMove);
-      this.rotateHandle.removeEventListener("pointerup", this._onRotatePointerUp);
-      this.rotateHandle.removeEventListener("pointercancel", this._onRotatePointerUp);
+      this.rotateHandle.removeEventListener(
+        "pointerdown",
+        this._onRotatePointerDown,
+      );
+      this.rotateHandle.removeEventListener(
+        "pointermove",
+        this._onRotatePointerMove,
+      );
+      this.rotateHandle.removeEventListener(
+        "pointerup",
+        this._onRotatePointerUp,
+      );
+      this.rotateHandle.removeEventListener(
+        "pointercancel",
+        this._onRotatePointerUp,
+      );
     }
 
     if (this.scaleHandle) {
-      this.scaleHandle.removeEventListener("pointerdown", this._onScalePointerDown);
-      this.scaleHandle.removeEventListener("pointermove", this._onScalePointerMove);
+      this.scaleHandle.removeEventListener(
+        "pointerdown",
+        this._onScalePointerDown,
+      );
+      this.scaleHandle.removeEventListener(
+        "pointermove",
+        this._onScalePointerMove,
+      );
       this.scaleHandle.removeEventListener("pointerup", this._onScalePointerUp);
-      this.scaleHandle.removeEventListener("pointercancel", this._onScalePointerUp);
+      this.scaleHandle.removeEventListener(
+        "pointercancel",
+        this._onScalePointerUp,
+      );
     }
 
     if (this.applyCenterBtn && this._onApplyCenter) {
@@ -676,7 +794,10 @@ const MapAlignmentHook = {
       this.opacitySlider.removeEventListener("input", this._onOpacityInput);
     }
     if (this.otherOpacitySlider && this._onOtherOpacityInput) {
-      this.otherOpacitySlider.removeEventListener("input", this._onOtherOpacityInput);
+      this.otherOpacitySlider.removeEventListener(
+        "input",
+        this._onOtherOpacityInput,
+      );
       this.otherOpacitySlider = null;
       this._onOtherOpacityInput = null;
     }
@@ -716,7 +837,9 @@ const MapAlignmentHook = {
     }
 
     if (this.leafletMap && this._onZoomEnd) {
-      try { this.leafletMap.off("zoomend", this._onZoomEnd); } catch (_) {}
+      try {
+        this.leafletMap.off("zoomend", this._onZoomEnd);
+      } catch (_) {}
     }
     this._onZoomEnd = null;
 
@@ -743,7 +866,9 @@ const MapAlignmentHook = {
       // down that the new instance doesn't already own.
       try {
         this.leafletMap.remove();
-      } catch (_) { /* container reused by newer instance */ }
+      } catch (_) {
+        /* container reused by newer instance */
+      }
       this.leafletMap = null;
     }
   },
@@ -756,7 +881,9 @@ const MapAlignmentHook = {
 
     const img = overlay.querySelector("img");
     if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) {
-      this._logger.warn("MapAlignmentHook: floorplan image not loaded; skipping save");
+      this._logger.warn(
+        "MapAlignmentHook: floorplan image not loaded; skipping save",
+      );
       return null;
     }
 
@@ -771,14 +898,17 @@ const MapAlignmentHook = {
       !(canvasW > 0) ||
       !(canvasH > 0)
     ) {
-      this._logger.warn("MapAlignmentHook: invalid map geometry; skipping alignment compute", {
-        canvasW,
-        canvasH
-      });
+      this._logger.warn(
+        "MapAlignmentHook: invalid map geometry; skipping alignment compute",
+        {
+          canvasW,
+          canvasH,
+        },
+      );
       return null;
     }
 
-    const {tx, ty, scale} = this.transform;
+    const { tx, ty, scale } = this.transform;
     // translate(tx, ty) rotate(r) scale(s) around transform-origin: center
     // Rotation and scale are pinned to the overlay center, so they leave the
     // center fixed. Only translate moves it.
@@ -806,7 +936,7 @@ const MapAlignmentHook = {
       center_lat: centerLatLng.lat,
       center_lon: centerLatLng.lng,
       scale_mpp: scaleMpp,
-      rotation_deg: this.transform.rotation
+      rotation_deg: this.transform.rotation,
     };
   },
 
@@ -884,7 +1014,14 @@ const MapAlignmentHook = {
 
   _cssTransformForAlignment(alignment, image) {
     const map = this.leafletMap;
-    if (!map || !alignment || !image || !image.naturalWidth || !image.naturalHeight) return null;
+    if (
+      !map ||
+      !alignment ||
+      !image ||
+      !image.naturalWidth ||
+      !image.naturalHeight
+    )
+      return null;
 
     const canvasRect = this._leafletRect();
     if (!canvasRect) return null;
@@ -901,11 +1038,13 @@ const MapAlignmentHook = {
 
     const imgAspect = image.naturalWidth / image.naturalHeight;
     const canvasAspect = canvasW / canvasH;
-    const containWidth = canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
+    const containWidth =
+      canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
     if (!(containWidth > 0)) return null;
 
     const renderedPxPerImagePxNeeded = alignment.scale_mpp / metersPerCanvasPx;
-    const scale = renderedPxPerImagePxNeeded / (containWidth / image.naturalWidth);
+    const scale =
+      renderedPxPerImagePxNeeded / (containWidth / image.naturalWidth);
 
     const alignedCenterPoint = map.latLngToContainerPoint([
       alignment.center_lat,
@@ -925,7 +1064,9 @@ const MapAlignmentHook = {
 
     const result = this._cssTransformForAlignment(alignment, img);
     if (!result) {
-      this._logger.warn("MapAlignment: restore skipped, geometry not ready", {label});
+      this._logger.warn("MapAlignment: restore skipped, geometry not ready", {
+        label,
+      });
       return;
     }
 
@@ -967,7 +1108,10 @@ const MapAlignmentHook = {
     const nextSlider = document.getElementById("map-other-overlays-opacity");
 
     if (this.otherOpacitySlider && this._onOtherOpacityInput) {
-      this.otherOpacitySlider.removeEventListener("input", this._onOtherOpacityInput);
+      this.otherOpacitySlider.removeEventListener(
+        "input",
+        this._onOtherOpacityInput,
+      );
       this._onOtherOpacityInput = null;
     }
 
@@ -979,8 +1123,13 @@ const MapAlignmentHook = {
       this._otherLevels.setOpacity(parseFloat(e.target.value));
     };
 
-    this.otherOpacitySlider.addEventListener("input", this._onOtherOpacityInput);
-    this._otherLevels.setOpacity(parseFloat(this.otherOpacitySlider.value) || 0.7);
+    this.otherOpacitySlider.addEventListener(
+      "input",
+      this._onOtherOpacityInput,
+    );
+    this._otherLevels.setOpacity(
+      parseFloat(this.otherOpacitySlider.value) || 0.7,
+    );
   },
 
   // Mark that the operator has taken manual control of the overlay transform.
@@ -992,7 +1141,11 @@ const MapAlignmentHook = {
     this._userAdjustedTransform = true;
     if (Array.isArray(this._overlayRestoreDisposers)) {
       this._overlayRestoreDisposers.forEach((dispose) => {
-        try { dispose(); } catch (_) { /* noop */ }
+        try {
+          dispose();
+        } catch (_) {
+          /* noop */
+        }
       });
       this._overlayRestoreDisposers = [];
     }
@@ -1001,17 +1154,63 @@ const MapAlignmentHook = {
   _markPreviewDirty() {
     if (!this._previewActive) return;
     this._previewActive = false;
-    this.pushEvent("alignment_preview_adjusted", {generation: this.generation});
+    this.pushEvent("alignment_preview_adjusted", {
+      generation: this.generation,
+    });
+  },
+
+  // Shared transform-change path. Every effective mutation calls this after
+  // mutating `this.transform`. It applies/repositions the overlay, refreshes
+  // pin status, preserves Package 07 preview-dirty semantics when
+  // `previewAdjusted` is true, and debounces one generation-tagged
+  // `alignment_transform_changed` so an open review closes (advisory only —
+  // INV-4). The debounce coalesces bursts into one push per window and the
+  // timer is cleared in destroyed() to avoid leaks.
+  _transformDidChange({ previewAdjusted } = {}) {
+    this._applyTransform();
+    this._syncPreviewStatus();
+
+    if (previewAdjusted) {
+      this._markPreviewDirty();
+    }
+
+    this._scheduleTransformInvalidation();
+  },
+
+  _scheduleTransformInvalidation() {
+    this._clearTransformInvalidationTimer();
+
+    this._transformInvalidationTimer = setTimeout(() => {
+      this._transformInvalidationTimer = null;
+
+      if (this._destroyed) return;
+
+      this.pushEvent("alignment_transform_changed", {
+        generation: this.generation,
+      });
+    }, TRANSFORM_INVALIDATION_DEBOUNCE_MS);
+  },
+
+  _clearTransformInvalidationTimer() {
+    if (!this._transformInvalidationTimer) return;
+
+    clearTimeout(this._transformInvalidationTimer);
+    this._transformInvalidationTimer = null;
   },
 
   _handleApplyPreviewTransform(payload) {
     if (!payload || payload.generation !== this.generation) {
-      this._logger.warn("MapAlignment: apply_preview_transform rejected (stale generation)");
+      this._logger.warn(
+        "MapAlignment: apply_preview_transform rejected (stale generation)",
+      );
       return;
     }
 
     if (!this._isValidAlignmentPayload(payload)) {
-      this._logger.warn("MapAlignment: apply_preview_transform rejected (invalid payload)", {payload});
+      this._logger.warn(
+        "MapAlignment: apply_preview_transform rejected (invalid payload)",
+        { payload },
+      );
       return;
     }
 
@@ -1025,19 +1224,26 @@ const MapAlignmentHook = {
 
     const result = this._cssTransformForAlignment(alignment, img);
     if (!result) {
-      this._logger.warn("MapAlignment: apply_preview_transform rejected (geometry not ready)");
+      this._logger.warn(
+        "MapAlignment: apply_preview_transform rejected (geometry not ready)",
+      );
       return;
     }
 
     this._markUserAdjusted();
     this.transform = result;
     this._previewActive = true;
-    this._applyTransform();
+    // The assisted preview is itself the new alignment source, so it does not
+    // dirty the preview. It still invalidates any open review because the
+    // displayed transform changed (advisory only — INV-4).
+    this._transformDidChange({ previewAdjusted: false });
   },
 
   _handleRestoreSavedTransform(payload) {
     if (!payload || payload.generation !== this.generation) {
-      this._logger.warn("MapAlignment: restore_saved_transform rejected (stale generation)");
+      this._logger.warn(
+        "MapAlignment: restore_saved_transform rejected (stale generation)",
+      );
       return;
     }
 
@@ -1045,26 +1251,35 @@ const MapAlignmentHook = {
       const img = this.overlay ? this.overlay.querySelector("img") : null;
       const result = this._cssTransformForAlignment(this.savedAlignment, img);
       if (!result) {
-        this._logger.warn("MapAlignment: restore_saved_transform rejected (geometry not ready)");
+        this._logger.warn(
+          "MapAlignment: restore_saved_transform rejected (geometry not ready)",
+        );
         return;
       }
       this.transform = result;
     } else {
-      this.transform = {...IDENTITY_TRANSFORM};
+      this.transform = { ...IDENTITY_TRANSFORM };
     }
 
     this._previewActive = false;
-    this._applyTransform();
+    // Restore replaces the displayed transform; it invalidates any open review
+    // (advisory only — INV-4) without dirtying the assisted preview.
+    this._transformDidChange({ previewAdjusted: false });
   },
 
   _handleAlignmentSaved(payload) {
     if (!payload || payload.generation !== this.generation) {
-      this._logger.warn("MapAlignment: alignment_saved rejected (stale generation)");
+      this._logger.warn(
+        "MapAlignment: alignment_saved rejected (stale generation)",
+      );
       return;
     }
 
     if (!this._isValidAlignmentPayload(payload)) {
-      this._logger.warn("MapAlignment: alignment_saved rejected (invalid payload)", {payload});
+      this._logger.warn(
+        "MapAlignment: alignment_saved rejected (invalid payload)",
+        { payload },
+      );
       return;
     }
 
@@ -1079,12 +1294,11 @@ const MapAlignmentHook = {
 
   _applyTransform() {
     if (!this.overlay) return;
-    const {tx, ty, rotation, scale} = this.transform;
+    const { tx, ty, rotation, scale } = this.transform;
     if (tx === 0 && ty === 0 && rotation === 0 && scale === 1) {
       this.overlay.style.transform = "none";
     } else {
-      this.overlay.style.transform =
-        `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
+      this.overlay.style.transform = `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
     // Active markers live outside the transformed overlay; recompute their
     // anchors so they track the floorplan as it translates/rotates/scales.
@@ -1101,7 +1315,7 @@ const MapAlignmentHook = {
   _isValidAlignmentPayload(payload) {
     if (!payload) return false;
 
-    const {center_lat, center_lon, scale_mpp, rotation_deg} = payload;
+    const { center_lat, center_lon, scale_mpp, rotation_deg } = payload;
 
     return (
       Number.isFinite(center_lat) &&
@@ -1122,7 +1336,10 @@ const MapAlignmentHook = {
     // controls outside its ignored root. Compatibility mode is only used by
     // older isolated hook fixtures that omit the required generation attribute.
     if (!this._legacyTestMode || !this.applyBtn) return;
-    const ready = !!(this._naturalSizeImg?.naturalWidth > 0 && this._naturalSizeImg?.naturalHeight > 0);
+    const ready = !!(
+      this._naturalSizeImg?.naturalWidth > 0 &&
+      this._naturalSizeImg?.naturalHeight > 0
+    );
     this.applyBtn.disabled = !ready;
     this.applyBtn.setAttribute("aria-disabled", ready ? "false" : "true");
     this.applyBtn.title = ready ? APPLY_ENABLED_TITLE : APPLY_DISABLED_TITLE;
@@ -1145,33 +1362,52 @@ const MapAlignmentHook = {
       return;
     }
 
-    const diagramCount = records.filter((s) => s.positionMode === "diagram").length;
+    const diagramCount = records.filter(
+      (s) => s.positionMode === "diagram",
+    ).length;
     const geoCount = records.filter((s) => s.positionMode === "geo").length;
     statusEl.textContent = previewStatusText(diagramCount, geoCount);
   },
 
-  _pushAlignmentEventIfValid(eventName) {
+  _pushAlignmentEventIfValid(eventName, beforePush) {
     const payload = this._computeAlignment();
     if (!payload) return;
     if (!this._isValidAlignmentPayload(payload)) {
-      this._logger.warn("MapAlignmentHook: invalid alignment payload; skipping pushEvent", {
-        eventName,
-        payload
-      });
+      this._logger.warn(
+        "MapAlignmentHook: invalid alignment payload; skipping pushEvent",
+        {
+          eventName,
+          payload,
+        },
+      );
       return;
     }
 
-    this.pushEvent(eventName, this._legacyTestMode ? payload : {...payload, generation: this.generation});
+    if (beforePush) beforePush();
+
+    this.pushEvent(
+      eventName,
+      this._legacyTestMode
+        ? payload
+        : { ...payload, generation: this.generation },
+    );
   },
 
   _emitMapState(state) {
-    if (this._destroyed || this._legacyTestMode || !this.generation || !MAP_STATES.has(state)) return;
-    this.pushEvent("map_state", {generation: this.generation, state});
+    if (
+      this._destroyed ||
+      this._legacyTestMode ||
+      !this.generation ||
+      !MAP_STATES.has(state)
+    )
+      return;
+    this.pushEvent("map_state", { generation: this.generation, state });
   },
 
   _bindRuntimeStateEvents() {
     const markReady = () => this._emitMapState("ready");
-    const markImageryUnavailable = () => this._emitMapState("imagery_unavailable");
+    const markImageryUnavailable = () =>
+      this._emitMapState("imagery_unavailable");
     this._tileLayers.filter(Boolean).forEach((layer) => {
       layer.on?.("load", markReady);
       layer.on?.("tileerror", markImageryUnavailable);
@@ -1200,16 +1436,28 @@ const MapAlignmentHook = {
     const scale = coarse ? 1.1 : 1.01;
 
     switch (action) {
-      case "left": this.transform.tx -= amount; break;
-      case "right": this.transform.tx += amount; break;
-      case "up": this.transform.ty -= amount; break;
-      case "down": this.transform.ty += amount; break;
-      case "rotate-left": this.transform.rotation -= rotation; break;
-      case "rotate-right": this.transform.rotation += rotation; break;
+      case "left":
+        this.transform.tx -= amount;
+        break;
+      case "right":
+        this.transform.tx += amount;
+        break;
+      case "up":
+        this.transform.ty -= amount;
+        break;
+      case "down":
+        this.transform.ty += amount;
+        break;
+      case "rotate-left":
+        this.transform.rotation -= rotation;
+        break;
+      case "rotate-right":
+        this.transform.rotation += rotation;
+        break;
       case "scale-down": {
         const nextScale = clampScaleInDirection(
           this.transform.scale,
-          this.transform.scale / scale
+          this.transform.scale / scale,
         );
         if (nextScale === this.transform.scale) return;
         this.transform.scale = nextScale;
@@ -1218,17 +1466,17 @@ const MapAlignmentHook = {
       case "scale-up": {
         const nextScale = clampScaleInDirection(
           this.transform.scale,
-          this.transform.scale * scale
+          this.transform.scale * scale,
         );
         if (nextScale === this.transform.scale) return;
         this.transform.scale = nextScale;
         break;
       }
-      default: return;
+      default:
+        return;
     }
     this._markUserAdjusted();
-    this._markPreviewDirty();
-    this._applyTransform();
+    this._transformDidChange({ previewAdjusted: true });
   },
 
   _fetchBuildings(lat, lon) {
@@ -1241,17 +1489,21 @@ const MapAlignmentHook = {
     }
 
     const url = `/map/buildings?lat=${lat}&lon=${lon}&radius=500`;
-    fetch(url, {credentials: "same-origin"})
+    fetch(url, { credentials: "same-origin" })
       .then((res) => (res.ok ? res.json() : null))
       .then((geojson) => {
         if (!geojson || !this.leafletMap) return;
         this._buildingsLayer = L.geoJSON(geojson, {
           style: {
-            color: paletteColor(this.el.closest("#diagram-page"), "--diagram-building-outline", "#374151"),
+            color: paletteColor(
+              this.el.closest("#diagram-page"),
+              "--diagram-building-outline",
+              "#374151",
+            ),
             weight: 2,
             fill: false,
-            interactive: false
-          }
+            interactive: false,
+          },
         }).addTo(this.leafletMap);
       })
       .catch(() => this._emitMapState("buildings_degraded"));
@@ -1279,13 +1531,13 @@ const MapAlignmentHook = {
     const worldCenter = map.containerPointToLatLng([oldCx, oldCy]);
     const scaleFactor = Math.pow(2, target - current);
 
-    map.setZoom(target, {animate: false});
+    map.setZoom(target, { animate: false });
 
     const newCenterPt = map.latLngToContainerPoint(worldCenter);
     this.transform.tx = newCenterPt.x - canvasW / 2;
     this.transform.ty = newCenterPt.y - canvasH / 2;
     this.transform.scale = this.transform.scale * scaleFactor;
-    this._applyTransform();
+    this._transformDidChange({ previewAdjusted: false });
     if (this._otherLevels) this._otherLevels.reposition();
   },
 
@@ -1293,7 +1545,10 @@ const MapAlignmentHook = {
     const { stops, level_id: levelId } = payload;
     const received = (stops || []).length;
     if (!this._activePinsRoot) {
-      this._logger.warn("MapAlignment: set_active_child_stops received but no #map-alignment-pins-active root", {received});
+      this._logger.warn(
+        "MapAlignment: set_active_child_stops received but no #map-alignment-pins-active root",
+        { received },
+      );
       return;
     }
 
@@ -1331,12 +1586,15 @@ const MapAlignmentHook = {
     const activeStopColor = paletteColor(
       this.el.closest("#diagram-page"),
       "--diagram-active-stop",
-      DIAGRAM_BASE_COLOR
+      DIAGRAM_BASE_COLOR,
     );
 
     this._activePinsRoot.innerHTML = "";
     this._activeChildStops.forEach((s) => {
-      const treatment = treatmentForLocationType(s.location_type, activeStopColor);
+      const treatment = treatmentForLocationType(
+        s.location_type,
+        activeStopColor,
+      );
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
@@ -1427,7 +1685,7 @@ const MapAlignmentHook = {
     this._activePinsRoot = null;
     this._activeChildStops = null;
     this._syncPreviewStatus();
-  }
+  },
 };
 
 function stopTooltipLabel(s, roleTag = "") {
@@ -1443,8 +1701,5 @@ function fallbackTooltipLabel(s, roleTag = "") {
   return `${stopTooltipLabel(s, roleTag)}${FALLBACK_POSITION_SUFFIX}`;
 }
 
-export {
-  parseAlignmentPayload,
-  readActiveAlignment,
-};
+export { parseAlignmentPayload, readActiveAlignment };
 export default MapAlignmentHook;

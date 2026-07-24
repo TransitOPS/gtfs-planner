@@ -1,4 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+import { existsSync } from "fs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const TEST_USER = {
   email: "browser-test@gtfs-planner.test",
@@ -19,7 +25,9 @@ async function loginAndGoToOverlays(page) {
 }
 
 // ── Smoke test (from Step 4; preserved) ──
-test("authenticates and opens the normative overlays page", async ({ page }) => {
+test("authenticates and opens the normative overlays page", async ({
+  page,
+}) => {
   await page.goto("/users/log_in");
   await page.fill('input[name="user[email]"]', TEST_USER.email);
   await page.fill('input[name="user[password]"]', TEST_USER.password);
@@ -60,7 +68,9 @@ test.describe("Closed overlay semantics", () => {
     await loginAndGoToOverlays(page);
   });
 
-  test("closed drawer is absent from role queries and tab order", async ({ page }) => {
+  test("closed drawer is absent from role queries and tab order", async ({
+    page,
+  }) => {
     // No dialog or alertdialog roles should be present when overlays are closed
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
@@ -91,7 +101,9 @@ test.describe("Closed overlay semantics", () => {
 test.describe("Open overlay modality", () => {
   test.beforeEach(async ({ page }) => {
     await loginAndGoToOverlays(page);
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
     await expect(page.locator("#ds-demo-drawer-overlay")).toBeVisible();
   });
 
@@ -102,15 +114,25 @@ test.describe("Open overlay modality", () => {
     await expect(page.getByRole("dialog")).toHaveCount(1);
   });
 
-  test("open confirmation names itself with role alertdialog", async ({ page }) => {
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
-    await expect(page.getByRole("alertdialog", { name: "Delete route 42?" })).toBeVisible();
+  test("open confirmation names itself with role alertdialog", async ({
+    page,
+  }) => {
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
+    await expect(
+      page.getByRole("alertdialog", { name: "Delete route 42?" }),
+    ).toBeVisible();
     await expect(page.getByRole("alertdialog")).toHaveCount(1);
   });
 
-  test("keyboard Tab traversal permits Chromium's native body boundary without reaching outside controls", async ({ page }) => {
+  test("keyboard Tab traversal permits Chromium's native body boundary without reaching outside controls", async ({
+    page,
+  }) => {
     // Open nested confirmation so it is the topmost modal
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
     // Initial focus should be on Cancel
     await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
@@ -157,7 +179,9 @@ test.describe("Open overlay modality", () => {
         isBody: ae === document.body,
       };
     });
-    expect(reverseFocusLocation.inConfirm || reverseFocusLocation.isBody).toBe(true);
+    expect(reverseFocusLocation.inConfirm || reverseFocusLocation.isBody).toBe(
+      true,
+    );
 
     if (reverseFocusLocation.isBody) {
       await page.keyboard.press("Shift+Tab");
@@ -175,7 +199,9 @@ test.describe("Open overlay modality", () => {
     expect(inConfirm).toBe(true);
   });
 
-  test("open drawer blocks interaction with outside page content", async ({ page }) => {
+  test("open drawer blocks interaction with outside page content", async ({
+    page,
+  }) => {
     // Try to focus the page heading outside the modal — should be blocked
     const pageTitle = page.locator("h1");
     await pageTitle.focus().catch(() => {});
@@ -196,9 +222,13 @@ test.describe("Dismissal and nesting", () => {
     await loginAndGoToOverlays(page);
   });
 
-  test("drawer closes via close control then reopens and closes via Escape", async ({ page }) => {
+  test("drawer closes via close control then reopens and closes via Escape", async ({
+    page,
+  }) => {
     const drawer = page.locator("#ds-demo-drawer-overlay");
-    const openBtn = page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")");
+    const openBtn = page.locator(
+      '#ds-drawer-demo button:has-text("Open drawer")',
+    );
 
     // Open and close via close button
     await openBtn.click();
@@ -213,9 +243,13 @@ test.describe("Dismissal and nesting", () => {
     await expect(drawer).not.toBeVisible();
   });
 
-  test("true drawer backdrop click closes the drawer exactly once", async ({ page }) => {
+  test("true drawer backdrop click closes the drawer exactly once", async ({
+    page,
+  }) => {
     const drawer = page.locator("#ds-demo-drawer-overlay");
-    const openBtn = page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")");
+    const openBtn = page.locator(
+      '#ds-drawer-demo button:has-text("Open drawer")',
+    );
 
     await openBtn.click();
     await expect(drawer).toBeVisible();
@@ -228,7 +262,9 @@ test.describe("Dismissal and nesting", () => {
 
   test("panel clicks do not close the drawer", async ({ page }) => {
     const drawer = page.locator("#ds-demo-drawer-overlay");
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
     await expect(drawer).toBeVisible();
 
     // Click inside the drawer inner panel (the <aside>)
@@ -237,8 +273,12 @@ test.describe("Dismissal and nesting", () => {
   });
 
   test("confirmation backdrop click defaults to refusal", async ({ page }) => {
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     const confirm = page.locator("#ds-demo-confirm");
     await expect(confirm).toBeVisible();
 
@@ -248,13 +288,19 @@ test.describe("Dismissal and nesting", () => {
     await expect(confirm).toBeVisible();
   });
 
-  test("nested Escape closes only the child confirmation, not the parent drawer", async ({ page }) => {
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+  test("nested Escape closes only the child confirmation, not the parent drawer", async ({
+    page,
+  }) => {
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
     const drawer = page.locator("#ds-demo-drawer-overlay");
     await expect(drawer).toBeVisible();
 
     // Open nested confirmation
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     const confirm = page.locator("#ds-demo-confirm");
     await expect(confirm).toBeVisible();
 
@@ -273,21 +319,33 @@ test.describe("Focus behavior", () => {
   });
 
   test("confirmation Cancel receives initial focus", async ({ page }) => {
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
     await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
   });
 
-  test("drawer heading receives focus when opened via heading mode", async ({ page }) => {
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+  test("drawer heading receives focus when opened via heading mode", async ({
+    page,
+  }) => {
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
     await expect(page.locator("#ds-demo-drawer-overlay")).toBeVisible();
     // Default initial_focus is :heading
     await expect(page.locator("#ds-demo-drawer-title")).toBeFocused();
   });
 
-  test("cancel and ordinary close use native opener restoration", async ({ page }) => {
-    const openBtn = page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")");
+  test("cancel and ordinary close use native opener restoration", async ({
+    page,
+  }) => {
+    const openBtn = page.locator(
+      '#ds-drawer-demo button:has-text("Open drawer")',
+    );
 
     // Focus the opener so restoration can be verified
     await openBtn.focus();
@@ -302,20 +360,28 @@ test.describe("Focus behavior", () => {
     await expect(openBtn).toBeFocused();
   });
 
-  test("child success closes confirmation and focuses result inside the still-open drawer", async ({ page }) => {
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+  test("child success closes confirmation and focuses result inside the still-open drawer", async ({
+    page,
+  }) => {
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
     const drawer = page.locator("#ds-demo-drawer-overlay");
     await expect(drawer).toBeVisible();
 
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
 
     // Click confirm to enter pending state
     await page.locator("#ds-demo-confirm-confirm").click();
-    await expect(page.locator("button:has-text(\"Complete successfully\")")).toBeVisible();
+    await expect(
+      page.locator('button:has-text("Complete successfully")'),
+    ).toBeVisible();
 
     // Complete successfully
-    await page.locator("button:has-text(\"Complete successfully\")").click();
+    await page.locator('button:has-text("Complete successfully")').click();
 
     // Confirmation closed
     await expect(page.locator("#ds-demo-confirm")).not.toBeVisible();
@@ -330,12 +396,18 @@ test.describe("Focus behavior", () => {
 test.describe("Pending and recovery", () => {
   test.beforeEach(async ({ page }) => {
     await loginAndGoToOverlays(page);
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
   });
 
-  test("pending copy appears immediately and duplicate confirmation is refused", async ({ page }) => {
+  test("pending copy appears immediately and duplicate confirmation is refused", async ({
+    page,
+  }) => {
     await page.locator("#ds-demo-confirm-confirm").click();
 
     // Pending label replaces confirmation label immediately (phx-disable-with)
@@ -349,7 +421,9 @@ test.describe("Pending and recovery", () => {
 
   test("pending blocks Escape and backdrop dismissal", async ({ page }) => {
     await page.locator("#ds-demo-confirm-confirm").click();
-    await expect(page.locator("#ds-demo-confirm[data-pending='true']")).toBeVisible();
+    await expect(
+      page.locator("#ds-demo-confirm[data-pending='true']"),
+    ).toBeVisible();
 
     // Escape is refused while pending
     await page.keyboard.press("Escape");
@@ -366,7 +440,7 @@ test.describe("Pending and recovery", () => {
     await expect(page.locator("#ds-demo-confirm-confirm")).toBeDisabled();
 
     // Trigger error outcome
-    await page.locator("button:has-text(\"Simulate error\")").click();
+    await page.locator('button:has-text("Simulate error")').click();
 
     // Both buttons should be re-enabled
     await expect(page.locator("#ds-demo-confirm-confirm")).toBeEnabled();
@@ -376,7 +450,9 @@ test.describe("Pending and recovery", () => {
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
   });
 
-  test("disconnect and reconnect cannot strand an open modal", async ({ page }) => {
+  test("disconnect and reconnect cannot strand an open modal", async ({
+    page,
+  }) => {
     // Enter pending state — the most dangerous time for a disconnect
     await page.locator("#ds-demo-confirm-confirm").click();
     await expect(page.locator("#ds-demo-confirm-confirm")).toBeDisabled();
@@ -397,7 +473,9 @@ test.describe("Pending and recovery", () => {
     await page.waitForSelector("#ds-page-overlays", { state: "visible" });
 
     // Page is interactive (no stranded inert overlay)
-    const openBtn = page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")");
+    const openBtn = page.locator(
+      '#ds-drawer-demo button:has-text("Open drawer")',
+    );
     await openBtn.waitFor({ state: "visible" });
   });
 });
@@ -406,11 +484,15 @@ test.describe("Pending and recovery", () => {
 test.describe("Presentation and motion", () => {
   test.beforeEach(async ({ page }) => {
     await loginAndGoToOverlays(page);
-    await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
+    await page
+      .locator('#ds-drawer-demo button:has-text("Open drawer")')
+      .click();
     await expect(page.locator("#ds-demo-drawer-overlay")).toBeVisible();
   });
 
-  test("drawer panel reaches the viewport edge and uses the slide-in animation", async ({ page }) => {
+  test("drawer panel reaches the viewport edge and uses the slide-in animation", async ({
+    page,
+  }) => {
     const panel = page.locator("#ds-demo-drawer");
     const motion = await panel.evaluate(async (element) => {
       const animation = element
@@ -448,13 +530,27 @@ test.describe("Presentation and motion", () => {
     expect(motion.duration).toBe(300);
     expect(motion.start.left).toBeGreaterThan(motion.middle.left);
     expect(motion.middle.left).toBeGreaterThan(motion.end.left);
-    expect(motion.start.left - motion.end.left).toBeGreaterThanOrEqual(motion.width * 0.99);
-    expect([motion.start.opacity, motion.middle.opacity, motion.end.opacity]).toEqual(["1", "1", "1"]);
-    expect([motion.start.scrollLeft, motion.middle.scrollLeft, motion.end.scrollLeft]).toEqual([0, 0, 0]);
-    expect(Math.abs(motion.end.right - page.viewportSize().width)).toBeLessThanOrEqual(1);
+    expect(motion.start.left - motion.end.left).toBeGreaterThanOrEqual(
+      motion.width * 0.99,
+    );
+    expect([
+      motion.start.opacity,
+      motion.middle.opacity,
+      motion.end.opacity,
+    ]).toEqual(["1", "1", "1"]);
+    expect([
+      motion.start.scrollLeft,
+      motion.middle.scrollLeft,
+      motion.end.scrollLeft,
+    ]).toEqual([0, 0, 0]);
+    expect(
+      Math.abs(motion.end.right - page.viewportSize().width),
+    ).toBeLessThanOrEqual(1);
   });
 
-  test("all three action controls compute to at least 44 by 44 CSS pixels", async ({ page }) => {
+  test("all three action controls compute to at least 44 by 44 CSS pixels", async ({
+    page,
+  }) => {
     // Drawer close button
     const closeBtn = page.locator("#ds-demo-drawer-close");
     let box = await closeBtn.boundingBox();
@@ -463,7 +559,9 @@ test.describe("Presentation and motion", () => {
     expect(box.height).toBeGreaterThanOrEqual(44);
 
     // Open confirmation to test its action buttons
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
 
     // Confirmation Cancel button
@@ -481,12 +579,16 @@ test.describe("Presentation and motion", () => {
     expect(box.height).toBeGreaterThanOrEqual(44);
   });
 
-  test("drawer close tooltip matches its accessible name on hover and focus", async ({ page }) => {
+  test("drawer close tooltip matches its accessible name on hover and focus", async ({
+    page,
+  }) => {
     const closeBtn = page.locator("#ds-demo-drawer-close");
     const tooltip = closeBtn.locator("..");
     const accessibleName = await closeBtn.getAttribute("aria-label");
     const tooltipOpacity = () =>
-      tooltip.evaluate((element) => getComputedStyle(element, "::before").opacity);
+      tooltip.evaluate(
+        (element) => getComputedStyle(element, "::before").opacity,
+      );
 
     await expect(tooltip).toHaveAttribute("data-tip", accessibleName);
 
@@ -500,7 +602,9 @@ test.describe("Presentation and motion", () => {
     await expect.poll(tooltipOpacity).toBe("1");
   });
 
-  test("emulated reduced motion reports zero animation and transition duration", async ({ page }) => {
+  test("emulated reduced motion reports zero animation and transition duration", async ({
+    page,
+  }) => {
     // Emulate the prefers-reduced-motion: reduce media query
     await page.emulateMedia({ reducedMotion: "reduce" });
 
@@ -514,7 +618,9 @@ test.describe("Presentation and motion", () => {
     // Dialog ::backdrop animation duration should be zero
     const backdropDuration = await page.evaluate(() => {
       const el = document.getElementById("ds-demo-drawer-overlay");
-      return el ? getComputedStyle(el, "::backdrop").animationDuration : "not found";
+      return el
+        ? getComputedStyle(el, "::backdrop").animationDuration
+        : "not found";
     });
     expect(backdropDuration).toBe("0s");
 
@@ -527,7 +633,9 @@ test.describe("Presentation and motion", () => {
 
     // Confirmation panel inner animation should also be zero
     // Open confirmation first
-    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
+    await page
+      .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+      .click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
 
     const confirmPanelDuration = await page.evaluate(() => {
@@ -537,5 +645,296 @@ test.describe("Presentation and motion", () => {
       return inner ? getComputedStyle(inner).animationDuration : "not found";
     });
     expect(confirmPanelDuration).toBe("0s");
+  });
+});
+
+// ── Confirmation dialog defaults (small danger) ──
+// Package 08 step 1 widens <.confirm_dialog> with size and confirm_variant.
+// The new axes default to the original small danger panel; this block is the
+// real-browser regression for that default contract at the package's two
+// declared viewports. The wide primary composition lands in step 2.
+test.describe("confirmation dialog defaults", () => {
+  for (const viewport of [
+    { width: 1280, height: 900 },
+    { width: 1440, height: 1000 },
+  ]) {
+    test(`opens through OverlayDialog, focuses Cancel, locks when pending, closes, and has no horizontal overflow at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport);
+      await loginAndGoToOverlays(page);
+
+      await page
+        .locator('#ds-drawer-demo button:has-text("Open drawer")')
+        .click();
+      const drawer = page.locator("#ds-demo-drawer-overlay");
+      await expect(drawer).toBeVisible();
+
+      await page
+        .locator('#ds-demo-drawer button[phx-click="open_confirm"]')
+        .click();
+      const confirm = page.locator("#ds-demo-confirm");
+      await expect(confirm).toBeVisible();
+      await expect(confirm).toHaveJSProperty("open", true);
+
+      // Cancel receives initial focus (cancel-first confirmation policy).
+      await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
+
+      // The panel keeps the small danger presentation at both viewports.
+      const panel = page.locator("#ds-demo-confirm > div > div");
+      const panelClass = await panel.getAttribute("class");
+      expect(panelClass).toContain("max-w-sm");
+      expect(panelClass).not.toContain("max-w-2xl");
+
+      const confirmBtn = page.locator("#ds-demo-confirm-confirm");
+      const confirmBtnClass = await confirmBtn.getAttribute("class");
+      expect(confirmBtnClass).toContain("bg-error");
+      expect(confirmBtnClass).toContain("text-error-content");
+      expect(confirmBtnClass).not.toContain("bg-primary");
+
+      // Click confirm to enter pending; both buttons lock and the dialog stays open.
+      await confirmBtn.click();
+      await expect(confirmBtn).toBeDisabled();
+      await expect(page.locator("#ds-demo-confirm-cancel")).toBeDisabled();
+      await expect(
+        page.locator("#ds-demo-confirm[data-pending='true']"),
+      ).toBeVisible();
+      await expect(confirm).toBeVisible();
+
+      // Recover via the demo's error path so the dialog remains interactive.
+      await page.locator('button:has-text("Simulate error")').click();
+      await expect(confirmBtn).toBeEnabled();
+      await expect(page.locator("#ds-demo-confirm-cancel")).toBeEnabled();
+
+      // Close via Escape (hook routes through on_cancel).
+      await page.keyboard.press("Escape");
+      await expect(confirm).not.toBeVisible();
+
+      // No horizontal overflow anywhere on the overlays page after dismissal.
+      const overflow = await page.evaluate(() => {
+        return {
+          bodyScroll: document.body.scrollWidth - document.body.clientWidth,
+          htmlScroll:
+            document.documentElement.scrollWidth -
+            document.documentElement.clientWidth,
+        };
+      });
+      expect(overflow.bodyScroll).toBeLessThanOrEqual(0);
+      expect(overflow.htmlScroll).toBeLessThanOrEqual(0);
+    });
+  }
+});
+
+// ── Review dialog (wide primary) ──
+// Package 08 step 2 composes the step-1 lg/primary axes into a runnable
+// review-dialog demo on /design/overlays. The dialog owns its own state
+// (open_review_confirm/cancel_review_confirm/run_review_confirm), independent
+// of the destructive confirm demo. The cases below mirror the closed/open/
+// pending contracts and capture the production surface at both viewports; the
+// reference capture runs only when the local mock-05 file is present (the
+// .specs/ workspace artifact), so CI never depends on a gitignored path.
+test.describe("review dialog", () => {
+  const reviewReferencePath = resolve(
+    __dirname,
+    "..",
+    "..",
+    ".specs",
+    "journal-08",
+    "visual-references",
+    "mock-05-align-mode-v2.html",
+  );
+
+  for (const viewport of [
+    { width: 1280, height: 900 },
+    { width: 1440, height: 1000 },
+  ]) {
+    test(`opens, focuses Cancel, locks when pending, recovers, and has no horizontal overflow at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport);
+      await loginAndGoToOverlays(page);
+
+      // The destructive confirm demo stays closed while the review demo is driven.
+      await expect(
+        page.locator("#ds-demo-confirm[data-open='false']"),
+      ).toBeAttached();
+
+      await page.locator("#ds-review-confirm-open").click();
+      const review = page.locator("#ds-demo-review-confirm");
+      await expect(review).toBeVisible();
+      await expect(review).toHaveJSProperty("open", true);
+
+      // One alertdialog on the page, named by its title.
+      await expect(
+        page.getByRole("alertdialog", {
+          name: "Update coordinates for 3 stops?",
+        }),
+      ).toBeVisible();
+      await expect(page.getByRole("alertdialog")).toHaveCount(1);
+
+      // Cancel receives initial focus (cancel-first confirmation policy).
+      await expect(
+        page.locator("#ds-demo-review-confirm-cancel"),
+      ).toBeFocused();
+
+      // The panel widens to lg; the confirm button takes the primary palette.
+      const panel = page.locator("#ds-demo-review-confirm > div > div");
+      const panelClass = await panel.getAttribute("class");
+      expect(panelClass).toContain("max-w-2xl");
+      expect(panelClass).not.toContain("max-w-sm");
+
+      const confirmBtn = page.locator("#ds-demo-review-confirm-confirm");
+      const confirmBtnClass = await confirmBtn.getAttribute("class");
+      expect(confirmBtnClass).toContain("bg-primary");
+      expect(confirmBtnClass).toContain("text-primary-content");
+      expect(confirmBtnClass).not.toContain("bg-error");
+
+      // The body scrolls (max-h-[60vh]) and contains a three-row evidence table.
+      const bodyClass = await page
+        .locator("#ds-demo-review-confirm-body")
+        .getAttribute("class");
+      expect(bodyClass).toContain("max-h-[60vh]");
+      expect(bodyClass).toContain("overflow-y-auto");
+      await expect(
+        page.locator("#ds-demo-review-confirm-evidence tbody tr"),
+      ).toHaveCount(3);
+
+      // The consequence copy is wired through aria-describedby.
+      await expect(review).toHaveAttribute(
+        "aria-describedby",
+        "ds-demo-review-confirm-consequence",
+      );
+
+      // Confirm enters durable pending; both actions lock and dismissal is refused.
+      await confirmBtn.click();
+      await expect(confirmBtn).toBeDisabled();
+      await expect(
+        page.locator("#ds-demo-review-confirm-cancel"),
+      ).toBeDisabled();
+      await expect(
+        page.locator("#ds-demo-review-confirm[data-pending='true']"),
+      ).toBeVisible();
+      await expect(confirmBtn).toHaveText("Updating…");
+
+      // Escape is refused while pending.
+      await page.keyboard.press("Escape");
+      await expect(review).toBeVisible();
+
+      // Backdrop click is also refused while pending.
+      await review.click({ position: { x: 5, y: 5 } });
+      await expect(review).toBeVisible();
+
+      // The destructive demo is not entangled with the review pending state.
+      await expect(
+        page.locator("#ds-demo-confirm[data-open='false']"),
+      ).toBeAttached();
+      await expect(
+        page.locator("#ds-demo-confirm[data-pending='true']"),
+      ).toHaveCount(0);
+
+      // Recover via the demo's explicit error path so the dialog remains interactive.
+      await page.locator('button[phx-click="review_confirm_error"]').click();
+      await expect(confirmBtn).toBeEnabled();
+      await expect(
+        page.locator("#ds-demo-review-confirm-cancel"),
+      ).toBeEnabled();
+      await expect(confirmBtn).toHaveText("Update 3 stops");
+
+      // Close via Escape (hook routes through on_cancel) and verify focus restoration.
+      const opener = page.locator("#ds-review-confirm-open");
+      await opener.focus();
+      await page.keyboard.press("Escape");
+      await expect(review).not.toBeVisible();
+      await expect(opener).toBeFocused();
+
+      // No horizontal overflow anywhere on the overlays page after dismissal.
+      const overflow = await page.evaluate(() => {
+        return {
+          bodyScroll: document.body.scrollWidth - document.body.clientWidth,
+          htmlScroll:
+            document.documentElement.scrollWidth -
+            document.documentElement.clientWidth,
+        };
+      });
+      expect(overflow.bodyScroll).toBeLessThanOrEqual(0);
+      expect(overflow.htmlScroll).toBeLessThanOrEqual(0);
+    });
+
+    test(`captures the production review dialog at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport);
+      await loginAndGoToOverlays(page);
+
+      await page.locator("#ds-review-confirm-open").click();
+      const review = page.locator("#ds-demo-review-confirm");
+      await expect(review).toBeVisible();
+      await expect(
+        page.locator("#ds-demo-review-confirm-cancel"),
+      ).toBeFocused();
+
+      const panel = page.locator("#ds-demo-review-confirm > div > div");
+      await panel.evaluate(async (element) => {
+        await Promise.all(
+          element.getAnimations().map((animation) => animation.finished),
+        );
+      });
+      await expect(panel).toHaveCSS("opacity", "1");
+
+      await page.screenshot({
+        path: resolve(
+          __dirname,
+          "..",
+          "..",
+          ".artifacts",
+          "journal-08",
+          `production-review-dialog-${viewport.width}.png`,
+        ),
+        fullPage: false,
+      });
+    });
+  }
+
+  // Reference capture: runs only when the local mock-05 reference file exists.
+  // The .specs/ workspace is gitignored, so CI skips this case rather than
+  // depending on a path that is not checked in.
+  test.describe("local reference capture (skipped when .specs/ is absent)", () => {
+    test.skip(
+      () => !existsSync(reviewReferencePath),
+      "reference file not present",
+    );
+
+    for (const viewport of [
+      { width: 1280, height: 900 },
+      { width: 1440, height: 1000 },
+    ]) {
+      test(`captures the mock-05 reference at ${viewport.width}x${viewport.height}`, async ({
+        page,
+      }) => {
+        await page.setViewportSize(viewport);
+        await page.goto(`file://${reviewReferencePath}`);
+        await page.waitForLoadState("networkidle");
+
+        // The mock is wider than the viewport by design (fixed 1360px shell);
+        // capture the review-state region directly.
+        const reviewSection = page.locator(
+          'section:has-text("REVIEW STATE — BEFORE THE BULK WRITE")',
+        );
+        await expect(reviewSection).toBeVisible();
+        await reviewSection.scrollIntoViewIfNeeded();
+
+        await page.screenshot({
+          path: resolve(
+            __dirname,
+            "..",
+            "..",
+            ".artifacts",
+            "journal-08",
+            `reference-review-dialog-${viewport.width}.png`,
+          ),
+          fullPage: false,
+        });
+      });
+    }
   });
 });

@@ -54,6 +54,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @history_key :history_load
   @journal_load_key :journal_load
   @drawer_journal_load_key :drawer_journal_load
+  @no_coordinate_changes_status "No coordinate changes to review."
+  @alignment_changed_status "The alignment changed — review again."
 
   @type drawer_journal_state ::
           :idle | :initial_loading | :ready | :refreshing | :error
@@ -211,9 +213,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:map_generation, "unmounted")
      |> assign(:map_state, :initializing)
      |> assign(:alignment_preview, nil)
-     |> assign(:coordinate_preview, nil)
-     |> assign(:coordinate_confirmation, false)
-     |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))
+     |> assign(:coordinate_review, nil)
+     |> assign(:review_transform, nil)
+     |> assign(:coordinate_review_status, nil)
+     |> assign(:coordinate_review_error, nil)
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg),
@@ -461,6 +464,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, [])
     |> assign(:child_stops_total, 0)
     |> assign(:child_stops_with_geo, 0)
+    |> assign(:child_stops_with_floorplan, 0)
     |> assign(:anchor_count, 0)
     |> assign(:cross_level_pathway_total, 0)
     |> assign(:cross_level_pathway_with_geo, 0)
@@ -519,6 +523,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
       end)
 
+    # Floorplan placement uses the same normalizer as Package 06's projection
+    # so the pre-review vocabulary (placed/total/unplaced) shares one identity
+    # with the post-review dialog (changed/unchanged/unplaced) (INV-7, DC-4).
+    child_stops_with_floorplan =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(Coordinates.normalize_point(s.diagram_coordinate))
+      end)
+
     anchor_count =
       Enum.count(child_stops_on_level, fn s ->
         not is_nil(s.diagram_coordinate) and not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
@@ -540,6 +552,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, child_stops_on_level)
     |> assign(:child_stops_total, child_stops_total)
     |> assign(:child_stops_with_geo, child_stops_with_geo)
+    |> assign(:child_stops_with_floorplan, child_stops_with_floorplan)
     |> assign(:anchor_count, anchor_count)
     |> assign(:cross_level_pathway_total, cross_level_pathway_total)
     |> assign(:cross_level_pathway_with_geo, cross_level_pathway_with_geo)
@@ -1094,6 +1107,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   image_natural_height={@floorplan_image_h}
                   child_stops_total={@child_stops_total}
                   child_stops_with_geo={@child_stops_with_geo}
+                  child_stops_with_floorplan={@child_stops_with_floorplan}
                   anchor_count={@anchor_count}
                   cross_level_pathway_total={@cross_level_pathway_total}
                   cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
@@ -1101,9 +1115,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   map_generation={@map_generation}
                   map_state={@map_state}
                   alignment_preview={@alignment_preview}
-                  coordinate_preview={@coordinate_preview}
-                  coordinate_confirmation={@coordinate_confirmation}
-                  coordinate_apply_form={@coordinate_apply_form}
+                  coordinate_review={@coordinate_review}
+                  review_transform={@review_transform}
+                  coordinate_review_status={@coordinate_review_status}
+                  coordinate_review_error={@coordinate_review_error}
                 />
               </div>
             <% else %>
@@ -2797,9 +2812,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   def handle_event("save_alignment", _params, socket), do: {:noreply, socket}
 
+  # Package 08 step 4: the evidence-first review contract is the sole route to
+  # coordinate persistence. The retired inline preview, typed-phrase apply, and
+  # immediate-persistence events were removed in the same cutover that wired
+  # the hook to the events below (INV-2).
+
   @impl true
   def handle_event(
-        "preview_coordinate_application",
+        "open_coordinate_review",
         %{
           "generation" => generation,
           "center_lat" => lat,
@@ -2824,35 +2844,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, put_flash(socket, :error, apply_alignment_error_message(:invalid_image_dims))}
 
       true ->
-        attrs = %{
+        # Normalize the displayed transform once, at review-open time. Apply
+        # resubmits this stored transform with the server's fingerprint, never a
+        # value re-read from later client state (INV-3, DC-1).
+        review_transform = %{
           floorplan_center_lat: lat,
           floorplan_center_lon: lon,
           floorplan_scale_mpp: mpp,
           floorplan_rotation_deg: rot
         }
 
-        case Gtfs.preview_stop_level_coordinate_application(
+        case Gtfs.preview_stop_level_alignment(
                stop_level.id,
-               attrs,
+               review_transform,
                image_w,
                image_h
              ) do
-          {:ok, preview} ->
+          {:ok, %{changes: []}} ->
             {:noreply,
              socket
-             |> assign(:coordinate_preview, Map.put(preview, :generation, generation))
-             |> assign(:coordinate_confirmation, false)
-             |> assign(
-               :coordinate_apply_form,
-               to_form(%{"phrase" => ""}, as: :coordinate_preview)
-             )}
+             |> assign(:coordinate_review, nil)
+             |> assign(:review_transform, nil)
+             |> assign(:coordinate_review_error, nil)
+             |> assign(:coordinate_review_status, @no_coordinate_changes_status)}
+
+          {:ok, review} ->
+            stamped_review =
+              Map.merge(review, %{generation: generation, stop_level_id: stop_level.id})
+
+            {:noreply,
+             socket
+             |> assign(:coordinate_review, stamped_review)
+             |> assign(:review_transform, review_transform)
+             |> assign(:coordinate_review_error, nil)
+             |> assign(:coordinate_review_status, nil)}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply,
              put_flash(
                socket,
                :error,
-               alignment_changeset_error_message("Could not save alignment", changeset)
+               alignment_changeset_error_message("Could not open coordinate review", changeset)
              )}
 
           {:error, reason} ->
@@ -2861,79 +2893,130 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  def handle_event("preview_coordinate_application", _params, socket), do: {:noreply, socket}
-
-  # The former immediate persistence event is deliberately inert. Map hooks
-  # now submit only a generation-tagged preview request, and the server-owned
-  # confirmation below is the sole route to coordinate persistence.
-  def handle_event("save_and_apply_alignment", _params, socket), do: {:noreply, socket}
+  def handle_event("open_coordinate_review", _params, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("open_coordinate_preview_confirmation", _params, socket) do
-    if current_coordinate_preview?(socket) do
-      {:noreply, assign(socket, :coordinate_confirmation, true)}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("cancel_coordinate_preview", _params, socket) do
+  def handle_event("cancel_coordinate_review", _params, socket) do
     {:noreply,
      socket
-     |> assign(:coordinate_confirmation, false)
-     |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))}
+     |> assign(:coordinate_review, nil)
+     |> assign(:review_transform, nil)
+     |> assign(:coordinate_review_error, nil)
+     |> assign(:coordinate_review_status, nil)}
   end
 
   @impl true
-  def handle_event(
-        "apply_coordinate_preview",
-        %{"coordinate_preview" => %{"phrase" => "APPLY"}},
-        socket
-      ) do
-    case socket.assigns.coordinate_preview do
-      %{generation: generation} = preview ->
-        if current_map_generation?(socket, generation) do
-          case Gtfs.apply_stop_level_coordinate_preview(
-                 Map.delete(preview, :generation),
-                 socket.assigns.audit_ctx
-               ) do
-            {:ok, %{active_stop_level: updated, touched_stop_count: count}} ->
-              {:noreply,
-               socket
-               |> assign(:active_stop_level, updated)
-               |> assign(:coordinate_preview, nil)
-               |> assign(:coordinate_confirmation, false)
-               |> assign(:other_level_markers_cache, %{})
-               |> assign(:other_level_counts_cache, %{})
-               |> load_station_stop_levels_cache()
-               |> refresh_lists()
-               |> put_flash(:info, "Applied coordinates to #{count} child stops")}
+  def handle_event("apply_coordinate_review", _params, socket) do
+    with %{generation: generation, stop_level_id: stop_level_id, fingerprint: fingerprint} <-
+           socket.assigns.coordinate_review,
+         true <- current_map_generation?(socket, generation),
+         %StopLevel{id: ^stop_level_id} <- socket.assigns.active_stop_level do
+      %{
+        floorplan_center_lat: lat,
+        floorplan_center_lon: lon,
+        floorplan_scale_mpp: mpp,
+        floorplan_rotation_deg: rot
+      } = socket.assigns.review_transform
 
-            {:error, reason} when reason in [:stale_preview, :busy] ->
-              {:noreply,
-               socket
-               |> clear_coordinate_preview()
-               |> put_flash(:error, coordinate_preview_error_message(reason))}
+      # The fingerprinted apply takes the four stored transform floats plus the
+      # server fingerprint captured at review-open time. The server rechecks the
+      # fingerprint under FOR UPDATE; this is the only stale-write fence (DC-2).
+      reviewed_alignment_attrs = %{
+        floorplan_center_lat: lat,
+        floorplan_center_lon: lon,
+        floorplan_scale_mpp: mpp,
+        floorplan_rotation_deg: rot,
+        fingerprint: fingerprint
+      }
 
-            {:error, _reason} ->
-              {:noreply,
-               socket
-               |> clear_coordinate_preview()
-               |> put_flash(:error, "Could not apply coordinate preview")}
-          end
-        else
-          {:noreply, socket}
-        end
+      image_w = socket.assigns.floorplan_image_w
+      image_h = socket.assigns.floorplan_image_h
 
+      case Gtfs.save_and_apply_stop_level_alignment(
+             stop_level_id,
+             reviewed_alignment_attrs,
+             image_w,
+             image_h,
+             socket.assigns.audit_ctx
+           ) do
+        {:ok, %{active_stop_level: updated, apply_result: %{updated_stop_count: count}}} ->
+          {:noreply,
+           socket
+           |> assign(:active_stop_level, updated)
+           |> assign(:coordinate_review, nil)
+           |> assign(:review_transform, nil)
+           |> assign(:coordinate_review_error, nil)
+           |> assign(:coordinate_review_status, nil)
+           |> assign(:other_level_markers_cache, %{})
+           |> assign(:other_level_counts_cache, %{})
+           |> load_station_stop_levels_cache()
+           |> refresh_lists()
+           |> push_child_stop_markers()
+           |> push_event("alignment_saved", %{
+             generation: socket.assigns.map_generation,
+             center_lat: updated.floorplan_center_lat,
+             center_lon: updated.floorplan_center_lon,
+             scale_mpp: updated.floorplan_scale_mpp,
+             rotation_deg: updated.floorplan_rotation_deg
+           })
+           |> put_flash(:info, "Updated coordinates for #{count} stops")}
+
+        {:error, reason} when reason in [:stale_review, :busy] ->
+          {:noreply,
+           socket
+           |> assign(:coordinate_review, nil)
+           |> assign(:review_transform, nil)
+           |> assign(:coordinate_review_error, nil)
+           |> assign(:coordinate_review_status, coordinate_review_error_message(reason))}
+
+        {:error, %Ecto.Changeset{} = changeset} ->
+          # Recoverable: preserve the review rows so a later apply can reuse
+          # the same fingerprinted projection. The focused alert is rendered in
+          # step 4; here we only assign the recovery error string.
+          {:noreply,
+           assign(
+             socket,
+             :coordinate_review_error,
+             alignment_changeset_error_message("Could not apply coordinate review", changeset)
+           )}
+
+        {:error, reason} ->
+          {:noreply,
+           assign(socket, :coordinate_review_error, apply_alignment_error_message(reason))}
+      end
+    else
       _ ->
+        # No current review, generation miss, or stop-level mismatch: no-op.
         {:noreply, socket}
     end
   end
 
-  def handle_event("apply_coordinate_preview", _params, socket) do
-    {:noreply, put_flash(socket, :error, "Type APPLY to confirm coordinate changes")}
+  @impl true
+  def handle_event("alignment_transform_changed", %{"generation" => generation}, socket) do
+    # UX-only invalidation. Closes an open review or clears a prior empty-result
+    # status. The Package 06 fingerprint recheck remains the sole stale-write
+    # fence; this event is never trusted as a guarantee (INV-4).
+    cond do
+      not current_map_generation?(socket, generation) ->
+        {:noreply, socket}
+
+      not is_nil(socket.assigns.coordinate_review) ->
+        {:noreply,
+         socket
+         |> assign(:coordinate_review, nil)
+         |> assign(:review_transform, nil)
+         |> assign(:coordinate_review_error, nil)
+         |> assign(:coordinate_review_status, @alignment_changed_status)}
+
+      socket.assigns.coordinate_review_status == @no_coordinate_changes_status ->
+        {:noreply, assign(socket, :coordinate_review_status, nil)}
+
+      true ->
+        {:noreply, socket}
+    end
   end
+
+  def handle_event("alignment_transform_changed", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event(
@@ -2989,7 +3072,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # The former one-click infer-and-persist event is deliberately inert. The
   # replacement preview path (Package 07) exposes read-only inference through
   # "preview_alignment"; this clause remains as a compatibility boundary for
-  # stale clients, matching the established "save_and_apply_alignment" pattern.
+  # stale clients.
   @impl true
   def handle_event("infer_alignment", _params, socket), do: {:noreply, socket}
 
@@ -4348,14 +4431,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:floorplan_image_w, nil)
     |> assign(:floorplan_image_h, nil)
     |> assign(:alignment_preview, nil)
-    |> clear_coordinate_preview()
-  end
-
-  defp clear_coordinate_preview(socket) do
-    socket
-    |> assign(:coordinate_preview, nil)
-    |> assign(:coordinate_confirmation, false)
-    |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))
+    |> assign(:coordinate_review, nil)
+    |> assign(:review_transform, nil)
+    |> assign(:coordinate_review_status, nil)
+    |> assign(:coordinate_review_error, nil)
   end
 
   defp current_map_generation?(socket, generation) when is_binary(generation) do
@@ -4364,22 +4443,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp current_map_generation?(_socket, _generation), do: false
 
-  defp current_coordinate_preview?(socket) do
-    case socket.assigns.coordinate_preview do
-      %{generation: generation, stop_level_id: stop_level_id} ->
-        current_map_generation?(socket, generation) and
-          match?(%StopLevel{id: ^stop_level_id}, socket.assigns.active_stop_level)
+  # Package 08 step 4: review-vocabulary copy. The legacy preview helpers were
+  # removed in the same cutover that wired this contract (INV-2).
+  defp coordinate_review_error_message(:stale_review),
+    do: "The station changed. Review the coordinate changes again."
 
-      _ ->
-        false
-    end
-  end
-
-  defp coordinate_preview_error_message(:stale_preview),
-    do: "The station changed. Preview the coordinate changes again."
-
-  defp coordinate_preview_error_message(:busy),
-    do: "The coordinate update is busy. Preview the coordinate changes again."
+  defp coordinate_review_error_message(:busy),
+    do: "The coordinate update is busy. Review the coordinate changes again."
 
   defp map_state_from_string("initializing"), do: :initializing
   defp map_state_from_string("ready"), do: :ready
@@ -6265,6 +6335,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
       end)
 
+    child_stops_with_floorplan =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(Coordinates.normalize_point(s.diagram_coordinate))
+      end)
+
     anchor_count =
       Enum.count(child_stops_on_level, fn s ->
         not is_nil(s.diagram_coordinate) and not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
@@ -6282,6 +6357,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(:child_stops_total, child_stops_total)
     |> assign(:child_stops_with_geo, child_stops_with_geo)
+    |> assign(:child_stops_with_floorplan, child_stops_with_floorplan)
     |> assign(:anchor_count, anchor_count)
     |> assign(:cross_level_pathway_total, cross_level_pathway_total)
     |> assign(:cross_level_pathway_with_geo, cross_level_pathway_with_geo)

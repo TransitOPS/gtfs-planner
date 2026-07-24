@@ -1377,6 +1377,118 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </div>
 
+      <h2 class="mt-8 text-lg font-semibold">Review dialog</h2>
+      <p id="ds-review-confirm-guidance" class="mt-1 text-sm text-base-content/70">
+        The wide primary variant for non-destructive bulk review. Pass
+        <code class="font-mono text-sm">size="lg"</code>
+        to widen the panel to <code class="font-mono text-sm">max-w-2xl</code>
+        and bound the body at <code class="font-mono text-sm">max-h-[60vh]</code>
+        so a full evidence table scrolls without truncation, and
+        <code class="font-mono text-sm">confirm_variant="primary"</code>
+        to swap the confirm button onto the primary palette — the action is
+        affirmative, not destructive. Cancel-first focus and durable pending
+        lockout apply unchanged; only the size and the confirm color change.
+      </p>
+
+      <div id="ds-review-confirm-demo" class="mt-3 border border-base-300 p-4">
+        <.button id="ds-review-confirm-open" phx-click="open_review_confirm">
+          Open review dialog
+        </.button>
+
+        <p
+          :if={@review_confirm_result == :success}
+          id="ds-review-confirm-result"
+          class="mt-3 text-sm text-success"
+          tabindex="-1"
+        >
+          Coordinates updated.
+        </p>
+
+        <.confirm_dialog
+          id="ds-demo-review-confirm"
+          open={@review_confirm_open}
+          title="Update coordinates for 3 stops?"
+          confirm_label="Update 3 stops"
+          pending_label="Updating…"
+          on_confirm="run_review_confirm"
+          on_cancel="cancel_review_confirm"
+          pending={@review_confirm_pending}
+          return_focus_id={@review_confirm_return_focus_id}
+          described_by="ds-demo-review-confirm-consequence"
+          size="lg"
+          confirm_variant="primary"
+        >
+          <p id="ds-demo-review-confirm-consequence" class="text-sm text-base-content/80">
+            Saving this alignment updates latitude/longitude for the stops below.
+            Five unplaced stops are unchanged. This is a documentation-only demo.
+          </p>
+
+          <div
+            id="ds-demo-review-confirm-recovery"
+            class="mt-4 border border-warning bg-warning/10 px-3 py-2 text-sm text-base-content"
+          >
+            <span class="font-semibold">Recovery:</span>
+            this update cannot currently be reverted as one batch. Review the
+            coordinate changes before applying.
+          </div>
+
+          <table id="ds-demo-review-confirm-evidence" class="mt-4 w-full text-sm">
+            <thead>
+              <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
+                <th scope="col" class="py-2 font-medium">Stop</th>
+                <th scope="col" class="py-2 text-right font-medium">Current coordinates</th>
+                <th scope="col" class="py-2 text-right font-medium">New coordinates</th>
+                <th scope="col" class="py-2 text-right font-medium">Change</th>
+              </tr>
+            </thead>
+            <tbody class="font-mono">
+              <tr class="border-b border-base-200">
+                <td class="py-3">32095_node_west</td>
+                <td class="py-3 text-right tabular-nums">40.038601, −75.144411</td>
+                <td class="py-3 text-right tabular-nums">40.038615, −75.144392</td>
+                <td class="py-3 text-right tabular-nums">2.3 m</td>
+              </tr>
+              <tr class="border-b border-base-200">
+                <td class="py-3">32095_node_fare</td>
+                <td class="py-3 text-right tabular-nums">40.038724, −75.144102</td>
+                <td class="py-3 text-right tabular-nums">40.038711, −75.144116</td>
+                <td class="py-3 text-right tabular-nums">1.9 m</td>
+              </tr>
+              <tr>
+                <td class="py-3">32095_platform_b</td>
+                <td class="py-3 text-right tabular-nums">—</td>
+                <td class="py-3 text-right tabular-nums">40.038681, −75.144044</td>
+                <td class="py-3 text-right tabular-nums">New</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div :if={@review_confirm_pending} class="mt-4 border-t border-base-300 pt-4">
+            <p class="text-sm font-medium">Demo: choose an outcome</p>
+            <p class="mt-1 text-xs text-base-content/60">
+              A real apply would resolve from the server; this demo waits for an
+              explicit recovery control so it never blocks on a timer.
+            </p>
+            <div class="flex gap-2 mt-2">
+              <.button variant="secondary" size="sm" phx-click="review_confirm_success">
+                Complete successfully
+              </.button>
+              <.button variant="secondary" size="sm" phx-click="review_confirm_error">
+                Simulate error
+              </.button>
+            </div>
+          </div>
+        </.confirm_dialog>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.confirm_dialog id="coordinate-review" open={@review_open} size="lg" confirm_variant="primary" … &gt; body scrolls inside max-h-[60vh] &lt;/.confirm_dialog&gt;
+        </code>
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>

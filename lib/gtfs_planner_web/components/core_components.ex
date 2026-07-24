@@ -1630,6 +1630,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
   body contains additional description beyond the title, and render a
   matching concise descendant inside the dialog.
 
+  ## Sizes and variants
+
+  The default `size="sm"` renders a `max-w-sm` panel for focused
+  destructive confirms — byte-compatible with every existing caller.
+  `size="lg"` widens the panel to `max-w-2xl` and bounds the body at
+  `max-h-[60vh]` so a full evidence table can scroll inside the dialog
+  without truncation. `confirm_variant="danger"` (default) keeps the
+  `bg-error`/`text-error-content` confirm button; `confirm_variant="primary"`
+  swaps to `bg-primary`/`text-primary-content` for non-destructive bulk
+  review. The closed axes mirror `<.button>`'s variant precedent; a third
+  presentation axis would call for a dedicated review component instead
+  of widening this one.
+
   ## Examples
 
       <.confirm_dialog
@@ -1645,6 +1658,23 @@ defmodule GtfsPlannerWeb.CoreComponents do
       >
         This removes the route and its 214 trips from version 2026-01. It cannot be undone.
       </.confirm_dialog>
+
+      <.confirm_dialog
+        id="coordinate-review"
+        open={@review_open}
+        title="Update coordinates for 18 stops?"
+        confirm_label="Update 18 stops"
+        pending_label="Updating…"
+        on_confirm="apply_coordinate_review"
+        on_cancel="cancel_coordinate_review"
+        pending={@applying}
+        described_by="coordinate-review-body"
+        size="lg"
+        confirm_variant="primary"
+      >
+        <p id="coordinate-review-body">This saves the alignment and replaces coordinates for the stops below.</p>
+        <!-- evidence table -->
+      </.confirm_dialog>
   """
   attr :id, :string, required: true
   attr :open, :boolean, required: true
@@ -1658,6 +1688,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :return_focus_id, :string, default: nil
   attr :described_by, :string, default: nil
   attr :close_on_backdrop, :boolean, default: false
+  attr :size, :string, values: ~w(sm lg), default: "sm"
+  attr :confirm_variant, :string, values: ~w(primary danger), default: "danger"
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -1674,7 +1706,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
         do: Map.merge(extra, %{role: "alertdialog", "aria-modal": "true"}),
         else: Map.merge(extra, %{inert: true, "aria-hidden": "true"})
 
-    assigns = assign(assigns, :extra, extra)
+    {variant_bg, variant_text} = confirm_dialog_variant_classes(assigns.confirm_variant)
+
+    assigns =
+      assigns
+      |> assign(:extra, extra)
+      |> assign(:panel_class, confirm_dialog_panel_class(assigns.size))
+      |> assign(:body_class, confirm_dialog_body_class(assigns.size))
+      |> assign(:variant_bg, variant_bg)
+      |> assign(:variant_text, variant_text)
 
     ~H"""
     <dialog
@@ -1690,9 +1730,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
       class="m-0 border-0 w-full h-full bg-transparent p-0"
     >
       <div class="w-full h-full flex items-center justify-center p-4">
-        <div class="w-full max-w-sm border border-base-300 bg-base-100 p-5">
+        <div class={@panel_class}>
           <h3 id={"#{@id}-title"} class="font-semibold">{@title}</h3>
-          <div id={"#{@id}-body"} class="mt-1 text-sm text-base-content/70">
+          <div id={"#{@id}-body"} class={@body_class}>
             {render_slot(@inner_block)}
           </div>
           <div class="mt-4 flex justify-end gap-2">
@@ -1710,7 +1750,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <button
               id={"#{@id}-confirm"}
               type="button"
-              class="h-[44px] min-w-[44px] bg-error px-4 text-sm font-semibold text-error-content"
+              class={[
+                "h-[44px] min-w-[44px]",
+                @variant_bg,
+                "px-4 text-sm font-semibold",
+                @variant_text
+              ]}
               phx-click={@on_confirm}
               phx-target={@target}
               phx-disable-with={@pending_label}
@@ -1724,6 +1769,28 @@ defmodule GtfsPlannerWeb.CoreComponents do
     </dialog>
     """
   end
+
+  # Closed panel-width map for confirm_dialog. The default "sm" path returns
+  # the byte-identical panel string; "lg" widens to the review width.
+  defp confirm_dialog_panel_class("sm"),
+    do: "w-full max-w-sm border border-base-300 bg-base-100 p-5"
+
+  defp confirm_dialog_panel_class("lg"),
+    do: "w-full max-w-2xl border border-base-300 bg-base-100 p-5"
+
+  # Closed body map for confirm_dialog. Only the large review body is scroll-
+  # bounded at 60vh so the evidence rows render complete without truncation.
+  defp confirm_dialog_body_class("sm"),
+    do: "mt-1 text-sm text-base-content/70"
+
+  defp confirm_dialog_body_class("lg"),
+    do: "mt-1 text-sm text-base-content/70 max-h-[60vh] overflow-y-auto"
+
+  # Closed variant map for confirm_dialog, mirroring <.button>'s variant
+  # precedent. Returning the bg and text tokens separately lets the default
+  # danger confirm button render byte-identically to the original markup.
+  defp confirm_dialog_variant_classes("danger"), do: {"bg-error", "text-error-content"}
+  defp confirm_dialog_variant_classes("primary"), do: {"bg-primary", "text-primary-content"}
 
   @doc """
   Renders a file upload field with Phoenix LiveView's UploadConfig.

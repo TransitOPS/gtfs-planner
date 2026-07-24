@@ -24,7 +24,11 @@ const OverlayDialog = {
     if (this.el.open) {
       this.el.close();
       const opener = this._overlayDialog_opener;
-      if (opener && document.contains(opener) && typeof opener.focus === "function") {
+      if (
+        opener &&
+        document.contains(opener) &&
+        typeof opener.focus === "function"
+      ) {
         opener.focus();
       }
     }
@@ -41,7 +45,10 @@ const OverlayDialog = {
   },
 
   destroyed() {
+    const restoreExplicitFocus =
+      this.el.open && !!this.el.dataset.returnFocusId;
     this._cleanup();
+    if (restoreExplicitFocus) this._restoreExplicitFocus();
   },
 
   _isOpenRequested() {
@@ -78,12 +85,19 @@ const OverlayDialog = {
   },
 
   _deactivate() {
-    const returnId = this.el.dataset.returnFocusId;
     this.el.close();
+    this._restoreExplicitFocus();
+  },
 
+  _restoreExplicitFocus() {
+    const returnId = this.el.dataset.returnFocusId;
     if (returnId) {
       const target = document.getElementById(returnId);
-      if (target && document.contains(target) && typeof target.focus === "function") {
+      if (
+        target &&
+        document.contains(target) &&
+        typeof target.focus === "function"
+      ) {
         target.focus();
       }
     }
@@ -93,7 +107,12 @@ const OverlayDialog = {
     const explicitId = this.el.dataset.initialFocusId;
     if (explicitId) {
       const target = document.getElementById(explicitId);
-      if (target && this.el.contains(target) && this._focusWithoutScroll(target)) return;
+      if (
+        target &&
+        this.el.contains(target) &&
+        this._focusWithoutScroll(target)
+      )
+        return;
     }
 
     const role = this.el.getAttribute("role");

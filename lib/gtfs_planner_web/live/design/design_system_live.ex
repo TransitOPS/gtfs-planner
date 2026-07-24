@@ -56,6 +56,10 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:confirm_pending, false)
      |> assign(:confirm_result, nil)
      |> assign(:confirm_return_focus_id, nil)
+     |> assign(:review_confirm_open, false)
+     |> assign(:review_confirm_pending, false)
+     |> assign(:review_confirm_result, nil)
+     |> assign(:review_confirm_return_focus_id, nil)
      |> assign(:form, address_form())
      |> assign(:selected_address, nil)
      |> assign(:selected_lat, nil)
@@ -192,6 +196,47 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      socket
      |> assign(:confirm_pending, false)
      |> assign(:confirm_return_focus_id, nil)}
+  end
+
+  # The overlays page review-dialog demo. A separate state machine from the
+  # destructive confirm demo above: open, pending, success, and error each bind
+  # to their own review_confirm_* assigns, so the two demos never share mutable
+  # state. The pattern mirrors the destructive one — open and pending are
+  # server assigns, success closes and focuses #ds-review-confirm-result on the
+  # page, and error clears pending in place so the user can retry or cancel.
+  def handle_event("open_review_confirm", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:review_confirm_open, true)
+     |> assign(:review_confirm_return_focus_id, nil)}
+  end
+
+  def handle_event("cancel_review_confirm", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:review_confirm_open, false)
+     |> assign(:review_confirm_pending, false)
+     |> assign(:review_confirm_return_focus_id, nil)}
+  end
+
+  def handle_event("run_review_confirm", _params, socket) do
+    {:noreply, assign(socket, :review_confirm_pending, true)}
+  end
+
+  def handle_event("review_confirm_success", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:review_confirm_open, false)
+     |> assign(:review_confirm_pending, false)
+     |> assign(:review_confirm_result, :success)
+     |> assign(:review_confirm_return_focus_id, "ds-review-confirm-result")}
+  end
+
+  def handle_event("review_confirm_error", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:review_confirm_pending, false)
+     |> assign(:review_confirm_return_focus_id, nil)}
   end
 
   # The autocomplete page's LiveSelect demo, migrated from the retired `/components`
