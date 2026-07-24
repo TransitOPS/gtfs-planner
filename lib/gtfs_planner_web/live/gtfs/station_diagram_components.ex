@@ -747,6 +747,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :image_natural_height, :any, default: nil
   attr :child_stops_total, :integer, default: 0
   attr :child_stops_with_geo, :integer, default: 0
+  attr :child_stops_with_floorplan, :integer, default: 0
   attr :anchor_count, :integer, default: 0
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
@@ -754,9 +755,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :map_generation, :string, required: true
   attr :map_state, :atom, default: :initializing
   attr :alignment_preview, :map, default: nil
-  attr :coordinate_preview, :map, default: nil
-  attr :coordinate_confirmation, :boolean, default: false
-  attr :coordinate_apply_form, :any, required: true
+  attr :coordinate_review, :map, default: nil
+  attr :review_transform, :map, default: nil
+  attr :coordinate_review_status, :string, default: nil
+  attr :coordinate_review_error, :string, default: nil
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -808,6 +810,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         )
       )
       |> assign(:canvas_id, canvas_id)
+      |> assign_review_projection()
 
     ~H"""
     <div>
@@ -904,7 +907,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </p>
           <div class="flex flex-col items-end gap-1">
             <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
-              {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
+              {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
             </span>
           </div>
         </div>
@@ -1109,13 +1112,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               id="map-alignment-apply"
               type="button"
               class="btn btn-sm btn-primary min-h-11"
-              title="Preview coordinate changes before applying them"
+              title="Review coordinate changes before applying them"
               disabled={
                 @map_state == :fatal or
                   invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
               }
             >
-              Preview coordinate changes
+              Review coordinate changes
             </button>
             <button
               :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
@@ -1144,94 +1147,87 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
         </div>
 
-        <%= if @coordinate_preview do %>
-          <section
-            id="coordinate-preview"
-            class="mt-5 border border-warning/40 bg-warning/10 p-4"
-            aria-labelledby="coordinate-preview-heading"
+        <%= if @coordinate_review_status do %>
+          <p
+            id="coordinate-review-status"
+            role="status"
+            aria-live="polite"
+            class="mt-4 text-xs text-base-content/70"
           >
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 id="coordinate-preview-heading" class="font-semibold">
-                  Preview coordinate changes
-                </h3>
-                <p class="text-sm text-base-content/70">
-                  {@coordinate_preview.stop_count} child stops will be updated. There is no one-click undo.
-                </p>
-              </div>
-              <button
-                id="confirm-coordinate-preview"
-                type="button"
-                class="btn btn-warning min-h-11"
-                phx-click="open_coordinate_preview_confirmation"
-              >
-                Apply preview
-              </button>
-            </div>
-            <div class="mt-3 overflow-x-auto">
-              <table id="coordinate-preview-table" class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Stop</th>
-                    <th class="text-right">Before</th>
-                    <th class="text-right">After</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    :for={row <- @coordinate_preview.rows}
-                    id={"coordinate-preview-row-#{row.stop_id}"}
-                  >
-                    <td class="font-mono text-xs">{row.stop_id}</td>
-                    <td class="text-right text-xs">{coordinate_pair(row.old_lat, row.old_lon)}</td>
-                    <td class="text-right text-xs">{coordinate_pair(row.new_lat, row.new_lon)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+            {@coordinate_review_status}
+          </p>
         <% end %>
 
-        <%= if @coordinate_confirmation do %>
-          <section
-            id="coordinate-preview-confirmation"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="coordinate-preview-confirmation-heading"
-            class="mt-4 rounded-box border border-error/40 bg-base-100 p-4 shadow-lg"
+        <.confirm_dialog
+          :if={@coordinate_review}
+          id="coordinate-review-dialog"
+          open={@coordinate_review != nil}
+          title={"Update coordinates for #{@review_change_count} stops?"}
+          confirm_label={"Update #{@review_change_count} stops"}
+          pending_label="Updating…"
+          on_confirm="apply_coordinate_review"
+          on_cancel="cancel_coordinate_review"
+          return_focus_id="map-alignment-apply"
+          described_by="coordinate-review-consequence"
+          size="lg"
+          confirm_variant="primary"
+        >
+          <p id="coordinate-review-consequence" class="text-sm text-base-content/70">
+            This saves the floorplan alignment and replaces latitude/longitude for the stops below.
+            <%= for clause <- @review_consequence_clauses do %>
+              <span class="ml-1">{clause}</span>
+            <% end %>
+          </p>
+          <div class="mt-3 border border-warning/60 bg-warning/10 px-3 py-2 text-sm text-base-content">
+            <strong class="font-medium">Recovery:</strong>
+            this update cannot be reverted as one batch. Review the coordinate changes before applying.
+          </div>
+          <div
+            :if={@coordinate_review_error}
+            id="coordinate-review-error"
+            role="alert"
+            tabindex="-1"
+            phx-mounted={JS.focus()}
+            class="mt-3 border border-error/50 bg-error/10 px-3 py-2 text-sm text-error"
           >
-            <h3 id="coordinate-preview-confirmation-heading" class="font-semibold">
-              Apply coordinate changes?
-            </h3>
-            <p class="mt-1 text-sm text-base-content/70">
-              Type APPLY to confirm {@coordinate_preview.stop_count} coordinate updates. This action has no one-click undo.
-            </p>
-            <.form
-              for={@coordinate_apply_form}
-              id="coordinate-preview-confirmation-form"
-              class="mt-3 flex flex-wrap items-end gap-2"
-              phx-submit="apply_coordinate_preview"
-            >
-              <.input
-                field={@coordinate_apply_form[:phrase]}
-                type="text"
-                label="Confirmation"
-                autocomplete="off"
-              />
-              <button id="apply-coordinate-preview" type="submit" class="btn btn-error min-h-11">
-                Apply coordinates
-              </button>
-              <button
-                id="cancel-coordinate-preview"
-                type="button"
-                class="btn btn-ghost min-h-11"
-                phx-click="cancel_coordinate_preview"
-              >
-                Cancel
-              </button>
-            </.form>
-          </section>
-        <% end %>
+            {@coordinate_review_error}
+          </div>
+          <div class="mt-4 -mx-1 overflow-x-auto">
+            <table id="coordinate-review-table" class="w-full text-sm border-collapse">
+              <caption class="sr-only">
+                Proposed coordinate changes for {@review_change_count} stops
+              </caption>
+              <thead>
+                <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
+                  <th scope="col" class="py-2 pr-3 font-medium">Stop</th>
+                  <th scope="col" class="py-2 px-3 font-medium">Current coordinates</th>
+                  <th scope="col" class="py-2 px-3 font-medium">New coordinates</th>
+                  <th scope="col" class="py-2 pl-3 text-right font-medium">Change</th>
+                </tr>
+              </thead>
+              <tbody class="font-mono">
+                <tr
+                  :for={change <- @coordinate_review.changes}
+                  id={"coordinate-review-row-#{change.stop_id}"}
+                  class="border-b border-base-200"
+                >
+                  <td class="py-3 pr-3 text-xs">
+                    {change.stop_external_id || change.stop_id}
+                  </td>
+                  <td class="py-3 px-3 text-xs tabular-nums">
+                    {review_coordinate(change.current.lat)}, {review_coordinate(change.current.lon)}
+                  </td>
+                  <td class="py-3 px-3 text-xs tabular-nums">
+                    {review_coordinate(change.proposed.lat)}, {review_coordinate(change.proposed.lon)}
+                  </td>
+                  <td class="py-3 pl-3 text-right text-xs tabular-nums">
+                    {review_distance(change.distance_meters)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </.confirm_dialog>
       </div>
     </div>
     """
@@ -1286,8 +1282,73 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ]
   end
 
-  defp coordinate_pair(nil, nil), do: "—"
-  defp coordinate_pair(lat, lon), do: "#{lat}, #{lon}"
+  # Derive the post-review projection counts and consequence clauses from the
+  # stored review so the dialog title, confirm button, consequence, and table
+  # all read from one projection (INV-7, DC-4). Pre-review placement vocabulary
+  # (placed/total/unplaced) is derived from the normalizable floorplan count.
+  defp assign_review_projection(assigns) do
+    review = assigns.coordinate_review
+
+    {change_count, unchanged_count, unplaced_count, consequence_clauses} =
+      case review do
+        %{changes: changes, unchanged_count: unchanged, unplaced_count: unplaced} ->
+          {length(changes), unchanged, unplaced,
+           review_consequence_clauses(length(changes), unchanged, unplaced)}
+
+        _ ->
+          {0, 0, 0, []}
+      end
+
+    child_stops_unplaced = max(assigns.child_stops_total - assigns.child_stops_with_floorplan, 0)
+
+    assigns
+    |> assign(:review_change_count, change_count)
+    |> assign(:review_unchanged_count, unchanged_count)
+    |> assign(:review_unplaced_count, unplaced_count)
+    |> assign(:review_consequence_clauses, consequence_clauses)
+    |> assign(:child_stops_unplaced, child_stops_unplaced)
+  end
+
+  # Build the post-review consequence clauses, omitting any zero-count group so
+  # the consequence never lists "0 already match" (DC-4).
+  defp review_consequence_clauses(changed, unchanged, unplaced) do
+    []
+    |> append_if(changed > 0, "#{changed} will receive new coordinates.")
+    |> append_if(unchanged > 0, "#{unchanged} already match.")
+    |> append_if(unplaced > 0, "#{unplaced} without placement stay unchanged.")
+  end
+
+  defp append_if(list, true, clause), do: list ++ [clause]
+  defp append_if(list, false, _clause), do: list
+
+  # Six-decimal display for both stored Decimal and derived float coordinates.
+  # Changed-versus-unchanged remains Package 06's domain comparison and is never
+  # inferred from these formatted strings (DC-8).
+  defp review_coordinate(nil), do: "—"
+
+  defp review_coordinate(%Decimal{} = value) do
+    format_review_decimal(value)
+  end
+
+  defp review_coordinate(value) when is_number(value) do
+    format_review_float(value * 1.0)
+  end
+
+  defp review_distance(nil), do: "New"
+
+  defp review_distance(value) when is_number(value) do
+    format_review_float(value * 1.0, 1)
+  end
+
+  defp format_review_decimal(%Decimal{} = value) do
+    value
+    |> Decimal.to_float()
+    |> format_review_float()
+  end
+
+  defp format_review_float(value, decimals \\ 6) do
+    :erlang.float_to_binary(value * 1.0, decimals: decimals)
+  end
 
   # ============================================================================
   # Diagram Canvas

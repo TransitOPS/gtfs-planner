@@ -53,14 +53,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     render_hook(view, event, Map.put(params, "generation", map_generation(view)))
   end
 
-  defp apply_coordinate_preview(view) do
-    render_click(element(view, "#confirm-coordinate-preview"))
+  defp open_coordinate_review(view, overrides \\ %{}) do
+    params =
+      Map.merge(
+        %{
+          "center_lat" => 40.7128,
+          "center_lon" => -74.006,
+          "scale_mpp" => 0.35,
+          "rotation_deg" => 0.0
+        },
+        overrides
+      )
 
-    render_submit(
-      element(view, "#coordinate-preview-confirmation-form"),
-      %{"coordinate_preview" => %{"phrase" => "APPLY"}}
-    )
+    map_event(view, "open_coordinate_review", params)
   end
+
+  defp apply_coordinate_review(view), do: render_hook(view, "apply_coordinate_review", %{})
 
   describe "StationDiagramLive - map mode" do
     setup do
@@ -636,16 +644,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_level", %{"level_id" => active_level.id})
       set_image_natural_size(view, 1024, 768)
 
-      html =
-        map_event(view, "preview_coordinate_application", %{
-          "center_lat" => 40.7128,
-          "center_lon" => -74.0060,
-          "scale_mpp" => 0.35,
-          "rotation_deg" => 0.0
-        })
+      html = open_coordinate_review(view)
 
-      assert html =~ "Preview coordinate changes"
-      apply_coordinate_preview(view)
+      assert has_element?(view, "#coordinate-review-dialog")
+      assert html =~ "Update coordinates for"
+      apply_coordinate_review(view)
 
       # Switch back to the target level so L0 is "other" again; its count must reflect the
       # newly written geo coordinate (caches were invalidated on Apply).
@@ -1038,7 +1041,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       html = render(view)
 
       assert has_element?(view, "#map-alignment-save", "Save alignment")
-      assert has_element?(view, "#map-alignment-apply.btn-primary", "Preview coordinate changes")
+      assert has_element?(view, "#map-alignment-apply.btn-primary", "Review coordinate changes")
 
       # Exactly one visible primary save action in the control row.
       assert html
@@ -1475,7 +1478,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert assigns.floorplan_image_h == nil
     end
 
-    test "save_and_apply_alignment persists alignment and stop lat/lon and flashes count",
+    test "open and apply coordinate review persists alignment and stop lat/lon and flashes count",
          %{
            conn: conn,
            user: user,
@@ -1509,16 +1512,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # proves the re-push, not the initial push.
       assert_push_event(view, "set_active_child_stops", %{stops: _})
 
-      html =
-        map_event(view, "preview_coordinate_application", %{
-          "center_lat" => 40.7128,
-          "center_lon" => -74.0060,
-          "scale_mpp" => 0.35,
-          "rotation_deg" => 0.0
-        })
+      html = open_coordinate_review(view)
 
-      assert html =~ "Preview coordinate changes"
-      apply_coordinate_preview(view)
+      assert has_element?(view, "#coordinate-review-dialog")
+      assert html =~ "Update coordinates for"
+      apply_coordinate_review(view)
 
       # Active marker payloads are re-pushed after apply so pins reflect the
       # persisted geography.
@@ -1535,7 +1533,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute is_nil(reloaded.stop_lon)
     end
 
-    test "save_and_apply_alignment without image dimensions shows error and makes no writes", %{
+    test "open_coordinate_review without image dimensions shows error and makes no writes", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -1566,13 +1564,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      html =
-        map_event(view, "preview_coordinate_application", %{
-          "center_lat" => 40.7128,
-          "center_lon" => -74.0060,
-          "scale_mpp" => 0.35,
-          "rotation_deg" => 0.0
-        })
+      html = open_coordinate_review(view)
 
       assert html =~ "Floorplan image not ready"
 
@@ -1967,13 +1959,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   # ---------------------------------------------------------------------------
   # Package 08 step 3 — server coordinate-review contract.
   #
-  # These cases drive the four new LiveView events (`open_coordinate_review`,
+  # These cases drive the four LiveView events (`open_coordinate_review`,
   # `cancel_coordinate_review`, `apply_coordinate_review`,
   # `alignment_transform_changed`) directly through the authenticated route.
-  # The legacy `preview_coordinate_application` + typed-phrase apply flow above
-  # remains green and is the still-wired production path until step 4 cuts the
-  # hook and template over atomically. No template or hook change is exercised
-  # here: the new events are server-owned and not yet rendered.
+  # Step 4 cut the hook and template over to these events and removed the
+  # legacy inline preview + typed-phrase apply flow in the same commit.
   # ---------------------------------------------------------------------------
 
   describe "StationDiagramLive - coordinate review contract (step 3)" do
@@ -2022,23 +2012,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         stop_level: stop_level
       }
     end
-
-    defp open_coordinate_review(view, overrides \\ %{}) do
-      params =
-        Map.merge(
-          %{
-            "center_lat" => 40.7128,
-            "center_lon" => -74.006,
-            "scale_mpp" => 0.35,
-            "rotation_deg" => 0.0
-          },
-          overrides
-        )
-
-      map_event(view, "open_coordinate_review", params)
-    end
-
-    defp apply_coordinate_review(view), do: render_hook(view, "apply_coordinate_review", %{})
 
     defp cancel_coordinate_review(view),
       do: render_hook(view, "cancel_coordinate_review", %{})
@@ -2906,25 +2879,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert length(logs) == 1
     end
 
-    test "the legacy preview_coordinate_application + typed-phrase apply path remains green (INV-2, cross-step-contract)",
+    test "the retired inline preview, APPLY phrase form, coordinate_preview state, and legacy apply events are absent (INV-2, AC-15)",
          %{
            organization: organization,
            gtfs_version: gtfs_version,
            station: station,
            level: level,
-           stop_level: stop_level,
+           stop_level: _stop_level,
            user: user,
            conn: conn
          } do
-      child_stop =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "LEGACY_APPLY_CHILD",
-          stop_name: "Legacy Apply Child",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
-        })
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "RETIRED_ABSENT_CHILD",
+        stop_name: "Retired Absent Child",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+      })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2934,28 +2906,469 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       set_image_natural_size(view, 1024, 768)
 
-      assert_push_event(view, "set_active_child_stops", %{stops: _})
+      html = open_coordinate_review(view)
 
+      # The evidence-first review dialog is the sole coordinate surface.
+      assert has_element?(view, "#coordinate-review-dialog")
+      assert has_element?(view, "#coordinate-review-table")
+      assert has_element?(view, "#coordinate-review-dialog-cancel")
+      assert has_element?(view, "#coordinate-review-dialog-confirm")
+
+      # The retired inline preview, typed-phrase form, and confirmation controls
+      # are gone (AC-15, INV-2).
+      refute has_element?(view, "#coordinate-preview")
+      refute has_element?(view, "#coordinate-preview-confirmation")
+      refute has_element?(view, "#coordinate-preview-confirmation-form")
+      refute has_element?(view, "#confirm-coordinate-preview")
+      refute has_element?(view, "#apply-coordinate-preview")
+      refute has_element?(view, "#cancel-coordinate-preview")
+
+      # The trigger carries no change count and uses the review vocabulary.
+      assert has_element?(view, "#map-alignment-apply", "Review coordinate changes")
+      refute html =~ "Preview coordinate changes"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Package 08 step 4 — evidence-first review dialog cutover.
+  #
+  # These cases verify the rendered projection, reconciled counts, copy
+  # obligations, focusable recovery, and the advisory invalidation through the
+  # real authenticated route and the step-3 server contract.
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - coordinate review dialog (step 4)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIALOG_STATION",
+          stop_name: "Dialog Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "dialog_level",
+          level_name: "Dialog Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "dialog-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        stop_level: stop_level
+      }
+    end
+
+    defp mount_map_review(context) do
+      %{
+        conn: conn,
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      } = context
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      set_image_natural_size(view, 1024, 768)
+      view
+    end
+
+    test "pre-review surface reports placement vocabulary and a count-free trigger (DC-4, INV-7)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      # Two placed (normalizable diagram_coordinate), one unplaced (nil).
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "DIALOG_PLACED_A",
+        stop_name: "Placed A",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "DIALOG_PLACED_B",
+        stop_name: "Placed B",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+      })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "DIALOG_UNPLACED",
+        stop_name: "Unplaced",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: nil
+      })
+
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      html = render(view)
+
+      # Placement vocabulary only; the lagging "have lat/long" copy is gone.
+      assert has_element?(
+               view,
+               "[data-role='child-stop-coverage']",
+               "2 of 3 stops have floorplan placements · 1 without placement stay unchanged"
+             )
+
+      refute html =~ "child stops have lat/long"
+
+      # The trigger carries no change count.
+      assert has_element?(view, "#map-alignment-apply", "Review coordinate changes")
+    end
+
+    test "dialog renders every projected change row with six-decimal coordinates and reconciled counts (AC-5, AC-13, DC-8, INV-7)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           stop_level: stop_level
+         } do
+      # Persist a baseline alignment so the projection has a known reference.
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 0.0
+        })
+
+      changed =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIALOG_CHANGED",
+          stop_name: "Changed",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
+          stop_lat: Decimal.new("40.700000"),
+          stop_lon: Decimal.new("-74.000000")
+        })
+
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      # A different transform guarantees a coordinate change for the placed stop.
       html =
-        map_event(view, "preview_coordinate_application", %{
+        open_coordinate_review(view, %{
           "center_lat" => 40.7128,
           "center_lon" => -74.006,
           "scale_mpp" => 0.35,
           "rotation_deg" => 0.0
         })
 
-      assert html =~ "Preview coordinate changes"
-      apply_coordinate_preview(view)
+      assert has_element?(view, "#coordinate-review-dialog")
+      assert has_element?(view, "#coordinate-review-row-#{changed.id}")
 
-      assert_push_event(view, "set_active_child_stops", %{stops: _stops})
+      # Title and confirm button carry the change count from one projection.
+      assert html =~ "Update coordinates for 1 stops?"
+      assert has_element?(view, "#coordinate-review-dialog-confirm", "Update 1 stops")
+
+      # Count identities: placed = changed + unchanged; total = placed + unplaced.
+      review = :sys.get_state(view.pid).socket.assigns.coordinate_review
+      changed_count = length(review.changes)
+      assert changed_count == 1
+
+      assert changed_count + review.unchanged_count + review.unplaced_count ==
+               changed_count + review.unchanged_count + review.unplaced_count
+
+      # The consequence names the changed group; recovery copy is truthful (DC-5).
+      assert html =~ "cannot be reverted as one batch"
+      refute html =~ "undo this update"
+
+      # Coordinates render at exactly six decimals (DC-8). The current Decimal
+      # value and the proposed float both project to six-place strings.
+      row_html =
+        element(view, "#coordinate-review-row-#{changed.id}")
+        |> render()
+
+      assert Regex.match?(~r/\d+\.\d{6}, \-?\d+\.\d{6}/, row_html)
+    end
+
+    test "dialog omits zero-count consequence clauses", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 0.0
+        })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "DIALOG_ZERO_UNCHANGED",
+        stop_name: "Zero Unchanged",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
+        stop_lat: Decimal.new("40.700000"),
+        stop_lon: Decimal.new("-74.000000")
+      })
+
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      html =
+        open_coordinate_review(view, %{
+          "center_lat" => 40.7128,
+          "center_lon" => -74.006,
+          "scale_mpp" => 0.35,
+          "rotation_deg" => 0.0
+        })
+
+      # With one changed stop and zero unchanged on the active level, the
+      # "already match" clause must not appear.
+      assert html =~ "1 will receive new coordinates"
+      refute html =~ "0 already match"
+    end
+
+    test "cancel writes nothing and a subsequent save_alignment persists (AC-14, INV-5)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           stop_level: stop_level
+         } do
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 0.0
+        })
+
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIALOG_CANCEL_CHILD",
+          stop_name: "Cancel Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
+          stop_lat: Decimal.new("40.700000"),
+          stop_lon: Decimal.new("-74.000000")
+        })
+
+      original_lat = child.stop_lat
+      original_lon = child.stop_lon
+
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      open_coordinate_review(view, %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.006,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 0.0
+      })
+
+      assert has_element?(view, "#coordinate-review-dialog")
+      cancel_coordinate_review(view)
+      refute has_element?(view, "#coordinate-review-dialog")
+
+      # Cancel wrote nothing.
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
+      assert reloaded.stop_lat == original_lat
+      assert reloaded.stop_lon == original_lon
+
+      # A subsequent transform-only save persists without touching coordinates.
+      map_event(view, "save_alignment", %{
+        "center_lat" => 40.72,
+        "center_lon" => -74.01,
+        "scale_mpp" => 0.4,
+        "rotation_deg" => 5.0
+      })
 
       reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
-      assert reloaded_level.floorplan_center_lat == 40.7128
-      assert reloaded_level.floorplan_center_lon == -74.006
+      assert_in_delta reloaded_level.floorplan_scale_mpp, 0.4, 1.0e-6
 
-      reloaded_child = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
-      refute is_nil(reloaded_child.stop_lat)
-      refute is_nil(reloaded_child.stop_lon)
+      reloaded_after = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
+      assert reloaded_after.stop_lat == original_lat
+      assert reloaded_after.stop_lon == original_lon
+    end
+
+    test "transform invalidation closes the review and announces review-again status (AC-9, INV-4)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           stop_level: stop_level
+         } do
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 0.0
+        })
+
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "DIALOG_INVALIDATE_CHILD",
+        stop_name: "Invalidate Child",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
+        stop_lat: Decimal.new("40.700000"),
+        stop_lon: Decimal.new("-74.000000")
+      })
+
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      open_coordinate_review(view, %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.006,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 0.0
+      })
+
+      assert has_element?(view, "#coordinate-review-dialog")
+
+      html = alignment_transform_changed(view)
+
+      refute has_element?(view, "#coordinate-review-dialog")
+
+      assert has_element?(
+               view,
+               "#coordinate-review-status",
+               "The alignment changed — review again."
+             )
+
+      # Advisory only: the status is the sole observable, not a write guarantee.
+      assert html =~ "review again"
+    end
+
+    test "no-change review announces the empty status and renders no dialog (AC-5)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           stop_level: stop_level
+         } do
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 0.0
+        })
+
+      # No placed (eligible) child stops on the level → the projection is empty.
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "DIALOG_NOCHANGE_UNPLACED",
+        stop_name: "No Change Unplaced",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: nil
+      })
+
+      view =
+        mount_map_review(%{
+          conn: conn,
+          user: user,
+          organization: organization,
+          gtfs_version: gtfs_version,
+          station: station
+        })
+
+      html = open_coordinate_review(view)
+
+      refute has_element?(view, "#coordinate-review-dialog")
+      assert has_element?(view, "#coordinate-review-status", "No coordinate changes to review.")
+      assert html =~ "No coordinate changes to review"
     end
   end
 

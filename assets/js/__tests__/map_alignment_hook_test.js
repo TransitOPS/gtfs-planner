@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
@@ -90,8 +90,14 @@ describe("map_alignment_hook alignment compute and payload gating", () => {
     leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
 
     Object.defineProperty(img, "complete", { value: true, configurable: true });
-    Object.defineProperty(img, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(img, "naturalHeight", { value: 100, configurable: true });
+    Object.defineProperty(img, "naturalWidth", {
+      value: 200,
+      configurable: true,
+    });
+    Object.defineProperty(img, "naturalHeight", {
+      value: 100,
+      configurable: true,
+    });
 
     const containerPointToLatLng = vi.fn(([x, y]) => ({ lat: y, lng: x }));
     const hook = {
@@ -180,11 +186,30 @@ describe("map_alignment_hook zoom slider", () => {
     const leafletEl = document.getElementById("map-alignment-leaflet");
     const zoomSlider = document.getElementById("map-alignment-zoom");
 
-    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const mapOn = vi.fn();
     const mapSetZoom = vi.fn();
@@ -261,11 +286,30 @@ describe("map_alignment_hook apply button enablement", () => {
     const leafletEl = document.getElementById("map-alignment-leaflet");
     const applyBtn = document.getElementById("map-alignment-apply");
 
-    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    Object.defineProperty(activeImg, "complete", { value: complete, configurable: true });
-    Object.defineProperty(activeImg, "naturalWidth", { value: naturalWidth, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: naturalHeight, configurable: true });
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: complete,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: naturalWidth,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: naturalHeight,
+      configurable: true,
+    });
 
     const mapInstance = {
       on: vi.fn(),
@@ -357,15 +401,23 @@ describe("map_alignment_hook apply button enablement", () => {
     });
 
     hook._renderActiveChildStops({
-      stops: [{ stop_id: "diagram-late-image", diagram_coordinate: { x: 50, y: 40 } }],
+      stops: [
+        { stop_id: "diagram-late-image", diagram_coordinate: { x: 50, y: 40 } },
+      ],
     });
 
     const pin = document.querySelector("#map-alignment-pins-active .map-pin");
     expect(pin.style.left).toBe("");
     expect(pin.style.top).toBe("");
 
-    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
     activeImg.dispatchEvent(new Event("load"));
 
     expect(pin.style.left).toBe("150px");
@@ -374,7 +426,7 @@ describe("map_alignment_hook apply button enablement", () => {
     restore();
   });
 
-  it("does not push save_and_apply_alignment when apply is clicked while disabled", () => {
+  it("does not push open_coordinate_review when apply is clicked while disabled", () => {
     const { hook, applyBtn, restore } = mountApplyHook({
       complete: false,
       naturalWidth: 0,
@@ -384,14 +436,14 @@ describe("map_alignment_hook apply button enablement", () => {
     applyBtn.dispatchEvent(new Event("click", { bubbles: true }));
 
     expect(hook.pushEvent).not.toHaveBeenCalledWith(
-      "save_and_apply_alignment",
-      expect.anything()
+      "open_coordinate_review",
+      expect.anything(),
     );
 
     restore();
   });
 
-  it("pushes only the alignment payload fields when apply is clicked after enable", () => {
+  it("pushes open_coordinate_review with the alignment payload when apply is clicked after enable", () => {
     const { hook, applyBtn, restore } = mountApplyHook({
       complete: true,
       naturalWidth: 1000,
@@ -407,14 +459,14 @@ describe("map_alignment_hook apply button enablement", () => {
 
     applyBtn.dispatchEvent(new Event("click", { bubbles: true }));
 
-    expect(hook.pushEvent).toHaveBeenCalledWith("save_and_apply_alignment", {
+    expect(hook.pushEvent).toHaveBeenCalledWith("open_coordinate_review", {
       center_lat: 40.7,
       center_lon: -74.0,
       scale_mpp: 0.25,
       rotation_deg: 10,
     });
     const applyCall = hook.pushEvent.mock.calls.find(
-      ([name]) => name === "save_and_apply_alignment"
+      ([name]) => name === "open_coordinate_review",
     );
     expect(Object.keys(applyCall[1]).sort()).toEqual([
       "center_lat",
@@ -422,6 +474,30 @@ describe("map_alignment_hook apply button enablement", () => {
       "rotation_deg",
       "scale_mpp",
     ]);
+
+    restore();
+  });
+
+  it("never pushes the retired apply events from the apply button", () => {
+    const { hook, applyBtn, restore } = mountApplyHook({
+      complete: true,
+      naturalWidth: 1000,
+      naturalHeight: 800,
+    });
+
+    hook._computeAlignment = vi.fn(() => ({
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.25,
+      rotation_deg: 10,
+    }));
+
+    applyBtn.dispatchEvent(new Event("click", { bubbles: true }));
+
+    const pushedNames = hook.pushEvent.mock.calls.map(([name]) => name);
+    expect(pushedNames).not.toContain("preview_coordinate_application");
+    expect(pushedNames).not.toContain("save_and_apply_alignment");
+    expect(pushedNames).toContain("open_coordinate_review");
 
     restore();
   });
@@ -523,9 +599,19 @@ describe("map_alignment_hook active child stops rendering", () => {
       level_id: "active-level",
       stops: [
         { stop_id: "boarding-area", lat: 40.7, lon: -74.0, location_type: 0 },
-        { stop_id: "boarding-point", lat: 40.705, lon: -74.005, location_type: 4 },
+        {
+          stop_id: "boarding-point",
+          lat: 40.705,
+          lon: -74.005,
+          location_type: 4,
+        },
         { stop_id: "entrance", lat: 40.71, lon: -74.01, location_type: 2 },
-        { stop_id: "generic-node", lat: 40.72, lon: -74.02, location_type: "bad" },
+        {
+          stop_id: "generic-node",
+          lat: 40.72,
+          lon: -74.02,
+          location_type: "bad",
+        },
       ],
     });
 
@@ -544,7 +630,9 @@ describe("map_alignment_hook active child stops rendering", () => {
     expectPinTreatment(boardingPointPin, 4, paletteColor);
     expect(symbolForLocationType(4)).toBe("rect_square");
     expect(boardingPointDot.style.backgroundColor).toBe(cssColor(paletteColor));
-    expect(boardingPointDot.style.borderColor).toBe(cssBorderColor(paletteColor));
+    expect(boardingPointDot.style.borderColor).toBe(
+      cssBorderColor(paletteColor),
+    );
     expect(boardingPointPin.style.width).not.toBe(boardingPin.style.width);
     expect(boardingPointPin.style.height).not.toBe(boardingPin.style.height);
 
@@ -731,8 +819,14 @@ describe("map_alignment_hook active child stops positioning by mode", () => {
     const activePinsRoot = document.getElementById("map-alignment-pins-active");
 
     leafletEl.getBoundingClientRect = () => ({ width: 500, height: 400 });
-    Object.defineProperty(img, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(img, "naturalHeight", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(img, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const latLngToContainerPoint = vi.fn(([lat, lon]) => ({ x: lon, y: lat }));
 
@@ -751,7 +845,8 @@ describe("map_alignment_hook active child stops positioning by mode", () => {
   }
 
   it("positions diagram-mode pins from preview pixels even when lat/lon is present", () => {
-    const { hook, activePinsRoot, latLngToContainerPoint } = buildPositioningHook();
+    const { hook, activePinsRoot, latLngToContainerPoint } =
+      buildPositioningHook();
 
     hook._renderActiveChildStops({
       level_id: "active-level",
@@ -783,7 +878,8 @@ describe("map_alignment_hook active child stops positioning by mode", () => {
   });
 
   it("positions geo-mode pins via Leaflet when diagram coordinate is absent", () => {
-    const { hook, activePinsRoot, latLngToContainerPoint } = buildPositioningHook();
+    const { hook, activePinsRoot, latLngToContainerPoint } =
+      buildPositioningHook();
 
     hook._renderActiveChildStops({
       level_id: "active-level",
@@ -869,7 +965,7 @@ describe("map_alignment_hook preview status", () => {
     });
 
     expect(statusEl.textContent).toBe(
-      "2 anchored to floorplan · 1 positioned from map"
+      "2 anchored to floorplan · 1 positioned from map",
     );
   });
 
@@ -900,8 +996,14 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
     const activePinsRoot = document.getElementById("map-alignment-pins-active");
 
     leafletEl.getBoundingClientRect = () => ({ width: 500, height: 400 });
-    Object.defineProperty(img, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(img, "naturalHeight", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(img, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const hook = {
       ...MapAlignmentHook,
@@ -994,7 +1096,9 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
 
     hook._handleZoomSliderInput({ target: { value: "17" } });
 
-    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, { animate: false });
+    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, {
+      animate: false,
+    });
     expect(reposition).toHaveBeenCalledTimes(1);
   });
 });
@@ -1027,7 +1131,9 @@ describe("map_alignment_hook _handleZoomSliderInput user-adjusted marking", () =
     hook._handleZoomSliderInput({ target: { value: "17" } });
 
     expect(hook._userAdjustedTransform).toBe(true);
-    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, { animate: false });
+    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, {
+      animate: false,
+    });
   });
 
   it("leaves _userAdjustedTransform false on a no-op value equal to the current zoom", () => {
@@ -1120,11 +1226,30 @@ describe("map_alignment_hook translate pointerdown marks control", () => {
     const activeImg = document.getElementById("active-img");
     const leafletEl = document.getElementById("map-alignment-leaflet");
 
-    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const mapInstance = {
       on: vi.fn(),
@@ -1220,11 +1345,30 @@ describe("map_alignment_hook rotate pointerdown marks control", () => {
     const activeImg = document.getElementById("active-img");
     const leafletEl = document.getElementById("map-alignment-leaflet");
 
-    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const mapInstance = {
       on: vi.fn(),
@@ -1320,11 +1464,30 @@ describe("map_alignment_hook scale pointerdown marks control", () => {
     const activeImg = document.getElementById("active-img");
     const leafletEl = document.getElementById("map-alignment-leaflet");
 
-    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const mapInstance = {
       on: vi.fn(),
@@ -1434,11 +1597,30 @@ describe("map_alignment_hook recenter marks control", () => {
     const latInput = document.getElementById("map-alignment-lat-input");
     const lonInput = document.getElementById("map-alignment-lon-input");
 
-    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     const mapInstance = {
       on: vi.fn(),
@@ -1488,11 +1670,9 @@ describe("map_alignment_hook recenter marks control", () => {
     hook._onApplyCenter();
 
     expect(hook._userAdjustedTransform).toBe(true);
-    expect(mapInstance.setView).toHaveBeenCalledWith(
-      [40.7128, -74.006],
-      16,
-      { animate: false },
-    );
+    expect(mapInstance.setView).toHaveBeenCalledWith([40.7128, -74.006], 16, {
+      animate: false,
+    });
 
     restore();
   });
@@ -1530,9 +1710,19 @@ describe("map_alignment_hook recenter marks control", () => {
     const known = { tx: 11, ty: 22, rotation: 33, scale: 4 };
     hook.transform = known;
     hook._applyTransform = vi.fn();
-    const alignment = { center_lat: 40.7, center_lon: -74.0, scale_mpp: 0.5, rotation_deg: 15 };
+    const alignment = {
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.5,
+      rotation_deg: 15,
+    };
 
-    hook._restoreOverlayAlignment(hook.overlay, alignment, hook.overlay.querySelector("img"), "active");
+    hook._restoreOverlayAlignment(
+      hook.overlay,
+      alignment,
+      hook.overlay.querySelector("img"),
+      "active",
+    );
 
     expect(hook.transform).toBe(known);
     expect(hook.transform).toEqual({ tx: 11, ty: 22, rotation: 33, scale: 4 });
@@ -1557,8 +1747,14 @@ describe("map_alignment_hook saved-alignment restore guard", () => {
 
     leafletEl.getBoundingClientRect = () => ({ width: 400, height: 200 });
     Object.defineProperty(img, "complete", { value: true, configurable: true });
-    Object.defineProperty(img, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(img, "naturalHeight", { value: 100, configurable: true });
+    Object.defineProperty(img, "naturalWidth", {
+      value: 200,
+      configurable: true,
+    });
+    Object.defineProperty(img, "naturalHeight", {
+      value: 100,
+      configurable: true,
+    });
 
     const alignment = {
       center_lat: 40.7,
@@ -1654,8 +1850,14 @@ describe("map_alignment_hook other-level isolation across active transform", () 
     const activePinsRoot = document.getElementById("map-alignment-pins-active");
 
     leafletEl.getBoundingClientRect = () => ({ width: 500, height: 400 });
-    Object.defineProperty(img, "naturalWidth", { value: 1000, configurable: true });
-    Object.defineProperty(img, "naturalHeight", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(img, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
 
     // Real other-level renderer with spied injected callbacks. The renderer
     // only recomputes overlay transforms / pin projections when its own
@@ -1757,7 +1959,7 @@ describe("map_alignment_hook generation bridge", () => {
     hook._emitMapState("imagery_unavailable");
     hook._emitMapState("buildings_degraded");
     hook._emitMapState("ready");
-    hook._pushAlignmentEventIfValid("preview_coordinate_application");
+    hook._pushAlignmentEventIfValid("open_coordinate_review");
 
     expect(hook.pushEvent).toHaveBeenNthCalledWith(1, "map_state", {
       generation: "map-42",
@@ -1775,19 +1977,26 @@ describe("map_alignment_hook generation bridge", () => {
       generation: "map-42",
       state: "ready",
     });
-    expect(hook.pushEvent).toHaveBeenNthCalledWith(5, "preview_coordinate_application", {
-      generation: "map-42",
-      center_lat: 40.7,
-      center_lon: -74.0,
-      scale_mpp: 0.25,
-      rotation_deg: 3,
-    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(
+      5,
+      "open_coordinate_review",
+      {
+        generation: "map-42",
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.25,
+        rotation_deg: 3,
+      },
+    );
   });
 
   it("reports an optional buildings-overlay failure separately from imagery", async () => {
     const originalLeaflet = window.L;
     window.L = {};
-    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("unavailable"))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("unavailable"))),
+    );
 
     try {
       const hook = {
@@ -1856,8 +2065,14 @@ describe("map_alignment_hook saved/preview state machine", () => {
   } = {}) {
     const img = document.createElement("img");
     Object.defineProperty(img, "complete", { value: true, configurable: true });
-    Object.defineProperty(img, "naturalWidth", { value: imageDims.w, configurable: true });
-    Object.defineProperty(img, "naturalHeight", { value: imageDims.h, configurable: true });
+    Object.defineProperty(img, "naturalWidth", {
+      value: imageDims.w,
+      configurable: true,
+    });
+    Object.defineProperty(img, "naturalHeight", {
+      value: imageDims.h,
+      configurable: true,
+    });
 
     const overlay = document.createElement("div");
     overlay.appendChild(img);
@@ -1905,7 +2120,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
         metersPerPx: 0.5,
       });
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 10 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      };
       const result = hook._cssTransformForAlignment(alignment, img);
 
       expect(result).not.toBeNull();
@@ -1921,15 +2141,32 @@ describe("map_alignment_hook saved/preview state machine", () => {
         metersPerPx: 0.5,
       });
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 0,
+      };
 
       const imgA = document.createElement("img");
-      Object.defineProperty(imgA, "naturalWidth", { value: 1000, configurable: true });
-      Object.defineProperty(imgA, "naturalHeight", { value: 500, configurable: true });
+      Object.defineProperty(imgA, "naturalWidth", {
+        value: 1000,
+        configurable: true,
+      });
+      Object.defineProperty(imgA, "naturalHeight", {
+        value: 500,
+        configurable: true,
+      });
 
       const imgB = document.createElement("img");
-      Object.defineProperty(imgB, "naturalWidth", { value: 2000, configurable: true });
-      Object.defineProperty(imgB, "naturalHeight", { value: 1000, configurable: true });
+      Object.defineProperty(imgB, "naturalWidth", {
+        value: 2000,
+        configurable: true,
+      });
+      Object.defineProperty(imgB, "naturalHeight", {
+        value: 1000,
+        configurable: true,
+      });
 
       const resultA = hook._cssTransformForAlignment(alignment, imgA);
       const resultB = hook._cssTransformForAlignment(alignment, imgB);
@@ -1943,10 +2180,21 @@ describe("map_alignment_hook saved/preview state machine", () => {
       const { hook } = buildPartialHook();
 
       const badImg = document.createElement("img");
-      Object.defineProperty(badImg, "naturalWidth", { value: 0, configurable: true });
-      Object.defineProperty(badImg, "naturalHeight", { value: 0, configurable: true });
+      Object.defineProperty(badImg, "naturalWidth", {
+        value: 0,
+        configurable: true,
+      });
+      Object.defineProperty(badImg, "naturalHeight", {
+        value: 0,
+        configurable: true,
+      });
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 0,
+      };
       expect(hook._cssTransformForAlignment(alignment, badImg)).toBeNull();
     });
 
@@ -1954,15 +2202,30 @@ describe("map_alignment_hook saved/preview state machine", () => {
       const { hook, img } = buildPartialHook();
       hook.leafletMap = null;
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 0,
+      };
       expect(hook._cssTransformForAlignment(alignment, img)).toBeNull();
     });
 
     it("returns null when the canvas rect has zero dimensions", () => {
       const { hook, img, leafletEl } = buildPartialHook();
-      leafletEl.getBoundingClientRect = () => ({ width: 0, height: 0, left: 0, top: 0 });
+      leafletEl.getBoundingClientRect = () => ({
+        width: 0,
+        height: 0,
+        left: 0,
+        top: 0,
+      });
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 0 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 0,
+      };
       expect(hook._cssTransformForAlignment(alignment, img)).toBeNull();
     });
   });
@@ -1973,7 +2236,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
       hook._applyTransform = vi.fn();
 
       hook.handleEvent("apply_preview_transform", (payload) =>
-        hook._handleApplyPreviewTransform(payload)
+        hook._handleApplyPreviewTransform(payload),
       );
 
       hook._handleApplyPreviewTransform({
@@ -2036,31 +2299,40 @@ describe("map_alignment_hook saved/preview state machine", () => {
       ["longitude above range", { center_lon: 180.1 }],
       ["zero scale", { scale_mpp: 0 }],
       ["negative scale", { scale_mpp: -0.1 }],
-    ])("rejects %s without changing transform or preview state", (_label, invalidField) => {
-      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
-      const initialTransform = { tx: 1, ty: 2, rotation: 3, scale: 1.5 };
-      hook.transform = { ...initialTransform };
-      hook._applyTransform = vi.fn();
+    ])(
+      "rejects %s without changing transform or preview state",
+      (_label, invalidField) => {
+        const { hook } = buildPartialHook({
+          generation: "gen-1",
+          previewActive: true,
+        });
+        const initialTransform = { tx: 1, ty: 2, rotation: 3, scale: 1.5 };
+        hook.transform = { ...initialTransform };
+        hook._applyTransform = vi.fn();
 
-      hook._handleApplyPreviewTransform({
-        generation: "gen-1",
-        center_lat: 50,
-        center_lon: 100,
-        scale_mpp: 0.25,
-        rotation_deg: 10,
-        ...invalidField,
-      });
+        hook._handleApplyPreviewTransform({
+          generation: "gen-1",
+          center_lat: 50,
+          center_lon: 100,
+          scale_mpp: 0.25,
+          rotation_deg: 10,
+          ...invalidField,
+        });
 
-      expect(hook.transform).toEqual(initialTransform);
-      expect(hook._previewActive).toBe(true);
-      expect(hook._applyTransform).not.toHaveBeenCalled();
-      expect(hook._logger.warn).toHaveBeenCalled();
-    });
+        expect(hook.transform).toEqual(initialTransform);
+        expect(hook._previewActive).toBe(true);
+        expect(hook._applyTransform).not.toHaveBeenCalled();
+        expect(hook._logger.warn).toHaveBeenCalled();
+      },
+    );
 
     it("rejects when the image is not ready (null geometry)", () => {
       const { hook } = buildPartialHook({ generation: "gen-1" });
       const badImg = hook.overlay.querySelector("img");
-      Object.defineProperty(badImg, "naturalWidth", { value: 0, configurable: true });
+      Object.defineProperty(badImg, "naturalWidth", {
+        value: 0,
+        configurable: true,
+      });
       hook._applyTransform = vi.fn();
 
       hook._handleApplyPreviewTransform({
@@ -2080,7 +2352,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
     it("restores the newest saved alignment", () => {
       const { hook } = buildPartialHook({
         generation: "gen-1",
-        savedAlignment: { center_lat: 60, center_lon: 110, scale_mpp: 0.3, rotation_deg: 20 },
+        savedAlignment: {
+          center_lat: 60,
+          center_lon: 110,
+          scale_mpp: 0.3,
+          rotation_deg: 20,
+        },
       });
       hook._applyTransform = vi.fn();
 
@@ -2092,7 +2369,10 @@ describe("map_alignment_hook saved/preview state machine", () => {
     });
 
     it("applies identity when no saved alignment exists", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1", savedAlignment: null });
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: null,
+      });
       hook.transform = { tx: 99, ty: 88, rotation: 45, scale: 2 };
       hook._applyTransform = vi.fn();
 
@@ -2106,7 +2386,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
     it("rejects a stale generation", () => {
       const { hook } = buildPartialHook({
         generation: "gen-2",
-        savedAlignment: { center_lat: 60, center_lon: 110, scale_mpp: 0.3, rotation_deg: 20 },
+        savedAlignment: {
+          center_lat: 60,
+          center_lon: 110,
+          scale_mpp: 0.3,
+          rotation_deg: 20,
+        },
       });
       hook.transform = { tx: 5, ty: 5, rotation: 5, scale: 1 };
       hook._applyTransform = vi.fn();
@@ -2120,11 +2405,19 @@ describe("map_alignment_hook saved/preview state machine", () => {
     it("leaves active preview state unchanged when saved geometry is not ready", () => {
       const { hook } = buildPartialHook({
         generation: "gen-1",
-        savedAlignment: { center_lat: 60, center_lon: 110, scale_mpp: 0.3, rotation_deg: 20 },
+        savedAlignment: {
+          center_lat: 60,
+          center_lon: 110,
+          scale_mpp: 0.3,
+          rotation_deg: 20,
+        },
         previewActive: true,
       });
       const badImg = hook.overlay.querySelector("img");
-      Object.defineProperty(badImg, "naturalWidth", { value: 0, configurable: true });
+      Object.defineProperty(badImg, "naturalWidth", {
+        value: 0,
+        configurable: true,
+      });
       hook.transform = { tx: 5, ty: 5, rotation: 5, scale: 1 };
       hook._applyTransform = vi.fn();
 
@@ -2139,7 +2432,10 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
   describe("alignment_saved", () => {
     it("updates savedAlignment with the persisted payload", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1", savedAlignment: null });
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: null,
+      });
 
       hook._handleAlignmentSaved({
         generation: "gen-1",
@@ -2158,8 +2454,16 @@ describe("map_alignment_hook saved/preview state machine", () => {
     });
 
     it("rejects a stale generation without updating savedAlignment", () => {
-      const original = { center_lat: 1, center_lon: 2, scale_mpp: 0.1, rotation_deg: 0 };
-      const { hook } = buildPartialHook({ generation: "gen-2", savedAlignment: original });
+      const original = {
+        center_lat: 1,
+        center_lon: 2,
+        scale_mpp: 0.1,
+        rotation_deg: 0,
+      };
+      const { hook } = buildPartialHook({
+        generation: "gen-2",
+        savedAlignment: original,
+      });
 
       hook._handleAlignmentSaved({
         generation: "gen-old",
@@ -2173,7 +2477,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
     });
 
     it("rejects an invalid current-generation payload without changing state", () => {
-      const original = { center_lat: 1, center_lon: 2, scale_mpp: 0.1, rotation_deg: 0 };
+      const original = {
+        center_lat: 1,
+        center_lon: 2,
+        scale_mpp: 0.1,
+        rotation_deg: 0,
+      };
       const { hook } = buildPartialHook({
         generation: "gen-1",
         savedAlignment: original,
@@ -2190,13 +2499,21 @@ describe("map_alignment_hook saved/preview state machine", () => {
       });
 
       expect(hook.savedAlignment).toEqual(original);
-      expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
+      expect(hook.transform).toEqual({
+        tx: 10,
+        ty: 20,
+        rotation: 30,
+        scale: 2,
+      });
       expect(hook._previewActive).toBe(true);
       expect(hook._logger.warn).toHaveBeenCalled();
     });
 
     it("keeps the persisted transform and clears _previewActive", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        previewActive: true,
+      });
       hook.transform = { tx: 10, ty: 20, rotation: 30, scale: 2 };
 
       hook._handleAlignmentSaved({
@@ -2207,25 +2524,39 @@ describe("map_alignment_hook saved/preview state machine", () => {
         rotation_deg: 5,
       });
 
-      expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
+      expect(hook.transform).toEqual({
+        tx: 10,
+        ty: 20,
+        rotation: 30,
+        scale: 2,
+      });
       expect(hook._previewActive).toBe(false);
     });
   });
 
   describe("_markPreviewDirty", () => {
     it("pushes alignment_preview_adjusted once and clears _previewActive", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        previewActive: true,
+      });
 
       hook._markPreviewDirty();
 
-      expect(hook.pushEvent).toHaveBeenCalledWith("alignment_preview_adjusted", {
-        generation: "gen-1",
-      });
+      expect(hook.pushEvent).toHaveBeenCalledWith(
+        "alignment_preview_adjusted",
+        {
+          generation: "gen-1",
+        },
+      );
       expect(hook._previewActive).toBe(false);
     });
 
     it("does not push again on a second call (one-shot)", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: true });
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        previewActive: true,
+      });
 
       hook._markPreviewDirty();
       hook._markPreviewDirty();
@@ -2234,7 +2565,10 @@ describe("map_alignment_hook saved/preview state machine", () => {
     });
 
     it("does not push when _previewActive is false", () => {
-      const { hook } = buildPartialHook({ generation: "gen-1", previewActive: false });
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        previewActive: false,
+      });
 
       hook._markPreviewDirty();
 
@@ -2266,14 +2600,35 @@ describe("map_alignment_hook saved/preview state machine", () => {
       const overlay = document.getElementById("map-alignment-overlay");
       const activeImg = document.getElementById("active-img");
       const leafletEl = document.getElementById("map-alignment-leaflet");
-      const rotateHandle = document.getElementById("map-alignment-rotate-handle");
+      const rotateHandle = document.getElementById(
+        "map-alignment-rotate-handle",
+      );
       const scaleHandle = document.getElementById("map-alignment-scale-handle");
 
-      leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-      overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-      Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-      Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-      Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+      leafletEl.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      overlay.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      Object.defineProperty(activeImg, "complete", {
+        value: true,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalWidth", {
+        value: 1000,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalHeight", {
+        value: 800,
+        configurable: true,
+      });
 
       const mapInstance = {
         on: vi.fn(),
@@ -2328,7 +2683,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
     function alignmentDirtyCalls(hook) {
       return hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
+        ([name]) => name === "alignment_preview_adjusted",
       );
     }
 
@@ -2343,7 +2698,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
         rotation_deg: 5,
       };
       const restorePayload = { generation: "gen-dirty" };
-      const savedPayload = {...applyPayload, rotation_deg: 8};
+      const savedPayload = { ...applyPayload, rotation_deg: 8 };
       hook._handleApplyPreviewTransform = vi.fn();
       hook._handleRestoreSavedTransform = vi.fn();
       hook._handleAlignmentSaved = vi.fn();
@@ -2352,8 +2707,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
       callbacks.restore_saved_transform(restorePayload);
       callbacks.alignment_saved(savedPayload);
 
-      expect(hook._handleApplyPreviewTransform).toHaveBeenCalledWith(applyPayload);
-      expect(hook._handleRestoreSavedTransform).toHaveBeenCalledWith(restorePayload);
+      expect(hook._handleApplyPreviewTransform).toHaveBeenCalledWith(
+        applyPayload,
+      );
+      expect(hook._handleRestoreSavedTransform).toHaveBeenCalledWith(
+        restorePayload,
+      );
       expect(hook._handleAlignmentSaved).toHaveBeenCalledWith(savedPayload);
 
       restore();
@@ -2444,8 +2803,13 @@ describe("map_alignment_hook saved/preview state machine", () => {
       "scale pointer movement outward from %s is a true no-op",
       (_position, initialScale, outwardClientX) => {
         const { hook, scaleHandle, restore } = mountDirtyHook();
-        const initialTransform = { tx: 10, ty: 20, rotation: 30, scale: initialScale };
-        hook.transform = {...initialTransform};
+        const initialTransform = {
+          tx: 10,
+          ty: 20,
+          rotation: 30,
+          scale: initialScale,
+        };
+        hook.transform = { ...initialTransform };
         hook._previewActive = true;
         hook._applyTransform = vi.fn();
 
@@ -2459,7 +2823,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
         expect(hook._applyTransform).not.toHaveBeenCalled();
 
         restore();
-      }
+      },
     );
 
     it.each([
@@ -2474,7 +2838,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
         boundaryScale,
         inwardClientX,
         expectedScale,
-        direction
+        direction,
       ) => {
         const { hook, scaleHandle, restore } = mountDirtyHook();
         hook.transform.scale = initialScale;
@@ -2500,7 +2864,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
         expect(hook._applyTransform).toHaveBeenCalledTimes(2);
 
         restore();
-      }
+      },
     );
 
     it("transform button mutation reports dirty once during active preview", () => {
@@ -2510,7 +2874,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
       hook._adjustTransform("left", false);
 
       const dirtyCalls = hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
+        ([name]) => name === "alignment_preview_adjusted",
       );
       expect(dirtyCalls).toHaveLength(1);
       expect(hook._previewActive).toBe(false);
@@ -2525,8 +2889,13 @@ describe("map_alignment_hook saved/preview state machine", () => {
       "%s outward from an out-of-range scale is a true no-op",
       (action, initialScale) => {
         const { hook, restore } = mountDirtyHook();
-        const initialTransform = { tx: 10, ty: 20, rotation: 30, scale: initialScale };
-        hook.transform = {...initialTransform};
+        const initialTransform = {
+          tx: 10,
+          ty: 20,
+          rotation: 30,
+          scale: initialScale,
+        };
+        hook.transform = { ...initialTransform };
         hook._previewActive = true;
         hook._applyTransform = vi.fn();
 
@@ -2538,7 +2907,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
         expect(hook._applyTransform).not.toHaveBeenCalled();
 
         restore();
-      }
+      },
     );
 
     it.each([
@@ -2565,7 +2934,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
         expect(hook._applyTransform).toHaveBeenCalledTimes(1);
 
         restore();
-      }
+      },
     );
 
     it.each([
@@ -2573,8 +2942,13 @@ describe("map_alignment_hook saved/preview state machine", () => {
       ["scale-up", 4],
     ])("%s at its clamp boundary is a true no-op", (action, boundaryScale) => {
       const { hook, restore } = mountDirtyHook();
-      const initialTransform = { tx: 10, ty: 20, rotation: 30, scale: boundaryScale };
-      hook.transform = {...initialTransform};
+      const initialTransform = {
+        tx: 10,
+        ty: 20,
+        rotation: 30,
+        scale: boundaryScale,
+      };
+      hook.transform = { ...initialTransform };
       hook._previewActive = true;
       hook._applyTransform = vi.fn();
 
@@ -2612,7 +2986,7 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
       expect(hook._previewActive).toBe(true);
       const dirtyCalls = hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
+        ([name]) => name === "alignment_preview_adjusted",
       );
       expect(dirtyCalls).toHaveLength(0);
 
@@ -2627,9 +3001,265 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
       expect(hook._previewActive).toBe(true);
       const dirtyCalls = hook.pushEvent.mock.calls.filter(
-        ([name]) => name === "alignment_preview_adjusted"
+        ([name]) => name === "alignment_preview_adjusted",
       );
       expect(dirtyCalls).toHaveLength(0);
+
+      restore();
+    });
+  });
+
+  describe("transform invalidation (_transformDidChange)", () => {
+    function mountInvalidationHook() {
+      document.body.innerHTML = `
+        <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16" data-map-generation="gen-invalidation">
+          <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+          <div id="map-alignment-leaflet"></div>
+          <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+          <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+          <input id="map-alignment-lat-input" value="40.7128" />
+          <input id="map-alignment-lon-input" value="-74.0060" />
+          <button id="map-alignment-apply-center"></button>
+          <input id="map-alignment-opacity" value="0.7" />
+          <input id="map-alignment-zoom" value="16" />
+          <button id="map-alignment-save"></button>
+          <button id="map-alignment-apply"></button>
+          <div id="map-alignment-pins-active"></div>
+          <button data-map-transform-action="left"></button>
+          <button data-map-transform-action="scale-up"></button>
+        </div>
+      `;
+
+      const root = document.getElementById("root");
+      const overlay = document.getElementById("map-alignment-overlay");
+      const activeImg = document.getElementById("active-img");
+      const leafletEl = document.getElementById("map-alignment-leaflet");
+
+      leafletEl.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      overlay.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      Object.defineProperty(activeImg, "complete", {
+        value: true,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalWidth", {
+        value: 1000,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalHeight", {
+        value: 800,
+        configurable: true,
+      });
+
+      const mapInstance = {
+        on: vi.fn(),
+        off: vi.fn(),
+        remove: vi.fn(),
+        invalidateSize: vi.fn(),
+        setZoom: vi.fn(),
+        getZoom: vi.fn(() => 16),
+        getMinZoom: vi.fn(() => 16),
+        getMaxZoom: vi.fn(() => 22),
+        setView: vi.fn(),
+        latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        distance: vi.fn(() => 1),
+        removeLayer: vi.fn(),
+      };
+
+      const originalL = window.L;
+      const originalFetch = global.fetch;
+      global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+      window.L = {
+        map: vi.fn(() => mapInstance),
+        tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+        geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+      };
+
+      const hook = {
+        ...MapAlignmentHook,
+        el: root,
+        pushEvent: vi.fn(),
+        handleEvent: vi.fn(),
+      };
+
+      hook.mounted();
+
+      const restore = () => {
+        window.L = originalL;
+        global.fetch = originalFetch;
+      };
+
+      return { hook, overlay, restore };
+    }
+
+    function invalidationCalls(hook) {
+      return hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_transform_changed",
+      );
+    }
+
+    function dispatchPointer(target, type, clientX, clientY) {
+      const event = new Event(type, { bubbles: true });
+      event.button = 0;
+      event.clientX = clientX;
+      event.clientY = clientY;
+      event.pointerId = 1;
+      target.dispatchEvent(event);
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("translate pointer mutation schedules one generation-tagged invalidation", () => {
+      const { hook, overlay, restore } = mountInvalidationHook();
+
+      dispatchPointer(overlay, "pointerdown", 100, 50);
+      dispatchPointer(overlay, "pointermove", 120, 60);
+      dispatchPointer(overlay, "pointerup", 120, 60);
+
+      expect(invalidationCalls(hook)).toHaveLength(0);
+      vi.advanceTimersByTime(401);
+      const calls = invalidationCalls(hook);
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1]).toEqual({ generation: "gen-invalidation" });
+
+      restore();
+    });
+
+    it("rotate and scale pointer mutations route through the shared path", () => {
+      const { hook, overlay, restore } = mountInvalidationHook();
+      const rotateHandle = document.getElementById(
+        "map-alignment-rotate-handle",
+      );
+      const scaleHandle = document.getElementById("map-alignment-scale-handle");
+
+      dispatchPointer(rotateHandle, "pointerdown", 200, 75);
+      dispatchPointer(rotateHandle, "pointermove", 100, 75);
+      dispatchPointer(rotateHandle, "pointerup", 100, 75);
+
+      dispatchPointer(scaleHandle, "pointerdown", 200, 75);
+      dispatchPointer(scaleHandle, "pointermove", 300, 75);
+      dispatchPointer(scaleHandle, "pointerup", 300, 75);
+
+      vi.advanceTimersByTime(401);
+      // Two bursts collapse into one coalesced push per debounce window.
+      expect(invalidationCalls(hook)).toHaveLength(1);
+
+      restore();
+    });
+
+    it("transform buttons schedule invalidation and preserve preview-dirty", () => {
+      const { hook, restore } = mountInvalidationHook();
+      hook._previewActive = true;
+
+      hook._adjustTransform("left", false);
+
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted",
+      );
+      expect(dirtyCalls).toHaveLength(1);
+      expect(hook._previewActive).toBe(false);
+
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(1);
+
+      restore();
+    });
+
+    it("center-map and zoom schedule invalidation without dirtying the preview", () => {
+      const { hook, restore } = mountInvalidationHook();
+      hook._previewActive = true;
+
+      hook._onApplyCenter();
+      hook._handleZoomSliderInput({ target: { value: "17" } });
+
+      const dirtyCalls = hook.pushEvent.mock.calls.filter(
+        ([name]) => name === "alignment_preview_adjusted",
+      );
+      expect(dirtyCalls).toHaveLength(0);
+      expect(hook._previewActive).toBe(true);
+
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(1);
+
+      restore();
+    });
+
+    it("assisted-preview application and restore schedule invalidation without dirtying", () => {
+      const { hook, restore } = mountInvalidationHook();
+      hook._previewActive = true;
+
+      hook._handleApplyPreviewTransform({
+        generation: "gen-invalidation",
+        center_lat: 40.71,
+        center_lon: -74.01,
+        scale_mpp: 0.3,
+        rotation_deg: 5,
+      });
+      // Applying the assisted preview sets _previewActive true; it must not
+      // immediately dirty itself.
+      expect(hook._previewActive).toBe(true);
+      expect(
+        hook.pushEvent.mock.calls.filter(
+          ([n]) => n === "alignment_preview_adjusted",
+        ),
+      ).toHaveLength(0);
+
+      hook._handleRestoreSavedTransform({ generation: "gen-invalidation" });
+      expect(hook._previewActive).toBe(false);
+
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(1);
+
+      restore();
+    });
+
+    it("coalesces a burst of mutations into exactly one invalidation per window", () => {
+      const { hook, restore } = mountInvalidationHook();
+
+      hook._adjustTransform("left", false);
+      hook._adjustTransform("left", false);
+      hook._adjustTransform("left", false);
+
+      expect(invalidationCalls(hook)).toHaveLength(0);
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(1);
+
+      // A later mutation starts a fresh window.
+      hook._adjustTransform("left", false);
+      vi.advanceTimersByTime(401);
+      expect(invalidationCalls(hook)).toHaveLength(2);
+
+      restore();
+    });
+
+    it("clears the stored timer in destroyed() and pushes nothing afterwards", () => {
+      const { hook, restore } = mountInvalidationHook();
+
+      hook._adjustTransform("left", false);
+      expect(hook._transformInvalidationTimer).toBeTruthy();
+
+      hook.destroyed();
+      expect(hook._transformInvalidationTimer).toBeNull();
+
+      // Flushing the window after destroy must not push (no leak, no callback).
+      vi.advanceTimersByTime(1000);
+      expect(invalidationCalls(hook)).toHaveLength(0);
 
       restore();
     });
@@ -2662,11 +3292,30 @@ describe("map_alignment_hook saved/preview state machine", () => {
       const activeImg = document.getElementById("active-img");
       const leafletEl = document.getElementById("map-alignment-leaflet");
 
-      leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-      overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-      Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-      Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-      Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+      leafletEl.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      overlay.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      Object.defineProperty(activeImg, "complete", {
+        value: true,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalWidth", {
+        value: 1000,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalHeight", {
+        value: 800,
+        configurable: true,
+      });
 
       const mapInstance = {
         on: vi.fn(),
@@ -2738,11 +3387,30 @@ describe("map_alignment_hook saved/preview state machine", () => {
       const activeImg = document.getElementById("active-img");
       const leafletEl = document.getElementById("map-alignment-leaflet");
 
-      leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-      overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
-      Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
-      Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
-      Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+      leafletEl.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      overlay.getBoundingClientRect = () => ({
+        width: 300,
+        height: 150,
+        left: 0,
+        top: 0,
+      });
+      Object.defineProperty(activeImg, "complete", {
+        value: true,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalWidth", {
+        value: 1000,
+        configurable: true,
+      });
+      Object.defineProperty(activeImg, "naturalHeight", {
+        value: 800,
+        configurable: true,
+      });
 
       const mapInstance = {
         on: vi.fn(),
@@ -2794,7 +3462,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
 
       hook._adjustTransform("reset", false);
 
-      expect(hook.transform).toEqual({ tx: 10, ty: 20, rotation: 30, scale: 2 });
+      expect(hook.transform).toEqual({
+        tx: 10,
+        ty: 20,
+        rotation: 30,
+        scale: 2,
+      });
       expect(hook._applyTransform).not.toHaveBeenCalled();
     });
   });
@@ -2810,7 +3483,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
       hook._userAdjustedTransform = false;
       hook._applyTransform = vi.fn();
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 10 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 10,
+      };
       hook._restoreOverlayAlignment(hook.overlay, alignment, img, "active");
 
       expect(hook.transform.rotation).toBe(10);
@@ -2827,13 +3505,24 @@ describe("map_alignment_hook saved/preview state machine", () => {
       });
 
       const otherImg = document.createElement("img");
-      Object.defineProperty(otherImg, "naturalWidth", { value: 2000, configurable: true });
-      Object.defineProperty(otherImg, "naturalHeight", { value: 1000, configurable: true });
+      Object.defineProperty(otherImg, "naturalWidth", {
+        value: 2000,
+        configurable: true,
+      });
+      Object.defineProperty(otherImg, "naturalHeight", {
+        value: 1000,
+        configurable: true,
+      });
 
       const el = document.createElement("div");
       el.appendChild(otherImg);
 
-      const alignment = { center_lat: 50, center_lon: 100, scale_mpp: 0.25, rotation_deg: 5 };
+      const alignment = {
+        center_lat: 50,
+        center_lon: 100,
+        scale_mpp: 0.25,
+        rotation_deg: 5,
+      };
       hook._applyOtherLevelOverlayTransform(el, alignment);
 
       expect(el.style.transform).toContain("rotate(5deg)");
