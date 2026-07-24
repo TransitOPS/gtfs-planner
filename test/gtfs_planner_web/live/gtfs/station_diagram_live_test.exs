@@ -2687,10 +2687,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
       assert_push_event(view, "set_active_child_stops", _initial)
+      refute has_element?(view, "#lists-section")
 
-      view
-      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
-      |> render_click()
+      render_hook(view, "edit_child_stop", %{"id" => child_stop.id})
 
       view
       |> form("#child-stop-form", %{

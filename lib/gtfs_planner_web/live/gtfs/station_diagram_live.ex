@@ -1385,6 +1385,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         </span>
 
         <.lists_section
+          :if={@mode != :map}
           active_level={@active_level}
           child_stops_list={@child_stops_list}
           unassigned_child_stops={@unassigned_child_stops}

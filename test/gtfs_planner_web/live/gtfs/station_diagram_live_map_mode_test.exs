@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#diagram-mode-option-map[disabled]")
     end
 
-    test "switch_mode to map swaps to the map canvas", %{
+    test "switch_mode to map swaps to the map canvas and hides station data tables", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -129,10 +129,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      assert has_element?(view, "#lists-section")
+
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assert has_element?(view, ".map-canvas")
       refute has_element?(view, "[id^='diagram-canvas-']")
+      refute has_element?(view, "#lists-section")
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+
+      assert has_element?(view, "#lists-section")
     end
 
     test "renders the other-levels trigger in map mode and drops the reference select (AC-1)", %{

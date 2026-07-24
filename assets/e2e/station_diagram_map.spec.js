@@ -14,6 +14,7 @@ test.describe("Station diagram map alignment", () => {
 
     const map = page.locator('[phx-hook="MapAlignment"]');
     await expect(map).toBeVisible();
+    await expect(page.locator("#lists-section")).toHaveCount(0);
     await expect(page.locator("#map-alignment-leaflet")).toBeVisible();
     await expect(page.locator("#map-alignment-leaflet.leaflet-container")).toHaveCount(1);
 
@@ -136,7 +137,7 @@ test.describe("assisted alignment", () => {
     fs.mkdirSync(artifactsDir, { recursive: true });
     await page.screenshot({
       path: path.join(artifactsDir, artifactName),
-      fullPage: false,
+      fullPage: true,
     });
 
     await restoreBtn.click();
