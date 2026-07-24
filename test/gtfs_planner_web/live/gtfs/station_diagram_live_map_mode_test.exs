@@ -3428,6 +3428,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute has_element?(view, "#coordinate-review-dialog")
       assert has_element?(view, "#coordinate-review-status", "No coordinate changes to review.")
       assert html =~ "No coordinate changes to review"
+
+      render_hook(view, "alignment_transform_changed", %{"generation" => "stale-generation"})
+
+      assert has_element?(view, "#coordinate-review-status", "No coordinate changes to review.")
+
+      html = alignment_transform_changed(view)
+      stored = assigns(view)
+
+      assert stored.coordinate_review == nil
+      assert stored.review_transform == nil
+      assert stored.coordinate_review_error == nil
+      assert stored.coordinate_review_status == nil
+      refute has_element?(view, "#coordinate-review-status")
+      refute html =~ "No coordinate changes to review."
+      refute html =~ "The alignment changed — review again."
     end
   end
 

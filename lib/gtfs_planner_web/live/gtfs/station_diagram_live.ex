@@ -54,6 +54,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @history_key :history_load
   @journal_load_key :journal_load
   @drawer_journal_load_key :drawer_journal_load
+  @no_coordinate_changes_status "No coordinate changes to review."
+  @alignment_changed_status "The alignment changed — review again."
 
   @type drawer_journal_state ::
           :idle | :initial_loading | :ready | :refreshing | :error
@@ -2864,7 +2866,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:coordinate_review, nil)
              |> assign(:review_transform, nil)
              |> assign(:coordinate_review_error, nil)
-             |> assign(:coordinate_review_status, "No coordinate changes to review.")}
+             |> assign(:coordinate_review_status, @no_coordinate_changes_status)}
 
           {:ok, review} ->
             stamped_review =
@@ -2991,19 +2993,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("alignment_transform_changed", %{"generation" => generation}, socket) do
-    # UX-only invalidation. Closes an open review and announces a re-review
-    # prompt. The Package 06 fingerprint recheck remains the sole stale-write
-    # fence; this event is never tested as a guarantee (INV-4).
-    if current_map_generation?(socket, generation) and
-         not is_nil(socket.assigns.coordinate_review) do
-      {:noreply,
-       socket
-       |> assign(:coordinate_review, nil)
-       |> assign(:review_transform, nil)
-       |> assign(:coordinate_review_error, nil)
-       |> assign(:coordinate_review_status, "The alignment changed — review again.")}
-    else
-      {:noreply, socket}
+    # UX-only invalidation. Closes an open review or clears a prior empty-result
+    # status. The Package 06 fingerprint recheck remains the sole stale-write
+    # fence; this event is never trusted as a guarantee (INV-4).
+    cond do
+      not current_map_generation?(socket, generation) ->
+        {:noreply, socket}
+
+      not is_nil(socket.assigns.coordinate_review) ->
+        {:noreply,
+         socket
+         |> assign(:coordinate_review, nil)
+         |> assign(:review_transform, nil)
+         |> assign(:coordinate_review_error, nil)
+         |> assign(:coordinate_review_status, @alignment_changed_status)}
+
+      socket.assigns.coordinate_review_status == @no_coordinate_changes_status ->
+        {:noreply, assign(socket, :coordinate_review_status, nil)}
+
+      true ->
+        {:noreply, socket}
     end
   end
 
