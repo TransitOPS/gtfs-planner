@@ -949,18 +949,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0"
           >
             <legend class="text-xs font-medium text-base-content/60 px-1">Floorplan transform</legend>
-            <div class="flex flex-wrap items-center gap-1">
-              <button
-                :for={{label, action, coarse} <- transform_controls()}
-                id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
-                type="button"
-                class="btn btn-sm min-h-11 min-w-11"
-                data-map-transform-action={action}
-                data-map-transform-coarse={to_string(coarse)}
-                title={label}
-              >
-                {label}
-              </button>
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-1">
+                <span class="w-10 shrink-0 text-xs text-base-content/60">Move</span>
+                <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                  <div class="join">
+                    <.transform_button
+                      :for={control <- transform_controls(:move)}
+                      control={control}
+                      class="join-item"
+                    />
+                  </div>
+                  <span class="text-xs text-base-content/60">Shift · 10×</span>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <div class="flex items-center gap-1">
+                  <span class="w-10 shrink-0 text-xs text-base-content/60">Rotate</span>
+                  <.transform_button control={transform_control("rotate-left")} />
+                  <span
+                    id="map-alignment-rotation-value"
+                    class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
+                  >
+                    0.0°
+                  </span>
+                  <.transform_button control={transform_control("rotate-right")} />
+                </div>
+
+                <div class="flex items-center gap-1">
+                  <span class="w-10 shrink-0 text-xs text-base-content/60">Scale</span>
+                  <.transform_button control={transform_control("scale-down")} />
+                  <span
+                    id="map-alignment-scale-value"
+                    class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
+                  >
+                    1.00×
+                  </span>
+                  <.transform_button control={transform_control("scale-up")} />
+                </div>
+              </div>
+            </div>
+            <div class="mt-2">
               <button
                 id="map-alignment-restore-saved"
                 type="button"
@@ -1305,19 +1335,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp map_state_message(:fatal), do: "Map service is unavailable. Retry to continue."
   defp map_state_message(_map_state), do: nil
 
+  # Opposing nudges must undo each other, so every control emits the same fine
+  # step and the coarse step (10 px / 5° / ×1.1, owned by `_adjustTransform`) is
+  # reached with Shift rather than by a duplicate button (INV-09D-4). Each title
+  # names the operation and both step sizes — the tooltip is the only place the
+  # modifier is spelled out per control.
   defp transform_controls do
     [
-      {"←", "left", false},
-      {"← 10", "left", true},
-      {"→", "right", false},
-      {"→ 10", "right", true},
-      {"↑", "up", false},
-      {"↓", "down", false},
-      {"↺", "rotate-left", false},
-      {"↻", "rotate-right", true},
-      {"−", "scale-down", false},
-      {"+", "scale-up", true}
+      %{
+        group: :move,
+        action: "left",
+        coarse: false,
+        label: "←",
+        title: "Move floorplan left · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :move,
+        action: "up",
+        coarse: false,
+        label: "↑",
+        title: "Move floorplan up · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :move,
+        action: "down",
+        coarse: false,
+        label: "↓",
+        title: "Move floorplan down · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :move,
+        action: "right",
+        coarse: false,
+        label: "→",
+        title: "Move floorplan right · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :rotate,
+        action: "rotate-left",
+        coarse: false,
+        label: "↺",
+        title: "Rotate floorplan left · 1° (Shift 5°)"
+      },
+      %{
+        group: :rotate,
+        action: "rotate-right",
+        coarse: false,
+        label: "↻",
+        title: "Rotate floorplan right · 1° (Shift 5°)"
+      },
+      %{
+        group: :scale,
+        action: "scale-down",
+        coarse: false,
+        label: "−",
+        title: "Shrink floorplan · 1% (Shift 10%)"
+      },
+      %{
+        group: :scale,
+        action: "scale-up",
+        coarse: false,
+        label: "+",
+        title: "Grow floorplan · 1% (Shift 10%)"
+      }
     ]
+  end
+
+  defp transform_controls(group) do
+    Enum.filter(transform_controls(), &(&1.group == group))
+  end
+
+  defp transform_control(action) do
+    Enum.find(transform_controls(), &(&1.action == action))
+  end
+
+  attr :control, :map, required: true
+  attr :class, :string, default: nil
+
+  defp transform_button(assigns) do
+    ~H"""
+    <button
+      id={"map-transform-#{@control.action}-#{if @control.coarse, do: "coarse", else: "fine"}"}
+      type="button"
+      class={["btn btn-sm min-h-11 min-w-11", @class]}
+      data-map-transform-action={@control.action}
+      data-map-transform-coarse={to_string(@control.coarse)}
+      title={@control.title}
+    >
+      {@control.label}
+    </button>
+    """
   end
 
   # Derive the post-review projection counts and consequence clauses from the
