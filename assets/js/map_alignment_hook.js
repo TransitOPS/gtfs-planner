@@ -391,6 +391,9 @@ const MapAlignmentHook = {
 
       this._onZoomEnd = () => {
         zoomSlider.value = String(map.getZoom());
+        // Zoom can change without slider input, so the readout follows the
+        // slider here too.
+        this._syncSliderReadouts();
       };
       map.on("zoomend", this._onZoomEnd);
     }
@@ -631,11 +634,15 @@ const MapAlignmentHook = {
     if (opacitySlider) {
       this._onOpacityInput = (e) => {
         this.overlay.style.opacity = e.target.value;
+        this._syncSliderReadouts();
       };
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
 
     this._syncOtherOverlaysOpacitySlider();
+    // Sliders are captured and the zoom slider's min/max/value are set from the
+    // map by this point, so the readouts start from the live values.
+    this._syncSliderReadouts();
 
     // --- Save: compute canonical alignment and push to server ---
     if (saveBtn) {
@@ -651,7 +658,13 @@ const MapAlignmentHook = {
     this._transformControls.forEach((control) => {
       const action = control.dataset.mapTransformAction;
       const coarse = control.dataset.mapTransformCoarse === "true";
-      const handler = () => this._adjustTransform(action, coarse);
+      // Holding Shift resolves the coarse step, so opposing nudges stay
+      // symmetric without duplicate coarse buttons (INV-09D-4). `coarse ||`
+      // is retained so a data-map-transform-coarse="true" control still forces
+      // the coarse step. A Shift-held Enter/Space on a focused button produces
+      // a click with shiftKey === true, so the modifier needs no second binding.
+      const handler = (event) =>
+        this._adjustTransform(action, coarse || event?.shiftKey === true);
       control.addEventListener("click", handler);
       control._mapAlignmentHandler = handler;
     });
@@ -1116,11 +1129,16 @@ const MapAlignmentHook = {
     }
 
     this.otherOpacitySlider = nextSlider;
+    // The other-levels control is conditionally rendered, so this runs on the
+    // rebind path too — including the case where the slider has just appeared
+    // or disappeared across a LiveView patch.
+    this._syncSliderReadouts();
 
     if (!this.otherOpacitySlider || !this._otherLevels) return;
 
     this._onOtherOpacityInput = (e) => {
       this._otherLevels.setOpacity(parseFloat(e.target.value));
+      this._syncSliderReadouts();
     };
 
     this.otherOpacitySlider.addEventListener(
@@ -1174,12 +1192,24 @@ const MapAlignmentHook = {
       this._markPreviewDirty();
     }
 
-    this._scheduleTransformInvalidation();
+    // `previewAdjusted` is true exactly for operator-initiated gestures
+    // (overlay drag, rotate handle, scale handle, nudge buttons) and false for
+    // programmatic reapplication (restore, assisted-preview apply, map-view
+    // change). The server reads this as the operator-dirty signal and owns the
+    // resulting unsaved indicator (INV-09D-3); without it a restore would
+    // re-dirty itself one debounce window later.
+    this._scheduleTransformInvalidation({ unsaved: previewAdjusted === true });
   },
 
-  _scheduleTransformInvalidation() {
+  // `unsaved` defaults to true to match the server's own
+  // `Map.get(params, "unsaved", true)`, so an option-less call behaves exactly
+  // as this event did before the key existed.
+  _scheduleTransformInvalidation({ unsaved = true } = {}) {
     this._clearTransformInvalidationTimer();
 
+    // Each call replaces the pending timer, so when changes coalesce inside one
+    // window the later call's `unsaved` value wins. Deliberately not a sticky
+    // OR: that would make a restore impossible to clear.
     this._transformInvalidationTimer = setTimeout(() => {
       this._transformInvalidationTimer = null;
 
@@ -1187,6 +1217,7 @@ const MapAlignmentHook = {
 
       this.pushEvent("alignment_transform_changed", {
         generation: this.generation,
+        unsaved,
       });
     }, TRANSFORM_INVALIDATION_DEBOUNCE_MS);
   },
@@ -1300,6 +1331,11 @@ const MapAlignmentHook = {
     } else {
       this.overlay.style.transform = `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
+    // _applyTransform is the single funnel every transform change reaches —
+    // drag, rotate handle, scale handle, nudge buttons, restore, preview apply
+    // and zoom — so the rotation/scale readouts are written here and nowhere
+    // else.
+    this._syncTransformReadouts();
     // Active markers live outside the transformed overlay; recompute their
     // anchors so they track the floorplan as it translates/rotates/scales.
     // Other-level overlays are intentionally NOT repositioned here — that
@@ -1367,6 +1403,58 @@ const MapAlignmentHook = {
     ).length;
     const geoCount = records.filter((s) => s.positionMode === "geo").length;
     statusEl.textContent = previewStatusText(diagramCount, geoCount);
+  },
+
+  // Write text into a server-rendered readout element. Text only: enabled
+  // state stays server-owned (INV-09D-3), exactly as _syncPreviewStatus does.
+  // The element is optional — isolated hook fixtures mount partial DOM and the
+  // other-levels controls are conditionally rendered.
+  _writeReadout(id, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+  },
+
+  // Current overlay rotation and scale, refreshed from _applyTransform.
+  _syncTransformReadouts() {
+    const { rotation, scale } = this.transform || {};
+
+    if (Number.isFinite(rotation)) {
+      this._writeReadout(
+        "map-alignment-rotation-value",
+        `${rotation.toFixed(1)}°`,
+      );
+    }
+
+    if (Number.isFinite(scale)) {
+      this._writeReadout("map-alignment-scale-value", `${scale.toFixed(2)}×`);
+    }
+  },
+
+  // Current slider values. Every reference is optional: the zoom slider's
+  // min/max/value come from the Leaflet map at mount, so the readout reports
+  // the slider's live value rather than the server-rendered default.
+  _syncSliderReadouts() {
+    const opacity = parseFloat(this.opacitySlider?.value);
+    if (Number.isFinite(opacity)) {
+      this._writeReadout(
+        "map-alignment-opacity-value",
+        `${Math.round(opacity * 100)}%`,
+      );
+    }
+
+    const zoom = parseFloat(this.zoomSlider?.value);
+    if (Number.isFinite(zoom)) {
+      this._writeReadout("map-alignment-zoom-value", zoom.toFixed(1));
+    }
+
+    const otherOpacity = parseFloat(this.otherOpacitySlider?.value);
+    if (Number.isFinite(otherOpacity)) {
+      this._writeReadout(
+        "map-other-overlays-opacity-value",
+        `${Math.round(otherOpacity * 100)}%`,
+      );
+    }
   },
 
   _pushAlignmentEventIfValid(eventName, beforePush) {
@@ -1510,6 +1598,10 @@ const MapAlignmentHook = {
   },
 
   _handleZoomSliderInput(e) {
+    // The readout tracks the slider's live value, so it is written before the
+    // no-op guards below.
+    this._syncSliderReadouts();
+
     const map = this.leafletMap;
     if (!map) return;
 
