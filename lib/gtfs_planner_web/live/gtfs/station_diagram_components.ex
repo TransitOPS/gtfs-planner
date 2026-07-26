@@ -901,110 +901,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
       </div>
       <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
-        <div class="flex items-start justify-between gap-4">
-          <p class="text-xs text-base-content/70">
-            Drag to move the floorplan. Use handles to rotate and resize.
-          </p>
-          <div class="flex flex-col items-end gap-1">
-            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
-              {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
-            </span>
-          </div>
-        </div>
-        <div class="mt-3 flex flex-wrap items-start gap-x-8 gap-y-4">
-          <fieldset class="flex items-end gap-2">
-            <legend class="sr-only">Map center</legend>
-            <div class="flex flex-col gap-1">
-              <label
-                for="map-alignment-lat-input"
-                class="text-xs font-medium text-base-content/80"
-              >
-                Latitude
-              </label>
-              <input
-                id="map-alignment-lat-input"
-                type="number"
-                step="any"
-                value={@initial_lat}
-                class="input input-sm input-bordered w-32"
-              />
+        <p class="text-xs text-base-content/70">
+          Drag to move the floorplan. Use handles to rotate and resize.
+        </p>
+        <div class="mt-3 grid grid-cols-1 gap-3 items-start xl:grid-cols-[minmax(0,18rem)_minmax(0,1fr)_minmax(0,20rem)_minmax(0,16rem)]">
+          <fieldset class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0">
+            <legend class="text-xs font-medium text-base-content/60 px-1">Map center</legend>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="flex flex-col gap-1 min-w-0">
+                <label
+                  for="map-alignment-lat-input"
+                  class="text-xs font-medium text-base-content/80"
+                >
+                  Latitude
+                </label>
+                <input
+                  id="map-alignment-lat-input"
+                  type="number"
+                  step="any"
+                  value={@initial_lat}
+                  class="input input-sm input-bordered min-h-11 w-full"
+                />
+              </div>
+              <div class="flex flex-col gap-1 min-w-0">
+                <label
+                  for="map-alignment-lon-input"
+                  class="text-xs font-medium text-base-content/80"
+                >
+                  Longitude
+                </label>
+                <input
+                  id="map-alignment-lon-input"
+                  type="number"
+                  step="any"
+                  value={@initial_lon}
+                  class="input input-sm input-bordered min-h-11 w-full"
+                />
+              </div>
             </div>
-            <div class="flex flex-col gap-1">
-              <label
-                for="map-alignment-lon-input"
-                class="text-xs font-medium text-base-content/80"
-              >
-                Longitude
-              </label>
-              <input
-                id="map-alignment-lon-input"
-                type="number"
-                step="any"
-                value={@initial_lon}
-                class="input input-sm input-bordered w-32"
-              />
-            </div>
-            <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
+            <button id="map-alignment-apply-center" type="button" class="btn btn-sm min-h-11 mt-2">
               Center map
             </button>
           </fieldset>
 
-          <div class="flex flex-col gap-1">
-            <label for="map-alignment-opacity" class="text-xs font-medium text-base-content/80">
-              Floorplan opacity
-            </label>
-            <input
-              id="map-alignment-opacity"
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value="0.7"
-              class="range range-xs w-40"
-            />
-          </div>
-
-          <div class="flex flex-col gap-1">
-            <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
-              Map zoom
-            </label>
-            <input
-              id="map-alignment-zoom"
-              type="range"
-              min="19"
-              max="22"
-              step="0.5"
-              value="19"
-              class="range range-xs w-40"
-              phx-update="ignore"
-            />
-          </div>
-
-          <%= if @other_levels_floorplan_count >= 1 do %>
-            <div class="flex flex-col gap-1">
-              <label
-                for="map-other-overlays-opacity"
-                class="text-xs font-medium text-base-content/80"
-              >
-                Other-levels opacity
-              </label>
-              <input
-                id="map-other-overlays-opacity"
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value="0.7"
-                class="range range-xs w-40"
-              />
-            </div>
-          <% end %>
-
           <fieldset
             id="map-alignment-transform-controls"
-            class="flex flex-col gap-1"
+            class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0"
           >
-            <legend class="text-xs font-medium text-base-content/80">Floorplan transform</legend>
+            <legend class="text-xs font-medium text-base-content/60 px-1">Floorplan transform</legend>
             <div class="flex flex-wrap items-center gap-1">
               <button
                 :for={{label, action, coarse} <- transform_controls()}
@@ -1030,7 +974,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
           <fieldset
             id="map-alignment-assisted"
-            class="border border-base-300 rounded-md px-4 pt-1 pb-3"
+            class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0"
           >
             <legend class="text-xs font-medium text-base-content/60 px-1">Assisted alignment</legend>
             <p class="text-xs text-base-content/70">
@@ -1092,7 +1036,97 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <% end %>
           </fieldset>
 
-          <div id="map-alignment-actions" class="ml-auto flex flex-wrap items-center gap-3">
+          <fieldset class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0">
+            <legend class="text-xs font-medium text-base-content/60 px-1">Layers</legend>
+            <div class="flex flex-col gap-1">
+              <div class="flex items-baseline justify-between gap-2">
+                <label
+                  for="map-alignment-opacity"
+                  class="text-xs font-medium text-base-content/80"
+                >
+                  Floorplan opacity
+                </label>
+                <span
+                  id="map-alignment-opacity-value"
+                  class="text-xs tabular-nums text-base-content/70"
+                >
+                  70%
+                </span>
+              </div>
+              <input
+                id="map-alignment-opacity"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.7"
+                class="range range-xs w-full"
+              />
+            </div>
+
+            <div class="mt-3 flex flex-col gap-1">
+              <div class="flex items-baseline justify-between gap-2">
+                <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
+                  Map zoom
+                </label>
+                <span
+                  id="map-alignment-zoom-value"
+                  class="text-xs tabular-nums text-base-content/70"
+                >
+                  19.0
+                </span>
+              </div>
+              <input
+                id="map-alignment-zoom"
+                type="range"
+                min="19"
+                max="22"
+                step="0.5"
+                value="19"
+                class="range range-xs w-full"
+                phx-update="ignore"
+              />
+            </div>
+
+            <%= if @other_levels_floorplan_count >= 1 do %>
+              <div class="mt-3 flex flex-col gap-1">
+                <div class="flex items-baseline justify-between gap-2">
+                  <label
+                    for="map-other-overlays-opacity"
+                    class="text-xs font-medium text-base-content/80"
+                  >
+                    Other-levels opacity
+                  </label>
+                  <span
+                    id="map-other-overlays-opacity-value"
+                    class="text-xs tabular-nums text-base-content/70"
+                  >
+                    70%
+                  </span>
+                </div>
+                <input
+                  id="map-other-overlays-opacity"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value="0.7"
+                  class="range range-xs w-full"
+                />
+              </div>
+            <% end %>
+          </fieldset>
+        </div>
+
+        <fieldset class="mt-3 border border-base-300 rounded-md px-4 pt-1 pb-3">
+          <legend class="text-xs font-medium text-base-content/60 px-1">Save and apply</legend>
+          <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
+            {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
+          </span>
+          <p id="map-alignment-save-help" class="mt-1 text-xs text-base-content/70">
+            Save alignment stores the floorplan's map position. Review coordinate changes also writes latitude and longitude onto child stops.
+          </p>
+          <div id="map-alignment-actions" class="mt-2 flex flex-wrap items-center gap-3">
             <span
               id="map-alignment-preview-status"
               class="text-xs text-base-content/70"
@@ -1145,7 +1179,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               {@map_controls_disabled_reason}
             </p>
           </div>
-        </div>
+        </fieldset>
 
         <%= if @coordinate_review_status do %>
           <p
