@@ -213,6 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:map_generation, "unmounted")
      |> assign(:map_state, :initializing)
      |> assign(:alignment_preview, nil)
+     |> assign(:alignment_unsaved?, false)
      |> assign(:coordinate_review, nil)
      |> assign(:review_transform, nil)
      |> assign(:coordinate_review_status, nil)
@@ -1115,6 +1116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   map_generation={@map_generation}
                   map_state={@map_state}
                   alignment_preview={@alignment_preview}
+                  alignment_unsaved?={@alignment_unsaved?}
                   coordinate_review={@coordinate_review}
                   review_transform={@review_transform}
                   coordinate_review_status={@coordinate_review_status}
@@ -2992,10 +2994,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("alignment_transform_changed", %{"generation" => generation}, socket) do
+  def handle_event("alignment_transform_changed", %{"generation" => generation} = params, socket) do
     # UX-only invalidation. Closes an open review or clears a prior empty-result
     # status. The Package 06 fingerprint recheck remains the sole stale-write
     # fence; this event is never trusted as a guarantee (INV-4).
+    #
+    # On a current generation the event also carries the operator-dirty signal
+    # for `alignment_unsaved?` (INV-09D-3). A stale generation sets nothing.
     cond do
       not current_map_generation?(socket, generation) ->
         {:noreply, socket}
@@ -3003,16 +3008,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       not is_nil(socket.assigns.coordinate_review) ->
         {:noreply,
          socket
+         |> mark_alignment_unsaved(params)
          |> assign(:coordinate_review, nil)
          |> assign(:review_transform, nil)
          |> assign(:coordinate_review_error, nil)
          |> assign(:coordinate_review_status, @alignment_changed_status)}
 
       socket.assigns.coordinate_review_status == @no_coordinate_changes_status ->
-        {:noreply, assign(socket, :coordinate_review_status, nil)}
+        {:noreply,
+         socket
+         |> mark_alignment_unsaved(params)
+         |> assign(:coordinate_review_status, nil)}
 
       true ->
-        {:noreply, socket}
+        {:noreply, mark_alignment_unsaved(socket, params)}
     end
   end
 
@@ -3144,6 +3153,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:alignment_preview, nil)
+     |> assign(:alignment_unsaved?, false)
      |> push_event("restore_saved_transform", %{generation: socket.assigns.map_generation})}
   end
 
@@ -4431,6 +4441,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:floorplan_image_w, nil)
     |> assign(:floorplan_image_h, nil)
     |> assign(:alignment_preview, nil)
+    |> assign(:alignment_unsaved?, false)
     |> assign(:coordinate_review, nil)
     |> assign(:review_transform, nil)
     |> assign(:coordinate_review_status, nil)
@@ -4442,6 +4453,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp current_map_generation?(_socket, _generation), do: false
+
+  # Enabled state on the Align strip is server-owned (INV-09D-3): the hook
+  # reports operator-initiated change through the `unsaved` payload key and the
+  # server decides what to render. A payload without the key — an older client,
+  # or an isolated hook fixture — is treated as dirty, which is how this event
+  # behaved before the key existed.
+  defp mark_alignment_unsaved(socket, params) when is_map(params) do
+    if Map.get(params, "unsaved", true) do
+      assign(socket, :alignment_unsaved?, true)
+    else
+      socket
+    end
+  end
 
   # Package 08 step 4: review-vocabulary copy. The legacy preview helpers were
   # removed in the same cutover that wired this contract (INV-2).
@@ -4483,6 +4507,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket
              |> assign(:active_stop_level, updated)
              |> assign(:alignment_preview, nil)
+             |> assign(:alignment_unsaved?, false)
              |> load_station_stop_levels_cache()
              |> push_event("alignment_saved", %{
                generation: socket.assigns.map_generation,

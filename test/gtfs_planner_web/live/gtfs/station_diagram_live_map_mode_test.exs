@@ -1957,6 +1957,204 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Package 09 part (d) step 3 — server-owned unsaved alignment state.
+  #
+  # `alignment_unsaved?` is set only by a current-generation
+  # `alignment_transform_changed` carrying a truthy `unsaved` key (a payload
+  # omitting the key is treated as dirty), and cleared by restore, a successful
+  # save, and any level/mode/version reset. The hook never writes `disabled`
+  # (INV-09D-3).
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - unsaved alignment state" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "UNSAVED_STATION",
+          stop_name: "Unsaved Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "unsaved_level",
+          level_name: "Unsaved Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "unsaved-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    defp mount_map_align(%{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         }) do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      view
+    end
+
+    defp transform_changed(view, params),
+      do: map_event(view, "alignment_transform_changed", params)
+
+    test "a freshly mounted align surface shows no unsaved indicator and disables restore",
+         context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change with unsaved true shows the indicator and enables restore",
+         context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert has_element?(view, "#map-alignment-unsaved", "Unsaved alignment changes")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change omitting the unsaved key is treated as unsaved", context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{})
+
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change with unsaved false leaves a clean surface clean", context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => false})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change with unsaved false does not clear an already unsaved surface",
+         context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      transform_changed(view, %{"unsaved" => false})
+
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a stale-generation transform change does not mark the surface unsaved", context do
+      view = mount_map_align(context)
+
+      render_hook(view, "alignment_transform_changed", %{
+        "generation" => "stale-generation",
+        "unsaved" => true
+      })
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change without a generation does not mark the surface unsaved", context do
+      view = mount_map_align(context)
+
+      render_hook(view, "alignment_transform_changed", %{"unsaved" => true})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "restoring the saved alignment clears the unsaved state", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      render_hook(view, "restore_saved_alignment", %{})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a successful save clears the unsaved state", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      map_event(view, "save_alignment", %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.0060,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 15.5
+      })
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a rejected save leaves the surface unsaved", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      html =
+        map_event(view, "save_alignment", %{
+          "center_lat" => 200,
+          "center_lon" => 0,
+          "scale_mpp" => 0.5,
+          "rotation_deg" => 0
+        })
+
+      assert html =~ "Could not save alignment"
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "leaving and re-entering align mode clears the unsaved state", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Package 08 step 3 — server coordinate-review contract.
   #
   # These cases drive the four LiveView events (`open_coordinate_review`,

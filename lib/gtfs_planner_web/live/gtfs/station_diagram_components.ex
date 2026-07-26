@@ -755,6 +755,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :map_generation, :string, required: true
   attr :map_state, :atom, default: :initializing
   attr :alignment_preview, :map, default: nil
+  attr :alignment_unsaved?, :boolean, default: false
   attr :coordinate_review, :map, default: nil
   attr :review_transform, :map, default: nil
   attr :coordinate_review_status, :string, default: nil
@@ -996,6 +997,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 type="button"
                 class="btn btn-sm btn-ghost min-h-11 text-primary"
                 phx-click="restore_saved_alignment"
+                disabled={not @alignment_unsaved?}
               >
                 Restore saved alignment
               </button>
@@ -1155,6 +1157,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </span>
           <p id="map-alignment-save-help" class="mt-1 text-xs text-base-content/70">
             Save alignment stores the floorplan's map position. Review coordinate changes also writes latitude and longitude onto child stops.
+          </p>
+          <p
+            :if={@alignment_unsaved?}
+            id="map-alignment-unsaved"
+            class="mt-1 text-xs font-medium text-warning"
+          >
+            Unsaved alignment changes
           </p>
           <div id="map-alignment-actions" class="mt-2 flex flex-wrap items-center gap-3">
             <span
