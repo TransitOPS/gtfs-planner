@@ -3644,6 +3644,372 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Package 09 part (d) step 5 — the rendered Align control strip.
+  #
+  # These cases assert grouping, the transform id delta, the readouts' initial
+  # values, and the per-button disable rules against a real LiveView render.
+  # Groups are identified by their visible <legend> text rather than by the
+  # container's utility classes, so the assertions survive a restyle.
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - align control strip" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STRIP_STATION",
+          stop_name: "Strip Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "strip_level",
+          level_name: "Strip Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "strip-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "the strip renders a visible legend for each of the five control groups", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "fieldset > legend", "Map center")
+      assert has_element?(view, "fieldset > legend", "Floorplan transform")
+      assert has_element?(view, "fieldset > legend", "Assisted alignment")
+      assert has_element?(view, "fieldset > legend", "Layers")
+      assert has_element?(view, "fieldset > legend", "Save and apply")
+    end
+
+    test "the Map center legend renders as visible text rather than sr-only", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "fieldset > legend", "Map center")
+      refute has_element?(view, "fieldset legend.sr-only", "Map center")
+    end
+
+    test "every align control renders inside its specified group", context do
+      view = mount_map_align(context)
+
+      assert control_groups(view) == %{
+               "map-alignment-lat-input" => "Map center",
+               "map-alignment-lon-input" => "Map center",
+               "map-alignment-apply-center" => "Map center",
+               "map-transform-left-fine" => "Floorplan transform",
+               "map-transform-up-fine" => "Floorplan transform",
+               "map-transform-down-fine" => "Floorplan transform",
+               "map-transform-right-fine" => "Floorplan transform",
+               "map-transform-rotate-left-fine" => "Floorplan transform",
+               "map-transform-rotate-right-fine" => "Floorplan transform",
+               "map-transform-scale-down-fine" => "Floorplan transform",
+               "map-transform-scale-up-fine" => "Floorplan transform",
+               "map-alignment-restore-saved" => "Floorplan transform",
+               "map-alignment-preview-auto" => "Assisted alignment",
+               "map-alignment-opacity" => "Layers",
+               "map-alignment-zoom" => "Layers",
+               "map-alignment-save" => "Save and apply",
+               "map-alignment-apply" => "Save and apply"
+             }
+    end
+
+    test "no align control renders outside a legended group", context do
+      view = mount_map_align(context)
+
+      assert ungrouped_strip_control_ids(view) == []
+    end
+
+    test "the map zoom slider keeps its ignore boundary inside the Layers group", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-zoom[phx-update='ignore']")
+      assert control_groups(view)["map-alignment-zoom"] == "Layers"
+    end
+
+    test "the other-levels opacity control joins the Layers group when an other level shows its floorplan",
+         context do
+      %{organization: organization, gtfs_version: gtfs_version, station: station} = context
+      other_level_id = aligned_other_level(organization, gtfs_version, station, "strip")
+      view = mount_map_align(context)
+
+      render_click(element(view, floorplan_selector(other_level_id)))
+
+      assert control_groups(view)["map-other-overlays-opacity"] == "Layers"
+      assert element_text(view, "#map-other-overlays-opacity-value") == "70%"
+    end
+
+    test "no other-levels opacity control renders when no other level shows a floorplan",
+         context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-other-overlays-opacity")
+      refute has_element?(view, "#map-other-overlays-opacity-value")
+    end
+
+    test "the Save and apply group leads with coverage, then the help line, then the actions",
+         context do
+      view = mount_map_align(context)
+
+      assert save_and_apply_contents(view) == [
+               "child-stop-coverage",
+               "map-alignment-save-help",
+               "map-alignment-actions"
+             ]
+    end
+
+    test "the unsaved indicator renders between the help line and the actions", context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert save_and_apply_contents(view) == [
+               "child-stop-coverage",
+               "map-alignment-save-help",
+               "map-alignment-unsaved",
+               "map-alignment-actions"
+             ]
+    end
+
+    test "the child-stop coverage sentence renders once and only inside Save and apply",
+         context do
+      view = mount_map_align(context)
+
+      assert coverage_sentence_count(view) == 1
+      assert "child-stop-coverage" in save_and_apply_contents(view)
+    end
+
+    test "the actions block holds the preview status, save, and review controls", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-actions #map-alignment-preview-status")
+      assert has_element?(view, "#map-alignment-actions #map-alignment-save")
+      assert has_element?(view, "#map-alignment-actions #map-alignment-apply")
+    end
+
+    test "the help line states what each of the two save actions does", context do
+      view = mount_map_align(context)
+
+      assert element_text(view, "#map-alignment-save-help") ==
+               "Save alignment stores the floorplan's map position. " <>
+                 "Review coordinate changes also writes latitude and longitude onto child stops."
+    end
+
+    test "the transform group renders exactly the eight symmetric fine controls", context do
+      view = mount_map_align(context)
+
+      assert transform_controls_rendered(view) == %{
+               "map-transform-left-fine" =>
+                 {"left", "false", "Move floorplan left · 2 px (Shift 10 px)"},
+               "map-transform-up-fine" =>
+                 {"up", "false", "Move floorplan up · 2 px (Shift 10 px)"},
+               "map-transform-down-fine" =>
+                 {"down", "false", "Move floorplan down · 2 px (Shift 10 px)"},
+               "map-transform-right-fine" =>
+                 {"right", "false", "Move floorplan right · 2 px (Shift 10 px)"},
+               "map-transform-rotate-left-fine" =>
+                 {"rotate-left", "false", "Rotate floorplan left · 1° (Shift 5°)"},
+               "map-transform-rotate-right-fine" =>
+                 {"rotate-right", "false", "Rotate floorplan right · 1° (Shift 5°)"},
+               "map-transform-scale-down-fine" =>
+                 {"scale-down", "false", "Shrink floorplan · 1% (Shift 10%)"},
+               "map-transform-scale-up-fine" =>
+                 {"scale-up", "false", "Grow floorplan · 1% (Shift 10%)"}
+             }
+    end
+
+    test "the four removed coarse transform controls no longer render", context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-transform-left-coarse")
+      refute has_element?(view, "#map-transform-right-coarse")
+      refute has_element?(view, "#map-transform-rotate-right-coarse")
+      refute has_element?(view, "#map-transform-scale-up-coarse")
+    end
+
+    test "the transform and slider readouts render their initial values", context do
+      view = mount_map_align(context)
+
+      assert element_text(view, "#map-alignment-rotation-value") == "0.0°"
+      assert element_text(view, "#map-alignment-scale-value") == "1.00×"
+      assert element_text(view, "#map-alignment-opacity-value") == "70%"
+      assert element_text(view, "#map-alignment-zoom-value") == "19.0"
+    end
+
+    test "a fatal map state disables save, preview, and review", context do
+      view = mount_map_align(context)
+      set_image_natural_size(view, 1024, 768)
+
+      map_event(view, "map_state", %{"state" => "fatal"})
+
+      assert has_element?(view, "#map-alignment-save[disabled]")
+      assert has_element?(view, "#map-alignment-preview-auto[disabled]")
+      assert has_element?(view, "#map-alignment-apply[disabled]")
+    end
+
+    test "a ready map state with valid image dimensions enables save, preview, and review",
+         context do
+      view = mount_map_align(context)
+      set_image_natural_size(view, 1024, 768)
+
+      map_event(view, "map_state", %{"state" => "ready"})
+
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      refute has_element?(view, "#map-alignment-preview-auto[disabled]")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+    end
+
+    test "missing floorplan image dimensions disable preview and review but not save", context do
+      view = mount_map_align(context)
+
+      map_event(view, "map_state", %{"state" => "ready"})
+
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      assert has_element?(view, "#map-alignment-preview-auto[disabled]")
+      assert has_element?(view, "#map-alignment-apply[disabled]")
+    end
+  end
+
+  # Ids of the Align control-strip controls. The strip is a sibling of the
+  # `phx-hook="MapAlignment"` root rather than a container with a stable id, so
+  # membership is resolved by id prefix and the map region's own handles are
+  # subtracted structurally.
+  @strip_control_id_prefixes ["map-alignment-", "map-transform-", "map-other-overlays-"]
+
+  defp parsed_document(view), do: view |> render() |> LazyHTML.from_document()
+
+  defp strip_control_id?(id), do: String.starts_with?(id, @strip_control_id_prefixes)
+
+  defp legend_text(fieldset) do
+    fieldset
+    |> LazyHTML.query("legend")
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
+  # Maps every strip control id to the visible legend of the fieldset it renders in.
+  defp control_groups(view) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("fieldset")
+    |> Enum.flat_map(fn fieldset ->
+      legend = legend_text(fieldset)
+
+      fieldset
+      |> LazyHTML.query("button[id], input[id]")
+      |> LazyHTML.attribute("id")
+      |> Enum.filter(&strip_control_id?/1)
+      |> Enum.map(&{&1, legend})
+    end)
+    |> Map.new()
+  end
+
+  # Strip controls that render outside every legended fieldset.
+  defp ungrouped_strip_control_ids(view) do
+    document = parsed_document(view)
+
+    strip_controls =
+      document
+      |> LazyHTML.query("button[id], input[id]")
+      |> LazyHTML.attribute("id")
+      |> Enum.filter(&strip_control_id?/1)
+
+    map_region_controls =
+      document
+      |> LazyHTML.query(
+        "[phx-hook='MapAlignment'] button[id], [phx-hook='MapAlignment'] input[id]"
+      )
+      |> LazyHTML.attribute("id")
+
+    grouped_controls =
+      document
+      |> LazyHTML.query("fieldset:has(> legend) button[id], fieldset:has(> legend) input[id]")
+      |> LazyHTML.attribute("id")
+
+    strip_controls
+    |> Kernel.--(map_region_controls)
+    |> Kernel.--(grouped_controls)
+  end
+
+  defp fieldset_with_legend(view, legend) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("fieldset")
+    |> Enum.find(fn fieldset -> legend_text(fieldset) == legend end)
+  end
+
+  # The Save-and-apply group's named blocks, in document order.
+  defp save_and_apply_contents(view) do
+    view
+    |> fieldset_with_legend("Save and apply")
+    |> LazyHTML.query(
+      "[data-role='child-stop-coverage'], #map-alignment-save-help, " <>
+        "#map-alignment-unsaved, #map-alignment-actions"
+    )
+    |> Enum.map(fn node ->
+      case LazyHTML.attribute(node, "id") do
+        [id | _] -> id
+        [] -> node |> LazyHTML.attribute("data-role") |> List.first()
+      end
+    end)
+  end
+
+  defp coverage_sentence_count(view) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("[data-role='child-stop-coverage']")
+    |> Enum.count()
+  end
+
+  # Every rendered transform control, keyed by id, as {action, coarse, title}.
+  defp transform_controls_rendered(view) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("[data-map-transform-action]")
+    |> Enum.map(fn control ->
+      {first_attribute(control, "id"),
+       {first_attribute(control, "data-map-transform-action"),
+        first_attribute(control, "data-map-transform-coarse"), first_attribute(control, "title")}}
+    end)
+    |> Map.new()
+  end
+
+  defp element_text(view, selector) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
+  defp first_attribute(node, name), do: node |> LazyHTML.attribute(name) |> List.first()
+
   # Creates an other level with a diagram and a complete alignment (floorplan-eligible)
   # and returns its level id (string).
   defp aligned_other_level(organization, gtfs_version, station, slug, level_index \\ 1.0) do

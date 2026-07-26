@@ -2368,6 +2368,35 @@ describe("map_alignment_hook saved/preview state machine", () => {
       expect(hook._applyTransform).toHaveBeenCalled();
     });
 
+    it("re-measures the map container before deriving the restored transform", () => {
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: {
+          center_lat: 60,
+          center_lon: 110,
+          scale_mpp: 0.3,
+          rotation_deg: 0,
+        },
+      });
+
+      // The LiveView patch that delivers this event also removes the unsaved
+      // indicator, so the container has already changed height while Leaflet
+      // still reports the pre-patch projection.
+      let staleOffset = 20;
+      hook.leafletMap.latLngToContainerPoint = vi.fn(([lat, lon]) => ({
+        x: lon,
+        y: lat - staleOffset,
+      }));
+      hook.leafletMap.invalidateSize = vi.fn(() => {
+        staleOffset = 0;
+      });
+      hook._applyTransform = vi.fn();
+
+      hook._handleRestoreSavedTransform({ generation: "gen-1" });
+
+      expect(hook.transform.ty).toBe(-40);
+    });
+
     it("applies identity when no saved alignment exists", () => {
       const { hook } = buildPartialHook({
         generation: "gen-1",

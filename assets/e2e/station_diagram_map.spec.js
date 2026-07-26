@@ -51,6 +51,44 @@ async function readSettledTransform(overlay) {
   );
 }
 
+// The Align control strip's five groups, each captioned by a visible <legend>.
+const controlGroupLegends = [
+  "Map center",
+  "Floorplan transform",
+  "Assisted alignment",
+  "Layers",
+  "Save and apply",
+];
+
+async function expectControlGroupLegendsVisible(page) {
+  for (const legend of controlGroupLegends) {
+    const caption = page
+      .locator("fieldset > legend")
+      .filter({ hasText: legend });
+
+    await expect(caption).toBeVisible();
+
+    // A visually-hidden legend still reports as visible, so measure it: the
+    // sr-only idiom collapses to a 1px box.
+    const box = await caption.boundingBox();
+    expect(box.width).toBeGreaterThan(20);
+  }
+}
+
+// Records document.activeElement.id at the starting control and after each Tab.
+async function collectTabOrder(page, startSelector, steps) {
+  await page.locator(startSelector).focus();
+
+  const order = [await page.evaluate(() => document.activeElement?.id ?? "")];
+
+  for (let step = 0; step < steps; step += 1) {
+    await page.keyboard.press("Tab");
+    order.push(await page.evaluate(() => document.activeElement?.id ?? ""));
+  }
+
+  return order;
+}
+
 async function coordinateReviewTableMetrics(page) {
   return page.evaluate(() => {
     const body = document.querySelector("#coordinate-review-dialog-body");
@@ -132,7 +170,7 @@ test.describe("Station diagram map alignment", () => {
 });
 
 test.describe("assisted alignment", () => {
-  const artifactsDir = path.resolve(__dirname, "../../.artifacts/journal-08");
+  const artifactsDir = path.resolve(__dirname, "../../.artifacts/journal-09");
   const referencePath = path.resolve(
     __dirname,
     "../../.specs/journal-08/visual-references/mock-05-align-mode-v2.html",
@@ -153,6 +191,7 @@ test.describe("assisted alignment", () => {
     const floorplanImage = overlay.locator("img");
 
     await expect(canvas).toBeVisible();
+    await expectControlGroupLegendsVisible(page);
     const canvasBox = await canvas.boundingBox();
     expect(canvasBox.width).toBeGreaterThan(400);
     expect(canvasBox.height).toBeGreaterThan(200);
@@ -234,6 +273,14 @@ test.describe("assisted alignment", () => {
       fullPage: true,
     });
 
+    // Applying an assisted preview reports `unsaved: false` to the server
+    // (`previewAdjusted` is false for programmatic reapplication), so Restore
+    // saved alignment stays disabled until an operator gesture dirties the
+    // alignment. This documents the shipped behaviour, not a desired one.
+    await expect(restoreBtn).toBeDisabled();
+    await page.locator("#map-transform-right-fine").click();
+    await expect(restoreBtn).toBeEnabled();
+
     await restoreBtn.click();
     await expect(status).not.toBeVisible();
     await expect
@@ -244,6 +291,10 @@ test.describe("assisted alignment", () => {
   test("renders the copied reference and captures the assisted alignment region", async ({
     page,
   }) => {
+    // The mock lives under the gitignored .specs/ workspace, so the suite skips
+    // rather than fails when that workspace is absent (as the coordinate-review
+    // reference test already does).
+    test.skip(!fs.existsSync(referencePath), "reference file not present");
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(pathToFileURL(referencePath).href);
 
@@ -255,10 +306,13 @@ test.describe("assisted alignment", () => {
       page.locator("text=Unsaved auto-alignment preview"),
     ).toBeVisible();
 
-    fs.mkdirSync(artifactsDir, { recursive: true });
+    fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
 
     await page.screenshot({
-      path: path.join(artifactsDir, "reference-assisted-alignment.png"),
+      path: path.join(
+        journal08ArtifactsDir,
+        "reference-assisted-alignment.png",
+      ),
       fullPage: false,
     });
   });
@@ -284,15 +338,71 @@ test.describe("assisted alignment", () => {
     await loginAndGoToDiagram(page);
     await selectDiagramMode(page, "map");
 
-    const precedingControl = page.locator("#map-transform-scale-up-coarse");
+    const precedingControl = page.locator("#map-transform-scale-up-fine");
     await precedingControl.click();
     await expect(precedingControl).toBeFocused();
+
+    // Restore saved alignment is disabled until the server marks the alignment
+    // unsaved, and a disabled button is not a tab stop. The click above is the
+    // operator gesture that dirties it, one debounce window earlier.
+    await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
+    await precedingControl.focus();
 
     await page.keyboard.press("Tab");
     await expect(page.locator("#map-alignment-restore-saved")).toBeFocused();
 
     await page.keyboard.press("Tab");
     await expect(page.locator("#map-alignment-preview-auto")).toBeFocused();
+  });
+
+  test("keyboard focus walks the control groups in source order", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await loginAndGoToDiagram(page);
+    await selectDiagramMode(page, "map");
+
+    // Dirty the alignment so Restore saved alignment is a tab stop at all.
+    await page.locator("#map-transform-right-fine").click();
+    await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
+
+    const focusOrder = await collectTabOrder(
+      page,
+      "#map-alignment-lat-input",
+      24,
+    );
+
+    // One marker per group, asserted as relative order rather than adjacency:
+    // the Move pad contributes four consecutive stops and each group holds
+    // several focusable controls.
+    const markers = [
+      "map-alignment-lat-input",
+      "map-alignment-lon-input",
+      "map-alignment-apply-center",
+      "map-alignment-restore-saved",
+      "map-alignment-preview-auto",
+      "map-alignment-opacity",
+      "map-alignment-save",
+    ];
+    expect(focusOrder.filter((id) => markers.includes(id))).toEqual(markers);
+
+    // The transform pad is reached between Center map and Restore saved alignment.
+    const transformStop = focusOrder.findIndex((id) =>
+      id.startsWith("map-transform-"),
+    );
+    expect(transformStop).toBeGreaterThan(
+      focusOrder.indexOf("map-alignment-apply-center"),
+    );
+    expect(transformStop).toBeLessThan(
+      focusOrder.indexOf("map-alignment-restore-saved"),
+    );
+
+    // No unidentified tab stop is introduced between the first and last control.
+    const stripStops = focusOrder.slice(
+      0,
+      focusOrder.indexOf("map-alignment-save") + 1,
+    );
+    expect(stripStops.filter((id) => id === "")).toEqual([]);
   });
 });
 

@@ -736,7 +736,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
                "Coordinate-change preview not ready"
              )
 
-      assert has_element?(view, "div.mt-3.grid.grid-cols-1.items-start")
+      assert has_element?(view, "fieldset > legend", "Layers")
+      assert has_element?(view, "fieldset > legend", "Save and apply")
 
       refute has_element?(view, "#auto-alignment-status")
       refute has_element?(view, "#auto-alignment-error")

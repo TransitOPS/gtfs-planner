@@ -1278,6 +1278,13 @@ const MapAlignmentHook = {
       return;
     }
 
+    // Clearing the unsaved indicator is part of the same LiveView patch that
+    // delivers this event, so the map container has already changed height
+    // while Leaflet still reports the pre-patch size. Re-measure before
+    // deriving the transform, otherwise the restored floorplan lands half the
+    // height delta away from its saved position.
+    this.leafletMap?.invalidateSize?.();
+
     if (this.savedAlignment) {
       const img = this.overlay ? this.overlay.querySelector("img") : null;
       const result = this._cssTransformForAlignment(this.savedAlignment, img);
