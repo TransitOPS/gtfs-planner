@@ -4177,6 +4177,162 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 5 — the demoted Map center and Map zoom popovers.
+  #
+  # These cases pin the demotion half of the Id and selector delta: the five
+  # rarely-used controls step 4 left inline in the commit bar now render only
+  # inside their popover panels, the panels render hidden, and the triggers
+  # carry the disclosure and dismissal wiring the level-picker precedent uses.
+  # Dismissal and focus return need a real browser and belong to step 10.
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - align popovers" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "POPOVER_STATION",
+          stop_name: "Popover Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "popover_level",
+          level_name: "Popover Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "popover-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "the coordinate controls render only inside the map center panel", context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      for id <- [
+            "map-alignment-lat-input",
+            "map-alignment-lon-input",
+            "map-alignment-apply-center"
+          ] do
+        assert has_element?(view, "#map-alignment-center-panel ##{id}")
+
+        assert document |> LazyHTML.query("##{id}") |> Enum.count() == 1,
+               "#{id} renders more than once, so a copy survives outside the panel"
+      end
+    end
+
+    test "the zoom controls render only inside the map zoom panel, keeping the ignore boundary",
+         context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      for id <- ["map-alignment-zoom", "map-alignment-zoom-value"] do
+        assert has_element?(view, "#map-alignment-zoom-panel ##{id}")
+
+        assert document |> LazyHTML.query("##{id}") |> Enum.count() == 1,
+               "#{id} renders more than once, so a copy survives outside the panel"
+      end
+
+      assert has_element?(
+               view,
+               "#map-alignment-zoom-panel #map-alignment-zoom[phx-update='ignore']"
+             )
+
+      refute has_element?(view, "#map-alignment-zoom-panel[phx-update='ignore']")
+    end
+
+    test "both panels render hidden with their triggers collapsed in the commit bar", context do
+      view = mount_map_align(context)
+
+      for {trigger, panel} <- [
+            {"map-alignment-center-trigger", "map-alignment-center-panel"},
+            {"map-alignment-zoom-trigger", "map-alignment-zoom-panel"}
+          ] do
+        assert has_element?(view, "#map-alignment-commit-bar ##{trigger}")
+        assert has_element?(view, "#map-alignment-commit-bar ##{panel}")
+
+        assert has_element?(
+                 view,
+                 "##{trigger}[aria-expanded='false'][aria-controls='#{panel}']"
+               )
+
+        assert has_element?(view, "##{panel}[style='display: none;']")
+      end
+    end
+
+    test "each panel carries the click-away and escape dismissal wiring", context do
+      view = mount_map_align(context)
+
+      for panel <- ["map-alignment-center-panel", "map-alignment-zoom-panel"] do
+        assert has_element?(view, "##{panel}[phx-click-away]")
+        assert has_element?(view, "##{panel}[phx-window-keydown][phx-key='escape']")
+      end
+
+      for trigger <- ["map-alignment-center-trigger", "map-alignment-zoom-trigger"] do
+        assert has_element?(view, "##{trigger}[phx-click]")
+        assert has_element?(view, "##{trigger}[phx-keydown][phx-key='escape']")
+      end
+    end
+
+    test "the triggers name their clusters and the primary action keeps its label", context do
+      view = mount_map_align(context)
+
+      assert view |> element("#map-alignment-center-trigger") |> render() =~ "Map center"
+      assert view |> element("#map-alignment-zoom-trigger") |> render() =~ "Map zoom"
+      assert view |> element("#map-alignment-apply-center") |> render() =~ "Center map"
+    end
+
+    test "the coordinate fields keep visible labels bound to their inputs", context do
+      view = mount_map_align(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-center-panel label[for='map-alignment-lat-input']",
+               "Latitude"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-center-panel label[for='map-alignment-lon-input']",
+               "Longitude"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-zoom-panel label[for='map-alignment-zoom']",
+               "Map zoom"
+             )
+    end
+  end
+
   # Ids of the Align control-strip controls. The strip is a sibling of the
   # `phx-hook="MapAlignment"` root rather than a container with a stable id, so
   # membership is resolved by id prefix and the map region's own handles are

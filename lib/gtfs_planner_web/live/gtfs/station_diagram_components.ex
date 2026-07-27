@@ -762,6 +762,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :coordinate_review_error, :string, default: nil
 
   def map_canvas(assigns) do
+    # Popover wiring for the two demoted control clusters, following the
+    # #level-control-trigger / #level-control-panel idiom in this module.
+    # `close` hides and resets the trigger's aria-expanded; `dismiss` also
+    # returns focus. `dismiss` is used only where the panel is known to be
+    # open — phx-click-away is visibility-guarded by LiveView, and the
+    # trigger's own phx-keydown only fires while the trigger has focus.
+    # phx-window-keydown fires on every Escape anywhere on the page, so it
+    # gets the focus-free `close`.
+    center_close =
+      JS.hide(to: "#map-alignment-center-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-center-trigger")
+
+    zoom_close =
+      JS.hide(to: "#map-alignment-zoom-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-zoom-trigger")
+
     floorplan_url =
       diagram_image_href(
         assigns.organization_id,
@@ -811,6 +827,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         )
       )
       |> assign(:canvas_id, canvas_id)
+      |> assign(
+        :center_open,
+        JS.toggle(to: "#map-alignment-center-panel")
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"},
+          to: "#map-alignment-center-trigger"
+        )
+      )
+      |> assign(:center_close, center_close)
+      |> assign(:center_dismiss, JS.focus(center_close, to: "#map-alignment-center-trigger"))
+      |> assign(
+        :zoom_open,
+        JS.toggle(to: "#map-alignment-zoom-panel")
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"},
+          to: "#map-alignment-zoom-trigger"
+        )
+      )
+      |> assign(:zoom_close, zoom_close)
+      |> assign(:zoom_dismiss, JS.focus(zoom_close, to: "#map-alignment-zoom-trigger"))
       |> assign_review_projection()
 
     ~H"""
@@ -1041,27 +1075,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
 
           <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <button
-                id="map-alignment-preview-auto"
-                type="button"
-                class="btn btn-sm btn-outline btn-primary min-h-11 phx-click-loading:opacity-60"
-                phx-click="preview_alignment"
-                phx-disable-with="Previewing…"
-                disabled={
-                  @map_state == :fatal or
-                    invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
-                }
-                aria-describedby={
-                  if @auto_alignment_disabled_reason,
-                    do: "map-auto-alignment-disabled-reason"
-                }
-              >
-                Preview auto-alignment
-              </button>
-              <p class="text-xs text-base-content/70">
-                Uses {@anchor_count} stops that already have floorplan and map positions.
-              </p>
+            <div class="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <div class="flex min-w-0 items-center gap-x-3">
+                <button
+                  id="map-alignment-preview-auto"
+                  type="button"
+                  class="btn btn-sm btn-outline btn-primary min-h-11 shrink-0 phx-click-loading:opacity-60"
+                  phx-click="preview_alignment"
+                  phx-disable-with="Previewing…"
+                  disabled={
+                    @map_state == :fatal or
+                      invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+                  }
+                  aria-describedby={
+                    if @auto_alignment_disabled_reason,
+                      do: "map-auto-alignment-disabled-reason"
+                  }
+                >
+                  Preview auto-alignment
+                </button>
+                <p class="min-w-0 text-xs text-base-content/70">
+                  Uses {@anchor_count} stops that already have floorplan and map positions.
+                </p>
+              </div>
               <p
                 :if={@auto_alignment_disabled_reason}
                 id="map-auto-alignment-disabled-reason"
@@ -1096,7 +1132,122 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <% end %>
               <% end %>
             </div>
-            <div id="map-alignment-actions" class="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div class="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2">
+              <div class="relative">
+                <button
+                  id="map-alignment-center-trigger"
+                  type="button"
+                  class="inline-flex items-center gap-2 bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200"
+                  aria-expanded="false"
+                  aria-controls="map-alignment-center-panel"
+                  phx-click={@center_open}
+                  phx-keydown={@center_dismiss}
+                  phx-key="escape"
+                >
+                  <span class="text-base-content">Map center</span>
+                  <.icon name="hero-chevron-up" class="size-3.5 text-base-content/70" />
+                </button>
+
+                <div
+                  id="map-alignment-center-panel"
+                  phx-click-away={@center_dismiss}
+                  phx-window-keydown={@center_close}
+                  phx-key="escape"
+                  style="display: none;"
+                  class="absolute left-0 bottom-full mb-1 z-30 flex w-52 flex-col gap-3 border border-base-300 bg-base-100 rounded-box shadow-lg p-3 text-sm"
+                >
+                  <div class="flex flex-col gap-1">
+                    <label
+                      for="map-alignment-lat-input"
+                      class="text-xs font-medium text-base-content/80"
+                    >
+                      Latitude
+                    </label>
+                    <input
+                      id="map-alignment-lat-input"
+                      type="number"
+                      step="any"
+                      value={@initial_lat}
+                      class="input input-sm input-bordered min-h-11 w-full"
+                    />
+                  </div>
+                  <div class="flex flex-col gap-1">
+                    <label
+                      for="map-alignment-lon-input"
+                      class="text-xs font-medium text-base-content/80"
+                    >
+                      Longitude
+                    </label>
+                    <input
+                      id="map-alignment-lon-input"
+                      type="number"
+                      step="any"
+                      value={@initial_lon}
+                      class="input input-sm input-bordered min-h-11 w-full"
+                    />
+                  </div>
+                  <button
+                    id="map-alignment-apply-center"
+                    type="button"
+                    class="btn btn-sm btn-block min-h-11"
+                  >
+                    Center map
+                  </button>
+                </div>
+              </div>
+
+              <div class="relative">
+                <button
+                  id="map-alignment-zoom-trigger"
+                  type="button"
+                  class="inline-flex items-center gap-2 bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200"
+                  aria-expanded="false"
+                  aria-controls="map-alignment-zoom-panel"
+                  phx-click={@zoom_open}
+                  phx-keydown={@zoom_dismiss}
+                  phx-key="escape"
+                >
+                  <span class="text-base-content">Map zoom</span>
+                  <.icon name="hero-chevron-up" class="size-3.5 text-base-content/70" />
+                </button>
+
+                <div
+                  id="map-alignment-zoom-panel"
+                  phx-click-away={@zoom_dismiss}
+                  phx-window-keydown={@zoom_close}
+                  phx-key="escape"
+                  style="display: none;"
+                  class="absolute left-0 bottom-full mb-1 z-30 flex w-52 flex-col gap-1 border border-base-300 bg-base-100 rounded-box shadow-lg p-3 text-sm"
+                >
+                  <div class="flex items-baseline justify-between gap-2">
+                    <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
+                      Map zoom
+                    </label>
+                    <span
+                      id="map-alignment-zoom-value"
+                      class="text-xs tabular-nums text-base-content/70"
+                    >
+                      19.0
+                    </span>
+                  </div>
+                  <input
+                    id="map-alignment-zoom"
+                    type="range"
+                    min="19"
+                    max="22"
+                    step="0.5"
+                    value="19"
+                    class="range range-xs w-full"
+                    phx-update="ignore"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div
+              id="map-alignment-actions"
+              class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2"
+            >
               <span
                 id="map-alignment-preview-status"
                 class="text-xs text-base-content/70"
@@ -1148,56 +1299,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               >
                 {@map_controls_disabled_reason}
               </p>
-            </div>
-          </div>
-
-          <div class="flex flex-wrap items-end gap-x-4 gap-y-2">
-            <div class="flex flex-col gap-1">
-              <label for="map-alignment-lat-input" class="text-xs font-medium text-base-content/80">
-                Latitude
-              </label>
-              <input
-                id="map-alignment-lat-input"
-                type="number"
-                step="any"
-                value={@initial_lat}
-                class="input input-sm input-bordered min-h-11 w-36"
-              />
-            </div>
-            <div class="flex flex-col gap-1">
-              <label for="map-alignment-lon-input" class="text-xs font-medium text-base-content/80">
-                Longitude
-              </label>
-              <input
-                id="map-alignment-lon-input"
-                type="number"
-                step="any"
-                value={@initial_lon}
-                class="input input-sm input-bordered min-h-11 w-36"
-              />
-            </div>
-            <button id="map-alignment-apply-center" type="button" class="btn btn-sm min-h-11">
-              Center map
-            </button>
-            <div class="flex w-48 flex-col gap-1">
-              <div class="flex items-baseline justify-between gap-2">
-                <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
-                  Map zoom
-                </label>
-                <span id="map-alignment-zoom-value" class="text-xs tabular-nums text-base-content/70">
-                  19.0
-                </span>
-              </div>
-              <input
-                id="map-alignment-zoom"
-                type="range"
-                min="19"
-                max="22"
-                step="0.5"
-                value="19"
-                class="range range-xs w-full"
-                phx-update="ignore"
-              />
             </div>
           </div>
         </div>
