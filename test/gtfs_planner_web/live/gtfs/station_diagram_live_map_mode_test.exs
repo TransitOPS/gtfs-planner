@@ -3966,6 +3966,217 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     end
   end
 
+  # Every align control that survives the part (e) rebuild, addressed the way a
+  # consumer addresses it. Each must render exactly once.
+  @preserved_align_selectors [
+    "#map-alignment-workspace",
+    "#map-alignment-tools",
+    "#map-alignment-tools-toggle",
+    "#map-alignment-commit-bar",
+    "#map-alignment-lat-input",
+    "#map-alignment-lon-input",
+    "#map-alignment-apply-center",
+    "#map-transform-left-fine",
+    "#map-transform-up-fine",
+    "#map-transform-down-fine",
+    "#map-transform-right-fine",
+    "#map-transform-rotate-left-fine",
+    "#map-transform-rotate-right-fine",
+    "#map-transform-scale-down-fine",
+    "#map-transform-scale-up-fine",
+    "#map-alignment-rotation-value",
+    "#map-alignment-scale-value",
+    "#map-alignment-restore-saved",
+    "#map-alignment-opacity",
+    "#map-alignment-opacity-value",
+    "#map-alignment-zoom",
+    "#map-alignment-zoom-value",
+    "[data-role='child-stop-coverage']",
+    "#map-alignment-save-help",
+    "#map-alignment-actions",
+    "#map-alignment-preview-status",
+    "#map-alignment-save",
+    "#map-alignment-apply",
+    "#map-alignment-preview-auto"
+  ]
+
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 4 — the rebuilt Align layout.
+  #
+  # These cases pin the structural half of the Id and selector delta: the tools
+  # panel floats over the map as a sibling of the ignored canvas, the five
+  # bordered control groups are gone, and every control that lived in them still
+  # renders exactly once in its new container.
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - align tools panel and commit bar" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REBUILD_STATION",
+          stop_name: "Rebuild Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "rebuild_level",
+          level_name: "Rebuild Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rebuild-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "the tools panel floats inside the workspace and outside the ignored canvas", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-workspace #map-alignment-tools")
+      refute has_element?(view, "[phx-update='ignore'] #map-alignment-tools")
+      refute has_element?(view, "#map-alignment-tools [phx-update='ignore']")
+    end
+
+    test "the five removed control groups no longer render", context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-alignment-transform-controls")
+      refute has_element?(view, "#map-alignment-assisted")
+
+      for legend <- [
+            "Map center",
+            "Floorplan transform",
+            "Assisted alignment",
+            "Layers",
+            "Save and apply"
+          ] do
+        refute has_element?(view, "fieldset > legend", legend)
+      end
+    end
+
+    test "every preserved align control renders exactly once", context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      counts =
+        Map.new(@preserved_align_selectors, fn selector ->
+          {selector, document |> LazyHTML.query(selector) |> Enum.count()}
+        end)
+
+      assert counts == Map.new(@preserved_align_selectors, &{&1, 1})
+    end
+
+    test "the tools panel owns the frequent controls and the commit bar owns the rest",
+         context do
+      view = mount_map_align(context)
+
+      for id <- [
+            "map-transform-left-fine",
+            "map-transform-up-fine",
+            "map-transform-down-fine",
+            "map-transform-right-fine",
+            "map-transform-rotate-left-fine",
+            "map-transform-rotate-right-fine",
+            "map-transform-scale-down-fine",
+            "map-transform-scale-up-fine",
+            "map-alignment-rotation-value",
+            "map-alignment-scale-value",
+            "map-alignment-restore-saved",
+            "map-alignment-opacity",
+            "map-alignment-opacity-value",
+            "map-alignment-tools-toggle"
+          ] do
+        assert has_element?(view, "#map-alignment-tools ##{id}")
+      end
+
+      for id <- [
+            "map-alignment-save-help",
+            "map-alignment-preview-auto",
+            "map-alignment-actions",
+            "map-alignment-save",
+            "map-alignment-apply",
+            "map-alignment-lat-input",
+            "map-alignment-lon-input",
+            "map-alignment-apply-center",
+            "map-alignment-zoom",
+            "map-alignment-zoom-value"
+          ] do
+        assert has_element?(view, "#map-alignment-commit-bar ##{id}")
+      end
+
+      assert has_element?(
+               view,
+               "#map-alignment-commit-bar [data-role='child-stop-coverage']"
+             )
+    end
+
+    test "the map zoom slider keeps its ignore boundary on the input itself", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-zoom[phx-update='ignore']")
+    end
+
+    test "restore stays in the tools panel and follows the unsaved state", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved[disabled]")
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "the other-levels opacity control joins the tools panel when its floorplan shows",
+         context do
+      %{organization: organization, gtfs_version: gtfs_version, station: station} = context
+      other_level_id = aligned_other_level(organization, gtfs_version, station, "rebuild")
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-other-overlays-opacity")
+
+      render_click(element(view, floorplan_selector(other_level_id)))
+
+      assert has_element?(view, "#map-alignment-tools #map-other-overlays-opacity")
+      assert has_element?(view, "#map-alignment-tools #map-other-overlays-opacity-value")
+    end
+
+    test "the instruction copy names dragging, keyboard nudging, and hold-to-hide", context do
+      view = mount_map_align(context)
+      html = render(view)
+
+      assert html =~ "Drag to move the floorplan"
+      assert html =~ "arrow keys"
+      assert html =~ "Hold H"
+    end
+  end
+
   # Ids of the Align control-strip controls. The strip is a sibling of the
   # `phx-hook="MapAlignment"` root rather than a container with a stable id, so
   # membership is resolved by id prefix and the map region's own handles are

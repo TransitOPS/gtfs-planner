@@ -51,27 +51,24 @@ async function readSettledTransform(overlay) {
   );
 }
 
-// The Align control strip's five groups, each captioned by a visible <legend>.
-const controlGroupLegends = [
-  "Map center",
-  "Floorplan transform",
-  "Assisted alignment",
-  "Layers",
-  "Save and apply",
+// The Align surface's two containers: the tools panel floating over the map and
+// the commit bar below it. Each holds a control that proves it is populated.
+const alignContainers = [
+  ["#map-alignment-tools", "#map-transform-left-fine"],
+  ["#map-alignment-commit-bar", "#map-alignment-save"],
 ];
 
-async function expectControlGroupLegendsVisible(page) {
-  for (const legend of controlGroupLegends) {
-    const caption = page
-      .locator("fieldset > legend")
-      .filter({ hasText: legend });
+async function expectAlignContainersVisible(page) {
+  for (const [container, member] of alignContainers) {
+    const panel = page.locator(container);
 
-    await expect(caption).toBeVisible();
+    await expect(panel).toBeVisible();
+    await expect(panel.locator(member)).toBeVisible();
 
-    // A visually-hidden legend still reports as visible, so measure it: the
-    // sr-only idiom collapses to a 1px box.
-    const box = await caption.boundingBox();
+    // A collapsed-to-nothing container still reports as visible, so measure it.
+    const box = await panel.boundingBox();
     expect(box.width).toBeGreaterThan(20);
+    expect(box.height).toBeGreaterThan(20);
   }
 }
 
@@ -191,7 +188,7 @@ test.describe("assisted alignment", () => {
     const floorplanImage = overlay.locator("img");
 
     await expect(canvas).toBeVisible();
-    await expectControlGroupLegendsVisible(page);
+    await expectAlignContainersVisible(page);
     const canvasBox = await canvas.boundingBox();
     expect(canvasBox.width).toBeGreaterThan(400);
     expect(canvasBox.height).toBeGreaterThan(200);

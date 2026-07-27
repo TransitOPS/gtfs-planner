@@ -891,202 +891,112 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </button>
         </div>
         <div
-          :if={@alignment_preview && @alignment_preview.status == :ready}
-          id="auto-alignment-status"
-          role="status"
-          aria-live="polite"
-          aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
-          class="absolute z-10 top-4 left-4 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-900 shadow-sm"
+          id="map-alignment-tools"
+          class="absolute z-20 top-4 left-4 flex w-64 max-h-[calc(100%-2rem)] flex-col gap-3 overflow-y-auto bg-base-100 border border-base-300 rounded-md shadow-sm p-3"
         >
-          <strong class="font-medium">Unsaved auto-alignment preview</strong>
-        </div>
-      </div>
-      <div class="pt-3 pb-4">
-        <p class="text-xs text-base-content/70">
-          Drag to move the floorplan. Use handles to rotate and resize.
-        </p>
-        <div class="mt-3 grid grid-cols-1 gap-3 items-start xl:grid-cols-[minmax(0,18rem)_minmax(0,1fr)_minmax(0,20rem)_minmax(0,16rem)]">
-          <fieldset class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0">
-            <legend class="text-xs font-medium text-base-content/60 px-1">Map center</legend>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="flex flex-col gap-1 min-w-0">
-                <label
-                  for="map-alignment-lat-input"
-                  class="text-xs font-medium text-base-content/80"
-                >
-                  Latitude
-                </label>
-                <input
-                  id="map-alignment-lat-input"
-                  type="number"
-                  step="any"
-                  value={@initial_lat}
-                  class="input input-sm input-bordered min-h-11 w-full"
-                />
-              </div>
-              <div class="flex flex-col gap-1 min-w-0">
-                <label
-                  for="map-alignment-lon-input"
-                  class="text-xs font-medium text-base-content/80"
-                >
-                  Longitude
-                </label>
-                <input
-                  id="map-alignment-lon-input"
-                  type="number"
-                  step="any"
-                  value={@initial_lon}
-                  class="input input-sm input-bordered min-h-11 w-full"
-                />
-              </div>
-            </div>
-            <button id="map-alignment-apply-center" type="button" class="btn btn-sm min-h-11 mt-2">
-              Center map
-            </button>
-          </fieldset>
-
-          <fieldset
-            id="map-alignment-transform-controls"
-            class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0"
-          >
-            <legend class="text-xs font-medium text-base-content/60 px-1">Floorplan transform</legend>
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center gap-1">
-                <span class="w-10 shrink-0 text-xs text-base-content/60">Move</span>
-                <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
-                  <div class="join">
-                    <.transform_button
-                      :for={control <- transform_controls(:move)}
-                      control={control}
-                      class="join-item"
-                    />
-                  </div>
-                  <span class="text-xs text-base-content/60">Shift · 10×</span>
-                </div>
-              </div>
-
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <div class="flex items-center gap-1">
-                  <span class="w-10 shrink-0 text-xs text-base-content/60">Rotate</span>
-                  <.transform_button control={transform_control("rotate-left")} />
-                  <span
-                    id="map-alignment-rotation-value"
-                    class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
-                  >
-                    0.0°
-                  </span>
-                  <.transform_button control={transform_control("rotate-right")} />
-                </div>
-
-                <div class="flex items-center gap-1">
-                  <span class="w-10 shrink-0 text-xs text-base-content/60">Scale</span>
-                  <.transform_button control={transform_control("scale-down")} />
-                  <span
-                    id="map-alignment-scale-value"
-                    class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
-                  >
-                    1.00×
-                  </span>
-                  <.transform_button control={transform_control("scale-up")} />
-                </div>
-              </div>
-            </div>
-            <div class="mt-2">
-              <button
-                id="map-alignment-restore-saved"
-                type="button"
-                class="btn btn-sm btn-ghost min-h-11 text-primary"
-                phx-click="restore_saved_alignment"
-                disabled={not @alignment_unsaved?}
-              >
-                Restore saved alignment
-              </button>
-            </div>
-          </fieldset>
-
-          <fieldset
-            id="map-alignment-assisted"
-            class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0"
-          >
-            <legend class="text-xs font-medium text-base-content/60 px-1">Assisted alignment</legend>
-            <p class="text-xs text-base-content/70">
-              Uses {@anchor_count} stops that already have floorplan and map positions.
-            </p>
+          <div class="flex items-center justify-end">
             <button
-              id="map-alignment-preview-auto"
+              id="map-alignment-tools-toggle"
               type="button"
-              class="btn btn-sm btn-outline btn-primary min-h-11 w-full mt-2 phx-click-loading:opacity-60"
-              phx-click="preview_alignment"
-              phx-disable-with="Previewing…"
-              disabled={
-                @map_state == :fatal or
-                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
-              }
-              aria-describedby={
-                if @auto_alignment_disabled_reason,
-                  do: "map-auto-alignment-disabled-reason"
-              }
+              class="btn btn-sm btn-ghost min-h-11"
             >
-              Preview auto-alignment
+              Hide tools
             </button>
-            <p
-              :if={@auto_alignment_disabled_reason}
-              id="map-auto-alignment-disabled-reason"
-              class="mt-2 text-xs text-base-content/70"
-            >
-              {@auto_alignment_disabled_reason}
-            </p>
-            <%= if @alignment_preview && @alignment_preview.status == :ready do %>
-              <div id="auto-alignment-fit-value" class="mt-2 text-xs text-base-content/70">
-                Estimated fit error ·
-                <strong class="text-base-content">
-                  {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
-                </strong>
-              </div>
-              <div class="mt-1 text-xs text-base-content/60" id="auto-alignment-fit-description">
-                Computed from {@alignment_preview.anchor_count} anchor stops. RMSE measures the typical anchor mismatch; lower is better.
-              </div>
-            <% end %>
-            <%= if @alignment_preview && @alignment_preview.status == :error do %>
-              <div
-                id="auto-alignment-error"
-                role="alert"
-                class="mt-2 text-xs text-error"
-              >
-                {@alignment_preview.message}
-              </div>
-              <%= if @alignment_preview.reason == :insufficient_anchors do %>
-                <p class="mt-1 text-xs text-base-content/70">
-                  Place more stops with both a floorplan position and map coordinates, then try again.
-                </p>
-              <% end %>
-              <%= if @alignment_preview.reason == :high_residual do %>
-                <p class="mt-1 text-xs text-base-content/70">
-                  Check the anchor stops' positions, then try again.
-                </p>
-              <% end %>
-            <% end %>
-          </fieldset>
+          </div>
 
-          <fieldset class="border border-base-300 rounded-md px-4 pt-1 pb-3 min-w-0">
-            <legend class="text-xs font-medium text-base-content/60 px-1">Layers</legend>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center gap-1">
+              <span class="w-10 shrink-0 text-xs text-base-content/60">Move</span>
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                <div class="join">
+                  <.transform_button
+                    :for={control <- transform_controls(:move)}
+                    control={control}
+                    class="join-item"
+                  />
+                </div>
+                <span class="text-xs text-base-content/60">Shift · 10×</span>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div class="flex items-center gap-1">
+                <span class="w-10 shrink-0 text-xs text-base-content/60">Rotate</span>
+                <.transform_button control={transform_control("rotate-left")} />
+                <span
+                  id="map-alignment-rotation-value"
+                  class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
+                >
+                  0.0°
+                </span>
+                <.transform_button control={transform_control("rotate-right")} />
+              </div>
+
+              <div class="flex items-center gap-1">
+                <span class="w-10 shrink-0 text-xs text-base-content/60">Scale</span>
+                <.transform_button control={transform_control("scale-down")} />
+                <span
+                  id="map-alignment-scale-value"
+                  class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
+                >
+                  1.00×
+                </span>
+                <.transform_button control={transform_control("scale-up")} />
+              </div>
+            </div>
+          </div>
+
+          <button
+            id="map-alignment-restore-saved"
+            type="button"
+            class="btn btn-sm btn-ghost min-h-11 text-primary disabled:text-base-content/40"
+            phx-click="restore_saved_alignment"
+            disabled={not @alignment_unsaved?}
+          >
+            Restore saved alignment
+          </button>
+
+          <div class="flex flex-col gap-1">
+            <div class="flex items-baseline justify-between gap-2">
+              <label for="map-alignment-opacity" class="text-xs font-medium text-base-content/80">
+                Floorplan opacity
+              </label>
+              <span
+                id="map-alignment-opacity-value"
+                class="text-xs tabular-nums text-base-content/70"
+              >
+                70%
+              </span>
+            </div>
+            <input
+              id="map-alignment-opacity"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.7"
+              class="range range-xs w-full"
+            />
+          </div>
+
+          <%= if @other_levels_floorplan_count >= 1 do %>
             <div class="flex flex-col gap-1">
               <div class="flex items-baseline justify-between gap-2">
                 <label
-                  for="map-alignment-opacity"
+                  for="map-other-overlays-opacity"
                   class="text-xs font-medium text-base-content/80"
                 >
-                  Floorplan opacity
+                  Other-levels opacity
                 </label>
                 <span
-                  id="map-alignment-opacity-value"
+                  id="map-other-overlays-opacity-value"
                   class="text-xs tabular-nums text-base-content/70"
                 >
                   70%
                 </span>
               </div>
               <input
-                id="map-alignment-opacity"
+                id="map-other-overlays-opacity"
                 type="range"
                 min="0"
                 max="1"
@@ -1095,16 +1005,186 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 class="range range-xs w-full"
               />
             </div>
+          <% end %>
+        </div>
+        <div
+          :if={@alignment_preview && @alignment_preview.status == :ready}
+          id="auto-alignment-status"
+          role="status"
+          aria-live="polite"
+          aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
+          class="absolute z-10 top-4 left-1/2 -translate-x-1/2 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-900 shadow-sm"
+        >
+          <strong class="font-medium">Unsaved auto-alignment preview</strong>
+        </div>
+      </div>
+      <div class="pt-3 pb-4">
+        <p class="text-xs text-base-content/70">
+          Drag to move the floorplan, or nudge it with the arrow keys. Use the handles to rotate and resize. Hold H to hide the floorplan and check the map underneath.
+        </p>
 
-            <div class="mt-3 flex flex-col gap-1">
+        <div id="map-alignment-commit-bar" class="mt-3 flex flex-col gap-2">
+          <div class="flex flex-wrap items-baseline gap-x-8 gap-y-1">
+            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
+              {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
+            </span>
+            <p id="map-alignment-save-help" class="text-xs text-base-content/70">
+              Save alignment stores the floorplan's map position. Review coordinate changes also writes latitude and longitude onto child stops.
+            </p>
+            <p
+              :if={@alignment_unsaved?}
+              id="map-alignment-unsaved"
+              class="text-xs font-medium text-warning"
+            >
+              Unsaved alignment changes
+            </p>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <button
+                id="map-alignment-preview-auto"
+                type="button"
+                class="btn btn-sm btn-outline btn-primary min-h-11 phx-click-loading:opacity-60"
+                phx-click="preview_alignment"
+                phx-disable-with="Previewing…"
+                disabled={
+                  @map_state == :fatal or
+                    invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+                }
+                aria-describedby={
+                  if @auto_alignment_disabled_reason,
+                    do: "map-auto-alignment-disabled-reason"
+                }
+              >
+                Preview auto-alignment
+              </button>
+              <p class="text-xs text-base-content/70">
+                Uses {@anchor_count} stops that already have floorplan and map positions.
+              </p>
+              <p
+                :if={@auto_alignment_disabled_reason}
+                id="map-auto-alignment-disabled-reason"
+                class="text-xs text-base-content/70"
+              >
+                {@auto_alignment_disabled_reason}
+              </p>
+              <%= if @alignment_preview && @alignment_preview.status == :ready do %>
+                <span id="auto-alignment-fit-value" class="text-xs text-base-content/70">
+                  Estimated fit error ·
+                  <strong class="text-base-content">
+                    {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
+                  </strong>
+                </span>
+                <span class="text-xs text-base-content/60" id="auto-alignment-fit-description">
+                  Computed from {@alignment_preview.anchor_count} anchor stops. RMSE measures the typical anchor mismatch; lower is better.
+                </span>
+              <% end %>
+              <%= if @alignment_preview && @alignment_preview.status == :error do %>
+                <span id="auto-alignment-error" role="alert" class="text-xs text-error">
+                  {@alignment_preview.message}
+                </span>
+                <%= if @alignment_preview.reason == :insufficient_anchors do %>
+                  <span class="text-xs text-base-content/70">
+                    Place more stops with both a floorplan position and map coordinates, then try again.
+                  </span>
+                <% end %>
+                <%= if @alignment_preview.reason == :high_residual do %>
+                  <span class="text-xs text-base-content/70">
+                    Check the anchor stops' positions, then try again.
+                  </span>
+                <% end %>
+              <% end %>
+            </div>
+            <div id="map-alignment-actions" class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span
+                id="map-alignment-preview-status"
+                class="text-xs text-base-content/70"
+                aria-live="polite"
+              >
+                Coordinate-change preview not ready
+              </span>
+              <button
+                id="map-alignment-save"
+                type="button"
+                class="btn btn-sm min-h-11"
+                disabled={@map_state == :fatal}
+              >
+                Save alignment
+              </button>
+              <button
+                id="map-alignment-apply"
+                type="button"
+                class="btn btn-sm btn-primary min-h-11"
+                title="Review coordinate changes before applying them"
+                disabled={
+                  @map_state == :fatal or
+                    invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+                }
+              >
+                Review coordinate changes
+              </button>
+              <button
+                :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
+                id="map-alignment-retry"
+                type="button"
+                class="btn btn-sm min-h-11"
+                phx-click="retry_map_alignment"
+              >
+                Retry map
+              </button>
+              <p
+                :if={@map_state_message}
+                id="map-alignment-state"
+                class="basis-full text-xs text-base-content/70"
+                aria-live="polite"
+              >
+                {@map_state_message}
+              </p>
+              <p
+                :if={@map_controls_disabled_reason}
+                id="map-alignment-disabled-reason"
+                class="basis-full text-xs text-base-content/70"
+              >
+                {@map_controls_disabled_reason}
+              </p>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-end gap-x-4 gap-y-2">
+            <div class="flex flex-col gap-1">
+              <label for="map-alignment-lat-input" class="text-xs font-medium text-base-content/80">
+                Latitude
+              </label>
+              <input
+                id="map-alignment-lat-input"
+                type="number"
+                step="any"
+                value={@initial_lat}
+                class="input input-sm input-bordered min-h-11 w-36"
+              />
+            </div>
+            <div class="flex flex-col gap-1">
+              <label for="map-alignment-lon-input" class="text-xs font-medium text-base-content/80">
+                Longitude
+              </label>
+              <input
+                id="map-alignment-lon-input"
+                type="number"
+                step="any"
+                value={@initial_lon}
+                class="input input-sm input-bordered min-h-11 w-36"
+              />
+            </div>
+            <button id="map-alignment-apply-center" type="button" class="btn btn-sm min-h-11">
+              Center map
+            </button>
+            <div class="flex w-48 flex-col gap-1">
               <div class="flex items-baseline justify-between gap-2">
                 <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
                   Map zoom
                 </label>
-                <span
-                  id="map-alignment-zoom-value"
-                  class="text-xs tabular-nums text-base-content/70"
-                >
+                <span id="map-alignment-zoom-value" class="text-xs tabular-nums text-base-content/70">
                   19.0
                 </span>
               </div>
@@ -1119,106 +1199,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 phx-update="ignore"
               />
             </div>
-
-            <%= if @other_levels_floorplan_count >= 1 do %>
-              <div class="mt-3 flex flex-col gap-1">
-                <div class="flex items-baseline justify-between gap-2">
-                  <label
-                    for="map-other-overlays-opacity"
-                    class="text-xs font-medium text-base-content/80"
-                  >
-                    Other-levels opacity
-                  </label>
-                  <span
-                    id="map-other-overlays-opacity-value"
-                    class="text-xs tabular-nums text-base-content/70"
-                  >
-                    70%
-                  </span>
-                </div>
-                <input
-                  id="map-other-overlays-opacity"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value="0.7"
-                  class="range range-xs w-full"
-                />
-              </div>
-            <% end %>
-          </fieldset>
-        </div>
-
-        <fieldset class="mt-3 border border-base-300 rounded-md px-4 pt-1 pb-3">
-          <legend class="text-xs font-medium text-base-content/60 px-1">Save and apply</legend>
-          <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
-            {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
-          </span>
-          <p id="map-alignment-save-help" class="mt-1 text-xs text-base-content/70">
-            Save alignment stores the floorplan's map position. Review coordinate changes also writes latitude and longitude onto child stops.
-          </p>
-          <p
-            :if={@alignment_unsaved?}
-            id="map-alignment-unsaved"
-            class="mt-1 text-xs font-medium text-warning"
-          >
-            Unsaved alignment changes
-          </p>
-          <div id="map-alignment-actions" class="mt-2 flex flex-wrap items-center gap-3">
-            <span
-              id="map-alignment-preview-status"
-              class="text-xs text-base-content/70"
-              aria-live="polite"
-            >
-              Coordinate-change preview not ready
-            </span>
-            <button
-              id="map-alignment-save"
-              type="button"
-              class="btn btn-sm min-h-11"
-              disabled={@map_state == :fatal}
-            >
-              Save alignment
-            </button>
-            <button
-              id="map-alignment-apply"
-              type="button"
-              class="btn btn-sm btn-primary min-h-11"
-              title="Review coordinate changes before applying them"
-              disabled={
-                @map_state == :fatal or
-                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
-              }
-            >
-              Review coordinate changes
-            </button>
-            <button
-              :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
-              id="map-alignment-retry"
-              type="button"
-              class="btn btn-sm min-h-11"
-              phx-click="retry_map_alignment"
-            >
-              Retry map
-            </button>
-            <p
-              :if={@map_state_message}
-              id="map-alignment-state"
-              class="basis-full text-xs text-base-content/70"
-              aria-live="polite"
-            >
-              {@map_state_message}
-            </p>
-            <p
-              :if={@map_controls_disabled_reason}
-              id="map-alignment-disabled-reason"
-              class="basis-full text-xs text-base-content/70"
-            >
-              {@map_controls_disabled_reason}
-            </p>
           </div>
-        </fieldset>
+        </div>
 
         <%= if @coordinate_review_status do %>
           <p
