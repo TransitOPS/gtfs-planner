@@ -444,18 +444,20 @@ test.describe("align workspace layout and interaction", () => {
   ];
 
   // The tab order the Align surface publishes at rest: the tools panel floating
-  // over the map first, then the commit bar below it. Restore saved alignment is
-  // absent because the server disables it until the alignment is dirty, and the
+  // over the map first, then the commit bar below it. The transform pad is read
+  // row by row — rotate/move/rotate, then move/move, then scale/move/scale — so
+  // the chain follows what the operator sees. Restore saved alignment is absent
+  // because the server disables it until the alignment is dirty, and the
   // demoted popover controls are absent because their panels render hidden.
   const restingFocusOrder = [
     "map-alignment-tools-toggle",
-    "map-transform-left-fine",
-    "map-transform-up-fine",
-    "map-transform-down-fine",
-    "map-transform-right-fine",
     "map-transform-rotate-left-fine",
+    "map-transform-up-fine",
     "map-transform-rotate-right-fine",
+    "map-transform-left-fine",
+    "map-transform-right-fine",
     "map-transform-scale-down-fine",
+    "map-transform-down-fine",
     "map-transform-scale-up-fine",
     "map-alignment-opacity",
     "map-alignment-preview-auto",
@@ -466,16 +468,16 @@ test.describe("align workspace layout and interaction", () => {
   ];
 
   const dirtyFocusOrder = [
-    "map-alignment-tools-toggle",
-    "map-transform-left-fine",
-    "map-transform-up-fine",
-    "map-transform-down-fine",
-    "map-transform-right-fine",
-    "map-transform-rotate-left-fine",
-    "map-transform-rotate-right-fine",
-    "map-transform-scale-down-fine",
-    "map-transform-scale-up-fine",
     "map-alignment-restore-saved",
+    "map-alignment-tools-toggle",
+    "map-transform-rotate-left-fine",
+    "map-transform-up-fine",
+    "map-transform-rotate-right-fine",
+    "map-transform-left-fine",
+    "map-transform-right-fine",
+    "map-transform-scale-down-fine",
+    "map-transform-down-fine",
+    "map-transform-scale-up-fine",
     "map-alignment-opacity",
     "map-alignment-preview-auto",
     "map-alignment-center-trigger",
@@ -586,20 +588,25 @@ test.describe("align workspace layout and interaction", () => {
     const nudgeControl = page.locator("#map-transform-left-fine");
     const opacitySlider = page.locator("#map-alignment-opacity");
 
-    // The server renders `Hide tools`; the collapsed label is hook-owned and
-    // only observable once the toggle has been activated in a browser.
-    await expect(toggle).toHaveText("Hide tools");
+    // The control is icon-only, so its label is the tooltip and accessible
+    // name. The server renders `Hide tools`; the collapsed label is hook-owned
+    // and only observable once the toggle has been activated in a browser.
+    await expect(toggle).toHaveAttribute("title", "Hide tools");
+    await expect(toggle).toHaveAttribute("aria-label", "Hide tools");
+    await expect(toggle).toHaveAttribute("data-collapsed", "false");
     await expect(nudgeControl).toBeVisible();
     const expanded = await toolsPanelDisabledState(page);
 
     await toggle.click();
-    await expect(toggle).toHaveText("Show tools");
+    await expect(toggle).toHaveAttribute("title", "Show tools");
+    await expect(toggle).toHaveAttribute("data-collapsed", "true");
     await expect(nudgeControl).toBeHidden();
     await expect(opacitySlider).toBeHidden();
     expect(await toolsPanelDisabledState(page)).toEqual(expanded);
 
     await toggle.click();
-    await expect(toggle).toHaveText("Hide tools");
+    await expect(toggle).toHaveAttribute("title", "Hide tools");
+    await expect(toggle).toHaveAttribute("data-collapsed", "false");
     await expect(nudgeControl).toBeVisible();
     await expect(opacitySlider).toBeVisible();
     expect(await toolsPanelDisabledState(page)).toEqual(expanded);
@@ -735,7 +742,7 @@ test.describe("align workspace layout and interaction", () => {
     await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
 
     expect(
-      await collectTabOrder(page, "#map-alignment-tools-toggle", 15),
+      await collectTabOrder(page, "#map-alignment-restore-saved", 15),
     ).toEqual(dirtyFocusOrder);
   });
 

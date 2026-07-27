@@ -177,6 +177,13 @@ body {
   display: none;
 }
 
+/* The align tools collapse control is icon-only. The hook owns the collapsed
+   state and writes it as `data-collapsed`; the chevron points the way the next
+   click moves the panel. */
+#map-alignment-tools-toggle[data-collapsed="true"] span {
+  transform: rotate(180deg);
+}
+
 /* Every immersive mode renders its workspace in the sub-header slot, so
    #main-content is left holding nothing but closed dialogs. Its `py-8` and the
    `space-y-4` margin on the zero-height candidate probe would still push the

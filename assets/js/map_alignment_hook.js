@@ -129,6 +129,8 @@ const EDITABLE_TARGET_SELECTOR = "input, textarea, select, [contenteditable]";
 // The collapse toggle names the action it will perform, not the current state.
 const TOOLS_HIDE_LABEL = "Hide tools";
 const TOOLS_SHOW_LABEL = "Show tools";
+const FLOORPLAN_OPACITY_LABEL = "Floorplan opacity";
+const OTHER_OPACITY_LABEL = "Other-levels opacity";
 
 // In-flight fit readout. The hook knows a transform changed one debounce window
 // before the server does, so it owns the measuring state; the server owns every
@@ -1574,9 +1576,13 @@ const MapAlignmentHook = {
       }
     });
 
-    toggle.textContent = this._toolsCollapsed
-      ? TOOLS_SHOW_LABEL
-      : TOOLS_HIDE_LABEL;
+    // The toggle is icon-only, so the collapsed state is carried by a
+    // presentational attribute the stylesheet flips the chevron on, and by the
+    // tooltip and label that name what the next click will do.
+    const label = this._toolsCollapsed ? TOOLS_SHOW_LABEL : TOOLS_HIDE_LABEL;
+    toggle.setAttribute("data-collapsed", String(this._toolsCollapsed));
+    toggle.setAttribute("title", label);
+    toggle.setAttribute("aria-label", label);
   },
 
   // --- In-flight fit readout ---
@@ -1787,11 +1793,6 @@ const MapAlignmentHook = {
     } else {
       this.overlay.style.transform = `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
-    // _applyTransform is the single funnel every transform change reaches —
-    // drag, rotate handle, scale handle, nudge buttons, restore, preview apply
-    // and zoom — so the rotation/scale readouts are written here and nowhere
-    // else.
-    this._syncTransformReadouts();
     // Active markers live outside the transformed overlay; recompute their
     // anchors so they track the floorplan as it translates/rotates/scales.
     // Other-level overlays are intentionally NOT repositioned here — that
@@ -1871,31 +1872,19 @@ const MapAlignmentHook = {
     el.textContent = text;
   },
 
-  // Current overlay rotation and scale, refreshed from _applyTransform.
-  _syncTransformReadouts() {
-    const { rotation, scale } = this.transform || {};
-
-    if (Number.isFinite(rotation)) {
-      this._writeReadout(
-        "map-alignment-rotation-value",
-        `${rotation.toFixed(1)}°`,
-      );
-    }
-
-    if (Number.isFinite(scale)) {
-      this._writeReadout("map-alignment-scale-value", `${scale.toFixed(2)}×`);
-    }
-  },
-
   // Current slider values. Every reference is optional: the zoom slider's
   // min/max/value come from the Leaflet map at mount, so the readout reports
   // the slider's live value rather than the server-rendered default.
   _syncSliderReadouts() {
+    // The opacity sliders carry their value in the tooltip rather than a
+    // readout beside them: the thumb position already shows roughly where the
+    // value sits, and the exact percentage is only wanted on demand.
     const opacity = parseFloat(this.opacitySlider?.value);
     if (Number.isFinite(opacity)) {
-      this._writeReadout(
-        "map-alignment-opacity-value",
-        `${Math.round(opacity * 100)}%`,
+      this._writeSliderTooltip(
+        this.opacitySlider,
+        FLOORPLAN_OPACITY_LABEL,
+        opacity,
       );
     }
 
@@ -1906,11 +1895,18 @@ const MapAlignmentHook = {
 
     const otherOpacity = parseFloat(this.otherOpacitySlider?.value);
     if (Number.isFinite(otherOpacity)) {
-      this._writeReadout(
-        "map-other-overlays-opacity-value",
-        `${Math.round(otherOpacity * 100)}%`,
+      this._writeSliderTooltip(
+        this.otherOpacitySlider,
+        OTHER_OPACITY_LABEL,
+        otherOpacity,
       );
     }
+  },
+
+  // The element is optional for the same reason _writeReadout's is.
+  _writeSliderTooltip(slider, label, value) {
+    if (!slider) return;
+    slider.setAttribute("title", `${label} · ${Math.round(value * 100)}%`);
   },
 
   _pushAlignmentEventIfValid(eventName, beforePush) {

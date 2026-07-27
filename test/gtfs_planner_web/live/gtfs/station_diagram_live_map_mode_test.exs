@@ -3733,11 +3733,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     "#map-transform-rotate-right-fine",
     "#map-transform-scale-down-fine",
     "#map-transform-scale-up-fine",
-    "#map-alignment-rotation-value",
-    "#map-alignment-scale-value",
     "#map-alignment-restore-saved",
     "#map-alignment-opacity",
-    "#map-alignment-opacity-value",
     "#map-alignment-zoom",
     "#map-alignment-zoom-value",
     "[data-role='child-stop-coverage']",
@@ -3854,11 +3851,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
             "map-transform-rotate-right-fine",
             "map-transform-scale-down-fine",
             "map-transform-scale-up-fine",
-            "map-alignment-rotation-value",
-            "map-alignment-scale-value",
             "map-alignment-restore-saved",
             "map-alignment-opacity",
-            "map-alignment-opacity-value",
             "map-alignment-tools-toggle"
           ] do
         assert has_element?(view, "#map-alignment-tools ##{id}")
@@ -3913,7 +3907,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_click(element(view, floorplan_selector(other_level_id)))
 
       assert has_element?(view, "#map-alignment-tools #map-other-overlays-opacity")
-      assert has_element?(view, "#map-alignment-tools #map-other-overlays-opacity-value")
     end
 
     test "the instruction copy names dragging, keyboard nudging, and hold-to-hide", context do
@@ -4819,11 +4812,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     "#map-transform-rotate-right-fine",
     "#map-transform-scale-down-fine",
     "#map-transform-scale-up-fine",
-    "#map-alignment-rotation-value",
-    "#map-alignment-scale-value",
     "#map-alignment-restore-saved",
     "#map-alignment-opacity",
-    "#map-alignment-opacity-value",
     "#map-alignment-zoom",
     "#map-alignment-zoom-value",
     "#map-alignment-lat-input",
@@ -4899,11 +4889,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
           "#map-transform-rotate-right-fine",
           "#map-transform-scale-down-fine",
           "#map-transform-scale-up-fine",
-          "#map-alignment-rotation-value",
-          "#map-alignment-scale-value",
           "#map-alignment-restore-saved",
           "#map-alignment-opacity",
-          "#map-alignment-opacity-value",
           "#map-alignment-tools-toggle",
           "#map-alignment-lat-input",
           "#map-alignment-lon-input",
@@ -4935,11 +4922,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
                "#map-transform-rotate-right-fine" => "map-alignment-tools",
                "#map-transform-scale-down-fine" => "map-alignment-tools",
                "#map-transform-scale-up-fine" => "map-alignment-tools",
-               "#map-alignment-rotation-value" => "map-alignment-tools",
-               "#map-alignment-scale-value" => "map-alignment-tools",
                "#map-alignment-restore-saved" => "map-alignment-tools",
                "#map-alignment-opacity" => "map-alignment-tools",
-               "#map-alignment-opacity-value" => "map-alignment-tools",
                "#map-alignment-tools-toggle" => "map-alignment-tools",
                "#map-alignment-lat-input" => "map-alignment-center-panel",
                "#map-alignment-lon-input" => "map-alignment-center-panel",
@@ -5024,15 +5008,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       render_click(element(view, floorplan_selector(other_level_id)))
 
-      assert align_containers_of(view, [
-               "#map-other-overlays-opacity",
-               "#map-other-overlays-opacity-value"
-             ]) == %{
-               "#map-other-overlays-opacity" => "map-alignment-tools",
-               "#map-other-overlays-opacity-value" => "map-alignment-tools"
+      assert align_containers_of(view, ["#map-other-overlays-opacity"]) == %{
+               "#map-other-overlays-opacity" => "map-alignment-tools"
              }
 
-      assert element_text(view, "#map-other-overlays-opacity-value") == "70%"
+      assert has_element?(
+               view,
+               "#map-other-overlays-opacity[title='Other-levels opacity · 70%']"
+             )
     end
 
     test "no other-levels opacity control renders when no other level shows a floorplan",
@@ -5040,7 +5023,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       view = mount_map_align(context)
 
       refute has_element?(view, "#map-other-overlays-opacity")
-      refute has_element?(view, "#map-other-overlays-opacity-value")
     end
 
     test "the commit bar reads coverage, help, assisted alignment, popovers, fit, then actions",
@@ -5103,10 +5085,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     test "the tools toggle renders the expanded label the server owns", context do
       view = mount_map_align(context)
 
-      # The collapsed label is the hook's to write; the server renders the
-      # expanded one on every patch, so a server-rendered "Show tools" would
-      # invert the control for anyone who never clicks it.
-      assert element_text(view, "#map-alignment-tools-toggle") == "Hide tools"
+      # The control is icon-only, so its label lives in the tooltip and the
+      # accessible name rather than in text. The collapsed label is the hook's
+      # to write; the server renders the expanded one on every patch, so a
+      # server-rendered "Show tools" would invert the control for anyone who
+      # never clicks it.
+      assert has_element?(view, "#map-alignment-tools-toggle[title='Hide tools']")
+      assert has_element?(view, "#map-alignment-tools-toggle[aria-label='Hide tools']")
+      assert has_element?(view, "#map-alignment-tools-toggle[data-collapsed='false']")
     end
 
     test "the transform pad renders exactly the eight symmetric fine controls", context do
@@ -5132,13 +5118,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
              }
     end
 
-    test "the transform and slider readouts render their initial values", context do
+    test "the slider readouts render their initial values", context do
       view = mount_map_align(context)
 
-      assert element_text(view, "#map-alignment-rotation-value") == "0.0°"
-      assert element_text(view, "#map-alignment-scale-value") == "1.00×"
-      assert element_text(view, "#map-alignment-opacity-value") == "70%"
+      # The opacity sliders carry their percentage in the tooltip; the thumb
+      # position is the at-a-glance reading, so no readout sits beside them.
+      refute has_element?(view, "#map-alignment-opacity-value")
+
+      assert has_element?(view, "#map-alignment-opacity[title='Floorplan opacity · 70%']")
       assert element_text(view, "#map-alignment-zoom-value") == "19.0"
+    end
+
+    test "the transform pad reports each operation through its tooltip, not a readout",
+         context do
+      view = mount_map_align(context)
+
+      # Rotation and scale carry no live readout: every pad button names its
+      # operation and both step sizes in `title`, and the alignment's real
+      # quality signal is the residual in the commit bar.
+      refute has_element?(view, "#map-alignment-rotation-value")
+      refute has_element?(view, "#map-alignment-scale-value")
+
+      assert has_element?(
+               view,
+               "#map-transform-rotate-left-fine[title='Rotate floorplan left · 1° (Shift 5°)']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-transform-scale-up-fine[title='Grow floorplan · 1% (Shift 10%)']"
+             )
     end
 
     test "the re-parented status elements keep their aria-live announcements", context do

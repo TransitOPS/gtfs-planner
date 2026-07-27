@@ -1121,26 +1121,27 @@ describe("map_alignment_hook _handleZoomSliderInput user-adjusted marking", () =
     });
   });
 
-  const makeHook = (getZoom) => registerHook({
-    ...MapAlignmentHook,
-    overlay: document.createElement("div"),
-    leafletEl: (() => {
-      const el = document.createElement("div");
-      el.getBoundingClientRect = () => ({ width: 500, height: 400 });
-      return el;
-    })(),
-    _activePinsRoot: null,
-    _activeChildStops: [],
-    transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
-    _otherLevels: { reposition: vi.fn() },
-    _userAdjustedTransform: false,
-    leafletMap: {
-      getZoom: vi.fn(() => getZoom),
-      setZoom: vi.fn(),
-      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
-      latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
-    },
-  });
+  const makeHook = (getZoom) =>
+    registerHook({
+      ...MapAlignmentHook,
+      overlay: document.createElement("div"),
+      leafletEl: (() => {
+        const el = document.createElement("div");
+        el.getBoundingClientRect = () => ({ width: 500, height: 400 });
+        return el;
+      })(),
+      _activePinsRoot: null,
+      _activeChildStops: [],
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _otherLevels: { reposition: vi.fn() },
+      _userAdjustedTransform: false,
+      leafletMap: {
+        getZoom: vi.fn(() => getZoom),
+        setZoom: vi.fn(),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
+      },
+    });
 
   function registerHook(hook) {
     liveHooks.push(hook);
@@ -3805,13 +3806,9 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
         <button id="map-alignment-apply-center"></button>
         ${TRANSFORM_BUTTONS}
         <button id="legacy-coarse-right" data-map-transform-action="right" data-map-transform-coarse="true"></button>
-        <span id="map-alignment-rotation-value">0.0°</span>
-        <span id="map-alignment-scale-value">1.00×</span>
-        <span id="map-alignment-opacity-value">70%</span>
         <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
         <span id="map-alignment-zoom-value">19.0</span>
         <input id="map-alignment-zoom" type="range" min="19" max="22" step="0.5" value="19" />
-        <span id="map-other-overlays-opacity-value">70%</span>
         <input id="map-other-overlays-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
         <button id="map-alignment-save"></button>
         <button id="map-alignment-apply"></button>
@@ -3946,56 +3943,65 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
     });
   });
 
-  describe("transform readouts", () => {
-    it("writes rotation to one decimal and scale to two decimals from the applied transform", () => {
+  // Rotation and scale carry no on-screen readout: the pad is icon-only and the
+  // operator judges the fit from the floorplan and the residual in the commit
+  // bar. The transform the buttons produce is still the contract.
+  describe("transform nudges", () => {
+    it("applies the coarse rotate step on a Shift rotate nudge", () => {
       const { hook } = mountAlignHook();
-
-      hook.transform = { tx: 4, ty: 6, rotation: 12.34, scale: 0.857 };
-      hook._applyTransform();
-
-      expect(readoutText("map-alignment-rotation-value")).toBe("12.3°");
-      expect(readoutText("map-alignment-scale-value")).toBe("0.86×");
-    });
-
-    it("updates the rotation readout on a Shift rotate nudge", () => {
-      mountAlignHook();
 
       clickTransform("rotate-right", true);
 
-      expect(readoutText("map-alignment-rotation-value")).toBe("5.0°");
+      expect(hook.transform.rotation).toBe(5);
     });
 
-    it("updates the scale readout on a Shift scale nudge", () => {
-      mountAlignHook();
+    it("applies the coarse scale step on a Shift scale nudge", () => {
+      const { hook } = mountAlignHook();
 
       clickTransform("scale-up", true);
 
-      expect(readoutText("map-alignment-scale-value")).toBe("1.10×");
+      expect(hook.transform.scale).toBeCloseTo(1.1, 5);
     });
 
-    it("writes both transform readouts on the pointer-drag path", () => {
+    it("leaves rotation and scale untouched on the pointer-drag path", () => {
       const { hook } = mountAlignHook();
       const overlay = document.getElementById("map-alignment-overlay");
-      document.getElementById("map-alignment-rotation-value").textContent = "";
-      document.getElementById("map-alignment-scale-value").textContent = "";
 
       dispatchPointer(overlay, "pointerdown", 100, 50);
       dispatchPointer(overlay, "pointermove", 120, 60);
       dispatchPointer(overlay, "pointerup", 120, 60);
 
-      expect(hook.transform).toMatchObject({ tx: 20, ty: 10 });
-      expect(readoutText("map-alignment-rotation-value")).toBe("0.0°");
-      expect(readoutText("map-alignment-scale-value")).toBe("1.00×");
+      expect(hook.transform).toMatchObject({
+        tx: 20,
+        ty: 10,
+        rotation: 0,
+        scale: 1,
+      });
+    });
+
+    it("writes no rotation or scale readout even when one is present", () => {
+      const { hook } = mountAlignHook();
+      const stray = document.createElement("span");
+      stray.id = "map-alignment-rotation-value";
+      stray.textContent = "untouched";
+      document.body.appendChild(stray);
+
+      hook.transform = { tx: 4, ty: 6, rotation: 12.34, scale: 0.857 };
+      hook._applyTransform();
+
+      expect(stray.textContent).toBe("untouched");
     });
   });
 
   describe("slider readouts", () => {
-    it("writes the floorplan-opacity readout as a whole percentage on input", () => {
+    it("writes the floorplan-opacity percentage into the slider tooltip on input", () => {
       mountAlignHook();
 
       sliderInput("map-alignment-opacity", "0.35");
 
-      expect(readoutText("map-alignment-opacity-value")).toBe("35%");
+      expect(
+        document.getElementById("map-alignment-opacity").getAttribute("title"),
+      ).toBe("Floorplan opacity · 35%");
     });
 
     it("writes the map-zoom readout to one decimal on input", () => {
@@ -4006,12 +4012,16 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       expect(readoutText("map-alignment-zoom-value")).toBe("20.5");
     });
 
-    it("writes the other-levels opacity readout as a whole percentage on input", () => {
+    it("writes the other-levels opacity percentage into the slider tooltip on input", () => {
       mountAlignHook();
 
       sliderInput("map-other-overlays-opacity", "0.4");
 
-      expect(readoutText("map-other-overlays-opacity-value")).toBe("40%");
+      expect(
+        document
+          .getElementById("map-other-overlays-opacity")
+          .getAttribute("title"),
+      ).toBe("Other-levels opacity · 40%");
     });
 
     it("writes the map-zoom readout when the map zoom changes without slider input", () => {
@@ -4052,12 +4062,6 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       const hook = { ...MapAlignmentHook };
 
       expect(() => hook._syncSliderReadouts()).not.toThrow();
-    });
-
-    it("syncs transform readouts without throwing when no transform is set", () => {
-      const hook = { ...MapAlignmentHook };
-
-      expect(() => hook._syncTransformReadouts()).not.toThrow();
     });
   });
 
@@ -4439,7 +4443,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
   const TOOLS_PANEL = `
     <div id="map-alignment-tools">
       <div id="tools-header">
-        <button id="map-alignment-tools-toggle" type="button">Hide tools</button>
+        <button id="map-alignment-tools-toggle" type="button" data-collapsed="false" title="Hide tools" aria-label="Hide tools"></button>
       </div>
       <div id="tools-transform">
         <button id="map-transform-left-fine" data-map-transform-action="left" data-map-transform-coarse="false"></button>
@@ -4450,12 +4454,9 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
         <button id="map-transform-rotate-right-fine" data-map-transform-action="rotate-right" data-map-transform-coarse="false"></button>
         <button id="map-transform-scale-down-fine" data-map-transform-action="scale-down" data-map-transform-coarse="false"></button>
         <button id="map-transform-scale-up-fine" data-map-transform-action="scale-up" data-map-transform-coarse="false"></button>
-        <span id="map-alignment-rotation-value">0.0°</span>
-        <span id="map-alignment-scale-value">1.00×</span>
       </div>
       <button id="map-alignment-restore-saved" type="button" disabled>Restore saved alignment</button>
       <div id="tools-opacity">
-        <span id="map-alignment-opacity-value">70%</span>
         <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
       </div>
     </div>
@@ -4687,7 +4688,10 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       mountWorkspaceHook();
       document.getElementById("map-alignment-save").focus();
 
-      const event = new Event("pointerdown", { bubbles: true, cancelable: true });
+      const event = new Event("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+      });
       event.button = 0;
       event.clientX = 10;
       event.clientY = 10;
@@ -4704,7 +4708,10 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       const button = document.getElementById("map-transform-left-fine");
       button.focus();
 
-      const event = new Event("pointerdown", { bubbles: true, cancelable: true });
+      const event = new Event("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+      });
       event.button = 0;
       event.clientX = 10;
       event.clientY = 10;
@@ -4820,10 +4827,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
     });
 
     it.each([
-      [
-        "window blur",
-        () => window.dispatchEvent(new Event("blur")),
-      ],
+      ["window blur", () => window.dispatchEvent(new Event("blur"))],
       [
         "document visibilitychange",
         () => document.dispatchEvent(new Event("visibilitychange")),
@@ -4835,16 +4839,19 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
             .getElementById("outside-the-workspace")
             .dispatchEvent(new Event("focusin", { bubbles: true })),
       ],
-    ])("restores the overlay on %s when the keyup never arrives", (_name, fire) => {
-      mountWorkspaceHook();
+    ])(
+      "restores the overlay on %s when the keyup never arrives",
+      (_name, fire) => {
+        mountWorkspaceHook();
 
-      keydown(document.getElementById("map-alignment-workspace"), "h");
-      expect(overlayOpacity()).toBe("0");
+        keydown(document.getElementById("map-alignment-workspace"), "h");
+        expect(overlayOpacity()).toBe("0");
 
-      fire();
+        fire();
 
-      expect(overlayOpacity()).toBe("0.7");
-    });
+        expect(overlayOpacity()).toBe("0.7");
+      },
+    );
 
     it("keeps the overlay hidden when focus moves inside the workspace", () => {
       mountWorkspaceHook();
@@ -4900,7 +4907,9 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
   describe("tools panel collapse", () => {
     function controlDisabledMatrix() {
       return Array.from(
-        document.querySelectorAll("#map-alignment-tools button, #map-alignment-tools input"),
+        document.querySelectorAll(
+          "#map-alignment-tools button, #map-alignment-tools input",
+        ),
       ).map((control) => [control.id, control.disabled]);
     }
 
@@ -4930,9 +4939,9 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       expect(document.getElementById("tools-transform").style.display).toBe(
         "none",
       );
-      expect(document.getElementById("map-alignment-restore-saved").style.display).toBe(
-        "none",
-      );
+      expect(
+        document.getElementById("map-alignment-restore-saved").style.display,
+      ).toBe("none");
       expect(document.getElementById("tools-opacity").style.display).toBe(
         "none",
       );
@@ -4942,11 +4951,15 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       mountWorkspaceHook();
       const toggle = document.getElementById("map-alignment-tools-toggle");
 
-      expect(toggle.textContent.trim()).toBe("Hide tools");
+      expect(toggle.getAttribute("title")).toBe("Hide tools");
+      expect(toggle.getAttribute("data-collapsed")).toBe("false");
       toggle.click();
-      expect(toggle.textContent.trim()).toBe("Show tools");
+      expect(toggle.getAttribute("title")).toBe("Show tools");
+      expect(toggle.getAttribute("aria-label")).toBe("Show tools");
+      expect(toggle.getAttribute("data-collapsed")).toBe("true");
       toggle.click();
-      expect(toggle.textContent.trim()).toBe("Hide tools");
+      expect(toggle.getAttribute("title")).toBe("Hide tools");
+      expect(toggle.getAttribute("data-collapsed")).toBe("false");
     });
 
     it("settles on the same DOM for repeated toggles", () => {
@@ -4991,7 +5004,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       hook.updated();
 
       expect(body.style.display).toBe("none");
-      expect(newToggle.textContent.trim()).toBe("Show tools");
+      expect(newToggle.getAttribute("title")).toBe("Show tools");
 
       oldToggle.click();
       expect(body.style.display).toBe("none");

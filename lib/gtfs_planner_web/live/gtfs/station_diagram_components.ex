@@ -968,82 +968,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
         <div
           id="map-alignment-tools"
-          class="absolute z-20 top-4 left-4 flex w-64 max-h-[calc(100%-2rem)] flex-col gap-3 overflow-y-auto bg-base-100 border border-base-300 rounded-md shadow-sm p-3"
+          class="absolute z-20 top-4 left-4 flex w-auto max-h-[calc(100%-2rem)] flex-col gap-1 overflow-y-auto bg-base-100 border border-base-300 rounded-lg shadow-md p-1"
         >
-          <div class="flex items-center justify-end">
+          <div class="flex items-center justify-between">
+            <button
+              id="map-alignment-restore-saved"
+              type="button"
+              class="btn btn-ghost btn-square h-11 w-11 min-h-11 text-primary disabled:text-base-content/30"
+              phx-click="restore_saved_alignment"
+              disabled={not @alignment_unsaved?}
+              title="Restore saved alignment"
+              aria-label="Restore saved alignment"
+            >
+              <.icon name="hero-arrow-path" class="w-5 h-5" />
+            </button>
             <button
               id="map-alignment-tools-toggle"
               type="button"
-              class="btn btn-sm btn-ghost min-h-11"
+              class="btn btn-ghost btn-square h-11 w-11 min-h-11 text-base-content/70"
+              data-collapsed="false"
+              title="Hide tools"
+              aria-label="Hide tools"
             >
-              Hide tools
+              <.icon name="hero-chevron-up" class="w-5 h-5" />
             </button>
           </div>
 
-          <div class="flex flex-col gap-2">
-            <div class="flex items-center gap-1">
-              <span class="w-10 shrink-0 text-xs text-base-content/60">Move</span>
-              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
-                <div class="join">
-                  <.transform_button
-                    :for={control <- transform_controls(:move)}
-                    control={control}
-                    class="join-item"
-                  />
-                </div>
-                <span class="text-xs text-base-content/60">Shift · 10×</span>
-              </div>
-            </div>
-
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <div class="flex items-center gap-1">
-                <span class="w-10 shrink-0 text-xs text-base-content/60">Rotate</span>
-                <.transform_button control={transform_control("rotate-left")} />
-                <span
-                  id="map-alignment-rotation-value"
-                  class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
-                >
-                  0.0°
-                </span>
-                <.transform_button control={transform_control("rotate-right")} />
-              </div>
-
-              <div class="flex items-center gap-1">
-                <span class="w-10 shrink-0 text-xs text-base-content/60">Scale</span>
-                <.transform_button control={transform_control("scale-down")} />
-                <span
-                  id="map-alignment-scale-value"
-                  class="min-w-10 text-center text-xs tabular-nums text-base-content/70"
-                >
-                  1.00×
-                </span>
-                <.transform_button control={transform_control("scale-up")} />
-              </div>
-            </div>
+          <%!-- All eight transform controls in one pad: the cross moves, the top
+          corners rotate, the bottom corners scale. Every button carries its
+          operation, plain step and Shift step in `title`, so the pad needs no
+          row labels and no live readouts — the floorplan itself, and the
+          residual metres in the commit bar, are the feedback that matters. --%>
+          <div class="grid w-fit grid-cols-[repeat(3,2.75rem)] gap-px overflow-hidden rounded-md border border-base-300 bg-base-300">
+            <.transform_button control={transform_control("rotate-left")} />
+            <.transform_button control={transform_control("up")} />
+            <.transform_button control={transform_control("rotate-right")} />
+            <.transform_button control={transform_control("left")} />
+            <div class="h-11 w-11 bg-base-100"></div>
+            <.transform_button control={transform_control("right")} />
+            <.transform_button control={transform_control("scale-down")} />
+            <.transform_button control={transform_control("down")} />
+            <.transform_button control={transform_control("scale-up")} />
           </div>
 
-          <button
-            id="map-alignment-restore-saved"
-            type="button"
-            class="btn btn-sm btn-ghost min-h-11 text-primary disabled:text-base-content/40"
-            phx-click="restore_saved_alignment"
-            disabled={not @alignment_unsaved?}
-          >
-            Restore saved alignment
-          </button>
-
-          <div class="flex flex-col gap-1">
-            <div class="flex items-baseline justify-between gap-2">
-              <label for="map-alignment-opacity" class="text-xs font-medium text-base-content/80">
-                Floorplan opacity
-              </label>
-              <span
-                id="map-alignment-opacity-value"
-                class="text-xs tabular-nums text-base-content/70"
-              >
-                70%
-              </span>
-            </div>
+          <div class="flex h-9 w-[8.5rem] items-center gap-1.5 px-1">
+            <label
+              for="map-alignment-opacity"
+              class="shrink-0 text-base-content/60"
+              title="Floorplan opacity"
+            >
+              <.icon name="hero-photo" class="w-4 h-4" />
+            </label>
             <input
               id="map-alignment-opacity"
               type="range"
@@ -1051,26 +1026,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               max="1"
               step="0.05"
               value="0.7"
-              class="range range-xs w-full"
+              class="range range-xs min-w-0 flex-1 text-base-content/40"
+              title="Floorplan opacity · 70%"
             />
           </div>
 
           <%= if @other_levels_floorplan_count >= 1 do %>
-            <div class="flex flex-col gap-1">
-              <div class="flex items-baseline justify-between gap-2">
-                <label
-                  for="map-other-overlays-opacity"
-                  class="text-xs font-medium text-base-content/80"
-                >
-                  Other-levels opacity
-                </label>
-                <span
-                  id="map-other-overlays-opacity-value"
-                  class="text-xs tabular-nums text-base-content/70"
-                >
-                  70%
-                </span>
-              </div>
+            <div class="flex h-9 w-[8.5rem] items-center gap-1.5 px-1">
+              <label
+                for="map-other-overlays-opacity"
+                class="shrink-0 text-base-content/60"
+                title="Other-levels opacity"
+              >
+                <.icon name="hero-square-3-stack-3d" class="w-4 h-4" />
+              </label>
               <input
                 id="map-other-overlays-opacity"
                 type="range"
@@ -1078,7 +1047,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 max="1"
                 step="0.05"
                 value="0.7"
-                class="range range-xs w-full"
+                class="range range-xs min-w-0 flex-1 text-base-content/40"
+                title="Other-levels opacity · 70%"
               />
             </div>
           <% end %>
@@ -1637,10 +1607,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ]
   end
 
-  defp transform_controls(group) do
-    Enum.filter(transform_controls(), &(&1.group == group))
-  end
-
   defp transform_control(action) do
     Enum.find(transform_controls(), &(&1.action == action))
   end
@@ -1653,7 +1619,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <button
       id={"map-transform-#{@control.action}-#{if @control.coarse, do: "coarse", else: "fine"}"}
       type="button"
-      class={["btn btn-sm min-h-11 min-w-11", @class]}
+      class={
+        [
+          "btn btn-ghost h-11 w-11 min-h-11 min-w-11 rounded-none p-0 text-base",
+          "bg-base-100 hover:bg-base-200",
+          # The pad clips its corners, which would clip an outward focus ring on
+          # every edge cell. Draw it inside the cell so it stays whole.
+          "focus-visible:outline-offset-[-2px]",
+          @class
+        ]
+      }
       data-map-transform-action={@control.action}
       data-map-transform-coarse={to_string(@control.coarse)}
       title={@control.title}
