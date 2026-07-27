@@ -815,7 +815,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <div>
-      <div class="relative flex min-h-0 flex-1">
+      <div id="map-alignment-workspace" class="relative flex min-h-0 flex-1">
         <div
           id={@canvas_id}
           class="map-canvas relative min-h-0 flex-1 bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
@@ -901,7 +901,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <strong class="font-medium">Unsaved auto-alignment preview</strong>
         </div>
       </div>
-      <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
+      <div class="pt-3 pb-4">
         <p class="text-xs text-base-content/70">
           Drag to move the floorplan. Use handles to rotate and resize.
         </p>

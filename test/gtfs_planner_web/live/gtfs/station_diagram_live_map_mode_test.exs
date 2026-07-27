@@ -3896,6 +3896,76 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     end
   end
 
+  describe "StationDiagramLive - align workspace anchor" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WORKSPACE_STATION",
+          stop_name: "Workspace Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "workspace_level",
+          level_name: "Workspace Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "workspace-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "align mode renders exactly one workspace element", context do
+      view = mount_map_align(context)
+
+      workspaces =
+        view
+        |> parsed_document()
+        |> LazyHTML.query("#map-alignment-workspace")
+        |> Enum.count()
+
+      assert workspaces == 1
+    end
+
+    test "the workspace wraps the ignored map canvas rather than sitting inside it", context do
+      view = mount_map_align(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-workspace [phx-hook='MapAlignment'][phx-update='ignore']"
+             )
+
+      refute has_element?(view, "[phx-update='ignore'] #map-alignment-workspace")
+    end
+  end
+
   # Ids of the Align control-strip controls. The strip is a sibling of the
   # `phx-hook="MapAlignment"` root rather than a container with a stable id, so
   # membership is resolved by id prefix and the map region's own handles are
