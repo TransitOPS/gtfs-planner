@@ -1244,103 +1244,91 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
       </div>
       <div class="pt-3 pb-4">
-        <div id="map-alignment-commit-bar" class="flex flex-col gap-2">
-          <div class="flex flex-wrap items-baseline gap-x-8 gap-y-1">
-            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
-              {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
-            </span>
-            <p
+        <%!-- Read on the left, act on the right, and the three kinds of acting
+        kept apart: view changes nothing, assist moves the floorplan, commit
+        writes to the database. --%>
+        <div id="map-alignment-commit-bar" class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <dl class="flex min-w-0 shrink flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+            <div
+              id="map-alignment-residual"
+              data-fit-state={@residual_readout.state}
+              class="group flex items-baseline gap-1.5 whitespace-nowrap"
+            >
+              <dt class="text-base-content/60">Fit</dt>
+              <dd
+                id="map-alignment-residual-value"
+                class={[@residual_readout.value_class, @measuring_class]}
+              >
+                {@residual_readout.value}
+              </dd>
+              <%!-- Hidden while a measurement is in flight. The hook replaces the
+              value with "Measuring…" but cannot reach this, and a qualifier left
+              standing beside it would be the stale verdict read as current. --%>
+              <dd
+                :if={@residual_readout.qualifier}
+                class={[
+                  "group-data-[fit-state=measuring]:hidden",
+                  @residual_readout.qualifier_class
+                ]}
+              >
+                {@residual_readout.qualifier}
+              </dd>
+            </div>
+
+            <div
+              data-role="child-stop-coverage"
+              class="flex items-baseline gap-1.5 whitespace-nowrap"
+            >
+              <dt class="text-base-content/60">Placed</dt>
+              <dd class="font-medium tabular-nums text-base-content">
+                {@child_stops_with_floorplan} of {@child_stops_total}
+              </dd>
+              <dd :if={unplaced_note(@child_stops_unplaced)} class="text-base-content/50">
+                {unplaced_note(@child_stops_unplaced)}
+              </dd>
+            </div>
+
+            <div
               :if={@alignment_unsaved?}
               id="map-alignment-unsaved"
-              class="text-xs font-medium text-warning"
+              class="flex items-baseline gap-1.5 whitespace-nowrap"
             >
-              Unsaved alignment changes
-            </p>
-            <button
-              id="map-alignment-help-trigger"
-              type="button"
-              class="btn btn-ghost btn-xs h-7 min-h-7 gap-1 px-2 text-xs font-medium text-base-content/70"
-              aria-expanded="false"
-              aria-controls="map-alignment-help-panel"
-              phx-click={@help_open}
-            >
-              <.icon name="hero-question-mark-circle-solid" class="w-4 h-4" /> Help
-            </button>
-          </div>
-
-          <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-            <div class="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1">
-              <div class="flex min-w-0 items-center gap-x-3">
-                <button
-                  id="map-alignment-preview-auto"
-                  type="button"
-                  class="btn btn-sm btn-outline btn-primary min-h-11 shrink-0 phx-click-loading:opacity-60"
-                  phx-click="preview_alignment"
-                  phx-disable-with="Previewing…"
-                  title="Infers the alignment from stops that already have both a floorplan position and map coordinates"
-                  disabled={
-                    @map_state == :fatal or
-                      invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
-                  }
-                  aria-describedby={
-                    if @auto_alignment_disabled_reason,
-                      do: "map-auto-alignment-disabled-reason"
-                  }
-                >
-                  Preview auto-alignment
-                </button>
-                <p class="min-w-0 text-xs text-base-content/70">
-                  Uses {@anchor_count} anchor stops.
-                </p>
-              </div>
-              <p
-                :if={@auto_alignment_disabled_reason}
-                id="map-auto-alignment-disabled-reason"
-                class="text-xs text-base-content/70"
-              >
-                {@auto_alignment_disabled_reason}
-              </p>
-              <%= if @alignment_preview && @alignment_preview.status == :ready do %>
-                <span id="auto-alignment-fit-value" class="text-xs text-base-content/70">
-                  Estimated fit error ·
-                  <strong class="text-base-content">
-                    {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
-                  </strong>
-                </span>
-                <span class="text-xs text-base-content/60" id="auto-alignment-fit-description">
-                  Computed from {@alignment_preview.anchor_count} anchor stops. RMSE measures the typical anchor mismatch; lower is better.
-                </span>
-              <% end %>
-              <%= if @alignment_preview && @alignment_preview.status == :error do %>
-                <span id="auto-alignment-error" role="alert" class="text-xs text-error">
-                  {@alignment_preview.message}
-                </span>
-                <%= if @alignment_preview.reason == :insufficient_anchors do %>
-                  <span class="text-xs text-base-content/70">
-                    Place more stops with both a floorplan position and map coordinates, then try again.
-                  </span>
-                <% end %>
-                <%= if @alignment_preview.reason == :high_residual do %>
-                  <span class="text-xs text-base-content/70">
-                    Check the anchor stops' positions, then try again.
-                  </span>
-                <% end %>
-              <% end %>
+              <dt class="sr-only">Status</dt>
+              <dd class="inline-flex items-center gap-1.5 font-medium text-warning">
+                <span class="inline-block size-1.5 rounded-full bg-warning"></span>Unsaved
+              </dd>
             </div>
-            <div class="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2">
-              <div class="relative">
+          </dl>
+
+          <%!-- Help closes the read-only group: it explains the surface, it does
+          not act on it. --%>
+          <button
+            id="map-alignment-help-trigger"
+            type="button"
+            class="btn btn-ghost btn-xs h-7 min-h-7 shrink-0 gap-1 px-2 text-xs font-medium text-base-content/70"
+            aria-expanded="false"
+            aria-controls="map-alignment-help-panel"
+            phx-click={@help_open}
+          >
+            <.icon name="hero-question-mark-circle-solid" class="w-4 h-4" /> Help
+          </button>
+
+          <div class="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+            <div class="join">
+              <div class="relative join-item">
                 <button
                   id="map-alignment-center-trigger"
                   type="button"
-                  class="inline-flex items-center gap-2 bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200"
+                  class="tooltip tooltip-top btn btn-sm join-item min-h-11 px-3"
+                  data-tip="Center the map on a coordinate"
+                  aria-label="Center the map on a coordinate"
                   aria-expanded="false"
                   aria-controls="map-alignment-center-panel"
                   phx-click={@center_open}
                   phx-keydown={@center_dismiss}
                   phx-key="escape"
                 >
-                  <span class="text-base-content">Map center</span>
-                  <.icon name="hero-chevron-up" class="size-3.5 text-base-content/70" />
+                  <.icon name="hero-viewfinder-circle" class="size-4" />
                 </button>
 
                 <div
@@ -1391,19 +1379,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 </div>
               </div>
 
-              <div class="relative">
+              <div class="relative join-item">
                 <button
                   id="map-alignment-zoom-trigger"
                   type="button"
-                  class="inline-flex items-center gap-2 bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200"
+                  class="tooltip tooltip-top btn btn-sm join-item min-h-11 px-3"
+                  data-tip="Change the map zoom"
+                  aria-label="Change the map zoom"
                   aria-expanded="false"
                   aria-controls="map-alignment-zoom-panel"
                   phx-click={@zoom_open}
                   phx-keydown={@zoom_dismiss}
                   phx-key="escape"
                 >
-                  <span class="text-base-content">Map zoom</span>
-                  <.icon name="hero-chevron-up" class="size-3.5 text-base-content/70" />
+                  <.icon name="hero-magnifying-glass" class="size-4" />
                 </button>
 
                 <div
@@ -1439,60 +1428,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               </div>
             </div>
 
-            <div
-              id="map-alignment-residual"
-              data-fit-state={@residual_readout.state}
-              class="group flex shrink-0 flex-col"
-            >
-              <span class={[
-                "text-xs whitespace-nowrap",
-                @residual_readout.label_class,
-                @measuring_class
-              ]}>
-                {@residual_readout.label}
-              </span>
-              <span
-                id="map-alignment-residual-value"
-                class={[
-                  "text-xs tabular-nums whitespace-nowrap",
-                  @residual_readout.value_class,
-                  @measuring_class
-                ]}
-              >
-                {@residual_readout.value}
-              </span>
-            </div>
+            <div class="h-6 w-px shrink-0 bg-base-300"></div>
 
-            <div
-              id="map-alignment-actions"
-              class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2"
+            <button
+              id="map-alignment-preview-auto"
+              type="button"
+              class="btn btn-sm min-h-11 shrink-0 phx-click-loading:opacity-60"
+              phx-click="preview_alignment"
+              phx-disable-with="Aligning…"
+              title={"Positions the floorplan from the #{@anchor_count} stops that already have both a floorplan position and map coordinates"}
+              disabled={
+                @map_state == :fatal or
+                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+              }
+              aria-describedby={
+                if @auto_alignment_disabled_reason,
+                  do: "map-auto-alignment-disabled-reason"
+              }
             >
-              <span
-                id="map-alignment-preview-status"
-                class="text-xs text-base-content/70"
-                aria-live="polite"
-              >
-                Coordinate-change preview not ready
-              </span>
+              Auto-align
+            </button>
+
+            <div class="h-6 w-px shrink-0 bg-base-300"></div>
+
+            <div id="map-alignment-actions" class="flex shrink-0 items-center gap-2">
               <button
                 id="map-alignment-save"
                 type="button"
                 class="btn btn-sm min-h-11"
                 disabled={@map_state == :fatal}
               >
-                Save alignment
+                Save position
               </button>
               <button
                 id="map-alignment-apply"
                 type="button"
                 class="btn btn-sm btn-primary min-h-11"
-                title="Review coordinate changes before applying them"
+                title="Review every coordinate change before it is written"
                 disabled={
                   @map_state == :fatal or
                     invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
                 }
               >
-                Review coordinate changes
+                Update stop coordinates…
               </button>
               <button
                 :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
@@ -1503,23 +1481,75 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               >
                 Retry map
               </button>
-              <p
-                :if={@map_state_message}
-                id="map-alignment-state"
-                class="basis-full text-xs text-base-content/70"
-                aria-live="polite"
-              >
-                {@map_state_message}
-              </p>
-              <p
-                :if={@map_controls_disabled_reason}
-                id="map-alignment-disabled-reason"
-                class="basis-full text-xs text-base-content/70"
-              >
-                {@map_controls_disabled_reason}
-              </p>
             </div>
           </div>
+
+          <%!-- Anything that only applies in a degraded or blocked state gets its
+          own line beneath, so the resting bar stays one row. --%>
+          <div
+            :if={
+              @map_state_message || @map_controls_disabled_reason ||
+                @auto_alignment_disabled_reason ||
+                (@alignment_preview && @alignment_preview.status in [:ready, :error])
+            }
+            class="flex basis-full flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+          >
+            <p
+              :if={@map_state_message}
+              id="map-alignment-state"
+              class="text-base-content/70"
+              aria-live="polite"
+            >
+              {@map_state_message}
+            </p>
+            <p
+              :if={@map_controls_disabled_reason}
+              id="map-alignment-disabled-reason"
+              class="text-base-content/70"
+            >
+              {@map_controls_disabled_reason}
+            </p>
+            <p
+              :if={@auto_alignment_disabled_reason}
+              id="map-auto-alignment-disabled-reason"
+              class="text-base-content/70"
+            >
+              {@auto_alignment_disabled_reason}
+            </p>
+            <%= if @alignment_preview && @alignment_preview.status == :ready do %>
+              <span id="auto-alignment-fit-value" class="text-base-content/70">
+                Suggested alignment fits to
+                <strong class="text-base-content">
+                  {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
+                </strong>
+              </span>
+              <span class="text-base-content/60" id="auto-alignment-fit-description">
+                Measured over {@alignment_preview.anchor_count} anchor stops. Lower is better.
+              </span>
+            <% end %>
+            <%= if @alignment_preview && @alignment_preview.status == :error do %>
+              <span id="auto-alignment-error" role="alert" class="text-error">
+                {@alignment_preview.message}
+              </span>
+              <%= if @alignment_preview.reason == :insufficient_anchors do %>
+                <span class="text-base-content/70">
+                  Place more stops with both a floorplan position and map coordinates, then try again.
+                </span>
+              <% end %>
+              <%= if @alignment_preview.reason == :high_residual do %>
+                <span class="text-base-content/70">
+                  Check the anchor stops' positions, then try again.
+                </span>
+              <% end %>
+            <% end %>
+          </div>
+          <%!-- The hook owns this text and it is announced, not laid out: its
+          useful half is how many stops are placed, which the Placed fact already
+          shows, and its other half is a negative that read as a fault when it sat
+          in the row permanently. --%>
+          <span id="map-alignment-preview-status" class="sr-only" aria-live="polite">
+            Coordinate-change preview not ready
+          </span>
         </div>
 
         <%= if @coordinate_review_status do %>
@@ -1638,39 +1668,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # values. The hook overwrites it with "measuring" while a scoring round trip
   # is in flight, which the markup already styles, so the hook only has to set
   # the attribute and the value's text.
+  # The fit reads as one labelled fact: a term, a number, and what the number was
+  # measured over. Above tolerance it says what to do about it rather than only
+  # that a threshold was crossed.
   defp residual_readout(%{status: :ready, rmse_meters: rmse, anchor_count: count})
        when is_number(rmse) and is_integer(count) do
-    reading = "#{format_meters(rmse)} m · #{anchor_count_phrase(count)}"
-
     if rmse > @fit_tolerance_meters do
       %{
         state: "ready",
-        label: "Fit over #{format_meters(@fit_tolerance_meters)} m",
-        value: reading,
-        label_class: "font-medium text-warning",
-        value_class: "font-medium text-warning"
+        value: "#{format_meters(rmse)} m",
+        qualifier: "over #{anchor_count_phrase(count)} — check the alignment",
+        value_class: "font-medium tabular-nums text-warning",
+        qualifier_class: "text-warning/80"
       }
     else
       %{
         state: "ready",
-        label: "Measured fit",
-        value: reading,
-        label_class: "text-base-content/70",
-        value_class: "text-base-content"
+        value: "#{format_meters(rmse)} m",
+        qualifier: "over #{anchor_count_phrase(count)}",
+        value_class: "font-medium tabular-nums text-base-content",
+        qualifier_class: "text-base-content/50"
       }
     end
   end
 
-  # The count of usable anchors is not repeated here: the assisted cluster
-  # immediately to the left already renders it, and two counts a few pixels
-  # apart invite the reader to look for a difference that does not exist.
+  # With nothing measured, the value element carries the whole line, quietly. It
+  # still renders, because it is what the hook overwrites while measuring.
   defp residual_readout(%{status: :insufficient_anchors}) do
     %{
       state: "insufficient",
-      label: "Measured fit",
-      value: "Needs #{@fit_anchor_minimum} anchors",
-      label_class: "text-base-content/70",
-      value_class: "text-base-content/70"
+      value: "needs #{@fit_anchor_minimum} anchor stops",
+      qualifier: nil,
+      value_class: "text-base-content/50",
+      qualifier_class: nil
     }
   end
 
@@ -1680,14 +1710,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp residual_readout(_fit) do
     %{
       state: "unavailable",
-      label: "Measured fit",
-      value: "Move to measure",
-      label_class: "text-base-content/70",
-      value_class: "text-base-content/70"
+      value: "move the floorplan to measure",
+      qualifier: nil,
+      value_class: "text-base-content/50",
+      qualifier_class: nil
     }
   end
 
   defp format_meters(value), do: :erlang.float_to_binary(value * 1.0, decimals: 1)
+
+  # The zero case carries no information, so it is not rendered.
+  defp unplaced_note(0), do: nil
+  defp unplaced_note(1), do: "1 unplaced stays as it is"
+  defp unplaced_note(count), do: "#{count} unplaced stay as they are"
 
   defp anchor_count_phrase(1), do: "1 anchor"
   defp anchor_count_phrase(count), do: "#{count} anchors"

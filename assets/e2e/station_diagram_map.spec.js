@@ -342,20 +342,19 @@ test.describe("assisted alignment", () => {
     await expect(status).toBeVisible({ timeout: 10000 });
     await expect(status).toContainText("Unsaved auto-alignment preview");
     await expect(fitValue).toBeVisible();
-    await expect(fitValue).toContainText("Estimated fit error");
+    await expect(fitValue).toContainText("Suggested alignment fits to");
     await expect(fitValue.locator("strong")).toHaveText(/\d+\.\d m/);
-    await expect(fitDescription).toContainText(
-      "RMSE measures the typical anchor mismatch",
-    );
+    await expect(fitDescription).toContainText("Measured over");
+    await expect(fitDescription).toContainText("Lower is better");
 
     const pendingStates = await readPendingStates(page);
     expect(
       pendingStates.some(
-        ({ disabled, text }) => disabled && text === "Previewing…",
+        ({ disabled, text }) => disabled && text === "Aligning…",
       ),
     ).toBe(true);
     await expect(previewBtn).toBeEnabled();
-    await expect(previewBtn).toHaveText("Preview auto-alignment");
+    await expect(previewBtn).toHaveText("Auto-align");
     await expect
       .poll(() =>
         previewBtn.evaluate((element) =>
@@ -478,9 +477,9 @@ test.describe("align workspace layout and interaction", () => {
     "map-transform-scale-up-fine",
     "map-alignment-opacity",
     "map-alignment-help-trigger",
-    "map-alignment-preview-auto",
     "map-alignment-center-trigger",
     "map-alignment-zoom-trigger",
+    "map-alignment-preview-auto",
     "map-alignment-save",
     "map-alignment-apply",
   ];
@@ -498,9 +497,9 @@ test.describe("align workspace layout and interaction", () => {
     "map-transform-scale-up-fine",
     "map-alignment-opacity",
     "map-alignment-help-trigger",
-    "map-alignment-preview-auto",
     "map-alignment-center-trigger",
     "map-alignment-zoom-trigger",
+    "map-alignment-preview-auto",
     "map-alignment-save",
     "map-alignment-apply",
   ];
@@ -740,8 +739,8 @@ test.describe("align workspace layout and interaction", () => {
     await expect(residual).toHaveAttribute("data-fit-state", "ready", {
       timeout: 10000,
     });
-    await expect(page.locator("#map-alignment-residual-value")).toContainText(
-      /\d+\.\d m · \d+ anchors/,
+    await expect(page.locator("#map-alignment-residual")).toContainText(
+      /Fit\s+\d+\.\d m\s+over \d+ anchors/,
     );
   });
 
@@ -887,8 +886,8 @@ test.describe("align workspace layout and interaction", () => {
       "map-alignment-lon-input",
       "map-alignment-apply-center",
       "map-alignment-zoom-trigger",
+      "map-alignment-preview-auto",
       "map-alignment-save",
-      "map-alignment-apply",
     ]);
   });
 
@@ -907,17 +906,14 @@ test.describe("align workspace layout and interaction", () => {
     });
     await expect(page.locator("#auto-alignment-fit-description")).toBeVisible();
 
-    // A standing assisted preview renders the estimated fit error and its
-    // explanation inside the commit bar, which wraps the assisted cluster and
-    // takes the region past AC-1's budget. That trade is deliberate: the extra
-    // rows are the report the operator asked for and needs in order to accept
-    // or reject the preview, and the state is left by Restore saved alignment
-    // or by saving. The report is paid for out of the canvas rather than out of
-    // the viewport — nothing drops below the fold, which is asserted here
-    // alongside the bound so the state cannot silently grow further.
+    // A standing assisted preview adds one line reporting the suggested fit, and
+    // that line is all it costs: regrouping the bar brought this state inside
+    // AC-1's budget, where it used to sit at 512 px of canvas against a 520 px
+    // floor. It is held to the same budget as the resting surface so the
+    // exception cannot quietly return.
     const previewGeometry = await alignSurfaceGeometry(page);
-    expect(previewGeometry.canvas.height).toBeGreaterThanOrEqual(480);
-    expect(previewGeometry.region).toBeLessThanOrEqual(220);
+    expect(previewGeometry.canvas.height).toBeGreaterThanOrEqual(520);
+    expect(previewGeometry.region).toBeLessThanOrEqual(130);
     expect(previewGeometry.documentVerticalOverflow).toBeLessThanOrEqual(0);
     expect(previewGeometry.bar.bottom).toBeLessThanOrEqual(
       previewGeometry.viewportHeight,

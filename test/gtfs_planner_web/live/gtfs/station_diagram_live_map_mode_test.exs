@@ -1013,7 +1013,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-lat-input")
       assert has_element?(view, "#map-alignment-lon-input")
       assert has_element?(view, "#map-alignment-apply-center")
-      assert has_element?(view, "#map-alignment-save", "Save alignment")
+      assert has_element?(view, "#map-alignment-save", "Save position")
       assert has_element?(view, "#map-alignment-apply")
       refute has_element?(view, "#map-alignment-infer")
       refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
@@ -1041,8 +1041,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       html = render(view)
 
-      assert has_element?(view, "#map-alignment-save", "Save alignment")
-      assert has_element?(view, "#map-alignment-apply.btn-primary", "Review coordinate changes")
+      assert has_element?(view, "#map-alignment-save", "Save position")
+      assert has_element?(view, "#map-alignment-apply.btn-primary", "Update stop coordinates")
 
       # Exactly one visible primary save action in the control row.
       assert html
@@ -2047,7 +2047,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       transform_changed(view, %{"unsaved" => true})
 
-      assert has_element?(view, "#map-alignment-unsaved", "Unsaved alignment changes")
+      assert has_element?(view, "#map-alignment-unsaved", "Unsaved")
       refute has_element?(view, "#map-alignment-restore-saved[disabled]")
     end
 
@@ -3166,7 +3166,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute has_element?(view, "#cancel-coordinate-preview")
 
       # The trigger carries no change count and uses the review vocabulary.
-      assert has_element?(view, "#map-alignment-apply", "Review coordinate changes")
+      assert has_element?(view, "#map-alignment-apply", "Update stop coordinates")
       refute html =~ "Preview coordinate changes"
     end
   end
@@ -3297,13 +3297,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(
                view,
                "[data-role='child-stop-coverage']",
-               "2 of 3 stops have floorplan placements · 1 without placement stay unchanged"
+               "Placed 2 of 3 1 unplaced stays as it is"
              )
 
       refute html =~ "child stops have lat/long"
 
       # The trigger carries no change count.
-      assert has_element?(view, "#map-alignment-apply", "Review coordinate changes")
+      assert has_element?(view, "#map-alignment-apply", "Update stop coordinates")
     end
 
     test "dialog renders every projected change row with six-decimal coordinates and reconciled counts (AC-5, AC-13, DC-8, INV-7)",
@@ -3383,7 +3383,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(
                view,
                "[data-role='child-stop-coverage']",
-               "#{stored.child_stops_with_floorplan} of #{stored.child_stops_total} stops have floorplan placements · #{review.unplaced_count} without placement stay unchanged"
+               "Placed #{stored.child_stops_with_floorplan} of #{stored.child_stops_total}"
              )
 
       # The consequence names the changed group; recovery copy is truthful (DC-5).
@@ -4099,8 +4099,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     test "the triggers name their clusters and the primary action keeps its label", context do
       view = mount_map_align(context)
 
-      assert view |> element("#map-alignment-center-trigger") |> render() =~ "Map center"
-      assert view |> element("#map-alignment-zoom-trigger") |> render() =~ "Map zoom"
+      assert view |> element("#map-alignment-center-trigger") |> render() =~ "Center the map"
+      assert view |> element("#map-alignment-zoom-trigger") |> render() =~ "Change the map zoom"
       assert view |> element("#map-alignment-apply-center") |> render() =~ "Center map"
     end
 
@@ -4183,7 +4183,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       html = render_map_canvas(alignment_fit: nil)
 
       assert residual_state(html) == "unavailable"
-      assert residual_value(html) == "Move to measure"
+      assert residual_value(html) == "move the floorplan to measure"
       refute residual_value(html) =~ ~r/^0(\.0)?( m)?$/
     end
 
@@ -4191,7 +4191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       html = render_map_canvas(alignment_fit: %{status: :unavailable})
 
       assert residual_state(html) == "unavailable"
-      assert residual_value(html) == "Move to measure"
+      assert residual_value(html) == "move the floorplan to measure"
     end
 
     test "renders the metre value to one decimal and the anchor count within tolerance" do
@@ -4199,15 +4199,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.437, anchor_count: 5})
 
       assert residual_state(html) == "ready"
-      assert residual_value(html) == "1.4 m · 5 anchors"
-      assert residual_text(html) == "Measured fit 1.4 m · 5 anchors"
+      assert residual_value(html) == "1.4 m"
+      assert residual_text(html) == "Fit 1.4 m over 5 anchors"
+      assert residual_text(html) == "Fit 1.4 m over 5 anchors"
     end
 
     test "singularizes the anchor count when one anchor survived" do
       html =
         render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 0.25, anchor_count: 1})
 
-      assert residual_value(html) == "0.3 m · 1 anchor"
+      assert residual_value(html) == "0.3 m"
+      assert residual_text(html) == "Fit 0.3 m over 1 anchor"
     end
 
     test "names the 2.0 m tolerance in text above the threshold, not by colour alone" do
@@ -4217,20 +4219,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       within =
         render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 2.0, anchor_count: 5})
 
-      assert residual_text(above) == "Fit over 2.0 m 3.6 m · 5 anchors"
+      assert residual_text(above) == "Fit 3.6 m over 5 anchors — check the alignment"
       assert residual_state(above) == "ready"
 
       # 2.0 m exactly is the bar AlignmentInference accepts, so it is not banded.
       refute residual_text(within) =~ "over 2.0 m"
-      assert residual_text(within) =~ "Measured fit"
-      assert residual_value(within) == "2.0 m · 5 anchors"
+      assert residual_text(within) =~ "Fit"
+      assert residual_value(within) == "2.0 m"
     end
 
     test "names the three-anchor requirement instead of a number below three anchors" do
       html = render_map_canvas(alignment_fit: %{status: :insufficient_anchors, anchor_count: 2})
 
       assert residual_state(html) == "insufficient"
-      assert residual_value(html) == "Needs 3 anchors"
+      assert residual_value(html) == "needs 3 anchor stops"
       refute residual_value(html) =~ ~r/\dm|\d m/
     end
 
@@ -4322,7 +4324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   # The anchors are real seeded stops, so `stop_lat`/`stop_lon` arrive as
   # `Decimal`. `FloorplanTransform.residual_rmse_meters/4` requires `is_number/1`
   # and silently skips a `Decimal` anchor, so an unconverted level of five
-  # anchors would report "Needs 3 anchors". That conversion is what the
+  # anchors would report "needs 3 anchor stops". That conversion is what the
   # measured-value cases below pin.
   # ---------------------------------------------------------------------------
 
@@ -4538,7 +4540,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert assigns(view).alignment_fit == nil
       assert fit_readout(view).state == "unavailable"
-      assert fit_readout(view).value == "Move to measure"
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
     end
 
     test "a current-generation transform measures its alignment against the level's anchor stops",
@@ -4550,7 +4552,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert %{status: :ready, anchor_count: 5, rmse_meters: rmse} = assigns(view).alignment_fit
       assert rmse < 0.05
       assert fit_readout(view).state == "ready"
-      assert fit_readout(view).value == "0.0 m · 5 anchors"
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
     end
 
     test "an alignment displaced from its anchors names the tolerance in words", context do
@@ -4561,8 +4563,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       })
 
       assert fit_readout(view).state == "ready"
-      assert fit_readout(view).value == "11.1 m · 5 anchors"
-      assert fit_readout(view).text =~ "Fit over 2.0 m"
+      assert fit_readout(view).text == "Fit 11.1 m over 5 anchors — check the alignment"
+      assert fit_readout(view).text =~ "check the alignment"
     end
 
     test "a transform without an alignment key measures nothing on a resting surface", context do
@@ -4571,7 +4573,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       fit_transform_changed(view, %{"unsaved" => true})
 
       assert assigns(view).alignment_fit == nil
-      assert fit_readout(view).value == "Move to measure"
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
     end
 
     test "a transform without an alignment key leaves a standing measurement untouched",
@@ -4583,7 +4585,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       fit_transform_changed(view, %{"unsaved" => true})
 
       assert assigns(view).alignment_fit == measured
-      assert fit_readout(view).value == "0.0 m · 5 anchors"
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
     end
 
     test "a stale generation carrying an alignment measures nothing", context do
@@ -4619,7 +4621,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
 
       assert assigns(view).alignment_fit == first
-      assert fit_readout(view).value == "0.0 m · 5 anchors"
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
     end
 
     test "a later measurement replaces the earlier one", context do
@@ -4631,7 +4633,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
 
-      assert fit_readout(view).value == "0.0 m · 5 anchors"
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
       refute fit_readout(view).text =~ "over 2.0 m"
     end
 
@@ -4643,7 +4645,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
       })
 
-      assert fit_readout(view).text =~ "Fit over 2.0 m"
+      assert fit_readout(view).text =~ "check the alignment"
       refute has_element?(view, "#map-alignment-save[disabled]")
       refute has_element?(view, "#map-alignment-apply[disabled]")
       refute has_element?(view, "#map-alignment-preview-auto[disabled]")
@@ -4683,7 +4685,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
 
-      assert fit_readout(view).value == "0.0 m · 5 anchors"
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
     end
 
     test "leaving and re-entering align mode clears the measurement", context do
@@ -4694,7 +4696,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assert assigns(view).alignment_fit == nil
-      assert fit_readout(view).value == "Move to measure"
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
     end
 
     test "switching level clears the measurement", context do
@@ -4714,7 +4716,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert assigns(view).alignment_fit == %{status: :unavailable}
       assert fit_readout(view).state == "unavailable"
-      assert fit_readout(view).value == "Move to measure"
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
     end
 
     test "an alignment the server cannot validate reports no measurement", context do
@@ -4751,7 +4753,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert assigns(view).alignment_fit == %{status: :insufficient_anchors, anchor_count: 2}
       assert fit_readout(view).state == "insufficient"
-      assert fit_readout(view).value == "Needs 3 anchors"
+      assert fit_readout(view).text == "Fit needs 3 anchor stops"
     end
 
     test "an insufficient measurement leaves save and review coordinate changes enabled",
@@ -4779,7 +4781,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
 
       assert assigns(view).alignment_fit == %{status: :insufficient_anchors, anchor_count: 0}
-      assert fit_readout(view).value == "Needs 3 anchors"
+      assert fit_readout(view).text == "Fit needs 3 anchor stops"
     end
 
     test "a transform carrying an alignment still clears a standing no-changes status",
@@ -5024,8 +5026,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     test "the surviving group names read as visible trigger labels, not hidden ones", context do
       view = mount_map_align(context)
 
-      assert element_text(view, "#map-alignment-center-trigger") == "Map center"
-      assert element_text(view, "#map-alignment-zoom-trigger") == "Map zoom"
+      assert has_element?(
+               view,
+               "#map-alignment-center-trigger[data-tip='Center the map on a coordinate']"
+             )
+
+      assert has_element?(view, "#map-alignment-zoom-trigger[data-tip='Change the map zoom']")
       refute has_element?(view, ".sr-only", "Map center")
     end
 
@@ -5065,33 +5071,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute has_element?(view, "#map-other-overlays-opacity")
     end
 
-    test "the commit bar reads coverage, help, assisted alignment, popovers, fit, then actions",
+    test "the commit bar reads fit, coverage, view, assist, then commit",
          context do
       view = mount_map_align(context)
 
       assert commit_bar_blocks(view) == [
+               "map-alignment-residual",
                "child-stop-coverage",
-               "map-alignment-preview-auto",
                "map-alignment-center-trigger",
                "map-alignment-zoom-trigger",
-               "map-alignment-residual",
+               "map-alignment-preview-auto",
                "map-alignment-actions"
              ]
     end
 
-    test "the unsaved indicator renders between the help line and the assisted cluster",
+    test "the unsaved indicator renders with the other facts, before the actions",
          context do
       view = mount_map_align(context)
 
       transform_changed(view, %{"unsaved" => true})
 
       assert commit_bar_blocks(view) == [
+               "map-alignment-residual",
                "child-stop-coverage",
                "map-alignment-unsaved",
-               "map-alignment-preview-auto",
                "map-alignment-center-trigger",
                "map-alignment-zoom-trigger",
-               "map-alignment-residual",
+               "map-alignment-preview-auto",
                "map-alignment-actions"
              ]
     end
@@ -5107,7 +5113,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     test "the actions block holds the preview status, save, and review controls", context do
       view = mount_map_align(context)
 
-      assert has_element?(view, "#map-alignment-actions #map-alignment-preview-status")
+      assert has_element?(view, "#map-alignment-commit-bar #map-alignment-preview-status.sr-only")
       assert has_element?(view, "#map-alignment-actions #map-alignment-save")
       assert has_element?(view, "#map-alignment-actions #map-alignment-apply")
     end
@@ -5254,7 +5260,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
       })
 
-      assert fit_readout(view).text =~ "Fit over 2.0 m"
+      assert fit_readout(view).text =~ "check the alignment"
       assert disabled_align_actions(view) == []
     end
 
