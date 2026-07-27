@@ -776,14 +776,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     # returns focus. `dismiss` is used only where the panel is known to be
     # open — phx-click-away is visibility-guarded by LiveView, and the
     # trigger's own phx-keydown only fires while the trigger has focus.
-    # phx-window-keydown fires on every Escape anywhere on the page, so it
-    # gets the focus-free `close`.
     center_close =
       JS.hide(to: "#map-alignment-center-panel")
       |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-center-trigger")
 
     zoom_close =
       JS.hide(to: "#map-alignment-zoom-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-zoom-trigger")
+
+    # phx-window-keydown fires on every Escape anywhere on the page, and
+    # phx-keydown fires only when the event target itself carries it — so a
+    # panel-level phx-keydown never sees Escape typed in a panel input. The
+    # window path therefore carries the focus, gated on the trigger's own
+    # aria-expanded so it returns focus when the panel is open and leaves
+    # focus alone when it is not.
+    center_window_dismiss =
+      JS.focus(to: "#map-alignment-center-trigger[aria-expanded='true']")
+      |> JS.hide(to: "#map-alignment-center-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-center-trigger")
+
+    zoom_window_dismiss =
+      JS.focus(to: "#map-alignment-zoom-trigger[aria-expanded='true']")
+      |> JS.hide(to: "#map-alignment-zoom-panel")
       |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-zoom-trigger")
 
     floorplan_url =
@@ -842,7 +856,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           to: "#map-alignment-center-trigger"
         )
       )
-      |> assign(:center_close, center_close)
+      |> assign(:center_window_dismiss, center_window_dismiss)
       |> assign(:center_dismiss, JS.focus(center_close, to: "#map-alignment-center-trigger"))
       |> assign(
         :zoom_open,
@@ -851,7 +865,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           to: "#map-alignment-zoom-trigger"
         )
       )
-      |> assign(:zoom_close, zoom_close)
+      |> assign(:zoom_window_dismiss, zoom_window_dismiss)
       |> assign(:zoom_dismiss, JS.focus(zoom_close, to: "#map-alignment-zoom-trigger"))
       |> assign(:residual_readout, residual_readout(assigns.alignment_fit))
       # While a scoring round trip is in flight the hook swaps the value's text
@@ -1180,7 +1194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <div
                   id="map-alignment-center-panel"
                   phx-click-away={@center_dismiss}
-                  phx-window-keydown={@center_close}
+                  phx-window-keydown={@center_window_dismiss}
                   phx-key="escape"
                   style="display: none;"
                   class="absolute left-0 bottom-full mb-1 z-30 flex w-52 flex-col gap-3 border border-base-300 bg-base-100 rounded-box shadow-lg p-3 text-sm"
@@ -1243,7 +1257,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <div
                   id="map-alignment-zoom-panel"
                   phx-click-away={@zoom_dismiss}
-                  phx-window-keydown={@zoom_close}
+                  phx-window-keydown={@zoom_window_dismiss}
                   phx-key="escape"
                   style="display: none;"
                   class="absolute left-0 bottom-full mb-1 z-30 flex w-52 flex-col gap-1 border border-base-300 bg-base-100 rounded-box shadow-lg p-3 text-sm"

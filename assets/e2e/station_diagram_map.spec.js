@@ -277,6 +277,11 @@ test.describe("assisted alignment", () => {
     "../../.specs/journal-08/visual-references/mock-05-align-mode-v2.html",
   );
 
+  test.beforeAll(() => {
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
+  });
+
   async function exerciseProductionPreview(page, viewport, artifactName) {
     await page.setViewportSize(viewport);
     await loginAndGoToDiagram(page);
@@ -368,7 +373,6 @@ test.describe("assisted alignment", () => {
         element.getAnimations().map((animation) => animation.finished),
       ),
     );
-    fs.mkdirSync(artifactsDir, { recursive: true });
     await page.screenshot({
       path: path.join(artifactsDir, artifactName),
       fullPage: true,
@@ -406,8 +410,6 @@ test.describe("assisted alignment", () => {
     await expect(
       page.locator("text=Unsaved auto-alignment preview"),
     ).toBeVisible();
-
-    fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
 
     await page.screenshot({
       path: path.join(
@@ -482,6 +484,10 @@ test.describe("align workspace layout and interaction", () => {
     "map-alignment-apply",
   ];
 
+  test.beforeAll(() => {
+    fs.mkdirSync(journal10ArtifactsDir, { recursive: true });
+  });
+
   for (const viewport of layoutViewports) {
     test(`gives the map canvas at least 520 px and the region below it at most 130 px at ${viewport.label}`, async ({
       page,
@@ -502,7 +508,6 @@ test.describe("align workspace layout and interaction", () => {
       // being unusable, so the reclaimed height has to fit the panel too.
       expect(geometry.toolsScrollOverflow).toBeLessThanOrEqual(0);
 
-      fs.mkdirSync(journal10ArtifactsDir, { recursive: true });
       await page.screenshot({
         path: path.join(
           journal10ArtifactsDir,
@@ -619,6 +624,9 @@ test.describe("align workspace layout and interaction", () => {
     await expect(panel.locator("#map-alignment-apply-center")).toBeVisible();
     await expect(trigger).toBeFocused();
 
+    const latitudeInput = panel.locator("#map-alignment-lat-input");
+    await latitudeInput.focus();
+    await expect(latitudeInput).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -661,6 +669,9 @@ test.describe("align workspace layout and interaction", () => {
       panel.locator("#map-alignment-zoom[phx-update='ignore']"),
     ).toBeVisible();
 
+    const zoomInput = panel.locator("#map-alignment-zoom");
+    await zoomInput.focus();
+    await expect(zoomInput).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
     await expect(trigger).toBeFocused();
@@ -826,6 +837,10 @@ test.describe("coordinate review", () => {
     { width: 1440, height: 1000, label: "1440" },
   ];
 
+  test.beforeAll(() => {
+    fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
+  });
+
   // Wait for the review dialog to open and its body table to render rows.
   async function openReviewDialog(page) {
     const applyBtn = page.locator("#map-alignment-apply");
@@ -858,7 +873,6 @@ test.describe("coordinate review", () => {
       await expect(review.locator("table thead tr")).toContainText("Stop");
       await expect(review.locator("table thead tr")).toContainText("Change");
 
-      fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
       await page.screenshot({
         path: path.join(
           journal08ArtifactsDir,
@@ -929,7 +943,6 @@ test.describe("coordinate review", () => {
       });
       await expect(dialogPanel).toHaveCSS("opacity", "1");
 
-      fs.mkdirSync(journal08ArtifactsDir, { recursive: true });
       await page.screenshot({
         path: path.join(
           journal08ArtifactsDir,

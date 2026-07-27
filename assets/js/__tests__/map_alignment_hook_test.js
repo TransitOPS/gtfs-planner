@@ -4353,6 +4353,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
 
   let originalL;
   let originalFetch;
+  const liveHooks = [];
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -4361,8 +4362,10 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
   });
 
   afterEach(() => {
+    liveHooks.splice(0).forEach((hook) => hook.destroyed());
     window.L = originalL;
     global.fetch = originalFetch;
+    vi.restoreAllMocks();
     vi.useRealTimers();
     document.body.innerHTML = "";
   });
@@ -4428,6 +4431,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
     };
 
     hook.mounted();
+    liveHooks.push(hook);
 
     return { hook, mapInstance };
   }
@@ -4719,6 +4723,32 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
 
       expect(hook.transform).toEqual(start);
     });
+
+    it("rebinds keyboard shortcuts when a patch replaces the workspace", () => {
+      const { hook } = mountWorkspaceHook();
+      const oldWorkspace = document.getElementById("map-alignment-workspace");
+      const newWorkspace = document.createElement("div");
+      newWorkspace.id = "map-alignment-workspace";
+      newWorkspace.tabIndex = -1;
+
+      keydown(oldWorkspace, "h");
+      expect(overlayOpacity()).toBe("0");
+
+      while (oldWorkspace.firstChild) {
+        newWorkspace.appendChild(oldWorkspace.firstChild);
+      }
+      oldWorkspace.replaceWith(newWorkspace);
+      hook.updated();
+
+      expect(overlayOpacity()).toBe("0.7");
+      expect(hook._holdToHideActive).toBe(false);
+
+      keydown(oldWorkspace, "ArrowLeft");
+      expect(hook.transform.tx).toBe(0);
+
+      keydown(newWorkspace, "ArrowLeft");
+      expect(hook.transform.tx).toBe(-2);
+    });
   });
 
   describe("hold-to-hide", () => {
@@ -4948,6 +4978,28 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       expect(body.style.display).toBe("none");
     });
 
+    it("rebinds a patched toggle without losing the collapsed state", () => {
+      const { hook } = mountWorkspaceHook();
+      const oldToggle = document.getElementById("map-alignment-tools-toggle");
+      const body = document.getElementById("tools-transform");
+
+      oldToggle.click();
+      const newToggle = oldToggle.cloneNode(true);
+      oldToggle.replaceWith(newToggle);
+      body.style.display = "";
+      body.hidden = false;
+      hook.updated();
+
+      expect(body.style.display).toBe("none");
+      expect(newToggle.textContent.trim()).toBe("Show tools");
+
+      oldToggle.click();
+      expect(body.style.display).toBe("none");
+
+      newToggle.click();
+      expect(body.style.display).not.toBe("none");
+    });
+
     it("expands the panel on destroy so no orphan stays hidden", () => {
       const { hook } = mountWorkspaceHook();
 
@@ -5151,6 +5203,26 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       expect(() => hook._adjustTransform("left", false)).not.toThrow();
       expect(hook.transform.tx).toBe(-2);
       expect(() => hook.destroyed()).not.toThrow();
+    });
+
+    it("does not install hold-to-hide watchdogs without a workspace element", () => {
+      const windowAddEventListener = vi.spyOn(window, "addEventListener");
+      const documentAddEventListener = vi.spyOn(document, "addEventListener");
+
+      mountWorkspaceHook({ workspace: false });
+
+      expect(windowAddEventListener).not.toHaveBeenCalledWith(
+        "blur",
+        expect.any(Function),
+      );
+      expect(documentAddEventListener).not.toHaveBeenCalledWith(
+        "visibilitychange",
+        expect.any(Function),
+      );
+      expect(documentAddEventListener).not.toHaveBeenCalledWith(
+        "focusin",
+        expect.any(Function),
+      );
     });
   });
 });

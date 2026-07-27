@@ -801,6 +801,22 @@ const MapAlignmentHook = {
 
   updated() {
     this._syncOtherOverlaysOpacitySlider();
+
+    const workspace = document.getElementById("map-alignment-workspace");
+    if (workspace !== this._workspaceEl) {
+      this._releaseHoldToHide();
+      this._unbindWorkspaceKeyboard();
+      this._bindWorkspaceKeyboard();
+    }
+
+    const toolsToggle = document.getElementById("map-alignment-tools-toggle");
+    if (toolsToggle !== this._toolsToggle) {
+      const toolsCollapsed = this._toolsCollapsed;
+      this._unbindToolsToggle();
+      this._bindToolsToggle();
+      this._toolsCollapsed = toolsCollapsed;
+    }
+
     // The tools panel is server-rendered, so a patch that re-renders it puts the
     // hidden children back on screen. Collapse is client-owned view state, so
     // the hook re-asserts it rather than the server storing it.
@@ -1405,14 +1421,14 @@ const MapAlignmentHook = {
     if (this._workspaceEl) {
       this._workspaceEl.addEventListener("keydown", this._onWorkspaceKeyDown);
       this._workspaceEl.addEventListener("keyup", this._onWorkspaceKeyUp);
-    }
 
-    // The keyup can be delivered to another window, to a closed popover, or
-    // never — so the release does not enumerate the ways focus is lost. It
-    // watches for focus leaving at all.
-    window.addEventListener("blur", this._onHoldToHideWatchdog);
-    document.addEventListener("visibilitychange", this._onHoldToHideWatchdog);
-    document.addEventListener("focusin", this._onDocumentFocusIn);
+      // The keyup can be delivered to another window, to a closed popover, or
+      // never — so the release does not enumerate the ways focus is lost. It
+      // watches for focus leaving at all.
+      window.addEventListener("blur", this._onHoldToHideWatchdog);
+      document.addEventListener("visibilitychange", this._onHoldToHideWatchdog);
+      document.addEventListener("focusin", this._onDocumentFocusIn);
+    }
   },
 
   _unbindWorkspaceKeyboard() {

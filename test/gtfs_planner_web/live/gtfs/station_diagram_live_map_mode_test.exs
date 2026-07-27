@@ -4048,6 +4048,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       for trigger <- ["map-alignment-center-trigger", "map-alignment-zoom-trigger"] do
         assert has_element?(view, "##{trigger}[phx-click]")
         assert has_element?(view, "##{trigger}[phx-keydown][phx-key='escape']")
+
+        # phx-keydown fires only when the event target itself carries it, so
+        # Escape typed in a panel control reaches only the window binding.
+        # That binding returns focus to the trigger, gated on the trigger's
+        # own aria-expanded so an Escape with the panel closed moves nothing.
+        assert has_element?(
+                 view,
+                 ~s|[phx-window-keydown*="##{trigger}[aria-expanded='true']"]|
+               )
       end
     end
 
