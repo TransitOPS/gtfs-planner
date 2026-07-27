@@ -258,6 +258,15 @@ test.describe("Station diagram map alignment", () => {
     await expect(
       page.locator("#map-alignment-leaflet.leaflet-container"),
     ).toBeVisible();
+
+    // Wait for the surface to settle before taking it offline. While the map is
+    // still resolving, its state message comes and goes; each appearance adds a
+    // line to the commit bar, which resizes the canvas and moves the actions row
+    // with it, so Retry map never holds still long enough to be clicked.
+    await expect(page.locator("#map-alignment-state")).toHaveCount(0, {
+      timeout: 20000,
+    });
+
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
     await expect(page.locator("#map-alignment-retry")).toBeVisible();
     await page.locator("#map-alignment-retry").click();
@@ -762,6 +771,32 @@ test.describe("align workspace layout and interaction", () => {
     expect(
       await collectTabOrder(page, "#map-alignment-restore-saved", 16),
     ).toEqual(dirtyFocusOrder);
+  });
+
+  test("keeps the map's own stacking ladder from painting over the bar's tooltips", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    // The canvas stacks leaflet, other-level pins, the floorplan and its handles
+    // on a private z-index 0-5 ladder. Without a stacking context of its own that
+    // ladder competes with the whole page, and the floorplan at z-index 2 paints
+    // over the commit bar's tooltips, which sit at z-index 1 and open upward over
+    // the map. Pseudo-elements cannot be probed with elementFromPoint, so the
+    // containment itself is what is pinned here.
+    const canvas = page.locator("#map-alignment-workspace .map-canvas");
+    await expect(canvas).toHaveCSS("isolation", "isolate");
+
+    // The floorplan is still stacked above leaflet inside that context.
+    const inner = await page.evaluate(() => ({
+      leaflet: getComputedStyle(
+        document.getElementById("map-alignment-leaflet"),
+      ).zIndex,
+      overlay: getComputedStyle(
+        document.getElementById("map-alignment-overlay"),
+      ).zIndex,
+    }));
+    expect(Number(inner.overlay)).toBeGreaterThan(Number(inner.leaflet));
   });
 
   test("keeps the floorplan opacity through a patch of the tools panel", async ({

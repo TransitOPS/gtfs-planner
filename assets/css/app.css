@@ -177,6 +177,16 @@ body {
   display: none;
 }
 
+/* The align map canvas stacks its own children on a private 0-5 ladder: leaflet,
+   other-level pins, the floorplan overlay, and its handles. Without a stacking
+   context of its own that ladder competes with the rest of the page, so the
+   floorplan at z-index 2 painted over the commit bar's tooltips at z-index 1.
+   Isolating the canvas keeps the ladder internal; the panels and popovers that
+   are meant to sit over the map are siblings of it and still win. */
+#map-alignment-workspace .map-canvas {
+  isolation: isolate;
+}
+
 /* The align tools collapse control is icon-only. The hook owns the collapsed
    state and writes it as `data-collapsed`; the chevron points the way the next
    click moves the panel. */
