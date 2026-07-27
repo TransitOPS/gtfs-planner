@@ -3948,7 +3948,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       help = element_text(view, "#map-alignment-help-panel")
 
       assert help =~ "Drag the floorplan"
-      assert help =~ "keys ← ↑ ↓ →"
+      assert help =~ "← ↑ ↓ →"
       assert help =~ "Hold H"
       assert help =~ "Restore saved alignment"
 
@@ -5147,8 +5147,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # and refuses rather than applying a poor fit.
       assert help =~ "both a position on the floorplan and real map coordinates"
       assert help =~ "at least three"
-      assert help =~ "Moves the floorplan straight away"
+      assert help =~ "moves it immediately"
       assert help =~ "nothing is written until you save"
+    end
+
+    test "the help overlay states both step sizes for each transform operation", context do
+      view = mount_map_align(context)
+
+      help =
+        view
+        |> element_text("#map-alignment-help-panel")
+        |> String.replace(~r/\s+/, " ")
+
+      # Shift is 10x on move and resize but 5x on rotate, so the coarse step has
+      # to be stated per operation. A single "ten times as far" line was wrong
+      # for rotate, and wrong help is worse than none.
+      for {operation, keys, step, shift_step} <- [
+            {"Move", "← ↑ ↓ →", "2 px", "10 px"},
+            {"Rotate", "[ and ]", "1°", "5°"},
+            {"Resize", "− and =", "1%", "10%"}
+          ] do
+        assert help =~
+                 ~r/#{Regex.escape(operation)} #{Regex.escape(keys)} #{Regex.escape(step)} #{Regex.escape(shift_step)}/
+      end
     end
 
     test "the help overlay states what each of the two save actions does", context do

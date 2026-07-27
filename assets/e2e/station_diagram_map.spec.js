@@ -852,11 +852,23 @@ test.describe("align workspace layout and interaction", () => {
     await expect(panel).toContainText("Drag the floorplan");
     await expect(panel).toContainText("Hold H");
 
-    // The overlay is a bounded card, not a full-bleed scrim: the floorplan
-    // stays visible beside it rather than being covered while help is open.
+    // Reactive help, asked for rather than pushed: it takes the whole workspace
+    // instead of rationing itself to a corner of it. The commit bar is a sibling
+    // below, so every control the copy names stays on screen while it is read.
     const panelBox = await panel.boundingBox();
     const canvasBox = await page.locator(".map-canvas").boundingBox();
-    expect(panelBox.height).toBeLessThan(canvasBox.height);
+    expect(panelBox.width).toBeGreaterThanOrEqual(canvasBox.width - 1);
+    expect(panelBox.height).toBeGreaterThanOrEqual(canvasBox.height - 1);
+    await expect(page.locator("#map-alignment-commit-bar")).toBeVisible();
+
+    // The panel scrolls its own body rather than the page: the align surface is
+    // bounded at the viewport, so a growing panel must not produce a page
+    // scrollbar.
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollHeight <= window.innerHeight,
+      ),
+    ).toBe(true);
 
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
