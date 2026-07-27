@@ -1184,7 +1184,17 @@ const MapAlignmentHook = {
   // `alignment_transform_changed` so an open review closes (advisory only —
   // INV-4). The debounce coalesces bursts into one push per window and the
   // timer is cleared in destroyed() to avoid leaks.
-  _transformDidChange({ previewAdjusted } = {}) {
+  //
+  // Two options, because the caller is answering two different questions:
+  //   previewAdjusted — did the operator do this? (overlay drag, rotate/scale
+  //     handle, nudge buttons). Only this fires _markPreviewDirty().
+  //   dirtying — does this move the floorplan off its saved position? Defaults
+  //     to `previewAdjusted`, which is correct for every path but one.
+  // They differ only for applying an assisted preview: not an operator gesture,
+  // but it does dirty the saved alignment. Flipping `previewAdjusted` there is
+  // not available — it would fire _markPreviewDirty() and clobber the
+  // `_previewActive` state that path has just set.
+  _transformDidChange({ previewAdjusted, dirtying } = {}) {
     this._applyTransform();
     this._syncPreviewStatus();
 
@@ -1192,13 +1202,12 @@ const MapAlignmentHook = {
       this._markPreviewDirty();
     }
 
-    // `previewAdjusted` is true exactly for operator-initiated gestures
-    // (overlay drag, rotate handle, scale handle, nudge buttons) and false for
-    // programmatic reapplication (restore, assisted-preview apply, map-view
-    // change). The server reads this as the operator-dirty signal and owns the
-    // resulting unsaved indicator (INV-09D-3); without it a restore would
-    // re-dirty itself one debounce window later.
-    this._scheduleTransformInvalidation({ unsaved: previewAdjusted === true });
+    // The server reads `unsaved` as the dirty signal and owns the resulting
+    // unsaved indicator and the restore control's enabled state (INV-09D-3);
+    // without it a restore would re-dirty itself one debounce window later.
+    const isDirtying =
+      dirtying === undefined ? previewAdjusted === true : dirtying === true;
+    this._scheduleTransformInvalidation({ unsaved: isDirtying });
   },
 
   // `unsaved` defaults to true to match the server's own
@@ -1215,10 +1224,20 @@ const MapAlignmentHook = {
 
       if (this._destroyed) return;
 
-      this.pushEvent("alignment_transform_changed", {
-        generation: this.generation,
-        unsaved,
-      });
+      // Computed here rather than at schedule time so a window that is
+      // coalesced away, cancelled by open_coordinate_review, or dropped by
+      // destroy() does no geometry work and logs no warning, and so the
+      // reported alignment describes the transform actually being pushed.
+      const alignment = this._computeAlignment();
+
+      const payload = { generation: this.generation, unsaved };
+
+      // `null` means the floorplan image is not loaded or the map geometry is
+      // degenerate. Omit the key rather than sending nulls: the server leaves
+      // its fit assign untouched when the key is absent.
+      if (alignment) payload.alignment = alignment;
+
+      this.pushEvent("alignment_transform_changed", payload);
     }, TRANSFORM_INVALIDATION_DEBOUNCE_MS);
   },
 
@@ -1266,8 +1285,10 @@ const MapAlignmentHook = {
     this._previewActive = true;
     // The assisted preview is itself the new alignment source, so it does not
     // dirty the preview. It still invalidates any open review because the
-    // displayed transform changed (advisory only — INV-4).
-    this._transformDidChange({ previewAdjusted: false });
+    // displayed transform changed (advisory only — INV-4), and it does move the
+    // floorplan off its saved position, so it reports unsaved — the one call
+    // site where `dirtying` diverges from `previewAdjusted`.
+    this._transformDidChange({ previewAdjusted: false, dirtying: true });
   },
 
   _handleRestoreSavedTransform(payload) {

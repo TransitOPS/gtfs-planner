@@ -273,11 +273,11 @@ test.describe("assisted alignment", () => {
       fullPage: true,
     });
 
-    // Applying an assisted preview reports `unsaved: false` to the server
-    // (`previewAdjusted` is false for programmatic reapplication), so Restore
-    // saved alignment stays disabled until an operator gesture dirties the
-    // alignment. This documents the shipped behaviour, not a desired one.
-    await expect(restoreBtn).toBeDisabled();
+    // Applying an assisted preview moves the floorplan off its saved position,
+    // so the hook reports `unsaved: true` one debounce window later even though
+    // it was not an operator gesture. Restore saved alignment therefore becomes
+    // available without one, and an operator gesture afterwards keeps it so.
+    await expect(restoreBtn).toBeEnabled();
     await page.locator("#map-transform-right-fine").click();
     await expect(restoreBtn).toBeEnabled();
 

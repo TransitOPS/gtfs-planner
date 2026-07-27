@@ -3168,6 +3168,12 @@ describe("map_alignment_hook saved/preview state machine", () => {
       expect(calls[0][1]).toEqual({
         generation: "gen-invalidation",
         unsaved: true,
+        alignment: {
+          center_lat: expect.any(Number),
+          center_lon: expect.any(Number),
+          scale_mpp: expect.any(Number),
+          rotation_deg: expect.any(Number),
+        },
       });
 
       restore();
@@ -3601,6 +3607,16 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
   const GENERATION = "gen-step4";
   const DEBOUNCE_MS = 401;
 
+  // The debounced payload now carries the hook's computed alignment. These
+  // tests are about `unsaved`, so they pin the key and its field types; the
+  // exact geometry is pinned once, in "carries the computed alignment".
+  const NUMERIC_ALIGNMENT = {
+    center_lat: expect.any(Number),
+    center_lon: expect.any(Number),
+    scale_mpp: expect.any(Number),
+    rotation_deg: expect.any(Number),
+  };
+
   // Opposing nudge pairs in both orders. Applying one and then the other at the
   // same modifier state must return the transform to where it started — the
   // defect this package exists to fix.
@@ -4031,7 +4047,7 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: true },
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
       ]);
     });
 
@@ -4045,7 +4061,7 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: true },
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
       ]);
     });
 
@@ -4056,11 +4072,15 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: false },
+        {
+          generation: GENERATION,
+          unsaved: false,
+          alignment: NUMERIC_ALIGNMENT,
+        },
       ]);
     });
 
-    it("reports unsaved false after applying an assisted preview", () => {
+    it("reports unsaved true after applying an assisted preview", () => {
       const { hook } = mountAlignHook();
 
       hook._handleApplyPreviewTransform({
@@ -4073,8 +4093,28 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: false },
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
       ]);
+    });
+
+    it("keeps the assisted preview active while reporting it unsaved", () => {
+      const { hook } = mountAlignHook();
+
+      hook._handleApplyPreviewTransform({
+        generation: GENERATION,
+        center_lat: 40.71,
+        center_lon: -74.01,
+        scale_mpp: 0.3,
+        rotation_deg: 5,
+      });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(hook._previewActive).toBe(true);
+      expect(
+        hook.pushEvent.mock.calls.filter(
+          ([name]) => name === "alignment_preview_adjusted",
+        ),
+      ).toHaveLength(0);
     });
 
     it("reports unsaved false after a map recenter", () => {
@@ -4084,7 +4124,11 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: false },
+        {
+          generation: GENERATION,
+          unsaved: false,
+          alignment: NUMERIC_ALIGNMENT,
+        },
       ]);
     });
 
@@ -4097,7 +4141,11 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: false },
+        {
+          generation: GENERATION,
+          unsaved: false,
+          alignment: NUMERIC_ALIGNMENT,
+        },
       ]);
     });
 
@@ -4110,7 +4158,7 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       vi.advanceTimersByTime(DEBOUNCE_MS);
 
       expect(invalidationPayloads(hook)).toEqual([
-        { generation: GENERATION, unsaved: true },
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
       ]);
     });
 
@@ -4141,6 +4189,95 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
 
       expect(hook._transformInvalidationTimer).toBeNull();
       expect(invalidationPayloads(hook)).toEqual([]);
+    });
+  });
+
+  describe("alignment in the debounced payload", () => {
+    // The fixture pins every input _computeAlignment reads: a 300x150 Leaflet
+    // box centred on container point (150, 75), a stub projection returning
+    // {lat: y, lng: x}, one metre per canvas pixel, and a 1000x800 image that
+    // object-contains to 187.5 rendered px (0.1875 m per natural pixel at
+    // scale 1). A fine "left" nudge moves the centre to container x = 148.
+    it("carries the computed alignment for the reported transform", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 148,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
+    });
+
+    it("carries the last transform of a coalesced window, not the first", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(100);
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 146,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
+    });
+
+    it("omits the alignment key when the floorplan image is not loaded", () => {
+      const { hook } = mountAlignHook();
+      Object.defineProperty(document.getElementById("active-img"), "complete", {
+        value: false,
+        configurable: true,
+      });
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      const [payload] = invalidationPayloads(hook);
+      expect(Object.keys(payload).sort()).toEqual(["generation", "unsaved"]);
+      expect(payload).toEqual({ generation: GENERATION, unsaved: true });
+    });
+
+    it("carries the alignment again after a review cancels a pending window", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      document
+        .getElementById("map-alignment-apply")
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 146,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
     });
   });
 });
