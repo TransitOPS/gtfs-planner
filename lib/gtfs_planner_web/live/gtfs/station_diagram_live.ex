@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.DiagramUploadValidator
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage, as: JournalPhotoStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope, as: JournalScope
@@ -213,6 +214,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:map_generation, "unmounted")
      |> assign(:map_state, :initializing)
      |> assign(:alignment_preview, nil)
+     |> assign(:alignment_fit, nil)
      |> assign(:alignment_unsaved?, false)
      |> assign(:coordinate_review, nil)
      |> assign(:review_transform, nil)
@@ -1116,6 +1118,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   map_generation={@map_generation}
                   map_state={@map_state}
                   alignment_preview={@alignment_preview}
+                  alignment_fit={@alignment_fit}
                   alignment_unsaved?={@alignment_unsaved?}
                   coordinate_review={@coordinate_review}
                   review_transform={@review_transform}
@@ -3000,7 +3003,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     # fence; this event is never trusted as a guarantee (INV-4).
     #
     # On a current generation the event also carries the operator-dirty signal
-    # for `alignment_unsaved?` (INV-09D-3). A stale generation sets nothing.
+    # for `alignment_unsaved?` (INV-09D-3) and, when the floorplan image has
+    # loaded, the transform to score for `alignment_fit`. A stale generation
+    # sets nothing.
     cond do
       not current_map_generation?(socket, generation) ->
         {:noreply, socket}
@@ -3009,6 +3014,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> mark_alignment_unsaved(params)
+         |> score_alignment_fit(params)
          |> assign(:coordinate_review, nil)
          |> assign(:review_transform, nil)
          |> assign(:coordinate_review_error, nil)
@@ -3018,10 +3024,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> mark_alignment_unsaved(params)
+         |> score_alignment_fit(params)
          |> assign(:coordinate_review_status, nil)}
 
       true ->
-        {:noreply, mark_alignment_unsaved(socket, params)}
+        {:noreply, socket |> mark_alignment_unsaved(params) |> score_alignment_fit(params)}
     end
   end
 
@@ -4441,6 +4448,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:floorplan_image_w, nil)
     |> assign(:floorplan_image_h, nil)
     |> assign(:alignment_preview, nil)
+    # A measured fit describes one level's floorplan against one level's
+    # anchors, so it cannot survive a level, mode, or version change. It is
+    # deliberately not cleared by restore or save: neither changes the anchors,
+    # and the next debounced event re-scores the transform anyway.
+    |> assign(:alignment_fit, nil)
     |> assign(:alignment_unsaved?, false)
     |> assign(:coordinate_review, nil)
     |> assign(:review_transform, nil)
@@ -4466,6 +4478,92 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       socket
     end
   end
+
+  # Fit quality is advisory. It is measured here and rendered by
+  # `#map-alignment-residual`; it appears in no `disabled` expression and gates
+  # neither `#map-alignment-save` nor `#map-alignment-apply` (CRIT-005).
+  #
+  # A payload without an "alignment" key is normal, not an error: the hook omits
+  # it whenever `_computeAlignment()` returns null, which is the ordinary state
+  # right after a level or mode switch while the floorplan image loads. The
+  # previous reading is left standing rather than blanked, and the hook's
+  # measuring state covers the interval.
+  defp score_alignment_fit(socket, %{"alignment" => alignment}) do
+    anchors = fit_anchor_points(socket)
+
+    fit =
+      case FloorplanTransform.residual_rmse_meters(
+             alignment_from_payload(alignment),
+             socket.assigns.floorplan_image_w,
+             socket.assigns.floorplan_image_h,
+             anchors
+           ) do
+        {:ok, %{rmse_meters: rmse, anchor_count: count}} ->
+          %{status: :ready, rmse_meters: rmse, anchor_count: count}
+
+        # The error carries no count by design, so the caller supplies the one
+        # it already has: every anchor this builder keeps projects successfully
+        # under a valid alignment, so the built count is the surviving count.
+        {:error, :insufficient_anchors} ->
+          %{status: :insufficient_anchors, anchor_count: length(anchors)}
+
+        # An unusable alignment or an image whose natural size has not arrived
+        # yet — the same condition that disables `#map-alignment-apply`. Neither
+        # is a crash and neither is a measurement.
+        {:error, _reason} ->
+          %{status: :unavailable}
+      end
+
+    assign(socket, :alignment_fit, fit)
+  end
+
+  defp score_alignment_fit(socket, _params), do: socket
+
+  # The payload arrives string-keyed from the client; `residual_rmse_meters/4`
+  # validates atom keys. A missing or non-numeric field falls through its
+  # `{:error, :invalid_alignment}` branch rather than raising.
+  defp alignment_from_payload(%{} = alignment) do
+    %{
+      center_lat: Map.get(alignment, "center_lat"),
+      center_lon: Map.get(alignment, "center_lon"),
+      scale_mpp: Map.get(alignment, "scale_mpp"),
+      rotation_deg: Map.get(alignment, "rotation_deg")
+    }
+  end
+
+  defp alignment_from_payload(_), do: %{}
+
+  # The anchors are the stops the `anchor_count` assign counts: on the active
+  # level with a diagram coordinate and a geographic position. A stop whose
+  # diagram coordinate does not normalize is dropped, so the list is exactly
+  # what `residual_rmse_meters/4` can score.
+  defp fit_anchor_points(socket) do
+    socket.assigns
+    |> Map.get(:child_stops_list, [])
+    |> Enum.filter(& &1.on_active_level)
+    |> Enum.flat_map(fn stop ->
+      with %{x: x, y: y} <- Coordinates.normalize_point(stop.diagram_coordinate),
+           lat when is_number(lat) <- anchor_coordinate(stop.stop_lat),
+           lon when is_number(lon) <- anchor_coordinate(stop.stop_lon) do
+        [%{x: x, y: y, lat: lat, lon: lon}]
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  # `stops.stop_lat`/`stop_lon` are `:decimal` columns and
+  # `residual_rmse_meters/4` requires `is_number/1` — it silently skips a
+  # `Decimal` anchor, which would report every level as short of anchors.
+  # Mirrors `Gtfs.direct_candidates_for/1`'s conversion. NaN and infinity have
+  # no float representation and are dropped rather than raised out of a
+  # debounced event.
+  defp anchor_coordinate(%Decimal{} = value) do
+    if Decimal.nan?(value) or Decimal.inf?(value), do: nil, else: Decimal.to_float(value)
+  end
+
+  defp anchor_coordinate(value) when is_number(value), do: value * 1.0
+  defp anchor_coordinate(_), do: nil
 
   # Package 08 step 4: review-vocabulary copy. The legacy preview helpers were
   # removed in the same cutover that wired this contract (INV-2).

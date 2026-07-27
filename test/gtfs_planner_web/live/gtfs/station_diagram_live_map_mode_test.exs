@@ -4517,6 +4517,490 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 7 — server-scored fit quality.
+  #
+  # A current-generation `alignment_transform_changed` carrying an `alignment`
+  # key scores that transform against the level's anchor stops and returns the
+  # measurement as `alignment_fit`, which `#map-alignment-residual` renders.
+  # The measurement is advisory: it appears in no `disabled` expression
+  # (CRIT-005), and every other behaviour of the handler is unchanged (AC-20).
+  #
+  # The anchors are real seeded stops, so `stop_lat`/`stop_lon` arrive as
+  # `Decimal`. `FloorplanTransform.residual_rmse_meters/4` requires `is_number/1`
+  # and silently skips a `Decimal` anchor, so an unconverted level of five
+  # anchors would report "Needs 3 anchors". That conversion is what the
+  # measured-value cases below pin.
+  # ---------------------------------------------------------------------------
+
+  @fit_image_w 1000
+  @fit_image_h 800
+
+  # The alignment the anchor stops are generated from, so a payload carrying it
+  # scores ~0 and any departure from it scores the departure.
+  @fit_alignment %{
+    center_lat: 40.7128,
+    center_lon: -74.0060,
+    scale_mpp: 0.35,
+    rotation_deg: 0.0
+  }
+
+  # FloorplanTransform measures 111_111 m per degree of latitude, so shifting
+  # the alignment centre north by these offsets displaces every projected anchor
+  # by 11.1111 m and 111.111 m — both above the 2.0 m tolerance.
+  @fit_offset_above_tolerance 0.0001
+  @fit_offset_far_above_tolerance 0.001
+
+  @fit_anchor_points [
+    %{x: 20.0, y: 30.0},
+    %{x: 70.0, y: 25.0},
+    %{x: 45.0, y: 75.0},
+    %{x: 15.0, y: 85.0},
+    %{x: 88.0, y: 60.0}
+  ]
+
+  defp fit_anchor_lat_lon(point) do
+    {:ok, {lat, lon}} =
+      FloorplanTransform.svg_to_lat_lon(@fit_alignment, @fit_image_w, @fit_image_h, point)
+
+    {lat, lon}
+  end
+
+  # The wire shape: string-keyed, exactly what MapAlignmentHook._computeAlignment
+  # attaches to the debounced payload.
+  defp fit_alignment_payload(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "center_lat" => @fit_alignment.center_lat,
+        "center_lon" => @fit_alignment.center_lon,
+        "scale_mpp" => @fit_alignment.scale_mpp,
+        "rotation_deg" => @fit_alignment.rotation_deg
+      },
+      overrides
+    )
+  end
+
+  defp fit_shifted_payload(offset),
+    do: fit_alignment_payload(%{"center_lat" => @fit_alignment.center_lat + offset})
+
+  defp fit_base_context(prefix) do
+    organization = organization_fixture()
+    user = user_fixture()
+
+    Accounts.create_user_org_membership(%{
+      user_id: user.id,
+      organization_id: organization.id,
+      roles: ["pathways_studio_editor"]
+    })
+
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "#{prefix}_STATION",
+        stop_name: "Fit Station",
+        location_type: 1
+      })
+
+    level =
+      level_fixture(organization.id, gtfs_version.id, %{
+        level_id: "#{prefix}_level",
+        level_name: "Fit Level",
+        level_index: 0.0
+      })
+
+    {:ok, stop_level} =
+      Gtfs.create_stop_level(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: station.id,
+        level_id: level.id
+      })
+
+    {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "#{prefix}-diagram.png")
+
+    %{
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    }
+  end
+
+  # Real seeded stops: `diagram_coordinate` is a string-keyed JSON map and
+  # `stop_lat`/`stop_lon` are `Decimal`, both exactly as they come back from the
+  # database on the production path.
+  defp create_fit_anchor_stops(context, points) do
+    points
+    |> Enum.with_index()
+    |> Enum.map(fn {point, index} ->
+      {lat, lon} = fit_anchor_lat_lon(point)
+
+      stop_fixture(context.organization.id, context.gtfs_version.id, %{
+        stop_id: "#{context.station.stop_id}_ANCHOR_#{index}",
+        stop_name: "Fit Anchor #{index}",
+        location_type: 0,
+        parent_station: context.station.stop_id,
+        level_id: context.level.level_id,
+        diagram_coordinate: %{"x" => point.x, "y" => point.y},
+        stop_lat: Decimal.from_float(Float.round(lat, 7)),
+        stop_lon: Decimal.from_float(Float.round(lon, 7))
+      })
+    end)
+  end
+
+  defp create_fit_unplaced_stop(context, suffix) do
+    stop_fixture(context.organization.id, context.gtfs_version.id, %{
+      stop_id: "#{context.station.stop_id}_#{suffix}",
+      stop_name: "Fit Unplaced #{suffix}",
+      location_type: 0,
+      parent_station: context.station.stop_id,
+      level_id: context.level.level_id,
+      diagram_coordinate: nil,
+      stop_lat: nil,
+      stop_lon: nil
+    })
+  end
+
+  defp mount_fit_align_without_image_size(context) do
+    %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } = context
+
+    conn = log_in_user(conn, user, organization: organization)
+
+    {:ok, view, _html} =
+      live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+    render_hook(view, "switch_mode", %{"mode" => "map"})
+
+    view
+  end
+
+  defp mount_fit_align(context) do
+    view = mount_fit_align_without_image_size(context)
+    set_image_natural_size(view, @fit_image_w, @fit_image_h)
+
+    view
+  end
+
+  defp fit_transform_changed(view, params),
+    do: map_event(view, "alignment_transform_changed", params)
+
+  defp fit_readout(view) do
+    document = parsed_document(view)
+
+    %{
+      state:
+        document
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.attribute("data-fit-state")
+        |> List.first(),
+      value:
+        document
+        |> LazyHTML.query("#map-alignment-residual-value")
+        |> LazyHTML.text()
+        |> String.trim(),
+      text:
+        document
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.text()
+        |> String.replace(~r/\s+/, " ")
+        |> String.trim()
+    }
+  end
+
+  describe "StationDiagramLive - align fit scoring" do
+    setup do
+      context = fit_base_context("FIT")
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      create_fit_unplaced_stop(context, "UNPLACED")
+
+      other_level =
+        level_fixture(context.organization.id, context.gtfs_version.id, %{
+          level_id: "FIT_other_level",
+          level_name: "Fit Other Level",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: context.organization.id,
+          gtfs_version_id: context.gtfs_version.id,
+          stop_id: context.station.id,
+          level_id: other_level.id
+        })
+
+      Map.put(context, :other_level, other_level)
+    end
+
+    test "a fresh align surface rests with no measurement", context do
+      view = mount_fit_align(context)
+
+      assert assigns(view).alignment_fit == nil
+      assert fit_readout(view).state == "unavailable"
+      assert fit_readout(view).value == "Move to measure"
+    end
+
+    test "a current-generation transform measures its alignment against the level's anchor stops",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert %{status: :ready, anchor_count: 5, rmse_meters: rmse} = assigns(view).alignment_fit
+      assert rmse < 0.05
+      assert fit_readout(view).state == "ready"
+      assert fit_readout(view).value == "0.0 m · 5 anchors"
+    end
+
+    test "an alignment displaced from its anchors names the tolerance in words", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_above_tolerance)
+      })
+
+      assert fit_readout(view).state == "ready"
+      assert fit_readout(view).value == "11.1 m · 5 anchors"
+      assert fit_readout(view).text =~ "Fit over 2.0 m"
+    end
+
+    test "a transform without an alignment key measures nothing on a resting surface", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"unsaved" => true})
+
+      assert assigns(view).alignment_fit == nil
+      assert fit_readout(view).value == "Move to measure"
+    end
+
+    test "a transform without an alignment key leaves a standing measurement untouched",
+         context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      measured = assigns(view).alignment_fit
+
+      fit_transform_changed(view, %{"unsaved" => true})
+
+      assert assigns(view).alignment_fit == measured
+      assert fit_readout(view).value == "0.0 m · 5 anchors"
+    end
+
+    test "a stale generation carrying an alignment measures nothing", context do
+      view = mount_fit_align(context)
+
+      render_hook(view, "alignment_transform_changed", %{
+        "generation" => "stale-generation",
+        "alignment" => fit_alignment_payload()
+      })
+
+      assert assigns(view).alignment_fit == nil
+    end
+
+    test "a stale generation does not overwrite a standing measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      measured = assigns(view).alignment_fit
+
+      render_hook(view, "alignment_transform_changed", %{
+        "generation" => "stale-generation",
+        "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
+      })
+
+      assert assigns(view).alignment_fit == measured
+    end
+
+    test "re-sending an identical alignment produces an identical measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      first = assigns(view).alignment_fit
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == first
+      assert fit_readout(view).value == "0.0 m · 5 anchors"
+    end
+
+    test "a later measurement replaces the earlier one", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_above_tolerance)
+      })
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert fit_readout(view).value == "0.0 m · 5 anchors"
+      refute fit_readout(view).text =~ "over 2.0 m"
+    end
+
+    test "save and review coordinate changes stay enabled at a fit far above tolerance",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
+      })
+
+      assert fit_readout(view).text =~ "Fit over 2.0 m"
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+      refute has_element?(view, "#map-alignment-preview-auto[disabled]")
+    end
+
+    test "a transform carrying an alignment but omitting unsaved is still treated as unsaved",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform carrying an alignment still invalidates an open coordinate review",
+         context do
+      view = mount_fit_align(context)
+      open_coordinate_review(view, fit_shifted_payload(@fit_offset_far_above_tolerance))
+      assert has_element?(view, "#coordinate-review-dialog")
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      refute has_element?(view, "#coordinate-review-dialog")
+
+      assert has_element?(
+               view,
+               "#coordinate-review-status",
+               "The alignment changed — review again."
+             )
+    end
+
+    test "the review-invalidating branch records the measurement too", context do
+      view = mount_fit_align(context)
+      open_coordinate_review(view, fit_shifted_payload(@fit_offset_far_above_tolerance))
+      assert has_element?(view, "#coordinate-review-dialog")
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert fit_readout(view).value == "0.0 m · 5 anchors"
+    end
+
+    test "leaving and re-entering align mode clears the measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert assigns(view).alignment_fit == nil
+      assert fit_readout(view).value == "Move to measure"
+    end
+
+    test "switching level clears the measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      render_hook(view, "switch_level", %{"level_id" => context.other_level.id})
+
+      assert assigns(view).alignment_fit == nil
+    end
+
+    test "a transform scored before the floorplan image size arrives reports no measurement",
+         context do
+      view = mount_fit_align_without_image_size(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == %{status: :unavailable}
+      assert fit_readout(view).state == "unavailable"
+      assert fit_readout(view).value == "Move to measure"
+    end
+
+    test "an alignment the server cannot validate reports no measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      fit_transform_changed(view, %{"alignment" => %{"center_lat" => "not-a-number"}})
+
+      assert assigns(view).alignment_fit == %{status: :unavailable}
+    end
+
+    test "floorplan dimensions reported as floats are still scored", context do
+      view = mount_fit_align_without_image_size(context)
+      set_image_natural_size(view, @fit_image_w * 1.0, @fit_image_h * 1.0)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert %{status: :ready, anchor_count: 5} = assigns(view).alignment_fit
+    end
+  end
+
+  describe "StationDiagramLive - align fit scoring below the anchor minimum" do
+    setup do
+      context = fit_base_context("FITMIN")
+      create_fit_anchor_stops(context, Enum.take(@fit_anchor_points, 2))
+
+      context
+    end
+
+    test "two usable anchors report the three-anchor requirement, never a bare zero", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == %{status: :insufficient_anchors, anchor_count: 2}
+      assert fit_readout(view).state == "insufficient"
+      assert fit_readout(view).value == "Needs 3 anchors"
+    end
+
+    test "an insufficient measurement leaves save and review coordinate changes enabled",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+    end
+  end
+
+  describe "StationDiagramLive - align fit scoring with no placed stops" do
+    setup do
+      context = fit_base_context("FITNONE")
+      create_fit_unplaced_stop(context, "UNPLACED")
+
+      context
+    end
+
+    test "a level with no placed stops reports the anchor requirement", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == %{status: :insufficient_anchors, anchor_count: 0}
+      assert fit_readout(view).value == "Needs 3 anchors"
+    end
+
+    test "a transform carrying an alignment still clears a standing no-changes status",
+         context do
+      view = mount_fit_align(context)
+      open_coordinate_review(view)
+      assert has_element?(view, "#coordinate-review-status", "No coordinate changes to review.")
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      refute has_element?(view, "#coordinate-review-status")
+    end
+  end
+
   # Ids of the Align control-strip controls. The strip is a sibling of the
   # `phx-hook="MapAlignment"` root rather than a container with a stable id, so
   # membership is resolved by id prefix and the map region's own handles are
