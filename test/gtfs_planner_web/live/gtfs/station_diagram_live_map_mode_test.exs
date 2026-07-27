@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Repo
+  alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
 
   # Coordinate review cases (Package 08 step 3) swap
   # :gtfs_planner, :reviewed_apply_transaction and may run the production
@@ -4330,6 +4331,189 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
                "#map-alignment-zoom-panel label[for='map-alignment-zoom']",
                "Map zoom"
              )
+    end
+  end
+
+  describe "StationDiagramLive - align residual readout" do
+    # The LiveView does not assign `alignment_fit` until the server-side scoring
+    # lands, so the four shapes are exercised against the production component
+    # directly. `render_component/2` is a harness, not production wiring: the
+    # markup under test is the same `~H` block `StationDiagramLive.render/1`
+    # renders.
+    defp render_map_canvas(overrides) do
+      base = [
+        organization_id: "00000000-0000-0000-0000-0000000000a1",
+        gtfs_version_id: "00000000-0000-0000-0000-0000000000b1",
+        station: %{stop_id: "RESIDUAL_STATION", stop_lat: 40.7128, stop_lon: -74.006},
+        map_generation: "residual-generation-1",
+        map_state: :ready,
+        anchor_count: 5,
+        child_stops_total: 6,
+        child_stops_with_geo: 5,
+        child_stops_with_floorplan: 5,
+        image_natural_width: 1000,
+        image_natural_height: 800
+      ]
+
+      render_component(
+        &StationDiagramComponents.map_canvas/1,
+        Keyword.merge(base, overrides)
+      )
+    end
+
+    defp residual_state(html),
+      do:
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.attribute("data-fit-state")
+        |> List.first()
+
+    defp residual_value(html),
+      do:
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual-value")
+        |> LazyHTML.text()
+        |> String.trim()
+
+    defp residual_text(html),
+      do:
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.text()
+        |> String.replace(~r/\s+/, " ")
+        |> String.trim()
+
+    test "renders a resting line, never a blank or a bare zero, before any measurement" do
+      html = render_map_canvas(alignment_fit: nil)
+
+      assert residual_state(html) == "unavailable"
+      assert residual_value(html) == "Move to measure"
+      refute residual_value(html) =~ ~r/^0(\.0)?( m)?$/
+    end
+
+    test "renders the resting line when a round trip could not score the alignment" do
+      html = render_map_canvas(alignment_fit: %{status: :unavailable})
+
+      assert residual_state(html) == "unavailable"
+      assert residual_value(html) == "Move to measure"
+    end
+
+    test "renders the metre value to one decimal and the anchor count within tolerance" do
+      html =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.437, anchor_count: 5})
+
+      assert residual_state(html) == "ready"
+      assert residual_value(html) == "1.4 m · 5 anchors"
+      assert residual_text(html) == "Measured fit 1.4 m · 5 anchors"
+    end
+
+    test "singularizes the anchor count when one anchor survived" do
+      html =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 0.25, anchor_count: 1})
+
+      assert residual_value(html) == "0.3 m · 1 anchor"
+    end
+
+    test "names the 2.0 m tolerance in text above the threshold, not by colour alone" do
+      above =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 3.62, anchor_count: 5})
+
+      within =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 2.0, anchor_count: 5})
+
+      assert residual_text(above) == "Fit over 2.0 m 3.6 m · 5 anchors"
+      assert residual_state(above) == "ready"
+
+      # 2.0 m exactly is the bar AlignmentInference accepts, so it is not banded.
+      refute residual_text(within) =~ "over 2.0 m"
+      assert residual_text(within) =~ "Measured fit"
+      assert residual_value(within) == "2.0 m · 5 anchors"
+    end
+
+    test "names the three-anchor requirement instead of a number below three anchors" do
+      html = render_map_canvas(alignment_fit: %{status: :insufficient_anchors, anchor_count: 2})
+
+      assert residual_state(html) == "insufficient"
+      assert residual_value(html) == "Needs 3 anchors"
+      refute residual_value(html) =~ ~r/\dm|\d m/
+    end
+
+    test "keeps the readout on tabular numerals so the value does not reflow as it changes" do
+      # `tabular-nums` is the only DOM expression of the no-reflow requirement,
+      # so it is asserted directly rather than through a rendered measurement.
+      classes =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.0, anchor_count: 4})
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual-value")
+        |> LazyHTML.attribute("class")
+        |> List.first()
+
+      assert classes =~ "tabular-nums"
+    end
+
+    test "renders the readout inside the commit bar, exactly once" do
+      html =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.0, anchor_count: 4})
+
+      document = LazyHTML.from_fragment(html)
+
+      for id <- ["map-alignment-residual", "map-alignment-residual-value"] do
+        assert document |> LazyHTML.query("#map-alignment-commit-bar ##{id}") |> Enum.count() == 1
+        assert document |> LazyHTML.query("##{id}") |> Enum.count() == 1
+      end
+    end
+
+    test "never renders the in-flight state the hook owns" do
+      # data-fit-state has four values; "measuring" is written by the hook at
+      # schedule time and must never arrive from the server, or a resolved
+      # measurement would be presented as still in flight.
+      for fit <- [
+            nil,
+            %{status: :unavailable},
+            %{status: :insufficient_anchors, anchor_count: 2},
+            %{status: :ready, rmse_meters: 1.0, anchor_count: 4},
+            %{status: :ready, rmse_meters: 9.0, anchor_count: 4}
+          ] do
+        assert residual_state(render_map_canvas(alignment_fit: fit)) in [
+                 "ready",
+                 "insufficient",
+                 "unavailable"
+               ]
+      end
+    end
+
+    test "leaves save and review coordinate changes enabled at every fit value" do
+      for fit <- [
+            nil,
+            %{status: :unavailable},
+            %{status: :insufficient_anchors, anchor_count: 0},
+            %{status: :ready, rmse_meters: 0.4, anchor_count: 8},
+            %{status: :ready, rmse_meters: 2.0, anchor_count: 8},
+            %{status: :ready, rmse_meters: 42.5, anchor_count: 8}
+          ] do
+        document = render_map_canvas(alignment_fit: fit) |> LazyHTML.from_fragment()
+
+        for id <- ["map-alignment-save", "map-alignment-apply"] do
+          assert document |> LazyHTML.query("##{id}[disabled]") |> Enum.count() == 0,
+                 "#{id} became disabled at fit #{inspect(fit)}; the readout is advisory"
+        end
+      end
+    end
+
+    test "keeps the fatal-state disable expressions independent of the fit" do
+      document =
+        render_map_canvas(
+          map_state: :fatal,
+          alignment_fit: %{status: :ready, rmse_meters: 0.1, anchor_count: 9}
+        )
+        |> LazyHTML.from_fragment()
+
+      for id <- ["map-alignment-save", "map-alignment-apply", "map-alignment-preview-auto"] do
+        assert document |> LazyHTML.query("##{id}[disabled]") |> Enum.count() == 1
+      end
     end
   end
 

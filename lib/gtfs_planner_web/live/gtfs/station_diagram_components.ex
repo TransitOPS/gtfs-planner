@@ -756,6 +756,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :map_state, :atom, default: :initializing
   attr :alignment_preview, :map, default: nil
   attr :alignment_unsaved?, :boolean, default: false
+  # Measured fit of the operator's current placement, scored server-side from
+  # FloorplanTransform.residual_rmse_meters/4. `nil` until a scoring round trip
+  # resolves, which is also the resting state on first render.
+  #   nil
+  # | %{status: :ready, rmse_meters: float(), anchor_count: pos_integer()}
+  # | %{status: :insufficient_anchors, anchor_count: non_neg_integer()}
+  # | %{status: :unavailable}
+  attr :alignment_fit, :map, default: nil
   attr :coordinate_review, :map, default: nil
   attr :review_transform, :map, default: nil
   attr :coordinate_review_status, :string, default: nil
@@ -845,6 +853,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
       |> assign(:zoom_close, zoom_close)
       |> assign(:zoom_dismiss, JS.focus(zoom_close, to: "#map-alignment-zoom-trigger"))
+      |> assign(:residual_readout, residual_readout(assigns.alignment_fit))
+      # While a scoring round trip is in flight the hook swaps the value's text
+      # for "Measuring…" and sets data-fit-state="measuring" on the container.
+      # The band it replaces must go with it: a warning colour left standing
+      # over "Measuring…" is exactly the stale verdict read as current that this
+      # readout exists to prevent. Both lines therefore fall back to the neutral
+      # readout role for that one attribute value, so the hook still writes only
+      # text and a presentational attribute and never touches a class.
+      |> assign(
+        :measuring_class,
+        "group-data-[fit-state=measuring]:font-normal group-data-[fit-state=measuring]:text-base-content/70"
+      )
       |> assign_review_projection()
 
     ~H"""
@@ -1083,6 +1103,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   class="btn btn-sm btn-outline btn-primary min-h-11 shrink-0 phx-click-loading:opacity-60"
                   phx-click="preview_alignment"
                   phx-disable-with="Previewing…"
+                  title="Infers the alignment from stops that already have both a floorplan position and map coordinates"
                   disabled={
                     @map_state == :fatal or
                       invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
@@ -1095,7 +1116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   Preview auto-alignment
                 </button>
                 <p class="min-w-0 text-xs text-base-content/70">
-                  Uses {@anchor_count} stops that already have floorplan and map positions.
+                  Uses {@anchor_count} anchor stops.
                 </p>
               </div>
               <p
@@ -1242,6 +1263,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   />
                 </div>
               </div>
+            </div>
+
+            <div
+              id="map-alignment-residual"
+              data-fit-state={@residual_readout.state}
+              class="group flex shrink-0 flex-col"
+            >
+              <span class={[
+                "text-xs whitespace-nowrap",
+                @residual_readout.label_class,
+                @measuring_class
+              ]}>
+                {@residual_readout.label}
+              </span>
+              <span
+                id="map-alignment-residual-value"
+                class={[
+                  "text-xs tabular-nums whitespace-nowrap",
+                  @residual_readout.value_class,
+                  @measuring_class
+                ]}
+              >
+                {@residual_readout.value}
+              </span>
             </div>
 
             <div
@@ -1395,6 +1440,83 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp invalid_floorplan_image_dims?(width, height),
     do: not (is_integer(width) and width > 0 and is_integer(height) and height > 0)
+
+  # `#map-alignment-residual` reports the measured fit of whatever the operator
+  # has placed. Every shape of the assign resolves to a rendered line, because a
+  # blank readout or a bare `0` next to Save alignment reads as "the fit is
+  # fine" — the exact misreading this element exists to prevent.
+  #
+  # 2.0 m is the same bar `AlignmentInference`'s `@max_rmse_meters` enforces on
+  # an *inferred* fit, and 3 the same floor as its `anchor_minimum/0` and
+  # `FloorplanTransform`'s `@fit_anchor_minimum`. Both are restated here rather
+  # than imported: this module has no inference dependency and gains none.
+  # `check_residual/1` rejects `rmse > 2.0`, so 2.0 exactly is within tolerance.
+  @fit_tolerance_meters 2.0
+  @fit_anchor_minimum 3
+
+  # Two stacked lines: the label states the verdict, the value carries the
+  # numbers. The band is therefore legible in monochrome — an out-of-tolerance
+  # fit reads "Fit over 2.0 m" whether or not the warning colour lands — and
+  # every state keeps the same two-line shape and width class, so the block
+  # neither jitters nor grows the 44 px control row.
+  #
+  # `state` feeds `data-fit-state` and is only ever one of the three resolved
+  # values. The hook overwrites it with "measuring" while a scoring round trip
+  # is in flight, which the markup already styles, so the hook only has to set
+  # the attribute and the value's text.
+  defp residual_readout(%{status: :ready, rmse_meters: rmse, anchor_count: count})
+       when is_number(rmse) and is_integer(count) do
+    reading = "#{format_meters(rmse)} m · #{anchor_count_phrase(count)}"
+
+    if rmse > @fit_tolerance_meters do
+      %{
+        state: "ready",
+        label: "Fit over #{format_meters(@fit_tolerance_meters)} m",
+        value: reading,
+        label_class: "font-medium text-warning",
+        value_class: "font-medium text-warning"
+      }
+    else
+      %{
+        state: "ready",
+        label: "Measured fit",
+        value: reading,
+        label_class: "text-base-content/70",
+        value_class: "text-base-content"
+      }
+    end
+  end
+
+  # The count of usable anchors is not repeated here: the assisted cluster
+  # immediately to the left already renders it, and two counts a few pixels
+  # apart invite the reader to look for a difference that does not exist.
+  defp residual_readout(%{status: :insufficient_anchors}) do
+    %{
+      state: "insufficient",
+      label: "Measured fit",
+      value: "Needs #{@fit_anchor_minimum} anchors",
+      label_class: "text-base-content/70",
+      value_class: "text-base-content/70"
+    }
+  end
+
+  # `nil` (nothing measured yet) and `:unavailable` (a round trip that could not
+  # score) share one resting line: in both cases no measurement exists, and the
+  # operator's next move is the same.
+  defp residual_readout(_fit) do
+    %{
+      state: "unavailable",
+      label: "Measured fit",
+      value: "Move to measure",
+      label_class: "text-base-content/70",
+      value_class: "text-base-content/70"
+    }
+  end
+
+  defp format_meters(value), do: :erlang.float_to_binary(value * 1.0, decimals: 1)
+
+  defp anchor_count_phrase(1), do: "1 anchor"
+  defp anchor_count_phrase(count), do: "#{count} anchors"
 
   defp map_controls_disabled_reason(:fatal, _width, _height),
     do: "Map service is unavailable. Retry the map before saving or previewing coordinates."

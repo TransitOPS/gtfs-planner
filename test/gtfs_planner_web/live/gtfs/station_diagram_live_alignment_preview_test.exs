@@ -718,7 +718,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
 
       assert has_element?(view, "#map-alignment-preview-auto")
       assert has_element?(view, "#map-alignment-commit-bar #map-alignment-preview-auto")
-      assert has_element?(view, "#map-alignment-commit-bar", "Uses 3 stops")
+      assert has_element?(view, "#map-alignment-commit-bar", "Uses 3 anchor stops")
 
       assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved")
 
@@ -806,7 +806,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
 
       view = mount_map_view(context)
 
-      assert has_element?(view, "#map-alignment-commit-bar", "Uses 1 stops")
+      assert has_element?(view, "#map-alignment-commit-bar", "Uses 1 anchor stops")
       refute has_element?(view, "#map-alignment-preview-auto[disabled]")
     end
 
