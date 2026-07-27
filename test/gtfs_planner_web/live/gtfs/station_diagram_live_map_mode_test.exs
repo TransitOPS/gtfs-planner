@@ -3806,7 +3806,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert has_element?(view, "#map-alignment-workspace #map-alignment-tools")
       refute has_element?(view, "[phx-update='ignore'] #map-alignment-tools")
-      refute has_element?(view, "#map-alignment-tools [phx-update='ignore']")
+
+      # The panel stays patchable so the server keeps owning `disabled`. The one
+      # exception is the opacity slider: its value is client state, and a patch
+      # that restored the rendered `value` would snap the thumb back to 70%
+      # while the overlay kept the operator's setting. #map-alignment-zoom
+      # carries the same protection for the same reason.
+      assert ignored_ids_within(view, "#map-alignment-tools") == ["map-alignment-opacity"]
     end
 
     test "the five removed control groups no longer render", context do
@@ -3909,13 +3915,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-tools #map-other-overlays-opacity")
     end
 
-    test "the instruction copy names dragging, keyboard nudging, and hold-to-hide", context do
+    test "the help overlay opens from its trigger and dismisses back to it", context do
       view = mount_map_align(context)
-      html = render(view)
 
-      assert html =~ "Drag to move the floorplan"
-      assert html =~ "arrow keys"
-      assert html =~ "Hold H"
+      # The overlay follows the popover idiom: hidden until asked for, dismissed
+      # by Escape or a click away, and the dismiss returns focus to the trigger
+      # only while the trigger reports itself open.
+      assert has_element?(view, "#map-alignment-help-panel[phx-click-away]")
+      assert has_element?(view, "#map-alignment-help-panel[phx-window-keydown][phx-key='escape']")
+      assert has_element?(view, "#map-alignment-help-panel[role='dialog']")
+      assert has_element?(view, "#map-alignment-help-trigger[phx-click]")
+      assert has_element?(view, "#map-alignment-help-close[phx-click]")
+
+      assert align_containers_of(view, ["#map-alignment-help-close"]) == %{
+               "#map-alignment-help-close" => "map-alignment-help-panel"
+             }
+    end
+
+    test "the help overlay is a sibling of the ignored canvas, not a child", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-workspace #map-alignment-help-panel")
+      refute has_element?(view, "[phx-update='ignore'] #map-alignment-help-panel")
+    end
+
+    test "the help overlay names dragging, keyboard nudging, and hold-to-hide", context do
+      view = mount_map_align(context)
+
+      # The guidance moved off the commit bar and onto the surface it describes.
+      # It renders hidden until the operator asks for it, so the copy is
+      # asserted inside the panel rather than anywhere in the document.
+      refute render(view) =~ "Drag to move the floorplan, or nudge it"
+
+      help = element_text(view, "#map-alignment-help-panel")
+
+      assert help =~ "Drag the floorplan"
+      assert help =~ "arrow keys"
+      assert help =~ "Hold H"
+      assert help =~ "Restore saved alignment"
+
+      assert has_element?(view, "#map-alignment-help-panel[style='display: none;']")
+      assert has_element?(view, "#map-alignment-help-trigger[aria-expanded='false']")
+
+      assert has_element?(
+               view,
+               "#map-alignment-help-trigger[aria-controls='map-alignment-help-panel']"
+             )
     end
   end
 
@@ -4784,6 +4829,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   @align_containers [
     "map-alignment-center-panel",
     "map-alignment-zoom-panel",
+    "map-alignment-help-panel",
     "map-alignment-tools",
     "map-alignment-commit-bar"
   ]
@@ -5014,7 +5060,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert has_element?(
                view,
-               "#map-other-overlays-opacity[title='Other-levels opacity · 70%']"
+               "#map-other-overlays-opacity-tip[data-tip='Other-levels opacity · 70%']"
              )
     end
 
@@ -5090,7 +5136,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # to write; the server renders the expanded one on every patch, so a
       # server-rendered "Show tools" would invert the control for anyone who
       # never clicks it.
-      assert has_element?(view, "#map-alignment-tools-toggle[title='Hide tools']")
+      assert has_element?(view, "#map-alignment-tools-toggle[data-tip='Hide tools']")
       assert has_element?(view, "#map-alignment-tools-toggle[aria-label='Hide tools']")
       assert has_element?(view, "#map-alignment-tools-toggle[data-collapsed='false']")
     end
@@ -5125,7 +5171,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # position is the at-a-glance reading, so no readout sits beside them.
       refute has_element?(view, "#map-alignment-opacity-value")
 
-      assert has_element?(view, "#map-alignment-opacity[title='Floorplan opacity · 70%']")
+      assert has_element?(view, "#map-alignment-opacity-tip[data-tip='Floorplan opacity · 70%']")
       assert element_text(view, "#map-alignment-zoom-value") == "19.0"
     end
 
@@ -5141,12 +5187,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert has_element?(
                view,
-               "#map-transform-rotate-left-fine[title='Rotate floorplan left · 1° (Shift 5°)']"
+               "#map-transform-rotate-left-fine[data-tip='Rotate floorplan left · 1° (Shift 5°)']"
              )
 
       assert has_element?(
                view,
-               "#map-transform-scale-up-fine[title='Grow floorplan · 1% (Shift 10%)']"
+               "#map-transform-scale-up-fine[data-tip='Grow floorplan · 1% (Shift 10%)']"
              )
     end
 
@@ -5407,9 +5453,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     |> Enum.map(fn control ->
       {first_attribute(control, "id"),
        {first_attribute(control, "data-map-transform-action"),
-        first_attribute(control, "data-map-transform-coarse"), first_attribute(control, "title")}}
+        first_attribute(control, "data-map-transform-coarse"),
+        first_attribute(control, "data-tip")}}
     end)
     |> Map.new()
+  end
+
+  # Ids of every patch-ignored element inside the given container, so a new
+  # exclusion has to be stated rather than slipping in.
+  defp ignored_ids_within(view, container) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("#{container} [phx-update='ignore']")
+    |> Enum.map(&first_attribute(&1, "id"))
   end
 
   defp element_text(view, selector) do

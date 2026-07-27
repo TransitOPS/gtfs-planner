@@ -1581,7 +1581,7 @@ const MapAlignmentHook = {
     // tooltip and label that name what the next click will do.
     const label = this._toolsCollapsed ? TOOLS_SHOW_LABEL : TOOLS_HIDE_LABEL;
     toggle.setAttribute("data-collapsed", String(this._toolsCollapsed));
-    toggle.setAttribute("title", label);
+    toggle.setAttribute("data-tip", label);
     toggle.setAttribute("aria-label", label);
   },
 
@@ -1903,10 +1903,13 @@ const MapAlignmentHook = {
     }
   },
 
+  // The tooltip lives on the slider's wrapper, not the slider: an <input> is a
+  // replaced element and cannot render the ::before/::after the tooltip uses.
   // The element is optional for the same reason _writeReadout's is.
   _writeSliderTooltip(slider, label, value) {
-    if (!slider) return;
-    slider.setAttribute("title", `${label} · ${Math.round(value * 100)}%`);
+    const tip = slider?.closest(".tooltip");
+    if (!tip) return;
+    tip.setAttribute("data-tip", `${label} · ${Math.round(value * 100)}%`);
   },
 
   _pushAlignmentEventIfValid(eventName, beforePush) {

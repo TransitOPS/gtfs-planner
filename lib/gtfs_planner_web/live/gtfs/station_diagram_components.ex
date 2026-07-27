@@ -867,6 +867,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
       |> assign(:zoom_window_dismiss, zoom_window_dismiss)
       |> assign(:zoom_dismiss, JS.focus(zoom_close, to: "#map-alignment-zoom-trigger"))
+      |> assign(
+        :help_open,
+        JS.toggle(to: "#map-alignment-help-panel")
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"},
+          to: "#map-alignment-help-trigger"
+        )
+      )
+      |> assign(
+        :help_dismiss,
+        JS.focus(to: "#map-alignment-help-trigger[aria-expanded='true']")
+        |> JS.hide(to: "#map-alignment-help-panel")
+        |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-help-trigger")
+      )
       |> assign(:residual_readout, residual_readout(assigns.alignment_fit))
       # While a scoring round trip is in flight the hook swaps the value's text
       # for "Measuring…" and sets data-fit-state="measuring" on the container.
@@ -968,30 +981,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
         <div
           id="map-alignment-tools"
-          class="absolute z-20 top-4 left-4 flex w-auto max-h-[calc(100%-2rem)] flex-col gap-1 overflow-y-auto bg-base-100 border border-base-300 rounded-lg shadow-md p-1"
+          class="absolute z-20 top-4 left-4 flex w-auto max-h-[calc(100%-2rem)] flex-col gap-1 bg-base-100 border border-base-300 rounded-lg shadow-md p-1"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-1 px-0.5">
             <button
               id="map-alignment-restore-saved"
               type="button"
-              class="btn btn-ghost btn-square h-11 w-11 min-h-11 text-primary disabled:text-base-content/30"
+              class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-primary disabled:text-base-content/30"
               phx-click="restore_saved_alignment"
               disabled={not @alignment_unsaved?}
-              title="Restore saved alignment"
+              data-tip="Restore saved alignment"
               aria-label="Restore saved alignment"
             >
-              <.icon name="hero-arrow-path" class="w-5 h-5" />
+              <.icon name="hero-arrow-path" class="w-4 h-4" />
             </button>
-            <button
-              id="map-alignment-tools-toggle"
-              type="button"
-              class="btn btn-ghost btn-square h-11 w-11 min-h-11 text-base-content/70"
-              data-collapsed="false"
-              title="Hide tools"
-              aria-label="Hide tools"
-            >
-              <.icon name="hero-chevron-up" class="w-5 h-5" />
-            </button>
+            <div class="flex items-center gap-1">
+              <button
+                id="map-alignment-help-trigger"
+                type="button"
+                class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+                data-tip="How the align tools work"
+                aria-label="How the align tools work"
+                aria-expanded="false"
+                aria-controls="map-alignment-help-panel"
+                phx-click={@help_open}
+              >
+                <.icon name="hero-question-mark-circle" class="w-4 h-4" />
+              </button>
+              <button
+                id="map-alignment-tools-toggle"
+                type="button"
+                class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+                data-collapsed="false"
+                data-tip="Hide tools"
+                aria-label="Hide tools"
+              >
+                <.icon name="hero-chevron-up" class="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           <%!-- All eight transform controls in one pad: the cross moves, the top
@@ -999,57 +1026,71 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           operation, plain step and Shift step in `title`, so the pad needs no
           row labels and no live readouts — the floorplan itself, and the
           residual metres in the commit bar, are the feedback that matters. --%>
-          <div class="grid w-fit grid-cols-[repeat(3,2.75rem)] gap-px overflow-hidden rounded-md border border-base-300 bg-base-300">
-            <.transform_button control={transform_control("rotate-left")} />
+          <%!-- The pad rounds its own corner cells rather than clipping the grid:
+          an `overflow-hidden` here would also clip every button's tooltip. --%>
+          <div class="grid w-fit grid-cols-[repeat(3,2.75rem)] gap-px rounded-md border border-base-300 bg-base-300">
+            <.transform_button control={transform_control("rotate-left")} class="rounded-tl-md" />
             <.transform_button control={transform_control("up")} />
-            <.transform_button control={transform_control("rotate-right")} />
+            <.transform_button control={transform_control("rotate-right")} class="rounded-tr-md" />
             <.transform_button control={transform_control("left")} />
             <div class="h-11 w-11 bg-base-100"></div>
             <.transform_button control={transform_control("right")} />
-            <.transform_button control={transform_control("scale-down")} />
+            <.transform_button control={transform_control("scale-down")} class="rounded-bl-md" />
             <.transform_button control={transform_control("down")} />
-            <.transform_button control={transform_control("scale-up")} />
+            <.transform_button control={transform_control("scale-up")} class="rounded-br-md" />
           </div>
 
           <div class="flex h-9 w-[8.5rem] items-center gap-1.5 px-1">
             <label
               for="map-alignment-opacity"
-              class="shrink-0 text-base-content/60"
-              title="Floorplan opacity"
+              class="tooltip tooltip-right shrink-0 text-base-content/60"
+              data-tip="Floorplan opacity"
             >
               <.icon name="hero-photo" class="w-4 h-4" />
             </label>
-            <input
-              id="map-alignment-opacity"
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value="0.7"
-              class="range range-xs min-w-0 flex-1 text-base-content/40"
-              title="Floorplan opacity · 70%"
-            />
+            <div
+              id="map-alignment-opacity-tip"
+              class="tooltip tooltip-right min-w-0 flex-1"
+              data-tip="Floorplan opacity · 70%"
+            >
+              <input
+                id="map-alignment-opacity"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.7"
+                phx-update="ignore"
+                class="range range-xs w-full text-base-content/40"
+              />
+            </div>
           </div>
 
           <%= if @other_levels_floorplan_count >= 1 do %>
             <div class="flex h-9 w-[8.5rem] items-center gap-1.5 px-1">
               <label
                 for="map-other-overlays-opacity"
-                class="shrink-0 text-base-content/60"
-                title="Other-levels opacity"
+                class="tooltip tooltip-right shrink-0 text-base-content/60"
+                data-tip="Other-levels opacity"
               >
                 <.icon name="hero-square-3-stack-3d" class="w-4 h-4" />
               </label>
-              <input
-                id="map-other-overlays-opacity"
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value="0.7"
-                class="range range-xs min-w-0 flex-1 text-base-content/40"
-                title="Other-levels opacity · 70%"
-              />
+              <div
+                id="map-other-overlays-opacity-tip"
+                class="tooltip tooltip-right min-w-0 flex-1"
+                data-tip="Other-levels opacity · 70%"
+              >
+                <input
+                  id="map-other-overlays-opacity"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value="0.7"
+                  phx-update="ignore"
+                  class="range range-xs w-full text-base-content/40"
+                />
+              </div>
             </div>
           <% end %>
         </div>
@@ -1063,13 +1104,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           <strong class="font-medium">Unsaved auto-alignment preview</strong>
         </div>
+        <%!-- In-app help for the align surface, opened from the tools panel.
+        A bounded card rather than a full-bleed scrim, so the floorplan stays
+        visible and draggable behind it while the operator reads. --%>
+        <div
+          id="map-alignment-help-panel"
+          role="dialog"
+          aria-label="How the align tools work"
+          phx-click-away={@help_dismiss}
+          phx-window-keydown={@help_dismiss}
+          phx-key="escape"
+          style="display: none;"
+          class="absolute z-30 top-4 left-1/2 -translate-x-1/2 w-[26rem] max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-sm"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <h2 class="text-sm font-semibold">Aligning the floorplan</h2>
+            <button
+              id="map-alignment-help-close"
+              type="button"
+              class="btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+              aria-label="Close help"
+              phx-click={@help_dismiss}
+            >
+              <.icon name="hero-x-mark" class="w-4 h-4" />
+            </button>
+          </div>
+
+          <p class="mt-1 text-xs text-base-content/70">
+            Move the floorplan until its walls sit over the same walls in the imagery.
+          </p>
+
+          <dl class="mt-3 flex flex-col gap-2 text-xs">
+            <div :for={item <- align_help_items()} class="flex gap-3">
+              <dt class="w-24 shrink-0 font-medium text-base-content/80">{item.term}</dt>
+              <dd class="min-w-0 text-base-content/70">{item.description}</dd>
+            </div>
+          </dl>
+
+          <p class="mt-3 text-xs text-base-content/60">
+            Hold <kbd class="kbd kbd-xs">Shift</kbd>
+            with any nudge — button or key — to move ten times as far.
+          </p>
+        </div>
       </div>
       <div class="pt-3 pb-4">
-        <p class="text-xs text-base-content/70">
-          Drag to move the floorplan, or nudge it with the arrow keys. Use the handles to rotate and resize. Hold H to hide the floorplan and check the map underneath.
-        </p>
-
-        <div id="map-alignment-commit-bar" class="mt-3 flex flex-col gap-2">
+        <div id="map-alignment-commit-bar" class="flex flex-col gap-2">
           <div class="flex flex-wrap items-baseline gap-x-8 gap-y-1">
             <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
               {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
@@ -1607,6 +1686,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ]
   end
 
+  # The align surface's in-app help. One entry per way the floorplan can be
+  # moved, each naming both the pointer route and the keyboard route, so the
+  # help answers "how do I do this" rather than listing controls.
+  defp align_help_items do
+    [
+      %{
+        term: "Move",
+        description: "Drag the floorplan, use the pad's arrows, or press the arrow keys."
+      },
+      %{
+        term: "Rotate",
+        description:
+          "Use the pad's top corners, the handle at the map's top right, or press [ and ]."
+      },
+      %{
+        term: "Resize",
+        description:
+          "Use the pad's bottom corners, the handle at the map's bottom right, or press − and +."
+      },
+      %{
+        term: "Check the fit",
+        description:
+          "Hold H to blank the floorplan and see the imagery underneath. Measured fit, below the map, reports how far the anchor stops land from their mapped positions."
+      },
+      %{
+        term: "Fade",
+        description: "Drag the opacity slider to see both the floorplan and the imagery at once."
+      },
+      %{
+        term: "Start over",
+        description: "Restore saved alignment discards every unsaved change."
+      }
+    ]
+  end
+
   defp transform_control(action) do
     Enum.find(transform_controls(), &(&1.action == action))
   end
@@ -1621,6 +1735,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       type="button"
       class={
         [
+          "tooltip tooltip-right",
           "btn btn-ghost h-11 w-11 min-h-11 min-w-11 rounded-none p-0 text-base",
           "bg-base-100 hover:bg-base-200",
           # The pad clips its corners, which would clip an outward focus ring on
@@ -1631,7 +1746,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       }
       data-map-transform-action={@control.action}
       data-map-transform-coarse={to_string(@control.coarse)}
-      title={@control.title}
+      data-tip={@control.title}
+      aria-label={@control.title}
     >
       {@control.label}
     </button>

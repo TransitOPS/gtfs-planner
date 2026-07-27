@@ -3806,10 +3806,14 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
         <button id="map-alignment-apply-center"></button>
         ${TRANSFORM_BUTTONS}
         <button id="legacy-coarse-right" data-map-transform-action="right" data-map-transform-coarse="true"></button>
-        <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        <div class="tooltip" data-tip="Floorplan opacity · 70%">
+          <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
         <span id="map-alignment-zoom-value">19.0</span>
         <input id="map-alignment-zoom" type="range" min="19" max="22" step="0.5" value="19" />
-        <input id="map-other-overlays-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        <div class="tooltip" data-tip="Other-levels opacity · 70%">
+          <input id="map-other-overlays-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
         <button id="map-alignment-save"></button>
         <button id="map-alignment-apply"></button>
       </div>
@@ -3832,7 +3836,9 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
         <input id="map-alignment-lon-input" value="-74.0060" />
         <button id="map-alignment-apply-center"></button>
         ${TRANSFORM_BUTTONS}
-        <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        <div class="tooltip" data-tip="Floorplan opacity · 70%">
+          <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
         <input id="map-alignment-zoom" type="range" min="19" max="22" step="0.5" value="19" />
         <button id="map-alignment-save"></button>
         <button id="map-alignment-apply"></button>
@@ -4000,7 +4006,10 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       sliderInput("map-alignment-opacity", "0.35");
 
       expect(
-        document.getElementById("map-alignment-opacity").getAttribute("title"),
+        document
+          .getElementById("map-alignment-opacity")
+          .closest(".tooltip")
+          .getAttribute("data-tip"),
       ).toBe("Floorplan opacity · 35%");
     });
 
@@ -4020,7 +4029,8 @@ describe("map_alignment_hook transform steps, readouts, and unsaved reporting", 
       expect(
         document
           .getElementById("map-other-overlays-opacity")
-          .getAttribute("title"),
+          .closest(".tooltip")
+          .getAttribute("data-tip"),
       ).toBe("Other-levels opacity · 40%");
     });
 
@@ -4443,7 +4453,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
   const TOOLS_PANEL = `
     <div id="map-alignment-tools">
       <div id="tools-header">
-        <button id="map-alignment-tools-toggle" type="button" data-collapsed="false" title="Hide tools" aria-label="Hide tools"></button>
+        <button id="map-alignment-tools-toggle" type="button" data-collapsed="false" data-tip="Hide tools" aria-label="Hide tools"></button>
       </div>
       <div id="tools-transform">
         <button id="map-transform-left-fine" data-map-transform-action="left" data-map-transform-coarse="false"></button>
@@ -4457,7 +4467,9 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       </div>
       <button id="map-alignment-restore-saved" type="button" disabled>Restore saved alignment</button>
       <div id="tools-opacity">
-        <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        <div class="tooltip" data-tip="Floorplan opacity · 70%">
+          <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
       </div>
     </div>
   `;
@@ -4951,14 +4963,14 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       mountWorkspaceHook();
       const toggle = document.getElementById("map-alignment-tools-toggle");
 
-      expect(toggle.getAttribute("title")).toBe("Hide tools");
+      expect(toggle.getAttribute("data-tip")).toBe("Hide tools");
       expect(toggle.getAttribute("data-collapsed")).toBe("false");
       toggle.click();
-      expect(toggle.getAttribute("title")).toBe("Show tools");
+      expect(toggle.getAttribute("data-tip")).toBe("Show tools");
       expect(toggle.getAttribute("aria-label")).toBe("Show tools");
       expect(toggle.getAttribute("data-collapsed")).toBe("true");
       toggle.click();
-      expect(toggle.getAttribute("title")).toBe("Hide tools");
+      expect(toggle.getAttribute("data-tip")).toBe("Hide tools");
       expect(toggle.getAttribute("data-collapsed")).toBe("false");
     });
 
@@ -5004,7 +5016,7 @@ describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () =>
       hook.updated();
 
       expect(body.style.display).toBe("none");
-      expect(newToggle.getAttribute("title")).toBe("Show tools");
+      expect(newToggle.getAttribute("data-tip")).toBe("Show tools");
 
       oldToggle.click();
       expect(body.style.display).toBe("none");

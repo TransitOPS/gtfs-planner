@@ -311,12 +311,29 @@ test.describe("assisted alignment", () => {
       )
       .toEqual({ width: 100, height: 80 });
 
-    for (const target of [previewBtn, restoreBtn]) {
-      await expect(target).toBeVisible();
-      const box = await target.boundingBox();
+    // Preview auto-alignment is a primary commit-bar action and holds the 44 px
+    // target, as does every button in the transform pad. Restore saved
+    // alignment and the panel's other utility controls are deliberately 32 px:
+    // they are pressed once, not repeatedly, and the panel's job is to stay out
+    // of the map's way. Pinned exactly so neither can drift.
+    await expect(previewBtn).toBeVisible();
+    const previewBox = await previewBtn.boundingBox();
+    expect(previewBox.width).toBeGreaterThanOrEqual(44);
+    expect(previewBox.height).toBeGreaterThanOrEqual(44);
+
+    for (const padButton of [
+      "#map-transform-left-fine",
+      "#map-transform-scale-up-fine",
+    ]) {
+      const box = await page.locator(padButton).boundingBox();
       expect(box.width).toBeGreaterThanOrEqual(44);
       expect(box.height).toBeGreaterThanOrEqual(44);
     }
+
+    await expect(restoreBtn).toBeVisible();
+    const restoreBox = await restoreBtn.boundingBox();
+    expect(restoreBox.width).toBe(32);
+    expect(restoreBox.height).toBe(32);
 
     const savedTransform = await readSettledTransform(overlay);
     await watchPendingState(page, "#map-alignment-preview-auto");
@@ -450,6 +467,7 @@ test.describe("align workspace layout and interaction", () => {
   // because the server disables it until the alignment is dirty, and the
   // demoted popover controls are absent because their panels render hidden.
   const restingFocusOrder = [
+    "map-alignment-help-trigger",
     "map-alignment-tools-toggle",
     "map-transform-rotate-left-fine",
     "map-transform-up-fine",
@@ -469,6 +487,7 @@ test.describe("align workspace layout and interaction", () => {
 
   const dirtyFocusOrder = [
     "map-alignment-restore-saved",
+    "map-alignment-help-trigger",
     "map-alignment-tools-toggle",
     "map-transform-rotate-left-fine",
     "map-transform-up-fine",
@@ -591,21 +610,21 @@ test.describe("align workspace layout and interaction", () => {
     // The control is icon-only, so its label is the tooltip and accessible
     // name. The server renders `Hide tools`; the collapsed label is hook-owned
     // and only observable once the toggle has been activated in a browser.
-    await expect(toggle).toHaveAttribute("title", "Hide tools");
+    await expect(toggle).toHaveAttribute("data-tip", "Hide tools");
     await expect(toggle).toHaveAttribute("aria-label", "Hide tools");
     await expect(toggle).toHaveAttribute("data-collapsed", "false");
     await expect(nudgeControl).toBeVisible();
     const expanded = await toolsPanelDisabledState(page);
 
     await toggle.click();
-    await expect(toggle).toHaveAttribute("title", "Show tools");
+    await expect(toggle).toHaveAttribute("data-tip", "Show tools");
     await expect(toggle).toHaveAttribute("data-collapsed", "true");
     await expect(nudgeControl).toBeHidden();
     await expect(opacitySlider).toBeHidden();
     expect(await toolsPanelDisabledState(page)).toEqual(expanded);
 
     await toggle.click();
-    await expect(toggle).toHaveAttribute("title", "Hide tools");
+    await expect(toggle).toHaveAttribute("data-tip", "Hide tools");
     await expect(toggle).toHaveAttribute("data-collapsed", "false");
     await expect(nudgeControl).toBeVisible();
     await expect(opacitySlider).toBeVisible();
@@ -732,7 +751,7 @@ test.describe("align workspace layout and interaction", () => {
     await openAlignSurface(page, { width: 1280, height: 800 });
 
     expect(
-      await collectTabOrder(page, "#map-alignment-tools-toggle", 14),
+      await collectTabOrder(page, "#map-alignment-help-trigger", 15),
     ).toEqual(restingFocusOrder);
 
     // Restore saved alignment is disabled until the server marks the alignment
@@ -742,8 +761,79 @@ test.describe("align workspace layout and interaction", () => {
     await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
 
     expect(
-      await collectTabOrder(page, "#map-alignment-restore-saved", 15),
+      await collectTabOrder(page, "#map-alignment-restore-saved", 16),
     ).toEqual(dirtyFocusOrder);
+  });
+
+  test("keeps the floorplan opacity through a patch of the tools panel", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const readOpacity = () =>
+      page.evaluate(() => ({
+        slider: document.getElementById("map-alignment-opacity").value,
+        overlay: document.getElementById("map-alignment-overlay").style.opacity,
+        tip: document
+          .getElementById("map-alignment-opacity")
+          .closest(".tooltip")
+          .getAttribute("data-tip"),
+      }));
+
+    await page.locator("#map-alignment-opacity").fill("0.35");
+    expect(await readOpacity()).toEqual({
+      slider: "0.35",
+      overlay: "0.35",
+      tip: "Floorplan opacity · 35%",
+    });
+
+    // Nudging flips @alignment_unsaved?, which patches Restore saved
+    // alignment's disabled attribute inside the tools panel. Without
+    // phx-update="ignore" that patch restores the rendered value="0.7", and the
+    // thumb snaps back to 70% while the overlay keeps the operator's setting.
+    await page.locator("#map-transform-left-fine").click();
+    await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
+
+    expect(await readOpacity()).toEqual({
+      slider: "0.35",
+      overlay: "0.35",
+      tip: "Floorplan opacity · 35%",
+    });
+  });
+
+  test("opens in-app help over the map and dismisses it back to its trigger", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const trigger = page.locator("#map-alignment-help-trigger");
+    const panel = page.locator("#map-alignment-help-panel");
+
+    await expect(panel).toBeHidden();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(panel).toContainText("Drag the floorplan");
+    await expect(panel).toContainText("Hold H");
+
+    // The overlay is a bounded card, not a full-bleed scrim: the floorplan
+    // stays visible beside it rather than being covered while help is open.
+    const panelBox = await panel.boundingBox();
+    const canvasBox = await page.locator(".map-canvas").boundingBox();
+    expect(panelBox.height).toBeLessThan(canvasBox.height);
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await page.locator("#map-alignment-help-close").click();
+    await expect(panel).toBeHidden();
+    await expect(trigger).toBeFocused();
   });
 
   test("keeps hidden popover controls and the workspace out of the tab chain", async ({
@@ -759,13 +849,13 @@ test.describe("align workspace layout and interaction", () => {
       "",
       "map-alignment-rotate-handle",
       "map-alignment-scale-handle",
-      "map-alignment-tools-toggle",
+      "map-alignment-help-trigger",
     ]);
 
     const resting = await collectTabOrder(
       page,
-      "#map-alignment-tools-toggle",
-      14,
+      "#map-alignment-help-trigger",
+      15,
     );
 
     // #map-alignment-workspace carries tabindex="-1" so a click on the imagery
