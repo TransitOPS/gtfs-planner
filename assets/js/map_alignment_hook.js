@@ -14,6 +14,14 @@
  *   data-initial-zoom        integer zoom level for the initial map view
  *
  * DOM IDs the hook interacts with:
+ *   #map-alignment-workspace     binding root for keyboard nudging and
+ *                                hold-to-hide; wraps the ignored canvas and
+ *                                every floating panel rendered beside it
+ *   #map-alignment-tools         floating controls panel (collapsed view-only)
+ *   #map-alignment-tools-toggle  collapses/expands that panel
+ *   #map-alignment-residual      fit readout; the hook writes only its
+ *                                data-fit-state="measuring" in-flight state
+ *   #map-alignment-residual-value  text of that readout
  *   #map-alignment-leaflet       Leaflet map container (base layer, fixed)
  *   #map-alignment-overlay       transformable wrapper containing the floorplan
  *   #map-alignment-rotate-handle rotation grab target
@@ -81,6 +89,60 @@ const MAP_STATES = new Set([
   "reconnecting",
   "fatal",
 ]);
+
+// Overlay opacity used before the slider is reachable, and restored to when a
+// hold-to-hide release finds no slider. Matches the slider's rendered default.
+const DEFAULT_OVERLAY_OPACITY = "0.7";
+
+// Keyboard nudging (CRIT-004, INV-10E-3). Bound on #map-alignment-workspace,
+// never on the hook root: the root is the ignored canvas and the tools panel is
+// a *sibling* of it, so a key pressed while focus sits on a tools-panel button
+// would never reach a root listener.
+//
+// Both faces of each printable key resolve the same action. Shift is the coarse
+// modifier (INV-09D-4), and on most layouts it also changes the character the
+// key reports — without the shifted face, Shift+[ and Shift+- would silently do
+// nothing at exactly the moment the operator asked for the coarse step.
+const KEY_TRANSFORM_ACTIONS = new Map([
+  ["ArrowLeft", "left"],
+  ["ArrowRight", "right"],
+  ["ArrowUp", "up"],
+  ["ArrowDown", "down"],
+  ["[", "rotate-left"],
+  ["{", "rotate-left"],
+  ["]", "rotate-right"],
+  ["}", "rotate-right"],
+  ["-", "scale-down"],
+  ["_", "scale-down"],
+  ["=", "scale-up"],
+  ["+", "scale-up"],
+]);
+
+// Held to blank the floorplan for registration checking. Mnemonic, and guarded
+// against every editable target so it never eats a typed character.
+const HOLD_TO_HIDE_KEY = "h";
+
+// Typing targets that must keep every keystroke: the lat/lon and zoom inputs
+// live in popovers over this same workspace.
+const EDITABLE_TARGET_SELECTOR = "input, textarea, select, [contenteditable]";
+
+// The collapse toggle names the action it will perform, not the current state.
+const TOOLS_HIDE_LABEL = "Hide tools";
+const TOOLS_SHOW_LABEL = "Show tools";
+const FLOORPLAN_OPACITY_LABEL = "Floorplan opacity";
+const OTHER_OPACITY_LABEL = "Other-levels opacity";
+
+// In-flight fit readout. The hook knows a transform changed one debounce window
+// before the server does, so it owns the measuring state; the server owns every
+// resolved one.
+const RESIDUAL_MEASURING_STATE = "measuring";
+const RESIDUAL_MEASURING_TEXT = "Measuring…";
+
+// How long the measuring state waits for the server's answer to land in the
+// DOM. It exists for the case where the answer produces no DOM diff at all —
+// re-scoring an unchanged verdict, such as a level that stays below three
+// anchors — because then no patch ever arrives to replace "Measuring…".
+const MEASURING_RESOLVE_GRACE_MS = 1500;
 
 // Ready-state status: front-load the two deterministic counts. Diagram-mode pins
 // are anchored to the floorplan image; geo-mode pins fall back to map position.
@@ -255,7 +317,9 @@ const MapAlignmentHook = {
     );
     this._overlayRestoreDisposers = [];
 
-    overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
+    overlay.style.opacity = opacitySlider
+      ? opacitySlider.value
+      : DEFAULT_OVERLAY_OPACITY;
 
     this.transform = { ...IDENTITY_TRANSFORM };
     this._userAdjustedTransform = false;
@@ -391,6 +455,9 @@ const MapAlignmentHook = {
 
       this._onZoomEnd = () => {
         zoomSlider.value = String(map.getZoom());
+        // Zoom can change without slider input, so the readout follows the
+        // slider here too.
+        this._syncSliderReadouts();
       };
       map.on("zoomend", this._onZoomEnd);
     }
@@ -446,6 +513,12 @@ const MapAlignmentHook = {
       }
       e.preventDefault();
       e.stopPropagation();
+      // preventDefault above suppresses the browser's own click-to-focus, so
+      // after a drag — the most common gesture on this surface — focus would
+      // stay wherever it was and every keyboard shortcut bound on the workspace
+      // would be dead. Grabbing the floorplan is the operator saying "this is
+      // what I am working on", so hand the workspace the focus explicitly.
+      this._focusWorkspace();
     };
     this._onOverlayPointerMove = (e) => {
       if (!this._translateState) return;
@@ -630,12 +703,21 @@ const MapAlignmentHook = {
     // --- Opacity slider: controls floorplan overlay opacity ---
     if (opacitySlider) {
       this._onOpacityInput = (e) => {
-        this.overlay.style.opacity = e.target.value;
+        // A hold in progress owns the overlay's opacity. Skipping the write
+        // keeps the floorplan blank until release, and release then restores
+        // this new value because it reads the slider live.
+        if (!this._holdToHideActive) {
+          this.overlay.style.opacity = e.target.value;
+        }
+        this._syncSliderReadouts();
       };
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
 
     this._syncOtherOverlaysOpacitySlider();
+    // Sliders are captured and the zoom slider's min/max/value are set from the
+    // map by this point, so the readouts start from the live values.
+    this._syncSliderReadouts();
 
     // --- Save: compute canonical alignment and push to server ---
     if (saveBtn) {
@@ -651,7 +733,13 @@ const MapAlignmentHook = {
     this._transformControls.forEach((control) => {
       const action = control.dataset.mapTransformAction;
       const coarse = control.dataset.mapTransformCoarse === "true";
-      const handler = () => this._adjustTransform(action, coarse);
+      // Holding Shift resolves the coarse step, so opposing nudges stay
+      // symmetric without duplicate coarse buttons (INV-09D-4). `coarse ||`
+      // is retained so a data-map-transform-coarse="true" control still forces
+      // the coarse step. A Shift-held Enter/Space on a focused button produces
+      // a click with shiftKey === true, so the modifier needs no second binding.
+      const handler = (event) =>
+        this._adjustTransform(action, coarse || event?.shiftKey === true);
       control.addEventListener("click", handler);
       control._mapAlignmentHandler = handler;
     });
@@ -692,12 +780,19 @@ const MapAlignmentHook = {
         // Consume an invalidation queued by the transform being reviewed. If it
         // were allowed to fire after the open event, it would immediately close
         // the fresh review. Any later transform mutation starts a new timer.
-        this._pushAlignmentEventIfValid("open_coordinate_review", () =>
-          this._clearTransformInvalidationTimer(),
-        );
+        this._pushAlignmentEventIfValid("open_coordinate_review", () => {
+          this._clearTransformInvalidationTimer();
+          // The consumed window is the only thing that was going to resolve the
+          // measuring state, so put the last resolved reading back rather than
+          // leaving "Measuring…" standing for a measurement that never comes.
+          this._abandonMeasuringState();
+        });
       };
       applyBtn.addEventListener("click", this._onApply);
     }
+
+    this._bindWorkspaceKeyboard();
+    this._bindToolsToggle();
 
     // Own apply enablement after mount. The static markup disables the button
     // until image dims are known, but the ignored map root never receives a
@@ -708,10 +803,38 @@ const MapAlignmentHook = {
 
   updated() {
     this._syncOtherOverlaysOpacitySlider();
+
+    const workspace = document.getElementById("map-alignment-workspace");
+    if (workspace !== this._workspaceEl) {
+      this._releaseHoldToHide();
+      this._unbindWorkspaceKeyboard();
+      this._bindWorkspaceKeyboard();
+    }
+
+    const toolsToggle = document.getElementById("map-alignment-tools-toggle");
+    if (toolsToggle !== this._toolsToggle) {
+      const toolsCollapsed = this._toolsCollapsed;
+      this._unbindToolsToggle();
+      this._bindToolsToggle();
+      this._toolsCollapsed = toolsCollapsed;
+    }
+
+    // The tools panel is server-rendered, so a patch that re-renders it puts the
+    // hidden children back on screen. Collapse is client-owned view state, so
+    // the hook re-asserts it rather than the server storing it.
+    if (this._toolsCollapsed) this._setToolsCollapsed(true);
+    this._reassertMeasuringState();
   },
 
   destroyed() {
     this._destroyed = true;
+    // Before anything is unbound: a hook torn down mid-hold must not leave the
+    // floorplan invisible, and a torn-down measuring window will never resolve.
+    this._releaseHoldToHide();
+    this._abandonMeasuringState();
+    if (this._toolsCollapsed) this._setToolsCollapsed(false);
+    this._unbindWorkspaceKeyboard();
+    this._unbindToolsToggle();
     if (this._rafId !== null && this._rafId !== undefined) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
@@ -1116,11 +1239,16 @@ const MapAlignmentHook = {
     }
 
     this.otherOpacitySlider = nextSlider;
+    // The other-levels control is conditionally rendered, so this runs on the
+    // rebind path too — including the case where the slider has just appeared
+    // or disappeared across a LiveView patch.
+    this._syncSliderReadouts();
 
     if (!this.otherOpacitySlider || !this._otherLevels) return;
 
     this._onOtherOpacityInput = (e) => {
       this._otherLevels.setOpacity(parseFloat(e.target.value));
+      this._syncSliderReadouts();
     };
 
     this.otherOpacitySlider.addEventListener(
@@ -1166,7 +1294,17 @@ const MapAlignmentHook = {
   // `alignment_transform_changed` so an open review closes (advisory only —
   // INV-4). The debounce coalesces bursts into one push per window and the
   // timer is cleared in destroyed() to avoid leaks.
-  _transformDidChange({ previewAdjusted } = {}) {
+  //
+  // Two options, because the caller is answering two different questions:
+  //   previewAdjusted — did the operator do this? (overlay drag, rotate/scale
+  //     handle, nudge buttons). Only this fires _markPreviewDirty().
+  //   dirtying — does this move the floorplan off its saved position? Defaults
+  //     to `previewAdjusted`, which is correct for every path but one.
+  // They differ only for applying an assisted preview: not an operator gesture,
+  // but it does dirty the saved alignment. Flipping `previewAdjusted` there is
+  // not available — it would fire _markPreviewDirty() and clobber the
+  // `_previewActive` state that path has just set.
+  _transformDidChange({ previewAdjusted, dirtying } = {}) {
     this._applyTransform();
     this._syncPreviewStatus();
 
@@ -1174,20 +1312,54 @@ const MapAlignmentHook = {
       this._markPreviewDirty();
     }
 
-    this._scheduleTransformInvalidation();
+    // The server reads `unsaved` as the dirty signal and owns the resulting
+    // unsaved indicator and the restore control's enabled state (INV-09D-3);
+    // without it a restore would re-dirty itself one debounce window later.
+    const isDirtying =
+      dirtying === undefined ? previewAdjusted === true : dirtying === true;
+    this._scheduleTransformInvalidation({ unsaved: isDirtying });
   },
 
-  _scheduleTransformInvalidation() {
+  // `unsaved` defaults to true to match the server's own
+  // `Map.get(params, "unsaved", true)`, so an option-less call behaves exactly
+  // as this event did before the key existed.
+  _scheduleTransformInvalidation({ unsaved = true } = {}) {
     this._clearTransformInvalidationTimer();
 
+    // Deliberately every scheduling path, not only operator gestures: a restore
+    // and a map recenter also leave the rendered number describing the previous
+    // position for one debounce window, and a stale number in a confident band
+    // reads as current (CRIT-005).
+    this._beginMeasuringState();
+
+    // Each call replaces the pending timer, so when changes coalesce inside one
+    // window the later call's `unsaved` value wins. Deliberately not a sticky
+    // OR: that would make a restore impossible to clear.
     this._transformInvalidationTimer = setTimeout(() => {
       this._transformInvalidationTimer = null;
 
       if (this._destroyed) return;
 
-      this.pushEvent("alignment_transform_changed", {
-        generation: this.generation,
-      });
+      // Computed here rather than at schedule time so a window that is
+      // coalesced away, cancelled by open_coordinate_review, or dropped by
+      // destroy() does no geometry work and logs no warning, and so the
+      // reported alignment describes the transform actually being pushed.
+      const alignment = this._computeAlignment();
+
+      const payload = { generation: this.generation, unsaved };
+
+      // `null` means the floorplan image is not loaded or the map geometry is
+      // degenerate. Omit the key rather than sending nulls: the server leaves
+      // its fit assign untouched when the key is absent — which also means it
+      // will never resolve the measuring state, so put the last reading back.
+      if (alignment) {
+        payload.alignment = alignment;
+        this._awaitMeasuringResolution();
+      } else {
+        this._abandonMeasuringState();
+      }
+
+      this.pushEvent("alignment_transform_changed", payload);
     }, TRANSFORM_INVALIDATION_DEBOUNCE_MS);
   },
 
@@ -1196,6 +1368,318 @@ const MapAlignmentHook = {
 
     clearTimeout(this._transformInvalidationTimer);
     this._transformInvalidationTimer = null;
+  },
+
+  // --- Keyboard nudging and hold-to-hide (CRIT-004, CRIT-006, INV-10E-3) ---
+
+  // Bound on #map-alignment-workspace, resolved by id exactly as the transform
+  // controls are resolved by `document.querySelectorAll`. Binding on the hook
+  // root instead would drop every shortcut fired while focus sits on a
+  // tools-panel control, because that panel is a sibling of the root, not a
+  // descendant of it.
+  _bindWorkspaceKeyboard() {
+    this._holdToHideActive = false;
+    this._workspaceEl = document.getElementById("map-alignment-workspace");
+
+    this._onWorkspaceKeyDown = (event) => {
+      if (!this._keyboardShortcutAllowed(event)) return;
+
+      const key = typeof event.key === "string" ? event.key : "";
+      if (!key) return;
+
+      if (key.toLowerCase() === HOLD_TO_HIDE_KEY) {
+        event.preventDefault();
+        this._engageHoldToHide();
+        return;
+      }
+
+      const action = KEY_TRANSFORM_ACTIONS.get(key);
+      // No preventDefault for anything else: Tab traversal and browser
+      // shortcuts have to keep working on this surface.
+      if (!action) return;
+
+      event.preventDefault();
+      this._adjustTransform(action, event.shiftKey === true);
+    };
+
+    // Release is a watchdog, so keyup is deliberately *not* guarded the way
+    // keydown is. Releasing a hold that is not held costs nothing; leaving the
+    // floorplan invisible costs the operator the surface.
+    this._onWorkspaceKeyUp = (event) => {
+      const key = typeof event?.key === "string" ? event.key : "";
+      if (key.toLowerCase() !== HOLD_TO_HIDE_KEY) return;
+      this._releaseHoldToHide();
+    };
+
+    this._onHoldToHideWatchdog = () => this._releaseHoldToHide();
+
+    this._onDocumentFocusIn = (event) => {
+      const workspace = this._workspaceEl;
+      const target = event?.target;
+      if (workspace && target && workspace.contains(target)) return;
+      this._releaseHoldToHide();
+    };
+
+    if (this._workspaceEl) {
+      this._workspaceEl.addEventListener("keydown", this._onWorkspaceKeyDown);
+      this._workspaceEl.addEventListener("keyup", this._onWorkspaceKeyUp);
+
+      // The keyup can be delivered to another window, to a closed popover, or
+      // never — so the release does not enumerate the ways focus is lost. It
+      // watches for focus leaving at all.
+      window.addEventListener("blur", this._onHoldToHideWatchdog);
+      document.addEventListener("visibilitychange", this._onHoldToHideWatchdog);
+      document.addEventListener("focusin", this._onDocumentFocusIn);
+    }
+  },
+
+  _unbindWorkspaceKeyboard() {
+    if (this._workspaceEl) {
+      if (this._onWorkspaceKeyDown) {
+        this._workspaceEl.removeEventListener(
+          "keydown",
+          this._onWorkspaceKeyDown,
+        );
+      }
+      if (this._onWorkspaceKeyUp) {
+        this._workspaceEl.removeEventListener("keyup", this._onWorkspaceKeyUp);
+      }
+      this._workspaceEl = null;
+    }
+    if (this._onHoldToHideWatchdog) {
+      window.removeEventListener("blur", this._onHoldToHideWatchdog);
+      document.removeEventListener(
+        "visibilitychange",
+        this._onHoldToHideWatchdog,
+      );
+      this._onHoldToHideWatchdog = null;
+    }
+    if (this._onDocumentFocusIn) {
+      document.removeEventListener("focusin", this._onDocumentFocusIn);
+      this._onDocumentFocusIn = null;
+    }
+    this._onWorkspaceKeyDown = null;
+    this._onWorkspaceKeyUp = null;
+  },
+
+  // The workspace carries tabindex="-1" so it can hold focus without joining
+  // the tab order. Focus has to be *inside* the workspace for its key bindings
+  // to fire at all, and no-ops harmlessly when the element or the API is absent.
+  _focusWorkspace() {
+    const workspace = this._workspaceEl;
+    if (!workspace || typeof workspace.focus !== "function") return;
+    if (workspace.contains(document.activeElement)) return;
+
+    try {
+      workspace.focus({ preventScroll: true });
+    } catch (_) {
+      /* jsdom and older engines ignore the options bag */
+      workspace.focus();
+    }
+  },
+
+  _keyboardShortcutAllowed(event) {
+    if (!event) return false;
+    // A chord belongs to the browser or the OS, never to this surface.
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+
+    const target = event.target;
+    if (
+      target &&
+      typeof target.closest === "function" &&
+      target.closest(EDITABLE_TARGET_SELECTOR)
+    ) {
+      return false;
+    }
+
+    return true;
+  },
+
+  // Key repeat re-fires keydown for as long as the key is down, so engaging is
+  // guarded rather than counted: one flag, one blank, one release.
+  _engageHoldToHide() {
+    if (this._holdToHideActive) return;
+    if (!this.overlay) return;
+
+    this._holdToHideActive = true;
+    this.overlay.style.opacity = "0";
+  },
+
+  // Idempotent by contract: every watchdog calls this, and a doubled release
+  // must be indistinguishable from a single one. Restores the slider's *current*
+  // value rather than one captured at engage time, and never writes the slider.
+  _releaseHoldToHide() {
+    if (!this._holdToHideActive) return;
+
+    this._holdToHideActive = false;
+    if (!this.overlay) return;
+
+    this.overlay.style.opacity = this.opacitySlider
+      ? this.opacitySlider.value
+      : DEFAULT_OVERLAY_OPACITY;
+  },
+
+  // --- Tools panel collapse ---
+
+  // The licensed exception to INV-09D-3: view-only, gates no control, persists
+  // nothing. It hides the panel body and relabels its own toggle; it never
+  // touches `disabled`.
+  _bindToolsToggle() {
+    this._toolsCollapsed = false;
+    this._toolsChildDisplay = new Map();
+
+    const toggle = document.getElementById("map-alignment-tools-toggle");
+    if (!toggle) return;
+
+    this._toolsToggle = toggle;
+    this._onToolsToggle = () => this._setToolsCollapsed(!this._toolsCollapsed);
+    toggle.addEventListener("click", this._onToolsToggle);
+  },
+
+  _unbindToolsToggle() {
+    if (this._toolsToggle && this._onToolsToggle) {
+      this._toolsToggle.removeEventListener("click", this._onToolsToggle);
+    }
+    this._toolsToggle = null;
+    this._onToolsToggle = null;
+    if (this._toolsChildDisplay) this._toolsChildDisplay.clear();
+  },
+
+  // Re-resolved from the document each call so it survives a server patch that
+  // replaced the panel, and safe to call repeatedly with the same value.
+  _setToolsCollapsed(collapsed) {
+    const panel = document.getElementById("map-alignment-tools");
+    const toggle = document.getElementById("map-alignment-tools-toggle");
+    if (!panel || !toggle) return;
+    if (!this._toolsChildDisplay) this._toolsChildDisplay = new Map();
+
+    this._toolsCollapsed = collapsed === true;
+
+    Array.from(panel.children).forEach((child) => {
+      // The row holding the toggle stays: collapsing away the control that
+      // reverses the collapse would strand the operator.
+      if (child === toggle || child.contains(toggle)) return;
+
+      if (this._toolsCollapsed) {
+        if (!this._toolsChildDisplay.has(child)) {
+          this._toolsChildDisplay.set(child, child.style.display);
+        }
+        // `hidden` alone is a UA-stylesheet rule and loses to the panel's own
+        // display utilities, so the inline display is what actually hides it.
+        child.style.display = "none";
+        child.hidden = true;
+      } else {
+        const prior = this._toolsChildDisplay.get(child);
+        child.style.display = prior === undefined ? "" : prior;
+        this._toolsChildDisplay.delete(child);
+        child.hidden = false;
+      }
+    });
+
+    // The toggle is icon-only, so the collapsed state is carried by a
+    // presentational attribute the stylesheet flips the chevron on, and by the
+    // tooltip and label that name what the next click will do.
+    const label = this._toolsCollapsed ? TOOLS_SHOW_LABEL : TOOLS_HIDE_LABEL;
+    toggle.setAttribute("data-collapsed", String(this._toolsCollapsed));
+    toggle.setAttribute("data-tip", label);
+    toggle.setAttribute("aria-label", label);
+  },
+
+  // --- In-flight fit readout ---
+
+  // Text plus the presentational `data-fit-state`, into server-rendered
+  // elements — the _syncPreviewStatus precedent, and the whole of what the hook
+  // is allowed to write here (CRIT-002). No class, no `disabled`.
+  _beginMeasuringState() {
+    const container = document.getElementById("map-alignment-residual");
+    const valueEl = document.getElementById("map-alignment-residual-value");
+    if (!container && !valueEl) return;
+
+    this._clearMeasuringResolveTimer();
+
+    // Captured once per in-flight window, so a burst coalescing into one push
+    // still restores the reading that stood before the burst began.
+    if (!this._measuringRestore) {
+      this._measuringRestore = {
+        state: container ? container.getAttribute("data-fit-state") : null,
+        value: valueEl ? valueEl.textContent : null,
+      };
+    }
+
+    this._measuringAwaitingPush = true;
+    this._writeMeasuringState();
+  },
+
+  _writeMeasuringState() {
+    const container = document.getElementById("map-alignment-residual");
+    const valueEl = document.getElementById("map-alignment-residual-value");
+
+    if (container) {
+      container.setAttribute("data-fit-state", RESIDUAL_MEASURING_STATE);
+    }
+    if (valueEl) valueEl.textContent = RESIDUAL_MEASURING_TEXT;
+  },
+
+  // A LiveView patch inside the debounce window re-renders the readout from the
+  // fit the server scored *before* this change, putting the superseded number
+  // back inside a confident colour band — observed on the real page, where the
+  // preview-dirty push lands well before the debounced measurement. Only
+  // re-asserted while the measurement has not been sent yet; once it is on the
+  // wire the next patch is allowed to be the answer.
+  _reassertMeasuringState() {
+    if (!this._measuringAwaitingPush) return;
+    this._writeMeasuringState();
+  },
+
+  // The measurement is on the wire. Stop defending the state so the answer can
+  // land, but keep a watchdog: when the server re-scores to an unchanged
+  // verdict there is no diff, so no patch ever arrives to clear "Measuring…".
+  _awaitMeasuringResolution() {
+    this._measuringAwaitingPush = false;
+    this._clearMeasuringResolveTimer();
+    this._measuringResolveTimer = setTimeout(() => {
+      this._measuringResolveTimer = null;
+      this._abandonMeasuringState();
+    }, MEASURING_RESOLVE_GRACE_MS);
+  },
+
+  _clearMeasuringResolveTimer() {
+    if (!this._measuringResolveTimer) return;
+    clearTimeout(this._measuringResolveTimer);
+    this._measuringResolveTimer = null;
+  },
+
+  // Called only where the measurement that would replace the reading will never
+  // arrive: an open_coordinate_review consumed the window, the hook was
+  // destroyed, or the payload carried no alignment for the server to score.
+  // "Measuring…" forever is as wrong a readout as a stale number (CRIT-005).
+  _abandonMeasuringState() {
+    this._clearMeasuringResolveTimer();
+    this._measuringAwaitingPush = false;
+
+    const restore = this._measuringRestore;
+    this._measuringRestore = null;
+    if (!restore) return;
+
+    const container = document.getElementById("map-alignment-residual");
+    const valueEl = document.getElementById("map-alignment-residual-value");
+
+    // Only undo the hook's own write. If the server has already resolved the
+    // readout in the meantime, its value is the current one and stands.
+    if (
+      container &&
+      restore.state !== null &&
+      container.getAttribute("data-fit-state") === RESIDUAL_MEASURING_STATE
+    ) {
+      container.setAttribute("data-fit-state", restore.state);
+    }
+    if (
+      valueEl &&
+      restore.value !== null &&
+      valueEl.textContent === RESIDUAL_MEASURING_TEXT
+    ) {
+      valueEl.textContent = restore.value;
+    }
   },
 
   _handleApplyPreviewTransform(payload) {
@@ -1235,8 +1719,10 @@ const MapAlignmentHook = {
     this._previewActive = true;
     // The assisted preview is itself the new alignment source, so it does not
     // dirty the preview. It still invalidates any open review because the
-    // displayed transform changed (advisory only — INV-4).
-    this._transformDidChange({ previewAdjusted: false });
+    // displayed transform changed (advisory only — INV-4), and it does move the
+    // floorplan off its saved position, so it reports unsaved — the one call
+    // site where `dirtying` diverges from `previewAdjusted`.
+    this._transformDidChange({ previewAdjusted: false, dirtying: true });
   },
 
   _handleRestoreSavedTransform(payload) {
@@ -1246,6 +1732,13 @@ const MapAlignmentHook = {
       );
       return;
     }
+
+    // Clearing the unsaved indicator is part of the same LiveView patch that
+    // delivers this event, so the map container has already changed height
+    // while Leaflet still reports the pre-patch size. Re-measure before
+    // deriving the transform, otherwise the restored floorplan lands half the
+    // height delta away from its saved position.
+    this.leafletMap?.invalidateSize?.();
 
     if (this.savedAlignment) {
       const img = this.overlay ? this.overlay.querySelector("img") : null;
@@ -1367,6 +1860,56 @@ const MapAlignmentHook = {
     ).length;
     const geoCount = records.filter((s) => s.positionMode === "geo").length;
     statusEl.textContent = previewStatusText(diagramCount, geoCount);
+  },
+
+  // Write text into a server-rendered readout element. Text only: enabled
+  // state stays server-owned (INV-09D-3), exactly as _syncPreviewStatus does.
+  // The element is optional — isolated hook fixtures mount partial DOM and the
+  // other-levels controls are conditionally rendered.
+  _writeReadout(id, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+  },
+
+  // Current slider values. Every reference is optional: the zoom slider's
+  // min/max/value come from the Leaflet map at mount, so the readout reports
+  // the slider's live value rather than the server-rendered default.
+  _syncSliderReadouts() {
+    // The opacity sliders carry their value in the tooltip rather than a
+    // readout beside them: the thumb position already shows roughly where the
+    // value sits, and the exact percentage is only wanted on demand.
+    const opacity = parseFloat(this.opacitySlider?.value);
+    if (Number.isFinite(opacity)) {
+      this._writeSliderTooltip(
+        this.opacitySlider,
+        FLOORPLAN_OPACITY_LABEL,
+        opacity,
+      );
+    }
+
+    const zoom = parseFloat(this.zoomSlider?.value);
+    if (Number.isFinite(zoom)) {
+      this._writeReadout("map-alignment-zoom-value", zoom.toFixed(1));
+    }
+
+    const otherOpacity = parseFloat(this.otherOpacitySlider?.value);
+    if (Number.isFinite(otherOpacity)) {
+      this._writeSliderTooltip(
+        this.otherOpacitySlider,
+        OTHER_OPACITY_LABEL,
+        otherOpacity,
+      );
+    }
+  },
+
+  // The tooltip lives on the slider's wrapper, not the slider: an <input> is a
+  // replaced element and cannot render the ::before/::after the tooltip uses.
+  // The element is optional for the same reason _writeReadout's is.
+  _writeSliderTooltip(slider, label, value) {
+    const tip = slider?.closest(".tooltip");
+    if (!tip) return;
+    tip.setAttribute("data-tip", `${label} · ${Math.round(value * 100)}%`);
   },
 
   _pushAlignmentEventIfValid(eventName, beforePush) {
@@ -1510,6 +2053,10 @@ const MapAlignmentHook = {
   },
 
   _handleZoomSliderInput(e) {
+    // The readout tracks the slider's live value, so it is written before the
+    // no-op guards below.
+    this._syncSliderReadouts();
+
     const map = this.leafletMap;
     if (!map) return;
 

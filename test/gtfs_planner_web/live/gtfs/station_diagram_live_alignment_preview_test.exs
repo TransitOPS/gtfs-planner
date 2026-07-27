@@ -717,18 +717,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       view = mount_map_view(context)
 
       assert has_element?(view, "#map-alignment-preview-auto")
-      assert has_element?(view, "#map-alignment-assisted")
-      assert has_element?(view, "#map-alignment-assisted", "Uses 3 stops")
+      assert has_element?(view, "#map-alignment-commit-bar #map-alignment-preview-auto")
 
       assert has_element?(
                view,
-               "fieldset#map-alignment-transform-controls #map-alignment-restore-saved"
+               "#map-alignment-preview-auto[title*='3 stops that already have']"
              )
 
-      assert has_element?(
-               view,
-               "#map-alignment-preview-auto.btn-outline.btn-primary[phx-disable-with='Previewing…']"
-             )
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved")
+
+      # Auto-align is no longer styled as a primary: the view has one primary
+      # action, and it is the one that writes coordinates to stop records.
+      assert has_element?(view, "#map-alignment-preview-auto[phx-disable-with='Aligning…']")
+      refute has_element?(view, "#map-alignment-preview-auto.btn-primary")
+      assert has_element?(view, "#map-alignment-apply.btn-primary")
 
       assert has_element?(
                view,
@@ -736,7 +738,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
                "Coordinate-change preview not ready"
              )
 
-      assert has_element?(view, "div.mt-3.flex.flex-wrap.items-start")
+      assert has_element?(view, "#map-alignment-tools #map-alignment-opacity")
+      assert has_element?(view, "#map-alignment-commit-bar #map-alignment-actions")
 
       refute has_element?(view, "#auto-alignment-status")
       refute has_element?(view, "#auto-alignment-error")
@@ -808,7 +811,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
 
       view = mount_map_view(context)
 
-      assert has_element?(view, "#map-alignment-assisted", "Uses 1 stops")
+      assert has_element?(
+               view,
+               "#map-alignment-preview-auto[title*='1 stops that already have']"
+             )
+
       refute has_element?(view, "#map-alignment-preview-auto[disabled]")
     end
 
@@ -829,13 +836,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
                "#auto-alignment-status.bg-blue-50.border-blue-200.text-blue-900"
              )
 
-      assert has_element?(view, "#auto-alignment-fit-value", "Estimated fit error")
+      assert has_element?(view, "#auto-alignment-fit-value", "Suggested alignment fits to")
       assert has_element?(view, "#auto-alignment-fit-value", "0.0 m")
 
       assert has_element?(
                view,
                "#auto-alignment-fit-description",
-               "Computed from 3 anchor stops. RMSE measures the typical anchor mismatch; lower is better."
+               "Measured over 3 anchor stops. Lower is better."
              )
     end
 

@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.DiagramUploadValidator
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage, as: JournalPhotoStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope, as: JournalScope
@@ -213,6 +214,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:map_generation, "unmounted")
      |> assign(:map_state, :initializing)
      |> assign(:alignment_preview, nil)
+     |> assign(:alignment_fit, nil)
+     |> assign(:alignment_unsaved?, false)
      |> assign(:coordinate_review, nil)
      |> assign(:review_transform, nil)
      |> assign(:coordinate_review_status, nil)
@@ -247,6 +250,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       %{station: %{stop_id: ^stop_id}, active_level: %{}} -> true
       _ -> false
     end
+  end
+
+  # `list_levels_for_station/3` returns the diagram filename alongside each
+  # level rather than on it — `Level` has no such field, only `StopLevel` does.
+  # Collapsing the rows to `& &1.level` therefore drops it, which is what made
+  # every entry in the level menu read "No floorplan".
+  defp levels_with_floorplan(levels_data) do
+    for %{level: level, diagram_filename: filename} <- levels_data,
+        is_binary(filename) and filename != "",
+        into: MapSet.new(),
+        do: level.id
   end
 
   defp load_station_and_levels(socket, stop_id, params) do
@@ -290,6 +304,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:stop_id, stop_id)
           |> assign(:station, station)
           |> assign(:levels, levels)
+          |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
           |> assign(:available_levels, available_levels)
           |> assign(:all_levels, all_levels)
           |> assign(:active_level, active_level)
@@ -1073,6 +1088,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             scale_status={@scale_status}
             active_stop_level={@active_stop_level}
             levels={@levels}
+            levels_with_floorplan={@levels_with_floorplan}
             active_level={@active_level}
             active_level_name={@active_level_name}
             other_levels={@other_levels}
@@ -1115,6 +1131,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   map_generation={@map_generation}
                   map_state={@map_state}
                   alignment_preview={@alignment_preview}
+                  alignment_fit={@alignment_fit}
+                  alignment_unsaved?={@alignment_unsaved?}
                   coordinate_review={@coordinate_review}
                   review_transform={@review_transform}
                   coordinate_review_status={@coordinate_review_status}
@@ -2992,10 +3010,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("alignment_transform_changed", %{"generation" => generation}, socket) do
+  def handle_event("alignment_transform_changed", %{"generation" => generation} = params, socket) do
     # UX-only invalidation. Closes an open review or clears a prior empty-result
     # status. The Package 06 fingerprint recheck remains the sole stale-write
     # fence; this event is never trusted as a guarantee (INV-4).
+    #
+    # On a current generation the event also carries the operator-dirty signal
+    # for `alignment_unsaved?` (INV-09D-3) and, when the floorplan image has
+    # loaded, the transform to score for `alignment_fit`. A stale generation
+    # sets nothing.
     cond do
       not current_map_generation?(socket, generation) ->
         {:noreply, socket}
@@ -3003,16 +3026,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       not is_nil(socket.assigns.coordinate_review) ->
         {:noreply,
          socket
+         |> mark_alignment_unsaved(params)
+         |> score_alignment_fit(params)
          |> assign(:coordinate_review, nil)
          |> assign(:review_transform, nil)
          |> assign(:coordinate_review_error, nil)
          |> assign(:coordinate_review_status, @alignment_changed_status)}
 
       socket.assigns.coordinate_review_status == @no_coordinate_changes_status ->
-        {:noreply, assign(socket, :coordinate_review_status, nil)}
+        {:noreply,
+         socket
+         |> mark_alignment_unsaved(params)
+         |> score_alignment_fit(params)
+         |> assign(:coordinate_review_status, nil)}
 
       true ->
-        {:noreply, socket}
+        {:noreply, socket |> mark_alignment_unsaved(params) |> score_alignment_fit(params)}
     end
   end
 
@@ -3144,6 +3173,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:alignment_preview, nil)
+     |> assign(:alignment_unsaved?, false)
      |> push_event("restore_saved_transform", %{generation: socket.assigns.map_generation})}
   end
 
@@ -4061,6 +4091,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   {:noreply,
                    socket
                    |> assign(:levels, levels)
+                   |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
                    |> assign(:active_level, level)
                    |> assign(:show_level_modal, nil)
                    |> assign(:level_form, to_form(%{}))
@@ -4111,6 +4142,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               {:noreply,
                socket
                |> assign(:levels, levels)
+               |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
                |> assign(:available_levels, available_levels)
                |> assign(:active_level, new_level)
                |> assign(:show_level_modal, nil)
@@ -4149,6 +4181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:levels, levels)
+             |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
              |> assign(:active_level, updated_level)
              |> assign(:show_level_modal, nil)
              |> assign(:level_form, to_form(%{}))
@@ -4431,6 +4464,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:floorplan_image_w, nil)
     |> assign(:floorplan_image_h, nil)
     |> assign(:alignment_preview, nil)
+    # A measured fit describes one level's floorplan against one level's
+    # anchors, so it cannot survive a level, mode, or version change. It is
+    # deliberately not cleared by restore or save: neither changes the anchors,
+    # and the next debounced event re-scores the transform anyway.
+    |> assign(:alignment_fit, nil)
+    |> assign(:alignment_unsaved?, false)
     |> assign(:coordinate_review, nil)
     |> assign(:review_transform, nil)
     |> assign(:coordinate_review_status, nil)
@@ -4442,6 +4481,105 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp current_map_generation?(_socket, _generation), do: false
+
+  # Enabled state on the Align strip is server-owned (INV-09D-3): the hook
+  # reports operator-initiated change through the `unsaved` payload key and the
+  # server decides what to render. A payload without the key — an older client,
+  # or an isolated hook fixture — is treated as dirty, which is how this event
+  # behaved before the key existed.
+  defp mark_alignment_unsaved(socket, params) when is_map(params) do
+    if Map.get(params, "unsaved", true) do
+      assign(socket, :alignment_unsaved?, true)
+    else
+      socket
+    end
+  end
+
+  # Fit quality is advisory. It is measured here and rendered by
+  # `#map-alignment-residual`; it appears in no `disabled` expression and gates
+  # neither `#map-alignment-save` nor `#map-alignment-apply` (CRIT-005).
+  #
+  # A payload without an "alignment" key is normal, not an error: the hook omits
+  # it whenever `_computeAlignment()` returns null, which is the ordinary state
+  # right after a level or mode switch while the floorplan image loads. The
+  # previous reading is left standing rather than blanked, and the hook's
+  # measuring state covers the interval.
+  defp score_alignment_fit(socket, %{"alignment" => alignment}) do
+    anchors = fit_anchor_points(socket)
+
+    fit =
+      case FloorplanTransform.residual_rmse_meters(
+             alignment_from_payload(alignment),
+             socket.assigns.floorplan_image_w,
+             socket.assigns.floorplan_image_h,
+             anchors
+           ) do
+        {:ok, %{rmse_meters: rmse, anchor_count: count}} ->
+          %{status: :ready, rmse_meters: rmse, anchor_count: count}
+
+        # The error carries no count by design, so the caller supplies the one
+        # it already has: every anchor this builder keeps projects successfully
+        # under a valid alignment, so the built count is the surviving count.
+        {:error, :insufficient_anchors} ->
+          %{status: :insufficient_anchors, anchor_count: length(anchors)}
+
+        # An unusable alignment or an image whose natural size has not arrived
+        # yet — the same condition that disables `#map-alignment-apply`. Neither
+        # is a crash and neither is a measurement.
+        {:error, _reason} ->
+          %{status: :unavailable}
+      end
+
+    assign(socket, :alignment_fit, fit)
+  end
+
+  defp score_alignment_fit(socket, _params), do: socket
+
+  # The payload arrives string-keyed from the client; `residual_rmse_meters/4`
+  # validates atom keys. A missing or non-numeric field falls through its
+  # `{:error, :invalid_alignment}` branch rather than raising.
+  defp alignment_from_payload(%{} = alignment) do
+    %{
+      center_lat: Map.get(alignment, "center_lat"),
+      center_lon: Map.get(alignment, "center_lon"),
+      scale_mpp: Map.get(alignment, "scale_mpp"),
+      rotation_deg: Map.get(alignment, "rotation_deg")
+    }
+  end
+
+  defp alignment_from_payload(_), do: %{}
+
+  # The anchors are the stops the `anchor_count` assign counts: on the active
+  # level with a diagram coordinate and a geographic position. A stop whose
+  # diagram coordinate does not normalize is dropped, so the list is exactly
+  # what `residual_rmse_meters/4` can score.
+  defp fit_anchor_points(socket) do
+    socket.assigns
+    |> Map.get(:child_stops_list, [])
+    |> Enum.filter(& &1.on_active_level)
+    |> Enum.flat_map(fn stop ->
+      with %{x: x, y: y} <- Coordinates.normalize_point(stop.diagram_coordinate),
+           lat when is_number(lat) <- anchor_coordinate(stop.stop_lat),
+           lon when is_number(lon) <- anchor_coordinate(stop.stop_lon) do
+        [%{x: x, y: y, lat: lat, lon: lon}]
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  # `stops.stop_lat`/`stop_lon` are `:decimal` columns and
+  # `residual_rmse_meters/4` requires `is_number/1` — it silently skips a
+  # `Decimal` anchor, which would report every level as short of anchors.
+  # Mirrors `Gtfs.direct_candidates_for/1`'s conversion. NaN and infinity have
+  # no float representation and are dropped rather than raised out of a
+  # debounced event.
+  defp anchor_coordinate(%Decimal{} = value) do
+    if Decimal.nan?(value) or Decimal.inf?(value), do: nil, else: Decimal.to_float(value)
+  end
+
+  defp anchor_coordinate(value) when is_number(value), do: value * 1.0
+  defp anchor_coordinate(_), do: nil
 
   # Package 08 step 4: review-vocabulary copy. The legacy preview helpers were
   # removed in the same cutover that wired this contract (INV-2).
@@ -4483,6 +4621,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket
              |> assign(:active_stop_level, updated)
              |> assign(:alignment_preview, nil)
+             |> assign(:alignment_unsaved?, false)
              |> load_station_stop_levels_cache()
              |> push_event("alignment_saved", %{
                generation: socket.assigns.map_generation,
@@ -4567,7 +4706,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     levels_data = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
     levels = Enum.map(levels_data, & &1.level)
 
-    socket = assign(socket, :levels, levels)
+    socket =
+      socket
+      |> assign(:levels, levels)
+      |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
 
     socket =
       case socket.assigns.active_level do
@@ -7809,9 +7951,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            level_uuid
          ) do
       {:ok, :removed} ->
-        levels =
+        levels_data =
           Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
-          |> Enum.map(& &1.level)
+
+        levels = Enum.map(levels_data, & &1.level)
 
         station_level_ids = Enum.map(levels, & &1.id)
 
@@ -7825,6 +7968,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:levels, levels)
+         |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
          |> assign(:available_levels, available_levels)
          |> assign(:active_level, active_level)
          |> assign(:show_level_modal, nil)

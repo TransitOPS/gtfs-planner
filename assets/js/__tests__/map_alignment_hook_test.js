@@ -1100,30 +1100,53 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
       animate: false,
     });
     expect(reposition).toHaveBeenCalledTimes(1);
+
+    // The zoom path debounces a real 400ms invalidation. Production disposes it
+    // in destroyed(); a test that walks away leaves the callback to fire after
+    // the fixture DOM is gone and crash an unrelated later test.
+    hook._clearTransformInvalidationTimer();
   });
 });
 
 describe("map_alignment_hook _handleZoomSliderInput user-adjusted marking", () => {
-  const makeHook = (getZoom) => ({
-    ...MapAlignmentHook,
-    overlay: document.createElement("div"),
-    leafletEl: (() => {
-      const el = document.createElement("div");
-      el.getBoundingClientRect = () => ({ width: 500, height: 400 });
-      return el;
-    })(),
-    _activePinsRoot: null,
-    _activeChildStops: [],
-    transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
-    _otherLevels: { reposition: vi.fn() },
-    _userAdjustedTransform: false,
-    leafletMap: {
-      getZoom: vi.fn(() => getZoom),
-      setZoom: vi.fn(),
-      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
-      latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
-    },
+  // Every hook this describe builds debounces a real 400ms invalidation the
+  // moment the zoom actually changes. Production disposes that timer in
+  // destroyed(); without the same cleanup here the callback fires long after
+  // the test returns and throws inside whichever test is running then.
+  const liveHooks = [];
+
+  afterEach(() => {
+    liveHooks.splice(0).forEach((hook) => {
+      hook._clearTransformInvalidationTimer();
+    });
   });
+
+  const makeHook = (getZoom) =>
+    registerHook({
+      ...MapAlignmentHook,
+      overlay: document.createElement("div"),
+      leafletEl: (() => {
+        const el = document.createElement("div");
+        el.getBoundingClientRect = () => ({ width: 500, height: 400 });
+        return el;
+      })(),
+      _activePinsRoot: null,
+      _activeChildStops: [],
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _otherLevels: { reposition: vi.fn() },
+      _userAdjustedTransform: false,
+      leafletMap: {
+        getZoom: vi.fn(() => getZoom),
+        setZoom: vi.fn(),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
+      },
+    });
+
+  function registerHook(hook) {
+    liveHooks.push(hook);
+    return hook;
+  }
 
   it("marks _userAdjustedTransform and applies the zoom update on a changed value", () => {
     const hook = makeHook(16);
@@ -2368,6 +2391,35 @@ describe("map_alignment_hook saved/preview state machine", () => {
       expect(hook._applyTransform).toHaveBeenCalled();
     });
 
+    it("re-measures the map container before deriving the restored transform", () => {
+      const { hook } = buildPartialHook({
+        generation: "gen-1",
+        savedAlignment: {
+          center_lat: 60,
+          center_lon: 110,
+          scale_mpp: 0.3,
+          rotation_deg: 0,
+        },
+      });
+
+      // The LiveView patch that delivers this event also removes the unsaved
+      // indicator, so the container has already changed height while Leaflet
+      // still reports the pre-patch projection.
+      let staleOffset = 20;
+      hook.leafletMap.latLngToContainerPoint = vi.fn(([lat, lon]) => ({
+        x: lon,
+        y: lat - staleOffset,
+      }));
+      hook.leafletMap.invalidateSize = vi.fn(() => {
+        staleOffset = 0;
+      });
+      hook._applyTransform = vi.fn();
+
+      hook._handleRestoreSavedTransform({ generation: "gen-1" });
+
+      expect(hook.transform.ty).toBe(-40);
+    });
+
     it("applies identity when no saved alignment exists", () => {
       const { hook } = buildPartialHook({
         generation: "gen-1",
@@ -3136,7 +3188,16 @@ describe("map_alignment_hook saved/preview state machine", () => {
       vi.advanceTimersByTime(401);
       const calls = invalidationCalls(hook);
       expect(calls).toHaveLength(1);
-      expect(calls[0][1]).toEqual({ generation: "gen-invalidation" });
+      expect(calls[0][1]).toEqual({
+        generation: "gen-invalidation",
+        unsaved: true,
+        alignment: {
+          center_lat: expect.any(Number),
+          center_lon: expect.any(Number),
+          scale_mpp: expect.any(Number),
+          rotation_deg: expect.any(Number),
+        },
+      });
 
       restore();
     });
@@ -3561,6 +3622,1632 @@ describe("map_alignment_hook saved/preview state machine", () => {
       hook._applyOtherLevelOverlayTransform(el, alignment);
 
       expect(el.style.transform).toContain("rotate(5deg)");
+    });
+  });
+});
+
+describe("map_alignment_hook transform steps, readouts, and unsaved reporting", () => {
+  const GENERATION = "gen-step4";
+  const DEBOUNCE_MS = 401;
+
+  // The debounced payload now carries the hook's computed alignment. These
+  // tests are about `unsaved`, so they pin the key and its field types; the
+  // exact geometry is pinned once, in "carries the computed alignment".
+  const NUMERIC_ALIGNMENT = {
+    center_lat: expect.any(Number),
+    center_lon: expect.any(Number),
+    scale_mpp: expect.any(Number),
+    rotation_deg: expect.any(Number),
+  };
+
+  // Opposing nudge pairs in both orders. Applying one and then the other at the
+  // same modifier state must return the transform to where it started — the
+  // defect this package exists to fix.
+  const OPPOSING_SEQUENCES = [
+    ["left", "right"],
+    ["right", "left"],
+    ["up", "down"],
+    ["down", "up"],
+    ["rotate-left", "rotate-right"],
+    ["rotate-right", "rotate-left"],
+    ["scale-down", "scale-up"],
+    ["scale-up", "scale-down"],
+  ];
+
+  // Step sizes read from _adjustTransform: 2 px / 1° / ×1.01 fine,
+  // 10 px / 5° / ×1.1 coarse.
+  const FINE_STEPS = [
+    ["left", "tx", -2],
+    ["right", "tx", 2],
+    ["up", "ty", -2],
+    ["down", "ty", 2],
+    ["rotate-left", "rotation", -1],
+    ["rotate-right", "rotation", 1],
+    ["scale-down", "scale", 1 / 1.01],
+    ["scale-up", "scale", 1.01],
+  ];
+
+  const COARSE_STEPS = [
+    ["left", "tx", -10],
+    ["right", "tx", 10],
+    ["up", "ty", -10],
+    ["down", "ty", 10],
+    ["rotate-left", "rotation", -5],
+    ["rotate-right", "rotation", 5],
+    ["scale-down", "scale", 1 / 1.1],
+    ["scale-up", "scale", 1.1],
+  ];
+
+  const TRANSFORM_BUTTONS = `
+    <button id="map-transform-left-fine" data-map-transform-action="left" data-map-transform-coarse="false"></button>
+    <button id="map-transform-up-fine" data-map-transform-action="up" data-map-transform-coarse="false"></button>
+    <button id="map-transform-down-fine" data-map-transform-action="down" data-map-transform-coarse="false"></button>
+    <button id="map-transform-right-fine" data-map-transform-action="right" data-map-transform-coarse="false"></button>
+    <button id="map-transform-rotate-left-fine" data-map-transform-action="rotate-left" data-map-transform-coarse="false"></button>
+    <button id="map-transform-rotate-right-fine" data-map-transform-action="rotate-right" data-map-transform-coarse="false"></button>
+    <button id="map-transform-scale-down-fine" data-map-transform-action="scale-down" data-map-transform-coarse="false"></button>
+    <button id="map-transform-scale-up-fine" data-map-transform-action="scale-up" data-map-transform-coarse="false"></button>
+  `;
+
+  let originalL;
+  let originalFetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    originalL = window.L;
+    originalFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    window.L = originalL;
+    global.fetch = originalFetch;
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  function stubGeometry() {
+    const overlay = document.getElementById("map-alignment-overlay");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const activeImg = document.getElementById("active-img");
+
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
+  }
+
+  function bootHook(initialZoom) {
+    stubGeometry();
+
+    const zoomState = { current: initialZoom };
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn((value) => {
+        zoomState.current = value;
+      }),
+      getZoom: vi.fn(() => zoomState.current),
+      getMinZoom: vi.fn(() => 19),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: document.getElementById("root"),
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    const zoomEndEntry = mapInstance.on.mock.calls.find(
+      ([event]) => event === "zoomend",
+    );
+
+    return {
+      hook,
+      mapInstance,
+      setMapZoom: (value) => {
+        zoomState.current = value;
+      },
+      fireZoomEnd: zoomEndEntry ? zoomEndEntry[1] : null,
+    };
+  }
+
+  // Full production-shaped strip: eight symmetric fine-step buttons, a legacy
+  // data-map-transform-coarse="true" control, all five readout elements, and
+  // the conditionally-rendered other-levels slider.
+  function mountAlignHook(initialZoom = 19) {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="19" data-map-generation="${GENERATION}">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <div id="map-alignment-pins-active"></div>
+        <div id="map-other-overlays"></div>
+        <div id="map-other-pins"></div>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        ${TRANSFORM_BUTTONS}
+        <button id="legacy-coarse-right" data-map-transform-action="right" data-map-transform-coarse="true"></button>
+        <div class="tooltip" data-tip="Floorplan opacity · 70%">
+          <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
+        <span id="map-alignment-zoom-value">19.0</span>
+        <input id="map-alignment-zoom" type="range" min="19" max="22" step="0.5" value="19" />
+        <div class="tooltip" data-tip="Other-levels opacity · 70%">
+          <input id="map-other-overlays-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+      </div>
+    `;
+
+    return bootHook(initialZoom);
+  }
+
+  // Partial DOM, the shape the older isolated fixtures mount: no readout
+  // elements at all and no other-levels slider.
+  function mountReadoutFreeHook() {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="19" data-map-generation="${GENERATION}">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <div id="map-alignment-pins-active"></div>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        ${TRANSFORM_BUTTONS}
+        <div class="tooltip" data-tip="Floorplan opacity · 70%">
+          <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
+        <input id="map-alignment-zoom" type="range" min="19" max="22" step="0.5" value="19" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+      </div>
+    `;
+
+    return bootHook(19);
+  }
+
+  function clickTransform(action, shiftKey) {
+    document
+      .querySelector(
+        `[data-map-transform-action="${action}"][data-map-transform-coarse="false"]`,
+      )
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey }));
+  }
+
+  function dispatchPointer(target, type, clientX, clientY) {
+    const event = new Event(type, { bubbles: true });
+    event.button = 0;
+    event.clientX = clientX;
+    event.clientY = clientY;
+    event.pointerId = 1;
+    target.dispatchEvent(event);
+  }
+
+  function sliderInput(id, value) {
+    const slider = document.getElementById(id);
+    slider.value = value;
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function readoutText(id) {
+    return document.getElementById(id).textContent;
+  }
+
+  function invalidationPayloads(hook) {
+    return hook.pushEvent.mock.calls
+      .filter(([name]) => name === "alignment_transform_changed")
+      .map(([, payload]) => payload);
+  }
+
+  describe("opposing nudges are inverse at equal modifier state", () => {
+    it.each(OPPOSING_SEQUENCES)(
+      "a plain %s click then a plain %s click returns the transform to its start",
+      (first, second) => {
+        const { hook } = mountAlignHook();
+        const start = { ...hook.transform };
+
+        clickTransform(first, false);
+        clickTransform(second, false);
+
+        expect(hook.transform.tx).toBe(start.tx);
+        expect(hook.transform.ty).toBe(start.ty);
+        expect(hook.transform.rotation).toBe(start.rotation);
+        expect(hook.transform.scale).toBeCloseTo(start.scale, 10);
+      },
+    );
+
+    it.each(OPPOSING_SEQUENCES)(
+      "a Shift %s click then a Shift %s click returns the transform to its start",
+      (first, second) => {
+        const { hook } = mountAlignHook();
+        const start = { ...hook.transform };
+
+        clickTransform(first, true);
+        clickTransform(second, true);
+
+        expect(hook.transform.tx).toBe(start.tx);
+        expect(hook.transform.ty).toBe(start.ty);
+        expect(hook.transform.rotation).toBe(start.rotation);
+        expect(hook.transform.scale).toBeCloseTo(start.scale, 10);
+      },
+    );
+  });
+
+  describe("Shift resolves the coarse step", () => {
+    it.each(FINE_STEPS)(
+      "a plain click on %s applies the fine step to %s",
+      (action, field, expected) => {
+        const { hook } = mountAlignHook();
+
+        clickTransform(action, false);
+
+        expect(hook.transform[field]).toBeCloseTo(expected, 10);
+      },
+    );
+
+    it.each(COARSE_STEPS)(
+      "a Shift-click on %s applies the coarse step to %s",
+      (action, field, expected) => {
+        const { hook } = mountAlignHook();
+
+        clickTransform(action, true);
+
+        expect(hook.transform[field]).toBeCloseTo(expected, 10);
+      },
+    );
+
+    it("a plain click on a coarse-flagged control still applies the coarse step", () => {
+      const { hook } = mountAlignHook();
+
+      document
+        .getElementById("legacy-coarse-right")
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+      expect(hook.transform.tx).toBe(10);
+    });
+  });
+
+  // Rotation and scale carry no on-screen readout: the pad is icon-only and the
+  // operator judges the fit from the floorplan and the residual in the commit
+  // bar. The transform the buttons produce is still the contract.
+  describe("transform nudges", () => {
+    it("applies the coarse rotate step on a Shift rotate nudge", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("rotate-right", true);
+
+      expect(hook.transform.rotation).toBe(5);
+    });
+
+    it("applies the coarse scale step on a Shift scale nudge", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("scale-up", true);
+
+      expect(hook.transform.scale).toBeCloseTo(1.1, 5);
+    });
+
+    it("leaves rotation and scale untouched on the pointer-drag path", () => {
+      const { hook } = mountAlignHook();
+      const overlay = document.getElementById("map-alignment-overlay");
+
+      dispatchPointer(overlay, "pointerdown", 100, 50);
+      dispatchPointer(overlay, "pointermove", 120, 60);
+      dispatchPointer(overlay, "pointerup", 120, 60);
+
+      expect(hook.transform).toMatchObject({
+        tx: 20,
+        ty: 10,
+        rotation: 0,
+        scale: 1,
+      });
+    });
+
+    it("writes no rotation or scale readout even when one is present", () => {
+      const { hook } = mountAlignHook();
+      const stray = document.createElement("span");
+      stray.id = "map-alignment-rotation-value";
+      stray.textContent = "untouched";
+      document.body.appendChild(stray);
+
+      hook.transform = { tx: 4, ty: 6, rotation: 12.34, scale: 0.857 };
+      hook._applyTransform();
+
+      expect(stray.textContent).toBe("untouched");
+    });
+  });
+
+  describe("slider readouts", () => {
+    it("writes the floorplan-opacity percentage into the slider tooltip on input", () => {
+      mountAlignHook();
+
+      sliderInput("map-alignment-opacity", "0.35");
+
+      expect(
+        document
+          .getElementById("map-alignment-opacity")
+          .closest(".tooltip")
+          .getAttribute("data-tip"),
+      ).toBe("Floorplan opacity · 35%");
+    });
+
+    it("writes the map-zoom readout to one decimal on input", () => {
+      mountAlignHook();
+
+      sliderInput("map-alignment-zoom", "20.5");
+
+      expect(readoutText("map-alignment-zoom-value")).toBe("20.5");
+    });
+
+    it("writes the other-levels opacity percentage into the slider tooltip on input", () => {
+      mountAlignHook();
+
+      sliderInput("map-other-overlays-opacity", "0.4");
+
+      expect(
+        document
+          .getElementById("map-other-overlays-opacity")
+          .closest(".tooltip")
+          .getAttribute("data-tip"),
+      ).toBe("Other-levels opacity · 40%");
+    });
+
+    it("writes the map-zoom readout when the map zoom changes without slider input", () => {
+      const { setMapZoom, fireZoomEnd } = mountAlignHook();
+
+      setMapZoom(21);
+      fireZoomEnd();
+
+      expect(readoutText("map-alignment-zoom-value")).toBe("21.0");
+    });
+
+    it("writes the map-zoom readout from the live map zoom at mount", () => {
+      mountAlignHook(21);
+
+      expect(readoutText("map-alignment-zoom-value")).toBe("21.0");
+    });
+  });
+
+  describe("partial DOM tolerance", () => {
+    it("completes a transform nudge and a slider input when no readout elements exist", () => {
+      const { hook } = mountReadoutFreeHook();
+
+      expect(() => hook._adjustTransform("left", true)).not.toThrow();
+      expect(() =>
+        hook._onOpacityInput({ target: { value: "0.4" } }),
+      ).not.toThrow();
+      expect(() =>
+        hook._handleZoomSliderInput({ target: { value: "20" } }),
+      ).not.toThrow();
+
+      expect(hook.transform.tx).toBe(-10);
+      expect(
+        document.getElementById("map-alignment-overlay").style.opacity,
+      ).toBe("0.4");
+    });
+
+    it("syncs slider readouts without throwing when no slider is bound", () => {
+      const hook = { ...MapAlignmentHook };
+
+      expect(() => hook._syncSliderReadouts()).not.toThrow();
+    });
+  });
+
+  describe("unsaved reporting in the debounced payload", () => {
+    it("reports unsaved true after an operator nudge", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
+      ]);
+    });
+
+    it("reports unsaved true after an overlay drag", () => {
+      const { hook } = mountAlignHook();
+      const overlay = document.getElementById("map-alignment-overlay");
+
+      dispatchPointer(overlay, "pointerdown", 100, 50);
+      dispatchPointer(overlay, "pointermove", 120, 60);
+      dispatchPointer(overlay, "pointerup", 120, 60);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
+      ]);
+    });
+
+    it("reports unsaved false after restoring the saved transform", () => {
+      const { hook } = mountAlignHook();
+
+      hook._handleRestoreSavedTransform({ generation: GENERATION });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: false,
+          alignment: NUMERIC_ALIGNMENT,
+        },
+      ]);
+    });
+
+    it("reports unsaved true after applying an assisted preview", () => {
+      const { hook } = mountAlignHook();
+
+      hook._handleApplyPreviewTransform({
+        generation: GENERATION,
+        center_lat: 40.71,
+        center_lon: -74.01,
+        scale_mpp: 0.3,
+        rotation_deg: 5,
+      });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
+      ]);
+    });
+
+    it("keeps the assisted preview active while reporting it unsaved", () => {
+      const { hook } = mountAlignHook();
+
+      hook._handleApplyPreviewTransform({
+        generation: GENERATION,
+        center_lat: 40.71,
+        center_lon: -74.01,
+        scale_mpp: 0.3,
+        rotation_deg: 5,
+      });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(hook._previewActive).toBe(true);
+      expect(
+        hook.pushEvent.mock.calls.filter(
+          ([name]) => name === "alignment_preview_adjusted",
+        ),
+      ).toHaveLength(0);
+    });
+
+    it("reports unsaved false after a map recenter", () => {
+      const { hook } = mountAlignHook();
+
+      hook._onApplyCenter();
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: false,
+          alignment: NUMERIC_ALIGNMENT,
+        },
+      ]);
+    });
+
+    it("reports unsaved false when a restore follows a nudge inside one debounce window", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(100);
+      hook._handleRestoreSavedTransform({ generation: GENERATION });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: false,
+          alignment: NUMERIC_ALIGNMENT,
+        },
+      ]);
+    });
+
+    it("reports unsaved true when a nudge follows a restore inside one debounce window", () => {
+      const { hook } = mountAlignHook();
+
+      hook._handleRestoreSavedTransform({ generation: GENERATION });
+      vi.advanceTimersByTime(100);
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        { generation: GENERATION, unsaved: true, alignment: NUMERIC_ALIGNMENT },
+      ]);
+    });
+
+    it("reports nothing when an opened coordinate review consumes the pending push", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      document
+        .getElementById("map-alignment-apply")
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(hook._transformInvalidationTimer).toBeNull();
+      expect(invalidationPayloads(hook)).toEqual([]);
+      expect(
+        hook.pushEvent.mock.calls.filter(
+          ([name]) => name === "open_coordinate_review",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("reports nothing after the hook is destroyed mid-window", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      hook.destroyed();
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(hook._transformInvalidationTimer).toBeNull();
+      expect(invalidationPayloads(hook)).toEqual([]);
+    });
+  });
+
+  describe("alignment in the debounced payload", () => {
+    // The fixture pins every input _computeAlignment reads: a 300x150 Leaflet
+    // box centred on container point (150, 75), a stub projection returning
+    // {lat: y, lng: x}, one metre per canvas pixel, and a 1000x800 image that
+    // object-contains to 187.5 rendered px (0.1875 m per natural pixel at
+    // scale 1). A fine "left" nudge moves the centre to container x = 148.
+    it("carries the computed alignment for the reported transform", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 148,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
+    });
+
+    it("carries the last transform of a coalesced window, not the first", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(100);
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 146,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
+    });
+
+    it("omits the alignment key when the floorplan image is not loaded", () => {
+      const { hook } = mountAlignHook();
+      Object.defineProperty(document.getElementById("active-img"), "complete", {
+        value: false,
+        configurable: true,
+      });
+
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      const [payload] = invalidationPayloads(hook);
+      expect(Object.keys(payload).sort()).toEqual(["generation", "unsaved"]);
+      expect(payload).toEqual({ generation: GENERATION, unsaved: true });
+    });
+
+    it("carries the alignment again after a review cancels a pending window", () => {
+      const { hook } = mountAlignHook();
+
+      clickTransform("left", false);
+      document
+        .getElementById("map-alignment-apply")
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+      clickTransform("left", false);
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 146,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
+    });
+  });
+});
+
+// Part (e) step 8. These fixtures are the only ones in this file shaped like
+// production's *nesting*: #map-alignment-workspace wraps the ignored canvas
+// (the hook root) and #map-alignment-tools is a SIBLING of that canvas, not a
+// child. That relationship is the whole point of the step — a keydown listener
+// on the hook root cannot see a key pressed while focus sits on a tools-panel
+// button, which is the most likely place for focus to be (CRIT-004, INV-10E-3).
+describe("map_alignment_hook keyboard, hold-to-hide, collapse, measuring", () => {
+  const GENERATION = "gen-step8";
+  const DEBOUNCE_MS = 401;
+
+  // Same eight actions the buttons drive, reached by key. Steps are read from
+  // _adjustTransform and must equal the button steps exactly (INV-09D-4).
+  const FINE_KEYS = [
+    ["ArrowLeft", "tx", -2],
+    ["ArrowRight", "tx", 2],
+    ["ArrowUp", "ty", -2],
+    ["ArrowDown", "ty", 2],
+    ["[", "rotation", -1],
+    ["]", "rotation", 1],
+    ["-", "scale", 1 / 1.01],
+    ["=", "scale", 1.01],
+  ];
+
+  // Shift is the coarse modifier. On a US layout it also changes the printable
+  // character the bracket and scale keys report, so the shifted face of each
+  // key has to resolve the same action or Shift+[ would silently do nothing.
+  const COARSE_KEYS = [
+    ["ArrowLeft", "tx", -10],
+    ["ArrowRight", "tx", 10],
+    ["ArrowUp", "ty", -10],
+    ["ArrowDown", "ty", 10],
+    ["{", "rotation", -5],
+    ["}", "rotation", 5],
+    ["_", "scale", 1 / 1.1],
+    ["+", "scale", 1.1],
+  ];
+
+  const IGNORED_TARGET_MARKUP = [
+    ['<input id="guard-input" />', "guard-input"],
+    ['<textarea id="guard-textarea"></textarea>', "guard-textarea"],
+    ['<select id="guard-select"></select>', "guard-select"],
+    [
+      '<div id="guard-contenteditable" contenteditable="true"></div>',
+      "guard-contenteditable",
+    ],
+  ];
+
+  let originalL;
+  let originalFetch;
+  const liveHooks = [];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    originalL = window.L;
+    originalFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    liveHooks.splice(0).forEach((hook) => hook.destroyed());
+    window.L = originalL;
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  function bootHook() {
+    const overlay = document.getElementById("map-alignment-overlay");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const activeImg = document.getElementById("active-img");
+
+    leafletEl.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    overlay.getBoundingClientRect = () => ({
+      width: 300,
+      height: 150,
+      left: 0,
+      top: 0,
+    });
+    Object.defineProperty(activeImg, "complete", {
+      value: true,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalWidth", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(activeImg, "naturalHeight", {
+      value: 800,
+      configurable: true,
+    });
+
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn(),
+      getZoom: vi.fn(() => 19),
+      getMinZoom: vi.fn(() => 19),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: document.getElementById("root"),
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+    liveHooks.push(hook);
+
+    return { hook, mapInstance };
+  }
+
+  const TOOLS_PANEL = `
+    <div id="map-alignment-tools">
+      <div id="tools-header">
+        <button id="map-alignment-tools-toggle" type="button" data-collapsed="false" data-tip="Hide tools" aria-label="Hide tools"></button>
+      </div>
+      <div id="tools-transform">
+        <button id="map-transform-left-fine" data-map-transform-action="left" data-map-transform-coarse="false"></button>
+        <button id="map-transform-up-fine" data-map-transform-action="up" data-map-transform-coarse="false"></button>
+        <button id="map-transform-down-fine" data-map-transform-action="down" data-map-transform-coarse="false"></button>
+        <button id="map-transform-right-fine" data-map-transform-action="right" data-map-transform-coarse="false"></button>
+        <button id="map-transform-rotate-left-fine" data-map-transform-action="rotate-left" data-map-transform-coarse="false"></button>
+        <button id="map-transform-rotate-right-fine" data-map-transform-action="rotate-right" data-map-transform-coarse="false"></button>
+        <button id="map-transform-scale-down-fine" data-map-transform-action="scale-down" data-map-transform-coarse="false"></button>
+        <button id="map-transform-scale-up-fine" data-map-transform-action="scale-up" data-map-transform-coarse="false"></button>
+      </div>
+      <button id="map-alignment-restore-saved" type="button" disabled>Restore saved alignment</button>
+      <div id="tools-opacity">
+        <div class="tooltip" data-tip="Floorplan opacity · 70%">
+          <input id="map-alignment-opacity" type="range" min="0" max="1" step="0.05" value="0.7" />
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Production nesting. Everything the hook reads through `root.querySelector`
+  // stays inside the canvas; every control the hook reaches by id sits outside
+  // it, exactly as the server renders it.
+  function mountWorkspaceHook({
+    workspace = true,
+    tools = true,
+    residual = true,
+  } = {}) {
+    const canvas = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="19" data-map-generation="${GENERATION}">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <div id="map-alignment-pins-active"></div>
+        <div id="map-other-overlays"></div>
+        <div id="map-other-pins"></div>
+      </div>
+    `;
+
+    const inner = `${canvas}${tools ? TOOLS_PANEL : ""}`;
+
+    document.body.innerHTML = `
+      ${
+        workspace
+          ? `<div id="map-alignment-workspace" tabindex="-1">${inner}</div>`
+          : `<div id="not-the-workspace">${inner}</div>`
+      }
+      <div id="map-alignment-commit-bar">
+        ${
+          residual
+            ? `<div id="map-alignment-residual" class="group" data-fit-state="ready">
+                 <span id="residual-label">Measured fit</span>
+                 <span id="map-alignment-residual-value">1.4 m · 3 anchors</span>
+               </div>`
+            : ""
+        }
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-zoom" type="range" min="19" max="22" step="0.5" value="19" />
+        <span id="map-alignment-zoom-value">19.0</span>
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+      </div>
+      <input id="outside-the-workspace" />
+    `;
+
+    return bootHook();
+  }
+
+  function keydown(target, key, init = {}) {
+    const event = new KeyboardEvent("keydown", {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  function keyup(target, key, init = {}) {
+    const event = new KeyboardEvent("keyup", {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  function overlayOpacity() {
+    return document.getElementById("map-alignment-overlay").style.opacity;
+  }
+
+  function residualState() {
+    return document
+      .getElementById("map-alignment-residual")
+      .getAttribute("data-fit-state");
+  }
+
+  function residualValue() {
+    return document.getElementById("map-alignment-residual-value").textContent;
+  }
+
+  function invalidationPayloads(hook) {
+    return hook.pushEvent.mock.calls
+      .filter(([name]) => name === "alignment_transform_changed")
+      .map(([, payload]) => payload);
+  }
+
+  describe("keyboard nudging", () => {
+    it.each(FINE_KEYS)(
+      "applies the fine step for %s",
+      (key, field, expected) => {
+        const { hook } = mountWorkspaceHook();
+        const start = { ...hook.transform };
+
+        keydown(document.getElementById("map-alignment-workspace"), key);
+
+        const delta =
+          field === "scale"
+            ? hook.transform.scale / start.scale
+            : hook.transform[field] - start[field];
+        expect(delta).toBeCloseTo(expected, 10);
+      },
+    );
+
+    it.each(COARSE_KEYS)(
+      "applies the coarse step for Shift+%s",
+      (key, field, expected) => {
+        const { hook } = mountWorkspaceHook();
+        const start = { ...hook.transform };
+
+        keydown(document.getElementById("map-alignment-workspace"), key, {
+          shiftKey: true,
+        });
+
+        const delta =
+          field === "scale"
+            ? hook.transform.scale / start.scale
+            : hook.transform[field] - start[field];
+        expect(delta).toBeCloseTo(expected, 10);
+      },
+    );
+
+    // The binding-scope regression guard. A listener on the hook root would
+    // never see this event, because the tools panel is not inside the root.
+    it("nudges when the key event target is a button inside the tools panel", () => {
+      const { hook } = mountWorkspaceHook();
+      const toolsButton = document.getElementById("map-transform-left-fine");
+
+      expect(document.getElementById("root").contains(toolsButton)).toBe(false);
+
+      keydown(toolsButton, "ArrowLeft");
+
+      expect(hook.transform.tx).toBe(-2);
+    });
+
+    it("reports the keyboard nudge as an operator gesture in the debounced payload", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toEqual([
+        {
+          generation: GENERATION,
+          unsaved: true,
+          alignment: {
+            center_lat: 75,
+            center_lon: 148,
+            scale_mpp: 0.1875,
+            rotation_deg: 0,
+          },
+        },
+      ]);
+    });
+
+    it("calls preventDefault on a handled key", () => {
+      mountWorkspaceHook();
+
+      const event = keydown(
+        document.getElementById("map-alignment-workspace"),
+        "ArrowLeft",
+      );
+
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("leaves Tab traversal intact by not preventing an unhandled key", () => {
+      const { hook } = mountWorkspaceHook();
+      const start = { ...hook.transform };
+
+      const event = keydown(
+        document.getElementById("map-alignment-workspace"),
+        "Tab",
+      );
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(hook.transform).toEqual(start);
+    });
+
+    it.each(IGNORED_TARGET_MARKUP)(
+      "ignores a key raised on %s",
+      (markup, id) => {
+        const { hook } = mountWorkspaceHook();
+        document
+          .getElementById("map-alignment-workspace")
+          .insertAdjacentHTML("beforeend", markup);
+        const start = { ...hook.transform };
+
+        const event = keydown(document.getElementById(id), "ArrowLeft");
+
+        expect(hook.transform).toEqual(start);
+        expect(event.defaultPrevented).toBe(false);
+      },
+    );
+
+    it.each([["metaKey"], ["ctrlKey"], ["altKey"]])(
+      "ignores a key held with %s",
+      (modifier) => {
+        const { hook } = mountWorkspaceHook();
+        const start = { ...hook.transform };
+
+        const event = keydown(
+          document.getElementById("map-alignment-workspace"),
+          "ArrowLeft",
+          { [modifier]: true },
+        );
+
+        expect(hook.transform).toEqual(start);
+        expect(event.defaultPrevented).toBe(false);
+      },
+    );
+
+    // The overlay's pointerdown calls preventDefault to stop the image drag,
+    // which also suppresses the browser's click-to-focus. Without an explicit
+    // focus the operator's most common gesture leaves focus outside the
+    // workspace and every shortcut here is dead.
+    it("hands the workspace focus when the operator grabs the floorplan", () => {
+      mountWorkspaceHook();
+      document.getElementById("map-alignment-save").focus();
+
+      const event = new Event("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+      });
+      event.button = 0;
+      event.clientX = 10;
+      event.clientY = 10;
+      event.pointerId = 1;
+      document.getElementById("map-alignment-overlay").dispatchEvent(event);
+
+      expect(document.activeElement).toBe(
+        document.getElementById("map-alignment-workspace"),
+      );
+    });
+
+    it("leaves focus alone when it is already inside the workspace", () => {
+      mountWorkspaceHook();
+      const button = document.getElementById("map-transform-left-fine");
+      button.focus();
+
+      const event = new Event("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+      });
+      event.button = 0;
+      event.clientX = 10;
+      event.clientY = 10;
+      event.pointerId = 1;
+      document.getElementById("map-alignment-overlay").dispatchEvent(event);
+
+      expect(document.activeElement).toBe(button);
+    });
+
+    it("stops nudging after the hook is destroyed", () => {
+      const { hook } = mountWorkspaceHook();
+      hook.destroyed();
+      const start = { ...hook.transform };
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+
+      expect(hook.transform).toEqual(start);
+    });
+
+    it("rebinds keyboard shortcuts when a patch replaces the workspace", () => {
+      const { hook } = mountWorkspaceHook();
+      const oldWorkspace = document.getElementById("map-alignment-workspace");
+      const newWorkspace = document.createElement("div");
+      newWorkspace.id = "map-alignment-workspace";
+      newWorkspace.tabIndex = -1;
+
+      keydown(oldWorkspace, "h");
+      expect(overlayOpacity()).toBe("0");
+
+      while (oldWorkspace.firstChild) {
+        newWorkspace.appendChild(oldWorkspace.firstChild);
+      }
+      oldWorkspace.replaceWith(newWorkspace);
+      hook.updated();
+
+      expect(overlayOpacity()).toBe("0.7");
+      expect(hook._holdToHideActive).toBe(false);
+
+      keydown(oldWorkspace, "ArrowLeft");
+      expect(hook.transform.tx).toBe(0);
+
+      keydown(newWorkspace, "ArrowLeft");
+      expect(hook.transform.tx).toBe(-2);
+    });
+  });
+
+  describe("hold-to-hide", () => {
+    it("blanks the active overlay while H is held and restores it on keyup", () => {
+      mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+
+      keydown(workspace, "h");
+      expect(overlayOpacity()).toBe("0");
+
+      keyup(workspace, "h");
+      expect(overlayOpacity()).toBe("0.7");
+    });
+
+    it("restores to the opacity slider's current value, not the value at engage time", () => {
+      mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+      const slider = document.getElementById("map-alignment-opacity");
+
+      keydown(workspace, "h");
+      expect(overlayOpacity()).toBe("0");
+
+      slider.value = "0.35";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+      expect(overlayOpacity()).toBe("0");
+
+      keyup(workspace, "h");
+
+      expect(overlayOpacity()).toBe("0.35");
+    });
+
+    it("never writes the opacity slider's own value during a hold", () => {
+      mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+      const slider = document.getElementById("map-alignment-opacity");
+
+      keydown(workspace, "h");
+      expect(overlayOpacity()).toBe("0");
+      expect(slider.value).toBe("0.7");
+
+      keyup(workspace, "h");
+
+      expect(slider.value).toBe("0.7");
+    });
+
+    it("treats key repeat as one engagement and a single keyup as the release", () => {
+      const { hook } = mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+
+      keydown(workspace, "h", { repeat: false });
+      keydown(workspace, "h", { repeat: true });
+      keydown(workspace, "h", { repeat: true });
+      expect(overlayOpacity()).toBe("0");
+
+      keyup(workspace, "h");
+
+      expect(overlayOpacity()).toBe("0.7");
+      expect(hook._holdToHideActive).toBe(false);
+    });
+
+    it("does not release on a keyup for another key", () => {
+      mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+
+      keydown(workspace, "h");
+      keyup(workspace, "ArrowLeft");
+
+      expect(overlayOpacity()).toBe("0");
+    });
+
+    it.each([
+      ["window blur", () => window.dispatchEvent(new Event("blur"))],
+      [
+        "document visibilitychange",
+        () => document.dispatchEvent(new Event("visibilitychange")),
+      ],
+      [
+        "focusin outside the workspace",
+        () =>
+          document
+            .getElementById("outside-the-workspace")
+            .dispatchEvent(new Event("focusin", { bubbles: true })),
+      ],
+    ])(
+      "restores the overlay on %s when the keyup never arrives",
+      (_name, fire) => {
+        mountWorkspaceHook();
+
+        keydown(document.getElementById("map-alignment-workspace"), "h");
+        expect(overlayOpacity()).toBe("0");
+
+        fire();
+
+        expect(overlayOpacity()).toBe("0.7");
+      },
+    );
+
+    it("keeps the overlay hidden when focus moves inside the workspace", () => {
+      mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "h");
+      document
+        .getElementById("map-transform-left-fine")
+        .dispatchEvent(new Event("focusin", { bubbles: true }));
+
+      expect(overlayOpacity()).toBe("0");
+    });
+
+    it("is idempotent across a doubled release", () => {
+      const { hook } = mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+      const slider = document.getElementById("map-alignment-opacity");
+
+      keydown(workspace, "h");
+      keyup(workspace, "h");
+      slider.value = "0.2";
+      keyup(workspace, "h");
+      window.dispatchEvent(new Event("blur"));
+
+      expect(overlayOpacity()).toBe("0.7");
+      expect(hook._holdToHideActive).toBe(false);
+    });
+
+    it("restores the overlay when the hook is destroyed mid-hold", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "h");
+      hook.destroyed();
+
+      expect(overlayOpacity()).toBe("0.7");
+    });
+
+    it("stops watching after destroy", () => {
+      const { hook } = mountWorkspaceHook();
+      hook.destroyed();
+      const overlay = document.getElementById("map-alignment-overlay");
+      overlay.style.opacity = "0.9";
+
+      window.dispatchEvent(new Event("blur"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      document
+        .getElementById("outside-the-workspace")
+        .dispatchEvent(new Event("focusin", { bubbles: true }));
+
+      expect(overlay.style.opacity).toBe("0.9");
+    });
+  });
+
+  describe("tools panel collapse", () => {
+    function controlDisabledMatrix() {
+      return Array.from(
+        document.querySelectorAll(
+          "#map-alignment-tools button, #map-alignment-tools input",
+        ),
+      ).map((control) => [control.id, control.disabled]);
+    }
+
+    it("hides the panel body and reshows it without changing any control's disabled", () => {
+      mountWorkspaceHook();
+      const toggle = document.getElementById("map-alignment-tools-toggle");
+      const body = document.getElementById("tools-transform");
+      const before = controlDisabledMatrix();
+
+      toggle.click();
+      expect(body.style.display).toBe("none");
+      expect(controlDisabledMatrix()).toEqual(before);
+
+      toggle.click();
+      expect(body.style.display).not.toBe("none");
+      expect(controlDisabledMatrix()).toEqual(before);
+    });
+
+    it("hides every panel child except the row that holds the toggle", () => {
+      mountWorkspaceHook();
+
+      document.getElementById("map-alignment-tools-toggle").click();
+
+      expect(document.getElementById("tools-header").style.display).not.toBe(
+        "none",
+      );
+      expect(document.getElementById("tools-transform").style.display).toBe(
+        "none",
+      );
+      expect(
+        document.getElementById("map-alignment-restore-saved").style.display,
+      ).toBe("none");
+      expect(document.getElementById("tools-opacity").style.display).toBe(
+        "none",
+      );
+    });
+
+    it("names the action it will perform", () => {
+      mountWorkspaceHook();
+      const toggle = document.getElementById("map-alignment-tools-toggle");
+
+      expect(toggle.getAttribute("data-tip")).toBe("Hide tools");
+      expect(toggle.getAttribute("data-collapsed")).toBe("false");
+      toggle.click();
+      expect(toggle.getAttribute("data-tip")).toBe("Show tools");
+      expect(toggle.getAttribute("aria-label")).toBe("Show tools");
+      expect(toggle.getAttribute("data-collapsed")).toBe("true");
+      toggle.click();
+      expect(toggle.getAttribute("data-tip")).toBe("Hide tools");
+      expect(toggle.getAttribute("data-collapsed")).toBe("false");
+    });
+
+    it("settles on the same DOM for repeated toggles", () => {
+      mountWorkspaceHook();
+      const toggle = document.getElementById("map-alignment-tools-toggle");
+      const panel = document.getElementById("map-alignment-tools");
+
+      toggle.click();
+      const collapsed = panel.innerHTML;
+      toggle.click();
+      const expanded = panel.innerHTML;
+      toggle.click();
+      toggle.click();
+      toggle.click();
+
+      expect(panel.innerHTML).toBe(collapsed);
+      toggle.click();
+      expect(panel.innerHTML).toBe(expanded);
+    });
+
+    it("re-applies a collapse the server patch would have undone", () => {
+      const { hook } = mountWorkspaceHook();
+      const body = document.getElementById("tools-transform");
+
+      document.getElementById("map-alignment-tools-toggle").click();
+      body.style.display = "";
+      hook.updated();
+
+      expect(body.style.display).toBe("none");
+    });
+
+    it("rebinds a patched toggle without losing the collapsed state", () => {
+      const { hook } = mountWorkspaceHook();
+      const oldToggle = document.getElementById("map-alignment-tools-toggle");
+      const body = document.getElementById("tools-transform");
+
+      oldToggle.click();
+      const newToggle = oldToggle.cloneNode(true);
+      oldToggle.replaceWith(newToggle);
+      body.style.display = "";
+      body.hidden = false;
+      hook.updated();
+
+      expect(body.style.display).toBe("none");
+      expect(newToggle.getAttribute("data-tip")).toBe("Show tools");
+
+      oldToggle.click();
+      expect(body.style.display).toBe("none");
+
+      newToggle.click();
+      expect(body.style.display).not.toBe("none");
+    });
+
+    it("expands the panel on destroy so no orphan stays hidden", () => {
+      const { hook } = mountWorkspaceHook();
+
+      document.getElementById("map-alignment-tools-toggle").click();
+      hook.destroyed();
+
+      expect(document.getElementById("tools-transform").style.display).not.toBe(
+        "none",
+      );
+    });
+  });
+
+  describe("measuring state", () => {
+    it("writes Measuring… and data-fit-state=measuring when a change is scheduled", () => {
+      mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+
+      expect(residualState()).toBe("measuring");
+      expect(residualValue()).toBe("Measuring…");
+    });
+
+    it("writes the measuring state for a restore, not only for operator gestures", () => {
+      const { hook } = mountWorkspaceHook();
+
+      hook._handleRestoreSavedTransform({ generation: GENERATION });
+
+      expect(residualState()).toBe("measuring");
+      expect(residualValue()).toBe("Measuring…");
+    });
+
+    it("leaves the measuring state standing once the scored push is sent", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(invalidationPayloads(hook)).toHaveLength(1);
+      expect(residualState()).toBe("measuring");
+      expect(residualValue()).toBe("Measuring…");
+    });
+
+    // Observed on the real page: the preview-dirty push lands inside the
+    // debounce window, the server re-renders the readout from the fit it scored
+    // before this change, and the superseded number reappears in a confident
+    // band. That is the stale-as-current defect, restored by a patch.
+    it("re-asserts the measuring state when a server patch re-renders the readout", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+
+      document
+        .getElementById("map-alignment-residual")
+        .setAttribute("data-fit-state", "ready");
+      document.getElementById("map-alignment-residual-value").textContent =
+        "1.4 m · 3 anchors";
+      hook.updated();
+
+      expect(residualState()).toBe("measuring");
+      expect(residualValue()).toBe("Measuring…");
+    });
+
+    it("lets the answer stand once the measurement is on the wire", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      document
+        .getElementById("map-alignment-residual")
+        .setAttribute("data-fit-state", "ready");
+      document.getElementById("map-alignment-residual-value").textContent =
+        "0.9 m · 3 anchors";
+      hook.updated();
+
+      expect(residualState()).toBe("ready");
+      expect(residualValue()).toBe("0.9 m · 3 anchors");
+    });
+
+    // Re-scoring to an unchanged verdict produces no diff, so no patch ever
+    // arrives to replace "Measuring…" — a level stuck below three anchors would
+    // read "Measuring…" forever.
+    it("gives up the measuring state when the answer produces no patch at all", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+      expect(residualValue()).toBe("Measuring…");
+
+      vi.advanceTimersByTime(2000);
+
+      expect(residualState()).toBe("ready");
+      expect(residualValue()).toBe("1.4 m · 3 anchors");
+      expect(invalidationPayloads(hook)).toHaveLength(1);
+    });
+
+    it("leaves a resolved answer alone when the grace watchdog fires", () => {
+      mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      document
+        .getElementById("map-alignment-residual")
+        .setAttribute("data-fit-state", "ready");
+      document.getElementById("map-alignment-residual-value").textContent =
+        "0.9 m · 3 anchors";
+      vi.advanceTimersByTime(2000);
+
+      expect(residualState()).toBe("ready");
+      expect(residualValue()).toBe("0.9 m · 3 anchors");
+    });
+
+    // Nothing will ever resolve these windows, so leaving "Measuring…" up would
+    // be a permanently wrong readout — the failure CRIT-005 exists to prevent.
+    it("puts the last reading back when the payload carries no alignment to score", () => {
+      mountWorkspaceHook();
+      Object.defineProperty(document.getElementById("active-img"), "complete", {
+        value: false,
+        configurable: true,
+      });
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+
+      expect(residualState()).toBe("ready");
+      expect(residualValue()).toBe("1.4 m · 3 anchors");
+    });
+
+    it("puts the last reading back when a coordinate review consumes the window", () => {
+      mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      expect(residualState()).toBe("measuring");
+
+      document
+        .getElementById("map-alignment-apply")
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+      expect(residualState()).toBe("ready");
+      expect(residualValue()).toBe("1.4 m · 3 anchors");
+    });
+
+    it("puts the last reading back when the hook is destroyed mid-window", () => {
+      const { hook } = mountWorkspaceHook();
+
+      keydown(document.getElementById("map-alignment-workspace"), "ArrowLeft");
+      hook.destroyed();
+
+      expect(residualState()).toBe("ready");
+      expect(residualValue()).toBe("1.4 m · 3 anchors");
+    });
+
+    it("restores the pre-measuring reading, not an earlier measuring write, across a coalesced burst", () => {
+      mountWorkspaceHook();
+      const workspace = document.getElementById("map-alignment-workspace");
+
+      keydown(workspace, "ArrowLeft");
+      keydown(workspace, "ArrowLeft");
+      keydown(workspace, "ArrowLeft");
+      document
+        .getElementById("map-alignment-apply")
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+      expect(residualValue()).toBe("1.4 m · 3 anchors");
+      expect(residualState()).toBe("ready");
+    });
+  });
+
+  describe("partial DOM tolerance", () => {
+    it("mounts and nudges without a residual readout", () => {
+      const { hook } = mountWorkspaceHook({ residual: false });
+
+      expect(() =>
+        keydown(
+          document.getElementById("map-alignment-workspace"),
+          "ArrowLeft",
+        ),
+      ).not.toThrow();
+      expect(hook.transform.tx).toBe(-2);
+      expect(() => vi.advanceTimersByTime(DEBOUNCE_MS)).not.toThrow();
+    });
+
+    it("mounts and tears down without a tools panel", () => {
+      const { hook } = mountWorkspaceHook({ tools: false });
+
+      expect(() =>
+        keydown(
+          document.getElementById("map-alignment-workspace"),
+          "ArrowLeft",
+        ),
+      ).not.toThrow();
+      expect(hook.transform.tx).toBe(-2);
+      expect(() => hook.destroyed()).not.toThrow();
+    });
+
+    it("mounts and tears down without a workspace element", () => {
+      const { hook } = mountWorkspaceHook({ workspace: false });
+
+      expect(hook._holdToHideActive).toBe(false);
+      expect(() => hook._adjustTransform("left", false)).not.toThrow();
+      expect(hook.transform.tx).toBe(-2);
+      expect(() => hook.destroyed()).not.toThrow();
+    });
+
+    it("does not install hold-to-hide watchdogs without a workspace element", () => {
+      const windowAddEventListener = vi.spyOn(window, "addEventListener");
+      const documentAddEventListener = vi.spyOn(document, "addEventListener");
+
+      mountWorkspaceHook({ workspace: false });
+
+      expect(windowAddEventListener).not.toHaveBeenCalledWith(
+        "blur",
+        expect.any(Function),
+      );
+      expect(documentAddEventListener).not.toHaveBeenCalledWith(
+        "visibilitychange",
+        expect.any(Function),
+      );
+      expect(documentAddEventListener).not.toHaveBeenCalledWith(
+        "focusin",
+        expect.any(Function),
+      );
     });
   });
 });

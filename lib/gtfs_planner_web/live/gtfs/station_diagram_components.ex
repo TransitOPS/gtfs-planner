@@ -102,6 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_status, :any, default: nil
   attr :active_stop_level, :any, default: nil
   attr :levels, :list, default: []
+  attr :levels_with_floorplan, :any, default: nil
   attr :active_level, :any, default: nil
   attr :active_level_name, :string, default: ""
   attr :other_levels, :list, default: []
@@ -195,6 +196,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
         <.level_disclosure
           levels={@levels}
+          levels_with_floorplan={@levels_with_floorplan}
           active_level={@active_level}
           active_level_name={@active_level_name}
           has_diagram={@has_diagram}
@@ -333,6 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
 
   attr :levels, :list, required: true
+  attr :levels_with_floorplan, :any, default: nil
   attr :active_level, :any, default: nil
   attr :active_level_name, :string, default: ""
   attr :has_diagram, :boolean, required: true
@@ -391,7 +394,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <span class="flex items-center gap-2">
               {level.level_name || level.level_id}
               <span
-                :if={not level_has_diagram?(level)}
+                :if={not level_has_floorplan?(@levels_with_floorplan, level)}
                 class="text-[11px] text-warning"
               >
                 No floorplan
@@ -447,10 +450,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
-  defp level_has_diagram?(%{diagram_filename: filename})
-       when is_binary(filename) and filename != "", do: true
+  # Membership of the set the LiveView derives from `list_levels_for_station/3`,
+  # which is the only place the diagram filename survives: it hangs off the
+  # query row, not off `Level`, which has no such field. A nil set means the
+  # caller did not supply one, and no level is claimed to be missing a
+  # floorplan on the strength of an absent answer.
+  defp level_has_floorplan?(nil, _level), do: true
 
-  defp level_has_diagram?(_), do: false
+  defp level_has_floorplan?(%MapSet{} = with_floorplan, %{id: id}),
+    do: MapSet.member?(with_floorplan, id)
+
+  defp level_has_floorplan?(_, _), do: true
 
   # ============================================================================
   # Scale Control
@@ -755,12 +765,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :map_generation, :string, required: true
   attr :map_state, :atom, default: :initializing
   attr :alignment_preview, :map, default: nil
+  attr :alignment_unsaved?, :boolean, default: false
+  # Measured fit of the operator's current placement, scored server-side from
+  # FloorplanTransform.residual_rmse_meters/4. `nil` until a scoring round trip
+  # resolves, which is also the resting state on first render.
+  #   nil
+  # | %{status: :ready, rmse_meters: float(), anchor_count: pos_integer()}
+  # | %{status: :insufficient_anchors, anchor_count: non_neg_integer()}
+  # | %{status: :unavailable}
+  attr :alignment_fit, :map, default: nil
   attr :coordinate_review, :map, default: nil
   attr :review_transform, :map, default: nil
   attr :coordinate_review_status, :string, default: nil
   attr :coordinate_review_error, :string, default: nil
 
   def map_canvas(assigns) do
+    # Popover wiring for the two demoted control clusters, following the
+    # #level-control-trigger / #level-control-panel idiom in this module.
+    # `close` hides and resets the trigger's aria-expanded; `dismiss` also
+    # returns focus. `dismiss` is used only where the panel is known to be
+    # open — phx-click-away is visibility-guarded by LiveView, and the
+    # trigger's own phx-keydown only fires while the trigger has focus.
+    center_close =
+      JS.hide(to: "#map-alignment-center-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-center-trigger")
+
+    zoom_close =
+      JS.hide(to: "#map-alignment-zoom-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-zoom-trigger")
+
+    # phx-window-keydown fires on every Escape anywhere on the page, and
+    # phx-keydown fires only when the event target itself carries it — so a
+    # panel-level phx-keydown never sees Escape typed in a panel input. The
+    # window path therefore carries the focus, gated on the trigger's own
+    # aria-expanded so it returns focus when the panel is open and leaves
+    # focus alone when it is not.
+    center_window_dismiss =
+      JS.focus(to: "#map-alignment-center-trigger[aria-expanded='true']")
+      |> JS.hide(to: "#map-alignment-center-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-center-trigger")
+
+    zoom_window_dismiss =
+      JS.focus(to: "#map-alignment-zoom-trigger[aria-expanded='true']")
+      |> JS.hide(to: "#map-alignment-zoom-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-zoom-trigger")
+
     floorplan_url =
       diagram_image_href(
         assigns.organization_id,
@@ -810,11 +859,62 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         )
       )
       |> assign(:canvas_id, canvas_id)
+      |> assign(
+        :center_open,
+        JS.toggle(to: "#map-alignment-center-panel")
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"},
+          to: "#map-alignment-center-trigger"
+        )
+      )
+      |> assign(:center_window_dismiss, center_window_dismiss)
+      |> assign(:center_dismiss, JS.focus(center_close, to: "#map-alignment-center-trigger"))
+      |> assign(
+        :zoom_open,
+        JS.toggle(to: "#map-alignment-zoom-panel")
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"},
+          to: "#map-alignment-zoom-trigger"
+        )
+      )
+      |> assign(:zoom_window_dismiss, zoom_window_dismiss)
+      |> assign(:zoom_dismiss, JS.focus(zoom_close, to: "#map-alignment-zoom-trigger"))
+      |> assign(
+        :help_open,
+        JS.toggle(to: "#map-alignment-help-panel")
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"},
+          to: "#map-alignment-help-trigger"
+        )
+      )
+      |> assign(
+        :help_dismiss,
+        JS.focus(to: "#map-alignment-help-trigger[aria-expanded='true']")
+        |> JS.hide(to: "#map-alignment-help-panel")
+        |> JS.set_attribute({"aria-expanded", "false"}, to: "#map-alignment-help-trigger")
+      )
+      |> assign(:residual_readout, residual_readout(assigns.alignment_fit))
+      # While a scoring round trip is in flight the hook swaps the value's text
+      # for "Measuring…" and sets data-fit-state="measuring" on the container.
+      # The band it replaces must go with it: a warning colour left standing
+      # over "Measuring…" is exactly the stale verdict read as current that this
+      # readout exists to prevent. Both lines therefore fall back to the neutral
+      # readout role for that one attribute value, so the hook still writes only
+      # text and a presentational attribute and never touches a class.
+      |> assign(
+        :measuring_class,
+        "group-data-[fit-state=measuring]:font-normal group-data-[fit-state=measuring]:text-base-content/70"
+      )
       |> assign_review_projection()
 
     ~H"""
     <div>
-      <div class="relative flex min-h-0 flex-1">
+      <%!-- `tabindex="-1"` is what makes the keyboard bindings on this element
+      reachable. The hook binds nudging and hold-to-hide here rather than on the
+      ignored canvas, because the tools panel is a sibling of that canvas
+      (INV-10E-3) — but a plain `<div>` cannot hold focus, so after the most
+      common gesture of all, dragging the floorplan with the mouse, focus sits
+      on `<body>` and every shortcut is dead. `-1` keeps the element out of the
+      tab order, so the tab chain through the controls is unchanged; it only
+      lets a click on the imagery land focus inside the workspace. --%>
+      <div id="map-alignment-workspace" tabindex="-1" class="relative flex min-h-0 flex-1">
         <div
           id={@canvas_id}
           class="map-canvas relative min-h-0 flex-1 bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
@@ -890,158 +990,514 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </button>
         </div>
         <div
-          :if={@alignment_preview && @alignment_preview.status == :ready}
-          id="auto-alignment-status"
-          role="status"
-          aria-live="polite"
-          aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
-          class="absolute z-10 top-4 left-4 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-900 shadow-sm"
+          id="map-alignment-tools"
+          class="absolute z-20 top-4 left-4 flex w-auto max-h-[calc(100%-2rem)] flex-col gap-1 bg-base-100 border border-base-300 rounded-lg shadow-md p-1"
         >
-          <strong class="font-medium">Unsaved auto-alignment preview</strong>
-        </div>
-      </div>
-      <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
-        <div class="flex items-start justify-between gap-4">
-          <p class="text-xs text-base-content/70">
-            Drag to move the floorplan. Use handles to rotate and resize.
-          </p>
-          <div class="flex flex-col items-end gap-1">
-            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
-              {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
-            </span>
-          </div>
-        </div>
-        <div class="mt-3 flex flex-wrap items-start gap-x-8 gap-y-4">
-          <fieldset class="flex items-end gap-2">
-            <legend class="sr-only">Map center</legend>
-            <div class="flex flex-col gap-1">
-              <label
-                for="map-alignment-lat-input"
-                class="text-xs font-medium text-base-content/80"
-              >
-                Latitude
-              </label>
-              <input
-                id="map-alignment-lat-input"
-                type="number"
-                step="any"
-                value={@initial_lat}
-                class="input input-sm input-bordered w-32"
-              />
-            </div>
-            <div class="flex flex-col gap-1">
-              <label
-                for="map-alignment-lon-input"
-                class="text-xs font-medium text-base-content/80"
-              >
-                Longitude
-              </label>
-              <input
-                id="map-alignment-lon-input"
-                type="number"
-                step="any"
-                value={@initial_lon}
-                class="input input-sm input-bordered w-32"
-              />
-            </div>
-            <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
-              Center map
+          <div class="flex items-center justify-between gap-1 px-0.5">
+            <button
+              id="map-alignment-restore-saved"
+              type="button"
+              class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-primary disabled:text-base-content/30"
+              phx-click="restore_saved_alignment"
+              disabled={not @alignment_unsaved?}
+              data-tip="Restore saved alignment"
+              aria-label="Restore saved alignment"
+            >
+              <.icon name="hero-arrow-path" class="w-4 h-4" />
             </button>
-          </fieldset>
-
-          <div class="flex flex-col gap-1">
-            <label for="map-alignment-opacity" class="text-xs font-medium text-base-content/80">
-              Floorplan opacity
-            </label>
-            <input
-              id="map-alignment-opacity"
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value="0.7"
-              class="range range-xs w-40"
-            />
+            <button
+              id="map-alignment-tools-toggle"
+              type="button"
+              class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+              data-collapsed="false"
+              data-tip="Hide tools"
+              aria-label="Hide tools"
+            >
+              <.icon name="hero-chevron-up" class="w-4 h-4" />
+            </button>
           </div>
 
-          <div class="flex flex-col gap-1">
-            <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
-              Map zoom
-            </label>
-            <input
-              id="map-alignment-zoom"
-              type="range"
-              min="19"
-              max="22"
-              step="0.5"
-              value="19"
-              class="range range-xs w-40"
-              phx-update="ignore"
-            />
+          <%!-- All eight transform controls in one pad: the cross moves, the top
+          corners rotate, the bottom corners scale. Every button carries its
+          operation, plain step and Shift step in `title`, so the pad needs no
+          row labels and no live readouts — the floorplan itself, and the
+          residual metres in the commit bar, are the feedback that matters. --%>
+          <%!-- The pad rounds its own corner cells rather than clipping the grid:
+          an `overflow-hidden` here would also clip every button's tooltip. --%>
+          <div class="grid w-fit grid-cols-[repeat(3,2.75rem)] gap-px rounded-md border border-base-300 bg-base-300">
+            <.transform_button control={transform_control("rotate-left")} class="rounded-tl-md" />
+            <.transform_button control={transform_control("up")} />
+            <.transform_button control={transform_control("rotate-right")} class="rounded-tr-md" />
+            <.transform_button control={transform_control("left")} />
+            <div class="h-11 w-11 bg-base-100"></div>
+            <.transform_button control={transform_control("right")} />
+            <.transform_button control={transform_control("scale-down")} class="rounded-bl-md" />
+            <.transform_button control={transform_control("down")} />
+            <.transform_button control={transform_control("scale-up")} class="rounded-br-md" />
           </div>
 
-          <%= if @other_levels_floorplan_count >= 1 do %>
-            <div class="flex flex-col gap-1">
-              <label
-                for="map-other-overlays-opacity"
-                class="text-xs font-medium text-base-content/80"
-              >
-                Other-levels opacity
-              </label>
+          <div class="flex h-9 w-[8.5rem] items-center gap-1.5 px-1">
+            <label
+              for="map-alignment-opacity"
+              class="tooltip tooltip-right shrink-0 text-base-content/60"
+              data-tip="Floorplan opacity"
+            >
+              <.icon name="hero-photo" class="w-4 h-4" />
+            </label>
+            <div
+              id="map-alignment-opacity-tip"
+              class="tooltip tooltip-right min-w-0 flex-1"
+              data-tip="Floorplan opacity · 70%"
+            >
               <input
-                id="map-other-overlays-opacity"
+                id="map-alignment-opacity"
                 type="range"
                 min="0"
                 max="1"
                 step="0.05"
                 value="0.7"
-                class="range range-xs w-40"
+                phx-update="ignore"
+                class="range range-xs w-full text-base-content/40 border border-base-300 bg-base-200/60"
               />
             </div>
-          <% end %>
+          </div>
 
-          <fieldset
-            id="map-alignment-transform-controls"
-            class="flex flex-col gap-1"
-          >
-            <legend class="text-xs font-medium text-base-content/80">Floorplan transform</legend>
-            <div class="flex flex-wrap items-center gap-1">
-              <button
-                :for={{label, action, coarse} <- transform_controls()}
-                id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
-                type="button"
-                class="btn btn-sm min-h-11 min-w-11"
-                data-map-transform-action={action}
-                data-map-transform-coarse={to_string(coarse)}
-                title={label}
+          <%= if @other_levels_floorplan_count >= 1 do %>
+            <div class="flex h-9 w-[8.5rem] items-center gap-1.5 px-1">
+              <label
+                for="map-other-overlays-opacity"
+                class="tooltip tooltip-right shrink-0 text-base-content/60"
+                data-tip="Other-levels opacity"
               >
-                {label}
-              </button>
-              <button
-                id="map-alignment-restore-saved"
-                type="button"
-                class="btn btn-sm btn-ghost min-h-11 text-primary"
-                phx-click="restore_saved_alignment"
+                <.icon name="hero-square-3-stack-3d" class="w-4 h-4" />
+              </label>
+              <div
+                id="map-other-overlays-opacity-tip"
+                class="tooltip tooltip-right min-w-0 flex-1"
+                data-tip="Other-levels opacity · 70%"
               >
-                Restore saved alignment
-              </button>
+                <input
+                  id="map-other-overlays-opacity"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value="0.7"
+                  phx-update="ignore"
+                  class="range range-xs w-full text-base-content/40 border border-base-300 bg-base-200/60"
+                />
+              </div>
             </div>
-          </fieldset>
+          <% end %>
+        </div>
+        <div
+          :if={@alignment_preview && @alignment_preview.status == :ready}
+          id="auto-alignment-status"
+          role="status"
+          aria-live="polite"
+          aria-describedby="auto-alignment-fit-value auto-alignment-fit-description"
+          class="absolute z-10 top-4 left-1/2 -translate-x-1/2 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-900 shadow-sm"
+        >
+          <strong class="font-medium">Unsaved auto-alignment preview</strong>
+        </div>
+        <%!-- In-app help for the align surface, opened from the tools panel.
+        A bounded card rather than a full-bleed scrim, so the floorplan stays
+        visible and draggable behind it while the operator reads. --%>
+        <div
+          id="map-alignment-help-panel"
+          role="dialog"
+          aria-label="How the align tools work"
+          phx-click-away={@help_dismiss}
+          phx-window-keydown={@help_dismiss}
+          phx-key="escape"
+          style="display: none;"
+          class="absolute z-30 top-4 left-1/2 -translate-x-1/2 w-[46rem] max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto overscroll-contain bg-base-100 border border-base-300 rounded-lg shadow-lg text-sm"
+        >
+          <div class="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-base-300 bg-base-100 px-5 py-4">
+            <div>
+              <h2 class="text-base font-semibold">Aligning the floorplan</h2>
+              <p class="mt-0.5 text-sm text-base-content/80">
+                The goal: move the floorplan until its walls sit over the same walls in the
+                aerial imagery. Everything below is a way of getting there or checking you did.
+              </p>
+            </div>
+            <button
+              id="map-alignment-help-close"
+              type="button"
+              class="btn btn-ghost btn-square h-8 w-8 min-h-8 shrink-0 p-0 text-base-content/70"
+              aria-label="Close help"
+              phx-click={@help_dismiss}
+            >
+              <.icon name="hero-x-mark" class="w-4 h-4" />
+            </button>
+          </div>
 
-          <fieldset
-            id="map-alignment-assisted"
-            class="border border-base-300 rounded-md px-4 pt-1 pb-3"
+          <div class="px-5 py-4">
+            <.help_section
+              icon="hero-sparkles"
+              tone="primary"
+              title="Start here — let the data do it"
+            >
+              <p>
+                The <span class="font-semibold text-base-content">Auto-align</span>
+                button below the map works the position out from your own data. It takes every stop on
+                this level that already has
+                <em class="not-italic font-medium text-base-content">both</em>
+                a position on the floorplan and real map coordinates, and fits the floorplan to
+                them.
+              </p>
+              <ul class="mt-2 flex flex-col gap-1">
+                <li class="flex gap-2">
+                  <span class="text-primary">→</span> Needs at least three such stops.
+                </li>
+                <li class="flex gap-2">
+                  <span class="text-primary">→</span>
+                  Declines rather than applying a poor fit if it cannot get within 2.0 m.
+                </li>
+                <li class="flex gap-2">
+                  <span class="text-primary">→</span>
+                  Moves the floorplan straight away — there is nothing to accept, and nothing is
+                  written until you save.
+                </li>
+              </ul>
+            </.help_section>
+
+            <.help_section icon="hero-cursor-arrow-rays" tone="neutral" title="Adjusting it by hand">
+              <p>
+                The pad groups three operations. Each colour below matches the buttons it drives.
+              </p>
+
+              <div class="mt-3 flex flex-wrap items-start gap-5">
+                <div
+                  aria-hidden="true"
+                  class="grid w-fit shrink-0 grid-cols-[repeat(3,2.5rem)] gap-px rounded-md border border-base-300 bg-base-300"
+                >
+                  <span
+                    :for={cell <- align_pad_diagram_cells()}
+                    class={[
+                      "flex h-10 w-10 items-center justify-center text-base font-medium",
+                      cell.class
+                    ]}
+                  >
+                    {cell.glyph}
+                  </span>
+                </div>
+
+                <dl class="min-w-0 flex-1 text-sm">
+                  <div :for={row <- align_pad_help_rows()} class="flex items-baseline gap-3 py-1">
+                    <dt class={["w-24 shrink-0 font-semibold", row.tone_class]}>{row.action}</dt>
+                    <dd class="min-w-0 text-base-content/80">
+                      {row.step}
+                      <span class="text-base-content/60">· keys {row.keys}</span>
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+
+              <p class="mt-3">
+                Hold <kbd class="kbd kbd-sm">Shift</kbd>
+                with any nudge — button or key — to move ten times as far.
+              </p>
+            </.help_section>
+
+            <.help_section icon="hero-map" tone="neutral" title="Straight on the map">
+              <dl class="flex flex-col gap-2">
+                <div :for={row <- align_map_help_rows()} class="flex items-start gap-3">
+                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-base-300 bg-base-200 text-base-content/70">
+                    <.icon :if={row[:icon]} name={row.icon} class="w-3.5 h-3.5" />
+                    <span :if={row[:key]} class="text-xs font-semibold">{row.key}</span>
+                  </dt>
+                  <dd class="min-w-0 pt-0.5">
+                    <span class="font-semibold text-base-content">{row.term}</span>
+                    <span class="text-base-content/80">— {row.description}</span>
+                  </dd>
+                </div>
+              </dl>
+            </.help_section>
+
+            <.help_section
+              icon="hero-square-3-stack-3d"
+              tone="info"
+              title="Use another level as your guide"
+            >
+              <p>
+                A station's levels sit on top of each other in the real world, so a level you have
+                already aligned is the best reference you have for the next one.
+                The <span class="font-semibold text-base-content">Other levels</span>
+                menu in the strip above the map brings one onto this map in its own colour.
+              </p>
+              <dl class="mt-3 flex flex-col gap-2">
+                <div class="flex items-start gap-3">
+                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info/15 text-info">
+                    <.icon name="hero-photo" class="w-3.5 h-3.5" />
+                  </dt>
+                  <dd class="min-w-0 pt-0.5">
+                    <span class="font-semibold text-base-content">Floorplan</span>
+                    <span class="text-base-content/80">
+                      — draws that level's floorplan underneath yours. Line the shared
+                      walls, shafts and platform edges up and both levels agree.
+                    </span>
+                  </dd>
+                </div>
+                <div class="flex items-start gap-3">
+                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info/15 text-info">
+                    <.icon name="hero-map-pin" class="w-3.5 h-3.5" />
+                  </dt>
+                  <dd class="min-w-0 pt-0.5">
+                    <span class="font-semibold text-base-content">Stops</span>
+                    <span class="text-base-content/80">
+                      — drops that level's stops as coloured pins at their real coordinates. A
+                      lift or stair that serves both levels should land in the same place on
+                      each: when your floorplan puts it under its pin, you are aligned.
+                    </span>
+                  </dd>
+                </div>
+              </dl>
+              <p class="mt-2 text-base-content/70">
+                A box you cannot tick says why beside it — the level has no diagram, is not
+                aligned yet, or has no stops with coordinates. Fade the guide with the
+                <span class="font-medium text-base-content">Other-levels opacity</span>
+                slider in the tools panel.
+              </p>
+            </.help_section>
+
+            <.help_section icon="hero-adjustments-horizontal" tone="neutral" title="The tools panel">
+              <dl class="flex flex-col gap-2">
+                <div :for={row <- align_panel_help_rows()} class="flex items-start gap-3">
+                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-base-300 bg-base-200 text-base-content/70">
+                    <.icon name={row.icon} class="w-3.5 h-3.5" />
+                  </dt>
+                  <dd class="min-w-0 pt-0.5">
+                    <span class="font-semibold text-base-content">{row.term}</span>
+                    <span class="text-base-content/80">— {row.description}</span>
+                  </dd>
+                </div>
+              </dl>
+            </.help_section>
+
+            <.help_section icon="hero-check-badge" tone="success" title="Knowing when it is right">
+              <p>
+                The <span class="font-semibold text-base-content">Measured fit</span>
+                readout below the map reports how far the anchor stops land from the positions
+                already recorded for them. Lower is better, and under 2.0 m is a good alignment.
+                It is a guide, not a gate — you can save at any value.
+              </p>
+            </.help_section>
+
+            <.help_section icon="hero-inbox-arrow-down" tone="warning" title="Saving your work">
+              <dl class="flex flex-col gap-3">
+                <div>
+                  <dt class="font-semibold text-base-content">Save position</dt>
+                  <dd class="text-base-content/80">
+                    Stores where the floorplan sits on the map. Nothing else changes.
+                  </dd>
+                </div>
+                <div>
+                  <dt class="font-semibold text-base-content">Update stop coordinates…</dt>
+                  <dd class="text-base-content/80">
+                    Also writes each child stop's latitude and longitude from its position on the
+                    floorplan. You see every change before any of it is written.
+                  </dd>
+                </div>
+              </dl>
+            </.help_section>
+          </div>
+        </div>
+      </div>
+      <div class="pt-3 pb-4">
+        <%!-- Read on the left, act on the right, and the three kinds of acting
+        kept apart: view changes nothing, assist moves the floorplan, commit
+        writes to the database. --%>
+        <div id="map-alignment-commit-bar" class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <dl class="flex min-w-0 shrink flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+            <div
+              id="map-alignment-residual"
+              data-fit-state={@residual_readout.state}
+              class="group flex items-baseline gap-1.5 whitespace-nowrap"
+            >
+              <dt class="text-base-content/60">Fit</dt>
+              <dd
+                id="map-alignment-residual-value"
+                class={[@residual_readout.value_class, @measuring_class]}
+              >
+                {@residual_readout.value}
+              </dd>
+              <%!-- Hidden while a measurement is in flight. The hook replaces the
+              value with "Measuring…" but cannot reach this, and a qualifier left
+              standing beside it would be the stale verdict read as current. --%>
+              <dd
+                :if={@residual_readout.qualifier}
+                class={[
+                  "group-data-[fit-state=measuring]:hidden",
+                  @residual_readout.qualifier_class
+                ]}
+              >
+                {@residual_readout.qualifier}
+              </dd>
+            </div>
+
+            <div
+              data-role="child-stop-coverage"
+              class="flex items-baseline gap-1.5 whitespace-nowrap"
+            >
+              <dt class="text-base-content/60">Placed</dt>
+              <dd class="font-medium tabular-nums text-base-content">
+                {@child_stops_with_floorplan} of {@child_stops_total}
+              </dd>
+              <dd :if={unplaced_note(@child_stops_unplaced)} class="text-base-content/50">
+                {unplaced_note(@child_stops_unplaced)}
+              </dd>
+            </div>
+
+            <div
+              :if={@alignment_unsaved?}
+              id="map-alignment-unsaved"
+              class="flex items-baseline gap-1.5 whitespace-nowrap"
+            >
+              <dt class="sr-only">Status</dt>
+              <dd class="inline-flex items-center gap-1.5 font-medium text-warning">
+                <span class="inline-block size-1.5 rounded-full bg-warning"></span>Unsaved
+              </dd>
+            </div>
+          </dl>
+
+          <%!-- Help closes the read-only group: it explains the surface, it does
+          not act on it. --%>
+          <button
+            id="map-alignment-help-trigger"
+            type="button"
+            class="btn btn-ghost btn-xs h-7 min-h-7 shrink-0 gap-1 px-2 text-xs font-medium text-base-content/70"
+            aria-expanded="false"
+            aria-controls="map-alignment-help-panel"
+            phx-click={@help_open}
           >
-            <legend class="text-xs font-medium text-base-content/60 px-1">Assisted alignment</legend>
-            <p class="text-xs text-base-content/70">
-              Uses {@anchor_count} stops that already have floorplan and map positions.
-            </p>
+            <.icon name="hero-question-mark-circle-solid" class="w-4 h-4" /> Help
+          </button>
+
+          <div class="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+            <div class="join">
+              <div class="relative join-item">
+                <button
+                  id="map-alignment-center-trigger"
+                  type="button"
+                  class="tooltip tooltip-top btn btn-sm join-item min-h-11 px-3"
+                  data-tip="Center the map on a coordinate"
+                  aria-label="Center the map on a coordinate"
+                  aria-expanded="false"
+                  aria-controls="map-alignment-center-panel"
+                  phx-click={@center_open}
+                  phx-keydown={@center_dismiss}
+                  phx-key="escape"
+                >
+                  <.icon name="hero-viewfinder-circle" class="size-4" />
+                </button>
+
+                <div
+                  id="map-alignment-center-panel"
+                  phx-click-away={@center_dismiss}
+                  phx-window-keydown={@center_window_dismiss}
+                  phx-key="escape"
+                  style="display: none;"
+                  class="absolute left-0 bottom-full mb-1 z-30 flex w-52 flex-col gap-3 border border-base-300 bg-base-100 rounded-box shadow-lg p-3 text-sm"
+                >
+                  <div class="flex flex-col gap-1">
+                    <label
+                      for="map-alignment-lat-input"
+                      class="text-xs font-medium text-base-content/80"
+                    >
+                      Latitude
+                    </label>
+                    <input
+                      id="map-alignment-lat-input"
+                      type="number"
+                      step="any"
+                      value={@initial_lat}
+                      class="input input-sm input-bordered min-h-11 w-full"
+                    />
+                  </div>
+                  <div class="flex flex-col gap-1">
+                    <label
+                      for="map-alignment-lon-input"
+                      class="text-xs font-medium text-base-content/80"
+                    >
+                      Longitude
+                    </label>
+                    <input
+                      id="map-alignment-lon-input"
+                      type="number"
+                      step="any"
+                      value={@initial_lon}
+                      class="input input-sm input-bordered min-h-11 w-full"
+                    />
+                  </div>
+                  <button
+                    id="map-alignment-apply-center"
+                    type="button"
+                    class="btn btn-sm btn-block min-h-11"
+                  >
+                    Center map
+                  </button>
+                </div>
+              </div>
+
+              <div class="relative join-item">
+                <button
+                  id="map-alignment-zoom-trigger"
+                  type="button"
+                  class="tooltip tooltip-top btn btn-sm join-item min-h-11 px-3"
+                  data-tip="Change the map zoom"
+                  aria-label="Change the map zoom"
+                  aria-expanded="false"
+                  aria-controls="map-alignment-zoom-panel"
+                  phx-click={@zoom_open}
+                  phx-keydown={@zoom_dismiss}
+                  phx-key="escape"
+                >
+                  <.icon name="hero-magnifying-glass" class="size-4" />
+                </button>
+
+                <div
+                  id="map-alignment-zoom-panel"
+                  phx-click-away={@zoom_dismiss}
+                  phx-window-keydown={@zoom_window_dismiss}
+                  phx-key="escape"
+                  style="display: none;"
+                  class="absolute left-0 bottom-full mb-1 z-30 flex w-52 flex-col gap-1 border border-base-300 bg-base-100 rounded-box shadow-lg p-3 text-sm"
+                >
+                  <div class="flex items-baseline justify-between gap-2">
+                    <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
+                      Map zoom
+                    </label>
+                    <span
+                      id="map-alignment-zoom-value"
+                      class="text-xs tabular-nums text-base-content/70"
+                    >
+                      19.0
+                    </span>
+                  </div>
+                  <input
+                    id="map-alignment-zoom"
+                    type="range"
+                    min="19"
+                    max="22"
+                    step="0.5"
+                    value="19"
+                    class="range range-xs w-full"
+                    phx-update="ignore"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="h-6 w-px shrink-0 bg-base-300"></div>
+
             <button
               id="map-alignment-preview-auto"
               type="button"
-              class="btn btn-sm btn-outline btn-primary min-h-11 w-full mt-2 phx-click-loading:opacity-60"
+              class="btn btn-sm min-h-11 shrink-0 phx-click-loading:opacity-60"
               phx-click="preview_alignment"
-              phx-disable-with="Previewing…"
+              phx-disable-with="Aligning…"
+              title={"Positions the floorplan from the #{@anchor_count} stops that already have both a floorplan position and map coordinates"}
               disabled={
                 @map_state == :fatal or
                   invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
@@ -1051,88 +1507,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   do: "map-auto-alignment-disabled-reason"
               }
             >
-              Preview auto-alignment
+              Auto-align
             </button>
-            <p
-              :if={@auto_alignment_disabled_reason}
-              id="map-auto-alignment-disabled-reason"
-              class="mt-2 text-xs text-base-content/70"
-            >
-              {@auto_alignment_disabled_reason}
-            </p>
-            <%= if @alignment_preview && @alignment_preview.status == :ready do %>
-              <div id="auto-alignment-fit-value" class="mt-2 text-xs text-base-content/70">
-                Estimated fit error ·
-                <strong class="text-base-content">
-                  {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
-                </strong>
-              </div>
-              <div class="mt-1 text-xs text-base-content/60" id="auto-alignment-fit-description">
-                Computed from {@alignment_preview.anchor_count} anchor stops. RMSE measures the typical anchor mismatch; lower is better.
-              </div>
-            <% end %>
-            <%= if @alignment_preview && @alignment_preview.status == :error do %>
-              <div
-                id="auto-alignment-error"
-                role="alert"
-                class="mt-2 text-xs text-error"
-              >
-                {@alignment_preview.message}
-              </div>
-              <%= if @alignment_preview.reason == :insufficient_anchors do %>
-                <p class="mt-1 text-xs text-base-content/70">
-                  Place more stops with both a floorplan position and map coordinates, then try again.
-                </p>
-              <% end %>
-              <%= if @alignment_preview.reason == :high_residual do %>
-                <p class="mt-1 text-xs text-base-content/70">
-                  Check the anchor stops' positions, then try again.
-                </p>
-              <% end %>
-            <% end %>
-          </fieldset>
 
-          <div id="map-alignment-actions" class="ml-auto flex flex-wrap items-center gap-3">
-            <span
-              id="map-alignment-preview-status"
-              class="text-xs text-base-content/70"
-              aria-live="polite"
-            >
-              Coordinate-change preview not ready
-            </span>
-            <button
-              id="map-alignment-save"
-              type="button"
-              class="btn btn-sm min-h-11"
-              disabled={@map_state == :fatal}
-            >
-              Save alignment
-            </button>
-            <button
-              id="map-alignment-apply"
-              type="button"
-              class="btn btn-sm btn-primary min-h-11"
-              title="Review coordinate changes before applying them"
-              disabled={
-                @map_state == :fatal or
-                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
-              }
-            >
-              Review coordinate changes
-            </button>
-            <button
-              :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
-              id="map-alignment-retry"
-              type="button"
-              class="btn btn-sm min-h-11"
-              phx-click="retry_map_alignment"
-            >
-              Retry map
-            </button>
+            <div class="h-6 w-px shrink-0 bg-base-300"></div>
+
+            <div id="map-alignment-actions" class="flex shrink-0 items-center gap-2">
+              <button
+                id="map-alignment-save"
+                type="button"
+                class="btn btn-sm min-h-11"
+                disabled={@map_state == :fatal}
+              >
+                Save position
+              </button>
+              <button
+                id="map-alignment-apply"
+                type="button"
+                class="btn btn-sm btn-primary min-h-11"
+                title="Review every coordinate change before it is written"
+                disabled={
+                  @map_state == :fatal or
+                    invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+                }
+              >
+                Update stop coordinates…
+              </button>
+              <button
+                :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
+                id="map-alignment-retry"
+                type="button"
+                class="btn btn-sm min-h-11"
+                phx-click="retry_map_alignment"
+              >
+                Retry map
+              </button>
+            </div>
+          </div>
+
+          <%!-- Anything that only applies in a degraded or blocked state gets its
+          own line beneath, so the resting bar stays one row. --%>
+          <div
+            :if={
+              @map_state_message || @map_controls_disabled_reason ||
+                @auto_alignment_disabled_reason ||
+                (@alignment_preview && @alignment_preview.status in [:ready, :error])
+            }
+            class="flex basis-full flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+          >
             <p
               :if={@map_state_message}
               id="map-alignment-state"
-              class="basis-full text-xs text-base-content/70"
+              class="text-base-content/70"
               aria-live="polite"
             >
               {@map_state_message}
@@ -1140,11 +1566,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <p
               :if={@map_controls_disabled_reason}
               id="map-alignment-disabled-reason"
-              class="basis-full text-xs text-base-content/70"
+              class="text-base-content/70"
             >
               {@map_controls_disabled_reason}
             </p>
+            <p
+              :if={@auto_alignment_disabled_reason}
+              id="map-auto-alignment-disabled-reason"
+              class="text-base-content/70"
+            >
+              {@auto_alignment_disabled_reason}
+            </p>
+            <%= if @alignment_preview && @alignment_preview.status == :ready do %>
+              <span id="auto-alignment-fit-value" class="text-base-content/70">
+                Suggested alignment fits to
+                <strong class="text-base-content">
+                  {:erlang.float_to_binary(@alignment_preview.rmse_meters, decimals: 1)} m
+                </strong>
+              </span>
+              <span class="text-base-content/60" id="auto-alignment-fit-description">
+                Measured over {@alignment_preview.anchor_count} anchor stops. Lower is better.
+              </span>
+            <% end %>
+            <%= if @alignment_preview && @alignment_preview.status == :error do %>
+              <span id="auto-alignment-error" role="alert" class="text-error">
+                {@alignment_preview.message}
+              </span>
+              <%= if @alignment_preview.reason == :insufficient_anchors do %>
+                <span class="text-base-content/70">
+                  Place more stops with both a floorplan position and map coordinates, then try again.
+                </span>
+              <% end %>
+              <%= if @alignment_preview.reason == :high_residual do %>
+                <span class="text-base-content/70">
+                  Check the anchor stops' positions, then try again.
+                </span>
+              <% end %>
+            <% end %>
           </div>
+          <%!-- The hook owns this text and it is announced, not laid out: its
+          useful half is how many stops are placed, which the Placed fact already
+          shows, and its other half is a negative that read as a fault when it sat
+          in the row permanently. --%>
+          <span id="map-alignment-preview-status" class="sr-only" aria-live="polite">
+            Coordinate-change preview not ready
+          </span>
         </div>
 
         <%= if @coordinate_review_status do %>
@@ -1240,6 +1706,88 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp invalid_floorplan_image_dims?(width, height),
     do: not (is_integer(width) and width > 0 and is_integer(height) and height > 0)
 
+  # `#map-alignment-residual` reports the measured fit of whatever the operator
+  # has placed. Every shape of the assign resolves to a rendered line, because a
+  # blank readout or a bare `0` next to Save position reads as "the fit is
+  # fine" — the exact misreading this element exists to prevent.
+  #
+  # 2.0 m is the same bar `AlignmentInference`'s `@max_rmse_meters` enforces on
+  # an *inferred* fit, and 3 the same floor as its `anchor_minimum/0` and
+  # `FloorplanTransform`'s `@fit_anchor_minimum`. Both are restated here rather
+  # than imported: this module has no inference dependency and gains none.
+  # `check_residual/1` rejects `rmse > 2.0`, so 2.0 exactly is within tolerance.
+  @fit_tolerance_meters 2.0
+  @fit_anchor_minimum 3
+
+  # Two stacked lines: the label states the verdict, the value carries the
+  # numbers. The band is therefore legible in monochrome — an out-of-tolerance
+  # fit reads "Fit over 2.0 m" whether or not the warning colour lands — and
+  # every state keeps the same two-line shape and width class, so the block
+  # neither jitters nor grows the 44 px control row.
+  #
+  # `state` feeds `data-fit-state` and is only ever one of the three resolved
+  # values. The hook overwrites it with "measuring" while a scoring round trip
+  # is in flight, which the markup already styles, so the hook only has to set
+  # the attribute and the value's text.
+  # The fit reads as one labelled fact: a term, a number, and what the number was
+  # measured over. Above tolerance it says what to do about it rather than only
+  # that a threshold was crossed.
+  defp residual_readout(%{status: :ready, rmse_meters: rmse, anchor_count: count})
+       when is_number(rmse) and is_integer(count) do
+    if rmse > @fit_tolerance_meters do
+      %{
+        state: "ready",
+        value: "#{format_meters(rmse)} m",
+        qualifier: "over #{anchor_count_phrase(count)} — check the alignment",
+        value_class: "font-medium tabular-nums text-warning",
+        qualifier_class: "text-warning/80"
+      }
+    else
+      %{
+        state: "ready",
+        value: "#{format_meters(rmse)} m",
+        qualifier: "over #{anchor_count_phrase(count)}",
+        value_class: "font-medium tabular-nums text-base-content",
+        qualifier_class: "text-base-content/50"
+      }
+    end
+  end
+
+  # With nothing measured, the value element carries the whole line, quietly. It
+  # still renders, because it is what the hook overwrites while measuring.
+  defp residual_readout(%{status: :insufficient_anchors}) do
+    %{
+      state: "insufficient",
+      value: "needs #{@fit_anchor_minimum} anchor stops",
+      qualifier: nil,
+      value_class: "text-base-content/50",
+      qualifier_class: nil
+    }
+  end
+
+  # `nil` (nothing measured yet) and `:unavailable` (a round trip that could not
+  # score) share one resting line: in both cases no measurement exists, and the
+  # operator's next move is the same.
+  defp residual_readout(_fit) do
+    %{
+      state: "unavailable",
+      value: "move the floorplan to measure",
+      qualifier: nil,
+      value_class: "text-base-content/50",
+      qualifier_class: nil
+    }
+  end
+
+  defp format_meters(value), do: :erlang.float_to_binary(value * 1.0, decimals: 1)
+
+  # The zero case carries no information, so it is not rendered.
+  defp unplaced_note(0), do: nil
+  defp unplaced_note(1), do: "1 unplaced stays as it is"
+  defp unplaced_note(count), do: "#{count} unplaced stay as they are"
+
+  defp anchor_count_phrase(1), do: "1 anchor"
+  defp anchor_count_phrase(count), do: "#{count} anchors"
+
   defp map_controls_disabled_reason(:fatal, _width, _height),
     do: "Map service is unavailable. Retry the map before saving or previewing coordinates."
 
@@ -1271,19 +1819,231 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp map_state_message(:fatal), do: "Map service is unavailable. Retry to continue."
   defp map_state_message(_map_state), do: nil
 
+  # Opposing nudges must undo each other, so every control emits the same fine
+  # step and the coarse step (10 px / 5° / ×1.1, owned by `_adjustTransform`) is
+  # reached with Shift rather than by a duplicate button (INV-09D-4). Each title
+  # names the operation and both step sizes — the tooltip is the only place the
+  # modifier is spelled out per control.
   defp transform_controls do
     [
-      {"←", "left", false},
-      {"← 10", "left", true},
-      {"→", "right", false},
-      {"→ 10", "right", true},
-      {"↑", "up", false},
-      {"↓", "down", false},
-      {"↺", "rotate-left", false},
-      {"↻", "rotate-right", true},
-      {"−", "scale-down", false},
-      {"+", "scale-up", true}
+      %{
+        group: :move,
+        action: "left",
+        coarse: false,
+        label: "←",
+        title: "Move floorplan left · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :move,
+        action: "up",
+        coarse: false,
+        label: "↑",
+        title: "Move floorplan up · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :move,
+        action: "down",
+        coarse: false,
+        label: "↓",
+        title: "Move floorplan down · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :move,
+        action: "right",
+        coarse: false,
+        label: "→",
+        title: "Move floorplan right · 2 px (Shift 10 px)"
+      },
+      %{
+        group: :rotate,
+        action: "rotate-left",
+        coarse: false,
+        label: "↺",
+        title: "Rotate floorplan left · 1° (Shift 5°)"
+      },
+      %{
+        group: :rotate,
+        action: "rotate-right",
+        coarse: false,
+        label: "↻",
+        title: "Rotate floorplan right · 1° (Shift 5°)"
+      },
+      %{
+        group: :scale,
+        action: "scale-down",
+        coarse: false,
+        label: "−",
+        title: "Shrink floorplan · 1% (Shift 10%)"
+      },
+      %{
+        group: :scale,
+        action: "scale-up",
+        coarse: false,
+        label: "+",
+        title: "Grow floorplan · 1% (Shift 10%)"
+      }
     ]
+  end
+
+  attr :icon, :string, required: true
+  attr :title, :string, required: true
+  attr :tone, :string, default: "neutral"
+  slot :inner_block, required: true
+
+  defp help_section(assigns) do
+    ~H"""
+    <section class="border-t border-base-200 py-4 first:border-t-0 first:pt-0 last:pb-0">
+      <h3 class="flex items-center gap-2.5">
+        <span class={[
+          "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+          help_tone_chip(@tone)
+        ]}>
+          <.icon name={@icon} class="w-4 h-4" />
+        </span>
+        <span class="text-sm font-semibold">{@title}</span>
+      </h3>
+      <div class="mt-2 pl-9.5 text-sm text-base-content/80">
+        {render_slot(@inner_block)}
+      </div>
+    </section>
+    """
+  end
+
+  defp help_tone_chip("primary"), do: "bg-primary/12 text-primary"
+  defp help_tone_chip("info"), do: "bg-info/12 text-info"
+  defp help_tone_chip("success"), do: "bg-success/12 text-success"
+  defp help_tone_chip("warning"), do: "bg-warning/12 text-warning"
+  defp help_tone_chip(_), do: "bg-base-200 text-base-content/70"
+
+  # The pad replica, tinted by operation so the diagram and the legend key each
+  # other. Colour is the category here, not decoration; the legend repeats every
+  # grouping in words so it never carries meaning alone.
+  defp align_pad_diagram_cells do
+    move = "bg-primary/12 text-primary"
+    rotate = "bg-info/12 text-info"
+    scale = "bg-secondary/12 text-secondary"
+
+    [
+      %{glyph: "↺", class: rotate},
+      %{glyph: "↑", class: move},
+      %{glyph: "↻", class: rotate},
+      %{glyph: "←", class: move},
+      %{glyph: "", class: "bg-base-100"},
+      %{glyph: "→", class: move},
+      %{glyph: "−", class: scale},
+      %{glyph: "↓", class: move},
+      %{glyph: "+", class: scale}
+    ]
+  end
+
+  # The transform pad, one row per operation, showing the glyphs the operator
+  # actually sees on the buttons rather than naming their positions.
+  defp align_pad_help_rows do
+    [
+      %{
+        action: "Move",
+        step: "2 px a press",
+        keys: "← ↑ ↓ →",
+        tone_class: "text-primary"
+      },
+      %{
+        action: "Rotate",
+        step: "1° a press",
+        keys: "[ and ]",
+        tone_class: "text-info"
+      },
+      %{
+        action: "Resize",
+        step: "1% a press",
+        keys: "− and =",
+        tone_class: "text-secondary"
+      }
+    ]
+  end
+
+  # The panel's non-pad controls, each shown with its own icon.
+  defp align_panel_help_rows do
+    [
+      %{
+        icon: "hero-arrow-path",
+        term: "Restore saved alignment",
+        description: "puts the floorplan back where it was last saved, discarding every change."
+      },
+      %{
+        icon: "hero-photo",
+        term: "Floorplan opacity",
+        description: "fades the floorplan so you can see the imagery through it."
+      },
+      %{
+        icon: "hero-square-3-stack-3d",
+        term: "Other-levels opacity",
+        description: "fades the floorplans of other levels, when any are shown."
+      },
+      %{
+        icon: "hero-chevron-up",
+        term: "Hide tools",
+        description: "collapses the panel when it covers something you need to see."
+      }
+    ]
+  end
+
+  # What the operator can do on the map without touching the panel.
+  defp align_map_help_rows do
+    [
+      %{
+        icon: "hero-arrow-path",
+        term: "Rotate handle",
+        description: "top right of the map — drag it to turn the floorplan."
+      },
+      %{
+        icon: "hero-arrows-pointing-out",
+        term: "Resize handle",
+        description: "bottom right of the map — drag it to grow or shrink the floorplan."
+      },
+      %{
+        icon: "hero-hand-raised",
+        term: "Drag the floorplan",
+        description: "anywhere on it, to move it."
+      },
+      %{
+        key: "H",
+        term: "Hold H",
+        description: "blanks the floorplan while you hold it, so you can check the imagery."
+      }
+    ]
+  end
+
+  defp transform_control(action) do
+    Enum.find(transform_controls(), &(&1.action == action))
+  end
+
+  attr :control, :map, required: true
+  attr :class, :string, default: nil
+
+  defp transform_button(assigns) do
+    ~H"""
+    <button
+      id={"map-transform-#{@control.action}-#{if @control.coarse, do: "coarse", else: "fine"}"}
+      type="button"
+      class={
+        [
+          "tooltip tooltip-right",
+          "btn btn-ghost h-11 w-11 min-h-11 min-w-11 rounded-none p-0 text-base",
+          "bg-base-100 hover:bg-base-200",
+          # The pad clips its corners, which would clip an outward focus ring on
+          # every edge cell. Draw it inside the cell so it stays whole.
+          "focus-visible:outline-offset-[-2px]",
+          @class
+        ]
+      }
+      data-map-transform-action={@control.action}
+      data-map-transform-coarse={to_string(@control.coarse)}
+      data-tip={@control.title}
+      aria-label={@control.title}
+    >
+      {@control.label}
+    </button>
+    """
   end
 
   # Derive the post-review projection counts and consequence clauses from the

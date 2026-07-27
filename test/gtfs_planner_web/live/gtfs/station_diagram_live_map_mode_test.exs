@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Repo
+  alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
 
   # Coordinate review cases (Package 08 step 3) swap
   # :gtfs_planner, :reviewed_apply_transaction and may run the production
@@ -1012,7 +1013,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-lat-input")
       assert has_element?(view, "#map-alignment-lon-input")
       assert has_element?(view, "#map-alignment-apply-center")
-      assert has_element?(view, "#map-alignment-save", "Save alignment")
+      assert has_element?(view, "#map-alignment-save", "Save position")
       assert has_element?(view, "#map-alignment-apply")
       refute has_element?(view, "#map-alignment-infer")
       refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
@@ -1040,8 +1041,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       html = render(view)
 
-      assert has_element?(view, "#map-alignment-save", "Save alignment")
-      assert has_element?(view, "#map-alignment-apply.btn-primary", "Review coordinate changes")
+      assert has_element?(view, "#map-alignment-save", "Save position")
+      assert has_element?(view, "#map-alignment-apply.btn-primary", "Update stop coordinates")
 
       # Exactly one visible primary save action in the control row.
       assert html
@@ -1953,6 +1954,204 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # Map-mode canvas_click is still a no-op
       render_hook(view, "canvas_click", %{"x" => "100", "y" => "100"})
       refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Package 09 part (d) step 3 — server-owned unsaved alignment state.
+  #
+  # `alignment_unsaved?` is set only by a current-generation
+  # `alignment_transform_changed` carrying a truthy `unsaved` key (a payload
+  # omitting the key is treated as dirty), and cleared by restore, a successful
+  # save, and any level/mode/version reset. The hook never writes `disabled`
+  # (INV-09D-3).
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - unsaved alignment state" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "UNSAVED_STATION",
+          stop_name: "Unsaved Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "unsaved_level",
+          level_name: "Unsaved Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "unsaved-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    defp mount_map_align(%{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         }) do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      view
+    end
+
+    defp transform_changed(view, params),
+      do: map_event(view, "alignment_transform_changed", params)
+
+    test "a freshly mounted align surface shows no unsaved indicator and disables restore",
+         context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change with unsaved true shows the indicator and enables restore",
+         context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert has_element?(view, "#map-alignment-unsaved", "Unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change omitting the unsaved key is treated as unsaved", context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{})
+
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change with unsaved false leaves a clean surface clean", context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => false})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change with unsaved false does not clear an already unsaved surface",
+         context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      transform_changed(view, %{"unsaved" => false})
+
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a stale-generation transform change does not mark the surface unsaved", context do
+      view = mount_map_align(context)
+
+      render_hook(view, "alignment_transform_changed", %{
+        "generation" => "stale-generation",
+        "unsaved" => true
+      })
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform change without a generation does not mark the surface unsaved", context do
+      view = mount_map_align(context)
+
+      render_hook(view, "alignment_transform_changed", %{"unsaved" => true})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "restoring the saved alignment clears the unsaved state", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      render_hook(view, "restore_saved_alignment", %{})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a successful save clears the unsaved state", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      map_event(view, "save_alignment", %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.0060,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 15.5
+      })
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a rejected save leaves the surface unsaved", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      html =
+        map_event(view, "save_alignment", %{
+          "center_lat" => 200,
+          "center_lon" => 0,
+          "scale_mpp" => 0.5,
+          "rotation_deg" => 0
+        })
+
+      assert html =~ "Could not save alignment"
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "leaving and re-entering align mode clears the unsaved state", context do
+      view = mount_map_align(context)
+      transform_changed(view, %{"unsaved" => true})
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-restore-saved[disabled]")
     end
   end
 
@@ -2967,7 +3166,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute has_element?(view, "#cancel-coordinate-preview")
 
       # The trigger carries no change count and uses the review vocabulary.
-      assert has_element?(view, "#map-alignment-apply", "Review coordinate changes")
+      assert has_element?(view, "#map-alignment-apply", "Update stop coordinates")
       refute html =~ "Preview coordinate changes"
     end
   end
@@ -3098,13 +3297,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(
                view,
                "[data-role='child-stop-coverage']",
-               "2 of 3 stops have floorplan placements · 1 without placement stay unchanged"
+               "Placed 2 of 3 1 unplaced stays as it is"
              )
 
       refute html =~ "child stops have lat/long"
 
       # The trigger carries no change count.
-      assert has_element?(view, "#map-alignment-apply", "Review coordinate changes")
+      assert has_element?(view, "#map-alignment-apply", "Update stop coordinates")
     end
 
     test "dialog renders every projected change row with six-decimal coordinates and reconciled counts (AC-5, AC-13, DC-8, INV-7)",
@@ -3184,7 +3383,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(
                view,
                "[data-role='child-stop-coverage']",
-               "#{stored.child_stops_with_floorplan} of #{stored.child_stops_total} stops have floorplan placements · #{review.unplaced_count} without placement stay unchanged"
+               "Placed #{stored.child_stops_with_floorplan} of #{stored.child_stops_total}"
              )
 
       # The consequence names the changed group; recovery copy is truthful (DC-5).
@@ -3445,6 +3644,1876 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute html =~ "The alignment changed — review again."
     end
   end
+
+  describe "StationDiagramLive - align workspace anchor" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WORKSPACE_STATION",
+          stop_name: "Workspace Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "workspace_level",
+          level_name: "Workspace Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "workspace-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "align mode renders exactly one workspace element", context do
+      view = mount_map_align(context)
+
+      workspaces =
+        view
+        |> parsed_document()
+        |> LazyHTML.query("#map-alignment-workspace")
+        |> Enum.count()
+
+      assert workspaces == 1
+    end
+
+    test "the workspace wraps the ignored map canvas rather than sitting inside it", context do
+      view = mount_map_align(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-workspace [phx-hook='MapAlignment'][phx-update='ignore']"
+             )
+
+      refute has_element?(view, "[phx-update='ignore'] #map-alignment-workspace")
+    end
+  end
+
+  # Every align control that survives the part (e) rebuild, addressed the way a
+  # consumer addresses it. Each must render exactly once.
+  @preserved_align_selectors [
+    "#map-alignment-workspace",
+    "#map-alignment-tools",
+    "#map-alignment-tools-toggle",
+    "#map-alignment-commit-bar",
+    "#map-alignment-lat-input",
+    "#map-alignment-lon-input",
+    "#map-alignment-apply-center",
+    "#map-transform-left-fine",
+    "#map-transform-up-fine",
+    "#map-transform-down-fine",
+    "#map-transform-right-fine",
+    "#map-transform-rotate-left-fine",
+    "#map-transform-rotate-right-fine",
+    "#map-transform-scale-down-fine",
+    "#map-transform-scale-up-fine",
+    "#map-alignment-restore-saved",
+    "#map-alignment-opacity",
+    "#map-alignment-zoom",
+    "#map-alignment-zoom-value",
+    "[data-role='child-stop-coverage']",
+    "#map-alignment-actions",
+    "#map-alignment-preview-status",
+    "#map-alignment-save",
+    "#map-alignment-apply",
+    "#map-alignment-preview-auto"
+  ]
+
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 4 — the rebuilt Align layout.
+  #
+  # These cases pin the structural half of the Id and selector delta: the tools
+  # panel floats over the map as a sibling of the ignored canvas, the five
+  # bordered control groups are gone, and every control that lived in them still
+  # renders exactly once in its new container.
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - align tools panel and commit bar" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REBUILD_STATION",
+          stop_name: "Rebuild Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "rebuild_level",
+          level_name: "Rebuild Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rebuild-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "the tools panel floats inside the workspace and outside the ignored canvas", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-workspace #map-alignment-tools")
+      refute has_element?(view, "[phx-update='ignore'] #map-alignment-tools")
+
+      # The panel stays patchable so the server keeps owning `disabled`. The one
+      # exception is the opacity slider: its value is client state, and a patch
+      # that restored the rendered `value` would snap the thumb back to 70%
+      # while the overlay kept the operator's setting. #map-alignment-zoom
+      # carries the same protection for the same reason.
+      assert ignored_ids_within(view, "#map-alignment-tools") == ["map-alignment-opacity"]
+    end
+
+    test "the five removed control groups no longer render", context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-alignment-transform-controls")
+      refute has_element?(view, "#map-alignment-assisted")
+
+      for legend <- [
+            "Map center",
+            "Floorplan transform",
+            "Assisted alignment",
+            "Layers",
+            "Save and apply"
+          ] do
+        refute has_element?(view, "fieldset > legend", legend)
+      end
+    end
+
+    test "every preserved align control renders exactly once", context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      counts =
+        Map.new(@preserved_align_selectors, fn selector ->
+          {selector, document |> LazyHTML.query(selector) |> Enum.count()}
+        end)
+
+      assert counts == Map.new(@preserved_align_selectors, &{&1, 1})
+    end
+
+    test "the tools panel owns the frequent controls and the commit bar owns the rest",
+         context do
+      view = mount_map_align(context)
+
+      for id <- [
+            "map-transform-left-fine",
+            "map-transform-up-fine",
+            "map-transform-down-fine",
+            "map-transform-right-fine",
+            "map-transform-rotate-left-fine",
+            "map-transform-rotate-right-fine",
+            "map-transform-scale-down-fine",
+            "map-transform-scale-up-fine",
+            "map-alignment-restore-saved",
+            "map-alignment-opacity",
+            "map-alignment-tools-toggle"
+          ] do
+        assert has_element?(view, "#map-alignment-tools ##{id}")
+      end
+
+      for id <- [
+            "map-alignment-preview-auto",
+            "map-alignment-actions",
+            "map-alignment-save",
+            "map-alignment-apply",
+            "map-alignment-lat-input",
+            "map-alignment-lon-input",
+            "map-alignment-apply-center",
+            "map-alignment-zoom",
+            "map-alignment-zoom-value"
+          ] do
+        assert has_element?(view, "#map-alignment-commit-bar ##{id}")
+      end
+
+      assert has_element?(
+               view,
+               "#map-alignment-commit-bar [data-role='child-stop-coverage']"
+             )
+    end
+
+    test "the map zoom slider keeps its ignore boundary on the input itself", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-zoom[phx-update='ignore']")
+    end
+
+    test "restore stays in the tools panel and follows the unsaved state", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved[disabled]")
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "the other-levels opacity control joins the tools panel when its floorplan shows",
+         context do
+      %{organization: organization, gtfs_version: gtfs_version, station: station} = context
+      other_level_id = aligned_other_level(organization, gtfs_version, station, "rebuild")
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-other-overlays-opacity")
+
+      render_click(element(view, floorplan_selector(other_level_id)))
+
+      assert has_element?(view, "#map-alignment-tools #map-other-overlays-opacity")
+    end
+
+    test "the help overlay opens from its trigger and dismisses back to it", context do
+      view = mount_map_align(context)
+
+      # The overlay follows the popover idiom: hidden until asked for, dismissed
+      # by Escape or a click away, and the dismiss returns focus to the trigger
+      # only while the trigger reports itself open.
+      assert has_element?(view, "#map-alignment-help-panel[phx-click-away]")
+      assert has_element?(view, "#map-alignment-help-panel[phx-window-keydown][phx-key='escape']")
+      assert has_element?(view, "#map-alignment-help-panel[role='dialog']")
+      assert has_element?(view, "#map-alignment-help-trigger[phx-click]")
+      assert has_element?(view, "#map-alignment-help-close[phx-click]")
+
+      assert align_containers_of(view, ["#map-alignment-help-close"]) == %{
+               "#map-alignment-help-close" => "map-alignment-help-panel"
+             }
+    end
+
+    test "the help overlay is a sibling of the ignored canvas, not a child", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-workspace #map-alignment-help-panel")
+      refute has_element?(view, "[phx-update='ignore'] #map-alignment-help-panel")
+    end
+
+    test "the help overlay names dragging, keyboard nudging, and hold-to-hide", context do
+      view = mount_map_align(context)
+
+      # The guidance moved off the commit bar and onto the surface it describes.
+      # It renders hidden until the operator asks for it, so the copy is
+      # asserted inside the panel rather than anywhere in the document.
+      refute render(view) =~ "Drag to move the floorplan, or nudge it"
+
+      help = element_text(view, "#map-alignment-help-panel")
+
+      assert help =~ "Drag the floorplan"
+      assert help =~ "keys ← ↑ ↓ →"
+      assert help =~ "Hold H"
+      assert help =~ "Restore saved alignment"
+
+      assert has_element?(view, "#map-alignment-help-panel[style='display: none;']")
+      assert has_element?(view, "#map-alignment-help-trigger[aria-expanded='false']")
+
+      assert has_element?(
+               view,
+               "#map-alignment-help-trigger[aria-controls='map-alignment-help-panel']"
+             )
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 5 — the demoted Map center and Map zoom popovers.
+  #
+  # These cases pin the demotion half of the Id and selector delta: the five
+  # rarely-used controls step 4 left inline in the commit bar now render only
+  # inside their popover panels, the panels render hidden, and the triggers
+  # carry the disclosure and dismissal wiring the level-picker precedent uses.
+  # Dismissal and focus return need a real browser and belong to step 10.
+  # ---------------------------------------------------------------------------
+
+  describe "StationDiagramLive - align popovers" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "POPOVER_STATION",
+          stop_name: "Popover Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "popover_level",
+          level_name: "Popover Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "popover-diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_level: stop_level
+      }
+    end
+
+    test "the coordinate controls render only inside the map center panel", context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      for id <- [
+            "map-alignment-lat-input",
+            "map-alignment-lon-input",
+            "map-alignment-apply-center"
+          ] do
+        assert has_element?(view, "#map-alignment-center-panel ##{id}")
+
+        assert document |> LazyHTML.query("##{id}") |> Enum.count() == 1,
+               "#{id} renders more than once, so a copy survives outside the panel"
+      end
+    end
+
+    test "the zoom controls render only inside the map zoom panel, keeping the ignore boundary",
+         context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      for id <- ["map-alignment-zoom", "map-alignment-zoom-value"] do
+        assert has_element?(view, "#map-alignment-zoom-panel ##{id}")
+
+        assert document |> LazyHTML.query("##{id}") |> Enum.count() == 1,
+               "#{id} renders more than once, so a copy survives outside the panel"
+      end
+
+      assert has_element?(
+               view,
+               "#map-alignment-zoom-panel #map-alignment-zoom[phx-update='ignore']"
+             )
+
+      refute has_element?(view, "#map-alignment-zoom-panel[phx-update='ignore']")
+    end
+
+    test "both panels render hidden with their triggers collapsed in the commit bar", context do
+      view = mount_map_align(context)
+
+      for {trigger, panel} <- [
+            {"map-alignment-center-trigger", "map-alignment-center-panel"},
+            {"map-alignment-zoom-trigger", "map-alignment-zoom-panel"}
+          ] do
+        assert has_element?(view, "#map-alignment-commit-bar ##{trigger}")
+        assert has_element?(view, "#map-alignment-commit-bar ##{panel}")
+
+        assert has_element?(
+                 view,
+                 "##{trigger}[aria-expanded='false'][aria-controls='#{panel}']"
+               )
+
+        assert has_element?(view, "##{panel}[style='display: none;']")
+      end
+    end
+
+    test "each panel carries the click-away and escape dismissal wiring", context do
+      view = mount_map_align(context)
+
+      for panel <- ["map-alignment-center-panel", "map-alignment-zoom-panel"] do
+        assert has_element?(view, "##{panel}[phx-click-away]")
+        assert has_element?(view, "##{panel}[phx-window-keydown][phx-key='escape']")
+      end
+
+      for trigger <- ["map-alignment-center-trigger", "map-alignment-zoom-trigger"] do
+        assert has_element?(view, "##{trigger}[phx-click]")
+        assert has_element?(view, "##{trigger}[phx-keydown][phx-key='escape']")
+
+        # phx-keydown fires only when the event target itself carries it, so
+        # Escape typed in a panel control reaches only the window binding.
+        # That binding returns focus to the trigger, gated on the trigger's
+        # own aria-expanded so an Escape with the panel closed moves nothing.
+        assert has_element?(
+                 view,
+                 ~s|[phx-window-keydown*="##{trigger}[aria-expanded='true']"]|
+               )
+      end
+    end
+
+    test "the triggers name their clusters and the primary action keeps its label", context do
+      view = mount_map_align(context)
+
+      assert view |> element("#map-alignment-center-trigger") |> render() =~ "Center the map"
+      assert view |> element("#map-alignment-zoom-trigger") |> render() =~ "Change the map zoom"
+      assert view |> element("#map-alignment-apply-center") |> render() =~ "Center map"
+    end
+
+    test "the coordinate fields keep visible labels bound to their inputs", context do
+      view = mount_map_align(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-center-panel label[for='map-alignment-lat-input']",
+               "Latitude"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-center-panel label[for='map-alignment-lon-input']",
+               "Longitude"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-zoom-panel label[for='map-alignment-zoom']",
+               "Map zoom"
+             )
+    end
+  end
+
+  describe "StationDiagramLive - align residual readout" do
+    # The LiveView does not assign `alignment_fit` until the server-side scoring
+    # lands, so the four shapes are exercised against the production component
+    # directly. `render_component/2` is a harness, not production wiring: the
+    # markup under test is the same `~H` block `StationDiagramLive.render/1`
+    # renders.
+    defp render_map_canvas(overrides) do
+      base = [
+        organization_id: "00000000-0000-0000-0000-0000000000a1",
+        gtfs_version_id: "00000000-0000-0000-0000-0000000000b1",
+        station: %{stop_id: "RESIDUAL_STATION", stop_lat: 40.7128, stop_lon: -74.006},
+        map_generation: "residual-generation-1",
+        map_state: :ready,
+        anchor_count: 5,
+        child_stops_total: 6,
+        child_stops_with_geo: 5,
+        child_stops_with_floorplan: 5,
+        image_natural_width: 1000,
+        image_natural_height: 800
+      ]
+
+      render_component(
+        &StationDiagramComponents.map_canvas/1,
+        Keyword.merge(base, overrides)
+      )
+    end
+
+    defp residual_state(html),
+      do:
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.attribute("data-fit-state")
+        |> List.first()
+
+    defp residual_value(html),
+      do:
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual-value")
+        |> LazyHTML.text()
+        |> String.trim()
+
+    defp residual_text(html),
+      do:
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.text()
+        |> String.replace(~r/\s+/, " ")
+        |> String.trim()
+
+    test "renders a resting line, never a blank or a bare zero, before any measurement" do
+      html = render_map_canvas(alignment_fit: nil)
+
+      assert residual_state(html) == "unavailable"
+      assert residual_value(html) == "move the floorplan to measure"
+      refute residual_value(html) =~ ~r/^0(\.0)?( m)?$/
+    end
+
+    test "renders the resting line when a round trip could not score the alignment" do
+      html = render_map_canvas(alignment_fit: %{status: :unavailable})
+
+      assert residual_state(html) == "unavailable"
+      assert residual_value(html) == "move the floorplan to measure"
+    end
+
+    test "renders the metre value to one decimal and the anchor count within tolerance" do
+      html =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.437, anchor_count: 5})
+
+      assert residual_state(html) == "ready"
+      assert residual_value(html) == "1.4 m"
+      assert residual_text(html) == "Fit 1.4 m over 5 anchors"
+      assert residual_text(html) == "Fit 1.4 m over 5 anchors"
+    end
+
+    test "singularizes the anchor count when one anchor survived" do
+      html =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 0.25, anchor_count: 1})
+
+      assert residual_value(html) == "0.3 m"
+      assert residual_text(html) == "Fit 0.3 m over 1 anchor"
+    end
+
+    test "names the 2.0 m tolerance in text above the threshold, not by colour alone" do
+      above =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 3.62, anchor_count: 5})
+
+      within =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 2.0, anchor_count: 5})
+
+      assert residual_text(above) == "Fit 3.6 m over 5 anchors — check the alignment"
+      assert residual_state(above) == "ready"
+
+      # 2.0 m exactly is the bar AlignmentInference accepts, so it is not banded.
+      refute residual_text(within) =~ "over 2.0 m"
+      assert residual_text(within) =~ "Fit"
+      assert residual_value(within) == "2.0 m"
+    end
+
+    test "names the three-anchor requirement instead of a number below three anchors" do
+      html = render_map_canvas(alignment_fit: %{status: :insufficient_anchors, anchor_count: 2})
+
+      assert residual_state(html) == "insufficient"
+      assert residual_value(html) == "needs 3 anchor stops"
+      refute residual_value(html) =~ ~r/\dm|\d m/
+    end
+
+    test "keeps the readout on tabular numerals so the value does not reflow as it changes" do
+      # `tabular-nums` is the only DOM expression of the no-reflow requirement,
+      # so it is asserted directly rather than through a rendered measurement.
+      classes =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.0, anchor_count: 4})
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#map-alignment-residual-value")
+        |> LazyHTML.attribute("class")
+        |> List.first()
+
+      assert classes =~ "tabular-nums"
+    end
+
+    test "renders the readout inside the commit bar, exactly once" do
+      html =
+        render_map_canvas(alignment_fit: %{status: :ready, rmse_meters: 1.0, anchor_count: 4})
+
+      document = LazyHTML.from_fragment(html)
+
+      for id <- ["map-alignment-residual", "map-alignment-residual-value"] do
+        assert document |> LazyHTML.query("#map-alignment-commit-bar ##{id}") |> Enum.count() == 1
+        assert document |> LazyHTML.query("##{id}") |> Enum.count() == 1
+      end
+    end
+
+    test "never renders the in-flight state the hook owns" do
+      # data-fit-state has four values; "measuring" is written by the hook at
+      # schedule time and must never arrive from the server, or a resolved
+      # measurement would be presented as still in flight.
+      for fit <- [
+            nil,
+            %{status: :unavailable},
+            %{status: :insufficient_anchors, anchor_count: 2},
+            %{status: :ready, rmse_meters: 1.0, anchor_count: 4},
+            %{status: :ready, rmse_meters: 9.0, anchor_count: 4}
+          ] do
+        assert residual_state(render_map_canvas(alignment_fit: fit)) in [
+                 "ready",
+                 "insufficient",
+                 "unavailable"
+               ]
+      end
+    end
+
+    test "leaves save and review coordinate changes enabled at every fit value" do
+      for fit <- [
+            nil,
+            %{status: :unavailable},
+            %{status: :insufficient_anchors, anchor_count: 0},
+            %{status: :ready, rmse_meters: 0.4, anchor_count: 8},
+            %{status: :ready, rmse_meters: 2.0, anchor_count: 8},
+            %{status: :ready, rmse_meters: 42.5, anchor_count: 8}
+          ] do
+        document = render_map_canvas(alignment_fit: fit) |> LazyHTML.from_fragment()
+
+        for id <- ["map-alignment-save", "map-alignment-apply"] do
+          assert document |> LazyHTML.query("##{id}[disabled]") |> Enum.count() == 0,
+                 "#{id} became disabled at fit #{inspect(fit)}; the readout is advisory"
+        end
+      end
+    end
+
+    test "keeps the fatal-state disable expressions independent of the fit" do
+      document =
+        render_map_canvas(
+          map_state: :fatal,
+          alignment_fit: %{status: :ready, rmse_meters: 0.1, anchor_count: 9}
+        )
+        |> LazyHTML.from_fragment()
+
+      for id <- ["map-alignment-save", "map-alignment-apply", "map-alignment-preview-auto"] do
+        assert document |> LazyHTML.query("##{id}[disabled]") |> Enum.count() == 1
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 7 — server-scored fit quality.
+  #
+  # A current-generation `alignment_transform_changed` carrying an `alignment`
+  # key scores that transform against the level's anchor stops and returns the
+  # measurement as `alignment_fit`, which `#map-alignment-residual` renders.
+  # The measurement is advisory: it appears in no `disabled` expression
+  # (CRIT-005), and every other behaviour of the handler is unchanged (AC-20).
+  #
+  # The anchors are real seeded stops, so `stop_lat`/`stop_lon` arrive as
+  # `Decimal`. `FloorplanTransform.residual_rmse_meters/4` requires `is_number/1`
+  # and silently skips a `Decimal` anchor, so an unconverted level of five
+  # anchors would report "needs 3 anchor stops". That conversion is what the
+  # measured-value cases below pin.
+  # ---------------------------------------------------------------------------
+
+  @fit_image_w 1000
+  @fit_image_h 800
+
+  # The alignment the anchor stops are generated from, so a payload carrying it
+  # scores ~0 and any departure from it scores the departure.
+  @fit_alignment %{
+    center_lat: 40.7128,
+    center_lon: -74.0060,
+    scale_mpp: 0.35,
+    rotation_deg: 0.0
+  }
+
+  # FloorplanTransform measures 111_111 m per degree of latitude, so shifting
+  # the alignment centre north by these offsets displaces every projected anchor
+  # by 11.1111 m and 111.111 m — both above the 2.0 m tolerance.
+  @fit_offset_above_tolerance 0.0001
+  @fit_offset_far_above_tolerance 0.001
+
+  @fit_anchor_points [
+    %{x: 20.0, y: 30.0},
+    %{x: 70.0, y: 25.0},
+    %{x: 45.0, y: 75.0},
+    %{x: 15.0, y: 85.0},
+    %{x: 88.0, y: 60.0}
+  ]
+
+  defp fit_anchor_lat_lon(point) do
+    {:ok, {lat, lon}} =
+      FloorplanTransform.svg_to_lat_lon(@fit_alignment, @fit_image_w, @fit_image_h, point)
+
+    {lat, lon}
+  end
+
+  # The wire shape: string-keyed, exactly what MapAlignmentHook._computeAlignment
+  # attaches to the debounced payload.
+  defp fit_alignment_payload(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "center_lat" => @fit_alignment.center_lat,
+        "center_lon" => @fit_alignment.center_lon,
+        "scale_mpp" => @fit_alignment.scale_mpp,
+        "rotation_deg" => @fit_alignment.rotation_deg
+      },
+      overrides
+    )
+  end
+
+  defp fit_shifted_payload(offset),
+    do: fit_alignment_payload(%{"center_lat" => @fit_alignment.center_lat + offset})
+
+  defp fit_base_context(prefix) do
+    organization = organization_fixture()
+    user = user_fixture()
+
+    Accounts.create_user_org_membership(%{
+      user_id: user.id,
+      organization_id: organization.id,
+      roles: ["pathways_studio_editor"]
+    })
+
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "#{prefix}_STATION",
+        stop_name: "Fit Station",
+        location_type: 1
+      })
+
+    level =
+      level_fixture(organization.id, gtfs_version.id, %{
+        level_id: "#{prefix}_level",
+        level_name: "Fit Level",
+        level_index: 0.0
+      })
+
+    {:ok, stop_level} =
+      Gtfs.create_stop_level(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: station.id,
+        level_id: level.id
+      })
+
+    {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "#{prefix}-diagram.png")
+
+    %{
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    }
+  end
+
+  # Real seeded stops: `diagram_coordinate` is a string-keyed JSON map and
+  # `stop_lat`/`stop_lon` are `Decimal`, both exactly as they come back from the
+  # database on the production path.
+  defp create_fit_anchor_stops(context, points) do
+    points
+    |> Enum.with_index()
+    |> Enum.map(fn {point, index} ->
+      {lat, lon} = fit_anchor_lat_lon(point)
+
+      stop_fixture(context.organization.id, context.gtfs_version.id, %{
+        stop_id: "#{context.station.stop_id}_ANCHOR_#{index}",
+        stop_name: "Fit Anchor #{index}",
+        location_type: 0,
+        parent_station: context.station.stop_id,
+        level_id: context.level.level_id,
+        diagram_coordinate: %{"x" => point.x, "y" => point.y},
+        stop_lat: Decimal.from_float(Float.round(lat, 7)),
+        stop_lon: Decimal.from_float(Float.round(lon, 7))
+      })
+    end)
+  end
+
+  defp create_fit_unplaced_stop(context, suffix) do
+    stop_fixture(context.organization.id, context.gtfs_version.id, %{
+      stop_id: "#{context.station.stop_id}_#{suffix}",
+      stop_name: "Fit Unplaced #{suffix}",
+      location_type: 0,
+      parent_station: context.station.stop_id,
+      level_id: context.level.level_id,
+      diagram_coordinate: nil,
+      stop_lat: nil,
+      stop_lon: nil
+    })
+  end
+
+  defp mount_fit_align_without_image_size(context) do
+    %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } = context
+
+    conn = log_in_user(conn, user, organization: organization)
+
+    {:ok, view, _html} =
+      live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+    render_hook(view, "switch_mode", %{"mode" => "map"})
+
+    view
+  end
+
+  defp mount_fit_align(context) do
+    view = mount_fit_align_without_image_size(context)
+    set_image_natural_size(view, @fit_image_w, @fit_image_h)
+
+    view
+  end
+
+  defp fit_transform_changed(view, params),
+    do: map_event(view, "alignment_transform_changed", params)
+
+  defp fit_readout(view) do
+    document = parsed_document(view)
+
+    %{
+      state:
+        document
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.attribute("data-fit-state")
+        |> List.first(),
+      value:
+        document
+        |> LazyHTML.query("#map-alignment-residual-value")
+        |> LazyHTML.text()
+        |> String.trim(),
+      text:
+        document
+        |> LazyHTML.query("#map-alignment-residual")
+        |> LazyHTML.text()
+        |> String.replace(~r/\s+/, " ")
+        |> String.trim()
+    }
+  end
+
+  describe "StationDiagramLive - align fit scoring" do
+    setup do
+      context = fit_base_context("FIT")
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      create_fit_unplaced_stop(context, "UNPLACED")
+
+      other_level =
+        level_fixture(context.organization.id, context.gtfs_version.id, %{
+          level_id: "FIT_other_level",
+          level_name: "Fit Other Level",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: context.organization.id,
+          gtfs_version_id: context.gtfs_version.id,
+          stop_id: context.station.id,
+          level_id: other_level.id
+        })
+
+      Map.put(context, :other_level, other_level)
+    end
+
+    test "a fresh align surface rests with no measurement", context do
+      view = mount_fit_align(context)
+
+      assert assigns(view).alignment_fit == nil
+      assert fit_readout(view).state == "unavailable"
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
+    end
+
+    test "a current-generation transform measures its alignment against the level's anchor stops",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert %{status: :ready, anchor_count: 5, rmse_meters: rmse} = assigns(view).alignment_fit
+      assert rmse < 0.05
+      assert fit_readout(view).state == "ready"
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
+    end
+
+    test "an alignment displaced from its anchors names the tolerance in words", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_above_tolerance)
+      })
+
+      assert fit_readout(view).state == "ready"
+      assert fit_readout(view).text == "Fit 11.1 m over 5 anchors — check the alignment"
+      assert fit_readout(view).text =~ "check the alignment"
+    end
+
+    test "a transform without an alignment key measures nothing on a resting surface", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"unsaved" => true})
+
+      assert assigns(view).alignment_fit == nil
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
+    end
+
+    test "a transform without an alignment key leaves a standing measurement untouched",
+         context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      measured = assigns(view).alignment_fit
+
+      fit_transform_changed(view, %{"unsaved" => true})
+
+      assert assigns(view).alignment_fit == measured
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
+    end
+
+    test "a stale generation carrying an alignment measures nothing", context do
+      view = mount_fit_align(context)
+
+      render_hook(view, "alignment_transform_changed", %{
+        "generation" => "stale-generation",
+        "alignment" => fit_alignment_payload()
+      })
+
+      assert assigns(view).alignment_fit == nil
+    end
+
+    test "a stale generation does not overwrite a standing measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      measured = assigns(view).alignment_fit
+
+      render_hook(view, "alignment_transform_changed", %{
+        "generation" => "stale-generation",
+        "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
+      })
+
+      assert assigns(view).alignment_fit == measured
+    end
+
+    test "re-sending an identical alignment produces an identical measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      first = assigns(view).alignment_fit
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == first
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
+    end
+
+    test "a later measurement replaces the earlier one", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_above_tolerance)
+      })
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
+      refute fit_readout(view).text =~ "over 2.0 m"
+    end
+
+    test "save and review coordinate changes stay enabled at a fit far above tolerance",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
+      })
+
+      assert fit_readout(view).text =~ "check the alignment"
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+      refute has_element?(view, "#map-alignment-preview-auto[disabled]")
+    end
+
+    test "a transform carrying an alignment but omitting unsaved is still treated as unsaved",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert has_element?(view, "#map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "a transform carrying an alignment still invalidates an open coordinate review",
+         context do
+      view = mount_fit_align(context)
+      open_coordinate_review(view, fit_shifted_payload(@fit_offset_far_above_tolerance))
+      assert has_element?(view, "#coordinate-review-dialog")
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      refute has_element?(view, "#coordinate-review-dialog")
+
+      assert has_element?(
+               view,
+               "#coordinate-review-status",
+               "The alignment changed — review again."
+             )
+    end
+
+    test "the review-invalidating branch records the measurement too", context do
+      view = mount_fit_align(context)
+      open_coordinate_review(view, fit_shifted_payload(@fit_offset_far_above_tolerance))
+      assert has_element?(view, "#coordinate-review-dialog")
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert fit_readout(view).text == "Fit 0.0 m over 5 anchors"
+    end
+
+    test "leaving and re-entering align mode clears the measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert assigns(view).alignment_fit == nil
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
+    end
+
+    test "switching level clears the measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      render_hook(view, "switch_level", %{"level_id" => context.other_level.id})
+
+      assert assigns(view).alignment_fit == nil
+    end
+
+    test "a transform scored before the floorplan image size arrives reports no measurement",
+         context do
+      view = mount_fit_align_without_image_size(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == %{status: :unavailable}
+      assert fit_readout(view).state == "unavailable"
+      assert fit_readout(view).text == "Fit move the floorplan to measure"
+    end
+
+    test "an alignment the server cannot validate reports no measurement", context do
+      view = mount_fit_align(context)
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      fit_transform_changed(view, %{"alignment" => %{"center_lat" => "not-a-number"}})
+
+      assert assigns(view).alignment_fit == %{status: :unavailable}
+    end
+
+    test "floorplan dimensions reported as floats are still scored", context do
+      view = mount_fit_align_without_image_size(context)
+      set_image_natural_size(view, @fit_image_w * 1.0, @fit_image_h * 1.0)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert %{status: :ready, anchor_count: 5} = assigns(view).alignment_fit
+    end
+  end
+
+  describe "StationDiagramLive - align fit scoring below the anchor minimum" do
+    setup do
+      context = fit_base_context("FITMIN")
+      create_fit_anchor_stops(context, Enum.take(@fit_anchor_points, 2))
+
+      context
+    end
+
+    test "two usable anchors report the three-anchor requirement, never a bare zero", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == %{status: :insufficient_anchors, anchor_count: 2}
+      assert fit_readout(view).state == "insufficient"
+      assert fit_readout(view).text == "Fit needs 3 anchor stops"
+    end
+
+    test "an insufficient measurement leaves save and review coordinate changes enabled",
+         context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+    end
+  end
+
+  describe "StationDiagramLive - align fit scoring with no placed stops" do
+    setup do
+      context = fit_base_context("FITNONE")
+      create_fit_unplaced_stop(context, "UNPLACED")
+
+      context
+    end
+
+    test "a level with no placed stops reports the anchor requirement", context do
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      assert assigns(view).alignment_fit == %{status: :insufficient_anchors, anchor_count: 0}
+      assert fit_readout(view).text == "Fit needs 3 anchor stops"
+    end
+
+    test "a transform carrying an alignment still clears a standing no-changes status",
+         context do
+      view = mount_fit_align(context)
+      open_coordinate_review(view)
+      assert has_element?(view, "#coordinate-review-status", "No coordinate changes to review.")
+
+      fit_transform_changed(view, %{"alignment" => fit_alignment_payload()})
+
+      refute has_element?(view, "#coordinate-review-status")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Package 09 part (e) step 9 — the Align control strip after the rework.
+  #
+  # Part (d) grouped this surface into five bordered `<fieldset>`s and addressed
+  # every control by the visible `<legend>` of the group it sat in. Part (e)
+  # deletes all five, so those assertions are rewritten here against the
+  # containers that replaced them: `#map-alignment-tools` floating over the map
+  # (INV-10E-1), the two popover panels, and `#map-alignment-commit-bar` below
+  # it (INV-10E-2). No behaviour the old block guarded is dropped — control
+  # membership, the ignore boundary on the zoom input, the other-levels
+  # permutation, the transform id set and titles, the unsaved matrix, and the
+  # three `disabled` expressions all reappear below against the new structure.
+  #
+  # This block is the mechanical face of the spec's "Id and selector delta"
+  # (CRIT-003): every id the rework adds, every id it preserves, and every
+  # container it removes is named here, so a later re-parent that silently
+  # drops, moves, or duplicates a control fails a test rather than a review.
+  # The delta lists are restated independently of the ones the step-4 block
+  # uses — a single shared list could be edited to make both blocks pass.
+  #
+  # Containment is asserted as one id → container map compared for equality
+  # rather than as a sweep of membership checks: a map diff names the control
+  # and both containers, and it catches a control that gained a second home as
+  # well as one that lost its own. No assertion here names a Tailwind class;
+  # part (d) had to repoint exactly such an assertion when its container moved.
+  # ---------------------------------------------------------------------------
+
+  # The four containers that replaced the five fieldsets. The popover panels
+  # nest inside the commit bar, so they are tried first: the innermost
+  # container is the one that owns the control.
+  @align_containers [
+    "map-alignment-center-panel",
+    "map-alignment-zoom-panel",
+    "map-alignment-help-panel",
+    "map-alignment-tools",
+    "map-alignment-commit-bar"
+  ]
+
+  # Every id the spec's delta says renders on a resting Align surface: the ten
+  # under "Added" plus every control and readout under "Preserved verbatim".
+  # Each must render exactly once.
+  @align_delta_selectors [
+    # Added by this spec.
+    "#map-alignment-workspace",
+    "#map-alignment-tools",
+    "#map-alignment-tools-toggle",
+    "#map-alignment-commit-bar",
+    "#map-alignment-center-trigger",
+    "#map-alignment-center-panel",
+    "#map-alignment-zoom-trigger",
+    "#map-alignment-zoom-panel",
+    "#map-alignment-residual",
+    "#map-alignment-residual-value",
+    # Preserved verbatim from part (d).
+    "#map-transform-left-fine",
+    "#map-transform-up-fine",
+    "#map-transform-down-fine",
+    "#map-transform-right-fine",
+    "#map-transform-rotate-left-fine",
+    "#map-transform-rotate-right-fine",
+    "#map-transform-scale-down-fine",
+    "#map-transform-scale-up-fine",
+    "#map-alignment-restore-saved",
+    "#map-alignment-opacity",
+    "#map-alignment-zoom",
+    "#map-alignment-zoom-value",
+    "#map-alignment-lat-input",
+    "#map-alignment-lon-input",
+    "#map-alignment-apply-center",
+    "[data-role='child-stop-coverage']",
+    "#map-alignment-preview-auto",
+    "#map-alignment-actions",
+    "#map-alignment-preview-status",
+    "#map-alignment-save",
+    "#map-alignment-apply"
+  ]
+
+  # The "Removed" half of the delta. The two named fieldsets go by id; the three
+  # unnamed ones can only return as a fieldset inside one of the surviving
+  # containers, or under one of the legends refuted separately. The four coarse
+  # transform ids are here because part (d) removed them and INV-09D-4 keeps
+  # them removed.
+  @align_removed_selectors [
+    "#map-alignment-transform-controls",
+    "#map-alignment-assisted",
+    "#map-alignment-workspace fieldset",
+    "#map-alignment-commit-bar fieldset",
+    "#map-transform-left-coarse",
+    "#map-transform-right-coarse",
+    "#map-transform-rotate-right-coarse",
+    "#map-transform-scale-up-coarse"
+  ]
+
+  @deleted_group_legends [
+    "Map center",
+    "Floorplan transform",
+    "Assisted alignment",
+    "Layers",
+    "Save and apply"
+  ]
+
+  # The commit bar's named blocks, in the order the operator reads them.
+  @commit_bar_block_selectors [
+    "[data-role='child-stop-coverage']",
+    "#map-alignment-unsaved",
+    "#map-alignment-preview-auto",
+    "#map-alignment-center-trigger",
+    "#map-alignment-zoom-trigger",
+    "#map-alignment-residual",
+    "#map-alignment-actions"
+  ]
+
+  # The three buttons whose `disabled` expressions INV-09D-3 and CRIT-005 pin.
+  @align_action_ids [
+    "map-alignment-preview-auto",
+    "map-alignment-save",
+    "map-alignment-apply"
+  ]
+
+  describe "StationDiagramLive - align control strip" do
+    setup do
+      fit_base_context("STRIP")
+    end
+
+    test "every align control and readout renders in the container that owns it", context do
+      view = mount_map_align(context)
+
+      containment =
+        align_containers_of(view, [
+          "#map-transform-left-fine",
+          "#map-transform-up-fine",
+          "#map-transform-down-fine",
+          "#map-transform-right-fine",
+          "#map-transform-rotate-left-fine",
+          "#map-transform-rotate-right-fine",
+          "#map-transform-scale-down-fine",
+          "#map-transform-scale-up-fine",
+          "#map-alignment-restore-saved",
+          "#map-alignment-opacity",
+          "#map-alignment-tools-toggle",
+          "#map-alignment-lat-input",
+          "#map-alignment-lon-input",
+          "#map-alignment-apply-center",
+          "#map-alignment-zoom",
+          "#map-alignment-zoom-value",
+          "[data-role='child-stop-coverage']",
+          "#map-alignment-residual",
+          "#map-alignment-residual-value",
+          "#map-alignment-preview-auto",
+          "#map-alignment-center-trigger",
+          "#map-alignment-center-panel",
+          "#map-alignment-zoom-trigger",
+          "#map-alignment-zoom-panel",
+          "#map-alignment-actions",
+          "#map-alignment-preview-status",
+          "#map-alignment-save",
+          "#map-alignment-apply",
+          "#map-alignment-state"
+        ])
+
+      assert containment == %{
+               "#map-transform-left-fine" => "map-alignment-tools",
+               "#map-transform-up-fine" => "map-alignment-tools",
+               "#map-transform-down-fine" => "map-alignment-tools",
+               "#map-transform-right-fine" => "map-alignment-tools",
+               "#map-transform-rotate-left-fine" => "map-alignment-tools",
+               "#map-transform-rotate-right-fine" => "map-alignment-tools",
+               "#map-transform-scale-down-fine" => "map-alignment-tools",
+               "#map-transform-scale-up-fine" => "map-alignment-tools",
+               "#map-alignment-restore-saved" => "map-alignment-tools",
+               "#map-alignment-opacity" => "map-alignment-tools",
+               "#map-alignment-tools-toggle" => "map-alignment-tools",
+               "#map-alignment-lat-input" => "map-alignment-center-panel",
+               "#map-alignment-lon-input" => "map-alignment-center-panel",
+               "#map-alignment-apply-center" => "map-alignment-center-panel",
+               "#map-alignment-zoom" => "map-alignment-zoom-panel",
+               "#map-alignment-zoom-value" => "map-alignment-zoom-panel",
+               "[data-role='child-stop-coverage']" => "map-alignment-commit-bar",
+               "#map-alignment-residual" => "map-alignment-commit-bar",
+               "#map-alignment-residual-value" => "map-alignment-commit-bar",
+               "#map-alignment-preview-auto" => "map-alignment-commit-bar",
+               "#map-alignment-center-trigger" => "map-alignment-commit-bar",
+               "#map-alignment-center-panel" => "map-alignment-commit-bar",
+               "#map-alignment-zoom-trigger" => "map-alignment-commit-bar",
+               "#map-alignment-zoom-panel" => "map-alignment-commit-bar",
+               "#map-alignment-actions" => "map-alignment-commit-bar",
+               "#map-alignment-preview-status" => "map-alignment-commit-bar",
+               "#map-alignment-save" => "map-alignment-commit-bar",
+               "#map-alignment-apply" => "map-alignment-commit-bar",
+               "#map-alignment-state" => "map-alignment-commit-bar"
+             }
+    end
+
+    test "no align control renders outside the four containers", context do
+      view = mount_map_align(context)
+
+      assert uncontained_align_control_ids(view) == []
+    end
+
+    test "the unsaved indicator joins the commit bar rather than the tools panel", context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert align_containers_of(view, ["#map-alignment-unsaved"]) == %{
+               "#map-alignment-unsaved" => "map-alignment-commit-bar"
+             }
+    end
+
+    test "every id in the spec's identity delta renders exactly once", context do
+      view = mount_map_align(context)
+
+      assert align_delta_counts(view) == Map.new(@align_delta_selectors, &{&1, 1})
+    end
+
+    test "no container the rework removed renders again", context do
+      view = mount_map_align(context)
+
+      assert surviving_removed_selectors(view) == []
+    end
+
+    test "no legend anywhere on the page names a deleted control group", context do
+      view = mount_map_align(context)
+
+      assert resurrected_group_legends(view) == []
+    end
+
+    test "the surviving group names read as visible trigger labels, not hidden ones", context do
+      view = mount_map_align(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-center-trigger[data-tip='Center the map on a coordinate']"
+             )
+
+      assert has_element?(view, "#map-alignment-zoom-trigger[data-tip='Change the map zoom']")
+      refute has_element?(view, ".sr-only", "Map center")
+    end
+
+    test "the map zoom slider keeps its ignore boundary on the input, not the panel", context do
+      view = mount_map_align(context)
+
+      assert has_element?(
+               view,
+               "#map-alignment-zoom-panel #map-alignment-zoom[phx-update='ignore']"
+             )
+
+      refute has_element?(view, "#map-alignment-zoom-panel[phx-update='ignore']")
+    end
+
+    test "the other-levels opacity control joins the tools panel when an other level shows its floorplan",
+         context do
+      %{organization: organization, gtfs_version: gtfs_version, station: station} = context
+      other_level_id = aligned_other_level(organization, gtfs_version, station, "strip")
+      view = mount_map_align(context)
+
+      render_click(element(view, floorplan_selector(other_level_id)))
+
+      assert align_containers_of(view, ["#map-other-overlays-opacity"]) == %{
+               "#map-other-overlays-opacity" => "map-alignment-tools"
+             }
+
+      assert has_element?(
+               view,
+               "#map-other-overlays-opacity-tip[data-tip='Other-levels opacity · 70%']"
+             )
+    end
+
+    test "no other-levels opacity control renders when no other level shows a floorplan",
+         context do
+      view = mount_map_align(context)
+
+      refute has_element?(view, "#map-other-overlays-opacity")
+    end
+
+    test "the commit bar reads fit, coverage, view, assist, then commit",
+         context do
+      view = mount_map_align(context)
+
+      assert commit_bar_blocks(view) == [
+               "map-alignment-residual",
+               "child-stop-coverage",
+               "map-alignment-center-trigger",
+               "map-alignment-zoom-trigger",
+               "map-alignment-preview-auto",
+               "map-alignment-actions"
+             ]
+    end
+
+    test "the unsaved indicator renders with the other facts, before the actions",
+         context do
+      view = mount_map_align(context)
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert commit_bar_blocks(view) == [
+               "map-alignment-residual",
+               "child-stop-coverage",
+               "map-alignment-unsaved",
+               "map-alignment-center-trigger",
+               "map-alignment-zoom-trigger",
+               "map-alignment-preview-auto",
+               "map-alignment-actions"
+             ]
+    end
+
+    test "the child-stop coverage sentence renders once and only inside the commit bar",
+         context do
+      view = mount_map_align(context)
+
+      assert coverage_sentence_count(view) == 1
+      assert "child-stop-coverage" in commit_bar_blocks(view)
+    end
+
+    test "the actions block holds the preview status, save, and review controls", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-commit-bar #map-alignment-preview-status.sr-only")
+      assert has_element?(view, "#map-alignment-actions #map-alignment-save")
+      assert has_element?(view, "#map-alignment-actions #map-alignment-apply")
+    end
+
+    test "the help overlay names the buttons the bar actually renders", context do
+      view = mount_map_align(context)
+
+      help =
+        view
+        |> element_text("#map-alignment-help-panel")
+        |> String.replace(~r/\s+/, " ")
+
+      # Help that names a button by a label the bar no longer uses is worse than
+      # no help: it sends the operator looking for a control that is not there.
+      for id <- ["#map-alignment-save", "#map-alignment-apply", "#map-alignment-preview-auto"] do
+        label = view |> element(id) |> render() |> LazyHTML.from_fragment() |> LazyHTML.text()
+        assert help =~ String.trim(label)
+      end
+    end
+
+    test "the help overlay explains what Auto-align does before it does it", context do
+      view = mount_map_align(context)
+
+      help =
+        view
+        |> element_text("#map-alignment-help-panel")
+        |> String.replace(~r/\s+/, " ")
+
+      # Auto-align is the one control whose behaviour is not guessable from its
+      # label: it moves the floorplan the moment it is pressed, saves nothing,
+      # and refuses rather than applying a poor fit.
+      assert help =~ "both a position on the floorplan and real map coordinates"
+      assert help =~ "at least three"
+      assert help =~ "Moves the floorplan straight away"
+      assert help =~ "nothing is written until you save"
+    end
+
+    test "the help overlay states what each of the two save actions does", context do
+      view = mount_map_align(context)
+
+      # The sentence moved out of the bar and into the overlay, where it has room
+      # to distinguish the two paths properly. Keeping it inline cost a wrapped
+      # row that pushed Retry map below the fold whenever the map degraded.
+      refute has_element?(view, "#map-alignment-save-help")
+
+      help = element_text(view, "#map-alignment-help-panel")
+
+      assert help =~ "Stores where the floorplan sits on the map"
+      assert help =~ "writes each child stop's latitude and longitude"
+    end
+
+    test "the tools toggle renders the expanded label the server owns", context do
+      view = mount_map_align(context)
+
+      # The control is icon-only, so its label lives in the tooltip and the
+      # accessible name rather than in text. The collapsed label is the hook's
+      # to write; the server renders the expanded one on every patch, so a
+      # server-rendered "Show tools" would invert the control for anyone who
+      # never clicks it.
+      assert has_element?(view, "#map-alignment-tools-toggle[data-tip='Hide tools']")
+      assert has_element?(view, "#map-alignment-tools-toggle[aria-label='Hide tools']")
+      assert has_element?(view, "#map-alignment-tools-toggle[data-collapsed='false']")
+    end
+
+    test "the transform pad renders exactly the eight symmetric fine controls", context do
+      view = mount_map_align(context)
+
+      assert transform_controls_rendered(view) == %{
+               "map-transform-left-fine" =>
+                 {"left", "false", "Move floorplan left · 2 px (Shift 10 px)"},
+               "map-transform-up-fine" =>
+                 {"up", "false", "Move floorplan up · 2 px (Shift 10 px)"},
+               "map-transform-down-fine" =>
+                 {"down", "false", "Move floorplan down · 2 px (Shift 10 px)"},
+               "map-transform-right-fine" =>
+                 {"right", "false", "Move floorplan right · 2 px (Shift 10 px)"},
+               "map-transform-rotate-left-fine" =>
+                 {"rotate-left", "false", "Rotate floorplan left · 1° (Shift 5°)"},
+               "map-transform-rotate-right-fine" =>
+                 {"rotate-right", "false", "Rotate floorplan right · 1° (Shift 5°)"},
+               "map-transform-scale-down-fine" =>
+                 {"scale-down", "false", "Shrink floorplan · 1% (Shift 10%)"},
+               "map-transform-scale-up-fine" =>
+                 {"scale-up", "false", "Grow floorplan · 1% (Shift 10%)"}
+             }
+    end
+
+    test "the slider readouts render their initial values", context do
+      view = mount_map_align(context)
+
+      # The opacity sliders carry their percentage in the tooltip; the thumb
+      # position is the at-a-glance reading, so no readout sits beside them.
+      refute has_element?(view, "#map-alignment-opacity-value")
+
+      assert has_element?(view, "#map-alignment-opacity-tip[data-tip='Floorplan opacity · 70%']")
+      assert element_text(view, "#map-alignment-zoom-value") == "19.0"
+    end
+
+    test "the transform pad reports each operation through its tooltip, not a readout",
+         context do
+      view = mount_map_align(context)
+
+      # Rotation and scale carry no live readout: every pad button names its
+      # operation and both step sizes in `title`, and the alignment's real
+      # quality signal is the residual in the commit bar.
+      refute has_element?(view, "#map-alignment-rotation-value")
+      refute has_element?(view, "#map-alignment-scale-value")
+
+      assert has_element?(
+               view,
+               "#map-transform-rotate-left-fine[data-tip='Rotate floorplan left · 1° (Shift 5°)']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-transform-scale-up-fine[data-tip='Grow floorplan · 1% (Shift 10%)']"
+             )
+    end
+
+    test "the re-parented status elements keep their aria-live announcements", context do
+      view = mount_map_align(context)
+      document = parsed_document(view)
+
+      # `#auto-alignment-status` and `#auto-alignment-error` carry the rest of
+      # the preserved attribute set; the alignment-preview suite pins those.
+      live_regions =
+        Map.new(["map-alignment-preview-status", "map-alignment-state"], fn id ->
+          {id,
+           document |> LazyHTML.query("##{id}") |> LazyHTML.attribute("aria-live") |> List.first()}
+        end)
+
+      assert live_regions == %{
+               "map-alignment-preview-status" => "polite",
+               "map-alignment-state" => "polite"
+             }
+    end
+
+    test "a fatal map state disables save, preview, and review", context do
+      view = mount_map_align(context)
+      set_image_natural_size(view, 1024, 768)
+
+      map_event(view, "map_state", %{"state" => "fatal"})
+
+      assert disabled_align_actions(view) == [
+               "map-alignment-preview-auto",
+               "map-alignment-save",
+               "map-alignment-apply"
+             ]
+    end
+
+    test "a ready map state with valid image dimensions enables save, preview, and review",
+         context do
+      view = mount_map_align(context)
+      set_image_natural_size(view, 1024, 768)
+
+      map_event(view, "map_state", %{"state" => "ready"})
+
+      assert disabled_align_actions(view) == []
+    end
+
+    test "missing floorplan image dimensions disable preview and review but not save", context do
+      view = mount_map_align(context)
+
+      map_event(view, "map_state", %{"state" => "ready"})
+
+      assert disabled_align_actions(view) == [
+               "map-alignment-preview-auto",
+               "map-alignment-apply"
+             ]
+    end
+
+    test "a measured fit far outside tolerance gates nothing", context do
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      view = mount_fit_align(context)
+
+      fit_transform_changed(view, %{
+        "alignment" => fit_shifted_payload(@fit_offset_far_above_tolerance)
+      })
+
+      assert fit_readout(view).text =~ "check the alignment"
+      assert disabled_align_actions(view) == []
+    end
+
+    test "restore follows the unsaved state without leaving the tools panel", context do
+      view = mount_map_align(context)
+
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved[disabled]")
+
+      transform_changed(view, %{"unsaved" => true})
+
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+    end
+
+    test "the assisted cluster renders inside the commit bar once a preview is ready", context do
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      view = mount_fit_align(context)
+
+      render_click(element(view, "#map-alignment-preview-auto"))
+
+      assert align_containers_of(view, [
+               "#auto-alignment-fit-value",
+               "#auto-alignment-fit-description"
+             ]) == %{
+               "#auto-alignment-fit-value" => "map-alignment-commit-bar",
+               "#auto-alignment-fit-description" => "map-alignment-commit-bar"
+             }
+    end
+
+    test "the preview banner floats in the workspace rather than the commit bar", context do
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      view = mount_fit_align(context)
+
+      render_click(element(view, "#map-alignment-preview-auto"))
+
+      assert has_element?(view, "#map-alignment-workspace #auto-alignment-status")
+      refute has_element?(view, "#map-alignment-commit-bar #auto-alignment-status")
+      refute has_element?(view, "[phx-update='ignore'] #auto-alignment-status")
+    end
+
+    test "applying an assisted preview marks the surface unsaved without dropping the preview",
+         context do
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      view = mount_fit_align(context)
+      render_click(element(view, "#map-alignment-preview-auto"))
+
+      # The apply itself is the hook's: it moves the overlay client-side and,
+      # since step 2, reports the move as dirtying. This is the server-visible
+      # half — the payload that path now sends.
+      transform_changed(view, %{"unsaved" => true})
+
+      assert has_element?(view, "#map-alignment-commit-bar #map-alignment-unsaved")
+      refute has_element?(view, "#map-alignment-restore-saved[disabled]")
+      assert has_element?(view, "#auto-alignment-status")
+    end
+
+    test "restoring after an applied preview returns the surface to its saved state", context do
+      create_fit_anchor_stops(context, @fit_anchor_points)
+      view = mount_fit_align(context)
+      render_click(element(view, "#map-alignment-preview-auto"))
+      transform_changed(view, %{"unsaved" => true})
+
+      render_hook(view, "restore_saved_alignment", %{})
+
+      refute has_element?(view, "#map-alignment-unsaved")
+      assert has_element?(view, "#map-alignment-tools #map-alignment-restore-saved[disabled]")
+    end
+  end
+
+  # Ids of the Align control-strip controls. Part (d) resolved membership by id
+  # prefix because the strip was a sibling of the `phx-hook="MapAlignment"` root
+  # with no stable container id; part (e) gives it four, but the prefix set is
+  # still what distinguishes an Align control from the rest of the page, and the
+  # map region's own handles are still subtracted structurally.
+  @strip_control_id_prefixes ["map-alignment-", "map-transform-", "map-other-overlays-"]
+
+  defp parsed_document(view), do: view |> render() |> LazyHTML.from_document()
+
+  defp strip_control_id?(id), do: String.starts_with?(id, @strip_control_id_prefixes)
+
+  # Maps each given selector to the Align container that owns it, or `nil` when
+  # no container does. `@align_containers` is ordered innermost-first, so a
+  # control in a popover is attributed to the popover rather than to the commit
+  # bar the popover nests in.
+  defp align_containers_of(view, selectors) do
+    document = parsed_document(view)
+
+    Map.new(selectors, fn selector -> {selector, owning_align_container(document, selector)} end)
+  end
+
+  defp owning_align_container(document, selector) do
+    Enum.find(@align_containers, fn container ->
+      document |> LazyHTML.query("##{container} #{selector}") |> Enum.any?()
+    end)
+  end
+
+  # Align controls that render outside every one of the four containers. The
+  # map region's own handles (`#map-alignment-rotate-handle`,
+  # `#map-alignment-scale-handle`) live inside the ignored canvas by design and
+  # are subtracted rather than listed.
+  defp uncontained_align_control_ids(view) do
+    document = parsed_document(view)
+
+    align_controls =
+      document
+      |> LazyHTML.query("button[id], input[id]")
+      |> LazyHTML.attribute("id")
+      |> Enum.filter(&strip_control_id?/1)
+
+    map_region_controls =
+      document
+      |> LazyHTML.query(
+        "[phx-hook='MapAlignment'] button[id], [phx-hook='MapAlignment'] input[id]"
+      )
+      |> LazyHTML.attribute("id")
+
+    contained_controls =
+      Enum.flat_map(@align_containers, fn container ->
+        document
+        |> LazyHTML.query("##{container} button[id], ##{container} input[id]")
+        |> LazyHTML.attribute("id")
+      end)
+
+    align_controls
+    |> Kernel.--(map_region_controls)
+    |> Kernel.--(contained_controls)
+  end
+
+  # How many times each selector in the spec's identity delta renders.
+  defp align_delta_counts(view) do
+    document = parsed_document(view)
+
+    Map.new(@align_delta_selectors, fn selector ->
+      {selector, document |> LazyHTML.query(selector) |> Enum.count()}
+    end)
+  end
+
+  # Containers the rework removed that are rendering again.
+  defp surviving_removed_selectors(view) do
+    document = parsed_document(view)
+
+    Enum.filter(@align_removed_selectors, fn selector ->
+      document |> LazyHTML.query(selector) |> Enum.any?()
+    end)
+  end
+
+  # Legend text anywhere on the page that names one of the five deleted groups.
+  defp resurrected_group_legends(view) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("legend")
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+    |> Enum.filter(&(&1 in @deleted_group_legends))
+  end
+
+  # The commit bar's named blocks, in document order.
+  defp commit_bar_blocks(view) do
+    selector =
+      Enum.map_join(@commit_bar_block_selectors, ", ", &("#map-alignment-commit-bar " <> &1))
+
+    view
+    |> parsed_document()
+    |> LazyHTML.query(selector)
+    |> Enum.map(fn node ->
+      case LazyHTML.attribute(node, "id") do
+        [id | _] -> id
+        [] -> node |> LazyHTML.attribute("data-role") |> List.first()
+      end
+    end)
+  end
+
+  # The Align action buttons that currently carry `disabled`, in a fixed order
+  # so the result is a value to compare rather than a set to search.
+  defp disabled_align_actions(view) do
+    document = parsed_document(view)
+
+    Enum.filter(@align_action_ids, fn id ->
+      document |> LazyHTML.query("##{id}[disabled]") |> Enum.any?()
+    end)
+  end
+
+  defp coverage_sentence_count(view) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("[data-role='child-stop-coverage']")
+    |> Enum.count()
+  end
+
+  # Every rendered transform control, keyed by id, as {action, coarse, title}.
+  defp transform_controls_rendered(view) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("[data-map-transform-action]")
+    |> Enum.map(fn control ->
+      {first_attribute(control, "id"),
+       {first_attribute(control, "data-map-transform-action"),
+        first_attribute(control, "data-map-transform-coarse"),
+        first_attribute(control, "data-tip")}}
+    end)
+    |> Map.new()
+  end
+
+  # Ids of every patch-ignored element inside the given container, so a new
+  # exclusion has to be stated rather than slipping in.
+  defp ignored_ids_within(view, container) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query("#{container} [phx-update='ignore']")
+    |> Enum.map(&first_attribute(&1, "id"))
+  end
+
+  defp element_text(view, selector) do
+    view
+    |> parsed_document()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
+  defp first_attribute(node, name), do: node |> LazyHTML.attribute(name) |> List.first()
 
   # Creates an other level with a diagram and a complete alignment (floorplan-eligible)
   # and returns its level id (string).
