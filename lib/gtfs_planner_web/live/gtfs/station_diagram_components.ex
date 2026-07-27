@@ -102,6 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_status, :any, default: nil
   attr :active_stop_level, :any, default: nil
   attr :levels, :list, default: []
+  attr :levels_with_floorplan, :any, default: nil
   attr :active_level, :any, default: nil
   attr :active_level_name, :string, default: ""
   attr :other_levels, :list, default: []
@@ -195,6 +196,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
         <.level_disclosure
           levels={@levels}
+          levels_with_floorplan={@levels_with_floorplan}
           active_level={@active_level}
           active_level_name={@active_level_name}
           has_diagram={@has_diagram}
@@ -333,6 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
 
   attr :levels, :list, required: true
+  attr :levels_with_floorplan, :any, default: nil
   attr :active_level, :any, default: nil
   attr :active_level_name, :string, default: ""
   attr :has_diagram, :boolean, required: true
@@ -391,7 +394,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <span class="flex items-center gap-2">
               {level.level_name || level.level_id}
               <span
-                :if={not level_has_diagram?(level)}
+                :if={not level_has_floorplan?(@levels_with_floorplan, level)}
                 class="text-[11px] text-warning"
               >
                 No floorplan
@@ -447,10 +450,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
-  defp level_has_diagram?(%{diagram_filename: filename})
-       when is_binary(filename) and filename != "", do: true
+  # Membership of the set the LiveView derives from `list_levels_for_station/3`,
+  # which is the only place the diagram filename survives: it hangs off the
+  # query row, not off `Level`, which has no such field. A nil set means the
+  # caller did not supply one, and no level is claimed to be missing a
+  # floorplan on the strength of an absent answer.
+  defp level_has_floorplan?(nil, _level), do: true
 
-  defp level_has_diagram?(_), do: false
+  defp level_has_floorplan?(%MapSet{} = with_floorplan, %{id: id}),
+    do: MapSet.member?(with_floorplan, id)
+
+  defp level_has_floorplan?(_, _), do: true
 
   # ============================================================================
   # Scale Control
@@ -999,14 +1009,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <button
                 id="map-alignment-help-trigger"
                 type="button"
-                class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+                class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/45"
                 data-tip="How the align tools work"
                 aria-label="How the align tools work"
                 aria-expanded="false"
                 aria-controls="map-alignment-help-panel"
                 phx-click={@help_open}
               >
-                <.icon name="hero-question-mark-circle" class="w-4 h-4" />
+                <.icon name="hero-question-mark-circle-solid" class="w-[18px] h-[18px]" />
               </button>
               <button
                 id="map-alignment-tools-toggle"
@@ -1061,7 +1071,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 step="0.05"
                 value="0.7"
                 phx-update="ignore"
-                class="range range-xs w-full text-base-content/40"
+                class="range range-xs w-full text-base-content/40 border border-base-300 bg-base-200/60"
               />
             </div>
           </div>
@@ -1088,7 +1098,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   step="0.05"
                   value="0.7"
                   phx-update="ignore"
-                  class="range range-xs w-full text-base-content/40"
+                  class="range range-xs w-full text-base-content/40 border border-base-300 bg-base-200/60"
                 />
               </div>
             </div>

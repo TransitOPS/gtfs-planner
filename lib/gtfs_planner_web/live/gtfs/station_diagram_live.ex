@@ -252,6 +252,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  # `list_levels_for_station/3` returns the diagram filename alongside each
+  # level rather than on it — `Level` has no such field, only `StopLevel` does.
+  # Collapsing the rows to `& &1.level` therefore drops it, which is what made
+  # every entry in the level menu read "No floorplan".
+  defp levels_with_floorplan(levels_data) do
+    for %{level: level, diagram_filename: filename} <- levels_data,
+        is_binary(filename) and filename != "",
+        into: MapSet.new(),
+        do: level.id
+  end
+
   defp load_station_and_levels(socket, stop_id, params) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -293,6 +304,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:stop_id, stop_id)
           |> assign(:station, station)
           |> assign(:levels, levels)
+          |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
           |> assign(:available_levels, available_levels)
           |> assign(:all_levels, all_levels)
           |> assign(:active_level, active_level)
@@ -1076,6 +1088,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             scale_status={@scale_status}
             active_stop_level={@active_stop_level}
             levels={@levels}
+            levels_with_floorplan={@levels_with_floorplan}
             active_level={@active_level}
             active_level_name={@active_level_name}
             other_levels={@other_levels}
@@ -4078,6 +4091,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   {:noreply,
                    socket
                    |> assign(:levels, levels)
+                   |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
                    |> assign(:active_level, level)
                    |> assign(:show_level_modal, nil)
                    |> assign(:level_form, to_form(%{}))
@@ -4128,6 +4142,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               {:noreply,
                socket
                |> assign(:levels, levels)
+               |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
                |> assign(:available_levels, available_levels)
                |> assign(:active_level, new_level)
                |> assign(:show_level_modal, nil)
@@ -4166,6 +4181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:levels, levels)
+             |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
              |> assign(:active_level, updated_level)
              |> assign(:show_level_modal, nil)
              |> assign(:level_form, to_form(%{}))
@@ -4690,7 +4706,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     levels_data = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
     levels = Enum.map(levels_data, & &1.level)
 
-    socket = assign(socket, :levels, levels)
+    socket =
+      socket
+      |> assign(:levels, levels)
+      |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
 
     socket =
       case socket.assigns.active_level do
@@ -7932,9 +7951,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            level_uuid
          ) do
       {:ok, :removed} ->
-        levels =
+        levels_data =
           Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
-          |> Enum.map(& &1.level)
+
+        levels = Enum.map(levels_data, & &1.level)
 
         station_level_ids = Enum.map(levels, & &1.id)
 
@@ -7948,6 +7968,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:levels, levels)
+         |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
          |> assign(:available_levels, available_levels)
          |> assign(:active_level, active_level)
          |> assign(:show_level_modal, nil)

@@ -4089,6 +4089,60 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#level-option-#{level_b.id}[aria-current='true']")
     end
 
+    test "the level menu marks only the levels that have no floorplan", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      with_plan =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_WITH_PLAN",
+          level_name: "Concourse",
+          level_index: 1.0
+        })
+
+      without_plan =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_WITHOUT_PLAN",
+          level_name: "Mezzanine",
+          level_index: 2.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: with_plan.id,
+          diagram_filename: "concourse.svg"
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: without_plan.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # The diagram filename hangs off the stop_level row, not off Level, so a
+      # menu built from Level structs alone reports every entry as missing one.
+      refute view
+             |> element("#level-option-#{with_plan.id}")
+             |> render() =~ "No floorplan"
+
+      assert view
+             |> element("#level-option-#{without_plan.id}")
+             |> render() =~ "No floorplan"
+    end
+
     test "switching levels updates data-canvas-key on the SVG element", %{
       conn: conn,
       user: user,
