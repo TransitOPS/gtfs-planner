@@ -30,10 +30,19 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransform do
 
   @type svg_point :: %{x: number(), y: number()}
 
+  @type anchor_point :: %{x: number(), y: number(), lat: number(), lon: number()}
+
   @type error_reason :: :invalid_alignment | :invalid_image_dims | :invalid_point
 
   @meters_per_degree_lat 111_111.0
   @cos_epsilon 1.0e-9
+
+  # Mirrors AlignmentInference.anchor_minimum/0. The value is duplicated on
+  # purpose: this module has no AlignmentInference dependency today and gains
+  # none here. Three is the floor because a 2D similarity transform has four
+  # degrees of freedom and two point pairs determine it exactly — a two-anchor
+  # residual is 0.0 by construction and means "underdetermined", not "perfect".
+  @fit_anchor_minimum 3
 
   @spec distance_meters({number(), number()}, {number(), number()}) :: float()
   def distance_meters({lat1, lon1}, {lat2, lon2}) do
@@ -53,6 +62,66 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransform do
       {:ok, project(a, image_w, image_h, point)}
     end
   end
+
+  @doc """
+  Score an arbitrary alignment against known anchor stops.
+
+  Each anchor pairs a diagram point (`:x`/`:y`) with the geographic position
+  (`:lat`/`:lon`) that point is known to occupy. The alignment is projected
+  onto every anchor with `svg_to_lat_lon/4` and the residual is the root mean
+  square of the `distance_meters/2` errors, in metres.
+
+  The alignment and image dimensions are validated **once**, up front, so an
+  unusable alignment reports itself rather than presenting as an absence of
+  anchors. An individual anchor whose projection fails is skipped — one bad
+  diagram coordinate must not suppress the whole measurement — and
+  `:anchor_count` reports survivors only.
+
+  Fewer than `#{@fit_anchor_minimum}` surviving anchors returns
+  `{:error, :insufficient_anchors}` rather than a meaningless residual.
+
+  The result is order-independent and free of side effects.
+  """
+  @spec residual_rmse_meters(alignment(), pos_integer(), pos_integer(), [anchor_point()]) ::
+          {:ok, %{rmse_meters: float(), anchor_count: non_neg_integer()}}
+          | {:error, :insufficient_anchors | :invalid_alignment | :invalid_image_dims}
+  def residual_rmse_meters(alignment, image_w, image_h, anchors) when is_list(anchors) do
+    with {:ok, _validated} <- validate_alignment(alignment),
+         :ok <- validate_image_dims(image_w, image_h) do
+      squared_errors =
+        Enum.flat_map(anchors, &anchor_squared_error(alignment, image_w, image_h, &1))
+
+      anchor_count = length(squared_errors)
+
+      if anchor_count < @fit_anchor_minimum do
+        {:error, :insufficient_anchors}
+      else
+        # Summing in sorted order makes the result identical for any input
+        # ordering; plain float addition is not associative.
+        mean = Enum.sum(Enum.sort(squared_errors)) / anchor_count
+
+        {:ok, %{rmse_meters: :math.sqrt(mean), anchor_count: anchor_count}}
+      end
+    end
+  end
+
+  # A one-element list on success and an empty one on any per-anchor failure,
+  # so an unusable anchor is skipped rather than fatal.
+  defp anchor_squared_error(alignment, image_w, image_h, %{} = anchor) do
+    lat = Map.get(anchor, :lat)
+    lon = Map.get(anchor, :lon)
+    point = %{x: Map.get(anchor, :x), y: Map.get(anchor, :y)}
+
+    with true <- is_number(lat) and is_number(lon),
+         {:ok, projected} <- svg_to_lat_lon(alignment, image_w, image_h, point) do
+      distance = distance_meters(projected, {lat * 1.0, lon * 1.0})
+      [distance * distance]
+    else
+      _ -> []
+    end
+  end
+
+  defp anchor_squared_error(_alignment, _image_w, _image_h, _anchor), do: []
 
   defp validate_alignment(%{} = alignment) do
     center_lat = Map.get(alignment, :center_lat)

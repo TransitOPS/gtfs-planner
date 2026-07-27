@@ -267,4 +267,191 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
                FloorplanTransform.svg_to_lat_lon(alignment(), 100, 100, nil)
     end
   end
+
+  # residual_rmse_meters/4 — a landscape image, a non-zero rotation and a
+  # non-unit scale, so the score exercises the real projection rather than an
+  # identity transform.
+  @fit_image_w 800
+  @fit_image_h 400
+  @fit_points [{10.0, 5.0}, {40.0, 20.0}, {70.0, 40.0}, {90.0, 15.0}, {55.0, 30.0}]
+
+  defp fit_alignment, do: alignment(%{scale_mpp: 0.35, rotation_deg: 17.0})
+
+  # Anchors that agree perfectly with `align`: each one is a diagram point
+  # projected through the alignment under test, so the true residual is zero.
+  defp anchors_for(align, points \\ @fit_points) do
+    Enum.map(points, fn {x, y} ->
+      {:ok, {lat, lon}} =
+        FloorplanTransform.svg_to_lat_lon(align, @fit_image_w, @fit_image_h, %{x: x, y: y})
+
+      %{x: x, y: y, lat: lat, lon: lon}
+    end)
+  end
+
+  # The same anchors, each pushed `offset_m` metres north of where `align`
+  # projects it, so every anchor contributes a distinct non-zero residual.
+  defp displaced_anchors(align, offsets_m) do
+    align
+    |> anchors_for()
+    |> Enum.zip(offsets_m)
+    |> Enum.map(fn {anchor, offset_m} ->
+      %{anchor | lat: anchor.lat + offset_m / @meters_per_degree_lat}
+    end)
+  end
+
+  defp score(align, anchors) do
+    FloorplanTransform.residual_rmse_meters(align, @fit_image_w, @fit_image_h, anchors)
+  end
+
+  describe "residual_rmse_meters/4 AC-8: scoring an alignment against its anchors" do
+    test "anchors projected through the alignment under test score zero" do
+      align = fit_alignment()
+
+      assert {:ok, %{rmse_meters: rmse, anchor_count: 5}} = score(align, anchors_for(align))
+
+      assert_in_delta rmse, 0.0, 1.0e-6
+    end
+
+    test "displacing one of five anchors by 3 m returns sqrt(3^2 / 5) meters" do
+      align = fit_alignment()
+      [first | rest] = anchors_for(align)
+      displaced = %{first | lat: first.lat + 3.0 / @meters_per_degree_lat}
+
+      assert {:ok, %{rmse_meters: rmse, anchor_count: 5}} = score(align, [displaced | rest])
+
+      assert_in_delta rmse, :math.sqrt(9.0 / 5.0), 1.0e-6
+    end
+
+    test "a displaced anchor scores strictly worse than the exact fit" do
+      align = fit_alignment()
+      [first | rest] = anchors_for(align)
+      displaced = %{first | lat: first.lat + 3.0 / @meters_per_degree_lat}
+
+      {:ok, %{rmse_meters: exact}} = score(align, [first | rest])
+      {:ok, %{rmse_meters: worse}} = score(align, [displaced | rest])
+
+      assert worse > exact
+    end
+
+    test "reordering the anchors returns an identical result" do
+      align = fit_alignment()
+      # Every anchor carries a distinct non-zero residual, so reordering
+      # exercises a real five-term float sum rather than a trivial one. These
+      # displacements are order-sensitive at the sum level — plain list order
+      # gives 51.66999999495067 and swapping the middle pair gives
+      # 51.669999994950665 — which is why the implementation sums in canonical
+      # order. The subsequent divide-and-sqrt happens to absorb that particular
+      # difference, so this asserts the contract, not the mechanism.
+      [a, b, c, d, e] = displaced_anchors(align, [5.0, 0.8, 3.3, 3.5, 1.7])
+
+      assert score(align, [a, b, c, d, e]) === score(align, [a, b, d, c, e])
+      assert score(align, [a, b, c, d, e]) === score(align, [e, d, c, b, a])
+    end
+  end
+
+  describe "residual_rmse_meters/4 AC-9: the three-anchor minimum" do
+    test "two exactly-matching anchors report insufficient anchors, not a perfect fit" do
+      align = fit_alignment()
+
+      assert score(align, anchors_for(align, [{10.0, 5.0}, {70.0, 40.0}])) ==
+               {:error, :insufficient_anchors}
+    end
+
+    test "an empty anchor list reports insufficient anchors" do
+      assert score(fit_alignment(), []) == {:error, :insufficient_anchors}
+    end
+
+    test "exactly three usable anchors are scored" do
+      align = fit_alignment()
+
+      assert {:ok, %{anchor_count: 3}} =
+               score(align, anchors_for(align, [{10.0, 5.0}, {40.0, 20.0}, {70.0, 40.0}]))
+    end
+  end
+
+  describe "residual_rmse_meters/4 AC-9: invalid input is distinguished from missing anchors" do
+    test "a non-numeric alignment field reports invalid alignment despite five usable anchors" do
+      align = fit_alignment()
+
+      assert score(%{align | scale_mpp: "0.35"}, anchors_for(align)) ==
+               {:error, :invalid_alignment}
+    end
+
+    test "an alignment at the pole reports invalid alignment" do
+      align = fit_alignment()
+
+      assert score(%{align | center_lat: 90.0}, anchors_for(align)) ==
+               {:error, :invalid_alignment}
+    end
+
+    test "invalid image dimensions report invalid image dims despite five usable anchors" do
+      align = fit_alignment()
+
+      assert FloorplanTransform.residual_rmse_meters(align, 0, @fit_image_h, anchors_for(align)) ==
+               {:error, :invalid_image_dims}
+    end
+
+    test "an invalid alignment outranks a below-minimum anchor count" do
+      align = fit_alignment()
+
+      assert score(%{align | scale_mpp: "0.35"}, anchors_for(align, [{10.0, 5.0}, {70.0, 40.0}])) ==
+               {:error, :invalid_alignment}
+    end
+  end
+
+  describe "residual_rmse_meters/4 AC-10: unprojectable anchors are skipped" do
+    test "an anchor with a non-numeric diagram x is skipped and anchor_count reports survivors" do
+      align = fit_alignment()
+      [a, b, c, d, e] = anchors_for(align)
+
+      assert {:ok, %{rmse_meters: rmse, anchor_count: 4}} =
+               score(align, [%{a | x: "10"}, b, c, d, e])
+
+      assert_in_delta rmse, 0.0, 1.0e-6
+    end
+
+    test "an anchor with a non-numeric target latitude is skipped" do
+      align = fit_alignment()
+      [a, b, c, d, e] = anchors_for(align)
+
+      assert {:ok, %{anchor_count: 4}} = score(align, [%{a | lat: nil}, b, c, d, e])
+    end
+
+    # `stops.stop_lat` / `stops.stop_lon` are `:decimal` columns, so a caller
+    # that forwards them unconverted supplies a Decimal here. This function
+    # takes numbers: a Decimal is skipped, not coerced and not fatal. Callers
+    # convert first — `GtfsPlanner.Gtfs` already does, via `decimal_to_float/1`.
+    test "an anchor whose target latitude is a Decimal is skipped, not coerced" do
+      align = fit_alignment()
+      [a, b, c, d, e] = anchors_for(align)
+
+      assert {:ok, %{anchor_count: 4}} =
+               score(align, [%{a | lat: Decimal.from_float(40.75)}, b, c, d, e])
+    end
+
+    test "an anchor that is not a map is skipped" do
+      align = fit_alignment()
+      [_a, b, c, d, e] = anchors_for(align)
+
+      assert {:ok, %{anchor_count: 4}} = score(align, [nil, b, c, d, e])
+    end
+
+    test "the mean divides by surviving anchors, not by the input length" do
+      align = fit_alignment()
+      [a, b, c, d, e] = anchors_for(align)
+      displaced = %{a | lat: a.lat + 3.0 / @meters_per_degree_lat}
+
+      assert {:ok, %{rmse_meters: rmse, anchor_count: 4}} =
+               score(align, [displaced, b, c, d, %{e | x: "55"}])
+
+      assert_in_delta rmse, :math.sqrt(9.0 / 4.0), 1.0e-6
+    end
+
+    test "skipping below the minimum reports insufficient anchors" do
+      align = fit_alignment()
+      [a, b, c] = anchors_for(align, [{10.0, 5.0}, {40.0, 20.0}, {70.0, 40.0}])
+
+      assert score(align, [%{a | y: "5"}, b, c]) == {:error, :insufficient_anchors}
+    end
+  end
 end
