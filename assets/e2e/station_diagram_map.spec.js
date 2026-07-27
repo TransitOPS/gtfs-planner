@@ -533,15 +533,15 @@ test.describe("align workspace layout and interaction", () => {
         expect(region.right).toBeLessThanOrEqual(geometry.viewportWidth);
       }
 
-      // AC-2's vertical half is not yet met. The document still overflows by the
-      // 83 px `spec.md` records as pre-existing at every viewport: 64 px of
-      // `py-8` on the empty `#main-content` that immersive mode leaves behind,
-      // 16 px of its residual line box, and 3 px because immersive mode sizes
-      // `#map-canvas-wrapper` as `100vh - 4rem` against a 67 px action strip.
-      // None of it belongs to the Align surface, whose own controls all sit
-      // above the fold as asserted above. Bounded here so the surface cannot
-      // make the pre-existing defect worse and so a future fix fails loudly.
-      expect(geometry.documentVerticalOverflow).toBeLessThanOrEqual(83);
+      // AC-2's vertical half. The 83 px this page used to overflow by was 80 px
+      // of empty `#main-content` — immersive mode renders the workspace in the
+      // sub-header slot, leaving `main` holding nothing but closed dialogs, so
+      // its `py-8` and the `space-y-4` margin on the zero-height candidate probe
+      // were pure dead space — plus 3 px from sizing `#map-canvas-wrapper` as
+      // `100vh - 4rem` against a 67 px action strip. The immersive stylesheet
+      // now collapses the first and sizes the canvas from what the strip
+      // actually leaves, so nothing on this surface sits below the fold.
+      expect(geometry.documentVerticalOverflow).toBeLessThanOrEqual(0);
     });
 
     test(`aligns the commit bar with the canvas on both edges at ${viewport.label}`, async ({
@@ -815,10 +815,16 @@ test.describe("align workspace layout and interaction", () => {
     // takes the region past AC-1's budget. That trade is deliberate: the extra
     // rows are the report the operator asked for and needs in order to accept
     // or reject the preview, and the state is left by Restore saved alignment
-    // or by saving. Bounded here so it cannot silently grow further.
+    // or by saving. The report is paid for out of the canvas rather than out of
+    // the viewport — nothing drops below the fold, which is asserted here
+    // alongside the bound so the state cannot silently grow further.
     const previewGeometry = await alignSurfaceGeometry(page);
-    expect(previewGeometry.canvas.height).toBeGreaterThanOrEqual(500);
+    expect(previewGeometry.canvas.height).toBeGreaterThanOrEqual(480);
     expect(previewGeometry.region).toBeLessThanOrEqual(220);
+    expect(previewGeometry.documentVerticalOverflow).toBeLessThanOrEqual(0);
+    expect(previewGeometry.bar.bottom).toBeLessThanOrEqual(
+      previewGeometry.viewportHeight,
+    );
 
     await page.locator("#map-alignment-restore-saved").click();
     await expect(page.locator("#auto-alignment-status")).toBeHidden();

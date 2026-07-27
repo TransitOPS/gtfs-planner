@@ -177,11 +177,43 @@ body {
   display: none;
 }
 
+/* Every immersive mode renders its workspace in the sub-header slot, so
+   #main-content is left holding nothing but closed dialogs. Its `py-8` and the
+   `space-y-4` margin on the zero-height candidate probe would still push the
+   page 80 px past the viewport and produce a scrollbar (AC-2). Collapse the
+   spacing rather than hiding the element: a `display: none` ancestor would also
+   hide the drawers that open from here. */
+#diagram-page[data-immersive="true"] #main-content {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+#diagram-page[data-immersive="true"] #main-content > div > * {
+  margin-top: 0;
+}
+
 /* Align mode: the map fills the freed viewport height and its control bar
    anchors to the bottom of the screen instead of sitting below a tall square
-   that forces a page scroll. */
+   that forces a page scroll. The page is bounded at the viewport and the canvas
+   takes whatever the action strip leaves, rather than assuming a fixed strip
+   height — the strip is 67 px, so the previous `calc(100vh - 4rem)` overflowed
+   by 3 px. `:has()` scopes this to Align, the only immersive mode with a map
+   canvas; Add stop and Connect keep their own sizing below. */
+#diagram-page[data-immersive="true"]:has(#map-canvas-wrapper) {
+  height: 100vh;
+}
+
+#diagram-page[data-immersive="true"]:has(#map-canvas-wrapper) #sub-header-wrapper,
+#diagram-page[data-immersive="true"]:has(#map-canvas-wrapper) #floorplan-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 #diagram-page[data-immersive="true"] #map-canvas-wrapper {
-  height: calc(100vh - 4rem);
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding-top: 0.5rem;
