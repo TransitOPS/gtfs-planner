@@ -869,7 +869,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <div>
-      <div id="map-alignment-workspace" class="relative flex min-h-0 flex-1">
+      <%!-- `tabindex="-1"` is what makes the keyboard bindings on this element
+      reachable. The hook binds nudging and hold-to-hide here rather than on the
+      ignored canvas, because the tools panel is a sibling of that canvas
+      (INV-10E-3) — but a plain `<div>` cannot hold focus, so after the most
+      common gesture of all, dragging the floorplan with the mouse, focus sits
+      on `<body>` and every shortcut is dead. `-1` keeps the element out of the
+      tab order, so the tab chain through the controls is unchanged; it only
+      lets a click on the imagery land focus inside the workspace. --%>
+      <div id="map-alignment-workspace" tabindex="-1" class="relative flex min-h-0 flex-1">
         <div
           id={@canvas_id}
           class="map-canvas relative min-h-0 flex-1 bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
