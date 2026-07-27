@@ -877,9 +877,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
       |> assign(:zoom_window_dismiss, zoom_window_dismiss)
       |> assign(:zoom_dismiss, JS.focus(zoom_close, to: "#map-alignment-zoom-trigger"))
+      # `display: "flex"` is load-bearing, not cosmetic: JS.toggle restores
+      # `block` by default, which would drop the panel's flex column and leave
+      # the scroll body unconstrained — the header would scroll away and
+      # everything past the panel's height would be clipped with no way to reach
+      # it.
       |> assign(
         :help_open,
-        JS.toggle(to: "#map-alignment-help-panel")
+        JS.toggle(to: "#map-alignment-help-panel", display: "flex")
         |> JS.toggle_attribute({"aria-expanded", "true", "false"},
           to: "#map-alignment-help-trigger"
         )
@@ -1100,207 +1105,300 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           <strong class="font-medium">Unsaved auto-alignment preview</strong>
         </div>
-        <%!-- In-app help for the align surface, opened from the tools panel.
-        A bounded card rather than a full-bleed scrim, so the floorplan stays
-        visible and draggable behind it while the operator reads. --%>
+        <%!-- In-app help for the align surface, opened from the commit bar.
+        Reactive help, not a coach mark: the operator asked for it, so it takes
+        the whole workspace and answers the concept, the task and the reference
+        in that order rather than rationing itself to a corner. The commit bar
+        stays visible below, so every control the copy names is on screen while
+        it is read. --%>
         <div
           id="map-alignment-help-panel"
           role="dialog"
-          aria-label="How the align tools work"
+          aria-labelledby="map-alignment-help-title"
           phx-click-away={@help_dismiss}
           phx-window-keydown={@help_dismiss}
           phx-key="escape"
           style="display: none;"
-          class="absolute z-30 top-4 left-1/2 -translate-x-1/2 w-[46rem] max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto overscroll-contain bg-base-100 border border-base-300 rounded-lg shadow-lg text-sm"
+          class="absolute inset-0 z-30 flex flex-col overflow-hidden bg-base-100 border border-base-300 rounded-lg shadow-lg text-sm"
         >
-          <div class="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-base-300 bg-base-100 px-5 py-4">
-            <div>
-              <h2 class="text-base font-semibold">Aligning the floorplan</h2>
-              <p class="mt-0.5 text-sm text-base-content/80">
-                The goal: move the floorplan until its walls sit over the same walls in the
-                aerial imagery. Everything below is a way of getting there or checking you did.
+          <div class="flex shrink-0 items-start justify-between gap-6 border-b border-base-300 px-6 py-5">
+            <div class="min-w-0">
+              <h2 id="map-alignment-help-title" class="text-lg font-semibold tracking-tight">
+                Aligning a floorplan
+              </h2>
+              <p class="mt-1 max-w-[70ch] text-base-content/80">
+                A floorplan is a picture with no place on the earth. Aligning gives it one, so a
+                stop you drew on the plan can be turned into a real coordinate.
               </p>
             </div>
             <button
               id="map-alignment-help-close"
               type="button"
-              class="btn btn-ghost btn-square h-8 w-8 min-h-8 shrink-0 p-0 text-base-content/70"
+              class="btn btn-ghost btn-square min-h-11 h-11 w-11 shrink-0 p-0 text-base-content/70"
               aria-label="Close help"
               phx-click={@help_dismiss}
             >
-              <.icon name="hero-x-mark" class="w-4 h-4" />
+              <.icon name="hero-x-mark" class="size-5" />
             </button>
           </div>
 
-          <div class="px-5 py-4">
-            <.help_section
-              icon="hero-sparkles"
-              tone="primary"
-              title="Start here — let the data do it"
-            >
-              <p>
-                The <span class="font-semibold text-base-content">Auto-align</span>
-                button below the map works the position out from your own data. It takes every stop on
-                this level that already has
-                <em class="not-italic font-medium text-base-content">both</em>
-                a position on the floorplan and real map coordinates, and fits the floorplan to
-                them.
-              </p>
-              <ul class="mt-2 flex flex-col gap-1">
-                <li class="flex gap-2">
-                  <span class="text-primary">→</span> Needs at least three such stops.
-                </li>
-                <li class="flex gap-2">
-                  <span class="text-primary">→</span>
-                  Declines rather than applying a poor fit if it cannot get within 2.0 m.
-                </li>
-                <li class="flex gap-2">
-                  <span class="text-primary">→</span>
-                  Moves the floorplan straight away — there is nothing to accept, and nothing is
-                  written until you save.
-                </li>
-              </ul>
-            </.help_section>
-
-            <.help_section icon="hero-cursor-arrow-rays" tone="neutral" title="Adjusting it by hand">
-              <p>
-                The pad groups three operations. Each colour below matches the buttons it drives.
-              </p>
-
-              <div class="mt-3 flex flex-wrap items-start gap-5">
-                <div
-                  aria-hidden="true"
-                  class="grid w-fit shrink-0 grid-cols-[repeat(3,2.5rem)] gap-px rounded-md border border-base-300 bg-base-300"
-                >
-                  <span
-                    :for={cell <- align_pad_diagram_cells()}
-                    class={[
-                      "flex h-10 w-10 items-center justify-center text-base font-medium",
-                      cell.class
-                    ]}
+          <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <div class="grid gap-x-10 gap-y-7 px-6 py-6 lg:grid-cols-2">
+              <.help_section
+                class="lg:col-span-2"
+                icon="hero-globe-alt"
+                tone="primary"
+                title="What alignment records"
+              >
+                <p class="max-w-[70ch]">
+                  Aligning stores three facts about this level's image.
+                </p>
+                <dl class="mt-4 grid gap-4 sm:grid-cols-3">
+                  <div
+                    :for={row <- align_records_rows()}
+                    class="rounded-md border border-base-200 p-4"
                   >
-                    {cell.glyph}
-                  </span>
-                </div>
+                    <dt class="flex items-center gap-2.5 font-semibold text-base-content">
+                      <span class="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
+                        <.icon name={row.icon} class="size-5" />
+                      </span>
+                      {row.term}
+                    </dt>
+                    <dd class="mt-2 text-base-content/80">{row.description}</dd>
+                  </div>
+                </dl>
+                <p class="mt-4 max-w-[70ch]">
+                  Those three turn any point on the plan into a latitude and longitude. That
+                  conversion is what
+                  <span class="font-semibold text-base-content">Update stop coordinates…</span>
+                  writes and what <span class="font-semibold text-base-content">Fit</span>
+                  measures. Moving the plan changes them; nothing is written until you save.
+                </p>
+              </.help_section>
 
-                <dl class="min-w-0 flex-1 text-sm">
-                  <div :for={row <- align_pad_help_rows()} class="flex items-baseline gap-3 py-1">
-                    <dt class={["w-24 shrink-0 font-semibold", row.tone_class]}>{row.action}</dt>
-                    <dd class="min-w-0 text-base-content/80">
-                      {row.step}
-                      <span class="text-base-content/60">· keys {row.keys}</span>
+              <.help_section
+                class="lg:col-span-2"
+                icon="hero-list-bullet"
+                tone="primary"
+                title="The usual path"
+              >
+                <ol class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <li
+                    :for={{step, index} <- Enum.with_index(align_path_steps(), 1)}
+                    class="rounded-md border border-base-200 p-4"
+                  >
+                    <p class="flex items-center gap-2.5">
+                      <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-content">
+                        {index}
+                      </span>
+                      <span class="font-semibold text-base-content">{step.title}</span>
+                    </p>
+                    <p class="mt-2 text-base-content/80">{step.description}</p>
+                  </li>
+                </ol>
+                <p class="mt-4 max-w-[70ch] text-base-content/70">
+                  With fewer than three anchor stops there is nothing to solve from. Skip to step
+                  three and place the plan by eye against the imagery.
+                </p>
+              </.help_section>
+
+              <.help_section icon="hero-map-pin" tone="info" title="Anchor stops">
+                <p>
+                  An anchor is a child stop on this level carrying
+                  <span class="font-semibold text-base-content">
+                    both a position on the floorplan and real map coordinates
+                  </span>
+                  of its own. Two features run on anchors: Auto-align solves the alignment
+                  from them, and Fit scores an alignment against them.
+                </p>
+                <p class="mt-3">
+                  Three is the minimum. Two anchors fix a scale, a rotation and a position
+                  exactly, so a two-anchor fit always scores zero and tells you nothing.
+                </p>
+                <p class="mt-3 text-base-content/70">
+                  The bar below counts how many child stops sit on the plan, under <span class="font-medium text-base-content">Placed</span>. Fit names how many
+                  anchors it measured over.
+                </p>
+              </.help_section>
+
+              <.help_section icon="hero-check-badge" tone="success" title="Reading the fit">
+                <p>
+                  Fit is the root-mean-square distance between where each anchor lands under the
+                  current alignment and where its own coordinates put it. Lower is better.
+                </p>
+                <dl class="mt-3 flex flex-col divide-y divide-base-200 border-y border-base-200">
+                  <div :for={row <- align_fit_rows()} class="flex gap-4 py-2.5">
+                    <dt class={["w-40 shrink-0 font-medium tabular-nums", row.tone_class]}>
+                      {row.reading}
+                    </dt>
+                    <dd class="min-w-0 text-base-content/80">{row.meaning}</dd>
+                  </div>
+                </dl>
+                <p class="mt-3 text-base-content/70">Fit never blocks a save.</p>
+              </.help_section>
+
+              <.help_section
+                class="lg:col-span-2"
+                icon="hero-cursor-arrow-rays"
+                tone="neutral"
+                title="Moving the floorplan"
+              >
+                <div class="grid gap-x-10 gap-y-6 lg:grid-cols-2">
+                  <div>
+                    <p>
+                      The pad in the top left corner of the map drives three operations. The
+                      diagram repeats its layout, tinted by operation.
+                    </p>
+                    <div class="mt-4 flex flex-wrap items-start gap-6">
+                      <div
+                        aria-hidden="true"
+                        class="grid w-fit shrink-0 grid-cols-[repeat(3,3rem)] gap-px rounded-md border border-base-300 bg-base-300"
+                      >
+                        <span
+                          :for={cell <- align_pad_diagram_cells()}
+                          class={[
+                            "flex size-12 items-center justify-center text-lg font-medium",
+                            cell.class
+                          ]}
+                        >
+                          {cell.glyph}
+                        </span>
+                      </div>
+
+                      <table class="min-w-0 flex-1 text-left">
+                        <thead>
+                          <tr class="border-b border-base-200 text-xs text-base-content/60">
+                            <th scope="col" class="pb-1.5 pr-3 font-medium">Operation</th>
+                            <th scope="col" class="pb-1.5 pr-3 font-medium">Keys</th>
+                            <th scope="col" class="pb-1.5 pr-3 font-medium">Step</th>
+                            <th scope="col" class="pb-1.5 font-medium">Shift</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr :for={row <- align_transform_rows()} class="border-b border-base-200">
+                            <th
+                              scope="row"
+                              class={["py-2 pr-3 font-semibold whitespace-nowrap", row.tone_class]}
+                            >
+                              {row.operation}
+                            </th>
+                            <td class="py-2 pr-3 whitespace-nowrap text-base-content/80">
+                              {row.keys}
+                            </td>
+                            <td class="py-2 pr-3 tabular-nums whitespace-nowrap text-base-content/80">
+                              {row.step}
+                            </td>
+                            <td class="py-2 tabular-nums whitespace-nowrap text-base-content/80">
+                              {row.shift_step}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p class="mt-4 text-base-content/70">
+                      Keys act on the map only while focus is inside the workspace. If a key does
+                      nothing, click the imagery once and try again.
+                    </p>
+                  </div>
+
+                  <div>
+                    <p>Or work on the map directly.</p>
+                    <dl class="mt-4 flex flex-col gap-3">
+                      <div :for={row <- align_map_gesture_rows()} class="flex items-start gap-3">
+                        <dt class="flex size-8 shrink-0 items-center justify-center rounded-md border border-base-300 bg-base-200 text-base-content/70">
+                          <.icon :if={row[:icon]} name={row.icon} class="size-4" />
+                          <span :if={row[:key]} class="text-sm font-semibold">{row.key}</span>
+                        </dt>
+                        <dd class="min-w-0 pt-1">
+                          <span class="font-semibold text-base-content">{row.term}</span>
+                          <span class="text-base-content/80">{row.description}</span>
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </div>
+              </.help_section>
+
+              <.help_section icon="hero-eye" tone="neutral" title="Seeing what you are doing">
+                <p>
+                  An opaque floorplan hides the imagery you are matching it to. Four controls
+                  trade one view for the other.
+                </p>
+                <dl class="mt-3 flex flex-col gap-3">
+                  <div :for={row <- align_visibility_rows()} class="flex items-start gap-3">
+                    <dt class="flex size-8 shrink-0 items-center justify-center rounded-md border border-base-300 bg-base-200 text-base-content/70">
+                      <.icon :if={row[:icon]} name={row.icon} class="size-4" />
+                      <span :if={row[:key]} class="text-sm font-semibold">{row.key}</span>
+                    </dt>
+                    <dd class="min-w-0 pt-1">
+                      <span class="font-semibold text-base-content">{row.term}</span>
+                      <span class="text-base-content/80">{row.description}</span>
                     </dd>
                   </div>
                 </dl>
-              </div>
+              </.help_section>
 
-              <p class="mt-3">
-                Hold <kbd class="kbd kbd-sm">Shift</kbd>
-                with any nudge — button or key — to move ten times as far.
-              </p>
-            </.help_section>
+              <.help_section
+                icon="hero-square-3-stack-3d"
+                tone="info"
+                title="Another level as a guide"
+              >
+                <p>
+                  A station's levels sit on top of each other in the real world, so a level you
+                  have already aligned is the best reference for the next one. The
+                  <span class="font-semibold text-base-content">
+                    Other levels
+                  </span>
+                  menu in the strip above the map brings one onto this map in its own
+                  color.
+                </p>
+                <dl class="mt-3 flex flex-col gap-3">
+                  <div :for={row <- align_guide_rows()} class="flex items-start gap-3">
+                    <dt class="flex size-8 shrink-0 items-center justify-center rounded-md bg-info/12 text-info">
+                      <.icon name={row.icon} class="size-4" />
+                    </dt>
+                    <dd class="min-w-0 pt-1">
+                      <span class="font-semibold text-base-content">{row.term}</span>
+                      <span class="text-base-content/80">{row.description}</span>
+                    </dd>
+                  </div>
+                </dl>
+                <p class="mt-3 text-base-content/70">
+                  A box you cannot tick states why beside it: the level has no diagram, is not
+                  aligned yet, or has no stops with coordinates.
+                </p>
+              </.help_section>
 
-            <.help_section icon="hero-map" tone="neutral" title="Straight on the map">
-              <dl class="flex flex-col gap-2">
-                <div :for={row <- align_map_help_rows()} class="flex items-start gap-3">
-                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-base-300 bg-base-200 text-base-content/70">
-                    <.icon :if={row[:icon]} name={row.icon} class="w-3.5 h-3.5" />
-                    <span :if={row[:key]} class="text-xs font-semibold">{row.key}</span>
-                  </dt>
-                  <dd class="min-w-0 pt-0.5">
-                    <span class="font-semibold text-base-content">{row.term}</span>
-                    <span class="text-base-content/80">— {row.description}</span>
-                  </dd>
-                </div>
-              </dl>
-            </.help_section>
+              <.help_section icon="hero-inbox-arrow-down" tone="warning" title="Saving your work">
+                <dl class="flex flex-col gap-3">
+                  <div :for={row <- align_save_rows()}>
+                    <dt class="font-semibold text-base-content">{row.term}</dt>
+                    <dd class="mt-0.5 text-base-content/80">{row.description}</dd>
+                  </div>
+                </dl>
+                <p class="mt-3 text-base-content/70">
+                  <span class="font-medium text-base-content">Unsaved</span>
+                  in the bar below means the plan has moved since the last save.
+                </p>
+              </.help_section>
 
-            <.help_section
-              icon="hero-square-3-stack-3d"
-              tone="info"
-              title="Use another level as your guide"
-            >
-              <p>
-                A station's levels sit on top of each other in the real world, so a level you have
-                already aligned is the best reference you have for the next one.
-                The <span class="font-semibold text-base-content">Other levels</span>
-                menu in the strip above the map brings one onto this map in its own colour.
-              </p>
-              <dl class="mt-3 flex flex-col gap-2">
-                <div class="flex items-start gap-3">
-                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info/15 text-info">
-                    <.icon name="hero-photo" class="w-3.5 h-3.5" />
-                  </dt>
-                  <dd class="min-w-0 pt-0.5">
-                    <span class="font-semibold text-base-content">Floorplan</span>
-                    <span class="text-base-content/80">
-                      — draws that level's floorplan underneath yours. Line the shared
-                      walls, shafts and platform edges up and both levels agree.
-                    </span>
-                  </dd>
-                </div>
-                <div class="flex items-start gap-3">
-                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info/15 text-info">
-                    <.icon name="hero-map-pin" class="w-3.5 h-3.5" />
-                  </dt>
-                  <dd class="min-w-0 pt-0.5">
-                    <span class="font-semibold text-base-content">Stops</span>
-                    <span class="text-base-content/80">
-                      — drops that level's stops as coloured pins at their real coordinates. A
-                      lift or stair that serves both levels should land in the same place on
-                      each: when your floorplan puts it under its pin, you are aligned.
-                    </span>
-                  </dd>
-                </div>
-              </dl>
-              <p class="mt-2 text-base-content/70">
-                A box you cannot tick says why beside it — the level has no diagram, is not
-                aligned yet, or has no stops with coordinates. Fade the guide with the
-                <span class="font-medium text-base-content">Other-levels opacity</span>
-                slider in the tools panel.
-              </p>
-            </.help_section>
-
-            <.help_section icon="hero-adjustments-horizontal" tone="neutral" title="The tools panel">
-              <dl class="flex flex-col gap-2">
-                <div :for={row <- align_panel_help_rows()} class="flex items-start gap-3">
-                  <dt class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-base-300 bg-base-200 text-base-content/70">
-                    <.icon name={row.icon} class="w-3.5 h-3.5" />
-                  </dt>
-                  <dd class="min-w-0 pt-0.5">
-                    <span class="font-semibold text-base-content">{row.term}</span>
-                    <span class="text-base-content/80">— {row.description}</span>
-                  </dd>
-                </div>
-              </dl>
-            </.help_section>
-
-            <.help_section icon="hero-check-badge" tone="success" title="Knowing when it is right">
-              <p>
-                The <span class="font-semibold text-base-content">Measured fit</span>
-                readout below the map reports how far the anchor stops land from the positions
-                already recorded for them. Lower is better, and under 2.0 m is a good alignment.
-                It is a guide, not a gate — you can save at any value.
-              </p>
-            </.help_section>
-
-            <.help_section icon="hero-inbox-arrow-down" tone="warning" title="Saving your work">
-              <dl class="flex flex-col gap-3">
-                <div>
-                  <dt class="font-semibold text-base-content">Save position</dt>
-                  <dd class="text-base-content/80">
-                    Stores where the floorplan sits on the map. Nothing else changes.
-                  </dd>
-                </div>
-                <div>
-                  <dt class="font-semibold text-base-content">Update stop coordinates…</dt>
-                  <dd class="text-base-content/80">
-                    Also writes each child stop's latitude and longitude from its position on the
-                    floorplan. You see every change before any of it is written.
-                  </dd>
-                </div>
-              </dl>
-            </.help_section>
+              <.help_section
+                icon="hero-exclamation-triangle"
+                tone="warning"
+                title="When Auto-align refuses"
+              >
+                <p>
+                  Auto-align declines rather than applying a fit it cannot stand behind. The bar
+                  below states which case you hit.
+                </p>
+                <dl class="mt-3 flex flex-col gap-3">
+                  <div :for={row <- align_blocked_rows()}>
+                    <dt class="font-semibold text-base-content">{row.term}</dt>
+                    <dd class="mt-0.5 text-base-content/80">{row.description}</dd>
+                  </div>
+                </dl>
+              </.help_section>
+            </div>
           </div>
         </div>
       </div>
@@ -1366,12 +1464,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <button
             id="map-alignment-help-trigger"
             type="button"
-            class="btn btn-ghost btn-xs h-7 min-h-7 shrink-0 gap-1 px-2 text-xs font-medium text-base-content/70"
+            class="btn btn-ghost btn-sm min-h-11 shrink-0 gap-1.5 px-3 text-xs font-medium text-base-content/70"
             aria-expanded="false"
             aria-controls="map-alignment-help-panel"
             phx-click={@help_open}
           >
-            <.icon name="hero-question-mark-circle-solid" class="w-4 h-4" /> Help
+            <.icon name="hero-question-mark-circle-solid" class="size-5" /> Help
           </button>
 
           <div class="ml-auto flex shrink-0 flex-wrap items-center gap-2">
@@ -1888,21 +1986,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :icon, :string, required: true
   attr :title, :string, required: true
   attr :tone, :string, default: "neutral"
+  attr :class, :string, default: nil
   slot :inner_block, required: true
 
+  # One card per section on the help grid. The top rule is what makes the grid
+  # legible: cards in different columns start on the same line whatever their
+  # height, so the panel reads as a laid-out page rather than stacked boxes.
   defp help_section(assigns) do
     ~H"""
-    <section class="border-t border-base-200 py-4 first:border-t-0 first:pt-0 last:pb-0">
-      <h3 class="flex items-center gap-2.5">
+    <section class={["border-t-2 border-base-300 pt-4 first:border-t-0 first:pt-0", @class]}>
+      <h3 class="flex items-center gap-3">
         <span class={[
-          "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+          "flex size-9 shrink-0 items-center justify-center rounded-md",
           help_tone_chip(@tone)
         ]}>
-          <.icon name={@icon} class="w-4 h-4" />
+          <.icon name={@icon} class="size-5" />
         </span>
-        <span class="text-sm font-semibold">{@title}</span>
+        <span class="text-base font-semibold">{@title}</span>
       </h3>
-      <div class="mt-2 pl-9.5 text-sm text-base-content/80">
+      <div class="mt-3 text-sm text-base-content/80">
         {render_slot(@inner_block)}
       </div>
     </section>
@@ -1936,79 +2038,230 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ]
   end
 
-  # The transform pad, one row per operation, showing the glyphs the operator
-  # actually sees on the buttons rather than naming their positions.
-  defp align_pad_help_rows do
+  # The three quantities `FloorplanTransform` stores per level, named the way an
+  # operator would rather than by column name. This is the concept the rest of
+  # the panel refers back to, so it opens the help.
+  defp align_records_rows do
     [
       %{
-        action: "Move",
-        step: "2 px a press",
+        icon: "hero-map-pin",
+        term: "Center",
+        description: "The latitude and longitude under the middle of the image."
+      },
+      %{
+        icon: "hero-arrows-pointing-out",
+        term: "Scale",
+        description: "How many meters of ground one pixel of the image covers."
+      },
+      %{
+        icon: "hero-arrow-path",
+        term: "Rotation",
+        description: "How far the image is turned from north."
+      }
+    ]
+  end
+
+  # The task, in the order an operator performs it. Auto-align first because it
+  # is the only step that can do the whole job on its own.
+  defp align_path_steps do
+    [
+      %{
+        title: "Auto-align",
+        description:
+          "Fits the plan to this level's anchor stops, when there are at least three, " <>
+            "and moves it immediately. Nothing is written until you save."
+      },
+      %{
+        title: "Read the fit",
+        description:
+          "Fit reports how far the anchors land from their recorded coordinates. " <>
+            "Under 2.0 m is a good alignment."
+      },
+      %{
+        title: "Correct by hand",
+        description:
+          "Drag, nudge, rotate and resize until the plan's walls sit over the same " <>
+            "walls in the imagery."
+      },
+      %{
+        title: "Save",
+        description:
+          "Save position keeps the alignment. Update stop coordinates… also rewrites " <>
+            "the child stops' coordinates, after you review every change."
+      }
+    ]
+  end
+
+  # One row per operation on the pad, carrying both step sizes. The plain and
+  # Shift steps are stated per operation on purpose: Shift is 5× on rotate and
+  # 10× on move and resize, so a single "ten times as far" line was wrong.
+  defp align_transform_rows do
+    [
+      %{
+        operation: "Move",
         keys: "← ↑ ↓ →",
+        step: "2 px",
+        shift_step: "10 px",
         tone_class: "text-primary"
       },
       %{
-        action: "Rotate",
-        step: "1° a press",
+        operation: "Rotate",
         keys: "[ and ]",
+        step: "1°",
+        shift_step: "5°",
         tone_class: "text-info"
       },
       %{
-        action: "Resize",
-        step: "1% a press",
+        operation: "Resize",
         keys: "− and =",
+        step: "1%",
+        shift_step: "10%",
         tone_class: "text-secondary"
       }
     ]
   end
 
-  # The panel's non-pad controls, each shown with its own icon.
-  defp align_panel_help_rows do
+  # What the operator can do on the map without touching the tools panel.
+  defp align_map_gesture_rows do
     [
       %{
-        icon: "hero-arrow-path",
-        term: "Restore saved alignment",
-        description: "puts the floorplan back where it was last saved, discarding every change."
+        icon: "hero-hand-raised",
+        term: "Drag the floorplan",
+        description: "anywhere on it to move it."
       },
-      %{
-        icon: "hero-photo",
-        term: "Floorplan opacity",
-        description: "fades the floorplan so you can see the imagery through it."
-      },
-      %{
-        icon: "hero-square-3-stack-3d",
-        term: "Other-levels opacity",
-        description: "fades the floorplans of other levels, when any are shown."
-      },
-      %{
-        icon: "hero-chevron-up",
-        term: "Hide tools",
-        description: "collapses the panel when it covers something you need to see."
-      }
-    ]
-  end
-
-  # What the operator can do on the map without touching the panel.
-  defp align_map_help_rows do
-    [
       %{
         icon: "hero-arrow-path",
         term: "Rotate handle",
-        description: "top right of the map — drag it to turn the floorplan."
+        description: "sits top right of the map. Drag it to turn the plan."
       },
       %{
         icon: "hero-arrows-pointing-out",
         term: "Resize handle",
-        description: "bottom right of the map — drag it to grow or shrink the floorplan."
-      },
-      %{
-        icon: "hero-hand-raised",
-        term: "Drag the floorplan",
-        description: "anywhere on it, to move it."
-      },
+        description: "sits bottom right of the map. Drag it to grow or shrink the plan."
+      }
+    ]
+  end
+
+  # Grouped by what they achieve, not by where they sit: every one of these
+  # trades a view of the floorplan for a view of what is under it.
+  defp align_visibility_rows do
+    [
       %{
         key: "H",
         term: "Hold H",
-        description: "blanks the floorplan while you hold it, so you can check the imagery."
+        description: "blanks the floorplan for as long as you hold it."
+      },
+      %{
+        icon: "hero-photo",
+        term: "Floorplan opacity",
+        description: "fades the plan so the imagery shows through it."
+      },
+      %{
+        icon: "hero-square-3-stack-3d",
+        term: "Other-levels opacity",
+        description: "fades the guide levels, when any are shown."
+      },
+      %{
+        icon: "hero-chevron-up",
+        term: "Hide tools",
+        description: "collapses the tools panel when it covers something you need."
+      }
+    ]
+  end
+
+  # The two things the Other levels menu can draw, and what each is good for.
+  defp align_guide_rows do
+    [
+      %{
+        icon: "hero-photo",
+        term: "Floorplan",
+        description:
+          "draws that level's plan under yours. Line up the walls, shafts and " <>
+            "platform edges the two levels share."
+      },
+      %{
+        icon: "hero-map-pin",
+        term: "Stops",
+        description:
+          "drops that level's stops as colored pins at their real coordinates. An " <>
+            "elevator serving both levels should land on its own pin."
+      }
+    ]
+  end
+
+  # The four states the Fit readout renders, each paired with what to do about
+  # it. The readings are the strings `residual_readout/1` writes.
+  defp align_fit_rows do
+    [
+      %{
+        reading: "Under 2.0 m",
+        meaning: "A good alignment. Save it.",
+        tone_class: "text-base-content"
+      },
+      %{
+        reading: "Over 2.0 m",
+        meaning:
+          "Flagged, with check the alignment beside it. Usually one anchor is misplaced " <>
+            "rather than the whole plan.",
+        tone_class: "text-warning"
+      },
+      %{
+        reading: "needs 3 anchor stops",
+        meaning: "Too few anchors on this level to score anything.",
+        tone_class: "text-base-content/60"
+      },
+      %{
+        reading: "move the floorplan to measure",
+        meaning: "Nothing measured yet. Nudge the plan once and it scores.",
+        tone_class: "text-base-content/60"
+      }
+    ]
+  end
+
+  # The three controls that change what is stored, kept in one place so the two
+  # writes are read against each other rather than found separately.
+  defp align_save_rows do
+    [
+      %{
+        term: "Save position",
+        description: "Stores where the floorplan sits on the map. Child stops are untouched."
+      },
+      %{
+        term: "Update stop coordinates…",
+        description:
+          "Also writes each child stop's latitude and longitude from its position on " <>
+            "the floorplan. Every change is listed for review before any of it is written."
+      },
+      %{
+        term: "Restore saved alignment",
+        description:
+          "The circular arrow in the tools panel. Puts the plan back where it was last " <>
+            "saved and discards every change since."
+      }
+    ]
+  end
+
+  # The three refusals, phrased as the operator's next move rather than as the
+  # server's reason code.
+  defp align_blocked_rows do
+    [
+      %{
+        term: "Fewer than three anchors",
+        description:
+          "Give more child stops map coordinates, or place more of them on the floorplan, " <>
+            "then try again."
+      },
+      %{
+        term: "Cannot get within 2.0 m",
+        description:
+          "One wrong anchor drags the whole solve. Check each anchor's floorplan position " <>
+            "and its coordinates."
+      },
+      %{
+        term: "Floorplan or map not ready",
+        description:
+          "The image has not loaded, or the map service is down. Imagery is optional: you " <>
+            "can still align against another level."
       }
     ]
   end
