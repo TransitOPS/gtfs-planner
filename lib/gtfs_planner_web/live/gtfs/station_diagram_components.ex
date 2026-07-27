@@ -1133,7 +1133,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
           <div class="px-4 py-3">
             <h3 class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
-              The transform pad
+              The quickest start
+            </h3>
+
+            <p class="mt-2 text-xs text-base-content/70">
+              <span class="font-medium">Auto-align</span>
+              , below the map, works the position out from your own data: it takes every stop on
+              this level that already has both a position on the floorplan and real map
+              coordinates, and fits the floorplan to them. It needs at least three such stops,
+              and it declines rather than applying a poor fit if it cannot get within 2.0 m.
+            </p>
+
+            <p class="mt-1.5 text-xs text-base-content/70">
+              It moves the floorplan straight away — there is nothing to accept. Nothing is
+              written until you save, and <span class="font-medium">Restore saved alignment</span>
+              puts it back.
+            </p>
+
+            <h3 class="mt-4 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+              Adjusting it by hand
             </h3>
 
             <div class="mt-2 flex items-start gap-4">
@@ -1216,13 +1234,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
             <dl class="mt-2 text-xs">
               <div class="py-1.5">
-                <dt class="font-medium">Save alignment</dt>
+                <dt class="font-medium">Save position</dt>
                 <dd class="text-base-content/70">
                   Stores where the floorplan sits on the map. Nothing else changes.
                 </dd>
               </div>
               <div class="py-1.5">
-                <dt class="font-medium">Review coordinate changes</dt>
+                <dt class="font-medium">Update stop coordinates…</dt>
                 <dd class="text-base-content/70">
                   Also writes each child stop's latitude and longitude from its position on the
                   floorplan. You see every change before any of it is written.
@@ -1647,7 +1665,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   # `#map-alignment-residual` reports the measured fit of whatever the operator
   # has placed. Every shape of the assign resolves to a rendered line, because a
-  # blank readout or a bare `0` next to Save alignment reads as "the fit is
+  # blank readout or a bare `0` next to Save position reads as "the fit is
   # fine" — the exact misreading this element exists to prevent.
   #
   # 2.0 m is the same bar `AlignmentInference`'s `@max_rmse_meters` enforces on

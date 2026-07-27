@@ -5118,6 +5118,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-actions #map-alignment-apply")
     end
 
+    test "the help overlay names the buttons the bar actually renders", context do
+      view = mount_map_align(context)
+
+      help =
+        view
+        |> element_text("#map-alignment-help-panel")
+        |> String.replace(~r/\s+/, " ")
+
+      # Help that names a button by a label the bar no longer uses is worse than
+      # no help: it sends the operator looking for a control that is not there.
+      for id <- ["#map-alignment-save", "#map-alignment-apply", "#map-alignment-preview-auto"] do
+        label = view |> element(id) |> render() |> LazyHTML.from_fragment() |> LazyHTML.text()
+        assert help =~ String.trim(label)
+      end
+    end
+
+    test "the help overlay explains what Auto-align does before it does it", context do
+      view = mount_map_align(context)
+
+      help =
+        view
+        |> element_text("#map-alignment-help-panel")
+        |> String.replace(~r/\s+/, " ")
+
+      # Auto-align is the one control whose behaviour is not guessable from its
+      # label: it moves the floorplan the moment it is pressed, saves nothing,
+      # and refuses rather than applying a poor fit.
+      assert help =~ "both a position on the floorplan and real map coordinates"
+      assert help =~ "at least three"
+      assert help =~ "moves the floorplan straight away"
+      assert help =~ "Nothing is written until you save"
+    end
+
     test "the help overlay states what each of the two save actions does", context do
       view = mount_map_align(context)
 
