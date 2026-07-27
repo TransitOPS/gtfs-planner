@@ -177,6 +177,19 @@ body {
   display: none;
 }
 
+/* daisyUI renders a disabled checkbox at `opacity: .2`, which puts its border at
+   roughly 1.35:1 on base-100 — invisible at `checkbox-sm`, so a row of
+   ineligible options reads as a row of missing controls rather than unavailable
+   ones. Disabled components are exempt from WCAG 1.4.11, but a control the
+   operator cannot see is one they cannot reason about: the Other levels panel
+   states a reason beside each ineligible box, and that reason needs something to
+   refer to. Restore the box at a muted weight instead. */
+.checkbox:disabled {
+  opacity: 1;
+  border-color: color-mix(in oklab, var(--color-base-content) 40%, var(--color-base-100));
+  background-color: var(--color-base-200);
+}
+
 /* The align map canvas stacks its own children on a private 0-5 ladder: leaflet,
    other-level pins, the floorplan overlay, and its handles. Without a stacking
    context of its own that ladder competes with the rest of the page, so the

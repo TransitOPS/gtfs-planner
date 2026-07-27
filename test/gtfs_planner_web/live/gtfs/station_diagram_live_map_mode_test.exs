@@ -3948,7 +3948,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       help = element_text(view, "#map-alignment-help-panel")
 
       assert help =~ "Drag the floorplan"
-      assert help =~ "arrow keys"
+      assert help =~ "keys ← ↑ ↓ →"
       assert help =~ "Hold H"
       assert help =~ "Restore saved alignment"
 
@@ -5147,8 +5147,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # and refuses rather than applying a poor fit.
       assert help =~ "both a position on the floorplan and real map coordinates"
       assert help =~ "at least three"
-      assert help =~ "moves the floorplan straight away"
-      assert help =~ "Nothing is written until you save"
+      assert help =~ "Moves the floorplan straight away"
+      assert help =~ "nothing is written until you save"
     end
 
     test "the help overlay states what each of the two save actions does", context do
