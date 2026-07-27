@@ -86,6 +86,110 @@ async function collectTabOrder(page, startSelector, steps) {
   return order;
 }
 
+const journal10ArtifactsDir = path.resolve(
+  __dirname,
+  "../../.artifacts/journal-10",
+);
+
+async function openAlignSurface(page, viewport) {
+  await page.setViewportSize(viewport);
+  await loginAndGoToDiagram(page);
+  await selectDiagramMode(page, "map");
+
+  await expect(page.locator("#map-alignment-commit-bar")).toBeVisible();
+  await expect(page.locator("#map-alignment-tools")).toBeVisible();
+  await expect(page.locator("#map-alignment-overlay img")).toBeVisible();
+
+  // The surface renders two extra full-width status lines while it resolves:
+  // "Floorplan image is not ready" until the image reports its natural size,
+  // and "Loading map…" until Leaflet reports ready. Each costs the map ~24 px,
+  // so measure the ready surface rather than the one still settling. Their
+  // absence is the production signal that the map is ready and not degraded.
+  await expect(page.locator("#map-auto-alignment-disabled-reason")).toHaveCount(
+    0,
+  );
+  await expect(page.locator("#map-alignment-state")).toHaveCount(0, {
+    timeout: 20000,
+  });
+  await expect(page.locator("#map-alignment-preview-auto")).toBeEnabled();
+}
+
+// Rendered geometry of the Align surface in CSS pixels. `region` is the distance
+// from the canvas's bottom edge to the bottom of the element that owns both the
+// canvas and the controls beneath it — the space AC-1 puts a budget on.
+async function alignSurfaceGeometry(page) {
+  return page.evaluate(() => {
+    const canvas = document.querySelector(".map-canvas");
+    const workspace = document.querySelector("#map-alignment-workspace");
+    const bar = document.querySelector("#map-alignment-commit-bar");
+    const tools = document.querySelector("#map-alignment-tools");
+    const ignoredCanvas = document.querySelector(
+      '.map-canvas[phx-update="ignore"]',
+    );
+    const surface = workspace.parentElement;
+    const doc = document.documentElement;
+
+    const box = (element) => {
+      const rect = element.getBoundingClientRect();
+
+      return {
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    };
+
+    return {
+      canvas: box(canvas),
+      bar: box(bar),
+      tools: box(tools),
+      surface: box(surface),
+      region: Math.round(
+        surface.getBoundingClientRect().bottom -
+          canvas.getBoundingClientRect().bottom,
+      ),
+      toolsScrollOverflow: tools.scrollHeight - tools.clientHeight,
+      toolsInsideWorkspace: workspace.contains(tools),
+      toolsInsideIgnoredCanvas: ignoredCanvas.contains(tools),
+      ignoredCanvasIsTheMapCanvas: ignoredCanvas === canvas,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+      documentVerticalOverflow: doc.scrollHeight - doc.clientHeight,
+      documentHorizontalOverflow: doc.scrollWidth - doc.clientWidth,
+    };
+  });
+}
+
+// The floorplan's translation, parsed out of the inline transform the hook
+// writes. Nudges are asserted as deltas because the browser suite shares one
+// seeded database and the floorplan may already carry a saved offset.
+async function overlayTranslation(page) {
+  return page.locator("#map-alignment-overlay").evaluate((element) => {
+    const match = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(
+      element.style.transform,
+    );
+
+    return match
+      ? { x: Number(match[1]), y: Number(match[2]) }
+      : { x: null, y: null };
+  });
+}
+
+// `id:disabled` for every control the tools panel holds, so a collapse that
+// silently disabled something would change the list rather than pass unnoticed.
+async function toolsPanelDisabledState(page) {
+  return page.evaluate(() =>
+    Array.from(
+      document.querySelectorAll(
+        "#map-alignment-tools button, #map-alignment-tools input",
+      ),
+    ).map((element) => `${element.id}:${element.disabled}`),
+  );
+}
+
 async function coordinateReviewTableMetrics(page) {
   return page.evaluate(() => {
     const body = document.querySelector("#coordinate-review-dialog-body");
@@ -167,7 +271,7 @@ test.describe("Station diagram map alignment", () => {
 });
 
 test.describe("assisted alignment", () => {
-  const artifactsDir = path.resolve(__dirname, "../../.artifacts/journal-09");
+  const artifactsDir = journal10ArtifactsDir;
   const referencePath = path.resolve(
     __dirname,
     "../../.specs/journal-08/visual-references/mock-05-align-mode-v2.html",
@@ -318,7 +422,7 @@ test.describe("assisted alignment", () => {
     await exerciseProductionPreview(
       page,
       { width: 1280, height: 900 },
-      "production-assisted-alignment-1280.png",
+      "production-assisted-alignment-1280x900.png",
     );
   });
 
@@ -326,80 +430,393 @@ test.describe("assisted alignment", () => {
     await exerciseProductionPreview(
       page,
       { width: 1440, height: 1000 },
-      "production-assisted-alignment-1440.png",
+      "production-assisted-alignment-1440x1000.png",
+    );
+  });
+});
+
+test.describe("align workspace layout and interaction", () => {
+  const layoutViewports = [
+    { width: 1280, height: 800, label: "1280x800" },
+    { width: 1440, height: 900, label: "1440x900" },
+  ];
+
+  // The tab order the Align surface publishes at rest: the tools panel floating
+  // over the map first, then the commit bar below it. Restore saved alignment is
+  // absent because the server disables it until the alignment is dirty, and the
+  // demoted popover controls are absent because their panels render hidden.
+  const restingFocusOrder = [
+    "map-alignment-tools-toggle",
+    "map-transform-left-fine",
+    "map-transform-up-fine",
+    "map-transform-down-fine",
+    "map-transform-right-fine",
+    "map-transform-rotate-left-fine",
+    "map-transform-rotate-right-fine",
+    "map-transform-scale-down-fine",
+    "map-transform-scale-up-fine",
+    "map-alignment-opacity",
+    "map-alignment-preview-auto",
+    "map-alignment-center-trigger",
+    "map-alignment-zoom-trigger",
+    "map-alignment-save",
+    "map-alignment-apply",
+  ];
+
+  const dirtyFocusOrder = [
+    "map-alignment-tools-toggle",
+    "map-transform-left-fine",
+    "map-transform-up-fine",
+    "map-transform-down-fine",
+    "map-transform-right-fine",
+    "map-transform-rotate-left-fine",
+    "map-transform-rotate-right-fine",
+    "map-transform-scale-down-fine",
+    "map-transform-scale-up-fine",
+    "map-alignment-restore-saved",
+    "map-alignment-opacity",
+    "map-alignment-preview-auto",
+    "map-alignment-center-trigger",
+    "map-alignment-zoom-trigger",
+    "map-alignment-save",
+    "map-alignment-apply",
+  ];
+
+  for (const viewport of layoutViewports) {
+    test(`gives the map canvas at least 520 px and the region below it at most 130 px at ${viewport.label}`, async ({
+      page,
+    }) => {
+      await openAlignSurface(page, viewport);
+
+      const geometry = await alignSurfaceGeometry(page);
+
+      expect(geometry.canvas.height).toBeGreaterThanOrEqual(520);
+      expect(geometry.region).toBeLessThanOrEqual(130);
+
+      // `.map-canvas` still carries `aspect-square`; the immersive stylesheet
+      // resets it to `aspect-ratio: auto` so the flex height wins. A canvas that
+      // rendered square would meet the height budget and destroy the layout.
+      expect(geometry.canvas.width).toBeGreaterThan(geometry.canvas.height);
+
+      // A tools panel that scrolls internally satisfies the height budget while
+      // being unusable, so the reclaimed height has to fit the panel too.
+      expect(geometry.toolsScrollOverflow).toBeLessThanOrEqual(0);
+
+      fs.mkdirSync(journal10ArtifactsDir, { recursive: true });
+      await page.screenshot({
+        path: path.join(
+          journal10ArtifactsDir,
+          `align-workspace-${viewport.label}.png`,
+        ),
+        fullPage: false,
+      });
+    });
+
+    test(`keeps every align control inside the viewport without horizontal overflow at ${viewport.label}`, async ({
+      page,
+    }) => {
+      await openAlignSurface(page, viewport);
+
+      const geometry = await alignSurfaceGeometry(page);
+
+      expect(geometry.documentHorizontalOverflow).toBeLessThanOrEqual(0);
+
+      for (const region of [geometry.canvas, geometry.tools, geometry.bar]) {
+        expect(region.top).toBeGreaterThanOrEqual(0);
+        expect(region.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+        expect(region.left).toBeGreaterThanOrEqual(0);
+        expect(region.right).toBeLessThanOrEqual(geometry.viewportWidth);
+      }
+
+      // AC-2's vertical half is not yet met. The document still overflows by the
+      // 83 px `spec.md` records as pre-existing at every viewport: 64 px of
+      // `py-8` on the empty `#main-content` that immersive mode leaves behind,
+      // 16 px of its residual line box, and 3 px because immersive mode sizes
+      // `#map-canvas-wrapper` as `100vh - 4rem` against a 67 px action strip.
+      // None of it belongs to the Align surface, whose own controls all sit
+      // above the fold as asserted above. Bounded here so the surface cannot
+      // make the pre-existing defect worse and so a future fix fails loudly.
+      expect(geometry.documentVerticalOverflow).toBeLessThanOrEqual(83);
+    });
+
+    test(`aligns the commit bar with the canvas on both edges at ${viewport.label}`, async ({
+      page,
+    }) => {
+      await openAlignSurface(page, viewport);
+
+      const geometry = await alignSurfaceGeometry(page);
+
+      expect(
+        Math.abs(geometry.bar.left - geometry.canvas.left),
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(geometry.bar.right - geometry.canvas.right),
+      ).toBeLessThanOrEqual(1);
+    });
+  }
+
+  test("floats the tools panel over the canvas outside the ignored subtree", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const geometry = await alignSurfaceGeometry(page);
+
+    expect(geometry.ignoredCanvasIsTheMapCanvas).toBe(true);
+    expect(geometry.toolsInsideWorkspace).toBe(true);
+    expect(geometry.toolsInsideIgnoredCanvas).toBe(false);
+
+    expect(geometry.tools.left).toBeGreaterThanOrEqual(geometry.canvas.left);
+    expect(geometry.tools.right).toBeLessThanOrEqual(geometry.canvas.right);
+    expect(geometry.tools.top).toBeGreaterThanOrEqual(geometry.canvas.top);
+    expect(geometry.tools.bottom).toBeLessThanOrEqual(geometry.canvas.bottom);
+  });
+
+  test("collapses and restores the tools panel without changing any disabled state", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const toggle = page.locator("#map-alignment-tools-toggle");
+    const nudgeControl = page.locator("#map-transform-left-fine");
+    const opacitySlider = page.locator("#map-alignment-opacity");
+
+    // The server renders `Hide tools`; the collapsed label is hook-owned and
+    // only observable once the toggle has been activated in a browser.
+    await expect(toggle).toHaveText("Hide tools");
+    await expect(nudgeControl).toBeVisible();
+    const expanded = await toolsPanelDisabledState(page);
+
+    await toggle.click();
+    await expect(toggle).toHaveText("Show tools");
+    await expect(nudgeControl).toBeHidden();
+    await expect(opacitySlider).toBeHidden();
+    expect(await toolsPanelDisabledState(page)).toEqual(expanded);
+
+    await toggle.click();
+    await expect(toggle).toHaveText("Hide tools");
+    await expect(nudgeControl).toBeVisible();
+    await expect(opacitySlider).toBeVisible();
+    expect(await toolsPanelDisabledState(page)).toEqual(expanded);
+  });
+
+  test("opens the map center popover from its trigger and dismisses it on Escape", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const trigger = page.locator("#map-alignment-center-trigger");
+    const panel = page.locator("#map-alignment-center-panel");
+
+    await expect(panel).toBeHidden();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(panel.locator("#map-alignment-lat-input")).toBeVisible();
+    await expect(panel.locator("#map-alignment-lon-input")).toBeVisible();
+    await expect(panel.locator("#map-alignment-apply-center")).toBeVisible();
+    await expect(trigger).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(trigger).toBeFocused();
+  });
+
+  test("dismisses the map center popover on a click away, returning focus to its trigger", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const trigger = page.locator("#map-alignment-center-trigger");
+    const panel = page.locator("#map-alignment-center-panel");
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+
+    await page.locator("#map-alignment-save-help").click();
+
+    await expect(panel).toBeHidden();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(trigger).toBeFocused();
+  });
+
+  test("opens the map zoom popover from its trigger and dismisses it both ways", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    const trigger = page.locator("#map-alignment-zoom-trigger");
+    const panel = page.locator("#map-alignment-zoom-panel");
+
+    await expect(panel).toBeHidden();
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(panel.locator("#map-alignment-zoom-value")).toBeVisible();
+    await expect(
+      panel.locator("#map-alignment-zoom[phx-update='ignore']"),
+    ).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(trigger).toBeFocused();
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await page.locator("#map-alignment-save-help").click();
+    await expect(panel).toBeHidden();
+    await expect(trigger).toBeFocused();
+  });
+
+  test("nudges the floorplan when focus sits on a control inside the tools panel", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    // The regression guard for the binding scope: the tools panel is a sibling
+    // of the hook root, so a keydown listener on the hook root would never see
+    // this event. The keyboard binding lives on #map-alignment-workspace.
+    const geometry = await alignSurfaceGeometry(page);
+    expect(geometry.toolsInsideIgnoredCanvas).toBe(false);
+
+    const residual = page.locator("#map-alignment-residual");
+    await page.locator("#map-transform-left-fine").focus();
+    const start = await overlayTranslation(page);
+
+    await page.keyboard.press("ArrowRight");
+    await expect(residual).toHaveAttribute("data-fit-state", "measuring");
+    await expect
+      .poll(async () => (await overlayTranslation(page)).x)
+      .toBe(start.x + 2);
+
+    await page.keyboard.press("Shift+ArrowRight");
+    await expect
+      .poll(async () => (await overlayTranslation(page)).x)
+      .toBe(start.x + 12);
+
+    // The measuring state resolves into the server's scored verdict rather than
+    // staying in flight, so the readout is never a stale value shown as current.
+    await expect(residual).toHaveAttribute("data-fit-state", "ready", {
+      timeout: 10000,
+    });
+    await expect(page.locator("#map-alignment-residual-value")).toContainText(
+      /\d+\.\d m · \d+ anchors/,
     );
   });
 
-  test("controls are keyboard reachable in focus order", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await loginAndGoToDiagram(page);
-    await selectDiagramMode(page, "map");
-
-    const precedingControl = page.locator("#map-transform-scale-up-fine");
-    await precedingControl.click();
-    await expect(precedingControl).toBeFocused();
-
-    // Restore saved alignment is disabled until the server marks the alignment
-    // unsaved, and a disabled button is not a tab stop. The click above is the
-    // operator gesture that dirties it, one debounce window earlier.
-    await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
-    await precedingControl.focus();
-
-    await page.keyboard.press("Tab");
-    await expect(page.locator("#map-alignment-restore-saved")).toBeFocused();
-
-    await page.keyboard.press("Tab");
-    await expect(page.locator("#map-alignment-preview-auto")).toBeFocused();
-  });
-
-  test("keyboard focus walks the control groups in source order", async ({
+  test("reaches every align control by Tab in source order once the alignment is dirty", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await loginAndGoToDiagram(page);
-    await selectDiagramMode(page, "map");
+    await openAlignSurface(page, { width: 1280, height: 800 });
 
-    // Dirty the alignment so Restore saved alignment is a tab stop at all.
+    expect(
+      await collectTabOrder(page, "#map-alignment-tools-toggle", 14),
+    ).toEqual(restingFocusOrder);
+
+    // Restore saved alignment is disabled until the server marks the alignment
+    // unsaved, and a disabled button is not a tab stop. This gesture dirties it
+    // one debounce window earlier, and it then joins the chain in source order.
     await page.locator("#map-transform-right-fine").click();
     await expect(page.locator("#map-alignment-restore-saved")).toBeEnabled();
 
-    const focusOrder = await collectTabOrder(
+    expect(
+      await collectTabOrder(page, "#map-alignment-tools-toggle", 15),
+    ).toEqual(dirtyFocusOrder);
+  });
+
+  test("keeps hidden popover controls and the workspace out of the tab chain", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
+
+    // The canvas holds the rotate and scale handles, and they are reached before
+    // the tools panel, so no control over the map is keyboard-unreachable.
+    const fromMode = await collectTabOrder(page, "#diagram-mode-option-map", 4);
+    expect(fromMode).toEqual([
+      "diagram-mode-option-map",
+      "",
+      "map-alignment-rotate-handle",
+      "map-alignment-scale-handle",
+      "map-alignment-tools-toggle",
+    ]);
+
+    const resting = await collectTabOrder(
       page,
-      "#map-alignment-lat-input",
-      24,
+      "#map-alignment-tools-toggle",
+      14,
     );
 
-    // One marker per group, asserted as relative order rather than adjacency:
-    // the Move pad contributes four consecutive stops and each group holds
-    // several focusable controls.
-    const markers = [
+    // #map-alignment-workspace carries tabindex="-1" so a click on the imagery
+    // can land focus inside it and make the shortcuts live. It must stay out of
+    // the tab order all the same.
+    expect(resting).not.toContain("map-alignment-workspace");
+
+    // The demoted controls live inside `style="display: none;"` panels and are
+    // unreachable until their trigger opens them.
+    for (const hidden of [
       "map-alignment-lat-input",
       "map-alignment-lon-input",
       "map-alignment-apply-center",
-      "map-alignment-restore-saved",
-      "map-alignment-preview-auto",
-      "map-alignment-opacity",
+      "map-alignment-zoom",
+    ]) {
+      expect(resting).not.toContain(hidden);
+    }
+
+    await page.locator("#map-alignment-center-trigger").click();
+    await expect(page.locator("#map-alignment-center-panel")).toBeVisible();
+
+    // Opened, the panel's controls slot in directly after their own trigger and
+    // before the next group, rather than at the end of the surface.
+    expect(
+      await collectTabOrder(page, "#map-alignment-center-trigger", 6),
+    ).toEqual([
+      "map-alignment-center-trigger",
+      "map-alignment-lat-input",
+      "map-alignment-lon-input",
+      "map-alignment-apply-center",
+      "map-alignment-zoom-trigger",
       "map-alignment-save",
-    ];
-    expect(focusOrder.filter((id) => markers.includes(id))).toEqual(markers);
+      "map-alignment-apply",
+    ]);
+  });
 
-    // The transform pad is reached between Center map and Restore saved alignment.
-    const transformStop = focusOrder.findIndex((id) =>
-      id.startsWith("map-transform-"),
-    );
-    expect(transformStop).toBeGreaterThan(
-      focusOrder.indexOf("map-alignment-apply-center"),
-    );
-    expect(transformStop).toBeLessThan(
-      focusOrder.indexOf("map-alignment-restore-saved"),
-    );
+  test("spends map height on the assisted fit report only while a preview stands", async ({
+    page,
+  }) => {
+    await openAlignSurface(page, { width: 1280, height: 800 });
 
-    // No unidentified tab stop is introduced between the first and last control.
-    const stripStops = focusOrder.slice(
-      0,
-      focusOrder.indexOf("map-alignment-save") + 1,
-    );
-    expect(stripStops.filter((id) => id === "")).toEqual([]);
+    const restingGeometry = await alignSurfaceGeometry(page);
+    expect(restingGeometry.canvas.height).toBeGreaterThanOrEqual(520);
+    expect(restingGeometry.region).toBeLessThanOrEqual(130);
+
+    await page.locator("#map-alignment-preview-auto").click();
+    await expect(page.locator("#auto-alignment-status")).toBeVisible({
+      timeout: 10000,
+    });
+    await expect(page.locator("#auto-alignment-fit-description")).toBeVisible();
+
+    // A standing assisted preview renders the estimated fit error and its
+    // explanation inside the commit bar, which wraps the assisted cluster and
+    // takes the region past AC-1's budget. That trade is deliberate: the extra
+    // rows are the report the operator asked for and needs in order to accept
+    // or reject the preview, and the state is left by Restore saved alignment
+    // or by saving. Bounded here so it cannot silently grow further.
+    const previewGeometry = await alignSurfaceGeometry(page);
+    expect(previewGeometry.canvas.height).toBeGreaterThanOrEqual(500);
+    expect(previewGeometry.region).toBeLessThanOrEqual(220);
+
+    await page.locator("#map-alignment-restore-saved").click();
+    await expect(page.locator("#auto-alignment-status")).toBeHidden();
+
+    // Leaving the preview state returns the full budget.
+    await expect
+      .poll(async () => (await alignSurfaceGeometry(page)).canvas.height)
+      .toBeGreaterThanOrEqual(520);
+    expect((await alignSurfaceGeometry(page)).region).toBeLessThanOrEqual(130);
   });
 });
 
