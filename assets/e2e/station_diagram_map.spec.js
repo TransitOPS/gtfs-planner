@@ -467,7 +467,6 @@ test.describe("align workspace layout and interaction", () => {
   // because the server disables it until the alignment is dirty, and the
   // demoted popover controls are absent because their panels render hidden.
   const restingFocusOrder = [
-    "map-alignment-help-trigger",
     "map-alignment-tools-toggle",
     "map-transform-rotate-left-fine",
     "map-transform-up-fine",
@@ -478,6 +477,7 @@ test.describe("align workspace layout and interaction", () => {
     "map-transform-down-fine",
     "map-transform-scale-up-fine",
     "map-alignment-opacity",
+    "map-alignment-help-trigger",
     "map-alignment-preview-auto",
     "map-alignment-center-trigger",
     "map-alignment-zoom-trigger",
@@ -487,7 +487,6 @@ test.describe("align workspace layout and interaction", () => {
 
   const dirtyFocusOrder = [
     "map-alignment-restore-saved",
-    "map-alignment-help-trigger",
     "map-alignment-tools-toggle",
     "map-transform-rotate-left-fine",
     "map-transform-up-fine",
@@ -498,6 +497,7 @@ test.describe("align workspace layout and interaction", () => {
     "map-transform-down-fine",
     "map-transform-scale-up-fine",
     "map-alignment-opacity",
+    "map-alignment-help-trigger",
     "map-alignment-preview-auto",
     "map-alignment-center-trigger",
     "map-alignment-zoom-trigger",
@@ -670,7 +670,7 @@ test.describe("align workspace layout and interaction", () => {
     await trigger.click();
     await expect(panel).toBeVisible();
 
-    await page.locator("#map-alignment-save-help").click();
+    await page.locator('[data-role="child-stop-coverage"]').click();
 
     await expect(panel).toBeHidden();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -704,7 +704,7 @@ test.describe("align workspace layout and interaction", () => {
 
     await trigger.click();
     await expect(panel).toBeVisible();
-    await page.locator("#map-alignment-save-help").click();
+    await page.locator('[data-role="child-stop-coverage"]').click();
     await expect(panel).toBeHidden();
     await expect(trigger).toBeFocused();
   });
@@ -751,7 +751,7 @@ test.describe("align workspace layout and interaction", () => {
     await openAlignSurface(page, { width: 1280, height: 800 });
 
     expect(
-      await collectTabOrder(page, "#map-alignment-help-trigger", 15),
+      await collectTabOrder(page, "#map-alignment-tools-toggle", 15),
     ).toEqual(restingFocusOrder);
 
     // Restore saved alignment is disabled until the server marks the alignment
@@ -849,12 +849,12 @@ test.describe("align workspace layout and interaction", () => {
       "",
       "map-alignment-rotate-handle",
       "map-alignment-scale-handle",
-      "map-alignment-help-trigger",
+      "map-alignment-tools-toggle",
     ]);
 
     const resting = await collectTabOrder(
       page,
-      "#map-alignment-help-trigger",
+      "#map-alignment-tools-toggle",
       15,
     );
 

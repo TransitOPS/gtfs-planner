@@ -3738,7 +3738,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     "#map-alignment-zoom",
     "#map-alignment-zoom-value",
     "[data-role='child-stop-coverage']",
-    "#map-alignment-save-help",
     "#map-alignment-actions",
     "#map-alignment-preview-status",
     "#map-alignment-save",
@@ -3865,7 +3864,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       end
 
       for id <- [
-            "map-alignment-save-help",
             "map-alignment-preview-auto",
             "map-alignment-actions",
             "map-alignment-save",
@@ -4866,7 +4864,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     "#map-alignment-lon-input",
     "#map-alignment-apply-center",
     "[data-role='child-stop-coverage']",
-    "#map-alignment-save-help",
     "#map-alignment-preview-auto",
     "#map-alignment-actions",
     "#map-alignment-preview-status",
@@ -4901,7 +4898,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   # The commit bar's named blocks, in the order the operator reads them.
   @commit_bar_block_selectors [
     "[data-role='child-stop-coverage']",
-    "#map-alignment-save-help",
     "#map-alignment-unsaved",
     "#map-alignment-preview-auto",
     "#map-alignment-center-trigger",
@@ -4944,7 +4940,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
           "#map-alignment-zoom",
           "#map-alignment-zoom-value",
           "[data-role='child-stop-coverage']",
-          "#map-alignment-save-help",
           "#map-alignment-residual",
           "#map-alignment-residual-value",
           "#map-alignment-preview-auto",
@@ -4977,7 +4972,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
                "#map-alignment-zoom" => "map-alignment-zoom-panel",
                "#map-alignment-zoom-value" => "map-alignment-zoom-panel",
                "[data-role='child-stop-coverage']" => "map-alignment-commit-bar",
-               "#map-alignment-save-help" => "map-alignment-commit-bar",
                "#map-alignment-residual" => "map-alignment-commit-bar",
                "#map-alignment-residual-value" => "map-alignment-commit-bar",
                "#map-alignment-preview-auto" => "map-alignment-commit-bar",
@@ -5077,7 +5071,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert commit_bar_blocks(view) == [
                "child-stop-coverage",
-               "map-alignment-save-help",
                "map-alignment-preview-auto",
                "map-alignment-center-trigger",
                "map-alignment-zoom-trigger",
@@ -5094,7 +5087,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert commit_bar_blocks(view) == [
                "child-stop-coverage",
-               "map-alignment-save-help",
                "map-alignment-unsaved",
                "map-alignment-preview-auto",
                "map-alignment-center-trigger",
@@ -5120,12 +5112,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-actions #map-alignment-apply")
     end
 
-    test "the help line states what each of the two save actions does", context do
+    test "the help overlay states what each of the two save actions does", context do
       view = mount_map_align(context)
 
-      assert element_text(view, "#map-alignment-save-help") ==
-               "Save alignment stores the floorplan's map position. " <>
-                 "Review coordinate changes also writes latitude and longitude onto child stops."
+      # The sentence moved out of the bar and into the overlay, where it has room
+      # to distinguish the two paths properly. Keeping it inline cost a wrapped
+      # row that pushed Retry map below the fold whenever the map degraded.
+      refute has_element?(view, "#map-alignment-save-help")
+
+      help = element_text(view, "#map-alignment-help-panel")
+
+      assert help =~ "Stores where the floorplan sits on the map"
+      assert help =~ "writes each child stop's latitude and longitude"
     end
 
     test "the tools toggle renders the expanded label the server owns", context do

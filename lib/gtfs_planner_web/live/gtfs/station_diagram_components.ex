@@ -1005,30 +1005,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             >
               <.icon name="hero-arrow-path" class="w-4 h-4" />
             </button>
-            <div class="flex items-center gap-1">
-              <button
-                id="map-alignment-help-trigger"
-                type="button"
-                class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/45"
-                data-tip="How the align tools work"
-                aria-label="How the align tools work"
-                aria-expanded="false"
-                aria-controls="map-alignment-help-panel"
-                phx-click={@help_open}
-              >
-                <.icon name="hero-question-mark-circle-solid" class="w-[18px] h-[18px]" />
-              </button>
-              <button
-                id="map-alignment-tools-toggle"
-                type="button"
-                class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
-                data-collapsed="false"
-                data-tip="Hide tools"
-                aria-label="Hide tools"
-              >
-                <.icon name="hero-chevron-up" class="w-4 h-4" />
-              </button>
-            </div>
+            <button
+              id="map-alignment-tools-toggle"
+              type="button"
+              class="tooltip tooltip-right btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+              data-collapsed="false"
+              data-tip="Hide tools"
+              aria-label="Hide tools"
+            >
+              <.icon name="hero-chevron-up" class="w-4 h-4" />
+            </button>
           </div>
 
           <%!-- All eight transform controls in one pad: the cross moves, the top
@@ -1125,14 +1111,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           phx-window-keydown={@help_dismiss}
           phx-key="escape"
           style="display: none;"
-          class="absolute z-30 top-4 left-1/2 -translate-x-1/2 w-[26rem] max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-sm"
+          class="absolute z-30 top-4 left-1/2 -translate-x-1/2 w-[34rem] max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto overscroll-contain bg-base-100 border border-base-300 rounded-lg shadow-lg text-sm"
         >
-          <div class="flex items-start justify-between gap-3">
-            <h2 class="text-sm font-semibold">Aligning the floorplan</h2>
+          <div class="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-base-300 bg-base-100 px-4 py-3">
+            <div>
+              <h2 class="text-sm font-semibold">Aligning the floorplan</h2>
+              <p class="mt-0.5 text-xs text-base-content/70">
+                Move the floorplan until its walls sit over the same walls in the imagery.
+              </p>
+            </div>
             <button
               id="map-alignment-help-close"
               type="button"
-              class="btn btn-ghost btn-square h-8 w-8 min-h-8 p-0 text-base-content/70"
+              class="btn btn-ghost btn-square h-8 w-8 min-h-8 shrink-0 p-0 text-base-content/70"
               aria-label="Close help"
               phx-click={@help_dismiss}
             >
@@ -1140,21 +1131,116 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </button>
           </div>
 
-          <p class="mt-1 text-xs text-base-content/70">
-            Move the floorplan until its walls sit over the same walls in the imagery.
-          </p>
+          <div class="px-4 py-3">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+              The transform pad
+            </h3>
 
-          <dl class="mt-3 flex flex-col gap-2 text-xs">
-            <div :for={item <- align_help_items()} class="flex gap-3">
-              <dt class="w-24 shrink-0 font-medium text-base-content/80">{item.term}</dt>
-              <dd class="min-w-0 text-base-content/70">{item.description}</dd>
+            <div class="mt-2 flex items-start gap-4">
+              <%!-- A replica of the pad, so the help shows the control rather
+              than describing where to find it. Presentational only. --%>
+              <div
+                aria-hidden="true"
+                class="grid w-fit shrink-0 grid-cols-[repeat(3,2rem)] gap-px rounded-md border border-base-300 bg-base-300"
+              >
+                <span
+                  :for={glyph <- ~w(↺ ↑ ↻ ← · → − ↓ +)}
+                  class={[
+                    "flex h-8 w-8 items-center justify-center bg-base-100 text-sm",
+                    glyph == "·" && "text-transparent"
+                  ]}
+                >
+                  {glyph}
+                </span>
+              </div>
+
+              <dl class="min-w-0 flex-1 text-xs">
+                <div :for={row <- align_pad_help_rows()} class="flex gap-3 py-1">
+                  <dt class="flex w-20 shrink-0 items-center gap-1.5 font-medium">
+                    <span :for={glyph <- row.glyphs} class="text-base leading-none">{glyph}</span>
+                  </dt>
+                  <dd class="min-w-0 text-base-content/70">
+                    {row.action}
+                    <span class="text-base-content/50">· {row.keys}</span>
+                  </dd>
+                </div>
+              </dl>
             </div>
-          </dl>
 
-          <p class="mt-3 text-xs text-base-content/60">
-            Hold <kbd class="kbd kbd-xs">Shift</kbd>
-            with any nudge — button or key — to move ten times as far.
-          </p>
+            <p class="mt-2 text-xs text-base-content/60">
+              Hold <kbd class="kbd kbd-xs">Shift</kbd>
+              with any nudge — button or key — to move ten times as far.
+            </p>
+
+            <h3 class="mt-4 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+              The rest of the panel
+            </h3>
+
+            <dl class="mt-2 text-xs">
+              <div :for={row <- align_panel_help_rows()} class="flex items-start gap-3 py-1.5">
+                <dt class="flex h-5 w-5 shrink-0 items-center justify-center text-base-content/70">
+                  <.icon name={row.icon} class="w-4 h-4" />
+                </dt>
+                <dd class="min-w-0">
+                  <span class="font-medium">{row.term}</span>
+                  <span class="text-base-content/70">— {row.description}</span>
+                </dd>
+              </div>
+            </dl>
+
+            <h3 class="mt-4 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+              On the map itself
+            </h3>
+
+            <dl class="mt-2 text-xs">
+              <div :for={row <- align_map_help_rows()} class="flex items-start gap-3 py-1.5">
+                <dt class="flex h-5 w-5 shrink-0 items-center justify-center">
+                  <span
+                    :if={row[:icon]}
+                    class="flex h-5 w-5 items-center justify-center rounded-full border border-base-300 bg-base-100 text-base-content/70"
+                  >
+                    <.icon name={row.icon} class="w-3 h-3" />
+                  </span>
+                  <kbd :if={row[:key]} class="kbd kbd-xs">{row.key}</kbd>
+                </dt>
+                <dd class="min-w-0">
+                  <span class="font-medium">{row.term}</span>
+                  <span class="text-base-content/70">— {row.description}</span>
+                </dd>
+              </div>
+            </dl>
+
+            <h3 class="mt-4 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+              Saving your work
+            </h3>
+
+            <dl class="mt-2 text-xs">
+              <div class="py-1.5">
+                <dt class="font-medium">Save alignment</dt>
+                <dd class="text-base-content/70">
+                  Stores where the floorplan sits on the map. Nothing else changes.
+                </dd>
+              </div>
+              <div class="py-1.5">
+                <dt class="font-medium">Review coordinate changes</dt>
+                <dd class="text-base-content/70">
+                  Also writes each child stop's latitude and longitude from its position on the
+                  floorplan. You see every change before any of it is written.
+                </dd>
+              </div>
+            </dl>
+
+            <h3 class="mt-4 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+              Knowing when it is right
+            </h3>
+
+            <p class="mt-2 text-xs text-base-content/70">
+              The <span class="font-medium">Measured fit</span>
+              readout below the map reports how far the anchor stops land from the positions
+              already recorded for them. Lower is better, and under 2.0 m is a good alignment.
+              It is a guide, not a gate — you can save at any value.
+            </p>
+          </div>
         </div>
       </div>
       <div class="pt-3 pb-4">
@@ -1163,9 +1249,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
               {@child_stops_with_floorplan} of {@child_stops_total} stops have floorplan placements · {@child_stops_unplaced} without placement stay unchanged
             </span>
-            <p id="map-alignment-save-help" class="text-xs text-base-content/70">
-              Save alignment stores the floorplan's map position. Review coordinate changes also writes latitude and longitude onto child stops.
-            </p>
             <p
               :if={@alignment_unsaved?}
               id="map-alignment-unsaved"
@@ -1173,6 +1256,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             >
               Unsaved alignment changes
             </p>
+            <button
+              id="map-alignment-help-trigger"
+              type="button"
+              class="btn btn-ghost btn-xs h-7 min-h-7 gap-1 px-2 text-xs font-medium text-base-content/70"
+              aria-expanded="false"
+              aria-controls="map-alignment-help-panel"
+              phx-click={@help_open}
+            >
+              <.icon name="hero-question-mark-circle-solid" class="w-4 h-4" /> Help
+            </button>
           </div>
 
           <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
@@ -1696,37 +1789,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ]
   end
 
-  # The align surface's in-app help. One entry per way the floorplan can be
-  # moved, each naming both the pointer route and the keyboard route, so the
-  # help answers "how do I do this" rather than listing controls.
-  defp align_help_items do
+  # The transform pad, one row per operation, showing the glyphs the operator
+  # actually sees on the buttons rather than naming their positions.
+  defp align_pad_help_rows do
+    [
+      %{glyphs: ["←", "↑", "↓", "→"], action: "Move 2 px", keys: "arrow keys"},
+      %{glyphs: ["↺", "↻"], action: "Rotate 1°", keys: "[ and ]"},
+      %{glyphs: ["−", "+"], action: "Resize 1%", keys: "− and ="}
+    ]
+  end
+
+  # The panel's non-pad controls, each shown with its own icon.
+  defp align_panel_help_rows do
     [
       %{
-        term: "Move",
-        description: "Drag the floorplan, use the pad's arrows, or press the arrow keys."
+        icon: "hero-arrow-path",
+        term: "Restore saved alignment",
+        description: "puts the floorplan back where it was last saved, discarding every change."
       },
       %{
-        term: "Rotate",
-        description:
-          "Use the pad's top corners, the handle at the map's top right, or press [ and ]."
+        icon: "hero-photo",
+        term: "Floorplan opacity",
+        description: "fades the floorplan so you can see the imagery through it."
       },
       %{
-        term: "Resize",
-        description:
-          "Use the pad's bottom corners, the handle at the map's bottom right, or press − and +."
+        icon: "hero-square-3-stack-3d",
+        term: "Other-levels opacity",
+        description: "fades the floorplans of other levels, when any are shown."
       },
       %{
-        term: "Check the fit",
-        description:
-          "Hold H to blank the floorplan and see the imagery underneath. Measured fit, below the map, reports how far the anchor stops land from their mapped positions."
+        icon: "hero-chevron-up",
+        term: "Hide tools",
+        description: "collapses the panel when it covers something you need to see."
+      }
+    ]
+  end
+
+  # What the operator can do on the map without touching the panel.
+  defp align_map_help_rows do
+    [
+      %{
+        icon: "hero-arrow-path",
+        term: "Rotate handle",
+        description: "top right of the map — drag it to turn the floorplan."
       },
       %{
-        term: "Fade",
-        description: "Drag the opacity slider to see both the floorplan and the imagery at once."
+        icon: "hero-arrows-pointing-out",
+        term: "Resize handle",
+        description: "bottom right of the map — drag it to grow or shrink the floorplan."
       },
       %{
-        term: "Start over",
-        description: "Restore saved alignment discards every unsaved change."
+        icon: "hero-hand-raised",
+        term: "Drag the floorplan",
+        description: "anywhere on it, to move it."
+      },
+      %{
+        key: "H",
+        term: "Hold H",
+        description: "blanks the floorplan while you hold it, so you can check the imagery."
       }
     ]
   end
