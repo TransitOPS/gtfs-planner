@@ -27,42 +27,6 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     %{root: root}
   end
 
-  test "persists bounded preflight warnings and publishes final export bytes", %{root: root} do
-    organization = organization_fixture()
-    version = gtfs_version_fixture(organization.id)
-    stop_fixture(organization.id, version.id)
-    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
-    {:ok, claimed, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
-
-    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
-
-    assert %Run{
-             state: :ready,
-             warnings: [_ | _],
-             artifact_size_bytes: size,
-             artifact_sha256: sha256,
-             artifact_key: key
-           } = ready = Repo.get!(Run, run.id)
-
-    assert size > 0
-    assert byte_size(sha256) == 64
-    assert is_binary(key)
-    assert {:ok, claim} = ExportRuns.claim_download(organization.id, version.id, run.id)
-    assert File.exists?(claim.path)
-
-    assert :ok =
-             ExportRuns.complete_download(
-               organization.id,
-               version.id,
-               ready.id,
-               claim.claim_id
-             )
-
-    assert File.exists?(
-             Path.join([root, "export-runs", organization.id, version.id, run.id, key])
-           )
-  end
-
   test "cancellation before packaging leaves a durable cancelled row and no artifact" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)

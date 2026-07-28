@@ -17,7 +17,8 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
       stop_fixture(org.id, version.id, %{
         stop_id: "STATION_1",
         stop_name: "Test Station",
-        location_type: 1
+        location_type: 1,
+        level_id: "L1"
       })
 
     entrance =
@@ -27,7 +28,8 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
         location_type: 2,
         parent_station: station.stop_id,
         stop_lat: Decimal.new("39.9526"),
-        stop_lon: Decimal.new("-75.1652")
+        stop_lon: Decimal.new("-75.1653"),
+        level_id: "L1"
       })
 
     platform =
@@ -37,7 +39,8 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
         location_type: 0,
         parent_station: station.stop_id,
         stop_lat: Decimal.new("39.9527"),
-        stop_lon: Decimal.new("-75.1653")
+        stop_lon: Decimal.new("-75.1653"),
+        level_id: "L1"
       })
 
     pathway_fixture(org.id, version.id, entrance.stop_id, platform.stop_id, %{
@@ -120,7 +123,8 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
         stop_fixture(other_org.id, other_version.id, %{
           stop_id: "STATION_1",
           stop_name: "Foreign Station",
-          location_type: 1
+          location_type: 1,
+          level_id: "L1"
         })
 
       _foreign_entrance =
@@ -129,7 +133,8 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
           stop_name: "Foreign Entrance",
           location_type: 2,
           stop_lat: Decimal.new("40.0"),
-          stop_lon: Decimal.new("-74.0")
+          stop_lon: Decimal.new("-74.0"),
+          level_id: "L1"
         })
 
       assert {:ok, run} = Reachability.start_run(org.id, version.id, station.stop_id)
