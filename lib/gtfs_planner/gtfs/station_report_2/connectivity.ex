@@ -7,7 +7,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   using progressive computation (summary → route detail → expanded route).
   """
 
-  alias GtfsPlanner.Gtfs.{Graph, Pathway, Stop, TraversalCalculator}
+  alias GtfsPlanner.Gtfs.{Graph, Pathway, Stop}
+  alias GtfsPlanner.Routing.PathwayTraversal
 
   @long_route_threshold 300
   @elevator_step_threshold 120
@@ -471,7 +472,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         start_hop,
         start_stop,
         nil,
-        %{time_seconds: 0.0, distance_meters: nil, calculation_method: :origin},
+        %{time_seconds: 0.0, distance_meters: nil},
         nil,
         level_index,
         nil
@@ -487,7 +488,14 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         traversed_reverse? = traversed_reverse?(pathway, from_hop.stop_id, to_hop.stop_id)
 
         traversal =
-          if pathway, do: TraversalCalculator.calculate(pathway, level_diff), else: nil
+          if pathway && from_stop && to_stop do
+            level_rows = level_rows_from_index(level_index)
+
+            case PathwayTraversal.traverse(pathway, from_stop, to_stop, level_rows) do
+              {:ok, result} -> result
+              {:error, _} -> nil
+            end
+          end
 
         build_enriched_hop(
           to_hop,
@@ -545,8 +553,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       reversed_signposted_as: pathway && pathway.reversed_signposted_as,
       level_diff: level_diff,
       time_seconds: traversal && traversal.time_seconds,
-      distance_meters: traversal && traversal.distance_meters,
-      calculation_method: traversal && traversal.calculation_method
+      distance_meters: traversal && traversal.distance_meters
     }
   end
 
@@ -774,6 +781,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     levels
     |> Enum.map(fn %{level: level} -> level end)
     |> Map.new(fn level -> {level.level_id, level} end)
+  end
+
+  defp level_rows_from_index(level_index) do
+    Enum.map(level_index, fn {_id, level} ->
+      %{level: level, stop_count: 0, diagram_filename: nil, stop_level: nil}
+    end)
   end
 
   defp level_for_stop(nil, _level_index), do: nil
