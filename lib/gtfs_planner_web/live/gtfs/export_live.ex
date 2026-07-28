@@ -40,8 +40,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:user_roles, user_roles)
      |> assign(:export_type, :full)
      |> assign(:export_form, export_form(:full))
-     |> assign(:validation_form, validation_form([]))
-     |> assign(:validation_group_error, nil)
      |> assign(:file_inventory, [])
      |> assign(:export_run, nil)
      |> assign(:validation_run_id, nil)
@@ -120,42 +118,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_event("change_validation", params, socket) do
-    params = Map.get(params, "validation", %{})
-    selected = normalize_validation_checks(Map.get(params, "checks", []))
-
-    {:noreply,
-     socket
-     |> assign(:validation_form, validation_form(selected))
-     |> assign(:validation_group_error, nil)}
-  end
-
-  @impl Phoenix.LiveView
-  def handle_event("run_validation", params, socket) do
-    selected_validations =
-      params
-      |> Map.get("validation", socket.assigns.validation_form.params)
-      |> Map.get("checks", [])
-      |> normalize_validation_checks()
-
-    socket = assign(socket, :validation_form, validation_form(selected_validations))
-
-    cond do
-      socket.assigns.validating ->
-        {:noreply, put_flash(socket, :error, "Validation already in progress")}
-
-      selected_validations == [] ->
-        {:noreply,
-         assign(
-           socket,
-           :validation_group_error,
-           "Select at least one validation check before running validation."
-         )}
-
-      true ->
-        organization_id = socket.assigns.current_organization.id
-        gtfs_version_id = socket.assigns.current_gtfs_version.id
-        run_mobility_data_validation(socket, organization_id, gtfs_version_id)
+  def handle_event("run_validation", _params, socket) do
+    if socket.assigns.validating do
+      {:noreply, put_flash(socket, :error, "Validation already in progress")}
+    else
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      run_mobility_data_validation(socket, organization_id, gtfs_version_id)
     end
   end
 
@@ -206,7 +175,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         {:noreply,
          socket
          |> refresh_export_run()
-         |> put_flash(:error, "Export storage is unavailable. Try again later.")}
+         |> put_flash(
+           :error,
+           "The export could not start: this server cannot write export files. Ask an administrator to check the export storage location."
+         )}
 
       _ ->
         {:noreply,
@@ -721,7 +693,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         <div class="bg-base-100 rounded-lg p-6 border border-base-300">
           <h2 class="text-lg font-semibold mb-2">Validate</h2>
           <p class="text-sm text-base-content/70 mb-6">
-            Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
+            Run the MobilityData GTFS Validator against this version to find spec violations before publishing.
           </p>
 
           <%= if @validation_error do %>
@@ -822,7 +794,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 </div>
               <% end %>
             </section>
-
           <% end %>
 
           <%= if @pathways_prep_error do %>
@@ -875,7 +846,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 <% end %>
               </div>
             </div>
-
           <% end %>
 
           <%= cond do %>
@@ -929,43 +899,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{@validation_run_id}"}
                     class="btn btn-primary btn-sm w-full"
                   >
-                    View Full Results
+                    View full results
                   </.link>
                   <button class="btn btn-outline btn-sm w-full" phx-click="reset_validation">
-                    Run Again
+                    Run validation again
                   </button>
                 </div>
               </div>
             <% true -> %>
-              <.form
-                for={@validation_form}
-                id="validation-form"
-                phx-change="change_validation"
-                phx-submit="run_validation"
-                class="max-w-2xl"
+              <.button
+                id="run-validation"
+                phx-click="run_validation"
+                variant="secondary"
+                class="w-full"
               >
-                <.checkbox_group
-                  id="validation-checks"
-                  name="validation[checks][]"
-                  label="Validation checks"
-                  options={[
-                    {"MobilityData GTFS Validator", "mobility_data"}
-                  ]}
-                  selected={validation_selected_values(@validation_form)}
-                  required
-                  error={@validation_group_error}
-                  help="Run the GTFS compliance validator, pathways connectivity checks, or both."
-                />
-
-                <.button
-                  id="run-validation"
-                  type="submit"
-                  variant="secondary"
-                  class="mt-4 w-full"
-                >
-                  Run Validation
-                </.button>
-              </.form>
+                Run validation
+              </.button>
           <% end %>
 
           <%!-- Recent Validations --%>
@@ -2535,34 +2484,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp export_form(export_type),
     do: to_form(%{"type" => Atom.to_string(export_type)}, as: :export)
 
-  defp validation_form(selected) do
-    checks = Enum.map(selected, &validation_check_value/1)
-    to_form(%{"checks" => checks}, as: :validation)
-  end
-
-  defp validation_selected_values(form), do: Map.get(form.params, "checks", [])
-
-  defp normalize_validation_checks(checks) when is_binary(checks),
-    do: normalize_validation_checks([checks])
-
-  defp normalize_validation_checks(checks) when is_list(checks) do
-    checks
-    |> Enum.map(&validation_check/1)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp normalize_validation_checks(_checks), do: []
-
-  defp validation_check("mobility_data"), do: :mobility_data
-  defp validation_check("pathways_tests"), do: :pathways_tests
-  defp validation_check(:mobility_data), do: :mobility_data
-  defp validation_check(:pathways_tests), do: :pathways_tests
-  defp validation_check(_check), do: nil
-
-  defp validation_check_value(:mobility_data), do: "mobility_data"
-  defp validation_check_value(:pathways_tests), do: "pathways_tests"
-
   defp mobility_result_count_items(summary) do
     [
       %{key: "errors", label: "Errors", count: summary.errors, tone: :error},
@@ -2677,7 +2598,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: "Cancellation will take effect at the next safe build boundary."
 
   defp export_state_detail(%{state: :failed, failure_code: "artifact_storage_unavailable"}),
-    do: "Export storage is unavailable. Try again later."
+    do:
+      "The build finished but could not be saved: this server cannot write export files. Ask an administrator to check the export storage location."
 
   defp export_state_detail(%{state: :expired}),
     do: "The download artifact has expired. Create a new export to download it."

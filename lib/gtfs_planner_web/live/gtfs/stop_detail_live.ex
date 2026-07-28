@@ -29,8 +29,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:editing_status_state, :ready)
      |> assign(:editing_error, nil)
      |> assign(:child_stops_empty?, true)
+     |> assign(:child_stops_count, 0)
      |> assign(:levels_empty?, true)
+     |> assign(:levels_count, 0)
      |> assign(:pathways_empty?, true)
+     |> assign(:pathways_count, 0)
      |> assign(:journal_scope, nil)
      |> assign(:journal_state, :idle)
      |> assign(:journal_loaded_once?, false)
@@ -335,6 +338,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     |> assign(:child_stops_state, :ready)
     |> assign(:child_stops_by_level, child_stops_by_level)
     |> assign(:child_stops_empty?, child_stops == [])
+    |> assign(:child_stops_count, length(child_stops))
     |> stream(:child_stops, child_stops, reset: true)
   end
 
@@ -346,6 +350,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     socket
     |> assign(:levels_state, :ready)
     |> assign(:levels_empty?, levels == [])
+    |> assign(:levels_count, length(levels))
     |> stream(:levels, levels, reset: true)
   end
 
@@ -357,6 +362,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     socket
     |> assign(:pathways_state, :ready)
     |> assign(:pathways_empty?, pathways == [])
+    |> assign(:pathways_count, length(pathways))
     |> stream(:pathways, pathways, reset: true)
   end
 
@@ -725,69 +731,72 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
             </div>
           <% end %>
 
-          <div class="bg-base-100 border border-base-300 rounded-box p-6 mt-8">
-            <dl class="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Station ID</dt>
-                <dd class="mt-1 text-base font-mono">{@stop.stop_id}</dd>
-              </div>
+          <div class="mt-8">
+            <.section_heading title="Overview" />
+            <div class="bg-base-100 border border-base-300 rounded-box p-6">
+              <dl class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Station ID</dt>
+                  <dd class="mt-1 text-base font-mono">{@stop.stop_id}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Station Name</dt>
-                <dd class="mt-1 text-base">{@stop.stop_name || "—"}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Station Name</dt>
+                  <dd class="mt-1 text-base">{@stop.stop_name || "—"}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Location Type</dt>
-                <dd class="mt-1 text-base">{Stop.location_type_label(@stop.location_type)}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Location Type</dt>
+                  <dd class="mt-1 text-base">{Stop.location_type_label(@stop.location_type)}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Description</dt>
-                <dd class="mt-1 text-base">{@stop.stop_desc || "—"}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Description</dt>
+                  <dd class="mt-1 text-base">{@stop.stop_desc || "—"}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Latitude</dt>
-                <dd class="mt-1 text-base">{@stop.stop_lat || "—"}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Latitude</dt>
+                  <dd class="mt-1 text-base">{@stop.stop_lat || "—"}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Longitude</dt>
-                <dd class="mt-1 text-base">{@stop.stop_lon || "—"}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Longitude</dt>
+                  <dd class="mt-1 text-base">{@stop.stop_lon || "—"}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Level ID</dt>
-                <dd class="mt-1 text-base">{@stop.level_id || "—"}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Level ID</dt>
+                  <dd class="mt-1 text-base">{@stop.level_id || "—"}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Platform Code</dt>
-                <dd class="mt-1 text-base">{@stop.platform_code || "—"}</dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Platform Code</dt>
+                  <dd class="mt-1 text-base">{@stop.platform_code || "—"}</dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Accessibility</dt>
-                <dd class="mt-1 text-base">
-                  <TransitPresentation.accessibility_status
-                    status={accessibility_resolution(@stop).status}
-                    source={accessibility_resolution(@stop).source}
-                  />
-                </dd>
-              </div>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Accessibility</dt>
+                  <dd class="mt-1 text-base">
+                    <TransitPresentation.accessibility_status
+                      status={accessibility_resolution(@stop).status}
+                      source={accessibility_resolution(@stop).source}
+                    />
+                  </dd>
+                </div>
 
-              <div>
-                <dt class="text-sm font-medium text-base-content/70">Diagram</dt>
-                <dd class="mt-1 text-base" id="diagram-status">
-                  {diagram_status_text(@stop.diagram_coordinate)}
-                </dd>
-              </div>
-            </dl>
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Diagram</dt>
+                  <dd class="mt-1 text-base" id="diagram-status">
+                    {diagram_status_text(@stop.diagram_coordinate)}
+                  </dd>
+                </div>
+              </dl>
+            </div>
           </div>
 
           <div class="mt-8">
-            <h2 class="text-lg font-semibold mb-4">Child Stops</h2>
+            <.section_heading title="Child stops" count={@child_stops_count} />
             <%= cond do %>
               <% @child_stops_state == :unavailable -> %>
                 <.callout kind="warning" title="Child stops unavailable" id="child-stops-unavailable">
@@ -812,9 +821,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                 <div class="space-y-4">
                   <%= for {level_name, stops} <- @child_stops_by_level do %>
                     <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-                      <div class="bg-base-200 px-4 py-2 font-medium flex justify-between">
-                        <span>{level_name || "No Level"}</span>
-                        <span class="badge badge-ghost">{length(stops)}</span>
+                      <div class="flex items-center justify-between gap-3 border-b border-base-300 bg-base-200 px-4 py-2 text-sm font-medium">
+                        <span>{level_name || "No level"}</span>
+                        <span class="badge badge-ghost tabular-nums">{length(stops)}</span>
                       </div>
                       <.table
                         id={"child-stops-level-#{level_name || "none"}"}
@@ -857,7 +866,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           </div>
 
           <div class="mt-8">
-            <h2 class="text-lg font-semibold mb-4">Levels</h2>
+            <.section_heading title="Levels" count={@levels_count} />
             <%= cond do %>
               <% @levels_state == :unavailable -> %>
                 <.callout kind="warning" title="Levels unavailable" id="levels-unavailable">
@@ -879,36 +888,38 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   This station has no levels defined.
                 </.empty_state>
               <% true -> %>
-                <.table
-                  id="levels-table"
-                  rows={@streams.levels}
-                  row_id={fn {id, _item} -> id end}
-                  row_item={fn {_id, item} -> item end}
-                  responsive="stack"
-                >
-                  <:col :let={%{level: level}} label="Level ID">
-                    <span class="font-mono">{level.level_id}</span>
-                  </:col>
-                  <:col :let={%{level: level}} label="Name">
-                    {level.level_name || "—"}
-                  </:col>
-                  <:col :let={%{level: level}} label="Index">
-                    {level.level_index}
-                  </:col>
-                  <:col :let={%{stop_count: count}} label="Stops">
-                    <span class="badge badge-ghost">{count}</span>
-                  </:col>
-                  <:col :let={%{level: level, diagram_filename: filename}} label="Diagram">
-                    <span id={"diagram-status-#{level.level_id}"}>
-                      {diagram_status_text(filename)}
-                    </span>
-                  </:col>
-                </.table>
+                <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
+                  <.table
+                    id="levels-table"
+                    rows={@streams.levels}
+                    row_id={fn {id, _item} -> id end}
+                    row_item={fn {_id, item} -> item end}
+                    responsive="stack"
+                  >
+                    <:col :let={%{level: level}} label="Level ID">
+                      <span class="font-mono">{level.level_id}</span>
+                    </:col>
+                    <:col :let={%{level: level}} label="Name">
+                      {level.level_name || "—"}
+                    </:col>
+                    <:col :let={%{level: level}} label="Index" align="right">
+                      <span class="tabular-nums">{level.level_index}</span>
+                    </:col>
+                    <:col :let={%{stop_count: count}} label="Stops">
+                      <span class="badge badge-ghost tabular-nums">{count}</span>
+                    </:col>
+                    <:col :let={%{level: level, diagram_filename: filename}} label="Diagram">
+                      <span id={"diagram-status-#{level.level_id}"}>
+                        {diagram_status_text(filename)}
+                      </span>
+                    </:col>
+                  </.table>
+                </div>
             <% end %>
           </div>
 
           <div class="mt-8">
-            <h2 class="text-lg font-semibold mb-4">Pathways</h2>
+            <.section_heading title="Pathways" count={@pathways_count} />
             <%= cond do %>
               <% @pathways_state == :unavailable -> %>
                 <.callout kind="warning" title="Pathways unavailable" id="pathways-unavailable">
@@ -930,26 +941,28 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   This station has no pathways defined.
                 </.empty_state>
               <% true -> %>
-                <.table
-                  id="pathways-table"
-                  rows={@streams.pathways}
-                  row_id={fn {id, _item} -> id end}
-                  row_item={fn {_id, item} -> item end}
-                  responsive="stack"
-                >
-                  <:col :let={pathway} label="Pathway ID">
-                    <span class="font-mono">{pathway.pathway_id}</span>
-                  </:col>
-                  <:col :let={pathway} label="From">
-                    {pathway.from_stop_id}
-                  </:col>
-                  <:col :let={pathway} label="To">
-                    {pathway.to_stop_id}
-                  </:col>
-                  <:col :let={pathway} label="Mode & Direction">
-                    <TransitPresentation.pathway_summary pathway={pathway} />
-                  </:col>
-                </.table>
+                <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
+                  <.table
+                    id="pathways-table"
+                    rows={@streams.pathways}
+                    row_id={fn {id, _item} -> id end}
+                    row_item={fn {_id, item} -> item end}
+                    responsive="stack"
+                  >
+                    <:col :let={pathway} label="Pathway ID">
+                      <span class="font-mono">{pathway.pathway_id}</span>
+                    </:col>
+                    <:col :let={pathway} label="From">
+                      <span class="font-mono">{pathway.from_stop_id}</span>
+                    </:col>
+                    <:col :let={pathway} label="To">
+                      <span class="font-mono">{pathway.to_stop_id}</span>
+                    </:col>
+                    <:col :let={pathway} label="Mode & Direction">
+                      <TransitPresentation.pathway_summary pathway={pathway} />
+                    </:col>
+                  </.table>
+                </div>
             <% end %>
           </div>
 
@@ -959,22 +972,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
               id="station-journal-summary"
               aria-busy={to_string(@journal_state == :loading)}
             >
-              <div class="flex items-center gap-3 mb-4">
-                <h2 class="text-lg font-semibold">Journal</h2>
-                <%= if not @journal_entries_empty? and @journal_loaded_once? do %>
-                  <span
-                    id="station-journal-open-count"
-                    class="border border-base-300 rounded-full px-2.5 py-0.5 text-xs"
-                  >
+              <.section_heading title="Journal">
+                <:actions :if={not @journal_entries_empty? and @journal_loaded_once?}>
+                  <span id="station-journal-open-count" class="badge badge-ghost tabular-nums">
                     {@journal_open_count} open
                   </span>
-                  <span id="station-journal-closed-count" class="text-sm text-base-content/50">
+                  <span id="station-journal-closed-count" class="badge badge-ghost tabular-nums">
                     {@journal_closed_count} closed
                   </span>
                   <button
                     id="journal-summary-refresh"
                     phx-click={@journal_state != :loading && "retry_journal"}
-                    class="ml-auto btn btn-ghost size-11 min-h-11 min-w-11 p-0 text-base-content/50 hover:text-base-content"
+                    class="ml-auto btn btn-ghost size-11 min-h-11 min-w-11 p-0 text-base-content/70 hover:text-base-content"
                     aria-label="Refresh journal entries"
                     title="Refresh journal entries"
                     aria-busy={to_string(@journal_state == :loading)}
@@ -985,8 +994,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                       class={["size-3.5", @journal_state == :loading && "animate-spin"]}
                     />
                   </button>
-                <% end %>
-              </div>
+                </:actions>
+              </.section_heading>
 
               <%= cond do %>
                 <% @journal_state == :loading and not @journal_loaded_once? -> %>
@@ -1090,6 +1099,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           <div></div>
       <% end %>
     </Layouts.app>
+    """
+  end
+
+  attr :title, :string, required: true
+  attr :count, :integer, default: nil, doc: "record count; hidden when zero"
+  slot :actions, doc: "controls and counts aligned with the heading"
+
+  # One heading treatment for every section on this tab, so the lists below
+  # them read as the same kind of thing.
+  defp section_heading(assigns) do
+    ~H"""
+    <div class="mb-4 flex items-center gap-3">
+      <h2 class="text-lg font-semibold">{@title}</h2>
+      <span :if={@count && @count > 0} class="badge badge-ghost tabular-nums">{@count}</span>
+      {render_slot(@actions)}
+    </div>
     """
   end
 

@@ -810,19 +810,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         </:subtitle>
       </.header>
 
-      <div class="mt-8">
-        <div class="max-w-2xl bg-base-100 rounded-lg p-6">
+      <div class="mt-8 space-y-8">
+        <.import_section id="gtfs-import-section" title="Import feed">
+          <:description>
+            Imports a full feed into a new version. The current version stays available
+            until the import succeeds.
+          </:description>
+
           <.form
             for={@form}
             id="gtfs-import-form"
-            class="space-y-6"
+            class="max-w-2xl space-y-6"
             phx-change="validate"
             phx-submit="import"
             phx-hook=".ImportErrorFocus"
           >
             <div
               id="gtfs-import-destination"
-              class="rounded-lg border border-base-300 p-4 bg-base-200"
+              class="border border-base-300 rounded-box bg-base-200 p-4"
             >
               <p class="text-sm font-medium">
                 Destination: New version “{destination_name(@form)}”
@@ -874,35 +879,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           <div id="gtfs-import-status" aria-live="polite" role="status">
             <%= if @importing && @import_progress do %>
-              <div class="mt-6 pt-6 border-t border-base-300">
-                <div class="space-y-4">
-                  <div>
-                    <div class="flex justify-between mb-2">
-                      <span class="text-sm font-medium">
-                        Processing: {@import_progress.file}
-                      </span>
-                      <span class="text-sm text-base-content/60">
-                        {@import_progress.processed} / {@import_progress.total} rows
-                      </span>
-                    </div>
-                    <progress
-                      class="progress progress-primary w-full"
-                      value={@import_progress.processed}
-                      max={@import_progress.total}
-                    >
-                    </progress>
-                  </div>
+              <div class="mt-6 max-w-2xl">
+                <div class="flex justify-between mb-2">
+                  <span class="text-sm font-medium">
+                    Processing: {@import_progress.file}
+                  </span>
+                  <span class="text-sm text-base-content/70 tabular-nums">
+                    {@import_progress.processed} / {@import_progress.total} rows
+                  </span>
                 </div>
+                <progress
+                  class="progress progress-primary w-full"
+                  value={@import_progress.processed}
+                  max={@import_progress.total}
+                >
+                </progress>
               </div>
             <% end %>
           </div>
 
           <%= if @import_result do %>
-            <div
-              id="gtfs-import-result"
-              class="mt-6 pt-6 border-t border-base-300"
-              aria-live="assertive"
-            >
+            <div id="gtfs-import-result" class="mt-6 max-w-2xl" aria-live="assertive">
               <%= case @import_result do %>
                 <% {:ok, published, %Import.Result{counts: counts, unrecognized_files: unrecognized}} -> %>
                   <.callout kind="success" title="Import successful">
@@ -933,147 +930,22 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               <% end %>
             </div>
           <% end %>
-        </div>
-      </div>
+        </.import_section>
 
-      <%!-- Reconnect-safe recovery region: streamed, stable DOM ids, one ARIA
-           live region announces each state change once (AC-15/16/17/18, INV-3). --%>
-      <div class="mt-8" aria-live="polite" id="gtfs-import-recovery-announce">
-        <%= if @recovery_announce do %>
-          <span class="sr-only">{@recovery_announce}</span>
-        <% end %>
-      </div>
+        <.import_section id="station-data-section" title="Update station data">
+          <:description>
+            Upload `levels.txt`, `stops.txt`, and/or `pathways.txt` to review and apply station
+            data changes.
+          </:description>
 
-      <div class="mt-8">
-        <div class="bg-base-100 rounded-lg p-6">
-          <div class="flex flex-col gap-3">
-            <h2 class="text-xl font-semibold">Import recovery</h2>
-            <p class="text-sm text-base-content/70">
-              Failed, partial, interrupted, or cleanup-pending imports for this organization. Each can be discarded and re-uploaded.
-            </p>
-          </div>
-
-          <div
-            id="import-recovery-runs"
-            phx-update="stream"
-            class="mt-4 flex flex-col gap-3"
-          >
-            <div
-              :for={{dom_id, run} <- @streams.import_recovery_runs}
-              id={dom_id}
-              class={[
-                "rounded-lg border p-4",
-                recovery_card_border(run)
-              ]}
-            >
-              <.icon name={recovery_card_icon(run)} class="w-5 h-5 mb-2" />
-              <div class="flex flex-col gap-1">
-                <p class="text-sm font-semibold">{run.version_name}</p>
-                <.status_badge
-                  status={recovery_badge_status(run)}
-                  label={recovery_card_state_label(run)}
-                />
-                <%= if run.committed_counts != %{} and run.state == "partial" do %>
-                  <p class="text-xs text-base-content/70 mt-1">
-                    {recovery_counts_summary(run.committed_counts)}
-                  </p>
-                <% end %>
-                <%= if run.state == "partial" and run.failed_file do %>
-                  <p class="text-xs text-base-content/70">
-                    Last file: {run.failed_file}{if run.failed_row, do: " (row #{run.failed_row})"}
-                  </p>
-                <% end %>
-                <%= if run.state == "interrupted" do %>
-                  <p class="text-xs text-base-content/70 mt-1">
-                    Durable counts are uncertain after an interrupted import.
-                  </p>
-                <% end %>
-              </div>
-
-              <div class="mt-3 flex flex-wrap gap-2">
-                <%= if run.state == "publication_failed" do %>
-                  <.button
-                    id={"publish-version-#{run.id}"}
-                    phx-click="publish_version"
-                    phx-value-run_id={run.id}
-                    class="btn btn-primary btn-sm"
-                    disabled={@processing_publish == run.id}
-                  >
-                    Publish version
-                  </.button>
-                <% end %>
-
-                <%= if discardable?(run) do %>
-                  <%= if run.confirming_discard do %>
-                    <span class="text-xs text-base-content/80 mr-1 self-center">
-                      Discard “{run.version_name}” and delete its failed version?
-                    </span>
-                    <.button
-                      id={"delete-version-#{run.id}"}
-                      phx-click="delete_version"
-                      phx-value-run_id={run.id}
-                      class="btn btn-error btn-sm"
-                      disabled={@processing_discard}
-                    >
-                      Delete failed version
-                    </.button>
-                    <.button
-                      id={"cancel-discard-#{run.id}"}
-                      phx-click="cancel_discard"
-                      class="btn btn-ghost btn-sm"
-                      disabled={@processing_discard}
-                    >
-                      Cancel
-                    </.button>
-                  <% else %>
-                    <.button
-                      id={"discard-#{run.id}"}
-                      phx-click="begin_discard"
-                      phx-value-run_id={run.id}
-                      class="btn btn-outline btn-sm"
-                    >
-                      Discard failed import
-                    </.button>
-                  <% end %>
-                <% end %>
-
-                <%= if run.state in ~w(pending running cleaning) do %>
-                  <span class="text-xs text-base-content/50 self-center">
-                    {if run.state == "cleaning", do: "Cleanup in progress…", else: "In progress…"}
-                  </span>
-                <% end %>
-              </div>
-            </div>
-          </div>
-
-          <%= if @recovery_empty do %>
-            <.empty_state
-              id="import-recovery-empty"
-              class="py-6"
-              title="No recoverable imports"
-            >
-              No recoverable imports for this organization.
-            </.empty_state>
-          <% end %>
-        </div>
-      </div>
-
-      <div class="mt-8">
-        <div class="bg-base-100 rounded-lg p-6">
-          <div class="flex flex-col gap-2">
-            <h2 class="text-xl font-semibold">Update station data</h2>
-            <p class="text-sm text-base-content/70">
-              Upload `levels.txt`, `stops.txt`, and/or `pathways.txt` to review and apply station data diffs.
-            </p>
-            <p id="diff-destination" class="text-xs text-base-content/60">
-              Reviewed changes apply to version “{version_display_name(@current_gtfs_version)}”.
-            </p>
-          </div>
+          <p id="diff-destination" class="text-sm text-base-content/70">
+            Reviewed changes apply to version “{version_display_name(@current_gtfs_version)}”.
+          </p>
 
           <.form
             for={@diff_form}
             id="diff-upload-form"
-            class="mt-6 space-y-4"
+            class="mt-6 max-w-2xl space-y-4"
             phx-change="validate_diff"
             phx-submit="compute_diff"
           >
@@ -1343,8 +1215,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           <%= if @diff_step == :done do %>
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
-              <div class="rounded-lg border border-base-300 p-4 bg-base-200">
-                <p class="text-sm font-semibold">
+              <div class="border border-base-300 rounded-box bg-base-200 p-4">
+                <p class="text-sm font-semibold tabular-nums">
                   Applied {Map.get(@change_run.summary, "applied", 0)} · Failed {Map.get(
                     @change_run.summary,
                     "failed",
@@ -1363,7 +1235,112 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </button>
             </div>
           <% end %>
-        </div>
+        </.import_section>
+
+        <%!-- Reconnect-safe recovery region: streamed, stable DOM ids, one ARIA
+             live region announces each state change once (AC-15/16/17/18, INV-3). --%>
+        <.import_section id="import-recovery-section" title="Import recovery">
+          <:description>
+            Failed, partial, interrupted, or cleanup-pending imports for this organization.
+            Each can be discarded and re-uploaded.
+          </:description>
+
+          <div aria-live="polite" id="gtfs-import-recovery-announce">
+            <%= if @recovery_announce do %>
+              <span class="sr-only">{@recovery_announce}</span>
+            <% end %>
+          </div>
+
+          <div id="import-recovery-runs" phx-update="stream" class="flex flex-col gap-3">
+            <div
+              :for={{dom_id, run} <- @streams.import_recovery_runs}
+              id={dom_id}
+              class={["rounded-box border p-4", recovery_card_border(run)]}
+            >
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <p class="text-sm font-semibold">{run.version_name}</p>
+                <.status_badge
+                  status={recovery_badge_status(run)}
+                  label={recovery_state_word(run)}
+                />
+              </div>
+              <div class="mt-1 flex flex-col gap-1 text-xs text-base-content/70">
+                <p>{recovery_card_state_label(run)}</p>
+                <%= if run.committed_counts != %{} and run.state == "partial" do %>
+                  <p>{recovery_counts_summary(run.committed_counts)}</p>
+                <% end %>
+                <%= if run.state == "partial" and run.failed_file do %>
+                  <p>
+                    Last file: {run.failed_file}{if run.failed_row, do: " (row #{run.failed_row})"}
+                  </p>
+                <% end %>
+                <%= if run.state == "interrupted" do %>
+                  <p>Durable counts are uncertain after an interrupted import.</p>
+                <% end %>
+              </div>
+
+              <div class="mt-3 flex flex-wrap gap-2">
+                <%= if run.state == "publication_failed" do %>
+                  <.button
+                    id={"publish-version-#{run.id}"}
+                    phx-click="publish_version"
+                    phx-value-run_id={run.id}
+                    class="btn btn-primary btn-sm"
+                    disabled={@processing_publish == run.id}
+                  >
+                    Publish version
+                  </.button>
+                <% end %>
+
+                <%= if discardable?(run) do %>
+                  <%= if run.confirming_discard do %>
+                    <span class="text-xs text-base-content/80 mr-1 self-center">
+                      Discard “{run.version_name}” and delete its failed version?
+                    </span>
+                    <.button
+                      id={"delete-version-#{run.id}"}
+                      phx-click="delete_version"
+                      phx-value-run_id={run.id}
+                      class="btn btn-error btn-sm"
+                      disabled={@processing_discard}
+                    >
+                      Delete failed version
+                    </.button>
+                    <.button
+                      id={"cancel-discard-#{run.id}"}
+                      phx-click="cancel_discard"
+                      class="btn btn-ghost btn-sm"
+                      disabled={@processing_discard}
+                    >
+                      Cancel
+                    </.button>
+                  <% else %>
+                    <.button
+                      id={"discard-#{run.id}"}
+                      phx-click="begin_discard"
+                      phx-value-run_id={run.id}
+                      class="btn btn-outline btn-sm"
+                    >
+                      Discard failed import
+                    </.button>
+                  <% end %>
+                <% end %>
+
+                <%= if run.state in ~w(pending running cleaning) do %>
+                  <span class="text-xs text-base-content/50 self-center">
+                    {if run.state == "cleaning", do: "Cleanup in progress…", else: "In progress…"}
+                  </span>
+                <% end %>
+              </div>
+            </div>
+          </div>
+
+          <%= if @recovery_empty do %>
+            <.empty_state id="import-recovery-empty" title="No recoverable imports">
+              No recoverable imports for this organization.
+            </.empty_state>
+          <% end %>
+        </.import_section>
       </div>
     </Layouts.app>
 
@@ -1384,6 +1361,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         }
       }
     </script>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  slot :description, doc: "what this section does, in one or two sentences"
+  slot :inner_block, required: true
+
+  # Every task on this page gets the same surface: one bordered card, one
+  # heading, one description. The forms inside stay column-width for legibility.
+  defp import_section(assigns) do
+    ~H"""
+    <section id={@id} class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
+      <div class="border-b border-base-300 px-6 py-4">
+        <h2 class="text-lg font-semibold">{@title}</h2>
+        <p :if={@description != []} class="mt-1 text-sm text-base-content/70">
+          {render_slot(@description)}
+        </p>
+      </div>
+      <div class="p-6">{render_slot(@inner_block)}</div>
+    </section>
     """
   end
 
@@ -1605,14 +1603,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp recovery_card_border(%Run{state: "cleaning"}), do: "border-info/40 bg-info/5"
   defp recovery_card_border(%Run{}), do: "border-base-300 bg-base-200"
 
-  defp recovery_card_icon(%Run{state: state}) when state in ~w(failed interrupted cleanup_failed),
-    do: "hero-exclamation-circle"
-
-  defp recovery_card_icon(%Run{state: "partial"}), do: "hero-exclamation-triangle"
-  defp recovery_card_icon(%Run{state: "publication_failed"}), do: "hero-exclamation-triangle"
-  defp recovery_card_icon(%Run{state: "cleaning"}), do: "hero-arrow-path"
-  defp recovery_card_icon(%Run{}), do: "hero-clock"
-
   defp recovery_badge_status(%Run{state: state}) when state in ~w(pending running cleaning),
     do: :running
 
@@ -1623,6 +1613,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
        do: :failed
 
   defp recovery_badge_status(%Run{}), do: :info
+
+  # A badge holds one word; the sentence explaining the state goes beside it.
+  defp recovery_state_word(%Run{state: "pending"}), do: "Pending"
+  defp recovery_state_word(%Run{state: "running"}), do: "Running"
+  defp recovery_state_word(%Run{state: "partial"}), do: "Partial"
+  defp recovery_state_word(%Run{state: "failed"}), do: "Failed"
+  defp recovery_state_word(%Run{state: "interrupted"}), do: "Interrupted"
+  defp recovery_state_word(%Run{state: "publication_failed"}), do: "Not published"
+  defp recovery_state_word(%Run{state: "cleaning"}), do: "Cleaning up"
+  defp recovery_state_word(%Run{state: "cleanup_failed"}), do: "Cleanup failed"
+  defp recovery_state_word(%Run{}), do: "Recoverable"
 
   defp recovery_card_state_label(%Run{state: "pending"}), do: "Import pending — preparing upload."
 

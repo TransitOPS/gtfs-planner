@@ -20,7 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
      |> assign(:stop_id, nil)
      |> assign(:topology, nil)
      |> assign(:active_run, nil)
-     |> assign(:recent_runs, [])
+     |> assign(:last_run, nil)
      |> assign(:running?, false)
      |> assign(:run_error, nil)}
   end
@@ -45,7 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
           end
 
         active_run = Reachability.get_active_run(organization_id, gtfs_version_id, stop_id)
-        recent_runs = Reachability.list_recent_runs(organization_id, gtfs_version_id, stop_id, 5)
+        last_run = latest_finished_run(organization_id, gtfs_version_id, stop_id)
 
         if connected?(socket) and active_run do
           Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(active_run.id))
@@ -57,7 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
          |> assign(:stop_id, stop_id)
          |> assign(:topology, topology)
          |> assign(:active_run, active_run)
-         |> assign(:recent_runs, recent_runs)
+         |> assign(:last_run, last_run)
          |> assign(:running?, active_run != nil)
          |> assign(:run_error, nil)}
     end
@@ -113,17 +113,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   def handle_info({:reachability_run_completed, run_id}, socket) do
     if socket.assigns[:active_run] && socket.assigns.active_run.id == run_id do
       run = Reachability.get_run(run_id)
-      organization_id = socket.assigns.current_organization.id
       gtfs_version_id = socket.assigns.current_gtfs_version.id
       stop_id = socket.assigns.stop_id
-
-      recent_runs = Reachability.list_recent_runs(organization_id, gtfs_version_id, stop_id, 5)
 
       {:noreply,
        socket
        |> assign(:active_run, nil)
        |> assign(:running?, false)
-       |> assign(:recent_runs, recent_runs)
+       |> assign(:last_run, run)
        |> push_navigate(
          to: ~p"/gtfs/#{gtfs_version_id}/station-reachability/#{run.id}?stop_id=#{stop_id}"
        )}
@@ -183,28 +180,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               disabled={@running?}
             >
               <%= if @running? do %>
-                <span class="loading loading-spinner loading-sm"></span>
-                Running...
+                <span class="loading loading-spinner loading-sm"></span> Running...
               <% else %>
                 Run reachability tests
               <% end %>
             </button>
-            <span :if={@topology} class="text-sm text-base-content/60">
+            <span :if={@topology} class="text-sm text-base-content/70 tabular-nums">
               {@topology.pair_count} pairs will be tested
             </span>
           </div>
 
           <%= if @run_error do %>
-            <div class="alert alert-error">
-              <.icon name="hero-exclamation-circle" class="h-5 w-5" />
-              <span>{@run_error}</span>
-            </div>
+            <.callout kind="error" title="Reachability run could not start" role="alert">
+              {@run_error}
+            </.callout>
           <% end %>
         <% else %>
           <.empty_battery />
         <% end %>
 
-        <.recent_runs runs={@recent_runs} gtfs_version={@current_gtfs_version} stop_id={@stop_id} />
+        <.last_run run={@last_run} gtfs_version={@current_gtfs_version} stop_id={@stop_id} />
       </section>
     </Layouts.app>
     """
@@ -229,71 +224,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
   defp stat_card(assigns) do
     ~H"""
-    <div class="rounded-lg border border-base-200 bg-base-100 p-3 text-center">
-      <div class="text-2xl font-bold">{@value}</div>
-      <div class="text-xs text-base-content/60">{@label}</div>
+    <div class="bg-base-100 border border-base-300 rounded-box p-3 text-center">
+      <div class="text-2xl font-bold tabular-nums">{@value}</div>
+      <div class="text-xs text-base-content/70">{@label}</div>
     </div>
     """
   end
 
   defp empty_battery(assigns) do
     ~H"""
-    <div class="rounded-lg border border-base-200 bg-base-100 p-8 text-center">
-      <.icon name="hero-map" class="mx-auto h-12 w-12 text-base-content/30" />
-      <h3 class="mt-4 text-lg font-medium">No testable pairs</h3>
-      <p class="mt-2 text-sm text-base-content/60">
-        This station needs at least one entrance and one platform connected by pathways
-        to run reachability tests. Add entrances, platforms, and pathways in the station
-        diagram editor.
-      </p>
+    <.empty_state id="reachability-empty-battery" title="No testable pairs" class="bg-base-100">
+      This station needs at least one entrance and one platform connected by pathways
+      to run reachability tests. Add entrances, platforms, and pathways in Floorplans.
+    </.empty_state>
+    """
+  end
+
+  attr :run, :map, default: nil
+  attr :gtfs_version, :map, required: true
+  attr :stop_id, :string, required: true
+
+  # Runs are ephemeral: each one supersedes the last, so only the latest result
+  # is worth an affordance. The full run list stays out of the UI.
+  defp last_run(assigns) do
+    ~H"""
+    <div
+      :if={@run}
+      id="last-reachability-run"
+      class="flex flex-wrap items-center gap-x-4 gap-y-2 bg-base-100 border border-base-300 rounded-box px-4 py-3"
+    >
+      <span class="text-sm font-medium">Last run</span>
+      <.status_badge status={@run.status} />
+      <span class="text-sm text-base-content/70 tabular-nums">
+        {Calendar.strftime(@run.inserted_at, "%b %d, %Y at %H:%M")}
+      </span>
+      <.link
+        navigate={~p"/gtfs/#{@gtfs_version.id}/station-reachability/#{@run.id}?stop_id=#{@stop_id}"}
+        class="ml-auto inline-flex min-h-11 items-center text-sm font-medium text-primary hover:underline"
+      >
+        View results
+      </.link>
     </div>
     """
   end
 
-  attr :runs, :list, required: true
-  attr :gtfs_version, :map, required: true
-  attr :stop_id, :string, required: true
-
-  defp recent_runs(assigns) do
-    ~H"""
-    <div :if={@runs != []}>
-      <h3 class="text-sm font-semibold text-base-content/70">Recent Runs</h3>
-      <div class="mt-2 overflow-x-auto">
-        <table class="table table-sm">
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Engine</th>
-              <th>Errors</th>
-              <th>Warnings</th>
-              <th>Duration</th>
-              <th>Date</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr :for={run <- @runs}>
-              <td>
-                <.status_badge status={run.status} label={run.status} />
-              </td>
-              <td>{run.engine || "legacy"}</td>
-              <td>{run.errors_count}</td>
-              <td>{run.warnings_count}</td>
-              <td>{run.duration_ms && "#{div(run.duration_ms, 1000)}s"}</td>
-              <td>{Calendar.strftime(run.inserted_at, "%b %d, %H:%M")}</td>
-              <td>
-                <.link
-                  navigate={~p"/gtfs/#{@gtfs_version.id}/station-reachability/#{run.id}?stop_id=#{@stop_id}"}
-                  class="btn btn-ghost btn-xs"
-                >
-                  View
-                </.link>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-    """
+  # An in-progress run is already represented by the run button's busy state.
+  defp latest_finished_run(organization_id, gtfs_version_id, stop_id) do
+    organization_id
+    |> Reachability.list_recent_runs(gtfs_version_id, stop_id, 5)
+    |> Enum.find(&(&1.status in ["completed", "failed"]))
   end
 end

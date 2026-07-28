@@ -53,9 +53,22 @@ task_artifacts_path =
       expanded_path
 
     _ ->
-      if config_env() == :test,
-        do: Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts"),
-        else: nil
+      # Production must declare the mount explicitly; dev and test get a working
+      # default so exports and diff reviews run without extra setup. The
+      # directory is created here because storage readiness never creates it —
+      # an absent root in production means the volume is not mounted.
+      case config_env() do
+        :test ->
+          Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts")
+
+        :dev ->
+          default_path = Path.expand("../tmp/gtfs_task_artifacts", __DIR__)
+          File.mkdir_p!(default_path)
+          default_path
+
+        _ ->
+          nil
+      end
   end
 
 config :gtfs_planner, :gtfs_task_artifacts_path, task_artifacts_path
