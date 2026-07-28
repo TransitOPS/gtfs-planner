@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Reachability.Envelope do
         }) :: map()
   def build(%{
         station: station,
-        pairs: pairs,
+        pairs: _pairs,
         results: results,
         diagnostics: diagnostics,
         topology: topology,

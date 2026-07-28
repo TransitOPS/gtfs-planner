@@ -15,34 +15,30 @@ defmodule GtfsPlanner.Reachability.Runner do
     snapshot = %{child_stops: child_stops, pathways: pathways, levels: levels}
     pairs = Battery.derive(snapshot)
 
-    case Routing.build_station_graph(snapshot) do
-      {:ok, graph} ->
-        results = plan_all(graph, pairs)
-        completed_at = DateTime.utc_now()
+    {:ok, graph} = Routing.build_station_graph(snapshot)
 
-        topology = %{
-          entrance_count: Enum.count(child_stops, &(&1.location_type == 2)),
-          platform_count: Enum.count(child_stops, &(&1.location_type == 0)),
-          pathway_count: length(pathways),
-          level_count: length(levels)
-        }
+    results = plan_all(graph, pairs)
+    completed_at = DateTime.utc_now()
 
-        envelope =
-          Envelope.build(%{
-            station: station,
-            pairs: pairs,
-            results: results,
-            diagnostics: graph.diagnostics,
-            topology: topology,
-            started_at: started_at,
-            completed_at: completed_at
-          })
+    topology = %{
+      entrance_count: Enum.count(child_stops, &(&1.location_type == 2)),
+      platform_count: Enum.count(child_stops, &(&1.location_type == 0)),
+      pathway_count: length(pathways),
+      level_count: length(levels)
+    }
 
-        {:ok, envelope}
+    envelope =
+      Envelope.build(%{
+        station: station,
+        pairs: pairs,
+        results: results,
+        diagnostics: graph.diagnostics,
+        topology: topology,
+        started_at: started_at,
+        completed_at: completed_at
+      })
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+    {:ok, envelope}
   end
 
   defp plan_all(graph, pairs) do
