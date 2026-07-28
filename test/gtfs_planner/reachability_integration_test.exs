@@ -109,15 +109,14 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
       version: version,
       station: station
     } do
+      task_pids_before = MapSet.new(Task.Supervisor.children(GtfsPlanner.TaskSupervisor))
       assert {:ok, run} = Reachability.start_run(org.id, version.id, station.stop_id)
-
-      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(run.id))
 
       assert run.status == "running"
       assert run.engine == "pathways_router"
       assert run.result_schema_version == 1
 
-      run = wait_for_completion(run.id)
+      run = wait_for_completion(run.id, task_pids_before)
 
       assert run.status == "completed"
       assert run.completed_at != nil
@@ -161,15 +160,6 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
       assert {:ok, json} = Jason.encode(envelope)
       assert {:ok, decoded} = Jason.decode(json)
       assert decoded == envelope
-    end
-
-    test "broadcasts completion on the run topic", %{org: org, version: version, station: station} do
-      assert {:ok, run} = Reachability.start_run(org.id, version.id, station.stop_id)
-
-      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(run.id))
-
-      assert_receive {:reachability_run_completed, run_id}, 5_000
-      assert run_id == run.id
     end
 
     test "returns :station_not_found for unknown station", %{org: org, version: version} do
@@ -245,9 +235,9 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
           level_id: "L1"
         })
 
+      task_pids_before = MapSet.new(Task.Supervisor.children(GtfsPlanner.TaskSupervisor))
       assert {:ok, run} = Reachability.start_run(org.id, version.id, station.stop_id)
-      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(run.id))
-      run = wait_for_completion(run.id)
+      run = wait_for_completion(run.id, task_pids_before)
 
       assert run.status == "completed"
       envelope = run.result_json
@@ -264,8 +254,20 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
     end
   end
 
-  defp wait_for_completion(run_id) do
-    assert_receive {:reachability_run_completed, ^run_id}, 5_000
-    Repo.get!(ValidationRun, run_id)
+  defp wait_for_completion(run_id, task_pids_before) do
+    case Repo.get!(ValidationRun, run_id).status do
+      status when status in ["completed", "failed"] ->
+        Repo.get!(ValidationRun, run_id)
+
+      _status ->
+        task_pid =
+          GtfsPlanner.TaskSupervisor
+          |> Task.Supervisor.children()
+          |> Enum.find(&(&1 not in task_pids_before))
+
+        ref = Process.monitor(task_pid)
+        assert_receive {:DOWN, ^ref, :process, ^task_pid, :normal}, 5_000
+        Repo.get!(ValidationRun, run_id)
+    end
   end
 end

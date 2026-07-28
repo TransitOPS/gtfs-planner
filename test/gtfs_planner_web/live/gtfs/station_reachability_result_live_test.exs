@@ -67,6 +67,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       assert to_path == "/gtfs/#{version.id}/validation/#{run.id}"
     end
 
+    test "denies a run from another version in the same organization", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, run} =
+        Validations.create_validation_run(
+          organization.id,
+          other_version.id,
+          "station_reachability"
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      assert {:error, {:live_redirect, %{to: to_path, flash: flash}}} =
+               live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      assert to_path == "/gtfs/#{version.id}/export"
+      assert flash["error"] == "Unauthorized access to validation run"
+    end
+
     test "keeps the station tabs available on the results page", %{
       conn: conn,
       user: user,

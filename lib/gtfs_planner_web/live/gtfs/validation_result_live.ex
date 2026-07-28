@@ -63,7 +63,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     # Verify authorization: ensure the run belongs to the current organization
-    if run.organization_id != organization_id do
+    if run.organization_id != organization_id or run.gtfs_version_id != gtfs_version_id do
       {:noreply,
        socket
        |> put_flash(:error, "Unauthorized access to validation run")

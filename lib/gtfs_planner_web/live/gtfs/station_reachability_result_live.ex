@@ -35,7 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     cond do
-      run.organization_id != organization_id ->
+      run.organization_id != organization_id or run.gtfs_version_id != gtfs_version_id ->
         {:noreply,
          socket
          |> put_flash(:error, "Unauthorized access to validation run")

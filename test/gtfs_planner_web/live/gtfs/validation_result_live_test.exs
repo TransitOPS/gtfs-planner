@@ -923,5 +923,25 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert path == "/gtfs/#{version.id}/export"
       assert flash["error"] == "Unauthorized access to validation run"
     end
+
+    test "denies access to a validation run from another version in the same organization", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, other_run} =
+        Validations.create_validation_run(organization.id, other_version.id, "mobility_data")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      assert {:error, {:live_redirect, %{to: path, flash: flash}}} =
+               live(conn, "/gtfs/#{version.id}/validation/#{other_run.id}")
+
+      assert path == "/gtfs/#{version.id}/export"
+      assert flash["error"] == "Unauthorized access to validation run"
+    end
   end
 end
