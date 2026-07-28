@@ -102,7 +102,6 @@ defmodule GtfsPlanner.MixProject do
     [
       setup: [
         "deps.get",
-        "gtfs.otp.check --create-dir --warn-only",
         "ecto.setup",
         "assets.setup",
         "assets.build"

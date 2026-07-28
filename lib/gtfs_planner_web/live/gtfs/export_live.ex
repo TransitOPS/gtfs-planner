@@ -274,24 +274,35 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @impl Phoenix.LiveView
   def handle_info({:poll_pathways_trip_test_status, validation_run_id}, socket) do
     if poll_current_pathways_run?(socket, validation_run_id) do
-      case Validations.get_pathways_trip_test_status(validation_run_id) do
-        {:ok, %{status: "started"}} ->
+      case Validations.get_validation_run(validation_run_id) do
+        nil ->
+          {:noreply,
+           socket
+           |> assign(:pending_mobility_validation, false)
+           |> assign(:validating, false)
+           |> assign(:pathways_prep_detailed_progress, false)
+           |> assign(:validation_progress, nil)
+           |> assign_pathways_error_panel(%{reason: :pathways_run_not_found})}
+
+        %{run_type: run_type, status: "started"}
+        when run_type in ["pathways_tests", "station_reachability"] ->
           schedule_pathways_status_poll(validation_run_id)
 
           {:noreply, maybe_assign_pathways_status_progress(socket, "started")}
 
-        {:ok, %{status: "running"}} ->
+        %{run_type: run_type, status: "running"}
+        when run_type in ["pathways_tests", "station_reachability"] ->
           schedule_pathways_status_poll(validation_run_id)
 
           {:noreply, maybe_assign_pathways_status_progress(socket, "running")}
 
-        {:ok, %{status: "completed"}} ->
+        %{run_type: run_type, status: "completed"}
+        when run_type in ["pathways_tests", "station_reachability"] ->
           handle_pathways_trip_test_completed(socket, validation_run_id)
 
-        {:ok, %{status: "failed"} = status_payload} ->
-          error_payload =
-            payload_value(status_payload, :error_payload) ||
-              status_payload
+        %{run_type: run_type, status: "failed"} = run
+        when run_type in ["pathways_tests", "station_reachability"] ->
+          error_payload = %{reason: :pathways_run_failed, details: run.error_details}
 
           {:noreply,
            socket
@@ -301,7 +312,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            |> assign(:validation_progress, nil)
            |> assign_pathways_error_panel(error_payload)}
 
-        {:ok, _status_payload} ->
+        %{run_type: run_type}
+        when run_type in ["pathways_tests", "station_reachability"] ->
           {:noreply,
            socket
            |> assign(:pending_mobility_validation, false)
@@ -310,16 +322,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            |> assign(:validation_progress, nil)
            |> assign_pathways_error_panel(%{reason: :pathways_status_unavailable})}
 
-        {:error, :not_found} ->
-          {:noreply,
-           socket
-           |> assign(:pending_mobility_validation, false)
-           |> assign(:validating, false)
-           |> assign(:pathways_prep_detailed_progress, false)
-           |> assign(:validation_progress, nil)
-           |> assign_pathways_error_panel(%{reason: :pathways_run_not_found})}
-
-        {:error, :invalid_run_type} ->
+        %{} ->
           {:noreply,
            socket
            |> assign(:pending_mobility_validation, false)
@@ -490,30 +493,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp apply_validation_result(socket, {:ok, %Validator.Result{}}) do
-    cleanup_validation_runtime(socket)
     run = Validations.get_validation_run!(socket.assigns.validation_run_id)
     assign_persisted_validation_result(socket, run)
   end
 
   defp apply_validation_result(socket, {:error, reason}) do
     assign(socket, :validation_error, "Validation failed: #{inspect(reason)}")
-  end
-
-  defp cleanup_validation_runtime(socket) do
-    socket.assigns.current_organization.id
-    |> GtfsPlanner.Otp.Runtime.cleanup_on_success(socket.assigns.current_gtfs_version.id)
-    |> log_validation_cleanup_result()
-  end
-
-  defp log_validation_cleanup_result(:ok), do: :ok
-  defp log_validation_cleanup_result({:ok, _cleanup_result}), do: :ok
-
-  defp log_validation_cleanup_result({:error, reason}) do
-    Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
-  end
-
-  defp log_validation_cleanup_result(other) do
-    Logger.error("Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}")
   end
 
   defp assign_persisted_validation_result(socket, run) do

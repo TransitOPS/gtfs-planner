@@ -6,7 +6,6 @@ defmodule GtfsPlanner.Validations do
   import Ecto.Query
 
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Validations.PathwaysTripTestRunner
   alias GtfsPlanner.Validations.ValidationRun
   alias GtfsPlanner.Validations.WalkabilityTestRunResult
   alias GtfsPlanner.Validations.WalkabilityTest
@@ -129,34 +128,6 @@ defmodule GtfsPlanner.Validations do
     do: nil
 
   @doc """
-  Returns the current station reachability run reuse decision.
-
-  - `{:ok, run}` when an active run exists.
-  - `:none` when no active run exists.
-  """
-  @spec reusable_station_reachability_run(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          String.t(),
-          keyword()
-        ) ::
-          {:ok, ValidationRun.t()} | :none
-  def reusable_station_reachability_run(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        _opts \\ []
-      ) do
-    case get_active_station_reachability_run(organization_id, gtfs_version_id, station_stop_id) do
-      nil ->
-        :none
-
-      %ValidationRun{} = run ->
-        {:ok, run}
-    end
-  end
-
-  @doc """
   Returns the latest completed pathways trip test run for an organization/version.
 
   Selection is scoped to `pathways_tests` runs with `completed` status and
@@ -178,125 +149,6 @@ defmodule GtfsPlanner.Validations do
     )
     |> limit(1)
     |> Repo.one()
-  end
-
-  @doc """
-  Starts a pathways trip test run for the given organization and GTFS version.
-
-  Always creates a new run, transitions it to `running`, and spawns the
-  dedicated runner process under `GtfsPlanner.TaskSupervisor`.
-  """
-  @spec start_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
-          {:ok, ValidationRun.t()} | {:error, term()}
-  def start_pathways_trip_test(organization_id, gtfs_version_id, opts \\ [])
-
-  def start_pathways_trip_test(organization_id, gtfs_version_id, opts) do
-    start_new_pathways_trip_test(organization_id, gtfs_version_id, opts)
-  end
-
-  @doc """
-  Starts a station reachability test run for the given organization,
-  GTFS version, and station stop id.
-
-  Creates a station-scoped run, transitions it to `running`, then spawns the
-  existing pathways trip test runner under `GtfsPlanner.TaskSupervisor`.
-  """
-  @spec start_station_reachability_test(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
-          {:ok, ValidationRun.t()} | {:error, term()}
-  def start_station_reachability_test(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        opts \\ []
-      ) do
-    opts =
-      Keyword.update(
-        opts,
-        :pathways_validity_opts,
-        [station_stop_id: station_stop_id],
-        fn pathways_validity_opts ->
-          Keyword.put(pathways_validity_opts, :station_stop_id, station_stop_id)
-        end
-      )
-
-    opts =
-      Keyword.update(
-        opts,
-        :runtime_opts,
-        station_reachability_runtime_opts(station_stop_id),
-        fn runtime_opts ->
-          runtime_opts
-          |> Keyword.put(:runtime_scope, :station_reachability)
-          |> Keyword.put(:gtfs_materializer_fun, station_gtfs_materializer_fun())
-          |> Keyword.put(:gtfs_opts, station_stop_id: station_stop_id)
-        end
-      )
-
-    with {:ok, pending_run} <-
-           create_station_reachability_run(organization_id, gtfs_version_id, station_stop_id),
-         {:ok, running_run} <- mark_running(pending_run),
-         :ok <-
-           spawn_pathways_trip_test_runner(running_run, organization_id, gtfs_version_id, opts) do
-      {:ok, running_run}
-    else
-      {:error, {:runner_spawn_failed, reason, running_run}} ->
-        _ =
-          mark_failed(running_run, %{
-            reason: :pathways_runner_spawn_failed,
-            details: %{error: inspect(reason)}
-          })
-
-        {:error, {:pathways_runner_spawn_failed, reason}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec station_reachability_runtime_opts(String.t()) :: keyword()
-  defp station_reachability_runtime_opts(station_stop_id) do
-    [
-      runtime_scope: :station_reachability,
-      gtfs_materializer_fun: station_gtfs_materializer_fun(),
-      gtfs_opts: [station_stop_id: station_stop_id],
-      return_runtime_meta: true
-    ]
-  end
-
-  @spec station_gtfs_materializer_fun() ::
-          (Ecto.UUID.t(), Ecto.UUID.t(), keyword() -> {:ok, String.t(), map()} | {:error, term()})
-  defp station_gtfs_materializer_fun do
-    fn organization_id, gtfs_version_id, gtfs_opts ->
-      apply(
-        GtfsPlanner.Otp.StationMaterializer,
-        :get_or_build_gtfs_zip,
-        [organization_id, gtfs_version_id, gtfs_opts]
-      )
-    end
-  end
-
-  @spec start_new_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
-          {:ok, ValidationRun.t()} | {:error, term()}
-  defp start_new_pathways_trip_test(organization_id, gtfs_version_id, opts) do
-    with {:ok, started_run} <- create_pathways_validation_run(organization_id, gtfs_version_id),
-         {:ok, running_run} <- mark_pathways_running(started_run),
-         :ok <-
-           spawn_pathways_trip_test_runner(running_run, organization_id, gtfs_version_id, opts) do
-      {:ok, running_run}
-    else
-      {:error, {:runner_spawn_failed, reason, running_run}} ->
-        failure_reason = %{
-          reason: :pathways_runner_spawn_failed,
-          details: %{error: inspect(reason)}
-        }
-
-        _ = mark_pathways_failed(running_run, failure_reason)
-
-        {:error, {:pathways_runner_spawn_failed, reason}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
   end
 
   @doc """
@@ -433,40 +285,6 @@ defmodule GtfsPlanner.Validations do
     |> where([run], run.id == ^validation_run_id and run.run_type == "pathways_tests")
     |> select([run], run.result_json)
     |> Repo.one()
-  end
-
-  @doc """
-  Returns normalized status data for a pathways trip test run.
-
-  The response includes run identity, status, timing fields, aggregate counters,
-  and a decoded structured error payload when the run is failed.
-  """
-  @spec get_pathways_trip_test_status(Ecto.UUID.t()) ::
-          {:ok, map()} | {:error, :not_found | :invalid_run_type}
-  def get_pathways_trip_test_status(validation_run_id) do
-    case get_validation_run(validation_run_id) do
-      nil ->
-        {:error, :not_found}
-
-      %ValidationRun{run_type: run_type} = run
-      when run_type in ["pathways_tests", "station_reachability"] ->
-        {:ok,
-         %{
-           id: run.id,
-           run_type: run.run_type,
-           status: run.status,
-           started_at: run.started_at,
-           completed_at: run.completed_at,
-           duration_ms: run.duration_ms,
-           errors_count: run.errors_count,
-           warnings_count: run.warnings_count,
-           infos_count: run.infos_count,
-           error_payload: decode_pathways_error_payload(run.status, run.error_details)
-         }}
-
-      %ValidationRun{} ->
-        {:error, :invalid_run_type}
-    end
   end
 
   @doc """
@@ -901,84 +719,7 @@ defmodule GtfsPlanner.Validations do
     Repo.get(WalkabilityTest, id)
   end
 
-  @doc """
-  Creates a walkability test for a given organization and GTFS version.
 
-  ## Examples
-
-      iex> create_walkability_test(org_id, version_id, %{stop_id: "stop_123", address: "123 Main St", address_lat: "40.7128", address_lon: "-74.0060"})
-      {:ok, %WalkabilityTest{}}
-
-      iex> create_walkability_test(org_id, version_id, %{})
-      {:error, %Ecto.Changeset{}}
-
-  """
-  def create_walkability_test(organization_id, gtfs_version_id, attrs) do
-    %WalkabilityTest{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
-    |> WalkabilityTest.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
-  Updates a walkability test.
-
-  ## Examples
-
-      iex> update_walkability_test(walkability_test, %{address: "456 Oak Ave"})
-      {:ok, %WalkabilityTest{}}
-
-      iex> update_walkability_test(walkability_test, %{stop_id: nil})
-      {:error, %Ecto.Changeset{}}
-
-  """
-  def update_walkability_test(walkability_test, attrs) do
-    walkability_test
-    |> WalkabilityTest.changeset(attrs)
-    |> Repo.update()
-  end
-
-  @doc """
-  Deletes a walkability test.
-
-  ## Examples
-
-      iex> delete_walkability_test(walkability_test)
-      {:ok, %WalkabilityTest{}}
-
-      iex> delete_walkability_test(walkability_test)
-      {:error, %Ecto.Changeset{}}
-
-  """
-  def delete_walkability_test(walkability_test) do
-    Repo.delete(walkability_test)
-  end
-
-  @doc """
-  Returns an `%Ecto.Changeset{}` for tracking walkability test changes.
-
-  ## Examples
-
-      iex> change_walkability_test(walkability_test)
-      %Ecto.Changeset{data: %WalkabilityTest{}}
-
-  """
-  def change_walkability_test(walkability_test, attrs \\ %{}) do
-    WalkabilityTest.changeset(walkability_test, attrs)
-  end
-
-  @doc """
-  Returns a map of stop_id => test count for stops that have walkability tests.
-  """
-  def stop_ids_with_walkability_tests(_organization_id, []), do: %{}
-
-  def stop_ids_with_walkability_tests(organization_id, stop_ids) do
-    WalkabilityTest
-    |> where([wt], wt.organization_id == ^organization_id and wt.stop_id in ^stop_ids)
-    |> group_by([wt], wt.stop_id)
-    |> select([wt], {wt.stop_id, count(wt.id)})
-    |> Repo.all()
-    |> Map.new()
-  end
 
   @spec normalize_pathways_summary(%{
           required(:total) => non_neg_integer(),
@@ -1279,104 +1020,4 @@ defmodule GtfsPlanner.Validations do
     do: Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
 
   defp payload_value(_payload, _key), do: nil
-
-  @spec decode_pathways_error_payload(String.t(), String.t() | nil) :: map() | nil
-  defp decode_pathways_error_payload("failed", nil), do: nil
-
-  defp decode_pathways_error_payload("failed", error_details) when is_binary(error_details) do
-    case Jason.decode(error_details) do
-      {:ok, payload} when is_map(payload) ->
-        normalize_decoded_pathways_error_payload(payload, error_details)
-
-      {:ok, _payload} ->
-        legacy_pathways_error_payload("invalid_error_payload", error_details)
-
-      {:error, _reason} ->
-        legacy_pathways_error_payload("legacy_error_details", error_details)
-    end
-  end
-
-  defp decode_pathways_error_payload(_status, _error_details), do: nil
-
-  @spec normalize_decoded_pathways_error_payload(map(), String.t()) :: map()
-  defp normalize_decoded_pathways_error_payload(payload, error_details) do
-    normalized_payload = normalize_pathways_json_term(payload)
-
-    required_fields = %{
-      "scope" => payload_value(normalized_payload, :scope) || "pathways_tests",
-      "reason" =>
-        payload_value(normalized_payload, :reason) ||
-          payload_value(normalized_payload, :reason_code) || "unknown_pathways_failure",
-      "details" => normalize_pathways_error_details(payload_value(normalized_payload, :details)),
-      "issues" => normalize_decoded_pathways_issues(payload_value(normalized_payload, :issues))
-    }
-
-    normalized_payload
-    |> Map.merge(required_fields)
-    |> maybe_put_raw_error_details(error_details)
-  end
-
-  @spec normalize_decoded_pathways_issues(term()) :: [term()]
-  defp normalize_decoded_pathways_issues(issues) when is_list(issues),
-    do: Enum.map(issues, &normalize_pathways_json_term/1)
-
-  defp normalize_decoded_pathways_issues(_issues), do: []
-
-  @spec maybe_put_raw_error_details(map(), String.t()) :: map()
-  defp maybe_put_raw_error_details(payload, error_details) do
-    if payload_value(payload, :raw_error_details) do
-      payload
-    else
-      Map.put(payload, "raw_error_details", error_details)
-    end
-  end
-
-  @spec legacy_pathways_error_payload(String.t(), String.t()) :: map()
-  defp legacy_pathways_error_payload(reason, error_details) do
-    %{
-      "scope" => "pathways_tests",
-      "reason" => reason,
-      "details" => nil,
-      "issues" => [],
-      "raw_error_details" => error_details
-    }
-  end
-
-  @spec spawn_pathways_trip_test_runner(
-          ValidationRun.t(),
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          keyword()
-        ) ::
-          :ok | {:error, {:runner_spawn_failed, term(), ValidationRun.t()}}
-  defp spawn_pathways_trip_test_runner(validation_run, organization_id, gtfs_version_id, opts) do
-    runner_module =
-      Application.get_env(
-        :gtfs_planner,
-        :pathways_trip_test_runner_module,
-        PathwaysTripTestRunner
-      )
-
-    task_supervisor =
-      Application.get_env(
-        :gtfs_planner,
-        :pathways_trip_test_task_supervisor,
-        GtfsPlanner.TaskSupervisor
-      )
-
-    try do
-      case Task.Supervisor.start_child(task_supervisor, fn ->
-             runner_module.run(validation_run, organization_id, gtfs_version_id, opts)
-           end) do
-        {:ok, _pid} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, {:runner_spawn_failed, reason, validation_run}}
-      end
-    catch
-      :exit, reason ->
-        {:error, {:runner_spawn_failed, reason, validation_run}}
-    end
-  end
 end
