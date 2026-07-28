@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator
-  alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   require Logger
@@ -18,12 +17,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @pathways_failure_messages %{
     no_walkability_tests: "No pathways tests are configured for this GTFS version.",
-    otp_runtime_failed: "Pathways validation failed during OTP runtime.",
-    otp_runtime_already_running:
-      "Another pathways runtime is already active for this organization.",
-    otp_start_failed: "Failed to start OTP runtime.",
-    otp_ready_timeout: "OTP runtime readiness timed out.",
-    otp_stop_failed: "OTP runtime failed while stopping.",
     query_failure: "Pathways validation failed due to route query errors.",
     scoring_failure: "Pathways validation failed due to scoring errors.",
     pathways_runner_spawn_failed: "Pathways validation could not start.",
@@ -36,15 +29,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     pathways_invalid_run_type: "Pathways validation run type was invalid.",
     pathways_results_unavailable: "Pathways validation results were unavailable."
   }
-
-  @otp_data_requirements_summary [
-    "Station-related stops need valid numeric lat/lon in range.",
-    "Longitude sign must match your region (for example, Chicago is negative).",
-    "Boarding areas (location_type=4) need a valid parent_station.",
-    "Service must be active for the test date and time.",
-    "GTFS references must resolve across stops, trips, routes, and service IDs.",
-    "Fix critical stop-to-street linking warnings before rerun."
-  ]
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
@@ -171,13 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       true ->
         organization_id = socket.assigns.current_organization.id
         gtfs_version_id = socket.assigns.current_gtfs_version.id
-        has_pathways_tests = Enum.member?(selected_validations, :pathways_tests)
-
-        if has_pathways_tests do
-          start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id)
-        else
-          run_mobility_data_validation(socket, organization_id, gtfs_version_id)
-        end
+        run_mobility_data_validation(socket, organization_id, gtfs_version_id)
     end
   end
 
@@ -523,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp cleanup_validation_runtime(socket) do
     socket.assigns.current_organization.id
-    |> Runtime.cleanup_on_success(socket.assigns.current_gtfs_version.id)
+    |> GtfsPlanner.Otp.Runtime.cleanup_on_success(socket.assigns.current_gtfs_version.id)
     |> log_validation_cleanup_result()
   end
 
@@ -860,22 +838,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               <% end %>
             </section>
 
-            <%= if @pathways_failure do %>
-              <section
-                id="otp-data-requirements-summary"
-                class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
-              >
-                <h3 class="text-sm font-semibold text-base-content">
-                  OTP data requirements (quick checks)
-                </h3>
-                <p class="mt-1 text-xs text-base-content/70">
-                  Fix these common blockers before rerunning pathways validation.
-                </p>
-                <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
-                  <li :for={item <- otp_data_requirements_summary()}>{item}</li>
-                </ul>
-              </section>
-            <% end %>
           <% end %>
 
           <%= if @pathways_prep_error do %>
@@ -929,22 +891,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               </div>
             </div>
 
-            <%= if @pathways_failure do %>
-              <section
-                id="otp-data-requirements-summary"
-                class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
-              >
-                <h3 class="text-sm font-semibold text-base-content">
-                  OTP data requirements (quick checks)
-                </h3>
-                <p class="mt-1 text-xs text-base-content/70">
-                  Fix these common blockers before rerunning pathways validation.
-                </p>
-                <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
-                  <li :for={item <- otp_data_requirements_summary()}>{item}</li>
-                </ul>
-              </section>
-            <% end %>
           <% end %>
 
           <%= cond do %>
@@ -1018,8 +964,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   name="validation[checks][]"
                   label="Validation checks"
                   options={[
-                    {"MobilityData GTFS Validator", "mobility_data"},
-                    {"Pathways Trip Tests", "pathways_tests"}
+                    {"MobilityData GTFS Validator", "mobility_data"}
                   ]}
                   selected={validation_selected_values(@validation_form)}
                   required
@@ -1119,12 +1064,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label({:pathways_prep, {:graph, :persisting}}), do: "Saving graph metadata..."
   defp phase_label({:pathways_prep, {:graph, :done}}), do: "Graph preparation complete"
   defp phase_label({:pathways_prep, {:graph, :failed}}), do: "Graph preparation failed"
-  defp phase_label({:pathways_prep, {:otp, :starting}}), do: "Starting OTP runtime..."
-  defp phase_label({:pathways_prep, {:otp, :waiting_ready}}), do: "Waiting for OTP readiness..."
-  defp phase_label({:pathways_prep, {:otp, :ready}}), do: "Running OTP validity checks..."
-  defp phase_label({:pathways_prep, {:otp, :stopping}}), do: "Stopping OTP runtime..."
-  defp phase_label({:pathways_prep, {:otp, :stopped}}), do: "OTP runtime stopped"
-  defp phase_label({:pathways_prep, {:otp, :failed}}), do: "OTP runtime failed"
 
   defp phase_label({:pathways_prep, {:suite, :running, completed, total, _test_case_id}}),
     do: "Running pathways suite (#{completed} of #{total})"
@@ -1408,71 +1347,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
-  defp start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id) do
-    pending_mobility_validation = Enum.member?(selected_validations, :mobility_data)
-
-    start_new_pathways_prep(socket, pending_mobility_validation, organization_id, gtfs_version_id)
-  end
-
-  defp start_new_pathways_prep(
-         socket,
-         pending_mobility_validation,
-         organization_id,
-         gtfs_version_id
-       ) do
-    live_view_pid = self()
-
-    case Validations.start_pathways_trip_test(organization_id, gtfs_version_id,
-           status_callback: pathways_prep_status_callback(live_view_pid)
-         ) do
-      {:ok, run} ->
-        send(self(), {:poll_pathways_trip_test_status, run.id})
-
-        {:noreply,
-         socket
-         |> assign(:validation_run_id, run.id)
-         |> assign(:pathways_prep_task, nil)
-         |> assign(:pathways_prep_detailed_progress, false)
-         |> assign(:pending_mobility_validation, pending_mobility_validation)
-         |> assign(:validation_result, nil)
-         |> assign(:validation_error, nil)
-         |> assign(:pathways_failure, nil)
-         |> assign(:pathways_prep_error, nil)
-         |> assign(:validating, true)
-         |> assign(:validation_progress, pathways_status_progress(run.status))}
-
-      {:error, {:pathways_runner_spawn_failed, reason}} ->
-        {:noreply,
-         socket
-         |> assign(:pending_mobility_validation, false)
-         |> assign(:validating, false)
-         |> assign(:pathways_prep_detailed_progress, false)
-         |> assign(:validation_progress, nil)
-         |> assign_pathways_error_panel(%{
-           reason: :pathways_runner_spawn_failed,
-           details: %{error: inspect(reason)}
-         })}
-
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:pending_mobility_validation, false)
-         |> assign(:validating, false)
-         |> assign(:pathways_prep_detailed_progress, false)
-         |> assign(:validation_progress, nil)
-         |> assign_pathways_error_panel(%{
-           reason: :pathways_trip_test_failed,
-           details: %{error: inspect(reason)}
-         })}
-    end
-  end
-
-  defp pathways_prep_status_callback(live_view_pid) do
-    fn payload ->
-      send(live_view_pid, {:pathways_prep_progress, payload})
-    end
-  end
-
   defp phase_percent(:cache_check), do: 10
   defp phase_percent(:preflight), do: 25
   defp phase_percent(:exporting), do: 50
@@ -1493,12 +1367,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_percent({:graph, :persisting}), do: 95
   defp phase_percent({:graph, :done}), do: 96
   defp phase_percent({:graph, :failed}), do: 100
-  defp phase_percent({:otp, :starting}), do: 96
-  defp phase_percent({:otp, :waiting_ready}), do: 97
-  defp phase_percent({:otp, :ready}), do: 98
-  defp phase_percent({:otp, :stopping}), do: 99
-  defp phase_percent({:otp, :stopped}), do: 100
-  defp phase_percent({:otp, :failed}), do: 100
   defp phase_percent({:suite, :running, _completed, _total, _test_case_id}), do: 98
   defp phase_percent({:suite, :finishing, _completed, _total, _test_case_id}), do: 99
   defp phase_percent({:suite, :finished, _completed, _total, _test_case_id}), do: 100
@@ -1513,7 +1381,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     case Map.get(payload, :scope) do
       :gtfs -> {:gtfs, phase}
       :graph -> {:graph, phase}
-      :otp -> {:otp, phase}
       :suite -> {:suite, phase, completed, total, test_case_id}
       _unknown_scope -> phase
     end
@@ -2502,13 +2369,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp normalize_pathways_failure_code(:no_walkability_tests), do: :no_walkability_tests
 
-  defp normalize_pathways_failure_code(:otp_runtime_already_running),
-    do: :otp_runtime_already_running
-
-  defp normalize_pathways_failure_code(:otp_start_failed), do: :otp_start_failed
-  defp normalize_pathways_failure_code(:otp_runtime_failed), do: :otp_runtime_failed
-  defp normalize_pathways_failure_code(:otp_ready_timeout), do: :otp_ready_timeout
-  defp normalize_pathways_failure_code(:otp_stop_failed), do: :otp_stop_failed
   defp normalize_pathways_failure_code(:query_failure), do: :query_failure
   defp normalize_pathways_failure_code(:scoring_failure), do: :scoring_failure
 
@@ -2538,21 +2398,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     case value do
       "no_walkability_tests" ->
         :no_walkability_tests
-
-      "otp_runtime_already_running" ->
-        :otp_runtime_already_running
-
-      "otp_start_failed" ->
-        :otp_start_failed
-
-      "otp_runtime_failed" ->
-        :otp_runtime_failed
-
-      "otp_ready_timeout" ->
-        :otp_ready_timeout
-
-      "otp_stop_failed" ->
-        :otp_stop_failed
 
       "query_failure" ->
         :query_failure
@@ -2597,11 +2442,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp normalize_pathways_failure_code_from_text(value) when is_binary(value) do
     cond do
       String.contains?(value, "no_walkability_tests") -> :no_walkability_tests
-      String.contains?(value, "otp_runtime_already_running") -> :otp_runtime_already_running
-      String.contains?(value, "otp_start_failed") -> :otp_start_failed
-      String.contains?(value, "otp_runtime_failed") -> :otp_runtime_failed
-      String.contains?(value, "otp_ready_timeout") -> :otp_ready_timeout
-      String.contains?(value, "otp_stop_failed") -> :otp_stop_failed
       String.contains?(value, "query_failure") -> :query_failure
       String.contains?(value, "scoring_failure") -> :scoring_failure
       String.contains?(value, "pathways_runner_spawn_failed") -> :pathways_runner_spawn_failed
@@ -2706,8 +2546,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         end
     end
   end
-
-  defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 
   defp export_form(export_type),
     do: to_form(%{"type" => Atom.to_string(export_type)}, as: :export)
