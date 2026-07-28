@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Reachability.Envelope do
   alias GtfsPlanner.Routing.Diagnostic
 
   @engine "pathways_router"
-  @engine_ref "c34f9e84b7742de231652cb9bb3b3ba3cc8e8fcd"
+  @engine_ref "f1bf1b58e29307d410742af95dfde18111bcb07a"
   @schema_version 1
 
   @spec build(%{

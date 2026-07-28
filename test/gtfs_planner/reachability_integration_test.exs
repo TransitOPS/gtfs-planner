@@ -128,7 +128,7 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
 
       envelope = run.result_json
       assert envelope["engine"] == "pathways_router"
-      assert envelope["engine_ref"] == "c34f9e84b7742de231652cb9bb3b3ba3cc8e8fcd"
+      assert envelope["engine_ref"] == "f1bf1b58e29307d410742af95dfde18111bcb07a"
       assert envelope["result_schema_version"] == 1
       assert envelope["preferences"] == "default"
       assert envelope["metadata"]["station_stop_id"] == station.stop_id
