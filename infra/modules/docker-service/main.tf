@@ -58,8 +58,6 @@ locals {
           "AWS_SECRET_ACCESS_KEY=${aws_iam_access_key.service.secret}",
           "SECRET_KEY_BASE=${random_password.secret_key_base.result}",
           "DATABASE_URL=ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}",
-          "OTP_JAR_PATH=/opt/otp/otp.jar",
-          "OTP_OSM_PATH=/opt/otp/data/philadelphia.osm.pbf",
           "GTFS_TASK_ARTIFACTS_PATH=/app/var/gtfs-task-artifacts",
           "GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES=157286400",
           "GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES=1073741824",
