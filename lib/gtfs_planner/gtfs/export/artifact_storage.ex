@@ -52,7 +52,13 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     end
   end
 
-  @doc "Checks that the configured private root already exists and accepts a bounded probe write."
+  @doc """
+  Checks that the configured private root already exists and accepts a bounded probe write.
+
+  The root is never created here: an absent directory means the artifact volume
+  is not mounted, and creating it would silently write exports to the wrong
+  filesystem. Environments that own their root create it at boot instead.
+  """
   @spec available?(keyword()) :: :ok | {:error, :artifact_storage_unavailable}
   def available?(opts \\ []) do
     with {:ok, root} <- root(opts),

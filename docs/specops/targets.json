@@ -159,19 +159,6 @@
       "last_synthesized": null
     },
     {
-      "slug": "lib-gtfs-planner-otp",
-      "name": "OTP Integration Context",
-      "scope": "Builds and caches OTP-ready GTFS artifacts and graphs, checks local OTP prerequisites, runs OTP runtime sessions, and materializes station-scoped feeds.",
-      "origin": "derived",
-      "structural_unit": "lib/gtfs_planner/otp",
-      "source_globs": [
-        "lib/gtfs_planner/otp/**"
-      ],
-      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-otp.md",
-      "source_hash": "sha256:83043cb59d54195b590146472362943283073fedfba5da5e119671a4185f7c64",
-      "last_synthesized": null
-    },
-    {
       "slug": "lib-gtfs-planner-validations",
       "name": "Validation Context",
       "scope": "Creates and tracks GTFS validation runs, pathway and station reachability tests, preflight checks, summaries, and persisted validation results.",

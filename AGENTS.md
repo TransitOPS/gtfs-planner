@@ -470,7 +470,6 @@ Manifest: [`docs/specops/targets.json`](docs/specops/targets.json)
 | 9 | Geocoding Context | [`agents/lib-gtfs-planner-geocoding.md`](docs/specops/agents/lib-gtfs-planner-geocoding.md) | [`analysis/lib-gtfs-planner-geocoding.md`](docs/specops/analysis/lib-gtfs-planner-geocoding.md) | ✅ |
 | 10 | GTFS Data Context | [`agents/lib-gtfs-planner-gtfs.md`](docs/specops/agents/lib-gtfs-planner-gtfs.md) | [`analysis/lib-gtfs-planner-gtfs.md`](docs/specops/analysis/lib-gtfs-planner-gtfs.md) | ✅ |
 | 11 | Organizations Context | [`agents/lib-gtfs-planner-organizations.md`](docs/specops/agents/lib-gtfs-planner-organizations.md) | [`analysis/lib-gtfs-planner-organizations.md`](docs/specops/analysis/lib-gtfs-planner-organizations.md) | ✅ |
-| 12 | OTP Integration Context | [`agents/lib-gtfs-planner-otp.md`](docs/specops/agents/lib-gtfs-planner-otp.md) | [`analysis/lib-gtfs-planner-otp.md`](docs/specops/analysis/lib-gtfs-planner-otp.md) | ✅ |
 | 13 | Validation Context | [`agents/lib-gtfs-planner-validations.md`](docs/specops/agents/lib-gtfs-planner-validations.md) | [`analysis/lib-gtfs-planner-validations.md`](docs/specops/analysis/lib-gtfs-planner-validations.md) | ✅ |
 | 14 | GTFS Versions Context | [`agents/lib-gtfs-planner-versions.md`](docs/specops/agents/lib-gtfs-planner-versions.md) | [`analysis/lib-gtfs-planner-versions.md`](docs/specops/analysis/lib-gtfs-planner-versions.md) | ✅ |
 | 15 | Mix Maintenance Tasks | [`agents/lib-mix.md`](docs/specops/agents/lib-mix.md) | [`analysis/lib-mix.md`](docs/specops/analysis/lib-mix.md) | ✅ |

@@ -196,7 +196,10 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "does not update email if token expired", %{user: user, token: token} do
-      {1, nil} = Repo.update_all(UserToken, set: [inserted_at: ~N[2020-01-01 00:00:00]])
+      {1, nil} =
+        Repo.update_all(from(token_record in UserToken, where: token_record.user_id == ^user.id),
+          set: [inserted_at: ~N[2020-01-01 00:00:00]]
+        )
 
       assert Accounts.update_user_email(user, token) == :error
       assert Accounts.get_user!(user.id).email == user.email
@@ -387,8 +390,11 @@ defmodule GtfsPlanner.AccountsTest do
       refute Accounts.get_user_by_session_token("oops")
     end
 
-    test "does not return user for expired token", %{user: _user, token: token} do
-      {1, nil} = Repo.update_all(UserToken, set: [inserted_at: ~N[2020-01-01 00:00:00]])
+    test "does not return user for expired token", %{user: user, token: token} do
+      {1, nil} =
+        Repo.update_all(from(token_record in UserToken, where: token_record.user_id == ^user.id),
+          set: [inserted_at: ~N[2020-01-01 00:00:00]]
+        )
 
       refute Accounts.get_user_by_session_token(token)
     end
@@ -521,7 +527,10 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "does not confirm email if token expired", %{user: user, token: token} do
-      {1, nil} = Repo.update_all(UserToken, set: [inserted_at: ~N[2020-01-01 00:00:00]])
+      {1, nil} =
+        Repo.update_all(from(token_record in UserToken, where: token_record.user_id == ^user.id),
+          set: [inserted_at: ~N[2020-01-01 00:00:00]]
+        )
 
       assert Accounts.confirm_user(token) == :error
       refute Accounts.get_user!(user.id).confirmed_at
@@ -575,8 +584,11 @@ defmodule GtfsPlanner.AccountsTest do
       refute Accounts.get_user_by_reset_password_token("oops")
     end
 
-    test "does not return user if token expired", %{user: _user, token: token} do
-      {1, nil} = Repo.update_all(UserToken, set: [inserted_at: ~N[2020-01-01 00:00:00]])
+    test "does not return user if token expired", %{user: user, token: token} do
+      {1, nil} =
+        Repo.update_all(from(token_record in UserToken, where: token_record.user_id == ^user.id),
+          set: [inserted_at: ~N[2020-01-01 00:00:00]]
+        )
 
       refute Accounts.get_user_by_reset_password_token(token)
     end
@@ -875,6 +887,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "rolls back the new user when the organization does not exist" do
       users_before = Repo.aggregate(User, :count)
       tokens_before = Repo.aggregate(UserToken, :count)
+      memberships_before = Repo.aggregate(UserOrgMembership, :count)
 
       assert {:error, changeset} =
                Accounts.invite_member(
@@ -887,7 +900,7 @@ defmodule GtfsPlanner.AccountsTest do
       assert changeset.action == :insert
       assert Repo.aggregate(User, :count) == users_before
       assert Repo.aggregate(UserToken, :count) == tokens_before
-      assert Repo.aggregate(UserOrgMembership, :count) == 0
+      assert Repo.aggregate(UserOrgMembership, :count) == memberships_before
       assert_no_email_sent()
     end
 

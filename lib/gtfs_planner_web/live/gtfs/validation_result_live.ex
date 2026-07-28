@@ -1,25 +1,15 @@
 defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   use GtfsPlannerWeb, :live_view
-  alias GtfsPlannerWeb.Gtfs.ExportLive
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  @pathways_trip_test_poll_interval_ms 250
-
   @pathways_failure_messages %{
     no_walkability_tests: "No pathways tests are configured for this GTFS version.",
-    otp_runtime_failed: "Pathways validation failed during OTP runtime.",
-    otp_runtime_already_running:
-      "Another pathways runtime is already active for this organization.",
-    otp_start_failed: "Failed to start OTP runtime.",
-    otp_ready_timeout: "OTP runtime readiness timed out.",
-    otp_stop_failed: "OTP runtime failed while stopping.",
     query_failure: "Pathways validation failed due to route query errors.",
     scoring_failure: "Pathways validation failed due to scoring errors.",
     pathways_runner_spawn_failed: "Pathways validation could not start.",
-    pathways_trip_test_failed: "Pathways validation failed before OTP checks completed.",
     pathways_persistence_failed: "Pathways validation could not save run results.",
     pathways_export_prep_failed: "Pathways export preparation failed before runtime checks.",
     pathways_task_crashed: "Pathways validation task crashed unexpectedly.",
@@ -29,14 +19,19 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     pathways_results_unavailable: "Pathways validation results were unavailable."
   }
 
-  @otp_data_requirements_summary [
-    "Station-related stops need valid numeric lat/lon in range.",
-    "Longitude sign must match your region (for example, Chicago is negative).",
-    "Boarding areas (location_type=4) need a valid parent_station.",
-    "Service must be active for the test date and time.",
-    "GTFS references must resolve across stops, trips, routes, and service IDs.",
-    "Fix critical stop-to-street linking warnings before rerun."
-  ]
+  @pathways_failure_codes %{
+    "no_walkability_tests" => :no_walkability_tests,
+    "query_failure" => :query_failure,
+    "scoring_failure" => :scoring_failure,
+    "pathways_runner_spawn_failed" => :pathways_runner_spawn_failed,
+    "pathways_persistence_failed" => :pathways_persistence_failed,
+    "pathways_export_prep_failed" => :pathways_export_prep_failed,
+    "pathways_task_crashed" => :pathways_task_crashed,
+    "pathways_status_unavailable" => :pathways_status_unavailable,
+    "pathways_run_not_found" => :pathways_run_not_found,
+    "pathways_invalid_run_type" => :pathways_invalid_run_type,
+    "pathways_results_unavailable" => :pathways_results_unavailable
+  }
 
   @pathways_criteria_overview_definitions [
     %{kind: "expected_traversable", label: "Traversable"},
@@ -54,7 +49,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      |> assign(:page_title, "Validation Results")
      |> assign(:user_roles, user_roles)
      |> assign(:expanded_codes, MapSet.new())
-     |> assign(:pathways_preflight_issues, nil)
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_failure_message, nil)
      |> assign(:pathways_failure_diagnostics, [])
@@ -68,7 +62,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     # Verify authorization: ensure the run belongs to the current organization
-    if run.organization_id != organization_id do
+    if run.organization_id != organization_id or run.gtfs_version_id != gtfs_version_id do
       {:noreply,
        socket
        |> put_flash(:error, "Unauthorized access to validation run")
@@ -81,45 +75,16 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       pathways_failure = pathways_failure(run)
       pathways_failure_message = pathways_failure_message(run)
       pathways_failure_diagnostics = pathways_failure_diagnostics(run)
-      pathways_preflight_issues = pathways_preflight_issues(run)
 
       {:noreply,
        socket
        |> assign(:validation_id, validation_id)
        |> assign(:run, run)
-       |> assign(:pathways_preflight_issues, pathways_preflight_issues)
        |> assign(:pathways_failure, pathways_failure)
        |> assign(:pathways_failure_message, pathways_failure_message)
        |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
        |> assign(:pathways_case_results, pathways_case_results)
-       |> stream(:validation_runs, validation_runs_history)
-       |> maybe_schedule_pathways_status_poll(run)}
-    end
-  end
-
-  @impl Phoenix.LiveView
-  def handle_info({:poll_pathways_trip_test_status, validation_run_id}, socket) do
-    if poll_current_pathways_run?(socket, validation_run_id) do
-      case Validations.get_pathways_trip_test_status(validation_run_id) do
-        {:ok, %{status: "started"}} ->
-          schedule_pathways_status_poll(validation_run_id)
-          {:noreply, refresh_pathways_run(socket, validation_run_id)}
-
-        {:ok, %{status: "running"}} ->
-          schedule_pathways_status_poll(validation_run_id)
-          {:noreply, refresh_pathways_run(socket, validation_run_id)}
-
-        {:ok, %{status: "completed"}} ->
-          {:noreply, refresh_pathways_run(socket, validation_run_id)}
-
-        {:ok, %{status: "failed"}} ->
-          {:noreply, refresh_pathways_run(socket, validation_run_id)}
-
-        {:error, _reason} ->
-          {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
+       |> stream(:validation_runs, validation_runs_history)}
     end
   end
 
@@ -220,7 +185,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                     <% else %>
                       <h3 class="text-base font-semibold leading-6">Validation Failed</h3>
                       <p class="mt-1 text-sm leading-5 text-base-content/85">
-                        {failure_summary(@run, @pathways_preflight_issues)}
+                        {failure_summary(@run)}
                       </p>
                     <% end %>
                   </div>
@@ -263,57 +228,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                     </section>
                   <% end %>
 
-                  <%= if @pathways_preflight_issues do %>
-                    <section id="pathways-preflight-issues" class="space-y-4">
-                      <%= if @pathways_preflight_issues.blocking_errors != [] do %>
-                        <section id="pathways-preflight-blocking-errors" class="space-y-2">
-                          <h4 class="text-xs font-semibold uppercase tracking-wide text-error">
-                            Blocking errors
-                          </h4>
-                          <ul class="space-y-2 text-sm">
-                            <li
-                              :for={issue <- @pathways_preflight_issues.blocking_errors}
-                              class="border-l-2 border-error/60 pl-3"
-                            >
-                              <p class="leading-5 text-base-content">{issue.message}</p>
-                              <p
-                                :if={issue_context_text = preflight_issue_context(issue)}
-                                class="mt-1 font-mono text-xs leading-5 text-base-content/70"
-                              >
-                                {issue_context_text}
-                              </p>
-                            </li>
-                          </ul>
-                        </section>
-                      <% end %>
-
-                      <%= if @pathways_preflight_issues.warnings != [] do %>
-                        <section
-                          id="pathways-preflight-warnings"
-                          class="space-y-2 border-t border-base-300 pt-3"
-                        >
-                          <h4 class="text-xs font-semibold uppercase tracking-wide text-warning">
-                            Warnings
-                          </h4>
-                          <ul class="space-y-2 text-sm">
-                            <li
-                              :for={issue <- @pathways_preflight_issues.warnings}
-                              class="border-l-2 border-warning/60 pl-3"
-                            >
-                              <p class="leading-5 text-base-content">{issue.message}</p>
-                              <p
-                                :if={issue_context_text = preflight_issue_context(issue)}
-                                class="mt-1 font-mono text-xs leading-5 text-base-content/70"
-                              >
-                                {issue_context_text}
-                              </p>
-                            </li>
-                          </ul>
-                        </section>
-                      <% end %>
-                    </section>
-                  <% end %>
-
                   <%= if @pathways_failure_diagnostics != [] do %>
                     <section
                       id="pathways-failure-diagnostics"
@@ -337,23 +251,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                           <% end %>
                         </div>
                       </dl>
-                    </section>
-                  <% end %>
-
-                  <%= if @pathways_failure do %>
-                    <section
-                      id="otp-data-requirements-summary"
-                      class="rounded-lg border border-base-300 bg-base-100 p-4"
-                    >
-                      <h3 class="text-sm font-semibold text-base-content">
-                        OTP data requirements (quick checks)
-                      </h3>
-                      <p class="mt-1 text-xs text-base-content/70">
-                        Fix these common blockers before rerunning pathways validation.
-                      </p>
-                      <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
-                        <li :for={item <- otp_data_requirements_summary()}>{item}</li>
-                      </ul>
                     </section>
                   <% end %>
                 </div>
@@ -1751,178 +1648,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp pathways_empty_itinerary_text, do: "No itinerary steps available."
 
-  defp maybe_schedule_pathways_status_poll(socket, %{
-         run_type: "pathways_tests",
-         status: status,
-         id: id
-       })
-       when status in ["started", "running"] do
-    schedule_pathways_status_poll(id)
-    socket
-  end
-
-  defp maybe_schedule_pathways_status_poll(socket, _run), do: socket
-
-  defp poll_current_pathways_run?(socket, validation_run_id) do
-    case socket.assigns[:run] do
-      %{id: ^validation_run_id, run_type: "pathways_tests", status: status}
-      when status in ["started", "running"] ->
-        true
-
-      _ ->
-        false
-    end
-  end
-
-  defp schedule_pathways_status_poll(validation_run_id) do
-    Process.send_after(
-      self(),
-      {:poll_pathways_trip_test_status, validation_run_id},
-      @pathways_trip_test_poll_interval_ms
-    )
-  end
-
-  defp refresh_pathways_run(socket, validation_run_id) do
-    run = Validations.get_validation_run!(validation_run_id)
-    {run, pathways_case_results} = load_pathways_render_data(run)
-    pathways_failure = pathways_failure(run)
-    pathways_failure_message = pathways_failure_message(run)
-
-    socket
-    |> assign(:run, run)
-    |> assign(:pathways_preflight_issues, pathways_preflight_issues(run))
-    |> assign(:pathways_failure, pathways_failure)
-    |> assign(:pathways_failure_message, pathways_failure_message)
-    |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics(run))
-    |> assign(:pathways_case_results, pathways_case_results)
-  end
-
-  defp failure_summary(%{run_type: "pathways_tests"}, pathways_preflight_issues)
-       when not is_nil(pathways_preflight_issues) do
-    "Pathways export readiness failed before build packaging."
-  end
-
-  defp failure_summary(run, _pathways_preflight_issues), do: run.error_details
-
-  defp pathways_preflight_issues(%{
-         run_type: "pathways_tests",
-         status: "failed",
-         error_details: error_details
-       })
-       when is_binary(error_details) do
-    case Jason.decode(error_details) do
-      {:ok, payload} when is_map(payload) ->
-        normalize_preflight_issues(payload)
-
-      _other ->
-        nil
-    end
-  end
-
-  defp pathways_preflight_issues(_run), do: nil
-
-  defp normalize_preflight_issues(payload) do
-    details = payload_value(payload, :details)
-
-    {blocking_errors, warnings} =
-      case details do
-        details when is_map(details) ->
-          details_blocking_errors =
-            details
-            |> payload_value(:blocking_errors)
-            |> normalize_preflight_issue_list()
-
-          details_warnings =
-            details
-            |> payload_value(:warnings)
-            |> normalize_preflight_issue_list()
-
-          if details_blocking_errors == [] and details_warnings == [] do
-            split_preflight_issues_by_severity(payload_value(payload, :issues))
-          else
-            {details_blocking_errors, details_warnings}
-          end
-
-        _other ->
-          split_preflight_issues_by_severity(payload_value(payload, :issues))
-      end
-
-    if blocking_errors == [] and warnings == [] do
-      nil
-    else
-      %{
-        blocking_errors: blocking_errors,
-        warnings: warnings
-      }
-    end
-  end
-
-  defp split_preflight_issues_by_severity(issues) do
-    issues
-    |> normalize_preflight_issue_list()
-    |> Enum.split_with(&(&1.severity == :blocking))
-  end
-
-  defp normalize_preflight_issue_list(issues) when is_list(issues) do
-    Enum.map(issues, &normalize_preflight_issue/1)
-  end
-
-  defp normalize_preflight_issue_list(_issues), do: []
-
-  defp normalize_preflight_issue(issue) when is_map(issue) do
-    code = payload_value(issue, :code)
-    message = payload_value(issue, :message) || "Validation preparation issue"
-    severity = normalize_preflight_issue_severity(payload_value(issue, :severity))
-
-    context =
-      payload_value(issue, :context) || payload_value(issue, :details) || %{}
-
-    %{
-      code: code,
-      severity: severity,
-      message: to_string(message),
-      context: context
-    }
-  end
-
-  defp normalize_preflight_issue(issue) do
-    %{
-      code: nil,
-      severity: :blocking,
-      message: inspect(issue),
-      context: %{}
-    }
-  end
-
-  defp normalize_preflight_issue_severity(value) when value in [:warning, "warning"], do: :warning
-  defp normalize_preflight_issue_severity(_value), do: :blocking
-
-  defp preflight_issue_context(issue) do
-    context = Map.get(issue, :context, %{})
-
-    [
-      context_value(context, :file),
-      context_value(context, :field),
-      context_value(context, :stop_id),
-      context_value(context, :pathway_id),
-      context_value(context, :trip_id),
-      context_value(context, :route_id),
-      context_value(context, :service_id),
-      context_value(context, :value)
-    ]
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> case do
-      [] -> nil
-      values -> Enum.join(values, " · ")
-    end
-  end
-
-  defp context_value(context, key) when is_map(context) do
-    case payload_value(context, key) do
-      nil -> nil
-      value -> to_string(value)
-    end
-  end
+  defp failure_summary(run), do: run.error_details
 
   defp pathways_failure_diagnostics(%{
          run_type: "pathways_tests",
@@ -1964,9 +1690,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
        when is_binary(error_details) do
     case Jason.decode(error_details) do
       {:ok, payload} when is_map(payload) ->
-        payload
-        |> ExportLive.classify_pathways_failure_category()
-        |> ExportLive.present_pathways_failure(payload)
+        %{
+          title: "Pathways validation failed",
+          summary: Map.get(payload, "message", failure_summary(%{error_details: error_details})),
+          checks: [],
+          details: [],
+          blocking_issues: []
+        }
 
       _other ->
         nil
@@ -1987,7 +1717,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         |> pathways_failure_tokens()
         |> Enum.find_value(&normalize_pathways_failure_code/1)
         |> case do
-          nil -> failure_summary(%{error_details: error_details, run_type: "pathways_tests"}, nil)
+          nil -> failure_summary(%{error_details: error_details, run_type: "pathways_tests"})
           code -> Map.get(@pathways_failure_messages, code, "Pathways validation failed")
         end
 
@@ -1996,7 +1726,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     end
   end
 
-  defp pathways_failure_message(run), do: failure_summary(run, nil)
+  defp pathways_failure_message(run), do: failure_summary(run)
 
   defp pathways_failure_tokens(error_payload) do
     reason = payload_value(error_payload, :reason)
@@ -2018,21 +1748,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   defp normalize_pathways_failure_code(:no_walkability_tests), do: :no_walkability_tests
-
-  defp normalize_pathways_failure_code(:otp_runtime_already_running),
-    do: :otp_runtime_already_running
-
-  defp normalize_pathways_failure_code(:otp_start_failed), do: :otp_start_failed
-  defp normalize_pathways_failure_code(:otp_runtime_failed), do: :otp_runtime_failed
-  defp normalize_pathways_failure_code(:otp_ready_timeout), do: :otp_ready_timeout
-  defp normalize_pathways_failure_code(:otp_stop_failed), do: :otp_stop_failed
   defp normalize_pathways_failure_code(:query_failure), do: :query_failure
   defp normalize_pathways_failure_code(:scoring_failure), do: :scoring_failure
 
   defp normalize_pathways_failure_code(:pathways_runner_spawn_failed),
     do: :pathways_runner_spawn_failed
-
-  defp normalize_pathways_failure_code(:pathways_trip_test_failed), do: :pathways_trip_test_failed
 
   defp normalize_pathways_failure_code(:pathways_persistence_failed),
     do: :pathways_persistence_failed
@@ -2052,31 +1772,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     do: :pathways_results_unavailable
 
   defp normalize_pathways_failure_code(value) when is_binary(value) do
-    case value do
-      "no_walkability_tests" -> :no_walkability_tests
-      "otp_runtime_already_running" -> :otp_runtime_already_running
-      "otp_start_failed" -> :otp_start_failed
-      "otp_runtime_failed" -> :otp_runtime_failed
-      "otp_ready_timeout" -> :otp_ready_timeout
-      "otp_stop_failed" -> :otp_stop_failed
-      "query_failure" -> :query_failure
-      "scoring_failure" -> :scoring_failure
-      "pathways_runner_spawn_failed" -> :pathways_runner_spawn_failed
-      "pathways_trip_test_failed" -> :pathways_trip_test_failed
-      "pathways_persistence_failed" -> :pathways_persistence_failed
-      "pathways_export_prep_failed" -> :pathways_export_prep_failed
-      "pathways_task_crashed" -> :pathways_task_crashed
-      "pathways_status_unavailable" -> :pathways_status_unavailable
-      "pathways_run_not_found" -> :pathways_run_not_found
-      "pathways_invalid_run_type" -> :pathways_invalid_run_type
-      "pathways_results_unavailable" -> :pathways_results_unavailable
-      _other -> nil
-    end
+    Map.get(@pathways_failure_codes, value)
   end
 
   defp normalize_pathways_failure_code(_value), do: nil
-
-  defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 
   defp pathways_failure_exit_status(payload) do
     case pathways_build_failure_reason_code(payload) do
@@ -2264,13 +1963,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp payload_value(_payload, _key), do: nil
 
   defp load_pathways_render_data(%{run_type: "pathways_tests", status: "completed"} = run) do
-    case Validations.get_pathways_trip_test_results(run.id) do
-      {:ok, %{result_json: result_json, walkability_test_run_results: case_rows}} ->
-        {%{run | result_json: result_json}, case_rows}
-
-      {:error, _reason} ->
-        {%{run | result_json: nil}, []}
-    end
+    {run, Validations.Legacy.list_run_results(run.id)}
   end
 
   defp load_pathways_render_data(run), do: {run, []}

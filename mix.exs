@@ -5,7 +5,7 @@ defmodule GtfsPlanner.MixProject do
     [
       app: :gtfs_planner,
       version: "0.1.0",
-      elixir: "~> 1.15",
+      elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
@@ -83,7 +83,12 @@ defmodule GtfsPlanner.MixProject do
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:sobelow, "~> 0.14.1", only: :dev, runtime: false},
       {:live_select, "~> 1.4"},
-      {:dotenv_parser, "~> 2.0"}
+      {:dotenv_parser, "~> 2.0"},
+      {:pathways_router,
+       github: "TransitOPS/gtfs-pathways-router",
+       ref: "f1bf1b58e29307d410742af95dfde18111bcb07a",
+       sparse: "elixir",
+       depth: 1}
     ]
   end
 
@@ -97,7 +102,6 @@ defmodule GtfsPlanner.MixProject do
     [
       setup: [
         "deps.get",
-        "gtfs.otp.check --create-dir --warn-only",
         "ecto.setup",
         "assets.setup",
         "assets.build"

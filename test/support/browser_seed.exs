@@ -28,6 +28,7 @@ alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
+alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTest, WalkabilityTestRunResult}
 alias GtfsPlanner.Versions
 
 import Ecto.Query
@@ -349,6 +350,114 @@ case Accounts.register_first_admin(%{
       })
 
     IO.puts("Browser seed: elevator pathway BROWSER_STOP_C → BROWSER_STOP_A")
+
+    # ── Reachability result fixtures (reachability_results.spec.js) ──
+    #
+    # A completed router run, a completed legacy station run, and a completed
+    # legacy pathways run exercise each rendering branch without asking browser
+    # tests to race background work.
+    reachability_started_at = ~U[2026-07-28 12:00:00Z]
+
+    _new_reachability_run =
+      %ValidationRun{
+        id: "00000000-0000-4000-8000-000000000901",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      }
+      |> ValidationRun.changeset(%{
+        run_type: "station_reachability",
+        status: "completed",
+        engine: "pathways_router",
+        result_schema_version: 1,
+        started_at: reachability_started_at,
+        completed_at: reachability_started_at,
+        result_json: %{
+          "report_version" => 1,
+          "outcome" => "passed",
+          "metadata" => %{"station_stop_id" => station.stop_id},
+          "topology" => %{
+            "entrance_count" => 1,
+            "platform_count" => 2,
+            "pathway_count" => 1,
+            "level_count" => 1
+          },
+          "pairs" => [
+            %{
+              "index" => 0,
+              "mode" => "walking",
+              "outcome" => "reachable",
+              "from_stop_id" => browser_child_c.stop_id,
+              "to_stop_id" => browser_child_a.stop_id,
+              "duration_seconds" => 45.0,
+              "distance_meters" => 12.5,
+              "step_count" => 1
+            }
+          ],
+          "diagnostics" => []
+        }
+      })
+      |> Repo.insert!()
+
+    legacy_walkability_test =
+      %WalkabilityTest{
+        id: "00000000-0000-4000-8000-000000000903",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      }
+      |> WalkabilityTest.changeset(%{
+        stop_id: browser_child_c.stop_id,
+        address: "Browser legacy destination",
+        address_lat: Decimal.new("40.0390"),
+        address_lon: Decimal.new("-75.1440"),
+        description: "Legacy browser test"
+      })
+      |> Repo.insert!()
+
+    legacy_station_run =
+      %ValidationRun{
+        id: "00000000-0000-4000-8000-000000000902",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      }
+      |> ValidationRun.changeset(%{
+        run_type: "station_reachability",
+        status: "completed",
+        started_at: reachability_started_at,
+        completed_at: reachability_started_at,
+        result_json: %{"metadata" => %{"station_stop_id" => station.stop_id}}
+      })
+      |> Repo.insert!()
+
+    legacy_validation_run =
+      %ValidationRun{
+        id: "00000000-0000-4000-8000-000000000905",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      }
+      |> ValidationRun.changeset(%{
+        run_type: "pathways_tests",
+        status: "completed",
+        started_at: reachability_started_at,
+        completed_at: reachability_started_at,
+        result_json: %{"summary" => %{}}
+      })
+      |> Repo.insert!()
+
+    for run <- [legacy_station_run, legacy_validation_run] do
+      %WalkabilityTestRunResult{
+        validation_run_id: run.id,
+        walkability_test_id: legacy_walkability_test.id
+      }
+      |> WalkabilityTestRunResult.changeset(%{
+        order_index: 0,
+        status: "passed",
+        route_exists: true,
+        duration_seconds: 45.0
+      })
+      |> Repo.insert!()
+    end
+
+    IO.puts("Browser seed: completed router and legacy reachability result fixtures")
 
     # ── Station journal fixtures (station_journal_panel.spec.js, Package 02) ──
     #

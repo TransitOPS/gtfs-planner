@@ -10,7 +10,6 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Otp.Preflight
 
   @spec build(struct(), pos_integer(), Ecto.UUID.t(), String.t()) :: :ok
   def build(run, generation, token, _topic) do
@@ -46,10 +45,16 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   defp preflight(run) do
     warnings =
-      case preflight_module().run(run.organization_id, run.gtfs_version_id) do
-        :ok -> []
-        {:error, issues} when is_list(issues) -> Enum.map(issues, &warning_from_issue/1)
-        _ -> []
+      case preflight_module() do
+        nil ->
+          []
+
+        module ->
+          case module.run(run.organization_id, run.gtfs_version_id) do
+            :ok -> []
+            {:error, issues} when is_list(issues) -> Enum.map(issues, &warning_from_issue/1)
+            _ -> []
+          end
       end
 
     {:ok, Enum.take(warnings, 100)}
@@ -115,5 +120,5 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
     do: Application.get_env(:gtfs_planner, :gtfs_export_module, Export)
 
   defp preflight_module,
-    do: Application.get_env(:gtfs_planner, :otp_preflight_module, Preflight)
+    do: Application.get_env(:gtfs_planner, :otp_preflight_module)
 end

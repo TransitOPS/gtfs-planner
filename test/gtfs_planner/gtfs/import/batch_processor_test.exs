@@ -74,7 +74,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       assert {:ok, {:ok, 10}} = result
 
       # Verify all levels were inserted
-      levels = Repo.all(Level)
+      levels = levels_for_scope(org_id, version_id)
       assert length(levels) == 10
     end
 
@@ -266,7 +266,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       assert {:error, _} = result
 
       # Verify no levels were inserted (transaction rolled back)
-      levels = Repo.all(Level)
+      levels = levels_for_scope(org_id, version_id)
       assert levels == []
     end
 
@@ -328,7 +328,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
                 reason: :wrong_field_count
               }} = result
 
-      levels = Repo.all(Level)
+      levels = levels_for_scope(org_id, version_id)
       assert levels == []
 
       # Only the events before and including the structural error were realized;
@@ -392,7 +392,10 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
                  batch_size: 2
                )
 
-      assert Repo.all(Level) |> Enum.map(& &1.level_id) |> Enum.sort() == ["L1", "L2"]
+      assert levels_for_scope(org_id, version_id) |> Enum.map(& &1.level_id) |> Enum.sort() == [
+               "L1",
+               "L2"
+             ]
     end
 
     test "commits complete batches, discards the error batch, and stops consuming", %{
@@ -448,7 +451,10 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
                  batch_size: 2
                )
 
-      assert Repo.all(Level) |> Enum.map(& &1.level_id) |> Enum.sort() == ["L1", "L2"]
+      assert levels_for_scope(org_id, version_id) |> Enum.map(& &1.level_id) |> Enum.sort() == [
+               "L1",
+               "L2"
+             ]
 
       assert Process.get(:bp_transaction_consumed, [])
              |> Enum.reverse()
@@ -457,5 +463,14 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
                {:error, %GtfsPlanner.Gtfs.Import.ParseError{row: row}} -> {:error, row}
              end) == [{:ok, 2}, {:ok, 3}, {:ok, 4}, {:error, 5}]
     end
+  end
+
+  defp levels_for_scope(organization_id, gtfs_version_id) do
+    Level
+    |> where(
+      [level],
+      level.organization_id == ^organization_id and level.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
   end
 end

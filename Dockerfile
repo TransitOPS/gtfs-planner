@@ -32,7 +32,7 @@ RUN mix deps.compile
 
 COPY lib lib
 COPY priv priv
-RUN rm -rf priv/otp priv/gtfs_validator priv/static/uploads
+RUN rm -rf priv/gtfs_validator priv/static/uploads
 RUN mkdir -p priv/static/uploads
 RUN mix compile
 
@@ -73,14 +73,6 @@ RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install
     export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= && \
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
     /app/bin/gtfs_planner eval ":ok = :public_key.cacerts_load()" || exit 1
-
-# Install OpenTripPlanner 2.8.1 (not started automatically)
-RUN mkdir -p /opt/otp/data && \
-    curl -fL --retry 3 --retry-delay 2 -o /opt/otp/otp.jar \
-    "https://github.com/opentripplanner/OpenTripPlanner/releases/download/v2.8.1/otp-shaded-2.8.1.jar" && \
-    curl -fL --retry 3 --retry-delay 2 -o /opt/otp/data/philadelphia.osm.pbf \
-    "https://download.bbbike.org/osm/bbbike/Philadelphia/Philadelphia.osm.pbf" && \
-    chown -R nobody:root /opt/otp
 
 # Install MobilityData GTFS Validator 7.1.0 (not started automatically)
 RUN mkdir -p /opt/gtfs-validator && \

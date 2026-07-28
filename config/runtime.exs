@@ -53,9 +53,22 @@ task_artifacts_path =
       expanded_path
 
     _ ->
-      if config_env() == :test,
-        do: Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts"),
-        else: nil
+      # Production must declare the mount explicitly; dev and test get a working
+      # default so exports and diff reviews run without extra setup. The
+      # directory is created here because storage readiness never creates it —
+      # an absent root in production means the volume is not mounted.
+      case config_env() do
+        :test ->
+          Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts")
+
+        :dev ->
+          default_path = Path.expand("../tmp/gtfs_task_artifacts", __DIR__)
+          File.mkdir_p!(default_path)
+          default_path
+
+        _ ->
+          nil
+      end
   end
 
 config :gtfs_planner, :gtfs_task_artifacts_path, task_artifacts_path
@@ -90,71 +103,6 @@ config :gtfs_planner,
            do: "java",
            else: "/opt/homebrew/opt/openjdk@21/bin/java"
          )
-
-config :gtfs_planner,
-       :otp_jar_path,
-       System.get_env("OTP_JAR_PATH") ||
-         if(config_env() == :prod,
-           do: "/opt/otp/otp.jar",
-           else: Path.expand("../priv/otp/opentripplanner.jar", __DIR__)
-         )
-
-config :gtfs_planner,
-       :otp_osm_path,
-       System.get_env("OTP_OSM_PATH") ||
-         if(config_env() == :prod,
-           do: "/opt/otp/data/philadelphia.osm.pbf",
-           else: Path.expand("../priv/otp/region.osm.pbf", __DIR__)
-         )
-
-config :gtfs_planner,
-       :otp_runtime_path,
-       System.get_env("OTP_RUNTIME_PATH") ||
-         Path.join(System.tmp_dir!(), "gtfs_planner/otp_runtime")
-
-config :gtfs_planner,
-       :otp_artifacts_path,
-       System.get_env("OTP_ARTIFACTS_PATH") ||
-         Path.join(System.tmp_dir!(), "gtfs_planner_otp_artifacts")
-
-config :gtfs_planner,
-       :otp_graph_build_heap,
-       System.get_env("OTP_GRAPH_BUILD_HEAP") || "4G"
-
-config :gtfs_planner,
-       :otp_graph_build_timeout_ms,
-       System.get_env("OTP_GRAPH_BUILD_TIMEOUT_MS", "600000")
-       |> String.to_integer()
-
-config :gtfs_planner, :otp_server_host, System.get_env("OTP_SERVER_HOST") || "127.0.0.1"
-
-config :gtfs_planner,
-       :otp_server_port,
-       System.get_env("OTP_SERVER_PORT", "8080")
-       |> String.to_integer()
-
-config :gtfs_planner, :otp_server_heap, System.get_env("OTP_SERVER_HEAP") || "4G"
-
-config :gtfs_planner,
-       :otp_server_ready_timeout_ms,
-       System.get_env("OTP_SERVER_READY_TIMEOUT_MS", "30000")
-       |> String.to_integer()
-
-config :gtfs_planner,
-       :otp_server_ready_poll_interval_ms,
-       System.get_env("OTP_SERVER_READY_POLL_INTERVAL_MS", "250")
-       |> String.to_integer()
-
-config :gtfs_planner,
-       :otp_server_shutdown_timeout_ms,
-       System.get_env("OTP_SERVER_SHUTDOWN_TIMEOUT_MS", "5000")
-       |> String.to_integer()
-
-config :gtfs_planner,
-       :otp_graphql_path,
-       System.get_env("OTP_GRAPHQL_PATH") || "/otp/routers/default/index/graphql"
-
-config :gtfs_planner, :otp_jar_sha256, System.get_env("OTP_JAR_SHA256")
 
 config :gtfs_planner, :mail_domain, System.get_env("MAIL_DOMAIN") || "gtfsplanner.com"
 

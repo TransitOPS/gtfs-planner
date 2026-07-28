@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
   use GtfsPlannerWeb.ConnCase, async: true
 
+  import Ecto.Query
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -580,7 +581,11 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
                }
              } = json_response(rejected_conn, 400)
 
-      assert Repo.aggregate(JournalEntry, :count, :id) == 100
+      entry_ids = Enum.map(entries, & &1["id"])
+
+      assert JournalEntry
+             |> where([entry], entry.id in ^entry_ids)
+             |> Repo.aggregate(:count, :id) == 100
     end
 
     test "scopes pathways and keeps valid journal siblings when an invalid target is rejected", %{

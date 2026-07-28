@@ -9,8 +9,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
         stop_name: "Stop",
         wheelchair_boarding: nil,
         level_id: nil,
-        stop_lat: nil,
-        stop_lon: nil,
+        stop_lat: Decimal.new("39.95"),
+        stop_lon: Decimal.new("-75.16"),
         parent_station: "STATION_1"
       },
       attrs

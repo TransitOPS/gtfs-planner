@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
   use GtfsPlanner.DataCase, async: false
 
+  import Ecto.Query
   import ExUnit.CaptureLog
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -245,14 +246,18 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
   end
 
   test "row/correct-file retry returns the original row and removes stale temporary files",
-       context do
+       %{entry: entry} = context do
     photo_id = Ecto.UUID.generate()
     assert {:ok, photo} = create_photo(context, photo_id, @jpeg)
     stale_path = stale_temp_path(context.root, context.scope, photo_id)
     File.write!(stale_path, "stale")
 
     assert {:ok, ^photo} = create_photo(context, photo_id, @jpeg)
-    assert Repo.aggregate(JournalPhoto, :count, :id) == 1
+
+    assert JournalPhoto
+           |> where([photo], photo.journal_entry_id == ^entry.id)
+           |> Repo.aggregate(:count, :id) == 1
+
     assert File.read!(final_path(context.root, context.scope, photo_id)) == @jpeg
     assert [] == temporary_files(context.root, context.scope, photo_id)
   end

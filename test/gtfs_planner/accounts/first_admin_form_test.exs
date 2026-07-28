@@ -96,6 +96,8 @@ defmodule GtfsPlanner.Accounts.FirstAdminFormTest do
 
     test "rejects a confirmation that does not match the password without persisting" do
       attrs = Map.put(@valid_attrs, "password_confirmation", "different password 123")
+      user_count = Repo.aggregate(User, :count, :id)
+      organization_count = Repo.aggregate(Organization, :count, :id)
 
       changeset = FirstAdminForm.changeset(attrs)
 
@@ -105,8 +107,8 @@ defmodule GtfsPlanner.Accounts.FirstAdminFormTest do
                password_confirmation: {"does not match password", [validation: :confirmation]}
              ]
 
-      assert Repo.aggregate(User, :count) == 0
-      assert Repo.aggregate(Organization, :count) == 0
+      assert Repo.aggregate(User, :count, :id) == user_count
+      assert Repo.aggregate(Organization, :count, :id) == organization_count
     end
 
     test "accepts a blank alias by using the organization name as the alias candidate" do

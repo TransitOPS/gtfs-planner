@@ -4,10 +4,13 @@ defmodule GtfsPlanner.ValidationsFixtures do
   entities via the `GtfsPlanner.Validations` context.
   """
 
-  @doc """
-  Generate a walkability test fixture.
+  alias GtfsPlanner.Repo
+  alias GtfsPlanner.Validations.WalkabilityTest
 
-  When called, requires `organization_id` and `gtfs_version_id` in attrs.
+  @doc """
+  Generate a walkability test fixture via direct insertion.
+
+  The write API was retired; tests that need legacy data insert directly.
   """
   def walkability_test_fixture(attrs \\ %{}) do
     {organization_id, attrs} = Map.pop!(attrs, :organization_id)
@@ -21,9 +24,8 @@ defmodule GtfsPlanner.ValidationsFixtures do
         address_lon: Decimal.new("-71.0589")
       })
 
-    {:ok, walkability_test} =
-      GtfsPlanner.Validations.create_walkability_test(organization_id, gtfs_version_id, attrs)
-
-    walkability_test
+    %WalkabilityTest{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+    |> WalkabilityTest.changeset(attrs)
+    |> Repo.insert!()
   end
 end

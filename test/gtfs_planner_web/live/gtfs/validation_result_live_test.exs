@@ -8,7 +8,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTestRunResult}
 
   describe "ValidationResultLive" do
     setup do
@@ -98,177 +100,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       # Should display error details
       assert html =~ "RuntimeError"
-    end
-
-    test "renders build diagnostics and excerpt for failed pathways run", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      {:ok, run} =
-        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
-
-      temp_dir =
-        Path.join(
-          System.tmp_dir!(),
-          "validation-result-build-log-#{System.unique_integer([:positive])}"
-        )
-
-      build_log_path = Path.join(temp_dir, "build.log")
-      File.mkdir_p!(temp_dir)
-
-      File.write!(
-        build_log_path,
-        """
-        INFO graph build started
-        ERROR Graph build failed
-        ERROR Failed to load pathways.txt due to malformed csv row
-        java.lang.NullPointerException
-        java.lang.IllegalStateException: invalid stop linkage
-        Caused by: missing parent_station
-        """
-      )
-
-      on_exit(fn ->
-        File.rm_rf(temp_dir)
-      end)
-
-      {:ok, run} =
-        Validations.mark_pathways_failed(run, %{
-          reason: :otp_runtime_failed,
-          issues: [
-            %{
-              code: :build_failed,
-              details: %{
-                reason_code: :build_command_failed,
-                exit_status: 255,
-                build_log_path: build_log_path
-              }
-            }
-          ]
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
-
-      assert html =~ "FAILED"
-      assert has_element?(view, "#pathways-failure-title")
-      assert has_element?(view, "#pathways-failure-summary")
-      assert has_element?(view, "#pathways-failure-status-message")
-      assert has_element?(view, "#pathways-failure-checks")
-      assert has_element?(view, "#pathways-failure-diagnostics")
-      assert html =~ "Exit status:"
-      assert html =~ "255"
-      assert html =~ "Build log path:"
-      assert html =~ build_log_path
-      assert html =~ "Build log excerpt:"
-      assert html =~ "ERROR Graph build failed"
-      assert html =~ "Caused by: missing parent_station"
-      assert html =~ "Likely GTFS source:"
-      assert html =~ "Issue appears to come from pathways.txt."
-      assert html =~ "Likely cause:"
-
-      assert html =~
-               "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
-
-      assert has_element?(view, "#otp-data-requirements-summary")
-    end
-
-    test "renders structured preflight blocking and warning issues for failed pathways run", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      {:ok, run} =
-        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
-
-      {:ok, run} =
-        Validations.mark_pathways_failed(run, %{
-          reason: :pathways_export_prep_failed,
-          details: %{
-            blocking_errors: [
-              %{
-                code: :boarding_area_parent_station_missing,
-                severity: :blocking,
-                message: "Boarding area ba-1 is missing parent_station in stops.txt.",
-                context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
-              }
-            ],
-            warnings: [
-              %{
-                code: :pathway_endpoint_stop_not_found,
-                severity: :warning,
-                message: "Pathway p-1 references unknown to_stop_id S-404 in pathways.txt.",
-                context: %{file: "pathways.txt", field: "to_stop_id", pathway_id: "p-1"}
-              }
-            ]
-          }
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
-
-      assert has_element?(view, "#pathways-failure-title")
-      assert has_element?(view, "#pathways-failure-checks")
-      refute has_element?(view, "#pathways-failure-blocking-issues")
-      assert has_element?(view, "#pathways-failure-summary")
-      assert has_element?(view, "#pathways-preflight-issues")
-      assert has_element?(view, "#pathways-preflight-blocking-errors")
-      assert has_element?(view, "#pathways-preflight-warnings")
-      assert html =~ "Boarding area ba-1 is missing parent_station in stops.txt."
-      assert html =~ "Pathway p-1 references unknown to_stop_id S-404 in pathways.txt."
-      assert html =~ "stops.txt · parent_station · ba-1"
-      assert html =~ "pathways.txt · to_stop_id · p-1"
-    end
-
-    test "renders preflight blocking and warning sections when issues are only in root payload",
-         %{
-           conn: conn,
-           user: user,
-           organization: organization,
-           gtfs_version: version
-         } do
-      {:ok, run} =
-        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
-
-      {:ok, run} =
-        Validations.mark_pathways_failed(run, %{
-          reason: :pathways_export_prep_failed,
-          issues: [
-            %{
-              code: :station_stop_lon_sign_mismatch,
-              severity: :blocking,
-              message:
-                "Station st-1 has stop_lon with wrong sign for configured region in stops.txt.",
-              context: %{file: "stops.txt", field: "stop_lon", stop_id: "st-1"}
-            },
-            %{
-              code: :pathway_endpoint_stop_not_found,
-              severity: :warning,
-              message: "Pathway p-2 references unknown to_stop_id S-999 in pathways.txt.",
-              context: %{file: "pathways.txt", field: "to_stop_id", pathway_id: "p-2"}
-            }
-          ]
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
-
-      assert has_element?(view, "#pathways-failure-title")
-      assert has_element?(view, "#pathways-failure-checks")
-      assert has_element?(view, "#pathways-failure-blocking-issues")
-      assert html =~ "Pathways validation internal failure"
-      assert has_element?(view, "#pathways-preflight-blocking-errors")
-      assert has_element?(view, "#pathways-preflight-warnings")
-
-      assert html =~
-               "Station st-1 has stop_lon with wrong sign for configured region in stops.txt."
-
-      assert html =~ "Pathway p-2 references unknown to_stop_id S-999 in pathways.txt."
-      assert html =~ "stops.txt · stop_lon · st-1"
-      assert html =~ "pathways.txt · to_stop_id · p-2"
     end
 
     test "displays loading state for started validation run", %{
@@ -466,7 +297,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 250)
+      run = persist_legacy_pathways_run(run, run_result, 250)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -593,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 25)
+      run = persist_legacy_pathways_run(run, run_result, 25)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -691,7 +522,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 35)
+      run = persist_legacy_pathways_run(run, run_result, 35)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -802,7 +633,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         cases: []
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 5)
+      run = persist_legacy_pathways_run(run, run_result, 5)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -880,7 +711,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+      run = persist_legacy_pathways_run(run, run_result, 20)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -918,7 +749,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+      run = persist_legacy_pathways_run(run, run_result, 20)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -963,59 +794,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+      run = persist_legacy_pathways_run(run, run_result, 20)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
       assert has_element?(view, "#pathways-case-row-0 .text-warning", "WARNING")
       assert render(view |> element("#pathways-case-row-0")) =~ "Duration outside expected range"
-    end
-
-    test "poll refresh updates pathways run from running to completed", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      walkability_test =
-        walkability_test_fixture(%{organization_id: organization.id, gtfs_version_id: version.id})
-
-      {:ok, run} =
-        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
-
-      {:ok, run} = Validations.mark_pathways_running(run)
-
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
-
-      assert has_element?(view, ".text-info", "RUNNING")
-
-      run_result = %{
-        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
-        selected_test_case_ids: [walkability_test.id],
-        summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
-        cases: [
-          %{
-            test_case_id: walkability_test.id,
-            status: :passed,
-            route_output: %{route_exists: true, duration_seconds: 95.0, distance_meters: 140.0},
-            wheelchair_output: %{
-              route_exists: true,
-              duration_seconds: 110.0,
-              distance_meters: 160.0
-            }
-          }
-        ]
-      }
-
-      {:ok, _updated_run} = Validations.mark_pathways_completed(run, run_result, 10)
-
-      send(view.pid, {:poll_pathways_trip_test_status, run.id})
-
-      assert has_element?(view, ".text-success", "COMPLETED")
-      assert has_element?(view, "#pathways-case-row-0", walkability_test.id)
-      refute render(view) =~ "Validation in progress..."
     end
 
     test "history drawer contains links to past validation runs", %{
@@ -1140,5 +925,129 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert path == "/gtfs/#{version.id}/export"
       assert flash["error"] == "Unauthorized access to validation run"
     end
+
+    test "denies access to a validation run from another version in the same organization", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, other_run} =
+        Validations.create_validation_run(organization.id, other_version.id, "mobility_data")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      assert {:error, {:live_redirect, %{to: path, flash: flash}}} =
+               live(conn, "/gtfs/#{version.id}/validation/#{other_run.id}")
+
+      assert path == "/gtfs/#{version.id}/export"
+      assert flash["error"] == "Unauthorized access to validation run"
+    end
   end
+
+  defp persist_legacy_pathways_run(run, run_result, duration_ms) do
+    now = DateTime.utc_now()
+    summary = run_result.summary
+
+    report = %{
+      "report_version" => 1,
+      "suite_meta" => run_result.suite_meta,
+      "selected_test_case_ids" => run_result.selected_test_case_ids,
+      "selection" => %{
+        "total_candidates" => 0,
+        "in_scope_candidates" => 0,
+        "selected_count" => 0,
+        "invalid_count" => 0,
+        "scope_label" => nil,
+        "selected_test_case_ids" => [],
+        "invalid_test_case_ids" => [],
+        "invalid_cases" => []
+      },
+      "summary" => %{
+        "total" => summary.total,
+        "passed" => summary.passed,
+        "failed" => summary.failed,
+        "query_failure" => summary.query_failure,
+        "scoring_failure" => summary.scoring_failure,
+        "pass_rate" => pass_rate(summary.passed, summary.total)
+      },
+      "top_failure_categories" => top_failure_categories(summary),
+      "stage_timestamps" => %{
+        "started_at" => DateTime.to_iso8601(run.started_at),
+        "completed_at" => DateTime.to_iso8601(now)
+      }
+    }
+
+    Repo.transaction(fn ->
+      completed_run =
+        run
+        |> ValidationRun.changeset(%{
+          status: "completed",
+          errors_count: summary.failed,
+          warnings_count: summary.query_failure,
+          infos_count: summary.passed,
+          duration_ms: duration_ms,
+          result_json: report,
+          completed_at: now
+        })
+        |> Repo.update!()
+
+      run_result.cases
+      |> Enum.with_index()
+      |> Enum.each(fn {test_case, order_index} ->
+        insert_legacy_case_result(completed_run.id, test_case, order_index)
+      end)
+
+      completed_run
+    end)
+    |> case do
+      {:ok, completed_run} -> completed_run
+      {:error, reason} -> raise "could not seed historical pathways result: #{inspect(reason)}"
+    end
+  end
+
+  defp insert_legacy_case_result(validation_run_id, test_case, order_index) do
+    route_output = Map.get(test_case, :route_output) || %{}
+    wheelchair_output = Map.get(test_case, :wheelchair_output) || %{}
+
+    %WalkabilityTestRunResult{}
+    |> WalkabilityTestRunResult.changeset(%{
+      validation_run_id: validation_run_id,
+      walkability_test_id: test_case.test_case_id,
+      order_index: order_index,
+      status: Atom.to_string(test_case.status),
+      failure_category: failure_category(test_case),
+      route_exists: Map.get(route_output, :route_exists),
+      duration_seconds: Map.get(route_output, :duration_seconds),
+      distance_meters: Map.get(route_output, :distance_meters),
+      itinerary_start_time: Map.get(route_output, :itinerary_start_time),
+      itinerary_end_time: Map.get(route_output, :itinerary_end_time),
+      leg_count: Map.get(route_output, :leg_count),
+      step_count: Map.get(route_output, :step_count),
+      itinerary_steps_json: Map.get(route_output, :itinerary_steps),
+      wheelchair_route_exists: Map.get(wheelchair_output, :route_exists),
+      wheelchair_duration_seconds: Map.get(wheelchair_output, :duration_seconds),
+      wheelchair_distance_meters: Map.get(wheelchair_output, :distance_meters),
+      details_json: Map.get(test_case, :details)
+    })
+    |> Repo.insert!()
+  end
+
+  defp failure_category(%{failure_category: nil}), do: nil
+  defp failure_category(%{failure_category: category}), do: Atom.to_string(category)
+  defp failure_category(_test_case), do: nil
+
+  defp top_failure_categories(summary) do
+    [
+      %{"category" => "query_failure", "count" => summary.query_failure},
+      %{"category" => "scoring_failure", "count" => summary.scoring_failure}
+    ]
+    |> Enum.filter(&(&1["count"] > 0))
+    |> Enum.sort_by(&{-&1["count"], &1["category"]})
+  end
+
+  defp pass_rate(_passed, 0), do: 0.0
+  defp pass_rate(passed, total), do: Float.round(passed * 100.0 / total, 2)
 end
