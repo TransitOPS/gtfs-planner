@@ -14,6 +14,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   # summary; the rest is one click away.
   @diagnostics_preview_count 5
 
+  # The battery plans every pair in both modes, so the two entries for one
+  # origin/destination belong on one row. Order matches the battery's own.
+  @kinds [
+    {"entry", "Entry", "Street to platform",
+     "Can a rider coming in off the street reach each platform?"},
+    {"egress", "Egress", "Platform to street",
+     "Can a rider standing on each platform find a way out?"},
+    {"transfer", "Transfer", "Platform to platform",
+     "Can a rider change platforms without leaving the station?"}
+  ]
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     {:ok,
@@ -25,7 +36,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
      |> assign(:legacy?, false)
      |> assign(:legacy_results, [])
      |> assign(:diagnostics_expanded?, false)
-     |> assign(:envelope, nil)}
+     |> assign(:envelope, nil)
+     |> assign(:sections, [])
+     |> assign(:expanded_keys, MapSet.new())
+     |> assign(:trips, %{})
+     |> assign(:graph, nil)}
   end
 
   @impl Phoenix.LiveView
@@ -69,11 +84,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       |> assign(:run, run)
       |> assign(:legacy?, legacy?)
       |> assign(:diagnostics_expanded?, false)
+      # A different run means different pairs; nothing cached still applies.
+      |> assign(:expanded_keys, MapSet.new())
+      |> assign(:trips, %{})
+      |> assign(:graph, nil)
 
     if legacy? do
       assign(socket, :legacy_results, Legacy.list_run_results(run.id))
     else
-      assign(socket, :envelope, run.result_json)
+      socket
+      |> assign(:envelope, run.result_json)
+      |> assign(:sections, build_sections(run.result_json))
     end
   end
 
@@ -85,7 +106,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       {:noreply,
        socket
        |> assign(:run, run)
-       |> assign(:envelope, run.result_json)}
+       |> assign(:envelope, run.result_json)
+       |> assign(:sections, build_sections(run.result_json))}
     else
       {:noreply, socket}
     end
@@ -103,6 +125,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   @impl Phoenix.LiveView
   def handle_event("toggle_diagnostics", _params, socket) do
     {:noreply, assign(socket, :diagnostics_expanded?, not socket.assigns.diagnostics_expanded?)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("toggle_pair", %{"from" => from_stop_id, "to" => to_stop_id}, socket) do
+    key = pair_key(from_stop_id, to_stop_id)
+
+    if MapSet.member?(socket.assigns.expanded_keys, key) do
+      {:noreply, assign(socket, :expanded_keys, MapSet.delete(socket.assigns.expanded_keys, key))}
+    else
+      socket = assign(socket, :expanded_keys, MapSet.put(socket.assigns.expanded_keys, key))
+      {:noreply, load_trip(socket, key, from_stop_id, to_stop_id)}
+    end
   end
 
   @impl Phoenix.LiveView
@@ -124,6 +158,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       {:noreply, socket}
     end
   end
+
+  # The run stores totals, not itineraries, so an expanded pair is re-planned.
+  # The graph is built once per session and reused by every later expansion.
+  defp load_trip(socket, key, from_stop_id, to_stop_id) do
+    if Map.has_key?(socket.assigns.trips, key) do
+      socket
+    else
+      case ensure_graph(socket) do
+        {:ok, graph, socket} ->
+          trip = Reachability.plan_pair(graph, from_stop_id, to_stop_id)
+          assign(socket, :trips, Map.put(socket.assigns.trips, key, {:ok, trip}))
+
+        {:error, reason} ->
+          assign(socket, :trips, Map.put(socket.assigns.trips, key, {:error, reason}))
+      end
+    end
+  end
+
+  defp ensure_graph(%{assigns: %{graph: nil}} = socket) do
+    case Reachability.station_graph(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.stop_id
+         ) do
+      {:ok, graph} -> {:ok, graph, assign(socket, :graph, graph)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_graph(socket), do: {:ok, socket.assigns.graph, socket}
 
   @impl Phoenix.LiveView
   def render(assigns) do
@@ -164,7 +228,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
           <% @legacy? -> %>
             <.legacy_results run={@run} results={@legacy_results} />
           <% true -> %>
-            <.new_engine_results envelope={@envelope} diagnostics_expanded?={@diagnostics_expanded?} />
+            <.new_engine_results
+              envelope={@envelope}
+              diagnostics_expanded?={@diagnostics_expanded?}
+              sections={@sections}
+              expanded_keys={@expanded_keys}
+              trips={@trips}
+            />
         <% end %>
       </section>
     </Layouts.app>
@@ -235,10 +305,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
   attr :envelope, :map, required: true
   attr :diagnostics_expanded?, :boolean, required: true
+  attr :sections, :list, required: true
+  attr :expanded_keys, :any, required: true
+  attr :trips, :map, required: true
 
   defp new_engine_results(assigns) do
     ~H"""
     <div class="space-y-6">
+      <.engine_note />
+
       <%= if @envelope && @envelope["diagnostics"] not in [nil, []] do %>
         <.diagnostics_section
           diagnostics={@envelope["diagnostics"]}
@@ -248,11 +323,218 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
       <%= if @envelope do %>
         <.topology_section envelope={@envelope} />
-        <.pair_matrix pairs={@envelope["pairs"]} />
+
+        <%= if @sections == [] do %>
+          <.empty_state id="reachability-no-pairs" title="No pairs tested" class="bg-base-100">
+            This run produced no origin/destination pairs. A station needs at least one
+            entrance and one platform before reachability can be tested.
+          </.empty_state>
+        <% else %>
+          <.results_section
+            :for={section <- @sections}
+            section={section}
+            expanded_keys={@expanded_keys}
+            trips={@trips}
+          />
+        <% end %>
       <% end %>
     </div>
     """
   end
+
+  # Agencies read this page to find out what a trip planner will make of their
+  # pathways data. Say so plainly: the numbers below mean nothing without it.
+  defp engine_note(assigns) do
+    ~H"""
+    <div
+      id="reachability-engine-note"
+      class="bg-base-100 border border-base-300 rounded-box px-4 py-3 text-sm"
+    >
+      <p class="max-w-prose">
+        Your pathways data, run through the routing model OpenTripPlanner uses.
+        It shows what a trip planner will make of this station before you ship the feed.
+      </p>
+      <p class="mt-2 max-w-prose text-base-content/70">
+        Every origin and destination is planned twice: once on foot, once step-free.
+        Step-free planning drops all stairs and escalators, so a pair that walks but has
+        no step-free route is an accessibility gap, not a missing pathway.
+      </p>
+    </div>
+    """
+  end
+
+  attr :section, :map, required: true
+  attr :expanded_keys, :any, required: true
+  attr :trips, :map, required: true
+
+  defp results_section(assigns) do
+    ~H"""
+    <section
+      id={"reachability-section-#{@section.kind}"}
+      class="bg-base-100 border border-base-300 rounded-box overflow-hidden"
+    >
+      <div class="border-b border-base-300 px-4 py-3">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <h2 class="text-lg font-semibold">
+            {@section.title}
+            <span class="font-normal text-base-content/70">· {@section.subtitle}</span>
+          </h2>
+          <p
+            id={"reachability-section-#{@section.kind}-stats"}
+            class="text-sm text-base-content/70 tabular-nums"
+          >
+            {@section.stats.walking_reachable}/{@section.stats.total} on foot · {@section.stats.wheelchair_reachable}/{@section.stats.total} step-free
+          </p>
+        </div>
+        <p class="mt-1 max-w-prose text-sm text-base-content/70">{@section.description}</p>
+      </div>
+
+      <div class="divide-y divide-base-200">
+        <.pair_row
+          :for={row <- @section.rows}
+          row={row}
+          expanded={MapSet.member?(@expanded_keys, row.key)}
+          trip={Map.get(@trips, row.key)}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  attr :row, :map, required: true
+  attr :expanded, :boolean, required: true
+  attr :trip, :any, default: nil
+
+  defp pair_row(assigns) do
+    assigns = assign(assigns, :region_id, "trip-#{assigns.row.dom_id}")
+
+    ~H"""
+    <div>
+      <button
+        type="button"
+        id={"pair-#{@row.dom_id}"}
+        phx-click="toggle_pair"
+        phx-value-from={@row.from_stop_id}
+        phx-value-to={@row.to_stop_id}
+        aria-expanded={to_string(@expanded)}
+        aria-controls={@region_id}
+        class="flex w-full min-h-11 cursor-pointer flex-col gap-2 px-4 py-3 text-left motion-safe:transition-colors hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset sm:flex-row sm:items-center sm:justify-between"
+      >
+        <span class="flex min-w-0 items-center gap-1">
+          <.icon
+            name={if @expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
+            class="size-4 shrink-0"
+          />
+          <span class="text-sm font-medium break-words">
+            {@row.from_stop_name} → {@row.to_stop_name}
+          </span>
+        </span>
+
+        <span class="flex flex-wrap items-center gap-x-4 gap-y-1 ps-5 sm:ps-0">
+          <.mode_outcome label="On foot" pair={@row.walking} mode={:walking} />
+          <.mode_outcome label="Step-free" pair={@row.wheelchair} mode={:wheelchair} />
+        </span>
+      </button>
+
+      <div
+        :if={@expanded}
+        id={@region_id}
+        role="region"
+        aria-label={"Trip from #{@row.from_stop_name} to #{@row.to_stop_name}"}
+        class="space-y-4 border-t border-base-300 bg-base-200/40 px-4 py-3"
+      >
+        <p
+          :for={{label, text} <- explanations(@row)}
+          class="flex max-w-prose items-start gap-2 text-sm"
+        >
+          <.icon name="hero-information-circle" class="size-4 shrink-0 text-base-content/70" />
+          <span class="break-words"><span class="font-medium">{label}:</span> {text}</span>
+        </p>
+
+        <%= case @trip do %>
+          <% {:ok, trip} -> %>
+            <.trip_detail label="On foot" result={trip.walking} />
+            <.trip_detail label="Step-free" result={trip.wheelchair} />
+          <% {:error, _reason} -> %>
+            <p class="text-sm">
+              Trip detail is unavailable. The station could not be loaded for planning.
+            </p>
+          <% _ -> %>
+            <p class="text-sm text-base-content/70" aria-live="polite">Planning trip…</p>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :pair, :any, required: true
+  attr :mode, :atom, required: true
+
+  defp mode_outcome(assigns) do
+    {status, word} = outcome_badge(assigns.pair, assigns.mode)
+
+    assigns =
+      assigns
+      |> assign(:status, status)
+      |> assign(:word, word)
+      |> assign(:metrics, pair_metrics(assigns.pair))
+
+    ~H"""
+    <span class="inline-flex items-baseline gap-1.5">
+      <span class="text-xs text-base-content/70">{@label}</span>
+      <.status_badge status={@status} label={@word} data-mode={to_string(@mode)} />
+      <span :if={@metrics} class="text-xs text-base-content/70 tabular-nums">{@metrics}</span>
+    </span>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :result, :any, required: true
+
+  defp trip_detail(%{result: {:ok, _route}} = assigns) do
+    assigns = assign(assigns, :route, elem(assigns.result, 1))
+
+    ~H"""
+    <div>
+      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h3 class="text-sm font-semibold">{@label}</h3>
+        <p class="text-sm text-base-content/70 tabular-nums">
+          {@route.duration_seconds}s · {format_meters(@route.distance_meters)} · {@route.step_count} {if @route.step_count ==
+                                                                                                           1,
+                                                                                                         do:
+                                                                                                           "step",
+                                                                                                         else:
+                                                                                                           "steps"}
+        </p>
+      </div>
+
+      <ol class="mt-2 space-y-1">
+        <li
+          :for={{step, num} <- Enum.with_index(@route.steps, 1)}
+          class="flex gap-2 text-sm"
+        >
+          <span class="w-5 shrink-0 text-right tabular-nums text-base-content/70">{num}</span>
+          <span class="min-w-0 break-words">
+            <span class="font-medium">{direction_label(step.direction)}</span>
+            <span :if={present?(step.name)}>— {step.name}</span>
+            <span
+              :if={step.name_derived? and present?(step.name)}
+              class="text-xs text-base-content/70"
+            >
+              (derived, not signposted)
+            </span>
+            <span :if={step.distance_meters > 0} class="text-base-content/70 tabular-nums">
+              · {format_meters(step.distance_meters)}
+            </span>
+          </span>
+        </li>
+      </ol>
+    </div>
+    """
+  end
+
+  defp trip_detail(assigns), do: ~H""
 
   attr :diagnostics, :list, required: true
   attr :expanded?, :boolean, required: true
@@ -362,47 +644,175 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     """
   end
 
-  attr :pairs, :list, required: true
-
-  defp pair_matrix(assigns) do
-    ~H"""
-    <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-      <.table id="pair-matrix" rows={@pairs} row_id={fn pair -> "pair-#{pair["index"]}" end}>
-        <:col :let={pair} label="#" align="right">{pair["index"]}</:col>
-        <:col :let={pair} label="Kind">{pair["kind"]}</:col>
-        <:col :let={pair} label="Mode">{pair["mode"]}</:col>
-        <:col :let={pair} label="From">
-          <span title={pair["from_stop_id"]}>{pair["from_stop_name"] || pair["from_stop_id"]}</span>
-        </:col>
-        <:col :let={pair} label="To">
-          <span title={pair["to_stop_id"]}>{pair["to_stop_name"] || pair["to_stop_id"]}</span>
-        </:col>
-        <:col :let={pair} label="Outcome">
-          <.status_badge
-            status={outcome_status(pair["outcome"])}
-            label={String.capitalize(pair["outcome"])}
-          />
-        </:col>
-        <:col :let={pair} label="Duration" align="right">
-          {pair["duration_seconds"] && "#{pair["duration_seconds"]}s"}
-        </:col>
-        <:col :let={pair} label="Distance" align="right">
-          {formatted_distance(pair["distance_meters"])}
-        </:col>
-        <:col :let={pair} label="Steps" align="right">{pair["step_count"]}</:col>
-      </.table>
-    </div>
-    """
-  end
-
   defp outcome_status("reachable"), do: "completed"
   defp outcome_status("unreachable"), do: "failed"
   defp outcome_status("invalid"), do: "warning"
   defp outcome_status(_outcome), do: "unknown"
 
-  defp formatted_distance(nil), do: nil
-  defp formatted_distance(distance) when is_integer(distance), do: "#{distance}.0m"
-  defp formatted_distance(distance) when is_float(distance), do: "#{Float.round(distance, 1)}m"
+  # ── Section building ───────────────────────────────────────────────────────
+
+  defp build_sections(%{"pairs" => pairs}) when is_list(pairs) do
+    by_kind = Enum.group_by(pairs, & &1["kind"])
+
+    @kinds
+    |> Enum.map(fn {kind, title, subtitle, description} ->
+      rows = merge_mode_rows(Map.get(by_kind, kind, []))
+
+      %{
+        kind: kind,
+        title: title,
+        subtitle: subtitle,
+        description: description,
+        rows: rows,
+        stats: section_stats(rows)
+      }
+    end)
+    |> Enum.reject(&(&1.rows == []))
+  end
+
+  defp build_sections(_envelope), do: []
+
+  # One origin/destination, both modes, so accessibility reads as a comparison
+  # rather than two rows a screen apart.
+  defp merge_mode_rows(pairs) do
+    pairs
+    |> Enum.group_by(&{&1["from_stop_id"], &1["to_stop_id"]})
+    |> Enum.map(fn {{from_stop_id, to_stop_id}, entries} ->
+      reference = List.first(entries)
+
+      %{
+        key: pair_key(from_stop_id, to_stop_id),
+        dom_id: dom_id(from_stop_id, to_stop_id),
+        index: entries |> Enum.map(& &1["index"]) |> Enum.min(),
+        from_stop_id: from_stop_id,
+        from_stop_name: reference["from_stop_name"] || from_stop_id,
+        to_stop_id: to_stop_id,
+        to_stop_name: reference["to_stop_name"] || to_stop_id,
+        walking: Enum.find(entries, &(&1["mode"] == "walking")),
+        wheelchair: Enum.find(entries, &(&1["mode"] == "wheelchair"))
+      }
+    end)
+    |> Enum.sort_by(& &1.index)
+  end
+
+  defp section_stats(rows) do
+    %{
+      total: length(rows),
+      walking_reachable: Enum.count(rows, &reachable?(&1.walking)),
+      wheelchair_reachable: Enum.count(rows, &reachable?(&1.wheelchair))
+    }
+  end
+
+  defp pair_key(from_stop_id, to_stop_id), do: "#{from_stop_id}|#{to_stop_id}"
+
+  defp dom_id(from_stop_id, to_stop_id) do
+    String.replace(pair_key(from_stop_id, to_stop_id), ~r/[^A-Za-z0-9_-]/, "-")
+  end
+
+  defp reachable?(%{"outcome" => "reachable"}), do: true
+  defp reachable?(_pair), do: false
+
+  defp invalid?(%{"outcome" => "invalid"}), do: true
+  defp invalid?(_pair), do: false
+
+  # ── Outcome presentation ───────────────────────────────────────────────────
+
+  # Severity mirrors Scoring: a walking failure is an error, a step-free failure
+  # is a warning. The colour has to mean the same thing here as in the totals.
+  defp outcome_badge(nil, _mode), do: {"unknown", "Not tested"}
+  defp outcome_badge(%{"outcome" => "reachable"}, _mode), do: {"pass", "Reachable"}
+  defp outcome_badge(%{"outcome" => "invalid"}, _mode), do: {"warning", "Not planned"}
+  defp outcome_badge(%{"outcome" => "unreachable"}, :walking), do: {"failed", "No route"}
+
+  defp outcome_badge(%{"outcome" => "unreachable"}, :wheelchair),
+    do: {"warning", "No step-free route"}
+
+  defp outcome_badge(_pair, _mode), do: {"unknown", "Unknown"}
+
+  defp pair_metrics(%{"outcome" => "reachable"} = pair) do
+    [
+      pair["duration_seconds"] && "#{pair["duration_seconds"]}s",
+      pair["distance_meters"] && format_meters(pair["distance_meters"])
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp pair_metrics(_pair), do: nil
+
+  # ── Failure explanations ───────────────────────────────────────────────────
+
+  # Both modes are planned, so each explains the other: a pair that walks but
+  # does not roll is an accessibility gap, not a hole in the pathway graph.
+  defp explanations(row) do
+    [{"On foot", walking_explanation(row)}, {"Step-free", wheelchair_explanation(row)}]
+    |> Enum.reject(fn {_label, text} -> is_nil(text) end)
+  end
+
+  defp walking_explanation(%{walking: nil}), do: nil
+
+  defp walking_explanation(%{walking: pair}) do
+    cond do
+      reachable?(pair) -> nil
+      invalid?(pair) -> invalid_explanation(pair)
+      true -> "No pathway route connects these two elements in either direction of travel. \
+They sit in separate parts of the pathway graph — look for a missing pathway record between them."
+    end
+  end
+
+  defp wheelchair_explanation(%{wheelchair: nil}), do: nil
+
+  defp wheelchair_explanation(%{wheelchair: pair} = row) do
+    cond do
+      reachable?(pair) ->
+        nil
+
+      invalid?(pair) ->
+        invalid_explanation(pair)
+
+      reachable?(row.walking) ->
+        "Reachable on foot, but every connecting route uses stairs or an escalator. \
+Step-free planning drops both, so no route survives. Adding an elevator or ramp pathway would close this."
+
+      true ->
+        "No route in either mode; see the walking explanation above."
+    end
+  end
+
+  defp invalid_explanation(%{"reason" => "same_origin_and_destination"}),
+    do: "Origin and destination are the same element, so there is nothing to plan."
+
+  defp invalid_explanation(%{"reason" => "unknown_element: " <> element_id}) do
+    "#{element_id} is not in the routing graph. A stop is left out when it has no coordinates \
+and none can be inherited from its parent station."
+  end
+
+  defp invalid_explanation(_pair), do: "The router could not plan this pair."
+
+  # ── Formatting ─────────────────────────────────────────────────────────────
+
+  defp direction_label(:depart), do: "Depart"
+  defp direction_label(:continue), do: "Continue"
+  defp direction_label(:left), do: "Left"
+  defp direction_label(:right), do: "Right"
+  defp direction_label(:hard_left), do: "Hard left"
+  defp direction_label(:hard_right), do: "Hard right"
+  defp direction_label(:slightly_left), do: "Slight left"
+  defp direction_label(:slightly_right), do: "Slight right"
+  defp direction_label(:follow_signs), do: "Follow signs"
+  defp direction_label(:elevator), do: "Elevator"
+  defp direction_label(other), do: other |> to_string() |> String.replace("_", " ")
+
+  defp format_meters(nil), do: "—"
+  defp format_meters(meters) when is_integer(meters), do: "#{meters}m"
+  defp format_meters(meters) when is_float(meters), do: "#{Float.round(meters, 1)}m"
+  defp format_meters(meters), do: "#{meters}m"
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(_value), do: false
 
   defp diagnostic_severity_label("error"), do: "Error"
   defp diagnostic_severity_label("warning"), do: "Warning"

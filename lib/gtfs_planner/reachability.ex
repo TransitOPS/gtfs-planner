@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Reachability do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Reachability.{Battery, Runner, Scoring}
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Routing
+  alias GtfsPlanner.Routing.{Route, StationGraph}
   alias GtfsPlanner.Validations.ValidationRun
 
   @pubsub GtfsPlanner.PubSub
@@ -96,6 +98,40 @@ defmodule GtfsPlanner.Reachability do
          pair_count: length(pairs)
        }}
     end
+  end
+
+  @doc """
+  Builds the routable station graph for on-demand planning.
+
+  Results pages call this once and hold the graph, so expanding a pair costs a
+  search rather than a rebuild. The graph is built exactly as `Runner` builds
+  it, so an expanded trip matches the stored run.
+  """
+  @spec station_graph(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, StationGraph.t()} | {:error, :station_not_found}
+  def station_graph(organization_id, gtfs_version_id, station_stop_id) do
+    with {:ok, station} <- fetch_station(organization_id, gtfs_version_id, station_stop_id) do
+      organization_id
+      |> build_snapshot(gtfs_version_id, station)
+      |> Routing.build_station_graph()
+    end
+  end
+
+  @doc """
+  Plans one origin/destination pair in both modes.
+
+  The run stores per-pair totals but not the itineraries; this recovers the
+  turn-by-turn detail for a single pair when someone asks for it.
+  """
+  @spec plan_pair(StationGraph.t(), String.t(), String.t()) :: %{
+          walking: {:ok, Route.t()} | {:error, term()},
+          wheelchair: {:ok, Route.t()} | {:error, term()}
+        }
+  def plan_pair(%StationGraph{} = graph, from_stop_id, to_stop_id) do
+    %{
+      walking: Routing.plan(graph, from_stop_id, to_stop_id, wheelchair: false),
+      wheelchair: Routing.plan(graph, from_stop_id, to_stop_id, wheelchair: true)
+    }
   end
 
   @spec topic(Ecto.UUID.t()) :: String.t()
