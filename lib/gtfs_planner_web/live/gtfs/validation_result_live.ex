@@ -1,6 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   use GtfsPlannerWeb, :live_view
-  alias GtfsPlannerWeb.Gtfs.ExportLive
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
@@ -1691,9 +1690,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
        when is_binary(error_details) do
     case Jason.decode(error_details) do
       {:ok, payload} when is_map(payload) ->
-        payload
-        |> ExportLive.classify_pathways_failure_category()
-        |> ExportLive.present_pathways_failure(payload)
+        %{
+          title: "Pathways validation failed",
+          summary: Map.get(payload, "message", failure_summary(%{error_details: error_details})),
+          checks: [],
+          details: [],
+          blocking_issues: []
+        }
 
       _other ->
         nil

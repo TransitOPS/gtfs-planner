@@ -8,7 +8,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTestRunResult}
 
   describe "ValidationResultLive" do
     setup do
@@ -295,7 +297,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 250)
+      run = persist_legacy_pathways_run(run, run_result, 250)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -422,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 25)
+      run = persist_legacy_pathways_run(run, run_result, 25)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -520,7 +522,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 35)
+      run = persist_legacy_pathways_run(run, run_result, 35)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -631,7 +633,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         cases: []
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 5)
+      run = persist_legacy_pathways_run(run, run_result, 5)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -709,7 +711,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+      run = persist_legacy_pathways_run(run, run_result, 20)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -747,7 +749,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+      run = persist_legacy_pathways_run(run, run_result, 20)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -792,7 +794,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
         ]
       }
 
-      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+      run = persist_legacy_pathways_run(run, run_result, 20)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
@@ -944,4 +946,108 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert flash["error"] == "Unauthorized access to validation run"
     end
   end
+
+  defp persist_legacy_pathways_run(run, run_result, duration_ms) do
+    now = DateTime.utc_now()
+    summary = run_result.summary
+
+    report = %{
+      "report_version" => 1,
+      "suite_meta" => run_result.suite_meta,
+      "selected_test_case_ids" => run_result.selected_test_case_ids,
+      "selection" => %{
+        "total_candidates" => 0,
+        "in_scope_candidates" => 0,
+        "selected_count" => 0,
+        "invalid_count" => 0,
+        "scope_label" => nil,
+        "selected_test_case_ids" => [],
+        "invalid_test_case_ids" => [],
+        "invalid_cases" => []
+      },
+      "summary" => %{
+        "total" => summary.total,
+        "passed" => summary.passed,
+        "failed" => summary.failed,
+        "query_failure" => summary.query_failure,
+        "scoring_failure" => summary.scoring_failure,
+        "pass_rate" => pass_rate(summary.passed, summary.total)
+      },
+      "top_failure_categories" => top_failure_categories(summary),
+      "stage_timestamps" => %{
+        "started_at" => DateTime.to_iso8601(run.started_at),
+        "completed_at" => DateTime.to_iso8601(now)
+      }
+    }
+
+    Repo.transaction(fn ->
+      completed_run =
+        run
+        |> ValidationRun.changeset(%{
+          status: "completed",
+          errors_count: summary.failed,
+          warnings_count: summary.query_failure,
+          infos_count: summary.passed,
+          duration_ms: duration_ms,
+          result_json: report,
+          completed_at: now
+        })
+        |> Repo.update!()
+
+      run_result.cases
+      |> Enum.with_index()
+      |> Enum.each(fn {test_case, order_index} ->
+        insert_legacy_case_result(completed_run.id, test_case, order_index)
+      end)
+
+      completed_run
+    end)
+    |> case do
+      {:ok, completed_run} -> completed_run
+      {:error, reason} -> raise "could not seed historical pathways result: #{inspect(reason)}"
+    end
+  end
+
+  defp insert_legacy_case_result(validation_run_id, test_case, order_index) do
+    route_output = Map.get(test_case, :route_output) || %{}
+    wheelchair_output = Map.get(test_case, :wheelchair_output) || %{}
+
+    %WalkabilityTestRunResult{}
+    |> WalkabilityTestRunResult.changeset(%{
+      validation_run_id: validation_run_id,
+      walkability_test_id: test_case.test_case_id,
+      order_index: order_index,
+      status: Atom.to_string(test_case.status),
+      failure_category: failure_category(test_case),
+      route_exists: Map.get(route_output, :route_exists),
+      duration_seconds: Map.get(route_output, :duration_seconds),
+      distance_meters: Map.get(route_output, :distance_meters),
+      itinerary_start_time: Map.get(route_output, :itinerary_start_time),
+      itinerary_end_time: Map.get(route_output, :itinerary_end_time),
+      leg_count: Map.get(route_output, :leg_count),
+      step_count: Map.get(route_output, :step_count),
+      itinerary_steps_json: Map.get(route_output, :itinerary_steps),
+      wheelchair_route_exists: Map.get(wheelchair_output, :route_exists),
+      wheelchair_duration_seconds: Map.get(wheelchair_output, :duration_seconds),
+      wheelchair_distance_meters: Map.get(wheelchair_output, :distance_meters),
+      details_json: Map.get(test_case, :details)
+    })
+    |> Repo.insert!()
+  end
+
+  defp failure_category(%{failure_category: nil}), do: nil
+  defp failure_category(%{failure_category: category}), do: Atom.to_string(category)
+  defp failure_category(_test_case), do: nil
+
+  defp top_failure_categories(summary) do
+    [
+      %{"category" => "query_failure", "count" => summary.query_failure},
+      %{"category" => "scoring_failure", "count" => summary.scoring_failure}
+    ]
+    |> Enum.filter(&(&1["count"] > 0))
+    |> Enum.sort_by(&{-&1["count"], &1["category"]})
+  end
+
+  defp pass_rate(_passed, 0), do: 0.0
+  defp pass_rate(passed, total), do: Float.round(passed * 100.0 / total, 2)
 end
