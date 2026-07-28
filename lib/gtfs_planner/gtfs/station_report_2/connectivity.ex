@@ -189,6 +189,16 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     level_index = build_level_index(levels)
     traversal_cache = build_traversal_cache(pathways, stop_index, levels)
 
+    routing = %{
+      platform_target_index: platform_target_index,
+      path_adj: path_adj,
+      step_free_adj: step_free_adj,
+      stop_index: stop_index,
+      pathway_index: pathway_index,
+      level_index: level_index,
+      traversal_cache: traversal_cache
+    }
+
     {sources, targets} = sources_and_targets_for_dimension(entrances, platforms, dimension_key)
 
     Enum.map(sources, fn source ->
@@ -198,18 +208,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         targets
         |> Enum.reject(&(&1.stop_id == source.stop_id))
         |> Enum.map(fn target ->
-          build_target_row(
-            source,
-            target,
-            platform_target_index,
-            path_adj,
-            step_free_adj,
-            stop_index,
-            pathway_index,
-            level_index,
-            traversal_cache,
-            dimension_key
-          )
+          build_target_row(source, target, routing, dimension_key)
         end)
 
       %{
@@ -224,102 +223,109 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     end)
   end
 
-  defp build_target_row(
-         source,
-         target,
-         platform_target_index,
-         path_adj,
-         step_free_adj,
-         stop_index,
-         pathway_index,
-         level_index,
-         traversal_cache,
-         dimension_key
-       ) do
+  defp build_target_row(source, target, routing, dimension_key) do
+    %{
+      platform_target_index: platform_target_index,
+      path_adj: path_adj,
+      step_free_adj: step_free_adj,
+      level_index: level_index
+    } = routing
+
     start_ids = source_start_ids(source, platform_target_index, dimension_key)
     target_set = target_set_for_stop(target, platform_target_index, dimension_key)
 
-    # Find shortest path from any start node
-    shortest_result =
-      start_ids
-      |> Enum.map(fn start_id ->
-        case Graph.shortest_directed_path_to_any(path_adj, start_id, target_set) do
-          {:found, path} ->
-            enriched = enrich_path(path, pathway_index, stop_index, level_index, traversal_cache)
-            {enriched.totals.time_seconds, enriched}
-
-          :not_found ->
-            nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.min_by(fn {time, _} -> time end, fn -> nil end)
-
-    # Find step-free path
-    step_free_result =
-      start_ids
-      |> Enum.map(fn start_id ->
-        case Graph.shortest_directed_path_to_any(step_free_adj, start_id, target_set) do
-          {:found, path} ->
-            enriched = enrich_path(path, pathway_index, stop_index, level_index, traversal_cache)
-            {enriched.totals.time_seconds, enriched}
-
-          :not_found ->
-            nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.min_by(fn {time, _} -> time end, fn -> nil end)
+    shortest_result = shortest_enriched_path(start_ids, path_adj, target_set, routing)
+    step_free_result = shortest_enriched_path(start_ids, step_free_adj, target_set, routing)
 
     target_level = level_for_stop(target, level_index)
     meta = build_target_meta(target, target_level)
 
     case shortest_result do
-      nil ->
-        %{
-          name: target.stop_name || target.stop_id,
-          stop_id: target.stop_id,
-          meta: meta,
-          time: nil,
-          distance: nil,
-          levels: nil,
-          accessible: nil,
-          accessible_note: nil,
-          status: :nopath
-        }
-
-      {_time, enriched} ->
-        accessible = step_free_result != nil
-
-        accessible_note =
-          case step_free_result do
-            {_sf_time, sf_enriched} ->
-              cond do
-                sf_enriched.totals.has_elevator -> "elevator route available"
-                sf_enriched.totals.level_changes == 0 -> "same-level walkway"
-                true -> nil
-              end
-
-            nil ->
-              if enriched.totals.has_stairs, do: "stairs only", else: nil
-          end
-
-        route_status =
-          if enriched.totals.time_seconds > @long_route_threshold, do: :long, else: :reachable
-
-        %{
-          name: target.stop_name || target.stop_id,
-          stop_id: target.stop_id,
-          meta: meta,
-          time: enriched.totals.time_seconds,
-          distance: enriched.totals.distance_meters,
-          levels: enriched.totals.level_changes,
-          accessible: accessible,
-          accessible_note: accessible_note,
-          status: route_status
-        }
+      nil -> unavailable_target_row(target, meta)
+      {_time, enriched} -> reachable_target_row(target, meta, enriched, step_free_result)
     end
   end
+
+  defp unavailable_target_row(target, meta) do
+    %{
+      name: target.stop_name || target.stop_id,
+      stop_id: target.stop_id,
+      meta: meta,
+      time: nil,
+      distance: nil,
+      levels: nil,
+      accessible: nil,
+      accessible_note: nil,
+      status: :nopath
+    }
+  end
+
+  defp reachable_target_row(target, meta, enriched, step_free_result) do
+    %{
+      name: target.stop_name || target.stop_id,
+      stop_id: target.stop_id,
+      meta: meta,
+      time: enriched.totals.time_seconds,
+      distance: enriched.totals.distance_meters,
+      levels: enriched.totals.level_changes,
+      accessible: step_free_result != nil,
+      accessible_note: accessibility_note(enriched, step_free_result),
+      status: route_status(enriched)
+    }
+  end
+
+  defp accessibility_note(_enriched, {_sf_time, step_free_enriched}) do
+    cond do
+      step_free_enriched.totals.has_elevator -> "elevator route available"
+      step_free_enriched.totals.level_changes == 0 -> "same-level walkway"
+      true -> nil
+    end
+  end
+
+  defp accessibility_note(enriched, nil) do
+    if enriched.totals.has_stairs, do: "stairs only", else: nil
+  end
+
+  defp route_status(enriched) do
+    if enriched.totals.time_seconds > @long_route_threshold, do: :long, else: :reachable
+  end
+
+  defp shortest_enriched_path(start_ids, adjacency, target_set, routing) do
+    Enum.reduce(start_ids, nil, fn start_id, shortest ->
+      shortest_path_candidate(adjacency, start_id, target_set, routing)
+      |> choose_shortest_path(shortest)
+    end)
+  end
+
+  defp shortest_path_candidate(adjacency, start_id, target_set, routing) do
+    case Graph.shortest_directed_path_to_any(adjacency, start_id, target_set) do
+      {:found, path} ->
+        enriched =
+          enrich_path(
+            path,
+            routing.pathway_index,
+            routing.stop_index,
+            routing.level_index,
+            routing.traversal_cache
+          )
+
+        {enriched.totals.time_seconds, enriched}
+
+      :not_found ->
+        nil
+    end
+  end
+
+  defp choose_shortest_path(nil, shortest), do: shortest
+  defp choose_shortest_path(candidate, nil), do: candidate
+
+  defp choose_shortest_path(
+         {time, _candidate_enriched} = candidate,
+         {shortest_time, _shortest_enriched}
+       )
+       when time < shortest_time, do: candidate
+
+  defp choose_shortest_path(_candidate, shortest), do: shortest
 
   # ── Step 5: build_expanded_route/3 ────────────────────────────────────────
 
@@ -554,25 +560,32 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
          level_index,
          traversed_reverse?
        ) do
-    level_data =
-      case stop do
-        nil -> nil
-        _ -> level_for_stop(stop, level_index)
-      end
+    Map.merge(
+      enriched_stop_data(hop, stop, level_index),
+      enriched_pathway_data(hop, pathway, traversal, level_diff, traversed_reverse?)
+    )
+  end
+
+  defp enriched_stop_data(hop, stop, level_index) do
+    level_data = if stop, do: level_for_stop(stop, level_index)
+    location_type = stop && normalize_location_type(stop.location_type)
 
     %{
       stop_id: hop.stop_id,
       stop_name: stop && stop.stop_name,
-      location_type: stop && normalize_location_type(stop.location_type),
-      location_type_label:
-        stop && Stop.location_type_label(normalize_location_type(stop.location_type)),
+      location_type: location_type,
+      location_type_label: location_type && Stop.location_type_label(location_type),
       level_id: stop && stop.level_id,
       level_name: level_data && level_data.level_name,
-      level_index: level_data && level_data.level_index,
+      level_index: level_data && level_data.level_index
+    }
+  end
+
+  defp enriched_pathway_data(hop, pathway, traversal, level_diff, traversed_reverse?) do
+    %{
       pathway_id: hop.pathway_id,
       pathway_mode: hop.pathway_mode,
-      pathway_mode_label:
-        if(is_integer(hop.pathway_mode), do: Pathway.mode_label(hop.pathway_mode), else: nil),
+      pathway_mode_label: pathway_mode_label(hop.pathway_mode),
       is_bidirectional: pathway && pathway.is_bidirectional,
       traversed_reverse?: traversed_reverse?,
       signposted_as: pathway && pathway.signposted_as,
@@ -582,6 +595,9 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       distance_meters: traversal && traversal.distance_meters
     }
   end
+
+  defp pathway_mode_label(mode) when is_integer(mode), do: Pathway.mode_label(mode)
+  defp pathway_mode_label(_mode), do: nil
 
   defp path_totals(hops, pathway_hops) do
     time_seconds =

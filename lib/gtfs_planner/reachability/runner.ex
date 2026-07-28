@@ -45,7 +45,9 @@ defmodule GtfsPlanner.Reachability.Runner do
     Enum.map(pairs, fn %Pair{} = pair ->
       wheelchair? = pair.mode == :wheelchair
 
-      plan_result = Routing.plan(graph, pair.from_stop_id, pair.to_stop_id, wheelchair: wheelchair?)
+      plan_result =
+        Routing.plan(graph, pair.from_stop_id, pair.to_stop_id, wheelchair: wheelchair?)
+
       outcome = Scoring.pair_outcome(plan_result)
 
       {route, reason} =

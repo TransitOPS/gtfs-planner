@@ -110,7 +110,9 @@ defmodule GtfsPlanner.RoutingTest do
       assert {:error, {:unknown_element, "GHOST"}} = Routing.plan(graph, "ENT_A", "GHOST")
     end
 
-    test "same origin and destination returns {:error, :same_origin_and_destination}", %{graph: graph} do
+    test "same origin and destination returns {:error, :same_origin_and_destination}", %{
+      graph: graph
+    } do
       assert {:error, :same_origin_and_destination} = Routing.plan(graph, "ENT_A", "ENT_A")
     end
   end

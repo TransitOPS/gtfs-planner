@@ -169,8 +169,18 @@ defmodule GtfsPlanner.Routing.FeedAdapterTest do
 
     test "handles multiple levels" do
       levels = [
-        %{level: %Level{level_id: "L1", level_index: 0.0, level_name: "Ground"}, stop_count: 3, diagram_filename: nil, stop_level: nil},
-        %{level: %Level{level_id: "L2", level_index: 1.0, level_name: "Mezzanine"}, stop_count: 2, diagram_filename: nil, stop_level: nil}
+        %{
+          level: %Level{level_id: "L1", level_index: 0.0, level_name: "Ground"},
+          stop_count: 3,
+          diagram_filename: nil,
+          stop_level: nil
+        },
+        %{
+          level: %Level{level_id: "L2", level_index: 1.0, level_name: "Mezzanine"},
+          stop_count: 2,
+          diagram_filename: nil,
+          stop_level: nil
+        }
       ]
 
       rows = FeedAdapter.level_rows(levels)

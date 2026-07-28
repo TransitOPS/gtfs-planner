@@ -209,14 +209,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
         <.table id="legacy-reachability-results" rows={@results}>
           <:col :let={result} label="Test">
-            {result.walkability_test && result.walkability_test.name}
+            {result.walkability_test &&
+              (result.walkability_test.description || result.walkability_test.address)}
           </:col>
-          <:col :let={result} label="Origin">{result.origin_description}</:col>
-          <:col :let={result} label="Destination">{result.destination_description}</:col>
+          <:col :let={result} label="Origin">
+            {result.walkability_test && result.walkability_test.stop_id}
+          </:col>
+          <:col :let={result} label="Destination">
+            {result.walkability_test && result.walkability_test.address}
+          </:col>
           <:col :let={result} label="Status">
             <.status_badge
-              status={if(result.reachable, do: "completed", else: "failed")}
-              label={if(result.reachable, do: "Reachable", else: "Unreachable")}
+              status={if(result.route_exists, do: "completed", else: "failed")}
+              label={if(result.route_exists, do: "Reachable", else: "Unreachable")}
             />
           </:col>
           <:col :let={result} label="Duration">

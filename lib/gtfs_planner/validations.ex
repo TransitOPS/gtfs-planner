@@ -719,8 +719,6 @@ defmodule GtfsPlanner.Validations do
     Repo.get(WalkabilityTest, id)
   end
 
-
-
   @spec normalize_pathways_summary(%{
           required(:total) => non_neg_integer(),
           required(:passed) => non_neg_integer(),

@@ -17,7 +17,13 @@ defmodule GtfsPlanner.Reachability.EnvelopeTest do
   end
 
   defp route do
-    %Route{duration_seconds: 60, distance_meters: 80.0, generalized_cost: 120, step_count: 2, steps: []}
+    %Route{
+      duration_seconds: 60,
+      distance_meters: 80.0,
+      generalized_cost: 120,
+      step_count: 2,
+      steps: []
+    }
   end
 
   describe "build/1" do

@@ -151,8 +151,6 @@ defmodule GtfsPlanner.Gtfs.Validator do
     end
   end
 
-
-
   @doc false
   defp broadcast_progress(validation_id, phase, percent, message) do
     unless phase in @phases do

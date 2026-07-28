@@ -10,8 +10,18 @@ defmodule GtfsPlanner.Routing.RouteTest do
         distance_meters: 85.5,
         generalized_cost: 240,
         steps: [
-          %{relative_direction: :depart, street_name: "Main St", distance_meters: 50.0, name_derived?: false},
-          %{relative_direction: :right, street_name: "pathway", distance_meters: 35.5, name_derived?: true}
+          %{
+            relative_direction: :depart,
+            street_name: "Main St",
+            distance_meters: 50.0,
+            name_derived?: false
+          },
+          %{
+            relative_direction: :right,
+            street_name: "pathway",
+            distance_meters: 35.5,
+            name_derived?: true
+          }
         ]
       }
 
@@ -43,7 +53,12 @@ defmodule GtfsPlanner.Routing.RouteTest do
         distance_meters: 40.0,
         generalized_cost: 120,
         steps: [
-          %{relative_direction: :follow_signs, street_name: "To Platform 1", distance_meters: 40.0, name_derived?: false}
+          %{
+            relative_direction: :follow_signs,
+            street_name: "To Platform 1",
+            distance_meters: 40.0,
+            name_derived?: false
+          }
         ]
       }
 

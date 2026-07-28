@@ -86,7 +86,7 @@ defmodule GtfsPlanner.MixProject do
       {:dotenv_parser, "~> 2.0"},
       {:pathways_router,
        github: "TransitOPS/gtfs-pathways-router",
-       ref: "c34f9e84b7742de231652cb9bb3b3ba3cc8e8fcd",
+       ref: "f1bf1b58e29307d410742af95dfde18111bcb07a",
        sparse: "elixir",
        depth: 1}
     ]

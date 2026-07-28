@@ -30,6 +30,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     pathways_results_unavailable: "Pathways validation results were unavailable."
   }
 
+  @pathways_failure_codes %{
+    "no_walkability_tests" => :no_walkability_tests,
+    "query_failure" => :query_failure,
+    "scoring_failure" => :scoring_failure,
+    "pathways_runner_spawn_failed" => :pathways_runner_spawn_failed,
+    "pathways_trip_test_failed" => :pathways_trip_test_failed,
+    "pathways_persistence_failed" => :pathways_persistence_failed,
+    "pathways_export_prep_failed" => :pathways_export_prep_failed,
+    "pathways_task_crashed" => :pathways_task_crashed,
+    "pathways_status_unavailable" => :pathways_status_unavailable,
+    "pathways_run_not_found" => :pathways_run_not_found,
+    "pathways_invalid_run_type" => :pathways_invalid_run_type,
+    "pathways_results_unavailable" => :pathways_results_unavailable
+  }
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -2329,66 +2344,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: :pathways_results_unavailable
 
   defp normalize_pathways_failure_code(value) when is_binary(value) do
-    case value do
-      "no_walkability_tests" ->
-        :no_walkability_tests
-
-      "query_failure" ->
-        :query_failure
-
-      "scoring_failure" ->
-        :scoring_failure
-
-      "pathways_runner_spawn_failed" ->
-        :pathways_runner_spawn_failed
-
-      "pathways_trip_test_failed" ->
-        :pathways_trip_test_failed
-
-      "pathways_persistence_failed" ->
-        :pathways_persistence_failed
-
-      "pathways_export_prep_failed" ->
-        :pathways_export_prep_failed
-
-      "pathways_task_crashed" ->
-        :pathways_task_crashed
-
-      "pathways_status_unavailable" ->
-        :pathways_status_unavailable
-
-      "pathways_run_not_found" ->
-        :pathways_run_not_found
-
-      "pathways_invalid_run_type" ->
-        :pathways_invalid_run_type
-
-      "pathways_results_unavailable" ->
-        :pathways_results_unavailable
-
-      _other ->
-        normalize_pathways_failure_code_from_text(value)
-    end
+    Map.get(@pathways_failure_codes, value) || normalize_pathways_failure_code_from_text(value)
   end
 
   defp normalize_pathways_failure_code(_value), do: nil
 
   defp normalize_pathways_failure_code_from_text(value) when is_binary(value) do
-    cond do
-      String.contains?(value, "no_walkability_tests") -> :no_walkability_tests
-      String.contains?(value, "query_failure") -> :query_failure
-      String.contains?(value, "scoring_failure") -> :scoring_failure
-      String.contains?(value, "pathways_runner_spawn_failed") -> :pathways_runner_spawn_failed
-      String.contains?(value, "pathways_trip_test_failed") -> :pathways_trip_test_failed
-      String.contains?(value, "pathways_persistence_failed") -> :pathways_persistence_failed
-      String.contains?(value, "pathways_export_prep_failed") -> :pathways_export_prep_failed
-      String.contains?(value, "pathways_task_crashed") -> :pathways_task_crashed
-      String.contains?(value, "pathways_status_unavailable") -> :pathways_status_unavailable
-      String.contains?(value, "pathways_run_not_found") -> :pathways_run_not_found
-      String.contains?(value, "pathways_invalid_run_type") -> :pathways_invalid_run_type
-      String.contains?(value, "pathways_results_unavailable") -> :pathways_results_unavailable
-      true -> nil
-    end
+    Enum.find_value(@pathways_failure_codes, fn {code, atom} ->
+      if String.contains?(value, code), do: atom
+    end)
   end
 
   defp assign_pathways_error_panel(socket, error_payload) when is_map(error_payload) do

@@ -20,6 +20,20 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     pathways_results_unavailable: "Pathways validation results were unavailable."
   }
 
+  @pathways_failure_codes %{
+    "no_walkability_tests" => :no_walkability_tests,
+    "query_failure" => :query_failure,
+    "scoring_failure" => :scoring_failure,
+    "pathways_runner_spawn_failed" => :pathways_runner_spawn_failed,
+    "pathways_persistence_failed" => :pathways_persistence_failed,
+    "pathways_export_prep_failed" => :pathways_export_prep_failed,
+    "pathways_task_crashed" => :pathways_task_crashed,
+    "pathways_status_unavailable" => :pathways_status_unavailable,
+    "pathways_run_not_found" => :pathways_run_not_found,
+    "pathways_invalid_run_type" => :pathways_invalid_run_type,
+    "pathways_results_unavailable" => :pathways_results_unavailable
+  }
+
   @pathways_criteria_overview_definitions [
     %{kind: "expected_traversable", label: "Traversable"},
     %{kind: "duration_seconds_range", label: "Duration range"},
@@ -1755,20 +1769,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     do: :pathways_results_unavailable
 
   defp normalize_pathways_failure_code(value) when is_binary(value) do
-    case value do
-      "no_walkability_tests" -> :no_walkability_tests
-      "query_failure" -> :query_failure
-      "scoring_failure" -> :scoring_failure
-      "pathways_runner_spawn_failed" -> :pathways_runner_spawn_failed
-      "pathways_persistence_failed" -> :pathways_persistence_failed
-      "pathways_export_prep_failed" -> :pathways_export_prep_failed
-      "pathways_task_crashed" -> :pathways_task_crashed
-      "pathways_status_unavailable" -> :pathways_status_unavailable
-      "pathways_run_not_found" -> :pathways_run_not_found
-      "pathways_invalid_run_type" -> :pathways_invalid_run_type
-      "pathways_results_unavailable" -> :pathways_results_unavailable
-      _other -> nil
-    end
+    Map.get(@pathways_failure_codes, value)
   end
 
   defp normalize_pathways_failure_code(_value), do: nil

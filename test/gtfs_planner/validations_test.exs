@@ -688,7 +688,6 @@ defmodule GtfsPlanner.ValidationsTest do
       assert id == walkability_test.id
       assert nil == Validations.get_walkability_test(Ecto.UUID.generate())
     end
-
   end
 
   describe "transform_pathways_run_result/1" do

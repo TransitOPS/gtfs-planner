@@ -14,7 +14,9 @@ defmodule GtfsPlanner.Reachability.Envelope do
   @spec build(%{
           station: map(),
           pairs: [Pair.t()],
-          results: [%{pair: Pair.t(), outcome: atom(), route: map() | nil, reason: String.t() | nil}],
+          results: [
+            %{pair: Pair.t(), outcome: atom(), route: map() | nil, reason: String.t() | nil}
+          ],
           diagnostics: [Diagnostic.t()],
           topology: map(),
           started_at: DateTime.t(),

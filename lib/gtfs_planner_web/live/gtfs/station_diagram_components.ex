@@ -6223,8 +6223,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
-
-
   # ============================================================================
   # Lists Section
   # ============================================================================
@@ -6537,8 +6535,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
     """
   end
-
-
 
   attr :pathways_list, :list, required: true
   attr :pathway_error, :string

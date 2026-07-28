@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.FirstAdminLiveTest do
-  use GtfsPlannerWeb.ConnCase, async: true
+  use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
@@ -33,6 +33,13 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     "organization_name" => "",
     "organization_alias" => ""
   }
+
+  setup do
+    Repo.delete_all(GtfsPlanner.Accounts.UserToken)
+    Repo.delete_all(UserOrgMembership)
+    Repo.delete_all(User)
+    :ok
+  end
 
   describe "initial availability" do
     test "renders the stable form contract with no summary for a zero-user install", %{conn: conn} do

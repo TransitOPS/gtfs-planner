@@ -173,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:pathway_pair_counts, %{})
      |> assign(:available_levels, [])
      |> assign(:level_mode, :existing)
-      |> assign(:show_naming_drawer, false)
+     |> assign(:show_naming_drawer, false)
      |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
@@ -1648,13 +1648,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:active_level, selected_level)
          |> assign(:pending_xy, nil)
          |> assign(:diagram_error, nil)
-          |> assign(:show_diagram_upload_drawer, false)
-          |> reset_reposition_state()
-          |> load_station_stop_levels_cache()
-          |> assign(:other_levels_floorplan, MapSet.new())
-          |> assign(:other_levels_stops, MapSet.new())
-          |> reset_map_workflow()
-          |> load_level_data(selected_level)}
+         |> assign(:show_diagram_upload_drawer, false)
+         |> reset_reposition_state()
+         |> load_station_stop_levels_cache()
+         |> assign(:other_levels_floorplan, MapSet.new())
+         |> assign(:other_levels_stops, MapSet.new())
+         |> reset_map_workflow()
+         |> load_level_data(selected_level)}
     end
   end
 
