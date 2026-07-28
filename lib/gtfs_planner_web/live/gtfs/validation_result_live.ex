@@ -240,7 +240,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                       </dl>
                     </section>
                   <% end %>
-
                 </div>
               </section>
             <% @run.status in ["started", "running"] -> %>
@@ -1960,13 +1959,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp payload_value(_payload, _key), do: nil
 
   defp load_pathways_render_data(%{run_type: "pathways_tests", status: "completed"} = run) do
-    case Validations.get_pathways_trip_test_results(run.id) do
-      {:ok, %{result_json: result_json, walkability_test_run_results: case_rows}} ->
-        {%{run | result_json: result_json}, case_rows}
-
-      {:error, _reason} ->
-        {%{run | result_json: nil}, []}
-    end
+    {run, Validations.Legacy.list_run_results(run.id)}
   end
 
   defp load_pathways_render_data(run), do: {run, []}

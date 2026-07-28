@@ -54,6 +54,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(run.id))
     end
 
+    run = Validations.get_validation_run!(run.id)
+
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     legacy? = Legacy.legacy_station_run?(run)
@@ -380,7 +382,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
           {pair["duration_seconds"] && "#{pair["duration_seconds"]}s"}
         </:col>
         <:col :let={pair} label="Distance" align="right">
-          {pair["distance_meters"] && "#{Float.round(pair["distance_meters"], 1)}m"}
+          {formatted_distance(pair["distance_meters"])}
         </:col>
         <:col :let={pair} label="Steps" align="right">{pair["step_count"]}</:col>
       </.table>
@@ -392,6 +394,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp outcome_status("unreachable"), do: "failed"
   defp outcome_status("invalid"), do: "warning"
   defp outcome_status(_outcome), do: "unknown"
+
+  defp formatted_distance(nil), do: nil
+  defp formatted_distance(distance) when is_integer(distance), do: "#{distance}.0m"
+  defp formatted_distance(distance) when is_float(distance), do: "#{Float.round(distance, 1)}m"
 
   defp diagnostic_severity_label("error"), do: "Error"
   defp diagnostic_severity_label("warning"), do: "Warning"

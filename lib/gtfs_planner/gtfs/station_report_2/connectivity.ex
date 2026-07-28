@@ -187,6 +187,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     stop_index = build_stop_index(child_stops)
     pathway_index = build_pathway_index(pathways)
     level_index = build_level_index(levels)
+    traversal_cache = build_traversal_cache(pathways, stop_index, levels)
 
     {sources, targets} = sources_and_targets_for_dimension(entrances, platforms, dimension_key)
 
@@ -206,6 +207,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
             stop_index,
             pathway_index,
             level_index,
+            traversal_cache,
             dimension_key
           )
         end)
@@ -231,6 +233,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
          stop_index,
          pathway_index,
          level_index,
+         traversal_cache,
          dimension_key
        ) do
     start_ids = source_start_ids(source, platform_target_index, dimension_key)
@@ -242,7 +245,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       |> Enum.map(fn start_id ->
         case Graph.shortest_directed_path_to_any(path_adj, start_id, target_set) do
           {:found, path} ->
-            enriched = enrich_path(path, pathway_index, stop_index, level_index)
+            enriched = enrich_path(path, pathway_index, stop_index, level_index, traversal_cache)
             {enriched.totals.time_seconds, enriched}
 
           :not_found ->
@@ -258,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       |> Enum.map(fn start_id ->
         case Graph.shortest_directed_path_to_any(step_free_adj, start_id, target_set) do
           {:found, path} ->
-            enriched = enrich_path(path, pathway_index, stop_index, level_index)
+            enriched = enrich_path(path, pathway_index, stop_index, level_index, traversal_cache)
             {enriched.totals.time_seconds, enriched}
 
           :not_found ->
@@ -336,6 +339,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     stop_index = build_stop_index(child_stops)
     pathway_index = build_pathway_index(pathways)
     level_index = build_level_index(levels)
+    traversal_cache = build_traversal_cache(pathways, stop_index, levels)
 
     source = Map.get(stop_index, source_stop_id)
     target = Map.get(stop_index, target_stop_id)
@@ -360,7 +364,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       |> Enum.map(fn start_id ->
         case Graph.shortest_directed_path_to_any(path_adj, start_id, target_ids) do
           {:found, path} ->
-            enriched = enrich_path(path, pathway_index, stop_index, level_index)
+            enriched = enrich_path(path, pathway_index, stop_index, level_index, traversal_cache)
             {enriched.totals.time_seconds, enriched}
 
           :not_found ->
@@ -376,7 +380,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       |> Enum.map(fn start_id ->
         case Graph.shortest_directed_path_to_any(step_free_adj, start_id, target_ids) do
           {:found, path} ->
-            enriched = enrich_path(path, pathway_index, stop_index, level_index)
+            enriched = enrich_path(path, pathway_index, stop_index, level_index, traversal_cache)
             {enriched.totals.time_seconds, enriched}
 
           :not_found ->
@@ -448,7 +452,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
 
   # ── Path enrichment (copied from station_report.ex) ───────────────────────
 
-  defp enrich_path([], _pathway_index, _stop_index, _level_index) do
+  defp enrich_path([], _pathway_index, _stop_index, _level_index, _traversal_cache) do
     %{
       hops: [],
       totals: %{
@@ -463,7 +467,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     }
   end
 
-  defp enrich_path(path, pathway_index, stop_index, level_index) do
+  defp enrich_path(path, pathway_index, stop_index, level_index, traversal_cache) do
     [start_hop | _] = path
     start_stop = Map.get(stop_index, start_hop.stop_id)
 
@@ -488,14 +492,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         traversed_reverse? = traversed_reverse?(pathway, from_hop.stop_id, to_hop.stop_id)
 
         traversal =
-          if pathway && from_stop && to_stop do
-            level_rows = level_rows_from_index(level_index)
-
-            case PathwayTraversal.traverse(pathway, from_stop, to_stop, level_rows) do
-              {:ok, result} -> result
-              {:error, _} -> nil
-            end
-          end
+          pathway &&
+            Map.get(traversal_cache, {pathway.pathway_id, from_hop.stop_id, to_hop.stop_id})
 
         build_enriched_hop(
           to_hop,
@@ -517,6 +515,34 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       totals: totals,
       all_bidirectional: Enum.all?(pathway_hops, & &1.is_bidirectional)
     }
+  end
+
+  defp build_traversal_cache(pathways, stop_index, levels) do
+    Enum.reduce(pathways, %{}, fn pathway, cache ->
+      directions =
+        [{pathway.from_stop_id, pathway.to_stop_id}] ++
+          if(pathway.is_bidirectional, do: [{pathway.to_stop_id, pathway.from_stop_id}], else: [])
+
+      Enum.reduce(directions, cache, fn {from_stop_id, to_stop_id}, cache ->
+        cache_key = {pathway.pathway_id, from_stop_id, to_stop_id}
+
+        Map.put(
+          cache,
+          cache_key,
+          cached_traversal(pathway, stop_index, levels, from_stop_id, to_stop_id)
+        )
+      end)
+    end)
+  end
+
+  defp cached_traversal(pathway, stop_index, levels, from_stop_id, to_stop_id) do
+    with from_stop when not is_nil(from_stop) <- Map.get(stop_index, from_stop_id),
+         to_stop when not is_nil(to_stop) <- Map.get(stop_index, to_stop_id),
+         {:ok, traversal} <- PathwayTraversal.traverse(pathway, from_stop, to_stop, levels) do
+      traversal
+    else
+      _ -> nil
+    end
   end
 
   defp build_enriched_hop(
@@ -781,12 +807,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     levels
     |> Enum.map(fn %{level: level} -> level end)
     |> Map.new(fn level -> {level.level_id, level} end)
-  end
-
-  defp level_rows_from_index(level_index) do
-    Enum.map(level_index, fn {_id, level} ->
-      %{level: level, stop_count: 0, diagram_filename: nil, stop_level: nil}
-    end)
   end
 
   defp level_for_stop(nil, _level_index), do: nil

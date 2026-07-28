@@ -45,11 +45,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
           end
 
         active_run = Reachability.get_active_run(organization_id, gtfs_version_id, stop_id)
-        last_run = latest_finished_run(organization_id, gtfs_version_id, stop_id)
 
         if connected?(socket) and active_run do
           Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(active_run.id))
         end
+
+        active_run = Reachability.get_active_run(organization_id, gtfs_version_id, stop_id)
+        last_run = latest_finished_run(organization_id, gtfs_version_id, stop_id)
 
         {:noreply,
          socket
@@ -91,7 +93,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
          )}
 
       {:error, reason} ->
-        {:noreply, assign(socket, :run_error, "Failed to start run: #{inspect(reason)}")}
+        log_run_error(reason)
+        {:noreply, assign(socket, :run_error, run_error_message(reason))}
     end
   end
 
@@ -131,14 +134,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
   def handle_info({:reachability_run_failed, run_id, reason}, socket) do
     if socket.assigns[:active_run] && socket.assigns.active_run.id == run_id do
+      log_run_error(reason)
+
       {:noreply,
        socket
        |> assign(:active_run, nil)
        |> assign(:running?, false)
-       |> assign(:run_error, "Run failed: #{inspect(reason)}")}
+       |> assign(:run_error, run_error_message(reason))}
     else
       {:noreply, socket}
     end
+  end
+
+  defp run_error_message(:station_not_found), do: "The station could not be found."
+  defp run_error_message(:run_in_progress), do: "A run is already in progress for this station."
+
+  defp run_error_message(:battery_too_large),
+    do: "This station has too many pairs to test automatically."
+
+  defp run_error_message(_reason),
+    do: "The reachability run could not be completed. Please try again."
+
+  defp log_run_error(reason) do
+    require Logger
+    Logger.error("Station reachability run failed: #{inspect(reason)}")
   end
 
   @impl Phoenix.LiveView

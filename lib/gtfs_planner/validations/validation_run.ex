@@ -79,6 +79,9 @@ defmodule GtfsPlanner.Validations.ValidationRun do
     |> validate_required([:run_type, :status, :started_at])
     |> validate_inclusion(:run_type, @run_types)
     |> validate_inclusion(:status, @statuses)
+    |> unique_constraint(:result_json,
+      name: :gtfs_validation_runs_active_station_reachability_index
+    )
     |> foreign_key_constraint(:organization_id)
     |> foreign_key_constraint(:gtfs_version_id)
   end

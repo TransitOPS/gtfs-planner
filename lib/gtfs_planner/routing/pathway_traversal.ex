@@ -9,9 +9,6 @@ defmodule GtfsPlanner.Routing.PathwayTraversal do
   @spec traverse(map(), map(), map(), [map()]) ::
           {:ok, %{time_seconds: float(), distance_meters: float() | nil}} | {:error, term()}
   def traverse(pathway, from_stop, to_stop, levels) do
-    from_stop = ensure_coordinates(from_stop)
-    to_stop = ensure_coordinates(to_stop)
-
     stop_rows = FeedAdapter.stop_rows([from_stop, to_stop])
     pathway_rows = FeedAdapter.pathway_rows([pathway])
     level_rows = FeedAdapter.level_rows(levels)
@@ -36,14 +33,6 @@ defmodule GtfsPlanner.Routing.PathwayTraversal do
         end
 
       {:ok, %{time_seconds: itinerary.duration_seconds * 1.0, distance_meters: distance}}
-    end
-  end
-
-  defp ensure_coordinates(stop) do
-    if stop.stop_lat == nil or stop.stop_lon == nil do
-      %{stop | stop_lat: stop.stop_lat || Decimal.new("0"), stop_lon: stop.stop_lon || Decimal.new("0")}
-    else
-      stop
     end
   end
 end

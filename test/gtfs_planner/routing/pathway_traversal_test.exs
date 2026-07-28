@@ -137,5 +137,21 @@ defmodule GtfsPlanner.Routing.PathwayTraversalTest do
       assert {:ok, _} = PathwayTraversal.traverse(pw, from, to, [])
       assert {:ok, _} = PathwayTraversal.traverse(pw, to, from, [])
     end
+
+    test "does not fabricate missing stop coordinates" do
+      from = stop("A", lat: nil)
+      to = stop("B")
+
+      pathway = %Pathway{
+        pathway_id: "PW_MISSING_COORDINATE",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        from_stop_id: "A",
+        to_stop_id: "B",
+        traversal_time: 60
+      }
+
+      assert {:error, _reason} = PathwayTraversal.traverse(pathway, from, to, [])
+    end
   end
 end

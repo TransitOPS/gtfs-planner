@@ -15,7 +15,8 @@ defmodule GtfsPlanner.Reachability do
 
   @spec start_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
           {:ok, ValidationRun.t()}
-          | {:error, :station_not_found | :run_in_progress | :battery_too_large | Ecto.Changeset.t()}
+          | {:error,
+             :station_not_found | :run_in_progress | :battery_too_large | Ecto.Changeset.t()}
   def start_run(organization_id, gtfs_version_id, station_stop_id, opts \\ []) do
     runner = Keyword.get(opts, :runner, Runner)
 
@@ -23,8 +24,21 @@ defmodule GtfsPlanner.Reachability do
          snapshot <- build_snapshot(organization_id, gtfs_version_id, station),
          :ok <- check_battery_size(snapshot),
          {:ok, run} <- insert_run(organization_id, gtfs_version_id, station_stop_id) do
-      spawn_run(run, station, snapshot, runner)
-      {:ok, Repo.reload!(run)}
+      case spawn_run(run, station, snapshot, runner) do
+        {:ok, _pid} ->
+          {:ok, Repo.reload!(run)}
+
+        {:error, reason} ->
+          fail_run(run.id, inspect(reason))
+
+          Phoenix.PubSub.broadcast(
+            @pubsub,
+            topic(run.id),
+            {:reachability_run_failed, run.id, reason}
+          )
+
+          {:ok, Repo.reload!(run)}
+      end
     end
   end
 
@@ -144,8 +158,24 @@ defmodule GtfsPlanner.Reachability do
 
   defp active_run_conflict?(changeset) do
     Enum.any?(changeset.errors, fn
-      {:organization_id, {_, [constraint: :unique, constraint_name: "gtfs_validation_runs_active_station_reachability_index"]}} -> true
-      _ -> false
+      {:result_json,
+       {_,
+        [
+          constraint: :unique,
+          constraint_name: "gtfs_validation_runs_active_station_reachability_index"
+        ]}} ->
+        true
+
+      {:organization_id,
+       {_,
+        [
+          constraint: :unique,
+          constraint_name: "gtfs_validation_runs_active_station_reachability_index"
+        ]}} ->
+        true
+
+      _ ->
+        false
     end)
   end
 
@@ -159,20 +189,40 @@ defmodule GtfsPlanner.Reachability do
         case runner.run(snapshot, started_at) do
           {:ok, envelope} ->
             complete_run(run_id, envelope)
-            Phoenix.PubSub.broadcast(@pubsub, topic(run_id), {:reachability_run_completed, run_id})
+
+            Phoenix.PubSub.broadcast(
+              @pubsub,
+              topic(run_id),
+              {:reachability_run_completed, run_id}
+            )
 
           {:error, reason} ->
             fail_run(run_id, inspect(reason))
-            Phoenix.PubSub.broadcast(@pubsub, topic(run_id), {:reachability_run_failed, run_id, reason})
+
+            Phoenix.PubSub.broadcast(
+              @pubsub,
+              topic(run_id),
+              {:reachability_run_failed, run_id, reason}
+            )
         end
       rescue
         e ->
           fail_run(run_id, Exception.message(e))
-          Phoenix.PubSub.broadcast(@pubsub, topic(run_id), {:reachability_run_failed, run_id, Exception.message(e)})
+
+          Phoenix.PubSub.broadcast(
+            @pubsub,
+            topic(run_id),
+            {:reachability_run_failed, run_id, Exception.message(e)}
+          )
       catch
         kind, reason ->
           fail_run(run_id, "#{kind}: #{inspect(reason)}")
-          Phoenix.PubSub.broadcast(@pubsub, topic(run_id), {:reachability_run_failed, run_id, reason})
+
+          Phoenix.PubSub.broadcast(
+            @pubsub,
+            topic(run_id),
+            {:reachability_run_failed, run_id, reason}
+          )
       end
     end)
   end
@@ -181,7 +231,10 @@ defmodule GtfsPlanner.Reachability do
     counts =
       Scoring.counts(
         Enum.map(envelope["pairs"], fn p ->
-          %{mode: String.to_existing_atom(p["mode"]), outcome: String.to_existing_atom(p["outcome"])}
+          %{
+            mode: String.to_existing_atom(p["mode"]),
+            outcome: String.to_existing_atom(p["outcome"])
+          }
         end)
       )
 

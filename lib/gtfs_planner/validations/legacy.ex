@@ -16,7 +16,7 @@ defmodule GtfsPlanner.Validations.Legacy do
     WalkabilityTestRunResult
     |> where([r], r.validation_run_id == ^validation_run_id)
     |> preload([:walkability_test])
-    |> order_by([r], asc: r.inserted_at)
+    |> order_by([r], asc: r.order_index)
     |> Repo.all()
   end
 
