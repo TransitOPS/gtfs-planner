@@ -9,11 +9,13 @@ defmodule GtfsPlanner.Reachability.Runner do
 
   @spec run(map(), DateTime.t()) :: {:ok, map()} | {:error, term()}
   def run(
-        %{station: station, child_stops: child_stops, pathways: pathways, levels: levels},
+        %{station: station, child_stops: child_stops, pathways: pathways, levels: levels} =
+          snapshot,
         started_at
       ) do
-    snapshot = %{child_stops: child_stops, pathways: pathways, levels: levels}
-    pairs = Battery.derive(snapshot)
+    # The battery pairs station children; the graph is built from the whole
+    # snapshot so the router can resolve coordinates through the station row.
+    pairs = Battery.derive(%{child_stops: child_stops, pathways: pathways, levels: levels})
 
     {:ok, graph} = Routing.build_station_graph(snapshot)
 

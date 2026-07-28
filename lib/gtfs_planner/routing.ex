@@ -7,12 +7,13 @@ defmodule GtfsPlanner.Routing do
   alias GtfsPlanner.Routing.{Diagnostic, FeedAdapter, Route, StationGraph}
 
   @spec build_station_graph(%{
+          optional(:station) => GtfsPlanner.Gtfs.Stop.t(),
           child_stops: [GtfsPlanner.Gtfs.Stop.t()],
           pathways: [GtfsPlanner.Gtfs.Pathway.t()],
           levels: [map()]
         }) :: {:ok, StationGraph.t()}
-  def build_station_graph(%{child_stops: stops, pathways: pathways, levels: levels}) do
-    stop_rows = FeedAdapter.stop_rows(stops)
+  def build_station_graph(%{child_stops: stops, pathways: pathways, levels: levels} = snapshot) do
+    stop_rows = snapshot |> Map.get(:station) |> feed_stops(stops) |> FeedAdapter.stop_rows()
     pathway_rows = FeedAdapter.pathway_rows(pathways)
     level_rows = FeedAdapter.level_rows(levels)
 
@@ -63,6 +64,13 @@ defmodule GtfsPlanner.Routing do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # Station elements may omit coordinates. The loader recovers them from
+  # parent_station, so the station row has to be in the feed — without it, its
+  # children are dropped from the graph along with every pathway touching them.
+  # The station itself is referenced by no pathway, so it lands as an inert vertex.
+  defp feed_stops(nil, child_stops), do: child_stops
+  defp feed_stops(station, child_stops), do: [station | child_stops]
 
   defp filter_wheelchair_feed(%PathwaysRouter.Feed{} = feed) do
     filtered_pathways =
