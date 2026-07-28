@@ -18,6 +18,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
           gtfs_version_id: Ecto.UUID.t(),
           run_type: run_type(),
           status: status(),
+          engine: String.t() | nil,
+          result_schema_version: integer() | nil,
           errors_count: integer(),
           warnings_count: integer(),
           infos_count: integer(),
@@ -33,6 +35,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
   schema "gtfs_validation_runs" do
     field :run_type, :string
     field :status, :string
+    field :engine, :string
+    field :result_schema_version, :integer
     field :errors_count, :integer, default: 0
     field :warnings_count, :integer, default: 0
     field :infos_count, :integer, default: 0
@@ -60,6 +64,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
     |> cast(attrs, [
       :run_type,
       :status,
+      :engine,
+      :result_schema_version,
       :errors_count,
       :warnings_count,
       :infos_count,
