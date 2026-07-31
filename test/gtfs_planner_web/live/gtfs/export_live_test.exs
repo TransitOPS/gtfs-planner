@@ -7,6 +7,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Repo
+  alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.ValidationRun
 
   setup do
     organization = organization_fixture()
@@ -51,5 +54,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     refute html =~ "cannot write export files"
     assert has_element?(view, "#export-run-status")
     refute has_element?(view, "#export-empty-history")
+  end
+
+  test "renders with a recent legacy pathways_tests run present", %{
+    conn: conn,
+    user: user,
+    organization: organization,
+    gtfs_version: version
+  } do
+    {:ok, run} =
+      Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+    run
+    |> ValidationRun.changeset(%{status: "failed"})
+    |> Repo.update!()
+
+    conn = log_in_user(conn, user, organization: organization)
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+    assert has_element?(view, "#export-workspace")
+    assert has_element?(view, "#validation-history-counts")
+    assert has_element?(view, "a.link", "Pathways Tests")
+    assert has_element?(view, "#recent-validation-counts-#{run.id}")
   end
 end
