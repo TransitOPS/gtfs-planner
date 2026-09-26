@@ -26,6 +26,9 @@ Freshness: `source_hash=dd533899b58837342646f3ea88321cde78794dedccb4609cf5b7a8fa
 | GET `versions` | `:api_session` | `VersionController.index` | Yes |
 | GET `versions/:vid/stations` | `:api_session` | `StationController.index` | Yes |
 | GET `versions/:vid/stations/:sid/bundle` | `:api_session` | `StationController.bundle` | Yes |
+| POST `versions/:vid/pathways-exports` | `:api_session` | `PathwaysExportController.create` | Yes |
+| GET `versions/:vid/pathways-exports/:eid` | `:api_session` | `PathwaysExportController.show` | Yes |
+| GET `versions/:vid/pathways-exports/:eid/download` | `:api_session` | `PathwaysExportController.download` | Yes |
 | POST `versions/:vid/stations/:sid/sync` | `:api_session` | `SyncController.create` | Yes |
 
 ### Pipeline Plugs (set `conn.assigns`, run before controllers)
@@ -44,6 +47,7 @@ Freshness: `source_hash=dd533899b58837342646f3ea88321cde78794dedccb4609cf5b7a8fa
 | `VersionController` | `Versions` — list_gtfs_versions |
 | `StationController` | `Versions` — get_gtfs_version; `Gtfs` — list_stations, count_stations, list_child_stops_for_parent, list_levels_for_station, list_pathways_for_station, get_stop; `PathSafety`, `StopLevel`, `Endpoint.url()` |
 | `SyncController` | `Repo` — get_by, update; `Pathway` — changeset |
+| `PathwaysExportController` | `Versions` — get_published_gtfs_version_for_org; `ExportRuns` — create_pending, get_for_version, claim_download; `Export.Runner` — ensure_started; `ExportArtifactResponse` — send_claimed |
 | `FallbackController` | None (dead code — CORS plug halts before it executes) |
 
 ## Rules & Invariants
@@ -77,6 +81,15 @@ Freshness: `source_hash=dd533899b58837342646f3ea88321cde78794dedccb4609cf5b7a8fa
 - Floorplan: emitted only when `diagram_filename` non-empty. URL = `Endpoint.url()` + `/uploads/diagrams/{org_id}/{encoded_storage_dir}/{uri_encoded_filename}`. Storage dir via `PathSafety.stop_storage_dir(station_stop_id)` (base64url stop_id). If `PathSafety` returns non-binary, floorplan is `nil`.
 - Alignment fields: all four present only when `StopLevel.alignment_complete?/1` is true; otherwise all `null`.
 - `diagrams` array always `[]` (legacy field for companion client compatibility).
+
+### Pathways Export Routes
+- Three routes in the **protected `:api_session` scope only** — no `:api_editor`; any active member (including one with no roles) may use them.
+- Route params are canonicalized with `Ecto.UUID.cast/1` **before** any lookup: malformed id → `400 bad_request "Invalid ID format."`; an existing-but-foreign/unpublished/wrong-version/non-pathways resource → `404 not_found "Export resource not found."`.
+- Organization and actor come only from `conn.assigns` (`:current_organization_id`, `:current_user`); `export_type` is the literal `:pathways`. Request parameters are never cast into organization, actor, type, state or artifact fields.
+- `create/2` calls `ExportRuns.create_pending/4` then `Runner.ensure_started/2`; an active run is reused and returns `202` with the same id. Returns `503 export_unavailable` with a sanitized message for any returned error other than `{:error, :not_found}`; no exception is rescued and no inspected tuple/changeset is serialized.
+- `show/2` returns the exact allowlist inside `%{data: ...}`: `id, version_id, export_type, state, failure_code, created_at, finished_at, expires_at, size_bytes, sha256, download_path`. The last four are null unless the stored state is `ready`; no artifact keys, paths, leases, warnings or actor identity are emitted.
+- `download/2` claims through `ExportRuns.claim_download/3` and sends bytes through the shared `ExportArtifactResponse.send_claimed/5` (INV-1); a failed claim never starts a build and never creates a run. Because the context merges contention, expiry and missing/corrupt bytes into `:not_found`, the controller answers the status-first `409 export_not_ready` without reclassifying.
+- The `accepts ["json"]` pipeline is unchanged: a bare `Accept: application/zip` yields the existing `406` (documented limitation).
 
 ### Sync Endpoint
 - **Editable fields** (whitelist via `@editable_fields`): `traversal_time`, `stair_count`, `min_width`, `signposted_as`, `reversed_signposted_as`, `field_notes`, `field_completed_at`.
@@ -118,6 +131,7 @@ All errors: `{"error": {"code": "string", "message": "string"}}`. Sync errors in
 
 ## Change Checklist
 - [ ] New routes added to `:api_session` pipeline (never `:api_cors` unless intentionally unauthenticated).
+- [ ] Pathways export routes keep the exact 11-key serialization allowlist, the `Ecto.UUID.cast/1` 400/404 split, and the shared `ExportArtifactResponse.send_claimed/5` download path.
 - [ ] New sync fields added to `@editable_fields` in `SyncController` **and** `Pathway.changeset/2` cast.
 - [ ] Organization-scoped queries compare `resource.organization_id == current_organization_id`; mismatch → 404.
 - [ ] Bundle validation chain in `StationController.bundle/2` preserved in order (9-step `with` chain).
