@@ -88,9 +88,11 @@ Content-Type: application/json
 ```
 
 The `state` in this response is a **snapshot**. The build may already have moved on.
-A request made while a run is still active returns the **same** run id, so a retry
-after a lost response does not start a second build. A request made after a run has
-already finished creates a new run.
+A request made while a run is `pending` or `building` returns the **same** run id. A
+request made after that run has finished, including after it became `ready`, starts
+a new build. A pathways build often finishes within seconds, so a repeated `POST` is
+not a safe way to recover a lost response: keep the id from the first response and
+poll it.
 
 ## 4. Poll the status resource
 
@@ -107,7 +109,7 @@ for failed runs.
 
 | `state` | Meaning | What to do |
 | --- | --- | --- |
-| `pending` | Accepted, build not started yet | Keep polling |
+| `pending` | Accepted, build not started yet | Keep polling. If it stays `pending`, `POST` again: the request reuses this run and starts its build |
 | `building` | Build in progress | Keep polling |
 | `ready` | ZIP stored and verified | Download it (see expiry below) |
 | `failed` | Build failed; see `failure_code` | Read the code, then decide |
@@ -178,9 +180,10 @@ applies to every companion route.
 
 `data.expires_at` is the authority for how long the artifact stays downloadable. It
 is set from the server's configured artifact TTL, so treat it as "until this instant"
-rather than assuming a fixed number of hours. After that instant the run moves to
-`expired` (or its download returns the terminal `409` below) until maintenance runs.
-Stored bytes are cleared by the TTL; the run row and its history remain.
+rather than assuming a fixed number of hours. After that instant, downloads return
+`409 download_unavailable`. The status resource can keep reporting `ready` with a past
+`expires_at` until periodic maintenance moves the run to `expired`. Maintenance
+deletes the stored bytes; the run row and its history remain.
 
 ## Errors
 
@@ -200,7 +203,7 @@ Every error uses the same envelope:
 | No membership at all, or several memberships without `X-Organization-Id` | 403 | `no_organization` / `organization_required` | Send `X-Organization-Id`, or join an organization |
 | `X-Organization-Id` is not a UUID | 400 | `bad_request` (`X-Organization-Id must be a valid UUID.`) | Fix the header value |
 | Artifact storage unavailable before the run is created | 503 | `export_unavailable` | Retry later; nothing was created |
-| Any other returned creation/startup error | 503 | `export_unavailable` | Retry later; nothing was created |
+| Any other returned creation/startup error | 503 | `export_unavailable` | Retry later. A `pending` run may already exist; the retried `POST` reuses it and starts its build |
 | Download while `pending` or `building` | 409 | `export_not_ready` (`Export is not ready. Check export status before retrying.`) | Poll the status resource |
 | Download of a run in a terminal non-ready state (`failed`, `interrupted`, `cancelled`, `expired`) | 409 | `download_unavailable` (`Export is unavailable. Check export status before retrying.`) | Read the status resource; this run never becomes downloadable |
 | Download of a `ready` run whose artifact is expired, corrupt or held by another download | 409 | `download_unavailable` (`Export is unavailable. Check export status before retrying.`) | **Check the status resource first** |
