@@ -187,7 +187,7 @@ Stored bytes are cleared by the TTL; the run row and its history remain.
 Every error uses the same envelope:
 
 ```json
-{ "error": { "code": "export_not_ready", "message": "Export is unavailable. Check export status before retrying." } }
+{ "error": { "code": "export_not_ready", "message": "Export is not ready. Check export status before retrying." } }
 ```
 
 | Condition | Status | Code | Client action |
@@ -202,16 +202,20 @@ Every error uses the same envelope:
 | Artifact storage unavailable before the run is created | 503 | `export_unavailable` | Retry later; nothing was created |
 | Any other returned creation/startup error | 503 | `export_unavailable` | Retry later; nothing was created |
 | Download while `pending` or `building` | 409 | `export_not_ready` (`Export is not ready. Check export status before retrying.`) | Poll the status resource |
-| Download of a run in a terminal non-ready state (`failed`, `interrupted`, `cancelled`, `expired`) | 409 | `export_not_ready` (`Export is unavailable. Check export status before retrying.`) | Read the status resource; this run never becomes downloadable |
-| Download of an expired, corrupt or currently claimed artifact | 409 | `export_not_ready` (`Export is unavailable. Check export status before retrying.`) | **Check the status resource first** |
+| Download of a run in a terminal non-ready state (`failed`, `interrupted`, `cancelled`, `expired`) | 409 | `download_unavailable` (`Export is unavailable. Check export status before retrying.`) | Read the status resource; this run never becomes downloadable |
+| Download of a `ready` run whose artifact is expired, corrupt or held by another download | 409 | `download_unavailable` (`Export is unavailable. Check export status before retrying.`) | **Check the status resource first** |
 
-The two `409` messages differ in wording, and both tell you to check status
-first: "not ready" marks a run that is still building, "unavailable" marks a run
-that will not become downloadable. A `409` on download is temporary contention in some cases (another download
-holds the claim) and permanent in others (expired or corrupt artifact), so do not
-immediately request a new export. Read `state`, `failure_code` and `expires_at` from
-the status resource first; request a new export only after a terminal failure or an
-expired artifact, and reuse the same export id while it is still `ready`.
+The two `409` codes mean different things:
+
+- `export_not_ready`: the run is still `pending` or `building`. Keep polling the
+  status resource, then download.
+- `download_unavailable`: this download cannot be served now. The cause can be
+  temporary (another download holds the claim, which it releases when it finishes
+  or within about a minute) or permanent (a terminal run, or an expired or corrupt
+  artifact). Read `state`, `failure_code` and `expires_at` from the status resource
+  before deciding. While the run is still `ready` and `expires_at` is in the future,
+  retry the download of the same export id. Request a new export only after a
+  terminal failure or an expired artifact.
 
 A failed download never starts a build and never creates a run.
 

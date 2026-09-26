@@ -661,7 +661,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
       response =
         build_conn() |> api_conn(user, organization) |> get(download_path(version.id, run.id))
 
-      assert %{"error" => %{"code" => "export_not_ready", "message" => @unavailable_message}} =
+      assert %{"error" => %{"code" => "download_unavailable", "message" => @unavailable_message}} =
                json_response(response, 409)
 
       assert run_count(organization.id) == before
@@ -726,7 +726,9 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
         response =
           build_conn() |> api_conn(user, organization) |> get(download_path(version.id, run.id))
 
-        assert %{"error" => %{"code" => "export_not_ready", "message" => @unavailable_message}} =
+        assert %{
+                 "error" => %{"code" => "download_unavailable", "message" => @unavailable_message}
+               } =
                  json_response(response, 409)
 
         assert %Run{state: ^state, download_count: 0, download_claimed_until: nil} =
@@ -749,7 +751,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
       response =
         build_conn() |> api_conn(user, organization) |> get(download_path(version.id, run.id))
 
-      assert %{"error" => %{"code" => "export_not_ready", "message" => @unavailable_message}} =
+      assert %{"error" => %{"code" => "download_unavailable", "message" => @unavailable_message}} =
                json_response(response, 409)
 
       assert %Run{state: :ready, download_count: 0, download_claimed_until: nil} =
@@ -769,7 +771,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
       response =
         build_conn() |> api_conn(user, organization) |> get(download_path(version.id, run.id))
 
-      assert %{"error" => %{"code" => "export_not_ready", "message" => @unavailable_message}} =
+      assert %{"error" => %{"code" => "download_unavailable", "message" => @unavailable_message}} =
                json_response(response, 409)
 
       assert %Run{state: :failed, failure_code: "missing_or_corrupt_artifact"} =

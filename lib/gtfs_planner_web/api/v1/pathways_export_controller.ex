@@ -64,8 +64,8 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
       ExportArtifactResponse.send_claimed(conn, organization_id(conn), version_id, run.id, claim)
     else
       :error -> bad_request(conn)
-      {:error, :not_ready} -> export_error(conn, @not_ready_message)
-      {:error, :unavailable} -> export_error(conn, @unavailable_message)
+      {:error, :not_ready} -> conflict(conn, "export_not_ready", @not_ready_message)
+      {:error, :unavailable} -> conflict(conn, "download_unavailable", @unavailable_message)
       %Run{} -> not_found(conn)
       nil -> not_found(conn)
     end
@@ -97,9 +97,8 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
     |> json(%{data: serialize(run)})
   end
 
-  defp status_path(version_id, run_id) do
-    "/api/v1/versions/#{version_id}/pathways-exports/#{run_id}"
-  end
+  defp status_path(version_id, run_id),
+    do: ~p"/api/v1/versions/#{version_id}/pathways-exports/#{run_id}"
 
   # -- scope ------------------------------------------------------------------
 
@@ -128,9 +127,11 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
   # `claim_download/3` deliberately merges contention, expiry and missing or
   # corrupt bytes into one answer.
   #
-  # The response table distinguishes the two 409 wordings by state class: an
-  # active run still reaches a ready state, while a terminal non-ready run never
-  # does, so both advise the client to read the status resource before retrying.
+  # The two 409 codes separate a run that is still building (`export_not_ready`:
+  # keep polling) from a download that cannot be served now
+  # (`download_unavailable`). A terminal run never becomes downloadable, and a
+  # failed claim on a ready run may be temporary contention or a lost artifact,
+  # so that code asks the client to read status before deciding.
   defp claim_ready_download(_conn, _version_id, %Run{state: state})
        when state in [:pending, :building],
        do: {:error, :not_ready}
@@ -148,7 +149,6 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
 
   # -- serialization ----------------------------------------------------------
 
-  @doc false
   defp serialize(%Run{} = run) do
     %{
       id: run.id,
@@ -169,7 +169,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
   defp ready_value(%Run{}, _value), do: nil
 
   defp ready_download_path(%Run{state: :ready} = run),
-    do: "#{status_path(run.gtfs_version_id, run.id)}/download"
+    do: ~p"/api/v1/versions/#{run.gtfs_version_id}/pathways-exports/#{run.id}/download"
 
   defp ready_download_path(%Run{}), do: nil
 
@@ -182,8 +182,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
 
   defp not_found(conn), do: error(conn, 404, "not_found", @not_found_message)
 
-  defp export_error(conn, message),
-    do: error(conn, 409, "export_not_ready", message)
+  defp conflict(conn, code, message), do: error(conn, 409, code, message)
 
   defp service_unavailable(conn), do: error(conn, 503, "export_unavailable", @service_message)
 
