@@ -4093,11 +4093,12 @@ defmodule GtfsPlanner.Gtfs do
 
   defp apply_stop_sort(query, sort_by, sort_dir)
        when sort_by in [:stop_id, :stop_name, :location_type] and sort_dir in [:asc, :desc] do
-    order_by(query, [s], [{^sort_dir, field(s, ^sort_by)}])
+    order_by(query, [s], [{^sort_dir, field(s, ^sort_by)}, asc: s.stop_id])
   end
 
+  # Equal sort keys must not leave the page order to the database.
   defp apply_stop_sort(query, _sort_by, _sort_dir) do
-    order_by(query, [s], asc: s.stop_name)
+    order_by(query, [s], asc: s.stop_name, asc: s.stop_id)
   end
 
   defp maybe_search(query, nil), do: query
