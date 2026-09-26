@@ -129,4 +129,15 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactConfigTest do
       assert contents =~ "GTFS_TASK_ARTIFACTS_TTL_SECONDS"
     end)
   end
+
+  test "release image prepares the private artifact mount for its unprivileged user" do
+    contents =
+      "Dockerfile"
+      |> Path.expand(Path.expand("../../..", __DIR__))
+      |> File.read!()
+
+    assert contents =~ "mkdir -p /app/var/gtfs-task-artifacts"
+    assert contents =~ "chown -R nobody:root /app/var"
+    assert contents =~ "USER nobody"
+  end
 end

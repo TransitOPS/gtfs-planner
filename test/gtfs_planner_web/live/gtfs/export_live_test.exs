@@ -7,9 +7,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Export.RunnerSupervisor
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+
+  # LiveView "start_export" clicks start a real Export.Runner child that holds
+  # the sandbox connection while it builds. Waiting here for any runner child
+  # created during the test keeps that build (or its forced teardown) inside
+  # this test's on_exit, which runs before ConnCase releases the DB owner.
+  @runner_exit_timeout 5_000
 
   setup do
     organization = organization_fixture()
@@ -22,6 +29,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     })
 
     gtfs_version = gtfs_version_fixture(organization.id)
+
+    existing_runners = runner_pids()
+    on_exit(fn -> await_new_runners(existing_runners) end)
 
     %{user: user, organization: organization, gtfs_version: gtfs_version}
   end
@@ -76,5 +86,51 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     assert has_element?(view, "#validation-history-counts")
     assert has_element?(view, "a.link", "Pathways Tests")
     assert has_element?(view, "#recent-validation-counts-#{run.id}")
+  end
+
+  defp runner_pids do
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(RunnerSupervisor), is_pid(pid), do: pid
+  end
+
+  defp await_new_runners(existing_runners) do
+    for pid <- runner_pids(), pid not in existing_runners do
+      await_runner_down(pid)
+    end
+  end
+
+  defp await_runner_down(pid) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      @runner_exit_timeout -> force_runner_down(pid, ref)
+    end
+  end
+
+  defp force_runner_down(pid, ref) do
+    task_pid =
+      try do
+        case :sys.get_state(pid, @runner_exit_timeout) do
+          %{task_pid: task_pid} -> task_pid
+          _ -> nil
+        end
+      catch
+        :exit, _ -> nil
+      end
+
+    task_ref = task_pid && Process.monitor(task_pid)
+
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    end
+
+    if task_ref do
+      receive do
+        {:DOWN, ^task_ref, :process, ^task_pid, _reason} -> :ok
+      end
+    end
   end
 end
