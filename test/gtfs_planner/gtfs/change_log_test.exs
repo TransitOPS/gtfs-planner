@@ -269,6 +269,22 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert is_nil(log.changed_fields)
     end
 
+    test "stop created with an existing row keeps changed_fields nil", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_created_audit",
+          stop_name: "Created Stop"
+        })
+
+      assert :ok = Gtfs.record_change(ctx, :stop, stop, "created", %{})
+
+      [log] = Repo.all(ChangeLog)
+      assert log.entity_type == "stop"
+      assert log.action == "created"
+      assert log.snapshot["stop_name"] == "Created Stop"
+      assert is_nil(log.changed_fields)
+    end
+
     test "pathway updated records correct pathway fields", %{ctx: ctx} do
       from_stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{stop_id: "from_s"})
       to_stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{stop_id: "to_s"})

@@ -294,6 +294,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
              Gtfs.apply_review(copied.id, :delete, delete_fingerprint, context.audit)
 
     assert Repo.get(RoutePattern, copied.id) == nil
+
+    delete_log =
+      Repo.one!(
+        from log in ChangeLog,
+          where:
+            log.entity_type == "route_pattern" and log.entity_id == ^copied.id and
+              log.action == "deleted"
+      )
+
+    assert delete_log.changed_fields["before"]["route_pattern_id"] == copied.route_pattern_id
+    assert is_nil(delete_log.changed_fields["after"])
   end
 
   test "loop stops remain separate occurrences with distinct UUIDs", context do

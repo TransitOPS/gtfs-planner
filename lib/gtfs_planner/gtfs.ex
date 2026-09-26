@@ -3,6 +3,15 @@ defmodule GtfsPlanner.Gtfs do
   The Gtfs context.
   """
 
+  @structured_audit_entity_types [
+    :route_pattern,
+    "route_pattern",
+    :timed_pattern,
+    "timed_pattern",
+    :route_pattern_build,
+    "route_pattern_build"
+  ]
+
   import Ecto.Query, warn: false
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
@@ -4762,7 +4771,7 @@ defmodule GtfsPlanner.Gtfs do
   def record_change(%AuditContext{} = ctx, entity_type, entity_or_nil, action, attrs \\ %{}) do
     snapshot = build_snapshot(entity_type, entity_or_nil)
     changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
-    changed_fields = build_changed_fields(action, snapshot, changed_fields_attrs)
+    changed_fields = build_changed_fields(entity_type, action, snapshot, changed_fields_attrs)
 
     entity_external_id = entity_external_id_for(entity_type, entity_or_nil, attrs)
     entity_id = entity_id_for(entity_or_nil)
@@ -4804,7 +4813,7 @@ defmodule GtfsPlanner.Gtfs do
       ) do
     snapshot = build_snapshot(entity_type, entity_or_nil)
     changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
-    changed_fields = build_changed_fields(action, snapshot, changed_fields_attrs)
+    changed_fields = build_changed_fields(entity_type, action, snapshot, changed_fields_attrs)
 
     %ChangeLog{}
     |> ChangeLog.changeset(%{
@@ -5208,7 +5217,7 @@ defmodule GtfsPlanner.Gtfs do
 
   # -- Diff and rollback helpers --
 
-  defp build_changed_fields(action, snapshot, attrs)
+  defp build_changed_fields(_entity_type, action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
     snapshot_str_keys = stringify_map_keys(snapshot)
 
@@ -5228,15 +5237,17 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
-  defp build_changed_fields("created", snapshot, attrs) when not is_nil(snapshot) do
+  defp build_changed_fields(entity_type, "created", snapshot, attrs)
+       when entity_type in @structured_audit_entity_types and not is_nil(snapshot) do
     after_snapshot = Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
     %{"before" => nil, "after" => normalize_value(after_snapshot)}
   end
 
-  defp build_changed_fields("deleted", snapshot, _attrs) when not is_nil(snapshot),
-    do: %{"before" => normalize_value(snapshot), "after" => nil}
+  defp build_changed_fields(entity_type, "deleted", snapshot, _attrs)
+       when entity_type in @structured_audit_entity_types and not is_nil(snapshot),
+       do: %{"before" => normalize_value(snapshot), "after" => nil}
 
-  defp build_changed_fields(_action, _snapshot, _attrs), do: nil
+  defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
 
   @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
   defp reversible_attrs_for(entity_type, attrs) when is_map(attrs) do

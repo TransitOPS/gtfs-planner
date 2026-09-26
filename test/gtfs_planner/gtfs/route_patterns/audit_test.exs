@@ -50,6 +50,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
       )
 
     assert log.station_stop_id == nil
+    assert log.changed_fields["before"] == nil
+    assert log.changed_fields["after"]["route_pattern_name"] == "Crosstown"
     refute Enum.any?(Gtfs.reversible_fields_for("route_pattern"))
     refute Enum.any?(Gtfs.reversible_fields_for("timed_pattern"))
     assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(log)
@@ -198,6 +200,33 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     assert updated_log.entity_external_id == stable_identity
     assert updated_log.changed_fields["name"]["from"] == "Timing B"
     assert updated_log.changed_fields["name"]["to"] == "Evening"
+
+    {:ok, %{source_fingerprint: source}} =
+      Gtfs.get_pattern(
+        context.organization.id,
+        context.version.id,
+        context.route.route_id,
+        pattern.id
+      )
+
+    delete = {:delete_timing, timing.id}
+
+    assert {:ok, %{fingerprint: reviewed}} =
+             Gtfs.review(pattern.id, delete, source, context.audit)
+
+    assert {:ok, _} = Gtfs.apply_review(pattern.id, delete, reviewed, context.audit)
+
+    [deleted_log] =
+      Repo.all(
+        from log in ChangeLog,
+          where:
+            log.entity_type == "timed_pattern" and log.entity_id == ^timing.id and
+              log.action == "deleted"
+      )
+
+    assert deleted_log.entity_external_id == stable_identity
+    assert deleted_log.changed_fields["before"]["name"] == "Evening"
+    assert deleted_log.changed_fields["after"] == nil
   end
 
   defp attrs(stops) do
