@@ -11,7 +11,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   - Writes GTFS-compliant CSV files with proper escaping
   - Resolves UUID foreign keys to GTFS string identifiers
   - Creates ZIP archives using Erlang's `:zip` module
-  - Runs within database transaction for consistent snapshot
+  - Reads every GTFS file from one repeatable-read database snapshot
 
   ## Export Types
 
@@ -20,7 +20,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   """
 
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Gtfs.Export.{FileSpec, CsvWriter, StreamBuilder}
+  alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, Snapshot, StreamBuilder}
   alias GtfsPlanner.Gtfs.Extensions
 
   require Logger
@@ -56,20 +56,15 @@ defmodule GtfsPlanner.Gtfs.Export do
       # Create temp directory
       File.mkdir_p!(temp_dir)
 
-      # Build lookup maps for foreign key resolution
-      lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
-
       # Get file specifications for export type
       file_specs = FileSpec.get_specs(export_type)
 
-      # Export within transaction for consistent snapshot
+      # Export every file from one read snapshot
       result =
-        Repo.transaction(
-          fn ->
-            export_files(temp_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
-          end,
-          timeout: :infinity
-        )
+        with_read_snapshot(fn ->
+          lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
+          export_files(temp_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
+        end)
 
       case result do
         {:ok, file_paths} ->
@@ -116,19 +111,33 @@ defmodule GtfsPlanner.Gtfs.Export do
     try do
       File.mkdir_p!(output_dir)
 
-      lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
-
-      Repo.transaction(
-        fn ->
-          export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
-        end,
-        timeout: :infinity
-      )
+      with_read_snapshot(fn ->
+        lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
+        export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
+      end)
     rescue
       e ->
         Logger.error("GTFS disk export failed: #{inspect(e)}")
         {:error, "Export failed: #{Exception.message(e)}"}
     end
+  end
+
+  # Runs the whole GTFS read inside one transaction whose snapshot is established
+  # before the first query, so route patterns, trips and stop times describe a
+  # single committed revision. A caller-owned transaction cannot change its own
+  # isolation (for example the SQL sandbox), so the boundary owns the decision.
+  defp with_read_snapshot(fun) do
+    Repo.transaction(
+      fn ->
+        snapshot_module().begin_read()
+        fun.()
+      end,
+      timeout: :infinity
+    )
+  end
+
+  defp snapshot_module do
+    Application.get_env(:gtfs_planner, :gtfs_export_snapshot, Snapshot.Repo)
   end
 
   # Generates unique temporary directory path

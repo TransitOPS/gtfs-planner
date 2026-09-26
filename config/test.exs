@@ -46,6 +46,13 @@ config :gtfs_planner,
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 
+# The SQL sandbox already holds an open transaction, so it cannot change the
+# enclosing transaction's isolation level. The export-race test selects the
+# production Repo snapshot boundary directly.
+config :gtfs_planner,
+       :gtfs_export_snapshot,
+       GtfsPlanner.Gtfs.Export.Snapshot.Sandbox
+
 config :gtfs_planner,
        :reviewed_apply_transaction,
        GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox

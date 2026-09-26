@@ -64,57 +64,41 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     |> Map.new()
   end
 
+  # Primary GTFS ID fields in preference order, used when a schema needs a
+  # deterministic single-field sort but has no multi-field identity such as a
+  # trip's `stop_sequence` or a route pattern's `route_pattern_id`.
+  @ordering_fields [
+    :stop_id,
+    :route_id,
+    :trip_id,
+    :agency_id,
+    :service_id,
+    :fare_id,
+    :pathway_id,
+    :level_id,
+    :attribution_id,
+    :inserted_at,
+    :id
+  ]
+
   # Determines appropriate ordering for GTFS output based on schema
+  defp order_by_for_schema(query, GtfsPlanner.Gtfs.StopTime) do
+    order_by(query, [s], asc: s.trip_id, asc: s.stop_sequence)
+  end
+
+  # Route patterns share a route_id, so the pattern identity breaks the tie
+  defp order_by_for_schema(query, GtfsPlanner.Gtfs.RoutePattern) do
+    order_by(query, [s], asc: s.route_id, asc: s.route_pattern_id)
+  end
+
+  defp order_by_for_schema(query, GtfsPlanner.Gtfs.Shape) do
+    order_by(query, [s], asc: s.shape_id, asc: s.shape_pt_sequence)
+  end
+
   defp order_by_for_schema(query, schema) do
-    cond do
-      # StopTime must be ordered by trip_id, then stop_sequence
-      schema == GtfsPlanner.Gtfs.StopTime ->
-        order_by(query, [s], asc: s.trip_id, asc: s.stop_sequence)
-
-      # Shape must be ordered by shape_id, then shape_pt_sequence
-      schema == GtfsPlanner.Gtfs.Shape ->
-        order_by(query, [s], asc: s.shape_id, asc: s.shape_pt_sequence)
-
-      # Most schemas can be ordered by their primary GTFS ID field
-      # This provides deterministic output
-      has_field?(schema, :stop_id) ->
-        order_by(query, [s], asc: s.stop_id)
-
-      has_field?(schema, :route_id) ->
-        order_by(query, [s], asc: s.route_id)
-
-      has_field?(schema, :trip_id) ->
-        order_by(query, [s], asc: s.trip_id)
-
-      has_field?(schema, :agency_id) ->
-        order_by(query, [s], asc: s.agency_id)
-
-      has_field?(schema, :service_id) ->
-        order_by(query, [s], asc: s.service_id)
-
-      has_field?(schema, :fare_id) ->
-        order_by(query, [s], asc: s.fare_id)
-
-      has_field?(schema, :pathway_id) ->
-        order_by(query, [s], asc: s.pathway_id)
-
-      has_field?(schema, :level_id) ->
-        order_by(query, [s], asc: s.level_id)
-
-      has_field?(schema, :attribution_id) ->
-        order_by(query, [s], asc: s.attribution_id)
-
-      # Default: order by inserted_at for consistent output when timestamps are present
-      has_field?(schema, :inserted_at) ->
-        order_by(query, [s], asc: s.inserted_at)
-
-      # Fallback: order by primary key id if available
-      has_field?(schema, :id) ->
-        order_by(query, [s], asc: s.id)
-
-      # Final fallback: leave query order unchanged if no known ordering field exists
-      true ->
-        query
+    case Enum.find(@ordering_fields, &has_field?(schema, &1)) do
+      nil -> query
+      field -> order_by(query, [s], asc: field(s, ^field))
     end
   end
 
