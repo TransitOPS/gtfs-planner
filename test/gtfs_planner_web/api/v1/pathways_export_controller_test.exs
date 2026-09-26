@@ -1020,23 +1020,45 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
       receive do
         {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
       after
-        @child_deadline_ms ->
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
-          after
-            0 -> :ok
-          end
+        @child_deadline_ms -> kill_runner_child(pid, ref)
       end
     end
 
     :ok
   end
 
+  # :kill is untrappable, so both DOWNs below are guaranteed to arrive. The
+  # runner's build task (its `task_pid`) holds the sandboxed DB connection, so
+  # it must be confirmed dead too before teardown reclaims the connection and
+  # the temporary artifact root.
+  defp kill_runner_child(pid, ref) do
+    task_pid = runner_task_pid(pid)
+    task_ref = task_pid && Process.monitor(task_pid)
+
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    end
+
+    if task_ref do
+      receive do
+        {:DOWN, ^task_ref, :process, ^task_pid, _reason} -> :ok
+      end
+    end
+  end
+
+  defp runner_task_pid(pid) do
+    %{task_pid: task_pid} = :sys.get_state(pid, @child_deadline_ms)
+    task_pid
+  catch
+    :exit, _ -> nil
+  end
+
   # Durable-state wait. Subscribing before the first read and re-reading after
-  # every broadcast keeps this deterministic; the deadline only bounds a lost
-  # message, it never decides the outcome.
+  # every broadcast keeps this deterministic. The deadline bounds a lost
+  # message, but once it passes with the run still non-terminal, that is a
+  # failure: flunk with the run's current state instead of spinning.
   defp await_terminal_run(organization_id, version_id, run_id, timeout \\ @wait_ms) do
     Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run_id))
     deadline = System.monotonic_time(:millisecond) + timeout
@@ -1046,11 +1068,19 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
   defp do_await(organization_id, version_id, run_id, deadline) do
     run = ExportRuns.get_for_version(organization_id, version_id, run_id)
 
-    if run.state in [:ready, :failed, :interrupted, :cancelled, :expired] do
-      run
-    else
-      wait_for_change(run_id, deadline)
-      do_await(organization_id, version_id, run_id, deadline)
+    cond do
+      run.state in [:ready, :failed, :interrupted, :cancelled, :expired] ->
+        run
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk(
+          "pathways export run #{run_id} did not reach a terminal state before the deadline; " <>
+            "state=#{inspect(run.state)} failure_code=#{inspect(run.failure_code)}"
+        )
+
+      true ->
+        wait_for_change(run_id, deadline)
+        do_await(organization_id, version_id, run_id, deadline)
     end
   end
 
