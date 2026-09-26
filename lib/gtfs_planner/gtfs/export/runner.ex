@@ -25,15 +25,15 @@ defmodule GtfsPlanner.Gtfs.Export.Runner do
     )
   end
 
+  @typedoc "A durable export run row, as stored."
+  @type run :: %Run{}
+
   @doc """
   Starts the build for a pending run and normalizes the supervisor's start result.
 
   Shared by the web LiveView and the companion API so neither owns its own
   start-if-pending branch.
   """
-  @typedoc "A durable export run row, as stored."
-  @type run :: %Run{}
-
   @spec ensure_started(Ecto.UUID.t(), run()) :: :ok | {:error, term()}
   def ensure_started(organization_id, %Run{state: :pending, id: run_id}) do
     case start_build(organization_id, run_id) do
