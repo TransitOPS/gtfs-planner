@@ -9,7 +9,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
@@ -112,29 +114,44 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   def review(pattern_id, operation, source_fingerprint, %AuditContext{} = audit_context)
       when is_binary(pattern_id) do
-    with {:ok, %{pattern: pattern} = loaded} <-
-           get_pattern(
-             audit_context.organization_id,
-             audit_context.gtfs_version_id,
-             pattern_route_id(pattern_id, audit_context),
-             pattern_id
-           ),
-         true <- is_nil(source_fingerprint) or source_fingerprint == loaded.source_fingerprint,
-         :ok <- validate_lifecycle_operation(pattern, operation, loaded) do
-      {:ok,
-       %{
-         fingerprint: review_fingerprint(loaded.source_fingerprint, operation),
-         impact: operation_impact(operation, loaded),
-         proposed: operation_proposal(operation, pattern)
-       }}
-    else
-      false -> {:error, :stale_review}
-      nil -> {:error, :not_found}
-      {:error, _} = error -> error
-    end
+    Repo.transaction(fn ->
+      unless Keyword.get(Repo.config(), :pool) == Ecto.Adapters.SQL.Sandbox do
+        Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+      end
+
+      with {:ok, %{pattern: pattern} = loaded} <-
+             get_pattern(
+               audit_context.organization_id,
+               audit_context.gtfs_version_id,
+               pattern_route_id(pattern_id, audit_context),
+               pattern_id
+             ),
+           true <- is_nil(source_fingerprint) or source_fingerprint == loaded.source_fingerprint,
+           :ok <- validate_lifecycle_operation(pattern, operation, loaded),
+           {:ok, proposal} <- review_proposal(pattern, operation, loaded) do
+        impact = operation_impact(operation, loaded)
+
+        {:ok,
+         %{
+           fingerprint:
+             review_fingerprint(loaded.source_fingerprint, {operation, impact, proposal}),
+           impact: impact,
+           proposed: proposal
+         }}
+      else
+        false -> Repo.rollback(:stale_review)
+        nil -> Repo.rollback(:not_found)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_read_transaction()
   end
 
   def review(_, _, _, _), do: {:error, :invalid_input}
+
+  defp unwrap_read_transaction({:ok, {:ok, value}}), do: {:ok, value}
+  defp unwrap_read_transaction({:ok, {:error, reason}}), do: {:error, reason}
+  defp unwrap_read_transaction({:error, reason}), do: {:error, reason}
 
   def apply_review(pattern_id, operation, review_fingerprint, %AuditContext{} = audit_context)
       when is_binary(pattern_id) and is_binary(review_fingerprint) do
@@ -178,14 +195,45 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp apply_lifecycle_operation!(_route, pattern, {:details, attrs}, audit_context) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, attrs} <- normalize_allowed_attrs(attrs, @pattern_fields),
-         :ok <- reject_direction_change(attrs, pattern),
          :ok <- validate_noop_or_pattern(pattern, attrs) do
       if same_values?(pattern, attrs) do
         %{pattern: pattern, trips_updated: 0}
       else
+        trips_updated =
+          case Map.fetch(attrs, :direction_id) do
+            {:ok, direction_id} -> update_trip_direction!(pattern, direction_id)
+            :error -> 0
+          end
+
         updated = pattern |> RoutePattern.changeset(attrs) |> update_or_rollback!()
         audit!(audit_context, :route_pattern, pattern, "updated", attrs)
-        %{pattern: load_pattern_for_audit!(updated.id), trips_updated: 0}
+        %{pattern: load_pattern_for_audit!(updated.id), trips_updated: trips_updated}
+      end
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp apply_lifecycle_operation!(
+         _route,
+         pattern,
+         {:stops, entries, reviewed_values},
+         audit_context
+       ) do
+    with {:ok, edit} <- prepare_stop_edit(pattern, entries, reviewed_values) do
+      if edit.noop? do
+        %{pattern: pattern, trips_updated: 0}
+      else
+        trips_updated = persist_stop_edit!(pattern, edit)
+        after_pattern = load_pattern_for_audit!(pattern.id)
+
+        audit!(audit_context, :route_pattern, after_pattern, "updated", %{
+          before: pattern_snapshot(pattern),
+          after: pattern_snapshot(after_pattern),
+          affected_trips: trips_updated
+        })
+
+        %{pattern: after_pattern, trips_updated: trips_updated}
       end
     else
       {:error, reason} -> Repo.rollback(reason)
@@ -193,25 +241,40 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp apply_lifecycle_operation!(_route, pattern, {:timing, timing_id, attrs}, audit_context) do
-    with {:ok, attrs} <- normalize_allowed_attrs(attrs, @timing_fields),
+    rows_input = Map.get(attrs, :rows, Map.get(attrs, "rows"))
+
+    with {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
          %TimedPattern{} = timing <- scoped_timing(pattern, timing_id),
-         :ok <- validate_timing_attrs(attrs) do
+         :ok <- validate_timing_attrs(values),
+         {:ok, rows} <- validate_timing_rows(pattern, timing, rows_input) do
+      before = audit_timing_snapshot(timing)
+
       cond do
-        same_values?(timing, attrs) ->
+        same_values?(timing, values) and is_nil(rows) ->
           %{pattern: pattern, trips_updated: 0}
 
         true ->
-          _changed = timing |> TimedPattern.changeset(attrs) |> update_or_rollback!()
+          trips_updated = if rows, do: persist_timing_edit!(pattern, timing, rows), else: 0
+          if values != %{}, do: timing |> TimedPattern.changeset(values) |> update_or_rollback!()
+          after_snapshot = audit_timing_snapshot(Repo.get!(TimedPattern, timing.id))
 
           audit!(
             audit_context,
             :timed_pattern,
             timing,
             "updated",
-            timing_audit_attrs(pattern, timing, attrs)
+            timing_audit_attrs(
+              pattern,
+              timing,
+              Map.merge(values, %{
+                before: before,
+                after: after_snapshot,
+                affected_trips: trips_updated
+              })
+            )
           )
 
-          %{pattern: pattern, trips_updated: 0}
+          %{pattern: pattern, trips_updated: trips_updated}
       end
     else
       nil -> Repo.rollback(:not_found)
@@ -359,11 +422,29 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         _trips = lock_pattern_trips!(route, pattern)
       end
 
-      loaded = load_pattern_for_audit!(pattern.id)
-      current_fingerprint = source_fingerprint(loaded)
+      {:ok, loaded_view} =
+        get_pattern(
+          audit_context.organization_id,
+          audit_context.gtfs_version_id,
+          route.route_id,
+          pattern.id
+        )
 
-      unless secure_equal?(fingerprint, review_fingerprint(current_fingerprint, operation)) do
-        Repo.rollback(:stale_review)
+      loaded = loaded_view.pattern
+      current_fingerprint = loaded_view.source_fingerprint
+
+      impact = operation_impact(operation, %{pattern: loaded})
+
+      with :ok <- validate_lifecycle_operation(loaded, operation, loaded_view),
+           {:ok, proposal} <- review_proposal(loaded, operation, loaded_view) do
+        current_review_fingerprint =
+          review_fingerprint(current_fingerprint, {operation, impact, proposal})
+
+        unless secure_equal?(fingerprint, current_review_fingerprint) do
+          Repo.rollback(:stale_review)
+        end
+      else
+        {:error, reason} -> Repo.rollback(reason)
       end
 
       apply_lifecycle_operation!(route, loaded, operation, audit_context)
@@ -427,16 +508,24 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp validate_lifecycle_operation(pattern, {:details, attrs}, _loaded) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields),
-         :ok <- reject_direction_change(values, pattern),
          :ok <- validate_noop_or_pattern(pattern, values) do
       :ok
+    end
+  end
+
+  defp validate_lifecycle_operation(pattern, {:stops, entries, reviewed_values}, loaded) do
+    case prepare_stop_edit(pattern, entries, reviewed_values, loaded) do
+      {:ok, _edit} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp validate_lifecycle_operation(pattern, {:timing, timing_id, attrs}, _loaded) do
     with %TimedPattern{} <- scoped_timing(pattern, timing_id),
          {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
-         :ok <- validate_timing_attrs(values) do
+         :ok <- validate_timing_attrs(values),
+         {:ok, _rows} <-
+           validate_timing_rows(pattern, scoped_timing(pattern, timing_id), Map.get(attrs, :rows)) do
       :ok
     else
       nil -> {:error, :not_found}
@@ -479,12 +568,615 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp operation_impact(:delete, %{pattern: pattern}),
     do: %{trips_affected: count_pattern_trips(pattern)}
 
+  defp operation_impact({:stops, _entries, _values}, %{pattern: pattern}),
+    do: %{trips_affected: count_pattern_trips(pattern)}
+
+  defp operation_impact({:timing, timing_id, _attrs}, %{pattern: pattern}),
+    do: %{trips_affected: count_timing_trips(pattern, timing_id)}
+
+  defp operation_impact({:details, attrs}, %{pattern: pattern}) when is_map(attrs) do
+    if Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id"),
+      do: %{trips_affected: count_pattern_trips(pattern)},
+      else: %{trips_affected: 0}
+  end
+
   defp operation_impact(_, _), do: %{trips_affected: 0}
 
   defp operation_proposal({:details, attrs}, _pattern), do: attrs
   defp operation_proposal({:timing, _id, attrs}, _pattern), do: attrs
   defp operation_proposal({:add_timing, attrs}, _pattern), do: attrs
+
+  defp operation_proposal({:stops, entries, values}, pattern),
+    do: %{occurrences: entries, timings: values, pattern_id: pattern.id}
+
   defp operation_proposal(operation, _pattern), do: operation
+
+  defp review_proposal(pattern, {:stops, entries, reviewed_values}, loaded) do
+    with {:ok, edit} <- prepare_stop_edit(pattern, entries, reviewed_values, loaded) do
+      {:ok,
+       %{
+         occurrences: Enum.map(edit.new_occurrences, &occurrence_proposal/1),
+         removed: edit.removed,
+         added: edit.added,
+         timing_rows: edit.timing_rows,
+         start_shifts: edit.start_shifts,
+         estimates: edit.estimates
+       }}
+    end
+  end
+
+  defp review_proposal(pattern, {:timing, timing_id, attrs}, _loaded) do
+    timing = scoped_timing(pattern, timing_id)
+
+    with {:ok, rows} <- validate_timing_rows(pattern, timing, map_value(attrs, :rows)) do
+      {:ok, if(rows, do: %{attrs: Map.drop(attrs, [:rows, "rows"]), rows: rows}, else: attrs)}
+    end
+  end
+
+  defp review_proposal(_pattern, operation, _loaded),
+    do: {:ok, operation_proposal(operation, nil)}
+
+  defp prepare_stop_edit(pattern, entries, reviewed_values, loaded \\ nil) do
+    old_occurrences = if loaded, do: loaded.occurrences, else: pattern_occurrences(pattern)
+    timings = if loaded, do: loaded.timings, else: pattern_timings(pattern)
+    trips = pattern_trips(pattern)
+
+    with {:ok, new_occurrences} <- normalize_occurrence_entries(entries, pattern),
+         :ok <- validate_retained_stop_ids(old_occurrences, new_occurrences),
+         :ok <- validate_structural_trips(trips, old_occurrences, new_occurrences),
+         :ok <- ensure_eligible_occurrences!(pattern, new_occurrences),
+         {:ok, timing_groups} <- load_timing_groups(timings),
+         {:ok, reviewed} <-
+           Materializer.review_stops(
+             old_occurrences,
+             new_occurrences,
+             timing_groups,
+             reviewed_values
+           ),
+         :ok <-
+           require_timing_acknowledgements(
+             new_occurrences,
+             old_occurrences,
+             reviewed_values,
+             trips
+           ),
+         true <- timing_ids_match?(timings, reviewed.timing_rows) do
+      new_ids = MapSet.new(Enum.map(new_occurrences, &Map.get(&1, :id)))
+      removed = Enum.reject(old_occurrences, &MapSet.member?(new_ids, &1.id))
+      added = Enum.reject(new_occurrences, &Map.get(&1, :id))
+
+      {:ok,
+       %{
+         old_occurrences: old_occurrences,
+         new_occurrences: new_occurrences,
+         timings: timings,
+         timing_rows: reviewed.timing_rows,
+         start_shifts: Map.get(reviewed, :shifts, [%{start_shift: reviewed.start_shift}]),
+         estimates: reviewed.estimates,
+         removed: Enum.map(removed, &occurrence_proposal/1),
+         added: Enum.map(added, &occurrence_proposal/1),
+         noop?:
+           Enum.map(old_occurrences, &{&1.id, &1.stop_id}) ==
+             Enum.map(new_occurrences, &{Map.get(&1, :id), &1.stop_id})
+       }}
+    else
+      false -> {:error, :invalid_timing_review}
+      {:error, _} = error -> error
+    end
+  rescue
+    Ecto.NoResultsError -> {:error, :not_found}
+  end
+
+  defp normalize_occurrence_entries(entries, _pattern) when is_list(entries) do
+    normalized =
+      Enum.map(entries, fn entry ->
+        id = map_value(entry, :id)
+        stop_id = map_value(entry, :stop_id)
+        key = map_value(entry, :key)
+
+        cond do
+          is_binary(id) and is_binary(stop_id) -> %{id: id, stop_id: stop_id}
+          is_nil(id) and is_binary(stop_id) and is_binary(key) -> %{key: key, stop_id: stop_id}
+          true -> nil
+        end
+      end)
+
+    if Enum.any?(normalized, &is_nil/1), do: {:error, :invalid_input}, else: {:ok, normalized}
+  end
+
+  defp normalize_occurrence_entries(_, _), do: {:error, :invalid_input}
+
+  defp validate_structural_trips(trips, old_occurrences, new_occurrences) do
+    linked? = Enum.any?(trips, &(&1.pattern_derivation_state == "linked"))
+    custom? = Enum.any?(trips, &(&1.pattern_derivation_state == "custom"))
+    retained = Enum.filter(new_occurrences, &Map.has_key?(&1, :id))
+
+    cond do
+      custom? ->
+        {:error, :custom_trips_block_stop_edit}
+
+      length(new_occurrences) < 2 ->
+        {:error, :at_least_two_stops}
+
+      linked? and retained == [] ->
+        {:error, :retained_occurrence_required}
+
+      true ->
+        old_ids = Enum.map(old_occurrences, & &1.id)
+        new_ids = Enum.map(retained, & &1.id)
+
+        if new_ids == Enum.filter(old_ids, &(&1 in new_ids)),
+          do: :ok,
+          else: {:error, :invalid_occurrence_order}
+    end
+  end
+
+  defp ensure_eligible_occurrences!(pattern, occurrences) do
+    stop_ids = Enum.map(occurrences, & &1.stop_id)
+
+    cond do
+      length(stop_ids) < 2 ->
+        {:error, :at_least_two_stops}
+
+      Enum.any?(Enum.chunk_every(stop_ids, 2, 1, :discard), fn [a, b] -> a == b end) ->
+        {:error, :adjacent_duplicate_stops}
+
+      true ->
+        ensure_stops_exist(pattern, stop_ids)
+    end
+  end
+
+  defp ensure_stops_exist(pattern, stop_ids) do
+    eligible =
+      from(stop in Stop,
+        where:
+          stop.organization_id == ^pattern.organization_id and
+            stop.gtfs_version_id == ^pattern.gtfs_version_id and
+            stop.stop_id in ^stop_ids and (is_nil(stop.location_type) or stop.location_type == 0),
+        select: stop.stop_id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    if MapSet.size(eligible) == length(Enum.uniq(stop_ids)),
+      do: :ok,
+      else: {:error, :not_found}
+  end
+
+  defp validate_retained_stop_ids(old_occurrences, new_occurrences) do
+    old_by_id = Map.new(old_occurrences, &{&1.id, &1.stop_id})
+
+    if Enum.all?(new_occurrences, fn occurrence ->
+         case Map.fetch(occurrence, :id) do
+           {:ok, id} -> Map.get(old_by_id, id) == occurrence.stop_id
+           :error -> true
+         end
+       end) do
+      :ok
+    else
+      {:error, :invalid_occurrence_identity}
+    end
+  end
+
+  defp load_timing_groups(timings) do
+    {:ok,
+     Enum.map(timings, fn timing -> %{timing_id: timing.id, rows: timing_rows(timing.id)} end)}
+  end
+
+  defp require_timing_acknowledgements(new, _old, values, trips) do
+    added? = Enum.any?(new, &(not Map.has_key?(&1, :id)))
+    affected? = trips != []
+
+    if added? and affected? do
+      timings = Map.values(values)
+
+      if Enum.all?(timings, &(map_value(&1, :acknowledged) == true)),
+        do: :ok,
+        else: {:error, :timing_acknowledgement_required}
+    else
+      :ok
+    end
+  end
+
+  defp timing_ids_match?(timings, result_rows),
+    do:
+      Enum.sort(Enum.map(timings, & &1.id)) ==
+        Enum.sort(Enum.map(result_rows, &Map.get(&1, :timing_id)))
+
+  defp occurrence_proposal(occurrence),
+    do: %{
+      id: Map.get(occurrence, :id),
+      key: Map.get(occurrence, :key),
+      stop_id: Map.get(occurrence, :stop_id)
+    }
+
+  defp map_value(map, key) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp map_value(_, _), do: nil
+
+  defp validate_timing_rows(_pattern, _timing, nil), do: {:ok, nil}
+
+  defp validate_timing_rows(pattern, _timing, rows) when is_list(rows) do
+    occurrences = pattern_occurrences(pattern)
+
+    normalized =
+      Enum.map(rows, fn row ->
+        %{
+          route_pattern_stop_id: map_value(row, :route_pattern_stop_id),
+          arrival_offset: map_value(row, :arrival_offset),
+          departure_offset: map_value(row, :departure_offset),
+          timepoint: map_value(row, :timepoint),
+          pickup_type: map_value(row, :pickup_type),
+          drop_off_type: map_value(row, :drop_off_type),
+          stop_headsign: map_value(row, :stop_headsign)
+        }
+      end)
+
+    with true <- length(normalized) == length(occurrences),
+         true <-
+           Enum.map(normalized, & &1.route_pattern_stop_id) == Enum.map(occurrences, & &1.id),
+         :ok <- validate_relative_rows(normalized) do
+      {:ok, normalized}
+    else
+      false -> {:error, :invalid_input}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp validate_timing_rows(_pattern, _timing, _rows), do: {:error, :invalid_input}
+
+  defp validate_relative_rows(rows) do
+    rows
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, nil}, fn {row, index}, {:ok, preceding_departure} ->
+      arrival = row.arrival_offset
+      departure = row.departure_offset
+
+      valid? =
+        is_integer(arrival) and is_integer(departure) and departure >= arrival and
+          (index == 0 or arrival >= preceding_departure)
+
+      cond do
+        not valid? -> {:halt, {:error, :invalid_chronology}}
+        index == 0 and departure != 0 -> {:halt, {:error, :first_departure_must_be_zero}}
+        true -> {:cont, {:ok, departure}}
+      end
+    end)
+    |> case do
+      {:ok, _} -> :ok
+      error -> error
+    end
+  end
+
+  defp persist_timing_edit!(pattern, timing, rows) do
+    trips = linked_timing_trips(pattern, timing.id)
+    Enum.each(trips, &materialize_timing_trip!(&1, pattern, timing, rows))
+    update_trip_timestamps!(trips)
+
+    Enum.zip(pattern_occurrences(pattern), rows)
+    |> Enum.each(fn {occurrence, attrs} -> update_timing_row!(timing, occurrence, attrs) end)
+
+    if rows != [] do
+      Repo.update_all(from(t in TimedPattern, where: t.id == ^timing.id),
+        set: [updated_at: DateTime.utc_now()]
+      )
+    end
+
+    length(trips)
+  end
+
+  defp persist_stop_edit!(pattern, edit) do
+    old = edit.old_occurrences
+    new = persist_occurrences!(pattern, old, edit.new_occurrences)
+    timing_rows_by_id = Map.new(edit.timing_rows, &{&1.timing_id, &1.rows})
+
+    Enum.each(edit.timings, fn timing ->
+      persist_pattern_timing_rows!(timing, old, new, Map.fetch!(timing_rows_by_id, timing.id))
+    end)
+
+    trips = linked_pattern_trips(pattern)
+
+    shifts =
+      Map.new(edit.start_shifts, fn item -> {Map.get(item, :timing_id), item.start_shift} end)
+
+    Enum.each(trips, fn trip ->
+      rows = Map.fetch!(timing_rows_by_id, trip.timed_pattern_id)
+      shift = Map.get(shifts, trip.timed_pattern_id, Map.get(edit, :start_shift, 0))
+      persist_structural_trip!(trip, old, new, rows, shift)
+    end)
+
+    update_trip_timestamps!(trips)
+
+    if trips != [] or edit.added != [] or edit.removed != [] do
+      Repo.update_all(from(p in RoutePattern, where: p.id == ^pattern.id),
+        set: [updated_at: DateTime.utc_now()]
+      )
+    end
+
+    length(trips)
+  end
+
+  defp persist_occurrences!(pattern, old, new) do
+    new_ids = new |> Enum.map(&Map.get(&1, :id)) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    removed = Enum.reject(old, &MapSet.member?(new_ids, &1.id))
+
+    if removed != [] do
+      removed_ids = Enum.map(removed, & &1.id)
+
+      Repo.delete_all(
+        from(row in TimedPatternStop, where: row.route_pattern_stop_id in ^removed_ids)
+      )
+    end
+
+    Enum.each(removed, &Repo.delete!/1)
+
+    retained = Enum.filter(new, &Map.get(&1, :id))
+
+    temp_positions =
+      unused_positive_values(Enum.map(old, & &1.position), length(retained), length(new))
+
+    Enum.zip(retained, temp_positions)
+    |> Enum.each(fn {occurrence, position} ->
+      Repo.update_all(from(o in RoutePatternStop, where: o.id == ^occurrence.id),
+        set: [position: position]
+      )
+    end)
+
+    Enum.with_index(new, 1)
+    |> Enum.map(fn {entry, position} ->
+      case Map.get(entry, :id) do
+        nil ->
+          insert_occurrence!(pattern, entry.stop_id, position)
+
+        id ->
+          Repo.update_all(from(o in RoutePatternStop, where: o.id == ^id),
+            set: [position: position, stop_id: entry.stop_id]
+          )
+
+          Repo.get!(RoutePatternStop, id)
+      end
+    end)
+  end
+
+  defp persist_pattern_timing_rows!(timing, old, new, rows) do
+    new_ids = MapSet.new(Enum.map(new, & &1.id))
+    removed_ids = old |> Enum.reject(&MapSet.member?(new_ids, &1.id)) |> Enum.map(& &1.id)
+
+    Repo.delete_all(
+      from(r in TimedPatternStop,
+        where: r.timed_pattern_id == ^timing.id and r.route_pattern_stop_id in ^removed_ids
+      )
+    )
+
+    existing = Map.new(timing_rows(timing.id), &{&1.route_pattern_stop_id, &1})
+
+    Enum.zip(new, rows)
+    |> Enum.each(fn {occurrence, attrs} ->
+      case Map.get(existing, occurrence.id) do
+        nil ->
+          insert_timing_rows!(timing, [occurrence], [attrs])
+
+        row ->
+          row
+          |> Ecto.Changeset.change(
+            Map.take(attrs, [
+              :arrival_offset,
+              :departure_offset,
+              :timepoint,
+              :pickup_type,
+              :drop_off_type,
+              :stop_headsign
+            ])
+          )
+          |> update_or_rollback!()
+      end
+    end)
+  end
+
+  defp persist_structural_trip!(trip, old_occurrences, new_occurrences, timing_rows, shift) do
+    rows = trip_stop_times(trip)
+
+    if length(rows) != length(old_occurrences), do: Repo.rollback(:trip_stop_times_mismatch)
+
+    with {:ok, start_seconds} <- GtfsPlanner.Gtfs.GtfsTime.parse(List.first(rows).departure_time),
+         {:ok, materialized} <-
+           Materializer.materialize(start_seconds + shift, new_occurrences, timing_rows) do
+      occurrence_index = Map.new(Enum.with_index(old_occurrences), fn {o, i} -> {o.id, i} end)
+
+      old_by_occurrence =
+        Map.new(new_occurrences, fn occurrence ->
+          old_index = Map.get(occurrence_index, Map.get(occurrence, :id))
+          {Map.get(occurrence, :id), if(old_index, do: Enum.at(rows, old_index))}
+        end)
+
+      retained_times = old_by_occurrence |> Map.values() |> Enum.reject(&is_nil/1)
+      removed_times = Enum.reject(rows, &(&1 in retained_times))
+      Enum.each(removed_times, &Repo.delete!/1)
+
+      temp_sequences =
+        unused_positive_values(
+          Enum.map(rows, & &1.stop_sequence),
+          length(retained_times),
+          length(new_occurrences)
+        )
+
+      Enum.zip(retained_times, temp_sequences)
+      |> Enum.each(fn {row, seq} ->
+        Repo.update_all(from(st in StopTime, where: st.id == ^row.id), set: [stop_sequence: seq])
+      end)
+
+      Enum.zip([new_occurrences, materialized, timing_rows])
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{occurrence, materialized_row, timing_row}, sequence} ->
+        case Map.get(old_by_occurrence, occurrence.id) do
+          nil ->
+            %StopTime{}
+            |> StopTime.changeset(
+              stop_time_attrs(trip, occurrence, materialized_row, timing_row, sequence)
+            )
+            |> insert_or_rollback!()
+
+          old_row ->
+            attrs =
+              Map.merge(
+                Map.take(materialized_row, [:arrival_time, :departure_time]),
+                Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
+              )
+              |> Map.merge(%{stop_id: occurrence.stop_id, stop_sequence: sequence})
+
+            old_row |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
+        end
+      end)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp materialize_timing_trip!(trip, pattern, _timing, rows) do
+    stop_times = trip_stop_times(trip)
+    occurrences = pattern_occurrences(pattern)
+    if length(stop_times) != length(occurrences), do: Repo.rollback(:trip_stop_times_mismatch)
+
+    with {:ok, start} <- GtfsPlanner.Gtfs.GtfsTime.parse(List.first(stop_times).departure_time),
+         {:ok, materialized} <- Materializer.materialize(start, occurrences, rows) do
+      Enum.zip([stop_times, materialized, rows])
+      |> Enum.each(fn {old, value, timing_row} ->
+        attrs =
+          Map.merge(
+            Map.take(value, [:arrival_time, :departure_time]),
+            Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
+          )
+
+        old |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
+      end)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp stop_time_attrs(trip, occurrence, materialized, timing_row, sequence) do
+    Map.merge(
+      Map.take(materialized, [:arrival_time, :departure_time]),
+      Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
+    )
+    |> Map.merge(%{
+      trip_id: trip.trip_id,
+      stop_id: occurrence.stop_id,
+      stop_sequence: sequence,
+      organization_id: trip.organization_id,
+      gtfs_version_id: trip.gtfs_version_id,
+      continuous_pickup: nil,
+      continuous_drop_off: nil,
+      shape_dist_traveled: nil
+    })
+  end
+
+  defp update_timing_row!(timing, occurrence, attrs) do
+    case Repo.one(
+           from(r in TimedPatternStop,
+             where: r.timed_pattern_id == ^timing.id and r.route_pattern_stop_id == ^occurrence.id
+           )
+         ) do
+      nil ->
+        insert_timing_rows!(timing, [occurrence], [attrs])
+
+      row ->
+        row
+        |> Ecto.Changeset.change(
+          Map.take(attrs, [
+            :arrival_offset,
+            :departure_offset,
+            :timepoint,
+            :pickup_type,
+            :drop_off_type,
+            :stop_headsign
+          ])
+        )
+        |> update_or_rollback!()
+    end
+  end
+
+  defp linked_pattern_trips(pattern) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^pattern.organization_id and
+          t.gtfs_version_id == ^pattern.gtfs_version_id and t.route_id == ^pattern.route_id and
+          t.route_pattern_id == ^pattern.route_pattern_id and
+          t.pattern_derivation_state == "linked",
+      order_by: [asc: t.id]
+    )
+    |> Repo.all()
+  end
+
+  defp linked_timing_trips(pattern, timing_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^pattern.organization_id and
+          t.gtfs_version_id == ^pattern.gtfs_version_id and t.route_id == ^pattern.route_id and
+          t.route_pattern_id == ^pattern.route_pattern_id and t.timed_pattern_id == ^timing_id and
+          t.pattern_derivation_state == "linked",
+      order_by: [asc: t.id]
+    )
+    |> Repo.all()
+  end
+
+  defp pattern_trips(pattern) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^pattern.organization_id and
+          t.gtfs_version_id == ^pattern.gtfs_version_id and t.route_id == ^pattern.route_id and
+          t.route_pattern_id == ^pattern.route_pattern_id,
+      order_by: [asc: t.id]
+    )
+    |> Repo.all()
+  end
+
+  defp trip_stop_times(trip) do
+    from(st in StopTime,
+      where:
+        st.organization_id == ^trip.organization_id and
+          st.gtfs_version_id == ^trip.gtfs_version_id and st.trip_id == ^trip.trip_id,
+      order_by: [asc: st.stop_sequence, asc: st.id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+  end
+
+  defp update_trip_direction!(pattern, direction_id) do
+    trips = pattern_trips(pattern)
+
+    Repo.update_all(from(t in Trip, where: t.id in ^Enum.map(trips, & &1.id)),
+      set: [direction_id: direction_id, updated_at: DateTime.utc_now()]
+    )
+
+    length(trips)
+  end
+
+  defp update_trip_timestamps!([]), do: :ok
+
+  defp update_trip_timestamps!(trips) do
+    now = DateTime.utc_now()
+
+    Repo.update_all(from(t in Trip, where: t.id in ^Enum.map(trips, & &1.id)),
+      set: [updated_at: now]
+    )
+
+    :ok
+  end
+
+  defp unused_positive_values(occupied, count, final_count) do
+    used = MapSet.new(occupied ++ Enum.to_list(1..max(final_count, 0)))
+    take_unused(count, used, 1, [])
+  end
+
+  defp take_unused(0, _used, _candidate, acc), do: Enum.reverse(acc)
+
+  defp take_unused(count, used, candidate, acc) do
+    if MapSet.member?(used, candidate),
+      do: take_unused(count, used, candidate + 1, acc),
+      else: take_unused(count - 1, MapSet.put(used, candidate), candidate + 1, [candidate | acc])
+  end
 
   defp published_route(organization_id, version_id, route_id) do
     query =
@@ -554,6 +1246,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp trips_lock_required?(:delete), do: true
   defp trips_lock_required?({:delete_timing, _timing_id}), do: true
+  defp trips_lock_required?({:stops, _, _}), do: true
+  defp trips_lock_required?({:timing, _, _}), do: true
+
+  defp trips_lock_required?({:details, attrs}) when is_map(attrs),
+    do: Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id")
+
   defp trips_lock_required?(_operation), do: false
 
   defp scoped_pattern(org_id, version_id, route_id, pattern_id) do
@@ -848,45 +1546,75 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp source_fingerprint(pattern) do
-    data =
-      if pattern do
-        %{
-          scope: {pattern.organization_id, pattern.gtfs_version_id, pattern.route_id},
-          pattern: pattern_snapshot(pattern),
-          trips:
+    if pattern && not Repo.in_transaction?() do
+      Repo.transaction(fn -> source_fingerprint(pattern) end) |> elem(1)
+    else
+      base =
+        if pattern do
+          trips =
             from(trip in Trip,
               where:
                 trip.organization_id == ^pattern.organization_id and
                   trip.gtfs_version_id == ^pattern.gtfs_version_id and
                   trip.route_id == ^pattern.route_id and
                   trip.route_pattern_id == ^pattern.route_pattern_id,
-              order_by: [asc: trip.id],
-              select:
-                {trip.id, trip.timed_pattern_id, trip.pattern_derivation_state,
-                 trip.pattern_derivation_reason}
+              order_by: [asc: trip.id]
             )
             |> Repo.all()
-        }
-      else
-        nil
-      end
 
-    digest(data)
+          %{
+            scope: {pattern.organization_id, pattern.gtfs_version_id, pattern.route_id},
+            pattern: pattern_snapshot(pattern),
+            trips: trips
+          }
+        else
+          nil
+        end
+
+      hash = :crypto.hash_update(:crypto.hash_init(:sha256), canonical_binary(base))
+
+      hash =
+        if pattern do
+          query =
+            from(trip in Trip,
+              join: stop_time in StopTime,
+              on:
+                stop_time.organization_id == trip.organization_id and
+                  stop_time.gtfs_version_id == trip.gtfs_version_id and
+                  stop_time.trip_id == trip.trip_id,
+              where:
+                trip.organization_id == ^pattern.organization_id and
+                  trip.gtfs_version_id == ^pattern.gtfs_version_id and
+                  trip.route_id == ^pattern.route_id and
+                  trip.route_pattern_id == ^pattern.route_pattern_id,
+              order_by: [asc: trip.id, asc: stop_time.stop_sequence, asc: stop_time.id],
+              select: {trip.id, stop_time}
+            )
+
+          Repo.stream(query)
+          |> Enum.reduce(hash, fn record, acc ->
+            :crypto.hash_update(acc, canonical_binary(record))
+          end)
+        else
+          hash
+        end
+
+      :crypto.hash_final(hash) |> Base.encode16(case: :lower)
+    end
   end
 
   defp review_fingerprint(source, operation), do: digest({source, canonical(operation)})
 
   defp digest(value),
-    do:
-      value
-      |> canonical()
-      |> :erlang.term_to_binary([:deterministic])
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
+    do: :crypto.hash(:sha256, canonical_binary(value)) |> Base.encode16(case: :lower)
+
+  defp canonical_binary(value),
+    do: value |> canonical() |> :erlang.term_to_binary([:deterministic])
 
   defp canonical(%Decimal{} = value), do: {:decimal, Decimal.to_string(value, :normal)}
+  defp canonical(%_{} = value), do: value |> Map.from_struct() |> canonical()
 
-  defp canonical(value) when is_map(value),
+  defp canonical(value) when is_map(value) and not is_struct(value),
     do:
       value
       |> Enum.map(fn {key, val} -> {to_string(key), canonical(val)} end)
@@ -963,12 +1691,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     else
       :ok
     end
-  end
-
-  defp reject_direction_change(attrs, pattern) do
-    if Map.has_key?(attrs, :direction_id) and attrs.direction_id != pattern.direction_id,
-      do: {:error, :trip_affecting_operation_not_available},
-      else: :ok
   end
 
   defp same_values?(struct, attrs) do
