@@ -103,8 +103,12 @@ curl -s "http://localhost:4000/api/v1/versions/$VERSION_ID/pathways-exports/$EXP
   -H 'Accept: application/json'
 ```
 
-Poll with a bounded delay (for example every 2–5 seconds) and stop when the state is
-terminal. The status resource always answers `200` once the run is visible, including
+Poll every 2–5 seconds with an overall client deadline, and stop when the state is
+terminal. If a run stays `pending`, retry POST with backoff and a bounded retry
+budget: status reads do not start workers, and maintenance only reconciles
+`building` runs. The retry reuses the run only while it remains `pending` or
+`building`; if it finishes before the retry, POST creates a new run. Stop automatic
+retries when your budget is exhausted and report the last observed state. The status resource always answers `200` once the run is visible, including
 for failed runs.
 
 | `state` | Meaning | What to do |
@@ -203,7 +207,7 @@ Every error uses the same envelope:
 | No membership at all, or several memberships without `X-Organization-Id` | 403 | `no_organization` / `organization_required` | Send `X-Organization-Id`, or join an organization |
 | `X-Organization-Id` is not a UUID | 400 | `bad_request` (`X-Organization-Id must be a valid UUID.`) | Fix the header value |
 | Artifact storage unavailable before the run is created | 503 | `export_unavailable` | Retry later; nothing was created |
-| Any other returned creation/startup error | 503 | `export_unavailable` | Retry later. A `pending` run may already exist; the retried `POST` reuses it and starts its build |
+| Any other returned creation/startup error | 503 | `export_unavailable` | Retry POST with backoff and a bounded budget. A pending run may exist; reuse is guaranteed only while it remains pending/building |
 | Download while `pending` or `building` | 409 | `export_not_ready` (`Export is not ready. Check export status before retrying.`) | Poll the status resource |
 | Download of a run in a terminal non-ready state (`failed`, `interrupted`, `cancelled`, `expired`) | 409 | `download_unavailable` (`Export is unavailable. Check export status before retrying.`) | Read the status resource; this run never becomes downloadable |
 | Download of a `ready` run whose artifact is expired, corrupt or held by another download | 409 | `download_unavailable` (`Export is unavailable. Check export status before retrying.`) | **Check the status resource first** |
