@@ -28,6 +28,8 @@ Accept: application/json
 ```
 
 `X-Organization-Id` is optional when the user belongs to exactly one organization.
+Omitting it while the user has several memberships returns `403`
+`organization_required`; a value that is not a UUID returns `400 bad_request`.
 The organization always comes from the authenticated session, never from a body
 field or query parameter.
 
@@ -194,7 +196,9 @@ Every error uses the same envelope:
 | Missing, foreign or unpublished version | 404 | `not_found` | List versions again |
 | Missing, foreign, wrong-version or non-pathways run | 404 | `not_found` | Use the id from your own `Location`/status response |
 | Missing or invalid bearer token | 401 | `unauthorized` | Log in again |
-| Deactivated membership, non-member organization | 403 | `forbidden` / `no_organization` | Fix membership or select another organization |
+| Deactivated membership, non-member organization | 403 | `forbidden` | Fix membership or select another organization |
+| No membership at all, or several memberships without `X-Organization-Id` | 403 | `no_organization` / `organization_required` | Send `X-Organization-Id`, or join an organization |
+| `X-Organization-Id` is not a UUID | 400 | `bad_request` (`X-Organization-Id must be a valid UUID.`) | Fix the header value |
 | Artifact storage unavailable before the run is created | 503 | `export_unavailable` | Retry later; nothing was created |
 | Any other returned creation/startup error | 503 | `export_unavailable` | Retry later; nothing was created |
 | Download while `pending` or `building` | 409 | `export_not_ready` | Poll the status resource |

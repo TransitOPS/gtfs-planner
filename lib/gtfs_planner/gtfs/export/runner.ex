@@ -31,7 +31,10 @@ defmodule GtfsPlanner.Gtfs.Export.Runner do
   Shared by the web LiveView and the companion API so neither owns its own
   start-if-pending branch.
   """
-  @spec ensure_started(Ecto.UUID.t(), %Run{}) :: :ok | {:error, term()}
+  @typedoc "A durable export run row, as stored."
+  @type run :: %Run{}
+
+  @spec ensure_started(Ecto.UUID.t(), run()) :: :ok | {:error, term()}
   def ensure_started(organization_id, %Run{state: :pending, id: run_id}) do
     case start_build(organization_id, run_id) do
       {:ok, _pid} -> :ok
