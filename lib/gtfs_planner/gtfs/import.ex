@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   alias GtfsPlanner.{Repo, Gtfs}
   alias GtfsPlanner.Gtfs.Import.{Result, Failure, BatchProcessor, RowParser, CsvParser}
   alias GtfsPlanner.Gtfs.Extensions
+  alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
 
   require Logger
 
@@ -102,7 +103,20 @@ defmodule GtfsPlanner.Gtfs.Import do
                     end)
   @phase_1_specs Enum.filter(@import_specs, fn {_k, _f, _s, _p, phase} -> phase == :phase_1 end)
   @phase_2_specs Enum.filter(@import_specs, fn {_k, _f, _s, _p, phase} -> phase == :phase_2 end)
-  @supported_count_keys Enum.map(@import_specs, fn {key, _f, _s, _p, _phase} -> key end)
+  @file_count_keys Enum.map(@import_specs, fn {key, _f, _s, _p, _phase} -> key end)
+  # Bounded integer counters produced by route-pattern derivation. They share the
+  # count-key allowlist with the file counts so `Import.Run` accepts them as
+  # integers and never as a serialized status string.
+  @derivation_count_keys ~w(patterns_created timings_created trips_linked trips_custom)a
+  @supported_count_keys @file_count_keys ++ @derivation_count_keys
+
+  # App-owned pattern tables are deleted child-before-parent. `TimedPatternStop`
+  # has no organization column and is scoped through its timed-pattern parent.
+  @cleanup_pattern_schemas [
+    GtfsPlanner.Gtfs.TimedPatternStop,
+    GtfsPlanner.Gtfs.TimedPattern,
+    GtfsPlanner.Gtfs.RoutePatternStop
+  ]
 
   @doc """
   Imports GTFS data files with optimized transaction handling.
@@ -119,6 +133,7 @@ defmodule GtfsPlanner.Gtfs.Import do
     - `gtfs_version_id` - UUID of the GTFS version to associate records with
     - `files` - List of `%{filename: string, content: binary}` maps
     - `topic` - (optional) PubSub topic for progress updates. If not provided, one will be generated.
+    - `opts` - (optional) `:import_run_id`, the claimed run that owns this import, recorded as the derivation provenance
 
   ## Returns
 
@@ -138,7 +153,7 @@ defmodule GtfsPlanner.Gtfs.Import do
       iex> import_files(org_id, version_id, files)
       {:ok, %Import.Result{counts: %{routes: 1, stops: 0, ...}, unrecognized_files: [], topic: "import:123456", archive_warnings: [], extensions: :not_present}}
   """
-  def import_files(organization_id, gtfs_version_id, files, topic \\ nil) do
+  def import_files(organization_id, gtfs_version_id, files, topic \\ nil, opts \\ []) do
     # Generate a stable progress topic before work begins so the supervised
     # runner can durably attribute an unexpected worker exit to the active phase.
     topic = topic || "import:#{:erlang.unique_integer()}"
@@ -201,6 +216,7 @@ defmodule GtfsPlanner.Gtfs.Import do
         case phase_2_result do
           {:ok, counts} ->
             counts = fill_standard_counts(counts)
+            counts = maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, opts)
             broadcast_phase(topic, :extensions)
 
             case import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
@@ -251,12 +267,45 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp standard_count_total(counts) do
-    Enum.reduce(@supported_count_keys, 0, fn key, total ->
+    Enum.reduce(@file_count_keys, 0, fn key, total ->
       case Map.get(counts, key, 0) do
         value when is_integer(value) and value > 0 -> total + value
         _ -> total
       end
     end)
+  end
+
+  # Derivation runs after Phase 2 and before extension completion, inside the
+  # importer's existing exact-target ownership. An expected route-local failure is
+  # non-fatal: the route keeps its bounded error and pending trips for retry. A
+  # database failure raises rather than being reported as a clean result.
+  #
+  # A feed without imported trips cannot have anything to derive, so the phase is
+  # skipped entirely instead of issuing avoidable database work before
+  # publication.
+  defp maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, opts) do
+    if Map.get(counts, :trips, 0) > 0 do
+      broadcast_phase(topic, :derivation)
+      Map.merge(counts, run_derivation(organization_id, gtfs_version_id, opts))
+    else
+      counts
+    end
+  end
+
+  defp run_derivation(organization_id, gtfs_version_id, opts) do
+    import_run_id = Keyword.get(opts, :import_run_id)
+
+    {:ok, summary} =
+      Derivation.derive_version(organization_id, gtfs_version_id, {:import, import_run_id})
+
+    if summary.routes_failed > 0 do
+      Logger.warning(
+        "Route pattern derivation failed for #{summary.routes_failed} route(s) in version " <>
+          "#{gtfs_version_id}; retry metadata is persisted on those routes"
+      )
+    end
+
+    Map.take(summary, @derivation_count_keys)
   end
 
   # Processes phase 2 files with batch-level transactions.
@@ -363,7 +412,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   # Returns {categorized, unrecognized, extensions} where extensions is a map
   # with optional :json and :images keys for _pathways_extensions data.
   defp categorize_files(files) do
-    initial_categorized = Map.new(@supported_count_keys, fn key -> {key, []} end)
+    initial_categorized = Map.new(@file_count_keys, fn key -> {key, []} end)
     initial_acc = {initial_categorized, [], %{}}
 
     {categorized, unrecognized, extensions} =
@@ -412,6 +461,10 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   @doc """
   Returns all supported import count keys.
+
+  The file-backed counts plus the bounded route-pattern derivation counters. The
+  derivation counters are plain non-negative integers, so the `Import.Run` count
+  allowlist accepts them without a separate status channel.
   """
   def supported_count_keys do
     @supported_count_keys
@@ -422,16 +475,18 @@ defmodule GtfsPlanner.Gtfs.Import do
   deletes when discarding a failed import target.
 
   The list shares the same source (`@import_specs`) as `supported_filenames/0`,
-  so a supported file can never exist without cleanup ownership (INV-4). The
-  schemas are returned in reverse import order so that child rows are removed
+  so a supported file can never exist without cleanup ownership (INV-4/INV-5).
+  The schemas are returned in reverse import order so that child rows are removed
   before their parents; `GtfsPlanner.Gtfs.StopLevel` (an extension schema not
-  backed by a standard GTFS file) is prepended because its rows must be removed
-  first.
+  backed by a standard GTFS file) and the app-owned pattern tables are prepended
+  because their rows must be removed first. The pattern tables are ordered
+  child-before-parent: timed-pattern rows, timed patterns, pattern occurrences,
+  then the imported `route_patterns` rows later in the reversed list.
   """
   @spec cleanup_schemas() :: [module()]
   def cleanup_schemas do
     schemas = Enum.map(@import_specs, fn {_key, _filename, schema, _parser, _phase} -> schema end)
-    [GtfsPlanner.Gtfs.StopLevel | Enum.reverse(schemas)]
+    [GtfsPlanner.Gtfs.StopLevel | @cleanup_pattern_schemas] ++ Enum.reverse(schemas)
   end
 
   @max_zip_entries 10_000

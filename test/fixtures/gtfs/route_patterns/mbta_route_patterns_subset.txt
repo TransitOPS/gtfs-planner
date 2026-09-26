@@ -1,0 +1,4 @@
+route_pattern_id,route_id,direction_id,route_pattern_name,route_pattern_time_desc,route_pattern_typicality,route_pattern_sort_order,representative_trip_id,canonical_route_pattern
+Red-1-0,Red,0,Alewife – Ashmont,All day,1,1,Red-1-0-t1,0
+Red-1-1,Red,1,Ashmont – Alewife,All day,1,2,Red-1-1-t1,0
+Blue-2-0,Blue,0,Wonderland – Bowdoin,All day,1,1,Blue-2-0-t1,0

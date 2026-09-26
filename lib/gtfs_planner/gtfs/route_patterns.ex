@@ -21,7 +21,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   @pattern_fields ~w(route_pattern_name route_pattern_time_desc route_pattern_typicality direction_id headsign canonical_route_pattern)
   @timing_fields ~w(name headsign)
-  @forbidden_linkage_fields ~w(timed_pattern_id pattern_derivation_state pattern_derivation_reason trip_id trip_ids)
+  @forbidden_linkage_fields ~w(timed_pattern_id pattern_derivation_state pattern_derivation_reason trip_id trip_ids derivation_key)
 
   def list_patterns(organization_id, version_id, route_id) do
     with {:ok, _route} <- published_route(organization_id, version_id, route_id) do
@@ -203,6 +203,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         trips_updated = update_direction_trips(pattern, attrs)
 
         updated = pattern |> RoutePattern.changeset(attrs) |> update_or_rollback!()
+        maybe_clear_pattern_signature!(pattern, attrs)
         audit!(audit_context, :route_pattern, pattern, "updated", attrs)
         %{pattern: load_pattern_for_audit!(updated.id), trips_updated: trips_updated}
       end
@@ -363,6 +364,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp apply_stop_edit!(pattern, edit, audit_context) do
     trips_updated = persist_stop_edit!(pattern, edit)
+    clear_structure_signatures!(pattern)
     after_pattern = load_pattern_for_audit!(pattern.id)
 
     audit!(audit_context, :route_pattern, after_pattern, "updated", %{
@@ -376,6 +378,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp apply_timing_edit!(pattern, timing, values, rows, before, audit_context) do
     trips_updated = if rows, do: persist_timing_edit!(pattern, timing, rows), else: 0
+    if rows, do: clear_timing_signature!(timing)
     if values != %{}, do: timing |> TimedPattern.changeset(values) |> update_or_rollback!()
     after_snapshot = audit_timing_snapshot(Repo.get!(TimedPattern, timing.id))
 
@@ -1771,7 +1774,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     Enum.all?(attrs, fn {key, value} -> Map.get(struct, key) == value end)
   end
 
-  defp next_timing_name(pattern_id) do
+  @doc false
+  def next_timing_name(pattern_id) do
     names = MapSet.new(Enum.map(pattern_timings(pattern_id), &String.downcase(&1.name)))
 
     Stream.iterate(0, &(&1 + 1))
@@ -1779,6 +1783,35 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       name = "Timing #{alpha_name(index)}"
       if MapSet.member?(names, String.downcase(name)), do: nil, else: name
     end)
+  end
+
+  # Derivation persists a signature key on each derived pattern/timing so a retry
+  # can reuse them. A staff edit that changes the pattern structure, the pattern
+  # direction or a timing vector clears the affected keys so a retry can never
+  # match obsolete content.
+  defp clear_structure_signatures!(pattern) do
+    from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+    |> Repo.update_all(set: [derivation_key: nil])
+
+    clear_pattern_signature!(pattern)
+  end
+
+  defp clear_pattern_signature!(pattern) do
+    from(row in RoutePattern, where: row.id == ^pattern.id and not is_nil(row.derivation_key))
+    |> Repo.update_all(set: [derivation_key: nil])
+  end
+
+  defp clear_timing_signature!(timing) do
+    from(row in TimedPattern, where: row.id == ^timing.id and not is_nil(row.derivation_key))
+    |> Repo.update_all(set: [derivation_key: nil])
+  end
+
+  defp maybe_clear_pattern_signature!(pattern, attrs) do
+    direction = Map.get(attrs, :direction_id, Map.get(attrs, "direction_id"))
+
+    if not is_nil(direction) and direction != pattern.direction_id do
+      clear_pattern_signature!(pattern)
+    end
   end
 
   defp alpha_name(index) when index < 26, do: <<?A + index>>

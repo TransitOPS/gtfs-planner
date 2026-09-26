@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.DiagramStorage
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Versions.GtfsVersion
 
   @default_batch_size 5_000
@@ -74,15 +75,21 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
       maybe_inject_failure(:filesystem, :before_namespace)
       :ok = delete_namespace(organization_id, version_id)
 
-      # 2. Delete every manifest schema in bounded batches.
+      # 2. Detach trip pattern links before deleting the pattern tables: the
+      #    `trips.timed_pattern_id` foreign key is RESTRICT while `trips` is
+      #    deleted later in the manifest. Resetting the classification to pending
+      #    is the only combination the trips check constraint accepts.
+      detach_trip_pattern_links(organization_id, version_id)
+
+      # 3. Delete every manifest schema in bounded batches.
       for schema <- Import.cleanup_schemas() do
         delete_schema_batched(organization_id, schema, version_id)
       end
 
-      # 3. Verify every owned resource is absent.
+      # 4. Verify every owned resource is absent.
       verify_empty(organization_id, version_id)
 
-      # 4. Atomically delete the failed version row and mark the run cleaned.
+      # 5. Atomically delete the failed version row and mark the run cleaned.
       #    The run retains its target/actor snapshots (set at claim time).
       finish(organization_id, run_id, lease_token)
 
@@ -93,6 +100,25 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
         fail(organization_id, run_id, lease_token, reason)
         {:error, reason}
     end
+  end
+
+  defp detach_trip_pattern_links(_organization_id, nil), do: :ok
+
+  defp detach_trip_pattern_links(organization_id, version_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          not is_nil(t.timed_pattern_id)
+    )
+    |> Repo.update_all(
+      set: [
+        timed_pattern_id: nil,
+        pattern_derivation_state: "pending",
+        pattern_derivation_reason: nil
+      ]
+    )
+
+    :ok
   end
 
   defp delete_namespace(organization_id, version_id) do
@@ -133,12 +159,11 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     maybe_inject_failure(:database, schema)
 
     query =
-      from(r in schema,
-        where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
-        order_by: [asc: r.id],
-        limit: ^batch_size,
-        select: r.id
-      )
+      organization_id
+      |> scoped_query(schema, version_id)
+      |> order_by([r], asc: r.id)
+      |> limit(^batch_size)
+      |> select([r], r.id)
 
     case delete_batch(query, schema) do
       {:ok, 0} ->
@@ -169,6 +194,24 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     end)
   end
 
+  # Scopes one owned schema to the target version. `timed_pattern_stops` has no
+  # organization column, so its rows are scoped through their timed-pattern
+  # parent (INV-5).
+  defp scoped_query(organization_id, schema, version_id)
+       when schema == GtfsPlanner.Gtfs.TimedPatternStop do
+    from(row in schema,
+      join: timing in GtfsPlanner.Gtfs.TimedPattern,
+      on: timing.id == row.timed_pattern_id,
+      where: timing.organization_id == ^organization_id and timing.gtfs_version_id == ^version_id
+    )
+  end
+
+  defp scoped_query(organization_id, schema, version_id) do
+    from(r in schema,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id
+    )
+  end
+
   defp verify_empty(organization_id, version_id) do
     namespace_absent? =
       case version_id do
@@ -192,9 +235,8 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
       else
         Enum.find(Import.cleanup_schemas(), fn schema ->
           count =
-            from(r in schema,
-              where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id
-            )
+            organization_id
+            |> scoped_query(schema, version_id)
             |> Repo.aggregate(:count)
 
           count != 0

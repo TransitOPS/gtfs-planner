@@ -160,7 +160,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   end
 
   def handle_info({:import_phase, phase}, %{kind: :import} = state)
-      when phase in [:phase_1, :phase_2, :extensions, :publication] do
+      when phase in [:phase_1, :phase_2, :derivation, :extensions, :publication] do
     {:noreply, %{state | active_phase: phase}}
   end
 

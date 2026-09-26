@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StationEditingStatus
@@ -439,6 +440,27 @@ defmodule GtfsPlanner.Gtfs do
   @doc "Applies a previously reviewed pattern or timing lifecycle command."
   def apply_review(pattern_id, operation, fingerprint, %AuditContext{} = audit_context),
     do: RoutePatterns.apply_review(pattern_id, operation, fingerprint, audit_context)
+
+  @doc """
+  Builds or retries derived route patterns for one published route as an
+  authorized editor.
+
+  Runs derivation inside the route transaction and records one actor-bound
+  `route_pattern_build` summary there. A route with no pending trips is refused:
+  custom classification alone is not retryable.
+  """
+  def build_route_patterns(route_id, %AuditContext{} = audit_context) when is_binary(route_id) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    if Derivation.pending_trip_count(organization_id, version_id, route_id) == 0 do
+      {:error, :nothing_pending}
+    else
+      Derivation.derive_route(organization_id, version_id, route_id, {:editor, audit_context})
+    end
+  end
+
+  def build_route_patterns(_route_id, _audit_context), do: {:error, :invalid_input}
 
   @doc """
   Returns the count of levels for an organization and GTFS version.
@@ -5246,6 +5268,18 @@ defmodule GtfsPlanner.Gtfs do
   defp build_changed_fields(entity_type, "deleted", snapshot, _attrs)
        when entity_type in @structured_audit_entity_types and not is_nil(snapshot),
        do: %{"before" => normalize_value(snapshot), "after" => nil}
+
+  defp build_changed_fields(entity_type, "updated", _snapshot, attrs)
+       when entity_type in [:route_pattern_build, "route_pattern_build"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after"))),
+      "patterns_created" =>
+        normalize_value(Map.get(attrs, :patterns_created, Map.get(attrs, "patterns_created"))),
+      "timings_created" =>
+        normalize_value(Map.get(attrs, :timings_created, Map.get(attrs, "timings_created")))
+    }
+  end
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
 

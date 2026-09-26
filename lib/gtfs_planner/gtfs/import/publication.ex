@@ -20,7 +20,8 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
 
   `Publication` never calls generic version claim/publish/fail functions
   directly; `ImportRuns` is the sole owner of every coupled run + version
-  transition.
+  transition. It threads the claimed run id into the import so route-pattern
+  derivation records import provenance.
   """
 
   alias GtfsPlanner.Gtfs.Import
@@ -45,7 +46,7 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
     version_id = run.gtfs_version_id
 
     # 1. Import only into the claimed version id. Never a fallback id.
-    case Import.import_files(organization_id, version_id, files, topic) do
+    case Import.import_files(organization_id, version_id, files, topic, import_run_id: run_id) do
       {:ok, %Result{} = result} ->
         Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, :publication})
 

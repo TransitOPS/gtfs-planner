@@ -1,0 +1,21 @@
+{
+  "fixture": "mbta_route_patterns_subset.txt",
+  "sha256": "e8bd7a0eceb80700c69d925695b31ac88a19332bf68a2dae3b24fd0f2202e0ff",
+  "columns": [
+    "route_pattern_id",
+    "route_id",
+    "direction_id",
+    "route_pattern_name",
+    "route_pattern_time_desc",
+    "route_pattern_typicality",
+    "route_pattern_sort_order",
+    "representative_trip_id",
+    "canonical_route_pattern"
+  ],
+  "source": "docs/extensions/route-patterns.md (repository copy of the MBTA route_patterns.txt reference table)",
+  "source_date": "2026-09-26",
+  "retrieval": "No download was performed. This repository's implemented network authority is limited to isolated local verification, so this subset reproduces the documented MBTA column layout and value ranges with locally authored rows and a locally authored representative trip id.",
+  "license_note": "MBTA GTFS is published under the MBTA terms of use (https://www.mbta.com/policies/terms-use); this subset reproduces only the documented file layout, not MBTA operational data.",
+  "oracle": "The supplied route_pattern_id values in this file are an identity oracle: derivation must preserve them verbatim and must never reassign a trip to a different supplied pattern.",
+  "excluded_claim": "Editorial grouping in this subset is not asserted to equal any mechanical grouping of trips after the supplied ids are removed."
+}

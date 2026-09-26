@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
       :route_pattern_id,
       :route_id,
       :headsign,
+      :derivation_key,
       :direction_id,
       :route_pattern_name,
       :route_pattern_time_desc,
