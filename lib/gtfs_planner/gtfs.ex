@@ -37,6 +37,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StationEditingStatus
@@ -408,6 +409,27 @@ defmodule GtfsPlanner.Gtfs do
     )
     |> Repo.all()
   end
+
+  @doc "Returns the scoped editable patterns for a published route."
+  def list_patterns(organization_id, gtfs_version_id, route_id),
+    do: RoutePatterns.list_patterns(organization_id, gtfs_version_id, route_id)
+
+  @doc "Loads one editable pattern and an optional timing in its route scope."
+  def get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id \\ nil),
+    do:
+      RoutePatterns.get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id)
+
+  @doc "Creates a pattern, its ordered occurrences, an unassigned Timing A and one audit row."
+  def create_pattern(route_id, attrs, %AuditContext{} = audit_context),
+    do: RoutePatterns.create_pattern(route_id, attrs, audit_context)
+
+  @doc "Reviews an audit-only pattern or timing lifecycle command."
+  def review(pattern_id, operation, source_fingerprint, %AuditContext{} = audit_context),
+    do: RoutePatterns.review(pattern_id, operation, source_fingerprint, audit_context)
+
+  @doc "Applies a previously reviewed pattern or timing lifecycle command."
+  def apply_review(pattern_id, operation, fingerprint, %AuditContext{} = audit_context),
+    do: RoutePatterns.apply_review(pattern_id, operation, fingerprint, audit_context)
 
   @doc """
   Returns the count of levels for an organization and GTFS version.
@@ -4851,7 +4873,7 @@ defmodule GtfsPlanner.Gtfs do
   defp import_entity_schema(:pathway), do: {Pathway, :pathway_id}
 
   defp changed_fields_attrs("updated", entity_type, attrs),
-    do: reversible_attrs_for(entity_type, attrs)
+    do: audited_attrs_for(entity_type, attrs)
 
   defp changed_fields_attrs(_action, _entity_type, attrs), do: attrs
 
@@ -4931,6 +4953,14 @@ defmodule GtfsPlanner.Gtfs do
   def reversible_fields_for(:level), do: reversible_fields_for("level")
   def reversible_fields_for("level"), do: ~w(level_name level_index)
 
+  def reversible_fields_for(type)
+      when type in [:route_pattern, :timed_pattern, :route_pattern_build],
+      do: []
+
+  def reversible_fields_for(type)
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      do: []
+
   @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.
 
@@ -4956,6 +4986,10 @@ defmodule GtfsPlanner.Gtfs do
     {:error, :unauthorized}
   end
 
+  def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      do: {:error, :audit_only_entity}
+
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
     with {:ok, target_snapshot} <- rollback_target_snapshot(log),
          {:ok, entity} <- rollback_entity_for_log(log),
@@ -4969,6 +5003,10 @@ defmodule GtfsPlanner.Gtfs do
   Calculates the snapshot an entity should be restored to for a rollback.
   """
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
+  def rollback_target_snapshot(%ChangeLog{entity_type: type})
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      do: {:error, :audit_only_entity}
+
   def rollback_target_snapshot(%ChangeLog{action: action})
       when action in ["created", "deleted"] do
     {:error, :cannot_rollback_create_or_delete}
@@ -5046,6 +5084,19 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot(:stop, %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot(:pathway, %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot(:level, %Level{} = level), do: snapshot_level(level)
+
+  defp build_snapshot(:route_pattern, %RoutePattern{} = pattern),
+    do: snapshot_route_pattern(pattern)
+
+  defp build_snapshot("route_pattern", %RoutePattern{} = pattern),
+    do: snapshot_route_pattern(pattern)
+
+  defp build_snapshot(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing),
+    do: snapshot_timed_pattern(timing)
+
+  defp build_snapshot("timed_pattern", %GtfsPlanner.Gtfs.TimedPattern{} = timing),
+    do: snapshot_timed_pattern(timing)
+
   defp build_snapshot("stop", %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot("pathway", %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot("level", %Level{} = level), do: snapshot_level(level)
@@ -5088,6 +5139,12 @@ defmodule GtfsPlanner.Gtfs do
     %{level_name: level.level_name, level_index: level.level_index}
   end
 
+  defp snapshot_route_pattern(pattern),
+    do: RoutePatterns.audit_snapshot(pattern)
+
+  defp snapshot_timed_pattern(timing),
+    do: RoutePatterns.audit_timing_snapshot(timing)
+
   # -- Entity identity helpers --
 
   defp entity_id_for(nil), do: nil
@@ -5109,9 +5166,45 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for(:pathway, %Pathway{} = pw, _attrs), do: pw.pathway_id
   defp entity_external_id_for(:level, %Level{} = level, _attrs), do: level.level_id
 
+  defp entity_external_id_for(:route_pattern, %RoutePattern{} = pattern, _attrs),
+    do: pattern.route_pattern_id
+
+  defp entity_external_id_for(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing, attrs) do
+    pattern_natural_id =
+      Map.get(attrs, :pattern_route_pattern_id) || Map.get(attrs, "pattern_route_pattern_id") ||
+        "unknown"
+
+    "#{timing.id}:#{pattern_natural_id}"
+  end
+
+  defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
+
+  defp entity_external_id_for(:route_pattern_build, nil, attrs),
+    do: Map.get(attrs, :route_id) || Map.get(attrs, "route_id")
+
   defp entity_module_for("stop"), do: Stop
   defp entity_module_for("pathway"), do: Pathway
   defp entity_module_for("level"), do: Level
+
+  defp audited_attrs_for(type, attrs) when type in [:route_pattern, "route_pattern"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(
+        route_pattern_name route_pattern_time_desc direction_id
+        route_pattern_typicality headsign canonical_route_pattern
+        occurrences timings before after
+      )
+    end)
+  end
+
+  defp audited_attrs_for(type, attrs) when type in [:timed_pattern, "timed_pattern"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(name headsign rows before after)
+    end)
+  end
+
+  defp audited_attrs_for(:route_pattern_build, attrs), do: attrs
+  defp audited_attrs_for("route_pattern_build", attrs), do: attrs
+  defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
 
@@ -5134,6 +5227,14 @@ defmodule GtfsPlanner.Gtfs do
       end
     end)
   end
+
+  defp build_changed_fields("created", snapshot, attrs) when not is_nil(snapshot) do
+    after_snapshot = Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
+    %{"before" => nil, "after" => normalize_value(after_snapshot)}
+  end
+
+  defp build_changed_fields("deleted", snapshot, _attrs) when not is_nil(snapshot),
+    do: %{"before" => normalize_value(snapshot), "after" => nil}
 
   defp build_changed_fields(_action, _snapshot, _attrs), do: nil
 
