@@ -5,6 +5,11 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Repo
 
   @doc """
   Generate valid level attributes for testing.
@@ -195,5 +200,90 @@ defmodule GtfsPlanner.GtfsFixtures do
       )
 
     stop_time
+  end
+
+  @doc "Generate a route pattern fixture for occurrence and timing tests."
+  def route_pattern_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          route_pattern_id: "pattern_#{System.unique_integer([:positive])}",
+          route_id: "route_fixture",
+          direction_id: 0,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        attrs
+      )
+
+    %RoutePattern{}
+    |> RoutePattern.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Generate one ordered stop occurrence for a route pattern."
+  def route_pattern_stop_fixture(route_pattern, stop_id, position, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          route_pattern_id: route_pattern.id,
+          route_pattern: route_pattern,
+          organization_id: route_pattern.organization_id,
+          gtfs_version_id: route_pattern.gtfs_version_id,
+          stop_id: stop_id,
+          position: position
+        },
+        attrs
+      )
+
+    %RoutePatternStop{}
+    |> RoutePatternStop.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Generate a named timing for a route pattern."
+  def timed_pattern_fixture(route_pattern, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          route_pattern_id: route_pattern.id,
+          route_pattern: route_pattern,
+          organization_id: route_pattern.organization_id,
+          gtfs_version_id: route_pattern.gtfs_version_id,
+          name: "Timing #{System.unique_integer([:positive])}"
+        },
+        attrs
+      )
+
+    %TimedPattern{}
+    |> TimedPattern.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Generate a timing row attached to an occurrence."
+  def timed_pattern_stop_fixture(timed_pattern, route_pattern_stop, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          timed_pattern_id: timed_pattern.id,
+          route_pattern_stop_id: route_pattern_stop.id,
+          arrival_offset: 0,
+          departure_offset: 0,
+          timed_pattern: timed_pattern,
+          route_pattern_stop: route_pattern_stop
+        },
+        attrs
+      )
+
+    %TimedPatternStop{}
+    |> TimedPatternStop.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Set application-owned pattern classification on a trip fixture."
+  def trip_pattern_metadata_fixture(trip, attrs) do
+    trip
+    |> Ecto.Changeset.change(attrs)
+    |> Repo.update!()
   end
 end

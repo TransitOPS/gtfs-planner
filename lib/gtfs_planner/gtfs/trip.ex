@@ -18,6 +18,10 @@ defmodule GtfsPlanner.Gtfs.Trip do
     field :wheelchair_accessible, :integer
     field :bikes_allowed, :integer
     field :cars_allowed, :integer
+    field :route_pattern_id, :string
+    field :timed_pattern_id, Ecto.UUID
+    field :pattern_derivation_state, :string, default: "pending"
+    field :pattern_derivation_reason, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -42,6 +46,10 @@ defmodule GtfsPlanner.Gtfs.Trip do
           wheelchair_accessible: integer() | nil,
           bikes_allowed: integer() | nil,
           cars_allowed: integer() | nil,
+          route_pattern_id: String.t() | nil,
+          timed_pattern_id: Ecto.UUID.t() | nil,
+          pattern_derivation_state: String.t(),
+          pattern_derivation_reason: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -78,6 +86,7 @@ defmodule GtfsPlanner.Gtfs.Trip do
     |> validate_inclusion(:cars_allowed, 0..2)
     |> unique_constraint([:organization_id, :gtfs_version_id, :trip_id])
     |> foreign_key_constraint(:organization_id)
+    |> foreign_key_constraint(:timed_pattern_id)
   end
 
   @doc "Returns human-readable label for direction_id."

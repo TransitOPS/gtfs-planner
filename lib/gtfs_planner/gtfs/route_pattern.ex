@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
   schema "route_patterns" do
     field :route_pattern_id, :string
     field :route_id, :string
+    field :headsign, :string
+    field :derivation_key, :string
     field :direction_id, :integer
     field :route_pattern_name, :string
     field :route_pattern_time_desc, :string
@@ -32,6 +34,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
           gtfs_version_id: Ecto.UUID.t(),
           route_pattern_id: String.t(),
           route_id: String.t(),
+          headsign: String.t() | nil,
+          derivation_key: String.t() | nil,
           direction_id: integer(),
           route_pattern_name: String.t() | nil,
           route_pattern_time_desc: String.t() | nil,
@@ -50,6 +54,7 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
     |> cast(attrs, [
       :route_pattern_id,
       :route_id,
+      :headsign,
       :direction_id,
       :route_pattern_name,
       :route_pattern_time_desc,
@@ -74,6 +79,9 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
     |> validate_inclusion(:canonical_route_pattern, 0..2)
     |> validate_number(:route_pattern_sort_order, greater_than_or_equal_to: 0)
     |> unique_constraint([:organization_id, :gtfs_version_id, :route_pattern_id])
+    |> unique_constraint([:organization_id, :gtfs_version_id, :route_id, :derivation_key],
+      name: :route_patterns_scoped_derivation_key_index
+    )
     |> foreign_key_constraint(:organization_id)
   end
 

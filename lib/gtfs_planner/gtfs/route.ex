@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.Route do
     field :continuous_drop_off, :integer, default: 1
     field :network_id, :string
     field :active, :boolean, default: true
+    field :pattern_derivation_error, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -48,6 +49,7 @@ defmodule GtfsPlanner.Gtfs.Route do
           continuous_drop_off: integer(),
           network_id: String.t() | nil,
           active: boolean(),
+          pattern_derivation_error: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
