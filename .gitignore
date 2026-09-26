@@ -83,3 +83,5 @@ test-results/
 # Browser test screenshot output
 .artifacts/
 .uishot/
+
+.pi
