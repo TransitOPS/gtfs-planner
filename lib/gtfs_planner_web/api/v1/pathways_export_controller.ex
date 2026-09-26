@@ -127,8 +127,17 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
   # durable non-ready state or asks the client to check status first, because
   # `claim_download/3` deliberately merges contention, expiry and missing or
   # corrupt bytes into one answer.
-  defp claim_ready_download(_conn, _version_id, %Run{state: state}) when state not in [:ready],
-    do: {:error, :not_ready}
+  #
+  # The response table distinguishes the two 409 wordings by state class: an
+  # active run still reaches a ready state, while a terminal non-ready run never
+  # does, so both advise the client to read the status resource before retrying.
+  defp claim_ready_download(_conn, _version_id, %Run{state: state})
+       when state in [:pending, :building],
+       do: {:error, :not_ready}
+
+  defp claim_ready_download(_conn, _version_id, %Run{state: state})
+       when state in [:failed, :interrupted, :cancelled, :expired],
+       do: {:error, :unavailable}
 
   defp claim_ready_download(conn, version_id, %Run{} = run) do
     case ExportRuns.claim_download(organization_id(conn), version_id, run.id) do

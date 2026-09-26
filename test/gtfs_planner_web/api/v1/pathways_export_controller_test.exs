@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
   @password "valid user password 123456"
   @wait_ms 5_000
+  @child_deadline_ms 5_000
 
   @not_found_message "Export resource not found."
   @not_ready_message "Export is not ready. Check export status before retrying."
@@ -711,6 +712,32 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
     end
 
     @tag export_gate: :download
+    test "a terminal non-ready run gives the unavailable 409, creates no run and starts no build",
+         %{
+           organization: organization,
+           user: user
+         } do
+      before = run_count(organization.id)
+
+      for state <- [:failed, :interrupted, :cancelled, :expired] do
+        version = gtfs_version_fixture(organization.id)
+        run = state_run!(organization.id, version, state)
+
+        response =
+          build_conn() |> api_conn(user, organization) |> get(download_path(version.id, run.id))
+
+        assert %{"error" => %{"code" => "export_not_ready", "message" => @unavailable_message}} =
+                 json_response(response, 409)
+
+        assert %Run{state: ^state, download_count: 0, download_claimed_until: nil} =
+                 ExportRuns.get_for_version(organization.id, version.id, run.id)
+      end
+
+      assert run_count(organization.id) == before + 4
+      assert runner_children() == []
+    end
+
+    @tag export_gate: :download
     test "an expired artifact gives the terminal 409 code", %{
       organization: organization,
       version: version,
@@ -987,7 +1014,19 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
     for {_id, pid, _type, _mods} <-
           DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Export.RunnerSupervisor) do
       ref = Process.monitor(pid)
-      receive do: ({:DOWN, ^ref, :process, ^pid, _reason} -> :ok)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+      after
+        @child_deadline_ms ->
+          Process.exit(pid, :kill)
+
+          receive do
+            {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+          after
+            0 -> :ok
+          end
+      end
     end
 
     :ok

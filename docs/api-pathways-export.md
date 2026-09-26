@@ -201,11 +201,13 @@ Every error uses the same envelope:
 | `X-Organization-Id` is not a UUID | 400 | `bad_request` (`X-Organization-Id must be a valid UUID.`) | Fix the header value |
 | Artifact storage unavailable before the run is created | 503 | `export_unavailable` | Retry later; nothing was created |
 | Any other returned creation/startup error | 503 | `export_unavailable` | Retry later; nothing was created |
-| Download while `pending` or `building` | 409 | `export_not_ready` | Poll the status resource |
-| Download of an expired, corrupt or currently claimed artifact | 409 | `export_not_ready` | **Check the status resource first** |
+| Download while `pending` or `building` | 409 | `export_not_ready` (`Export is not ready. Check export status before retrying.`) | Poll the status resource |
+| Download of a run in a terminal non-ready state (`failed`, `interrupted`, `cancelled`, `expired`) | 409 | `export_not_ready` (`Export is unavailable. Check export status before retrying.`) | Read the status resource; this run never becomes downloadable |
+| Download of an expired, corrupt or currently claimed artifact | 409 | `export_not_ready` (`Export is unavailable. Check export status before retrying.`) | **Check the status resource first** |
 
-The two `409` messages differ only in wording, and both tell you to check status
-first. A `409` on download is temporary contention in some cases (another download
+The two `409` messages differ in wording, and both tell you to check status
+first: "not ready" marks a run that is still building, "unavailable" marks a run
+that will not become downloadable. A `409` on download is temporary contention in some cases (another download
 holds the claim) and permanent in others (expired or corrupt artifact), so do not
 immediately request a new export. Read `state`, `failure_code` and `expires_at` from
 the status resource first; request a new export only after a terminal failure or an
