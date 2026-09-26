@@ -164,6 +164,43 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   end
 
   @doc """
+  Converts a calendar_attributes CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def calendar_attribute_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, service_id} <- extract_required(row_map, "service_id"),
+         {:ok, schedule_type} <- parse_service_schedule_type(row_map["service_schedule_type"]),
+         {:ok, typicality} <- parse_calendar_typicality(row_map["service_schedule_typicality"]),
+         {:ok, rating_start} <- parse_gtfs_date(row_map["rating_start_date"]),
+         {:ok, rating_end} <- parse_gtfs_date(row_map["rating_end_date"]),
+         :ok <- validate_rating_date_order(rating_start, rating_end) do
+      {:ok,
+       %{
+         service_id: service_id,
+         service_description: empty_to_nil(row_map["service_description"]),
+         service_schedule_name: empty_to_nil(row_map["service_schedule_name"]),
+         service_schedule_type: schedule_type,
+         service_schedule_typicality: typicality || 0,
+         rating_start_date: rating_start,
+         rating_end_date: rating_end,
+         rating_description: empty_to_nil(row_map["rating_description"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
   Converts a trip CSV row to attributes map.
 
   `route_pattern_id` is the supplied MBTA-extension pattern identity and is read
@@ -1625,6 +1662,48 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
 
   def parse_exception_type(string) when is_binary(string) do
     {:error, "invalid exception_type (expected 1 or 2): #{string}"}
+  end
+
+  @doc """
+  Parses service_schedule_type for calendar_attributes.
+  Valid values: Weekday, Weekend, Saturday, Sunday, Other. Blank/nil defaults to nil.
+  """
+  def parse_service_schedule_type(nil), do: {:ok, nil}
+  def parse_service_schedule_type(""), do: {:ok, nil}
+
+  def parse_service_schedule_type(string) when is_binary(string) do
+    trimmed = String.trim(string)
+
+    if trimmed in ~w(Weekday Weekend Saturday Sunday Other) do
+      {:ok, trimmed}
+    else
+      {:error, "invalid service_schedule_type: #{string}"}
+    end
+  end
+
+  @doc """
+  Parses service_schedule_typicality (0-6, blank = 0 per MBTA spec).
+  """
+  def parse_calendar_typicality(nil), do: {:ok, 0}
+  def parse_calendar_typicality(""), do: {:ok, 0}
+
+  def parse_calendar_typicality(string) when is_binary(string) do
+    case Integer.parse(String.trim(string)) do
+      {int, ""} when int in 0..6 -> {:ok, int}
+      {int, ""} -> {:error, "service_schedule_typicality out of range 0-6: #{int}"}
+      _ -> {:error, "invalid service_schedule_typicality: #{string}"}
+    end
+  end
+
+  defp validate_rating_date_order(nil, _), do: :ok
+  defp validate_rating_date_order(_, nil), do: :ok
+
+  defp validate_rating_date_order(%Date{} = start_date, %Date{} = end_date) do
+    if Date.compare(end_date, start_date) == :lt do
+      {:error, "rating_end_date must be greater than or equal to rating_start_date"}
+    else
+      :ok
+    end
   end
 
   @doc """

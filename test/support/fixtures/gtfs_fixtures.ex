@@ -5,6 +5,9 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -285,5 +288,74 @@ defmodule GtfsPlanner.GtfsFixtures do
     trip
     |> Ecto.Changeset.change(attrs)
     |> Repo.update!()
+  end
+
+  @doc "Generate a calendar fixture."
+  def calendar_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          service_id: "calendar_#{System.unique_integer([:positive])}",
+          monday: 1,
+          tuesday: 1,
+          wednesday: 1,
+          thursday: 1,
+          friday: 1,
+          saturday: 0,
+          sunday: 0,
+          start_date: ~D[2026-01-01],
+          end_date: ~D[2026-12-31],
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        Map.new(attrs)
+      )
+
+    %Calendar{}
+    |> Calendar.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Generate a calendar date fixture."
+  def calendar_date_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          service_id: "calendar_#{System.unique_integer([:positive])}",
+          date: ~D[2026-07-04],
+          exception_type: 1,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        Map.new(attrs)
+      )
+
+    %CalendarDate{}
+    |> CalendarDate.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Generate a calendar attribute fixture."
+  def calendar_attribute_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          service_id: "calendar_#{System.unique_integer([:positive])}",
+          service_description: "Standard Service",
+          service_schedule_name: "Weekday",
+          service_schedule_type: "Weekday",
+          service_schedule_typicality: 1,
+          rating_start_date: ~D[2026-01-01],
+          rating_end_date: ~D[2026-12-31],
+          rating_description: "Winter 2026",
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        Map.new(attrs)
+      )
+
+    %CalendarAttribute{}
+    |> CalendarAttribute.changeset(attrs)
+    |> Repo.insert!()
   end
 end

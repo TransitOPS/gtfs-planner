@@ -64,6 +64,8 @@ defmodule GtfsPlanner.Gtfs.Import do
     {:calendars, "calendar.txt", Gtfs.Calendar, &RowParser.calendar_row_to_attrs/3, :phase_1},
     {:calendar_dates, "calendar_dates.txt", Gtfs.CalendarDate,
      &RowParser.calendar_date_row_to_attrs/3, :phase_1},
+    {:calendar_attributes, "calendar_attributes.txt", Gtfs.CalendarAttribute,
+     &RowParser.calendar_attribute_row_to_attrs/3, :phase_1},
     {:route_patterns, "route_patterns.txt", Gtfs.RoutePattern,
      &RowParser.route_pattern_row_to_attrs/3, :phase_1},
     {:route_networks, "route_networks.txt", Gtfs.RouteNetwork,

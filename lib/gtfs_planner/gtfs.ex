@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Attribution
   alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
@@ -3977,6 +3978,18 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.aggregate(:count)
   end
 
+  # CalendarAttribute functions
+
+  @doc """
+  Returns the count of calendar attributes for an organization and GTFS version.
+  """
+  def count_calendar_attributes(organization_id, gtfs_version_id) do
+    from(c in CalendarAttribute,
+      where: c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
   def get_file_inventory(organization_id, gtfs_version_id, export_type) do
     if export_type == :pathways do
       [
@@ -3993,6 +4006,7 @@ defmodule GtfsPlanner.Gtfs do
         {"stop_times.txt", count_stop_times(organization_id, gtfs_version_id)},
         {"calendar.txt", count_calendars(organization_id, gtfs_version_id)},
         {"calendar_dates.txt", count_calendar_dates(organization_id, gtfs_version_id)},
+        {"calendar_attributes.txt", count_calendar_attributes(organization_id, gtfs_version_id)},
         {"fare_attributes.txt", count_fare_attributes(organization_id, gtfs_version_id)},
         {"fare_rules.txt", count_fare_rules(organization_id, gtfs_version_id)},
         {"shapes.txt", count_shapes(organization_id, gtfs_version_id)},
