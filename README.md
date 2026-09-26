@@ -113,6 +113,7 @@ Programmatic access to GTFS Planner uses user-owned companion API sessions:
 - **Organization Scoping**: Send `X-Organization-Id` when selecting an organization, which is required for users with multiple memberships
 - **Expiration**: Companion session tokens expire 60 days after creation
 - **Legacy Credentials**: Retired `GtfsPlanner.V1.*` organization API keys are rejected with a 401 response
+- **Exports**: Any active member can request, inspect and download a published version's pathways export — see [Pathways Export API](docs/api-pathways-export.md)
 
 #### Example API Request
 
@@ -172,6 +173,7 @@ For detailed documentation on authentication features:
 
 - **[Authentication Guide](docs/authentication-guide.md)**: Complete overview of authentication architecture, flows, and best practices
 - **[API Authentication](docs/api-authentication.md)**: Companion-session login, Bearer token, organization selection, and logout details
+- **[Pathways Export API](docs/api-pathways-export.md)**: Request, poll and download a published version's pathways export, with checksum verification, expiry and error recovery
 - **[User Management](docs/user-management.md)**: User invitation, registration, and management workflows
 
 ## Development

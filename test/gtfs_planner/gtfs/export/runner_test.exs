@@ -53,6 +53,50 @@ defmodule GtfsPlanner.Gtfs.Export.RunnerTest do
     assert size > 0
   end
 
+  test "ensure_started starts an application-supervised build for a pending run" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id)
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
+
+    assert :ok = Runner.ensure_started(organization.id, run)
+
+    [{_id, runner, _type, _modules}] =
+      DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Export.RunnerSupervisor)
+
+    ref = Process.monitor(runner)
+    assert_receive {:export_run_changed, _}
+    assert_receive {:export_run_changed, _}
+    assert_receive {:DOWN, ^ref, :process, ^runner, _reason}
+    assert %Run{state: :ready} = Repo.get!(Run, run.id)
+  end
+
+  test "ensure_started reports success when the build claim is already held" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    assert {:ok, runner} = Runner.start_build(organization.id, run.id, WaitingWorker)
+
+    assert :ok = Runner.ensure_started(organization.id, run)
+
+    worker = :sys.get_state(runner).task_pid
+    ref = Process.monitor(runner)
+    send(worker, :die)
+    assert_receive {:DOWN, ^ref, :process, ^runner, _reason}
+  end
+
+  test "ensure_started leaves a non-pending run untouched" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id)
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    assert {:ok, _run, _generation, _token} = ExportRuns.claim(organization.id, run.id, :build)
+
+    assert :ok = Runner.ensure_started(organization.id, Repo.get!(Run, run.id))
+    assert DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Export.RunnerSupervisor) == []
+  end
+
   test "initiator loss and worker crash close once without automatic replay" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
