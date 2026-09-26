@@ -14,6 +14,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   setup do
     organization = organization_fixture()
@@ -188,7 +189,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
 
     version =
       context.version
-      |> GtfsPlanner.Versions.GtfsVersion.transition_changeset("importing", nil)
+      |> GtfsVersion.transition_changeset("importing", nil)
       |> Repo.update!()
 
     assert version.publication_status == "importing"

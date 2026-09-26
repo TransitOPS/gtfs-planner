@@ -8,20 +8,20 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
-  alias GtfsPlanner.Gtfs.Route
-  alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Accounts.UserOrgMembership
-  alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Organizations.Organization
-  alias GtfsPlanner.Versions.GtfsVersion
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   test "separate committing sessions serialize reviewed route writers and roll back audit failures" do
     supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})

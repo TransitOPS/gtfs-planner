@@ -1,4 +1,6 @@
 defmodule GtfsPlanner.Gtfs.RoutePatternStop do
+  @moduledoc "An ordered occurrence of a stop in a route pattern."
+
   use Ecto.Schema
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers

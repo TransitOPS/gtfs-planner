@@ -83,27 +83,35 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
   end
 
   defp valid_chronology([first | rest]) do
-    with {:ok, first_arrival} <- GtfsTime.parse(first.arrival_time),
-         {:ok, first_departure} <- GtfsTime.parse(first.departure_time) do
-      if first_departure < first_arrival do
+    case parsed_clocks(first) do
+      {:ok, arrival, departure} when departure >= arrival ->
+        validate_remaining_chronology(rest, departure)
+
+      _ ->
         {:error, :invalid_chronology}
-      else
-        Enum.reduce_while(rest, {:ok, first_departure}, fn row, {:ok, preceding_departure} ->
-          with {:ok, arrival} <- GtfsTime.parse(row.arrival_time),
-               {:ok, departure} <- GtfsTime.parse(row.departure_time),
-               true <- arrival >= preceding_departure and departure >= arrival do
-            {:cont, {:ok, departure}}
-          else
-            _ -> {:halt, {:error, :invalid_chronology}}
-          end
-        end)
-        |> case do
-          {:ok, _} -> :ok
-          error -> error
-        end
+    end
+  end
+
+  defp validate_remaining_chronology(rows, first_departure) do
+    Enum.reduce_while(rows, {:ok, first_departure}, fn row, {:ok, preceding} ->
+      case parsed_clocks(row) do
+        {:ok, arrival, departure} when arrival >= preceding and departure >= arrival ->
+          {:cont, {:ok, departure}}
+
+        _ ->
+          {:halt, {:error, :invalid_chronology}}
       end
-    else
-      _ -> {:error, :invalid_chronology}
+    end)
+    |> case do
+      {:ok, _} -> :ok
+      error -> error
+    end
+  end
+
+  defp parsed_clocks(row) do
+    with {:ok, arrival} <- GtfsTime.parse(row.arrival_time),
+         {:ok, departure} <- GtfsTime.parse(row.departure_time) do
+      {:ok, arrival, departure}
     end
   end
 
@@ -113,18 +121,24 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     |> Enum.reduce_while({:ok, []}, fn {timing, index}, {:ok, acc} ->
       {id, rows} = timing_parts(timing, index)
 
-      with true <- length(rows) == length(old),
-           {:ok, result} <- review_timing(old, new, rows, Map.get(added_values, id, %{})) do
-        item = if is_nil(id), do: result, else: Map.put(result, :timing_id, id)
-        {:cont, {:ok, [item | acc]}}
-      else
-        false -> {:halt, {:error, :invalid_input}}
+      case review_one_timing(old, new, id, rows, added_values) do
+        {:ok, item} -> {:cont, {:ok, [item | acc]}}
         {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
       {:ok, results} -> {:ok, Enum.reverse(results)}
       error -> error
+    end
+  end
+
+  defp review_one_timing(old, new, id, rows, added_values) do
+    if length(rows) != length(old) do
+      {:error, :invalid_input}
+    else
+      with {:ok, result} <- review_timing(old, new, rows, Map.get(added_values, id, %{})) do
+        {:ok, if(is_nil(id), do: result, else: Map.put(result, :timing_id, id))}
+      end
     end
   end
 
@@ -152,31 +166,37 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
   end
 
   defp build_raw_rows(new, old_map, supplied) do
-    indexes = Enum.with_index(new)
+    Enum.with_index(new)
+    |> Enum.reduce_while({:ok, [], []}, fn {occurrence, index}, {:ok, rows, estimates} ->
+      case raw_row_for(new, occurrence, index, old_map, supplied) do
+        {:ok, row, estimate} ->
+          next_estimates = prepend_estimate(estimate, estimates)
+          {:cont, {:ok, [row | rows], next_estimates}}
 
-    Enum.reduce_while(indexes, {:ok, [], []}, fn {occurrence, index}, {:ok, acc, estimates} ->
-      id = field(occurrence, :id)
-
-      if id do
-        case Map.fetch(old_map, id) do
-          {:ok, row} -> {:cont, {:ok, [row_attrs(row) | acc], estimates}}
-          :error -> {:halt, {:error, :invalid_input}}
-        end
-      else
-        added = supplied_value(supplied, occurrence)
-
-        case inserted_row(new, index, old_map, added) do
-          {:ok, row, estimate} ->
-            {:cont, {:ok, [row | acc], if(estimate, do: [estimate | estimates], else: estimates)}}
-
-          {:error, _} = error ->
-            {:halt, error}
-        end
+        {:error, _} = error ->
+          {:halt, error}
       end
     end)
     |> case do
       {:ok, values, estimates} -> {:ok, {Enum.reverse(values), Enum.reverse(estimates)}}
       error -> error
+    end
+  end
+
+  defp prepend_estimate(nil, estimates), do: estimates
+  defp prepend_estimate(estimate, estimates), do: [estimate | estimates]
+
+  defp raw_row_for(new, occurrence, index, old_map, supplied) do
+    case field(occurrence, :id) do
+      nil -> inserted_row(new, index, old_map, supplied_value(supplied, occurrence))
+      id -> retained_row(old_map, id)
+    end
+  end
+
+  defp retained_row(old_map, id) do
+    case Map.fetch(old_map, id) do
+      {:ok, row} -> {:ok, row_attrs(row), nil}
+      :error -> {:error, :invalid_input}
     end
   end
 
@@ -294,14 +314,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     |> Enum.reduce_while({:ok, nil}, fn {row, index}, {:ok, preceding} ->
       arrival = row.arrival_offset
       departure = row.departure_offset
-
-      valid? = departure >= arrival and (index == 0 or arrival >= preceding)
-      if valid?, do: {:cont, {:ok, departure}}, else: {:halt, {:error, :invalid_chronology}}
+      validate_relative_row(index, arrival, departure, preceding)
     end)
     |> case do
       {:ok, _} -> :ok
       error -> error
     end
+  end
+
+  defp validate_relative_row(index, arrival, departure, preceding) do
+    if departure >= arrival and (index == 0 or arrival >= preceding),
+      do: {:cont, {:ok, departure}},
+      else: {:halt, {:error, :invalid_chronology}}
   end
 
   defp validate_occurrences(old, new) do

@@ -5,11 +5,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -199,11 +200,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       if same_values?(pattern, attrs) do
         %{pattern: pattern, trips_updated: 0}
       else
-        trips_updated =
-          case Map.fetch(attrs, :direction_id) do
-            {:ok, direction_id} -> update_trip_direction!(pattern, direction_id)
-            :error -> 0
-          end
+        trips_updated = update_direction_trips(pattern, attrs)
 
         updated = pattern |> RoutePattern.changeset(attrs) |> update_or_rollback!()
         audit!(audit_context, :route_pattern, pattern, "updated", attrs)
@@ -220,22 +217,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:stops, entries, reviewed_values},
          audit_context
        ) do
-    with {:ok, edit} <- prepare_stop_edit(pattern, entries, reviewed_values) do
-      if edit.noop? do
-        %{pattern: pattern, trips_updated: 0}
-      else
-        trips_updated = persist_stop_edit!(pattern, edit)
-        after_pattern = load_pattern_for_audit!(pattern.id)
-
-        audit!(audit_context, :route_pattern, after_pattern, "updated", %{
-          before: pattern_snapshot(pattern),
-          after: pattern_snapshot(after_pattern),
-          affected_trips: trips_updated
-        })
-
-        %{pattern: after_pattern, trips_updated: trips_updated}
-      end
-    else
+    case prepare_stop_edit(pattern, entries, reviewed_values) do
+      {:ok, edit} -> apply_stop_edit!(pattern, edit, audit_context)
       {:error, reason} -> Repo.rollback(reason)
     end
   end
@@ -249,32 +232,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:ok, rows} <- validate_timing_rows(pattern, timing, rows_input) do
       before = audit_timing_snapshot(timing)
 
-      cond do
-        same_values?(timing, values) and is_nil(rows) ->
-          %{pattern: pattern, trips_updated: 0}
-
-        true ->
-          trips_updated = if rows, do: persist_timing_edit!(pattern, timing, rows), else: 0
-          if values != %{}, do: timing |> TimedPattern.changeset(values) |> update_or_rollback!()
-          after_snapshot = audit_timing_snapshot(Repo.get!(TimedPattern, timing.id))
-
-          audit!(
-            audit_context,
-            :timed_pattern,
-            timing,
-            "updated",
-            timing_audit_attrs(
-              pattern,
-              timing,
-              Map.merge(values, %{
-                before: before,
-                after: after_snapshot,
-                affected_trips: trips_updated
-              })
-            )
-          )
-
-          %{pattern: pattern, trips_updated: trips_updated}
+      if same_values?(timing, values) and is_nil(rows) do
+        %{pattern: pattern, trips_updated: 0}
+      else
+        apply_timing_edit!(pattern, timing, values, rows, before, audit_context)
       end
     else
       nil -> Repo.rollback(:not_found)
@@ -390,6 +351,53 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp apply_lifecycle_operation!(_route, _pattern, _operation, _audit_context),
     do: Repo.rollback(:invalid_operation)
 
+  defp update_direction_trips(pattern, attrs) do
+    case Map.fetch(attrs, :direction_id) do
+      {:ok, direction_id} -> update_trip_direction!(pattern, direction_id)
+      :error -> 0
+    end
+  end
+
+  defp apply_stop_edit!(pattern, %{noop?: true}, _audit_context),
+    do: %{pattern: pattern, trips_updated: 0}
+
+  defp apply_stop_edit!(pattern, edit, audit_context) do
+    trips_updated = persist_stop_edit!(pattern, edit)
+    after_pattern = load_pattern_for_audit!(pattern.id)
+
+    audit!(audit_context, :route_pattern, after_pattern, "updated", %{
+      before: pattern_snapshot(pattern),
+      after: pattern_snapshot(after_pattern),
+      affected_trips: trips_updated
+    })
+
+    %{pattern: after_pattern, trips_updated: trips_updated}
+  end
+
+  defp apply_timing_edit!(pattern, timing, values, rows, before, audit_context) do
+    trips_updated = if rows, do: persist_timing_edit!(pattern, timing, rows), else: 0
+    if values != %{}, do: timing |> TimedPattern.changeset(values) |> update_or_rollback!()
+    after_snapshot = audit_timing_snapshot(Repo.get!(TimedPattern, timing.id))
+
+    audit!(
+      audit_context,
+      :timed_pattern,
+      timing,
+      "updated",
+      timing_audit_attrs(
+        pattern,
+        timing,
+        Map.merge(values, %{
+          before: before,
+          after: after_snapshot,
+          affected_trips: trips_updated
+        })
+      )
+    )
+
+    %{pattern: pattern, trips_updated: trips_updated}
+  end
+
   defp delete_pattern_children!(pattern_id) do
     timing_ids =
       from(timing in TimedPattern,
@@ -414,77 +422,80 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          audit_context,
          attempts
        ) do
-    transaction = fn ->
-      route = lock_published_route!(audit_context, route_id)
-      pattern = lock_pattern!(route, pattern_id)
+    result =
+      run_apply_transaction(fn ->
+        apply_review_transaction(pattern_id, operation, route_id, fingerprint, audit_context)
+      end)
 
-      if trips_lock_required?(operation) do
-        _trips = lock_pattern_trips!(route, pattern)
-      end
+    handle_review_result(
+      result,
+      {pattern_id, operation, route_id, fingerprint, audit_context, attempts}
+    )
+  end
 
-      {:ok, loaded_view} =
-        get_pattern(
-          audit_context.organization_id,
-          audit_context.gtfs_version_id,
-          route.route_id,
-          pattern.id
-        )
+  defp apply_review_transaction(pattern_id, operation, route_id, fingerprint, audit_context) do
+    route = lock_published_route!(audit_context, route_id)
+    pattern = lock_pattern!(route, pattern_id)
+    lock_trips_for_operation!(route, pattern, operation)
+    loaded_view = load_locked_pattern!(route, pattern, audit_context)
+    verify_review_fingerprint!(loaded_view, operation, fingerprint)
+    apply_lifecycle_operation!(route, loaded_view.pattern, operation, audit_context)
+  end
 
-      loaded = loaded_view.pattern
-      current_fingerprint = loaded_view.source_fingerprint
+  defp lock_trips_for_operation!(route, pattern, operation) do
+    if trips_lock_required?(operation), do: lock_pattern_trips!(route, pattern)
+  end
 
-      impact = operation_impact(operation, %{pattern: loaded})
-
-      with :ok <- validate_lifecycle_operation(loaded, operation, loaded_view),
-           {:ok, proposal} <- review_proposal(loaded, operation, loaded_view) do
-        current_review_fingerprint =
-          review_fingerprint(current_fingerprint, {operation, impact, proposal})
-
-        unless secure_equal?(fingerprint, current_review_fingerprint) do
-          Repo.rollback(:stale_review)
-        end
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-
-      apply_lifecycle_operation!(route, loaded, operation, audit_context)
-    end
-
-    case run_apply_transaction(transaction) do
-      {:ok, result} ->
-        {:ok, result}
-
-      {:serialization_failure, _error} when attempts > 1 ->
-        apply_review_with_retries(
-          pattern_id,
-          operation,
-          route_id,
-          fingerprint,
-          audit_context,
-          attempts - 1
-        )
-
-      {:serialization_failure, _error} ->
-        {:error, :busy}
-
-      {:error, %Postgrex.Error{} = error} ->
-        if serialization_failure?(error) and attempts > 1 do
-          apply_review_with_retries(
-            pattern_id,
-            operation,
-            route_id,
-            fingerprint,
-            audit_context,
-            attempts - 1
-          )
-        else
-          if serialization_failure?(error), do: {:error, :busy}, else: {:error, error}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+  defp load_locked_pattern!(route, pattern, audit_context) do
+    case get_pattern(
+           audit_context.organization_id,
+           audit_context.gtfs_version_id,
+           route.route_id,
+           pattern.id
+         ) do
+      {:ok, loaded_view} -> loaded_view
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  defp verify_review_fingerprint!(loaded_view, operation, fingerprint) do
+    pattern = loaded_view.pattern
+    impact = operation_impact(operation, %{pattern: pattern})
+
+    with :ok <- validate_lifecycle_operation(pattern, operation, loaded_view),
+         {:ok, proposal} <- review_proposal(pattern, operation, loaded_view) do
+      current = review_fingerprint(loaded_view.source_fingerprint, {operation, impact, proposal})
+      if secure_equal?(fingerprint, current), do: :ok, else: Repo.rollback(:stale_review)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp handle_review_result({:ok, result}, _retry), do: {:ok, result}
+
+  defp handle_review_result({:serialization_failure, _error}, retry),
+    do: retry_review(retry)
+
+  defp handle_review_result({:error, %Postgrex.Error{} = error}, retry) do
+    if serialization_failure?(error), do: retry_review(retry), else: {:error, error}
+  end
+
+  defp handle_review_result({:error, reason}, _retry), do: {:error, reason}
+
+  defp retry_review({pattern_id, operation, route_id, fingerprint, audit_context, attempts})
+       when attempts > 1 do
+    apply_review_with_retries(
+      pattern_id,
+      operation,
+      route_id,
+      fingerprint,
+      audit_context,
+      attempts - 1
+    )
+  end
+
+  defp retry_review({_pattern_id, _operation, _route_id, _fingerprint, _audit_context, 1}),
+    do: {:error, :busy}
 
   defp run_apply_transaction(transaction) do
     Application.get_env(
@@ -507,9 +518,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_lifecycle_operation(pattern, {:details, attrs}, _loaded) do
     with :ok <- reject_forged_linkage(attrs),
-         {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields),
-         :ok <- validate_noop_or_pattern(pattern, values) do
-      :ok
+         {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields) do
+      validate_noop_or_pattern(pattern, values)
     end
   end
 
@@ -535,9 +545,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_lifecycle_operation(_pattern, {:add_timing, attrs}, _loaded) do
     with :ok <- reject_forged_linkage(attrs),
-         {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
-         :ok <- validate_timing_attrs(values),
-         do: :ok
+         {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields) do
+      validate_timing_attrs(values)
+    end
   end
 
   defp validate_lifecycle_operation(pattern, {:delete_timing, timing_id}, _loaded) do
@@ -746,15 +756,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp validate_retained_stop_ids(old_occurrences, new_occurrences) do
     old_by_id = Map.new(old_occurrences, &{&1.id, &1.stop_id})
 
-    if Enum.all?(new_occurrences, fn occurrence ->
-         case Map.fetch(occurrence, :id) do
-           {:ok, id} -> Map.get(old_by_id, id) == occurrence.stop_id
-           :error -> true
-         end
-       end) do
+    if Enum.all?(new_occurrences, &retained_identity_valid?(&1, old_by_id)) do
       :ok
     else
       {:error, :invalid_occurrence_identity}
+    end
+  end
+
+  defp retained_identity_valid?(occurrence, old_by_id) do
+    case Map.fetch(occurrence, :id) do
+      {:ok, id} -> Map.get(old_by_id, id) == occurrence.stop_id
+      :error -> true
     end
   end
 
@@ -833,19 +845,30 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       arrival = row.arrival_offset
       departure = row.departure_offset
 
-      valid? =
-        is_integer(arrival) and is_integer(departure) and departure >= arrival and
-          (index == 0 or arrival >= preceding_departure)
-
-      cond do
-        not valid? -> {:halt, {:error, :invalid_chronology}}
-        index == 0 and departure != 0 -> {:halt, {:error, :first_departure_must_be_zero}}
-        true -> {:cont, {:ok, departure}}
+      case relative_row_error(arrival, departure, index, preceding_departure) do
+        nil -> {:cont, {:ok, departure}}
+        reason -> {:halt, {:error, reason}}
       end
     end)
     |> case do
       {:ok, _} -> :ok
       error -> error
+    end
+  end
+
+  defp relative_row_error(arrival, departure, index, preceding_departure) do
+    cond do
+      not is_integer(arrival) or not is_integer(departure) or departure < arrival ->
+        :invalid_chronology
+
+      index > 0 and arrival < preceding_departure ->
+        :invalid_chronology
+
+      index == 0 and departure != 0 ->
+        :first_departure_must_be_zero
+
+      true ->
+        nil
     end
   end
 
@@ -979,57 +1002,104 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     if length(rows) != length(old_occurrences), do: Repo.rollback(:trip_stop_times_mismatch)
 
-    with {:ok, start_seconds} <- GtfsPlanner.Gtfs.GtfsTime.parse(List.first(rows).departure_time),
+    with {:ok, start_seconds} <- trip_start_seconds(rows),
          {:ok, materialized} <-
            Materializer.materialize(start_seconds + shift, new_occurrences, timing_rows) do
-      occurrence_index = Map.new(Enum.with_index(old_occurrences), fn {o, i} -> {o.id, i} end)
-
-      old_by_occurrence =
-        Map.new(new_occurrences, fn occurrence ->
-          old_index = Map.get(occurrence_index, Map.get(occurrence, :id))
-          {Map.get(occurrence, :id), if(old_index, do: Enum.at(rows, old_index))}
-        end)
-
-      retained_times = old_by_occurrence |> Map.values() |> Enum.reject(&is_nil/1)
-      removed_times = Enum.reject(rows, &(&1 in retained_times))
-      Enum.each(removed_times, &Repo.delete!/1)
-
-      temp_sequences =
-        unused_positive_values(
-          Enum.map(rows, & &1.stop_sequence),
-          length(retained_times),
-          length(new_occurrences)
-        )
-
-      Enum.zip(retained_times, temp_sequences)
-      |> Enum.each(fn {row, seq} ->
-        Repo.update_all(from(st in StopTime, where: st.id == ^row.id), set: [stop_sequence: seq])
-      end)
-
-      Enum.zip([new_occurrences, materialized, timing_rows])
-      |> Enum.with_index(1)
-      |> Enum.each(fn {{occurrence, materialized_row, timing_row}, sequence} ->
-        case Map.get(old_by_occurrence, occurrence.id) do
-          nil ->
-            %StopTime{}
-            |> StopTime.changeset(
-              stop_time_attrs(trip, occurrence, materialized_row, timing_row, sequence)
-            )
-            |> insert_or_rollback!()
-
-          old_row ->
-            attrs =
-              Map.merge(
-                Map.take(materialized_row, [:arrival_time, :departure_time]),
-                Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
-              )
-              |> Map.merge(%{stop_id: occurrence.stop_id, stop_sequence: sequence})
-
-            old_row |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
-        end
-      end)
+      persist_structural_rows!(
+        trip,
+        rows,
+        old_occurrences,
+        new_occurrences,
+        timing_rows,
+        materialized
+      )
     else
       {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp trip_start_seconds([first | _]), do: GtfsTime.parse(first.departure_time)
+
+  defp persist_structural_rows!(
+         trip,
+         rows,
+         old_occurrences,
+         new_occurrences,
+         timing_rows,
+         materialized
+       ) do
+    old_by_occurrence = old_rows_by_occurrence(old_occurrences, new_occurrences, rows)
+    retained_times = old_by_occurrence |> Map.values() |> Enum.reject(&is_nil/1)
+    delete_removed_stop_times!(rows, retained_times)
+    move_retained_sequences!(rows, retained_times, length(new_occurrences))
+
+    persist_final_occurrence_rows!(
+      trip,
+      new_occurrences,
+      timing_rows,
+      materialized,
+      old_by_occurrence
+    )
+  end
+
+  defp old_rows_by_occurrence(old_occurrences, new_occurrences, rows) do
+    occurrence_indexes =
+      Map.new(Enum.with_index(old_occurrences), fn {item, index} -> {item.id, index} end)
+
+    Map.new(new_occurrences, fn occurrence ->
+      old_index = Map.get(occurrence_indexes, occurrence.id)
+      {occurrence.id, if(old_index, do: Enum.at(rows, old_index))}
+    end)
+  end
+
+  defp delete_removed_stop_times!(rows, retained_times) do
+    rows
+    |> Enum.reject(&(&1 in retained_times))
+    |> Enum.each(&Repo.delete!/1)
+  end
+
+  defp move_retained_sequences!(rows, retained_times, final_count) do
+    temporary_values =
+      unused_positive_values(
+        Enum.map(rows, & &1.stop_sequence),
+        length(retained_times),
+        final_count
+      )
+
+    Enum.zip(retained_times, temporary_values)
+    |> Enum.each(fn {row, sequence} ->
+      Repo.update_all(from(st in StopTime, where: st.id == ^row.id),
+        set: [stop_sequence: sequence]
+      )
+    end)
+  end
+
+  defp persist_final_occurrence_rows!(trip, occurrences, timing_rows, materialized, old_rows) do
+    Enum.zip([occurrences, materialized, timing_rows])
+    |> Enum.with_index(1)
+    |> Enum.each(fn {{occurrence, materialized_row, timing_row}, sequence} ->
+      persist_occurrence_row!(trip, occurrence, materialized_row, timing_row, sequence, old_rows)
+    end)
+  end
+
+  defp persist_occurrence_row!(trip, occurrence, materialized, timing_row, sequence, old_rows) do
+    case Map.get(old_rows, occurrence.id) do
+      nil ->
+        %StopTime{}
+        |> StopTime.changeset(
+          stop_time_attrs(trip, occurrence, materialized, timing_row, sequence)
+        )
+        |> insert_or_rollback!()
+
+      old_row ->
+        attrs =
+          Map.merge(
+            Map.take(materialized, [:arrival_time, :departure_time]),
+            Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
+          )
+          |> Map.merge(%{stop_id: occurrence.stop_id, stop_sequence: sequence})
+
+        old_row |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
     end
   end
 
@@ -1038,7 +1108,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     occurrences = pattern_occurrences(pattern)
     if length(stop_times) != length(occurrences), do: Repo.rollback(:trip_stop_times_mismatch)
 
-    with {:ok, start} <- GtfsPlanner.Gtfs.GtfsTime.parse(List.first(stop_times).departure_time),
+    with {:ok, start} <- GtfsTime.parse(List.first(stop_times).departure_time),
          {:ok, materialized} <- Materializer.materialize(start, occurrences, rows) do
       Enum.zip([stop_times, materialized, rows])
       |> Enum.each(fn {old, value, timing_row} ->
@@ -1547,60 +1617,64 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp source_fingerprint(pattern) do
     if pattern && not Repo.in_transaction?() do
-      Repo.transaction(fn -> source_fingerprint(pattern) end) |> elem(1)
+      Repo.transaction(fn -> source_fingerprint_in_transaction(pattern) end) |> elem(1)
     else
-      base =
-        if pattern do
-          trips =
-            from(trip in Trip,
-              where:
-                trip.organization_id == ^pattern.organization_id and
-                  trip.gtfs_version_id == ^pattern.gtfs_version_id and
-                  trip.route_id == ^pattern.route_id and
-                  trip.route_pattern_id == ^pattern.route_pattern_id,
-              order_by: [asc: trip.id]
-            )
-            |> Repo.all()
-
-          %{
-            scope: {pattern.organization_id, pattern.gtfs_version_id, pattern.route_id},
-            pattern: pattern_snapshot(pattern),
-            trips: trips
-          }
-        else
-          nil
-        end
-
-      hash = :crypto.hash_update(:crypto.hash_init(:sha256), canonical_binary(base))
-
-      hash =
-        if pattern do
-          query =
-            from(trip in Trip,
-              join: stop_time in StopTime,
-              on:
-                stop_time.organization_id == trip.organization_id and
-                  stop_time.gtfs_version_id == trip.gtfs_version_id and
-                  stop_time.trip_id == trip.trip_id,
-              where:
-                trip.organization_id == ^pattern.organization_id and
-                  trip.gtfs_version_id == ^pattern.gtfs_version_id and
-                  trip.route_id == ^pattern.route_id and
-                  trip.route_pattern_id == ^pattern.route_pattern_id,
-              order_by: [asc: trip.id, asc: stop_time.stop_sequence, asc: stop_time.id],
-              select: {trip.id, stop_time}
-            )
-
-          Repo.stream(query)
-          |> Enum.reduce(hash, fn record, acc ->
-            :crypto.hash_update(acc, canonical_binary(record))
-          end)
-        else
-          hash
-        end
-
-      :crypto.hash_final(hash) |> Base.encode16(case: :lower)
+      source_fingerprint_in_transaction(pattern)
     end
+  end
+
+  defp source_fingerprint_in_transaction(pattern) do
+    base = source_fingerprint_base(pattern)
+    hash = :crypto.hash_update(:crypto.hash_init(:sha256), canonical_binary(base))
+
+    hash
+    |> stream_stop_time_fingerprint(pattern)
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+  end
+
+  defp source_fingerprint_base(nil), do: nil
+
+  defp source_fingerprint_base(pattern) do
+    trips =
+      from(trip in Trip,
+        where:
+          trip.organization_id == ^pattern.organization_id and
+            trip.gtfs_version_id == ^pattern.gtfs_version_id and
+            trip.route_id == ^pattern.route_id and
+            trip.route_pattern_id == ^pattern.route_pattern_id,
+        order_by: [asc: trip.id]
+      )
+      |> Repo.all()
+
+    %{
+      scope: {pattern.organization_id, pattern.gtfs_version_id, pattern.route_id},
+      pattern: pattern_snapshot(pattern),
+      trips: trips
+    }
+  end
+
+  defp stream_stop_time_fingerprint(hash, nil), do: hash
+
+  defp stream_stop_time_fingerprint(hash, pattern) do
+    from(trip in Trip,
+      join: stop_time in StopTime,
+      on:
+        stop_time.organization_id == trip.organization_id and
+          stop_time.gtfs_version_id == trip.gtfs_version_id and
+          stop_time.trip_id == trip.trip_id,
+      where:
+        trip.organization_id == ^pattern.organization_id and
+          trip.gtfs_version_id == ^pattern.gtfs_version_id and
+          trip.route_id == ^pattern.route_id and
+          trip.route_pattern_id == ^pattern.route_pattern_id,
+      order_by: [asc: trip.id, asc: stop_time.stop_sequence, asc: stop_time.id],
+      select: {trip.id, stop_time}
+    )
+    |> Repo.stream()
+    |> Enum.reduce(hash, fn record, acc ->
+      :crypto.hash_update(acc, canonical_binary(record))
+    end)
   end
 
   defp review_fingerprint(source, operation), do: digest({source, canonical(operation)})

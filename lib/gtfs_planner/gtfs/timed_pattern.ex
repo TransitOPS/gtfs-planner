@@ -1,4 +1,6 @@
 defmodule GtfsPlanner.Gtfs.TimedPattern do
+  @moduledoc "A named service timing associated with a route pattern."
+
   use Ecto.Schema
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers

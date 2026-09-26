@@ -1,4 +1,6 @@
 defmodule GtfsPlanner.Gtfs.TimedPatternStop do
+  @moduledoc "Relative timing and stop service values for one pattern occurrence."
+
   use Ecto.Schema
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers
