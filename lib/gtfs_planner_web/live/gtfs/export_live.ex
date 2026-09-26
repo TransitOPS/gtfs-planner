@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              socket.assigns.export_type
            ),
          :ok <- subscribe_export_run(run),
-         :ok <- maybe_start_export_run(organization_id, run) do
+         :ok <- ExportRunner.ensure_started(organization_id, run) do
       {:noreply, assign(socket, :export_run, run)}
     else
       {:error, :invalid_transition} ->
@@ -801,17 +801,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp export_actor(socket) do
     %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
   end
-
-  defp maybe_start_export_run(organization_id, %{state: :pending, id: run_id}) do
-    case ExportRunner.start_build(organization_id, run_id) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, :claim_failed} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp maybe_start_export_run(_organization_id, _active_run), do: :ok
 
   defp refresh_file_inventory(socket) do
     organization_id = socket.assigns.current_organization.id

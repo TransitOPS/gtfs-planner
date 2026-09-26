@@ -25,6 +25,24 @@ defmodule GtfsPlanner.Gtfs.Export.Runner do
     )
   end
 
+  @doc """
+  Starts the build for a pending run and normalizes the supervisor's start result.
+
+  Shared by the web LiveView and the companion API so neither owns its own
+  start-if-pending branch.
+  """
+  @spec ensure_started(Ecto.UUID.t(), %Run{}) :: :ok | {:error, term()}
+  def ensure_started(organization_id, %Run{state: :pending, id: run_id}) do
+    case start_build(organization_id, run_id) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, :claim_failed} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def ensure_started(_organization_id, %Run{}), do: :ok
+
   @impl true
   def init(opts) do
     organization_id = Keyword.fetch!(opts, :organization_id)
