@@ -1639,7 +1639,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   without truncation. `confirm_variant="danger"` (default) keeps the
   `bg-error`/`text-error-content` confirm button; `confirm_variant="primary"`
   swaps to `bg-primary`/`text-primary-content` for non-destructive bulk
-  review. The closed axes mirror `<.button>`'s variant precedent; a third
+  review. `cancel_label` names the cancel action when the outcome needs a
+  clearer word than “Cancel”, such as “Keep editing” for unsaved changes. The closed axes mirror `<.button>`'s variant precedent; a third
   presentation axis would call for a dedicated review component instead
   of widening this one.
 
@@ -1683,6 +1684,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :pending_label, :string, required: true
   attr :on_confirm, :string, required: true
   attr :on_cancel, :string, required: true
+  attr :cancel_label, :string, default: "Cancel"
   attr :target, :any, default: nil
   attr :pending, :boolean, default: false
   attr :return_focus_id, :string, default: nil
@@ -1745,7 +1747,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               data-dialog-dismiss
               disabled={@pending}
             >
-              Cancel
+              {@cancel_label}
             </button>
             <button
               id={"#{@id}-confirm"}

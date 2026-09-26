@@ -164,6 +164,26 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Loads the scoped pattern editor read model for one published route.
+
+  `opts` may carry `:pattern_id` and `:timing_id` to include one pattern's detail
+  with only that timing's rows, and `:include_stop_choices` to include the
+  version's eligible stop choices. A route or pattern outside the loaded
+  organization/version/route scope is `{:error, :not_found}`; a lost database
+  connection is `{:error, :unavailable}`.
+  """
+  @spec load_route_pattern_screen(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, :not_found | :unavailable}
+  def load_route_pattern_screen(organization_id, gtfs_version_id, route_id, opts \\ []) do
+    catalog_read_adapter().load_route_pattern_screen(
+      organization_id,
+      gtfs_version_id,
+      route_id,
+      opts
+    )
+  end
+
+  @doc """
   Fetches a single stop by its GTFS `stop_id` for the station detail surface
   through the configured catalog read adapter.
 
@@ -5222,7 +5242,7 @@ defmodule GtfsPlanner.Gtfs do
     Map.filter(attrs, fn {key, _value} ->
       to_string(key) in ~w(
         route_pattern_name route_pattern_time_desc direction_id
-        route_pattern_typicality headsign canonical_route_pattern
+        route_pattern_typicality headsign canonical_route_pattern route_pattern_sort_order
         occurrences timings before after
       )
     end)

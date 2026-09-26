@@ -33,6 +33,7 @@ import FormErrorFocusHook from "./form_error_focus_hook"
 import TablistHook from "./tablist_hook"
 import UserMenuHook from "./user_menu_hook"
 import JournalPanelHook from "./journal_panel_hook"
+import RoutePatternEditorHook from "./route_pattern_editor"
 import "../vendor/leaflet"
 import LiveSelect from "../vendor/live_select"
 
@@ -40,7 +41,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect},
+  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook},
 })
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")

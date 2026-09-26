@@ -20,7 +20,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @behaviour GtfsPlanner.Gtfs.CatalogReadAdapter
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{Route, Stop}
+  alias GtfsPlanner.Gtfs.{Route, RoutePatterns, Stop}
 
   @default_per_page 25
 
@@ -68,6 +68,17 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @impl true
   def load_route_patterns(organization_id, gtfs_version_id, route_id) do
     run(fn -> Gtfs.list_route_patterns_for_route(organization_id, gtfs_version_id, route_id) end)
+  end
+
+  @impl true
+  def load_route_pattern_screen(organization_id, gtfs_version_id, route_id, opts) do
+    case run(fn ->
+           RoutePatterns.pattern_screen(organization_id, gtfs_version_id, route_id, opts)
+         end) do
+      {:ok, {:ok, screen}} -> {:ok, screen}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
   end
 
   @impl true

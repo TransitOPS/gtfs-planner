@@ -19,7 +19,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
-  @pattern_fields ~w(route_pattern_name route_pattern_time_desc route_pattern_typicality direction_id headsign canonical_route_pattern)
+  @pattern_fields ~w(route_pattern_name route_pattern_time_desc route_pattern_typicality direction_id headsign canonical_route_pattern route_pattern_sort_order)
   @timing_fields ~w(name headsign)
   @forbidden_linkage_fields ~w(timed_pattern_id pattern_derivation_state pattern_derivation_reason trip_id trip_ids derivation_key)
 
@@ -73,6 +73,241 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       nil -> {:error, :not_found}
       {:error, _} = error -> error
     end
+  end
+
+  @doc """
+  Scoped read model for the pattern editor.
+
+  Returns the route's pattern summaries with their stop, trip and timing counts,
+  the route's pending/custom trip counts and bounded derivation error, the
+  version's eligible stop choices (only when `include_stop_choices: true`), and
+  optionally one pattern's detail: its ordered occurrences, every timing summary
+  and only the selected timing's rows. Nothing else is loaded, so the editor
+  never accumulates the feed's stop-time vectors (AC-18).
+
+  A missing route, or a pattern outside the loaded route/version scope, returns
+  `{:error, :not_found}`; a timing that belongs to another pattern returns
+  `{:error, :timing_not_found}`.
+  """
+  def pattern_screen(organization_id, version_id, route_id, opts \\ []) do
+    with {:ok, route} <- published_route(organization_id, version_id, route_id),
+         {:ok, detail} <- pattern_detail(route, organization_id, version_id, route_id, opts) do
+      patterns = route_patterns_in_order(route)
+
+      stop_counts = route_row_counts(RoutePatternStop, route)
+      trip_counts = route_row_counts(Trip, route)
+      timing_counts = route_row_counts(TimedPattern, route)
+      trip_states = trip_state_counts(route)
+
+      summaries =
+        Enum.map(patterns, fn pattern ->
+          %{
+            id: pattern.route_pattern_id,
+            pattern: pattern,
+            stop_count: Map.get(stop_counts, pattern.id, 0),
+            trip_count: Map.get(trip_counts, pattern.route_pattern_id, 0),
+            timing_count: Map.get(timing_counts, pattern.id, 0)
+          }
+        end)
+
+      {:ok,
+       %{
+         route: route,
+         patterns: summaries,
+         pending_trip_count: Map.get(trip_states, "pending", 0),
+         custom_trip_count: Map.get(trip_states, "custom", 0),
+         linked_trip_count: Map.get(trip_states, "linked", 0),
+         derivation_error: route.pattern_derivation_error,
+         detail: detail,
+         stop_choices:
+           if(Keyword.get(opts, :include_stop_choices, false), do: stop_choices(route), else: [])
+       }}
+    end
+  end
+
+  defp route_patterns_in_order(route) do
+    from(pattern in RoutePattern,
+      where:
+        pattern.organization_id == ^route.organization_id and
+          pattern.gtfs_version_id == ^route.gtfs_version_id and
+          pattern.route_id == ^route.route_id,
+      order_by: [
+        asc: pattern.direction_id,
+        asc: pattern.route_pattern_sort_order,
+        asc: pattern.route_pattern_id
+      ]
+    )
+    |> Repo.all()
+  end
+
+  defp route_row_counts(schema, route) do
+    from(row in schema,
+      where:
+        row.organization_id == ^route.organization_id and
+          row.gtfs_version_id == ^route.gtfs_version_id,
+      group_by: row.route_pattern_id,
+      select: {row.route_pattern_id, count(row.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp trip_state_counts(route) do
+    from(trip in Trip,
+      where:
+        trip.organization_id == ^route.organization_id and
+          trip.gtfs_version_id == ^route.gtfs_version_id and trip.route_id == ^route.route_id,
+      group_by: trip.pattern_derivation_state,
+      select: {trip.pattern_derivation_state, count(trip.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp pattern_detail(_route, organization_id, version_id, route_id, opts) do
+    case Keyword.get(opts, :pattern_id) do
+      nil -> {:ok, nil}
+      pattern_id -> load_pattern_detail(organization_id, version_id, route_id, opts, pattern_id)
+    end
+  end
+
+  defp load_pattern_detail(organization_id, version_id, route_id, opts, pattern_id) do
+    case scoped_pattern_by_natural_id(organization_id, version_id, route_id, pattern_id) do
+      %RoutePattern{} = pattern ->
+        build_pattern_detail(pattern, Keyword.get(opts, :timing_id))
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  defp build_pattern_detail(pattern, timing_id) do
+    occurrences = pattern_occurrences(pattern.id)
+    timings = pattern_timings(pattern.id)
+    timing_trip_counts = timing_trip_counts(pattern)
+    stops = stops_by_ids(pattern, Enum.map(occurrences, & &1.stop_id))
+
+    with {:ok, selected} <- select_detail_timing(timings, timing_id) do
+      {:ok,
+       %{
+         pattern: pattern,
+         occurrences: occurrences,
+         stops: stops,
+         timings:
+           Enum.map(timings, fn timing ->
+             %{timing: timing, trip_count: Map.get(timing_trip_counts, timing.id, 0)}
+           end),
+         selected_timing: selected,
+         selected_timing_rows: detail_timing_rows(pattern, selected, stops),
+         stop_count: length(occurrences),
+         trip_count: pattern_trip_count(pattern),
+         source_fingerprint: source_fingerprint(pattern)
+       }}
+    end
+  end
+
+  defp detail_timing_rows(_pattern, nil, _stops), do: []
+
+  defp detail_timing_rows(pattern, selected, stops),
+    do: selected_timing_rows(pattern.id, selected.id, stops)
+
+  # Selecting no timing resolves to the pattern's first timing; a timing that
+  # belongs to another pattern is a distinct not-found outcome so the editor can
+  # refuse it without leaking the other pattern's data.
+  defp select_detail_timing(timings, nil), do: {:ok, List.first(timings)}
+
+  defp select_detail_timing(timings, timing_id) do
+    case Enum.find(timings, &(&1.id == timing_id)) do
+      %TimedPattern{} = timing -> {:ok, timing}
+      nil -> {:error, :timing_not_found}
+    end
+  end
+
+  defp scoped_pattern_by_natural_id(org_id, version_id, route_id, route_pattern_id) do
+    Repo.one(
+      from(pattern in RoutePattern,
+        where:
+          pattern.organization_id == ^org_id and pattern.gtfs_version_id == ^version_id and
+            pattern.route_id == ^route_id and pattern.route_pattern_id == ^route_pattern_id
+      )
+    )
+  end
+
+  defp pattern_trip_count(pattern) do
+    Repo.aggregate(
+      from(trip in Trip,
+        where:
+          trip.organization_id == ^pattern.organization_id and
+            trip.gtfs_version_id == ^pattern.gtfs_version_id and
+            trip.route_pattern_id == ^pattern.route_pattern_id
+      ),
+      :count
+    )
+  end
+
+  # Only the selected timing's rows are read, and each row is bounded to its
+  # occurrence position and offset values; no full stop-time vector list is
+  # retained for any other timing.
+  defp selected_timing_rows(pattern_id, timing_id, stops) do
+    from(row in TimedPatternStop,
+      join: occurrence in RoutePatternStop,
+      on: occurrence.id == row.route_pattern_stop_id,
+      where: row.timed_pattern_id == ^timing_id and occurrence.route_pattern_id == ^pattern_id,
+      order_by: [asc: occurrence.position],
+      select: %{
+        position: occurrence.position,
+        stop_id: occurrence.stop_id,
+        arrival_offset: row.arrival_offset,
+        departure_offset: row.departure_offset
+      }
+    )
+    |> Repo.all()
+    |> Enum.map(&Map.put(&1, :stop, Map.get(stops, &1.stop_id)))
+  end
+
+  defp timing_trip_counts(pattern) do
+    from(trip in Trip,
+      where:
+        trip.organization_id == ^pattern.organization_id and
+          trip.gtfs_version_id == ^pattern.gtfs_version_id and
+          trip.route_pattern_id == ^pattern.route_pattern_id and
+          not is_nil(trip.timed_pattern_id),
+      group_by: trip.timed_pattern_id,
+      select: {trip.timed_pattern_id, count(trip.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp stops_by_ids(_pattern, []), do: %{}
+
+  defp stops_by_ids(pattern, stop_ids) do
+    from(stop in Stop,
+      where:
+        stop.organization_id == ^pattern.organization_id and
+          stop.gtfs_version_id == ^pattern.gtfs_version_id and
+          stop.stop_id in ^Enum.uniq(stop_ids),
+      order_by: [asc: stop.stop_name, asc: stop.stop_id]
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.stop_id, &1})
+  end
+
+  # Eligible stops are those GTFS allows in a stop sequence. The list is a
+  # bounded, name-ordered choice set; targeted search remains the editor's
+  # scoped query path.
+  @stop_choice_limit 300
+
+  defp stop_choices(route) do
+    from(stop in Stop,
+      where:
+        stop.organization_id == ^route.organization_id and
+          stop.gtfs_version_id == ^route.gtfs_version_id and
+          (is_nil(stop.location_type) or stop.location_type == 0),
+      order_by: [asc: stop.stop_name, asc: stop.stop_id],
+      limit: @stop_choice_limit
+    )
+    |> Repo.all()
   end
 
   def create_pattern(route_id, attrs, %AuditContext{} = audit_context) when is_map(attrs) do

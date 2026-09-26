@@ -44,6 +44,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               {:ok, Route.t()} | {:error, :not_found | :unavailable}
   @callback load_route_patterns(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, [RoutePattern.t()]} | unavailable()
+  @callback load_route_pattern_screen(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
+              {:ok, map()} | {:error, :not_found | :unavailable}
   @callback fetch_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, Stop.t()} | {:error, :not_found | :unavailable}
   @callback load_stop_regions(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t()) :: %{

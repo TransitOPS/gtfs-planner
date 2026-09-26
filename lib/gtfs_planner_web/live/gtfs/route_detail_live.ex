@@ -6,7 +6,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
-  alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -20,10 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:page_title, "Route Details")
      |> assign(:user_roles, user_roles)
      |> assign(:active_tab, :details)
-     |> assign(:route_state, :loading)
-     |> assign(:patterns_state, :ready)
-     |> assign(:route_patterns_empty?, true)
-     |> stream(:route_patterns, [])}
+     |> assign(:route_state, :loading)}
   end
 
   @impl true
@@ -48,14 +44,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         {:noreply, assign(socket, :route_state, :unavailable)}
 
       {:ok, route} ->
-        socket =
-          socket
-          |> assign(:route, route)
-          |> assign(:route_state, :ready)
-
-        socket = load_patterns(socket, active_tab)
-
-        {:noreply, socket}
+        {:noreply,
+         socket
+         |> assign(:route, route)
+         |> assign(:route_state, :ready)}
     end
   end
 
@@ -76,20 +68,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         {:noreply, assign(socket, :route_state, :unavailable)}
 
       {:ok, route} ->
-        socket =
-          socket
-          |> assign(:route, route)
-          |> assign(:route_state, :ready)
-
-        socket = load_patterns(socket, socket.assigns.active_tab)
-
-        {:noreply, socket}
+        {:noreply,
+         socket
+         |> assign(:route, route)
+         |> assign(:route_state, :ready)}
     end
-  end
-
-  @impl true
-  def handle_event("retry_patterns", _params, socket) do
-    {:noreply, load_patterns(socket, socket.assigns.active_tab)}
   end
 
   @impl true
@@ -129,25 +112,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       {:noreply, socket}
     end
   end
-
-  defp load_patterns(socket, :patterns) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    route_id = socket.assigns.route_id
-
-    case Gtfs.load_catalog_route_patterns(organization_id, gtfs_version_id, route_id) do
-      {:ok, patterns} ->
-        socket
-        |> assign(:patterns_state, :ready)
-        |> assign(:route_patterns_empty?, patterns == [])
-        |> stream(:route_patterns, patterns, reset: true)
-
-      {:error, :unavailable} ->
-        assign(socket, :patterns_state, :unavailable)
-    end
-  end
-
-  defp load_patterns(socket, _), do: socket
 
   defp valid_external_url?(url) when is_binary(url) and url != "" do
     case URI.parse(url) do
@@ -281,52 +245,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     <dd class="mt-1 text-base">{if @route.active, do: "Yes", else: "No"}</dd>
                   </div>
                 </dl>
-              </div>
-            <% @active_tab == :patterns -> %>
-              <div class="mt-8">
-                <%= cond do %>
-                  <% @patterns_state == :unavailable -> %>
-                    <.callout kind="warning" title="Patterns unavailable" id="patterns-unavailable">
-                      Route patterns could not be loaded. Please try again.
-                      <button
-                        id="patterns-retry"
-                        phx-click="retry_patterns"
-                        class="btn btn-sm btn-outline mt-2"
-                      >
-                        Retry
-                      </button>
-                    </.callout>
-                  <% @route_patterns_empty? -> %>
-                    <.empty_state
-                      title="No route patterns"
-                      id="patterns-empty"
-                      class="bg-base-100"
-                    >
-                      This route has no patterns defined. Patterns appear after trip data is imported.
-                    </.empty_state>
-                  <% true -> %>
-                    <.table
-                      id="route-patterns-table"
-                      rows={@streams.route_patterns}
-                      row_item={fn {_id, item} -> item end}
-                      responsive="stack"
-                    >
-                      <:col :let={pattern} label="Pattern ID">
-                        <span class="font-mono">{pattern.route_pattern_id}</span>
-                      </:col>
-                      <:col :let={pattern} label="Name">
-                        {pattern.route_pattern_name || "—"}
-                      </:col>
-                      <:col :let={pattern} label="Direction">
-                        {RoutePattern.direction_label(pattern.direction_id)}
-                      </:col>
-                      <:col :let={pattern} label="Typicality">
-                        <span class="badge badge-sm">
-                          {RoutePattern.typicality_label(pattern.route_pattern_typicality)}
-                        </span>
-                      </:col>
-                    </.table>
-                <% end %>
               </div>
             <% @active_tab == :schedules -> %>
               <div class="mt-8" id="schedules-deferred">

@@ -875,6 +875,153 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: long-name routes for reflow tests")
 
+    # ── Route pattern editor fixtures (read-only slice) ──
+    #
+    # Three isolated routes give the pattern list its ready, first-use and
+    # unlinked-trips states without sharing records with any mutating journey:
+    # BROWSER_PATTERNS_READY carries two patterns, occurrences, one timing and
+    # linked trips; BROWSER_PATTERNS_EMPTY has none; BROWSER_PATTERNS_UNLINKED
+    # has ungrouped trips with stop times but no patterns.
+    pattern_stops =
+      Enum.map(1..4, fn index ->
+        {:ok, stop} =
+          Gtfs.create_stop(%{
+            stop_id: "BROWSER_PATTERN_STOP_#{index}",
+            stop_name: "Pattern Stop #{index}",
+            location_type: 0,
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id
+          })
+
+        stop
+      end)
+
+    pattern_routes =
+      [
+        {"BROWSER_PATTERNS_READY", "PR", "Browser Patterns Ready"},
+        {"BROWSER_PATTERNS_EMPTY", "PE", "Browser Patterns Empty"},
+        {"BROWSER_PATTERNS_UNLINKED", "PU", "Browser Patterns Unlinked"}
+      ]
+      |> Enum.map(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end)
+      |> Map.new(&{&1.route_id, &1})
+
+    ready_route = Map.fetch!(pattern_routes, "BROWSER_PATTERNS_READY")
+
+    occurrence_fixture = fn route_pattern, stops ->
+      stops
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop, position} ->
+        GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(route_pattern, stop.stop_id, position)
+      end)
+    end
+
+    timing_fixture = fn route_pattern, name, occurrences ->
+      timing = GtfsPlanner.GtfsFixtures.timed_pattern_fixture(route_pattern, %{name: name})
+
+      Enum.each(occurrences, fn occurrence ->
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, occurrence, %{
+          arrival_offset: 0,
+          departure_offset: 0
+        })
+      end)
+
+      timing
+    end
+
+    outbound =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: ready_route.route_id,
+        route_pattern_id: "BROWSER-P1",
+        route_pattern_name: "Central – Valley Hospital",
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 1,
+        direction_id: 0,
+        route_pattern_sort_order: 1
+      })
+
+    outbound_occurrences = occurrence_fixture.(outbound, Enum.take(pattern_stops, 4))
+    outbound_timing = timing_fixture.(outbound, "Weekday daytime", outbound_occurrences)
+    timing_fixture.(outbound, "Evenings & weekends", outbound_occurrences)
+
+    inbound =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: ready_route.route_id,
+        route_pattern_id: "BROWSER-P2",
+        route_pattern_name: "Valley Hospital – Central",
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 3,
+        direction_id: 1,
+        route_pattern_sort_order: 1
+      })
+
+    inbound_occurrences =
+      occurrence_fixture.(inbound, pattern_stops |> Enum.take(3) |> Enum.reverse())
+
+    timing_fixture.(inbound, "All day", inbound_occurrences)
+
+    Enum.each(["BROWSER_PT1", "BROWSER_PT2"], fn trip_id ->
+      {:ok, trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: ready_route.route_id,
+          trip_id: trip_id,
+          service_id: "BROWSER_PATTERN_SERVICE",
+          trip_headsign: "Valley Hospital",
+          direction_id: 0
+        })
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-P1",
+        timed_pattern_id: outbound_timing.id,
+        pattern_derivation_state: "linked"
+      })
+    end)
+
+    unlinked_route = Map.fetch!(pattern_routes, "BROWSER_PATTERNS_UNLINKED")
+
+    Enum.each(["BROWSER_PU1", "BROWSER_PU2"], fn trip_id ->
+      {:ok, trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: unlinked_route.route_id,
+          trip_id: trip_id,
+          service_id: "BROWSER_PATTERN_SERVICE",
+          trip_headsign: "Valley Hospital",
+          direction_id: 0
+        })
+
+      [first, second] = Enum.take(pattern_stops, 2)
+
+      Enum.each([{first, 1}, {second, 2}], fn {stop, sequence} ->
+        {:ok, _stop_time} =
+          Gtfs.create_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            trip_id: trip.trip_id,
+            stop_id: stop.stop_id,
+            stop_sequence: sequence,
+            arrival_time: "08:0#{sequence}:00",
+            departure_time: "08:0#{sequence}:00"
+          })
+      end)
+    end)
+
+    IO.puts("Browser seed: route pattern routes (ready with 2 patterns, empty, unlinked trips)")
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

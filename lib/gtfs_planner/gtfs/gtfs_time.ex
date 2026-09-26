@@ -63,7 +63,12 @@ defmodule GtfsPlanner.Gtfs.GtfsTime do
   def format_offset(seconds)
       when is_integer(seconds) and seconds >= -@max_seconds and seconds <= @max_seconds do
     sign = if seconds < 0, do: "-", else: ""
-    sign <> format_unsigned(abs(seconds))
+    total = abs(seconds)
+
+    # Elapsed offsets are minutes:seconds until they reach an hour, so a value
+    # like 90 reads as 01:30 rather than 00:01:30; whole hours and beyond keep
+    # the H+:MM:SS form the parser round-trips.
+    if total < 3600, do: sign <> format_minutes(total), else: sign <> format_unsigned(total)
   end
 
   def format_offset(_seconds),
@@ -115,6 +120,10 @@ defmodule GtfsPlanner.Gtfs.GtfsTime do
     remainder = rem(seconds, 60)
 
     Enum.join([pad(hours), pad(minutes), pad(remainder)], ":")
+  end
+
+  defp format_minutes(seconds) do
+    Enum.join([pad(div(seconds, 60)), pad(rem(seconds, 60))], ":")
   end
 
   defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
