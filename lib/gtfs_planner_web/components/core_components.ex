@@ -1050,7 +1050,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   """
   attr :route, :map, required: true, doc: "the route record"
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
-  attr :active_tab, :atom, values: [:details, :patterns], default: :details
+  attr :active_tab, :atom, values: [:details, :patterns, :schedules], default: :details
 
   def route_sub_nav(assigns) do
     route_display =
@@ -1101,6 +1101,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
             aria-current={@active_tab == :patterns && "page"}
           >
             Patterns
+          </.link>
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/schedules"}
+            class={sub_nav_link_class(@active_tab == :schedules)}
+            aria-current={@active_tab == :schedules && "page"}
+          >
+            Schedules
           </.link>
         </div>
       </div>

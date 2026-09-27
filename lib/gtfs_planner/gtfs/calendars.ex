@@ -2195,6 +2195,24 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
   defp editor_role?(_roles), do: false
 
+  @doc """
+  Locks the published version row `FOR SHARE` and checks that `service_id` is a calendar identity.
+
+  Schedule writers call this before any route lock, so a calendar delete cannot commit between the
+  union check and the trip insert. Call only inside `Repo.transaction/1`; this is a lock, not a
+  transaction, and it rolls back `:calendar_not_found` when the version is missing or the service ID
+  is not in the union of calendars, calendar dates and calendar attributes for this version.
+  """
+  @spec lock_service_for_reference!(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) :: :ok
+  def lock_service_for_reference!(organization_id, version_id, service_id) do
+    lock_shared_published_version!(organization_id, version_id)
+
+    unless service_id_taken?(organization_id, version_id, service_id),
+      do: Repo.rollback(:calendar_not_found)
+
+    :ok
+  end
+
   defp lock_shared_published_version!(organization_id, version_id) do
     organization_id
     |> published_version_for_share(version_id)

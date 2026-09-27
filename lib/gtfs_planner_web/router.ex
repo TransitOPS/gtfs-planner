@@ -145,7 +145,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/routes/:route_id/patterns", Gtfs.RoutePatternLive, :index
       live "/routes/:route_id/patterns/new", Gtfs.RoutePatternLive, :new
       live "/routes/:route_id/patterns/:route_pattern_id", Gtfs.RoutePatternLive, :show
-      live "/routes/:route_id/schedules", Gtfs.RouteDetailLive, :schedules
+      live "/routes/:route_id/schedules", Gtfs.RouteSchedulesLive, :index
       live "/stops", Gtfs.StopsLive, :index
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index

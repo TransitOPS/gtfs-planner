@@ -8,6 +8,8 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.Frequency
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -288,6 +290,195 @@ defmodule GtfsPlanner.GtfsFixtures do
     trip
     |> Ecto.Changeset.change(attrs)
     |> Repo.update!()
+  end
+
+  @doc """
+  Generate a schedule pattern: the pattern, its ordered occurrences and one named timing.
+
+  `attrs` accepts `:route_id` (required), `:direction_id`, `:route_pattern_name`,
+  `:route_pattern_id` (an explicit natural ID for literal expectations),
+  `:headsign`, `:route_pattern_sort_order`, `:route_pattern_typicality`,
+  `:timing_name`, `:timing_headsign` and `:stops` as
+  `[{stop_id, arrival_offset, departure_offset, timepoint}]` in
+  position order. The returned map carries `:pattern`, `:occurrences`, `:timing`
+  and `:rows`; rows are zipped to occurrences by position, so the same stop ID may
+  appear more than once (a loop).
+  """
+  def schedule_pattern_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    pattern_attrs =
+      %{
+        route_id: Map.fetch!(attrs, :route_id),
+        direction_id: Map.get(attrs, :direction_id, 0),
+        route_pattern_name:
+          Map.get(attrs, :route_pattern_name, "Pattern #{System.unique_integer([:positive])}"),
+        headsign: Map.get(attrs, :headsign),
+        route_pattern_sort_order: Map.get(attrs, :route_pattern_sort_order, 0),
+        route_pattern_typicality: Map.get(attrs, :route_pattern_typicality, 0),
+        route_pattern_id: Map.get(attrs, :route_pattern_id)
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    pattern = route_pattern_fixture(organization_id, gtfs_version_id, pattern_attrs)
+
+    timing =
+      timed_pattern_fixture(pattern, %{
+        name: Map.get(attrs, :timing_name, "Timing #{System.unique_integer([:positive])}"),
+        headsign: Map.get(attrs, :timing_headsign)
+      })
+
+    {occurrences, rows} =
+      attrs
+      |> Map.get(:stops, [])
+      |> Enum.with_index(1)
+      |> Enum.map_reduce([], fn
+        {{stop_id, arrival_offset, departure_offset, timepoint}, position}, rows ->
+          occurrence = route_pattern_stop_fixture(pattern, stop_id, position)
+
+          row =
+            timed_pattern_stop_fixture(timing, occurrence, %{
+              arrival_offset: arrival_offset,
+              departure_offset: departure_offset,
+              timepoint: timepoint
+            })
+
+          {occurrence, [row | rows]}
+      end)
+
+    %{pattern: pattern, occurrences: occurrences, timing: timing, rows: Enum.reverse(rows)}
+  end
+
+  @doc """
+  Generate a trip on a schedule pattern with its materialized stop times and frequencies.
+
+  `attrs` accepts `:service_id` (required), `:start_time` (default `"06:00:00"`),
+  `:trip_id`, `:direction_id`, `:trip_headsign`, `:trip_short_name`, `:block_id`,
+  `:state` (default `"linked"`), `:reason`, and `:route_pattern_id` and
+  `:timed_pattern_id` (defaulting per state, so a `nil` or dangling pattern ID makes
+  the trip unlinked), `:stop_times` as explicit `[{stop_id, arrival_time,
+  departure_time}]` in sequence order, and `:frequencies` as frequency attribute
+  maps. Without explicit `:stop_times`, times are derived from the timing offsets at
+  `:start_time`. Returns `%{trip:, stop_times:, frequencies:}`.
+  """
+  def schedule_trip_fixture(organization_id, gtfs_version_id, route_id, bundle, attrs \\ %{}) do
+    attrs = Map.new(attrs)
+    state = Map.get(attrs, :state, "linked")
+
+    trip =
+      trip_fixture(organization_id, gtfs_version_id, route_id, %{
+        trip_id: Map.get(attrs, :trip_id, "trip_#{System.unique_integer([:positive])}"),
+        service_id: Map.fetch!(attrs, :service_id),
+        direction_id: Map.get(attrs, :direction_id, bundle.pattern.direction_id),
+        trip_headsign: Map.get(attrs, :trip_headsign),
+        trip_short_name: Map.get(attrs, :trip_short_name),
+        block_id: Map.get(attrs, :block_id)
+      })
+
+    trip =
+      trip_pattern_metadata_fixture(
+        trip,
+        Map.merge(
+          %{route_pattern_id: Map.get(attrs, :route_pattern_id, bundle.pattern.route_pattern_id)},
+          derivation_metadata(state, bundle, attrs)
+        )
+      )
+
+    stop_times =
+      bundle
+      |> materialized_stop_times(attrs)
+      |> insert_stop_times(organization_id, gtfs_version_id, trip)
+
+    frequencies =
+      Enum.map(Map.get(attrs, :frequencies, []), fn frequency_attrs ->
+        frequency_fixture(organization_id, gtfs_version_id, trip.trip_id, frequency_attrs)
+      end)
+
+    %{trip: trip, stop_times: stop_times, frequencies: frequencies}
+  end
+
+  @doc "Generate one frequencies.txt window for a trip."
+  def frequency_fixture(organization_id, gtfs_version_id, trip_id, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          trip_id: trip_id,
+          start_time: "09:00:00",
+          end_time: "12:00:00",
+          headway_secs: 1200,
+          exact_times: 0,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        Map.new(attrs)
+      )
+
+    %Frequency{}
+    |> Frequency.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  defp materialized_stop_times(bundle, attrs) do
+    case Map.get(attrs, :stop_times) do
+      nil -> derived_stop_times(bundle, attrs)
+      stop_times -> stop_times
+    end
+  end
+
+  # The trips check constraint couples the state to the timing and reason: a linked
+  # trip has a timing and no reason, and a custom trip has no timing and a reason.
+  defp derivation_metadata("custom", _bundle, attrs) do
+    %{
+      timed_pattern_id: Map.get(attrs, :timed_pattern_id, nil),
+      pattern_derivation_state: "custom",
+      pattern_derivation_reason: Map.get(attrs, :reason, "stops_mismatch")
+    }
+  end
+
+  defp derivation_metadata("pending", _bundle, attrs) do
+    %{
+      timed_pattern_id: Map.get(attrs, :timed_pattern_id, nil),
+      pattern_derivation_state: "pending",
+      pattern_derivation_reason: Map.get(attrs, :reason, nil)
+    }
+  end
+
+  defp derivation_metadata(_linked, bundle, attrs) do
+    %{
+      timed_pattern_id: Map.get(attrs, :timed_pattern_id, bundle.timing.id),
+      pattern_derivation_state: "linked",
+      pattern_derivation_reason: Map.get(attrs, :reason, nil)
+    }
+  end
+
+  defp derived_stop_times(bundle, attrs) do
+    start_secs = time_seconds!(Map.get(attrs, :start_time, "06:00:00"))
+
+    bundle.occurrences
+    |> Enum.zip(bundle.rows)
+    |> Enum.map(fn {occurrence, row} ->
+      {occurrence.stop_id, GtfsTime.format(start_secs + row.arrival_offset),
+       GtfsTime.format(start_secs + row.departure_offset)}
+    end)
+  end
+
+  defp insert_stop_times(stop_times, organization_id, gtfs_version_id, trip) do
+    stop_times
+    |> Enum.with_index(1)
+    |> Enum.map(fn {{stop_id, arrival_time, departure_time}, sequence} ->
+      stop_time_fixture(organization_id, gtfs_version_id, trip.trip_id, stop_id, %{
+        arrival_time: arrival_time,
+        departure_time: departure_time,
+        stop_sequence: sequence
+      })
+    end)
+  end
+
+  defp time_seconds!(value) do
+    case GtfsTime.parse(value) do
+      {:ok, seconds} -> seconds
+      {:error, :invalid_time} -> raise ArgumentError, "invalid fixture time #{inspect(value)}"
+    end
   end
 
   @doc "Generate a calendar fixture."

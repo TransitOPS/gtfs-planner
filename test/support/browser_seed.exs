@@ -2109,6 +2109,411 @@ case Accounts.register_first_admin(%{
       "Browser seed: 6 calendar identities in #{diagram_version.id} (today #{calendar_today})"
     )
 
+    # ── Route schedules read view (Schedules tab) ──
+    #
+    # Three isolated routes on the shared Browser E2E Version cover the Schedules
+    # read view: SCHEDULES_READY carries both directions, a linked series, a
+    # frequency window, a custom trip whose stops differ and unlinked trips;
+    # SCHEDULES_WIDE carries a 72-occurrence pattern for the All-stops scroll;
+    # SCHEDULES_EMPTY has no patterns. A second published version with no
+    # calendars gives the no-calendars state. Every record is read-only for the
+    # journeys, and step 7 adds its own mutating scenario routes.
+    schedule_stops =
+      Enum.map(1..6, fn index ->
+        {:ok, stop} =
+          Gtfs.create_stop(%{
+            stop_id: "BSS_#{index}",
+            stop_name: "Schedule Stop #{index}",
+            location_type: 0,
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id
+          })
+
+        stop
+      end)
+
+    schedule_routes =
+      [
+        {"BROWSER_SCHEDULES_READY", "SR", "Browser Schedules Ready"},
+        {"BROWSER_SCHEDULES_WIDE", "SW", "Browser Schedules Wide"},
+        {"BROWSER_SCHEDULES_EMPTY", "SE", "Browser Schedules Empty"}
+      ]
+      |> Enum.map(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end)
+      |> Map.new(&{&1.route_id, &1})
+
+    ready_route = Map.fetch!(schedule_routes, "BROWSER_SCHEDULES_READY")
+
+    ready = %{
+      service_id: "CAL_DAILY",
+      stops: [
+        {"BSS_1", 0, 0, 1},
+        {"BSS_2", 300, 360, 1},
+        {"BSS_3", 660, 720, 0},
+        {"BSS_4", 1020, 1080, 0},
+        {"BSS_5", 1500, 1560, 1}
+      ]
+    }
+
+    ready_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: ready_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-P1",
+        route_pattern_name: "Downtown – Valley College",
+        route_pattern_typicality: 1,
+        timing_name: "Weekday daytime",
+        timing_headsign: "Valley College",
+        stops: ready.stops
+      })
+
+    for {trip_id, start_time, short_name} <- [
+          {"BROWSER_SCHED_T1", "06:00:00", "1201"},
+          {"BROWSER_SCHED_T2", "06:30:00", "1202"},
+          {"BROWSER_SCHED_T3", "07:00:00", "1203"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        ready_route.route_id,
+        ready_pattern,
+        %{
+          service_id: ready.service_id,
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          start_time: start_time,
+          trip_headsign: "Valley College",
+          block_id: "SR-1"
+        }
+      )
+    end
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      ready_route.route_id,
+      ready_pattern,
+      %{
+        service_id: ready.service_id,
+        trip_id: "BROWSER_SCHED_FREQ",
+        trip_short_name: "1206",
+        start_time: "09:00:00",
+        trip_headsign: "Valley College",
+        frequencies: [%{start_time: "09:00:00", end_time: "12:00:00", headway_secs: 1200}]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      ready_route.route_id,
+      ready_pattern,
+      %{
+        service_id: ready.service_id,
+        trip_id: "BROWSER_SCHED_CUSTOM",
+        trip_short_name: "1205",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Valley College",
+        stop_times: [
+          {"BSS_1", "09:00:00", "09:00:00"},
+          {"BSS_4", "09:20:00", "09:20:00"},
+          {"BSS_3", "09:40:00", "09:40:00"}
+        ]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      ready_route.route_id,
+      ready_pattern,
+      %{
+        service_id: ready.service_id,
+        trip_id: "BROWSER_SCHED_NOTIME",
+        trip_short_name: "1207",
+        stop_times: [
+          {"BSS_1", nil, nil},
+          {"BSS_2", nil, nil}
+        ]
+      }
+    )
+
+    for {trip_id, start_time} <- [
+          {"BROWSER_SCHED_UNLINKED_1", "06:00:00"},
+          {"BROWSER_SCHED_UNLINKED_2", "10:00:00"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        ready_route.route_id,
+        ready_pattern,
+        %{
+          service_id: ready.service_id,
+          trip_id: trip_id,
+          start_time: start_time,
+          state: "custom",
+          timed_pattern_id: nil,
+          route_pattern_id: nil
+        }
+      )
+    end
+
+    GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+      route_id: ready_route.route_id,
+      direction_id: 1,
+      route_pattern_id: "BROWSER-SCHED-P2",
+      route_pattern_name: "Valley College – Downtown",
+      route_pattern_typicality: 1,
+      timing_name: "Weekday daytime",
+      stops: [
+        {"BSS_5", 0, 0, 1},
+        {"BSS_2", 300, 360, 1},
+        {"BSS_1", 660, 720, 1}
+      ]
+    })
+
+    wide_route = Map.fetch!(schedule_routes, "BROWSER_SCHEDULES_WIDE")
+
+    wide_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: wide_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-PW",
+        route_pattern_name: "Wide pattern",
+        route_pattern_typicality: 1,
+        timing_name: "All day",
+        timing_headsign: "Wide outbound",
+        stops:
+          1..12
+          |> Enum.flat_map(fn _round -> schedule_stops end)
+          |> Enum.with_index()
+          |> Enum.map(fn {stop, index} ->
+            {stop.stop_id, index * 120, index * 120 + 30, if(index in [0, 71], do: 1, else: 0)}
+          end)
+      })
+
+    for {trip_id, start_time, short_name} <- [
+          {"BROWSER_SCHED_WIDE_1", "05:00:00", "2101"},
+          {"BROWSER_SCHED_WIDE_2", "05:30:00", "2102"},
+          {"BROWSER_SCHED_WIDE_3", "06:00:00", "2103"},
+          {"BROWSER_SCHED_WIDE_4", "06:30:00", "2104"},
+          {"BROWSER_SCHED_WIDE_5", "07:00:00", "2105"},
+          {"BROWSER_SCHED_WIDE_6", "07:30:00", "2106"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        wide_route.route_id,
+        wide_pattern,
+        %{
+          service_id: "CAL_DAILY",
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          start_time: start_time,
+          trip_headsign: "Wide outbound"
+        }
+      )
+    end
+
+    IO.puts(
+      "Browser seed: schedule routes (ready with both directions and trip states, " <>
+        "wide with 72 stops, empty without patterns)"
+    )
+
+    # ── Route schedules mutation scenarios (step 7) ──
+    #
+    # One isolated route carries every drawer and bulk action: two direction-0
+    # patterns, a 62-occurrence pattern for the wide All-stops table, a linked
+    # series with an adjacent pair so a delete moves the vehicle count, a
+    # frequency window, a custom trip whose stops differ, a compatible custom trip
+    # for adoption, and an after-midnight departure for the +1 marker. These
+    # routes are mutated by the journeys, so they are seeded on their own route.
+    {:ok, mutate_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_SCHEDULES_MUTATE",
+        route_short_name: "SM",
+        route_long_name: "Browser Schedules Mutate",
+        route_type: 3
+      })
+
+    mutate_primary =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: mutate_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-PM1",
+        route_pattern_name: "Mutate primary",
+        route_pattern_typicality: 1,
+        timing_name: "All day",
+        timing_headsign: "Mutate outbound",
+        stops:
+          1..10
+          |> Enum.flat_map(fn _round -> schedule_stops end)
+          |> Enum.concat(Enum.take(schedule_stops, 2))
+          |> Enum.with_index()
+          |> Enum.map(fn {stop, index} ->
+            {stop.stop_id, index * 120, if(index == 0, do: 0, else: index * 120 + 30),
+             if(index in [0, 61], do: 1, else: 0)}
+          end)
+      })
+
+    for {trip_id, start_time, short_name} <- [
+          {"SM_T1", "06:00:00", "3101"},
+          {"SM_T2", "06:05:00", "3102"},
+          {"SM_T3", "07:00:00", "3103"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        mutate_route.route_id,
+        mutate_primary,
+        %{
+          service_id: "CAL_DAILY",
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          start_time: start_time,
+          trip_headsign: "Mutate outbound",
+          block_id: "SM-1"
+        }
+      )
+    end
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      mutate_route.route_id,
+      mutate_primary,
+      %{
+        service_id: "CAL_DAILY",
+        trip_id: "SM_FREQ",
+        trip_short_name: "3104",
+        start_time: "09:00:00",
+        trip_headsign: "Mutate outbound",
+        frequencies: [%{start_time: "09:00:00", end_time: "12:00:00", headway_secs: 1200}]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      mutate_route.route_id,
+      mutate_primary,
+      %{
+        service_id: "CAL_DAILY",
+        trip_id: "SM_CUSTOM_DIFF",
+        trip_short_name: "3105",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Mutate outbound",
+        stop_times: [
+          {"BSS_1", "10:00:00", "10:00:00"},
+          {"BSS_4", "10:20:00", "10:20:00"},
+          {"BSS_3", "10:40:00", "10:40:00"}
+        ]
+      }
+    )
+
+    mutate_secondary =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: mutate_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-PM2",
+        route_pattern_name: "Mutate secondary",
+        route_pattern_typicality: 3,
+        timing_name: "Secondary",
+        timing_headsign: "Mutate secondary",
+        stops: [
+          {"BSS_1", 0, 0, 1},
+          {"BSS_2", 300, 360, 1},
+          {"BSS_3", 660, 720, 0},
+          {"BSS_4", 1020, 1080, 0},
+          {"BSS_5", 1500, 1560, 1},
+          {"BSS_6", 1800, 1860, 1}
+        ]
+      })
+
+    for {trip_id, start_time, short_name} <- [
+          {"SM_P2_1", "08:00:00", "3201"},
+          {"SM_P2_2", "08:30:00", "3202"},
+          {"SM_LATE", "25:10:00", "3203"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        mutate_route.route_id,
+        mutate_secondary,
+        %{
+          service_id: "CAL_DAILY",
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          start_time: start_time,
+          trip_headsign: "Mutate secondary",
+          block_id: "SM-2"
+        }
+      )
+    end
+
+    # A compatible custom trip: its ordered stops equal the pattern's occurrences,
+    # so the Edit drawer offers the pattern's timings.
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      mutate_route.route_id,
+      mutate_secondary,
+      %{
+        service_id: "CAL_DAILY",
+        trip_id: "SM_P2_CUSTOM",
+        trip_short_name: "3204",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Mutate secondary",
+        stop_times: [
+          {"BSS_1", "08:45:00", "08:45:00"},
+          {"BSS_2", "08:50:00", "08:51:00"},
+          {"BSS_3", "08:56:00", "08:57:00"},
+          {"BSS_4", "09:02:00", "09:03:00"},
+          {"BSS_5", "09:10:00", "09:11:00"},
+          {"BSS_6", "09:15:00", "09:15:00"}
+        ]
+      }
+    )
+
+    IO.puts(
+      "Browser seed: schedule mutation route BROWSER_SCHEDULES_MUTATE " <>
+        "(62-occurrence pattern, linked series, frequency, custom and after-midnight trips)"
+    )
+
+    {:ok, schedules_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Schedules No Calendars"})
+
+    {:ok, _schedule_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: schedules_version.id,
+        route_id: "BROWSER_SCHEDULES_NOCAL",
+        route_short_name: "SNC",
+        route_long_name: "Browser Schedules No Calendars",
+        route_type: 3
+      })
+
+    IO.puts(
+      "Browser seed: version #{schedules_version.name} with no calendars " <>
+        "(#{schedules_version.id})"
+    )
+
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
   {:error, changeset} ->

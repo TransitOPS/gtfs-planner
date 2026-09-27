@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header :if={@route_state == :ready && @active_tab != :schedules}>
+      <:sub_header :if={@route_state == :ready}>
         <.route_sub_nav
           route={@route}
           gtfs_version_id={@current_gtfs_version.id}
@@ -245,12 +245,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     <dd class="mt-1 text-base">{if @route.active, do: "Yes", else: "No"}</dd>
                   </div>
                 </dl>
-              </div>
-            <% @active_tab == :schedules -> %>
-              <div class="mt-8" id="schedules-deferred">
-                <.empty_state title="Schedules" class="bg-base-100">
-                  Schedule data will be available in a future update.
-                </.empty_state>
               </div>
             <% true -> %>
               <div></div>
