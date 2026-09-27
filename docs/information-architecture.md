@@ -164,7 +164,9 @@ badges; New route drawer.
 - "New transfer" asks for the scope first (stop pair, route pair or trip pair), then shows only
   that scope's fields.
 - It lives with routes because `transfers.txt` is only in the full GTFS export.
-- In-seat transfers (type 4) created on Blocks also appear here.
+- In-seat transfers (types 4 and 5) appear behind an "In-seat (N)" filter, read-only, and are
+  managed on Blocks. The default list shows general transfers (types 0–3). Where agencies use
+  in-seat rows they are often most of the file: 72% of MBTA's transfers, and all of SEPTA rail's.
 
 **Route › Details** (Proposed editable): an in-place form, like Pattern › Details.
 - The route name and badge in the page header are the live preview while editing colors.

@@ -105,7 +105,11 @@ Routes (version with no agency)
 - in-seat trip pairs need a shared block.
 
 `transfers.txt` is only in the full GTFS export, so the list sits with the route data. In-seat
-transfers created on Blocks (item 6) also appear here.
+transfers (item 6) appear here behind an "In-seat (N)" filter. They are read-only and link to their
+Blocks connection, or say there is none. Only 11 of 552 surveyed feeds use in-seat rows, but where
+they do, those rows are usually most of the file, and some match no block at all. The list is the
+only place those can be found. Route and station pages count general transfers, and show in-seat
+continuations separately.
 
 | Rejected | Reason |
 |---|---|
