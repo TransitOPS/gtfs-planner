@@ -923,6 +923,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       date: date,
       exception_type: exception_type
     })
+    |> Ecto.Changeset.put_change(:service_id, service_id)
     |> insert_or_rollback!()
   end
 
@@ -981,7 +982,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp duplicate_service_id(source_service_id, attrs, audit_context) do
     case fetch_value(attrs, :service_id) do
-      nil -> {:ok, available_service_id(source_service_id, audit_context)}
+      nil -> {:ok, available_service_id(String.trim(source_service_id), audit_context)}
       requested when is_binary(requested) -> create_service_id(attrs)
       _other -> {:error, :invalid_input}
     end
@@ -1364,6 +1365,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         |> Map.put(:organization_id, audit_context.organization_id)
         |> Map.put(:gtfs_version_id, audit_context.gtfs_version_id)
       )
+      |> Ecto.Changeset.put_change(:service_id, service_id)
 
     if changeset.valid? do
       with {:ok, anchor} <- plan_anchor(source, service_id, attrs, audit_context) do
@@ -1985,6 +1987,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       gtfs_version_id: audit_context.gtfs_version_id
     }
     |> CalendarAttribute.changeset(%{service_id: service_id})
+    |> Ecto.Changeset.put_change(:service_id, service_id)
     |> insert_or_rollback!()
   end
 

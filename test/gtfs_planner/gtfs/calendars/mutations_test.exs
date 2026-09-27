@@ -61,6 +61,105 @@ defmodule GtfsPlanner.Gtfs.Calendars.MutationsTest do
              Gtfs.fetch_calendar(context.organization.id, context.version.id, copied.service_id)
   end
 
+  test "imported IDs retain exact exception, conversion and audit scope", context do
+    raw = " RAW "
+    neighbor = create_dates_only!(context, "RAW", [~D[2026-10-01]])
+
+    Repo.insert!(%CalendarDate{
+      organization_id: context.organization.id,
+      gtfs_version_id: context.version.id,
+      service_id: raw,
+      date: ~D[2026-10-01],
+      exception_type: 1
+    })
+
+    Repo.insert!(%CalendarAttribute{
+      organization_id: context.organization.id,
+      gtfs_version_id: context.version.id,
+      service_id: raw
+    })
+
+    for command <- [
+          {:put_exceptions, raw, [~D[2026-10-02]], :added},
+          {:convert, raw, :weekly, weekly_dates_attrs()},
+          {:convert, raw, :dates_only, %{}}
+        ] do
+      assert {:ok, reviewed} = review(context, command, source!(context, raw))
+      assert reviewed.affected_service_ids == [raw]
+      assert {:ok, result} = apply_change(context, command, reviewed.fingerprint)
+      assert result.service_id == raw
+      reloaded = source!(context, raw)
+      assert Enum.all?(reloaded.exceptions, &(&1.service_id == raw))
+      assert reloaded.calendar == nil or reloaded.calendar.service_id == raw
+      assert Enum.any?(reloaded.exceptions, &(&1.date == ~D[2026-10-02]))
+      assert source!(context, "RAW").fingerprint == neighbor.fingerprint
+    end
+
+    logs =
+      Repo.all(
+        from l in ChangeLog,
+          where: l.gtfs_version_id == ^context.version.id and l.action == "updated"
+      )
+
+    assert logs != []
+    assert Enum.all?(logs, &(&1.entity_external_id == raw))
+  end
+
+  test "deleting an anchorless imported ID leaves no trimmed phantom or neighbor changes",
+       context do
+    neighbor = create_dates_only!(context, "RAW", [~D[2026-10-01]])
+
+    Repo.insert!(%CalendarDate{
+      organization_id: context.organization.id,
+      gtfs_version_id: context.version.id,
+      service_id: " RAW ",
+      date: ~D[2026-10-01],
+      exception_type: 1
+    })
+
+    command = {:delete, " RAW "}
+    assert {:ok, reviewed} = review(context, command, source!(context, " RAW "))
+    assert {:ok, %{service_id: " RAW "}} = apply_change(context, command, reviewed.fingerprint)
+
+    assert {:error, :not_found} =
+             Gtfs.get_calendar(context.organization.id, context.version.id, " RAW ")
+
+    assert source!(context, "RAW").fingerprint == neighbor.fingerprint
+
+    assert Repo.all(
+             from a in CalendarAttribute,
+               where: a.gtfs_version_id == ^context.version.id,
+               select: a.service_id
+           ) == ["RAW"]
+
+    log =
+      Repo.one!(
+        from l in ChangeLog,
+          where: l.gtfs_version_id == ^context.version.id and l.action == "deleted"
+      )
+
+    assert log.entity_external_id == " RAW "
+  end
+
+  test "default imported-ID copies canonicalize before collision checks and reload", context do
+    create_dates_only!(context, "RAW_copy", [~D[2026-10-03]])
+
+    Repo.insert!(%CalendarDate{
+      organization_id: context.organization.id,
+      gtfs_version_id: context.version.id,
+      service_id: " RAW ",
+      date: ~D[2026-10-01],
+      exception_type: 1
+    })
+
+    assert {:ok, copy} = Gtfs.duplicate_calendar(" RAW ", %{}, context.audit)
+    assert copy.service_id == "RAW_copy_2"
+    assert source!(context, copy.service_id).exceptions |> Enum.map(& &1.date) == [~D[2026-10-01]]
+    assert Enum.all?(copy.exceptions, &(&1.service_id == copy.service_id))
+    assert copy.attributes.service_id == copy.service_id
+    assert source!(context, "RAW_copy").exceptions |> Enum.map(& &1.date) == [~D[2026-10-03]]
+  end
+
   describe "save" do
     test "reviewed save writes metadata and weekly changes with exact audit rows", context do
       calendar_fixture(context.organization.id, context.version.id,

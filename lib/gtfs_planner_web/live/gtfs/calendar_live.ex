@@ -1709,7 +1709,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
             />
 
             <p id="preview-date-status" role="status" class="mt-3 text-sm text-base-content/70">
-              Use the arrow keys within a month to check dates.
+              Use the left and right arrow keys in the preview to move the month window.
             </p>
           </section>
 
@@ -1926,6 +1926,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp command_dates({:remove_exceptions, _id, dates}), do: dates
   defp command_dates({:add_break, _id, first, last}), do: [first, last]
   defp command_dates(_command), do: []
+
+  defp dialog_details(%{changes: %{action: :delete} = changes, warnings: warnings}),
+    do: change_lines(changes, warnings) ++ ["0 effective service dates remain."]
 
   defp dialog_details(%{changes: changes, warnings: warnings}) do
     change_lines(changes, warnings) ++

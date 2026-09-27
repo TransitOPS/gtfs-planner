@@ -43,7 +43,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       :organization_id,
       :gtfs_version_id
     ])
-    |> trim_string_fields()
+    |> trim_string_fields(except: [:entity_external_id])
     |> validate_required([
       :entity_type,
       :entity_external_id,

@@ -1092,6 +1092,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       {:ok, view, _html} = live(conn, detail_path(version, "UNUSED_DELETE"))
 
       review = render_click(view, "delete")
+      assert has_element?(view, "#calendar-review-dialog", "0 effective service dates remain.")
       assert dialog_open?(review, "calendar-review-dialog")
       assert review =~ "Delete UNUSED_DELETE?"
       assert weekly_row(context, "UNUSED_DELETE") != nil

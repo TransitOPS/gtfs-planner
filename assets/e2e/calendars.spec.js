@@ -815,3 +815,42 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
     if (!event.defaultPrevented) throw new Error("dirty unload was not guarded");
   });
 });
+
+
+test("browser Back and Forward require explicit discard and cancellation retains the draft", async ({page}) => {
+  const versionId = await openCalendars(page);
+  const listUrl = page.url();
+  await page.locator("#calendars-list tr", {hasText: "School days"}).locator("td a").first().click();
+  await waitForEditorReady(page);
+  const editorUrl = page.url();
+  await page.fill("#calendar-name", "History draft");
+  await expect(page.locator("#calendar-editor")).toHaveAttribute("data-dirty", "true");
+  const cancel = async dialog => { expect(dialog.message()).toContain("Discard unsaved"); await dialog.dismiss(); };
+  page.once("dialog", cancel);
+  await page.evaluate(() => history.back());
+  await expect(page).toHaveURL(editorUrl);
+  await expect(page.locator("#calendar-name")).toHaveValue("History draft");
+  page.once("dialog", dialog => dialog.accept());
+  await page.evaluate(() => history.back());
+  await expect(page).toHaveURL(listUrl);
+  await expect(page.locator("#calendars-list-container")).toBeVisible();
+  await page.goForward();
+  await waitForEditorReady(page);
+  await expect(page.locator("#calendar-name")).toHaveValue("School days");
+
+  // Create a forward destination by leaving cleanly and returning with Back.
+  await page.locator("#calendar-editor nav a").click();
+  await expect(page.locator("#calendars-list-container")).toBeVisible();
+  await page.goBack();
+  await waitForEditorReady(page);
+  await page.fill("#calendar-name", "Forward draft");
+  await expect(page.locator("#calendar-editor")).toHaveAttribute("data-dirty", "true");
+  page.once("dialog", cancel);
+  await page.evaluate(() => history.forward());
+  await expect(page).toHaveURL(editorUrl);
+  await expect(page.locator("#calendar-name")).toHaveValue("Forward draft");
+  page.once("dialog", dialog => dialog.accept());
+  await page.evaluate(() => history.forward());
+  await expect(page.locator("#calendars-list-container")).toBeVisible();
+  expect(page.url()).toContain(`/gtfs/${versionId}/calendars`);
+});
