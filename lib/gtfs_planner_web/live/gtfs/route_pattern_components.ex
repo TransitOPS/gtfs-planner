@@ -260,7 +260,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   @doc """
   Renders the pattern detail header: the way back to the list, the pattern
   name, its figures, the dirty badge, the published-version notice and the
-  Stops/Timings/Details task navigation.
+  Stops/Timings/Alignment/Details task navigation.
   """
   attr :creating, :boolean, required: true
   attr :pattern_name, :string, required: true
@@ -1419,5 +1419,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp task_label(:stops), do: "Stops"
   defp task_label(:timings), do: "Timings"
+  defp task_label(:alignment), do: "Alignment"
   defp task_label(:details), do: "Details"
 end

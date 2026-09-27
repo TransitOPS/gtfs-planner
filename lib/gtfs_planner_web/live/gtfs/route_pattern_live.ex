@@ -3,10 +3,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   LiveView for the route pattern editor.
 
   It renders the route's Patterns list, the creation flow and the pattern
-  Stops/Timings/Details tasks from the scoped `GtfsPlanner.Gtfs.RoutePatterns`
-  reads. Every identifier used for a write comes from a loaded server record:
-  the route and pattern are resolved from the URL inside the loaded
-  organization/version scope, and a pattern or timing from another scope
+  Stops/Timings/Alignment/Details tasks from the scoped
+  `GtfsPlanner.Gtfs.RoutePatterns` reads. Alignment is still an unbuilt
+  destination, so its task renders the shared `GtfsPlannerWeb.ComingSoon` body
+  instead of a map editor. Every identifier used for a write comes from a loaded
+  server record: the route and pattern are resolved from the URL inside the
+  loaded organization/version scope, and a pattern or timing from another scope
   resolves to `not_found`. Access uses the existing editor guard, and a lost
   database connection renders as unavailable reading with an explicit retry.
 
@@ -17,6 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.ComingSoon, only: [coming_soon: 1]
+
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -24,6 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.ComingSoon
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -1019,7 +1024,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   tasks={
                     if(@live_action == :new,
                       do: [:details, :stops],
-                      else: [:stops, :timings, :details]
+                      else: [:stops, :timings, :alignment, :details]
                     )
                   }
                   dirty?={@dirty?}
@@ -1079,6 +1084,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       insert_form={@insert_form}
                       busy?={@applying? or @offline?}
                     />
+                  <% @task == :alignment -> %>
+                    <div class="mt-4">
+                      <.coming_soon
+                        feature={ComingSoon.feature(:alignment)}
+                        scope_label={"This version: #{@current_gtfs_version.name}"}
+                        heading_level={3}
+                      />
+                    </div>
                   <% true -> %>
                     <RoutePatternComponents.timings_task
                       timings={@timings}
@@ -2550,6 +2563,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp resolve_task(:new, "stops"), do: :stops
   defp resolve_task(:new, _task), do: :details
   defp resolve_task(_action, "timings"), do: :timings
+  defp resolve_task(_action, "alignment"), do: :alignment
   defp resolve_task(_action, "details"), do: :details
   defp resolve_task(_action, "stops"), do: :stops
   defp resolve_task(_action, _task), do: :stops
