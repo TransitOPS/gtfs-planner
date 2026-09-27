@@ -237,6 +237,169 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
     end
   end
 
+  describe "transfer_row_to_attrs/3" do
+    test "converts a stopless type 4 row with both trip IDs", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_stop_id" => "",
+        "to_stop_id" => "",
+        "from_trip_id" => "T1",
+        "to_trip_id" => "T2",
+        "transfer_type" => "4"
+      }
+
+      assert {:ok, attrs} = RowParser.transfer_row_to_attrs(row, org_id, version_id)
+
+      assert attrs == %{
+               from_stop_id: nil,
+               to_stop_id: nil,
+               from_route_id: nil,
+               to_route_id: nil,
+               from_trip_id: "T1",
+               to_trip_id: "T2",
+               transfer_type: 4,
+               min_transfer_time: nil,
+               organization_id: org_id,
+               gtfs_version_id: version_id
+             }
+    end
+
+    test "converts a type 5 row whose stop columns are absent", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_trip_id" => "T1",
+        "to_trip_id" => "T2",
+        "transfer_type" => "5"
+      }
+
+      assert {:ok, attrs} = RowParser.transfer_row_to_attrs(row, org_id, version_id)
+
+      assert attrs == %{
+               from_stop_id: nil,
+               to_stop_id: nil,
+               from_route_id: nil,
+               to_route_id: nil,
+               from_trip_id: "T1",
+               to_trip_id: "T2",
+               transfer_type: 5,
+               min_transfer_time: nil,
+               organization_id: org_id,
+               gtfs_version_id: version_id
+             }
+    end
+
+    test "keeps a type 0 row's stops and nils its empty route and trip columns", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_stop_id" => "S1",
+        "to_stop_id" => "S2",
+        "from_route_id" => "",
+        "to_route_id" => "",
+        "from_trip_id" => "",
+        "to_trip_id" => "",
+        "transfer_type" => "0"
+      }
+
+      assert {:ok, attrs} = RowParser.transfer_row_to_attrs(row, org_id, version_id)
+
+      assert attrs == %{
+               from_stop_id: "S1",
+               to_stop_id: "S2",
+               from_route_id: nil,
+               to_route_id: nil,
+               from_trip_id: nil,
+               to_trip_id: nil,
+               transfer_type: 0,
+               min_transfer_time: nil,
+               organization_id: org_id,
+               gtfs_version_id: version_id
+             }
+    end
+
+    test "keeps both stops and both trips on a type 4 row", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_stop_id" => "S1",
+        "to_stop_id" => "S2",
+        "from_trip_id" => "T3",
+        "to_trip_id" => "T4",
+        "transfer_type" => "4"
+      }
+
+      assert {:ok, attrs} = RowParser.transfer_row_to_attrs(row, org_id, version_id)
+
+      assert attrs.from_stop_id == "S1"
+      assert attrs.to_stop_id == "S2"
+      assert attrs.from_trip_id == "T3"
+      assert attrs.to_trip_id == "T4"
+      assert attrs.transfer_type == 4
+    end
+
+    test "returns an error for a type 4 row without a to_trip_id", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_stop_id" => "",
+        "to_stop_id" => "",
+        "from_trip_id" => "T1",
+        "to_trip_id" => "",
+        "transfer_type" => "4"
+      }
+
+      assert {:error, "empty required field: to_trip_id"} =
+               RowParser.transfer_row_to_attrs(row, org_id, version_id)
+    end
+
+    test "returns an error for a type 5 row without a from_trip_id key", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_stop_id" => "",
+        "to_stop_id" => "",
+        "to_trip_id" => "T2",
+        "transfer_type" => "5"
+      }
+
+      assert {:error, "missing required field: from_trip_id"} =
+               RowParser.transfer_row_to_attrs(row, org_id, version_id)
+    end
+
+    test "returns an error for a type 2 row without a from_stop_id", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "from_stop_id" => "",
+        "to_stop_id" => "S2",
+        "transfer_type" => "2",
+        "min_transfer_time" => "120"
+      }
+
+      assert {:error, "empty required field: from_stop_id"} =
+               RowParser.transfer_row_to_attrs(row, org_id, version_id)
+    end
+
+    test "returns an error for an empty transfer_type", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"from_stop_id" => "S1", "to_stop_id" => "S2", "transfer_type" => ""}
+
+      assert {:error, "empty required field: transfer_type"} =
+               RowParser.transfer_row_to_attrs(row, org_id, version_id)
+    end
+  end
+
   describe "parse_float/1" do
     test "parses valid float" do
       assert {:ok, 1.5} = RowParser.parse_float("1.5")
