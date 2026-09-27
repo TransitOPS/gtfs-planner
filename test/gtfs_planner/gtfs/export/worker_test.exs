@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.{Run, Worker}
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
@@ -39,7 +40,7 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
   defmodule UnsupportedWarningExport do
     def build_zip(organization_id, gtfs_version_id, export_type) do
       {:ok, zip_bytes, _warnings} =
-        GtfsPlanner.Gtfs.Export.build_zip(organization_id, gtfs_version_id, export_type)
+        Export.build_zip(organization_id, gtfs_version_id, export_type)
 
       {:ok, zip_bytes,
        [%{code: "unsupported", detail: "unsupported warning", extra_key: "unsupported"}]}

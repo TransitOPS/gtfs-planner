@@ -335,37 +335,34 @@ defmodule GtfsPlanner.Operations do
     {:ok, outcome} =
       Repo.transaction(fn ->
         case fetch_vehicle(organization_id, id) do
-          nil ->
-            {:error, :not_found}
-
-          vehicle ->
-            with {:ok, vehicle_type_id} <-
-                   update_assignment(
-                     organization_id,
-                     VehicleType,
-                     attrs,
-                     "vehicle_type_id",
-                     vehicle.vehicle_type_id
-                   ),
-                 {:ok, garage_id} <-
-                   update_assignment(
-                     organization_id,
-                     Garage,
-                     attrs,
-                     "garage_id",
-                     vehicle.garage_id
-                   ) do
-              vehicle
-              |> Vehicle.changeset(attrs)
-              |> put_change(:vehicle_type_id, vehicle_type_id)
-              |> put_change(:garage_id, garage_id)
-              |> put_change(:updated_by_id, actor_id(actor))
-              |> Repo.update(mode: :savepoint)
-            end
+          nil -> {:error, :not_found}
+          vehicle -> apply_vehicle_update(organization_id, actor, vehicle, attrs)
         end
       end)
 
     outcome
+  end
+
+  # Assignment keys that are present are validated and set here, inside the
+  # caller's transaction; absent keys keep the stored assignment.
+  defp apply_vehicle_update(organization_id, actor, vehicle, attrs) do
+    with {:ok, vehicle_type_id} <-
+           update_assignment(
+             organization_id,
+             VehicleType,
+             attrs,
+             "vehicle_type_id",
+             vehicle.vehicle_type_id
+           ),
+         {:ok, garage_id} <-
+           update_assignment(organization_id, Garage, attrs, "garage_id", vehicle.garage_id) do
+      vehicle
+      |> Vehicle.changeset(attrs)
+      |> put_change(:vehicle_type_id, vehicle_type_id)
+      |> put_change(:garage_id, garage_id)
+      |> put_change(:updated_by_id, actor_id(actor))
+      |> Repo.update(mode: :savepoint)
+    end
   end
 
   @doc """
@@ -389,50 +386,44 @@ defmodule GtfsPlanner.Operations do
           | {:error, {:invalid_range, String.t()} | {:ids_taken, [String.t()]} | :not_found}
   def create_vehicle_range(organization_id, actor, attrs) do
     with {:ok, vehicle_ids} <- range_vehicle_ids(attrs) do
-      outcome =
-        Repo.transaction(fn ->
-          with {:ok, vehicle_type_id} <-
-                 validate_assignment(
-                   organization_id,
-                   VehicleType,
-                   present_assignment(attrs, "vehicle_type_id")
-                 ),
-               {:ok, garage_id} <-
-                 validate_assignment(
-                   organization_id,
-                   Garage,
-                   present_assignment(attrs, "garage_id")
-                 ) do
-            case existing_vehicle_ids(organization_id, vehicle_ids) do
-              [] ->
-                insert_vehicle_range(
-                  organization_id,
-                  actor,
-                  vehicle_ids,
-                  vehicle_type_id,
-                  garage_id
-                )
-
-              taken ->
-                {:ids_taken, taken}
-            end
-          end
-        end)
-
-      case outcome do
-        {:ok, {:ok, vehicles}} ->
-          {:ok, vehicles}
-
-        {:ok, {:ids_taken, taken}} ->
-          {:error, {:ids_taken, taken}}
-
-        {:ok, {:error, :not_found}} ->
-          {:error, :not_found}
-
-        {:error, {:short_insert, _count}} ->
-          {:error, {:ids_taken, existing_vehicle_ids(organization_id, vehicle_ids)}}
-      end
+      Repo.transaction(fn -> insert_range_plan(organization_id, actor, attrs, vehicle_ids) end)
+      |> range_outcome(organization_id, vehicle_ids)
     end
+  end
+
+  # The transaction body: validate the assignment targets, refuse any claimed
+  # ID, then insert the whole group. A short insert rolls back via
+  # `insert_vehicle_range/5`.
+  defp insert_range_plan(organization_id, actor, attrs, vehicle_ids) do
+    with {:ok, vehicle_type_id} <-
+           validate_assignment(
+             organization_id,
+             VehicleType,
+             present_assignment(attrs, "vehicle_type_id")
+           ),
+         {:ok, garage_id} <-
+           validate_assignment(organization_id, Garage, present_assignment(attrs, "garage_id")),
+         [] <- existing_vehicle_ids(organization_id, vehicle_ids) do
+      insert_vehicle_range(organization_id, actor, vehicle_ids, vehicle_type_id, garage_id)
+    else
+      taken when is_list(taken) -> {:ids_taken, taken}
+      {:error, :not_found} = not_found -> not_found
+    end
+  end
+
+  # A short insert (a concurrent writer claimed part of the range after the
+  # recompute) reports the currently taken IDs from a fresh read outside the
+  # rolled-back transaction.
+  defp range_outcome({:ok, {:ok, vehicles}}, _organization_id, _vehicle_ids), do: {:ok, vehicles}
+
+  defp range_outcome({:ok, {:ids_taken, taken}}, _organization_id, _vehicle_ids),
+    do: {:error, {:ids_taken, taken}}
+
+  defp range_outcome({:ok, {:error, :not_found} = not_found}, _organization_id, _vehicle_ids),
+    do: not_found
+
+  defp range_outcome({:error, {:short_insert, _count}}, organization_id, vehicle_ids) do
+    {:error, {:ids_taken, existing_vehicle_ids(organization_id, vehicle_ids)}}
   end
 
   @doc """
@@ -454,44 +445,43 @@ defmodule GtfsPlanner.Operations do
   def update_vehicles(organization_id, actor, ids, assignment) do
     with {:ok, ids} <- cast_vehicle_ids(ids),
          {:ok, field, value} <- bulk_assignment(assignment) do
-      if ids == [] do
-        {:ok, 0}
-      else
-        outcome =
-          Repo.transaction(fn ->
-            # The target is locked before the vehicles so a concurrent parent
-            # deletion cannot hold the parent while waiting for these rows.
-            with {:ok, value} <-
-                   validate_assignment(organization_id, assignment_schema(field), value),
-                 {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
-              now = DateTime.utc_now()
-
-              {count, _} =
-                Vehicle
-                |> where([v], v.organization_id == ^organization_id and v.id in ^locked_ids)
-                |> Repo.update_all(
-                  set: [
-                    {field, value},
-                    {:updated_by_id, actor_id(actor)},
-                    {:updated_at, now}
-                  ]
-                )
-
-              if count == length(locked_ids) do
-                {:ok, count}
-              else
-                Repo.rollback(:count_mismatch)
-              end
-            end
-          end)
-
-        case outcome do
-          {:ok, {:ok, count}} -> {:ok, count}
-          {:ok, {:error, :not_found}} -> {:error, :not_found}
-          {:error, _reason} -> {:error, :not_found}
-        end
-      end
+      bulk_update_vehicles(organization_id, actor, ids, field, value)
     end
+  end
+
+  defp bulk_update_vehicles(_organization_id, _actor, [], _field, _value), do: {:ok, 0}
+
+  defp bulk_update_vehicles(organization_id, actor, ids, field, value) do
+    Repo.transaction(fn ->
+      update_vehicles_locked(organization_id, actor, ids, field, value)
+    end)
+    |> bulk_write_outcome()
+  end
+
+  # The target is locked before the vehicles so a concurrent parent deletion
+  # cannot hold the parent while waiting for these rows.
+  defp update_vehicles_locked(organization_id, actor, ids, field, value) do
+    with {:ok, value} <- validate_assignment(organization_id, assignment_schema(field), value),
+         {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
+      update_vehicles_rows(organization_id, actor, locked_ids, field, value)
+    end
+  end
+
+  defp update_vehicles_rows(organization_id, actor, locked_ids, field, value) do
+    now = DateTime.utc_now()
+
+    {count, _} =
+      Vehicle
+      |> where([v], v.organization_id == ^organization_id and v.id in ^locked_ids)
+      |> Repo.update_all(
+        set: [
+          {field, value},
+          {:updated_by_id, actor_id(actor)},
+          {:updated_at, now}
+        ]
+      )
+
+    verified_vehicle_count(count, locked_ids)
   end
 
   @doc """
@@ -506,33 +496,42 @@ defmodule GtfsPlanner.Operations do
           {:ok, non_neg_integer()} | {:error, :not_found}
   def delete_vehicles(organization_id, ids) do
     with {:ok, ids} <- cast_vehicle_ids(ids) do
-      if ids == [] do
-        {:ok, 0}
-      else
-        outcome =
-          Repo.transaction(fn ->
-            with {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
-              {count, _} =
-                Vehicle
-                |> where([v], v.organization_id == ^organization_id and v.id in ^locked_ids)
-                |> Repo.delete_all()
-
-              if count == length(locked_ids) do
-                {:ok, count}
-              else
-                Repo.rollback(:count_mismatch)
-              end
-            end
-          end)
-
-        case outcome do
-          {:ok, {:ok, count}} -> {:ok, count}
-          {:ok, {:error, :not_found}} -> {:error, :not_found}
-          {:error, _reason} -> {:error, :not_found}
-        end
-      end
+      bulk_delete_vehicles(organization_id, ids)
     end
   end
+
+  defp bulk_delete_vehicles(_organization_id, []), do: {:ok, 0}
+
+  defp bulk_delete_vehicles(organization_id, ids) do
+    Repo.transaction(fn -> delete_vehicles_locked(organization_id, ids) end)
+    |> bulk_write_outcome()
+  end
+
+  defp delete_vehicles_locked(organization_id, ids) do
+    with {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
+      delete_vehicles_rows(organization_id, locked_ids)
+    end
+  end
+
+  defp delete_vehicles_rows(organization_id, locked_ids) do
+    {count, _} =
+      Vehicle
+      |> where([v], v.organization_id == ^organization_id and v.id in ^locked_ids)
+      |> Repo.delete_all()
+
+    verified_vehicle_count(count, locked_ids)
+  end
+
+  # Both bulk writers require the affected count to match the locked rows; a
+  # mismatch rolls the whole request back.
+  defp verified_vehicle_count(count, locked_ids) when count == length(locked_ids),
+    do: {:ok, count}
+
+  defp verified_vehicle_count(_count, _locked_ids), do: Repo.rollback(:count_mismatch)
+
+  defp bulk_write_outcome({:ok, {:ok, count}}), do: {:ok, count}
+  defp bulk_write_outcome({:ok, {:error, :not_found}}), do: {:error, :not_found}
+  defp bulk_write_outcome({:error, _reason}), do: {:error, :not_found}
 
   @doc """
   Counts the organization's vehicles per garage and vehicle type pair.
@@ -701,26 +700,32 @@ defmodule GtfsPlanner.Operations do
   defp range_vehicle_ids(attrs) do
     with {:ok, first, first_digits} <- range_bound(attrs, "first"),
          {:ok, last, _last_digits} <- range_bound(attrs, "last") do
-      count = last - first + 1
-      width = String.length(first_digits)
+      padded_range_ids(first, last, String.length(first_digits))
+    end
+  end
 
-      cond do
-        count < 1 ->
-          {:error, {:invalid_range, "The last number must be the same as or after the first."}}
+  defp padded_range_ids(first, last, width) do
+    count = last - first + 1
 
-        count > @range_limit ->
-          {:error, {:invalid_range, "Choose a numbered group of 1 to 200 vehicles."}}
+    cond do
+      count < 1 ->
+        {:error, {:invalid_range, "The last number must be the same as or after the first."}}
 
-        true ->
-          vehicle_ids =
-            Enum.map(first..last, &String.pad_leading(Integer.to_string(&1), width, "0"))
+      count > @range_limit ->
+        {:error, {:invalid_range, "Choose a numbered group of 1 to 200 vehicles."}}
 
-          if Enum.any?(vehicle_ids, &(String.length(&1) > @max_vehicle_id_length)) do
-            {:error, {:invalid_range, "Vehicle IDs must be 255 characters or fewer."}}
-          else
-            {:ok, vehicle_ids}
-          end
-      end
+      true ->
+        bound_range_ids(first, last, width)
+    end
+  end
+
+  defp bound_range_ids(first, last, width) do
+    vehicle_ids = Enum.map(first..last, &String.pad_leading(Integer.to_string(&1), width, "0"))
+
+    if Enum.any?(vehicle_ids, &(String.length(&1) > @max_vehicle_id_length)) do
+      {:error, {:invalid_range, "Vehicle IDs must be 255 characters or fewer."}}
+    else
+      {:ok, vehicle_ids}
     end
   end
 
@@ -798,18 +803,20 @@ defmodule GtfsPlanner.Operations do
   # order; a single malformed entry fails the whole request without touching the
   # database.
   defp cast_vehicle_ids(ids) when is_list(ids) do
-    case Enum.reduce_while(ids, {:ok, []}, fn value, {:ok, acc} ->
-           case Ecto.UUID.cast(value) do
-             {:ok, id} -> {:cont, {:ok, [String.downcase(id) | acc]}}
-             :error -> {:halt, {:error, :not_found}}
-           end
-         end) do
+    case Enum.reduce_while(ids, {:ok, []}, &cast_vehicle_id/2) do
       {:ok, cast_ids} -> {:ok, cast_ids |> Enum.uniq() |> Enum.sort()}
       {:error, :not_found} -> {:error, :not_found}
     end
   end
 
   defp cast_vehicle_ids(_ids), do: {:error, :not_found}
+
+  defp cast_vehicle_id(value, {:ok, acc}) do
+    case Ecto.UUID.cast(value) do
+      {:ok, id} -> {:cont, {:ok, [String.downcase(id) | acc]}}
+      :error -> {:halt, {:error, :not_found}}
+    end
+  end
 
   # Locks every listed vehicle `FOR UPDATE` in sorted UUID order and verifies the
   # cardinality, so a missing or foreign row fails the whole request instead of
