@@ -58,4 +58,43 @@ defmodule GtfsPlanner.AccountsFixtures do
   end
 
   def valid_user_password, do: "valid user password 123456"
+
+  @doc """
+  Generate an active organization membership for a user.
+
+  Interactive calendar commands resolve the actor's current membership from the
+  server-held identity, so tests must supply a real active membership row rather
+  than only an `%AuditContext{}`.
+  """
+  def organization_membership_fixture(user, organization, roles \\ ["pathways_studio_editor"]) do
+    {:ok, membership} =
+      GtfsPlanner.Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: roles
+      })
+
+    membership
+  end
+
+  @doc """
+  Generate a user with an active `pathways_studio_editor` membership in the organization.
+  """
+  def editor_fixture(organization) do
+    user = user_fixture()
+    organization_membership_fixture(user, organization)
+    user
+  end
+
+  @doc """
+  Deactivate an existing membership the way the application does.
+
+  `UserOrgMembership.changeset/2` never casts `deactivated_at`, so the lifecycle
+  column is set explicitly here, exactly as the real deactivation path does.
+  """
+  def deactivate_membership_fixture(membership) do
+    membership
+    |> Ecto.Changeset.change(%{deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> GtfsPlanner.Repo.update!()
+  end
 end

@@ -13,14 +13,17 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   separately from the primary stop read, so an enrichment failure yields
   `{:partial, page, :route_enrichment_unavailable}` while keeping the loaded
   stop rows. Station-detail regions resolve independently so one failing region
-  does not erase the others. Nothing else is rescued, so a malformed id, a bad
-  query, or any other defect still raises rather than being reported as downtime.
+  does not erase the others. Calendar list and detail reads delegate to
+  `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
+  preserving the domain's own `{:error, :not_found}`. Nothing else is rescued, so
+  a malformed id, a bad query, or any other defect still raises rather than being
+  reported as downtime.
   """
 
   @behaviour GtfsPlanner.Gtfs.CatalogReadAdapter
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{Route, RoutePatterns, Stop}
+  alias GtfsPlanner.Gtfs.{Calendars, Route, RoutePatterns, Stop}
 
   @default_per_page 25
 
@@ -95,6 +98,24 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     case run(fn -> Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) end) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, %Stop{} = stop} -> {:ok, stop}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_calendar_catalog(organization_id, gtfs_version_id, opts) do
+    case run(fn -> Calendars.list_calendars(organization_id, gtfs_version_id, opts) end) do
+      {:ok, {:ok, summaries}} -> {:ok, summaries}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def fetch_calendar(organization_id, gtfs_version_id, service_id) do
+    case run(fn -> Calendars.get_calendar(organization_id, gtfs_version_id, service_id) end) do
+      {:ok, {:ok, payload}} -> {:ok, payload}
+      {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end
   end

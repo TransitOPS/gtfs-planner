@@ -60,7 +60,8 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       "level",
       "route_pattern",
       "timed_pattern",
-      "route_pattern_build"
+      "route_pattern_build",
+      "calendar"
     ])
     |> validate_inclusion(:action, ["created", "updated", "deleted", "rolled_back"])
     |> validate_rollback_reference()

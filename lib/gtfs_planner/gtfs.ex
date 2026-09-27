@@ -9,7 +9,9 @@ defmodule GtfsPlanner.Gtfs do
     :timed_pattern,
     "timed_pattern",
     :route_pattern_build,
-    "route_pattern_build"
+    "route_pattern_build",
+    :calendar,
+    "calendar"
   ]
 
   import Ecto.Query, warn: false
@@ -23,6 +25,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
@@ -200,6 +203,36 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Stop.t()} | {:error, :not_found | :unavailable}
   def fetch_catalog_stop(organization_id, gtfs_version_id, stop_id) do
     catalog_read_adapter().fetch_stop(organization_id, gtfs_version_id, stop_id)
+  end
+
+  @doc """
+  Loads the scoped calendar list through the configured catalog read adapter.
+
+  Every calendar identity in the published organization/version is returned once,
+  ordered by display name then service ID, with grouped usage, effective dates, a
+  source fingerprint and `ServiceDates` warnings. `opts` may carry `:today` to pin
+  the warning date; otherwise the agency-local date is resolved through
+  `Gtfs.DisplayClock`. A foreign, invalid or unpublished scope is
+  `{:error, :not_found}` and a lost database connection is `{:error, :unavailable}`.
+  """
+  @spec load_calendar_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, [Calendars.summary()]} | {:error, :not_found | :unavailable}
+  def load_calendar_catalog(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_calendar_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Fetches one calendar identity through the configured catalog read adapter.
+
+  Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted
+  exceptions and the source fingerprint used for reviewed commands. An unknown or
+  foreign service ID is `{:error, :not_found}`; a lost database connection is
+  `{:error, :unavailable}`.
+  """
+  @spec fetch_calendar(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Calendars.payload()} | {:error, :not_found | :unavailable}
+  def fetch_calendar(organization_id, gtfs_version_id, service_id) do
+    catalog_read_adapter().fetch_calendar(organization_id, gtfs_version_id, service_id)
   end
 
   @doc """
@@ -3990,6 +4023,38 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.aggregate(:count)
   end
 
+  @doc "Returns the scoped trip usage of one calendar identity grouped by route."
+  def calendar_usage(organization_id, gtfs_version_id, service_id),
+    do: Calendars.calendar_usage(organization_id, gtfs_version_id, service_id)
+
+  @doc "Returns the version's maximal civil-date runs with no calendar service."
+  def feed_service_gaps(organization_id, gtfs_version_id, today),
+    do: Calendars.feed_service_gaps(organization_id, gtfs_version_id, today)
+
+  @doc "Lists the unified scoped calendars of one published organization/version."
+  def list_calendars(organization_id, gtfs_version_id, opts \\ []),
+    do: Calendars.list_calendars(organization_id, gtfs_version_id, opts)
+
+  @doc "Loads one calendar identity as its weekly row, anchor, exceptions and fingerprint."
+  def get_calendar(organization_id, gtfs_version_id, service_id),
+    do: Calendars.get_calendar(organization_id, gtfs_version_id, service_id)
+
+  @doc "Creates one weekly or dates-only calendar under the scoped write lock."
+  def create_calendar(attrs, %AuditContext{} = audit_context),
+    do: Calendars.create_calendar(attrs, audit_context)
+
+  @doc "Duplicates one calendar identity under the scoped write lock."
+  def duplicate_calendar(service_id, attrs, %AuditContext{} = audit_context),
+    do: Calendars.duplicate_calendar(service_id, attrs, audit_context)
+
+  @doc "Reviews a calendar command against the caller's retained source fingerprints."
+  def review_calendar_change(command, source_fingerprints, %AuditContext{} = audit_context),
+    do: Calendars.review_calendar_change(command, source_fingerprints, audit_context)
+
+  @doc "Applies a previously reviewed calendar command under the write lock."
+  def apply_calendar_change(command, fingerprint, %AuditContext{} = audit_context),
+    do: Calendars.apply_calendar_change(command, fingerprint, audit_context)
+
   def get_file_inventory(organization_id, gtfs_version_id, export_type) do
     if export_type == :pathways do
       [
@@ -5049,6 +5114,9 @@ defmodule GtfsPlanner.Gtfs do
       when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
       do: []
 
+  def reversible_fields_for(:calendar), do: reversible_fields_for("calendar")
+  def reversible_fields_for("calendar"), do: []
+
   @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.
 
@@ -5075,7 +5143,7 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar"],
       do: {:error, :audit_only_entity}
 
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
@@ -5092,7 +5160,7 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   def rollback_target_snapshot(%ChangeLog{entity_type: type})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar"],
       do: {:error, :audit_only_entity}
 
   def rollback_target_snapshot(%ChangeLog{action: action})
@@ -5188,6 +5256,16 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot("stop", %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot("pathway", %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot("level", %Level{} = level), do: snapshot_level(level)
+
+  # A calendar's audit identity is its metadata anchor. The complete aggregate
+  # before/after snapshots are passed explicitly by Calendars, so the stored
+  # anchor snapshot never has to be expanded into native weekly/date rows here.
+  defp build_snapshot(:calendar, %CalendarAttribute{} = anchor),
+    do: Calendars.audit_snapshot(anchor)
+
+  defp build_snapshot("calendar", %CalendarAttribute{} = anchor),
+    do: Calendars.audit_snapshot(anchor)
+
   defp build_snapshot(_, _), do: nil
 
   defp snapshot_stop(stop) do
@@ -5265,6 +5343,12 @@ defmodule GtfsPlanner.Gtfs do
     "#{timing.id}:#{pattern_natural_id}"
   end
 
+  defp entity_external_id_for(:calendar, %CalendarAttribute{} = anchor, _attrs),
+    do: anchor.service_id
+
+  defp entity_external_id_for("calendar", %CalendarAttribute{} = anchor, _attrs),
+    do: anchor.service_id
+
   defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
 
   defp entity_external_id_for(:route_pattern_build, nil, attrs),
@@ -5292,9 +5376,23 @@ defmodule GtfsPlanner.Gtfs do
 
   defp audited_attrs_for(:route_pattern_build, attrs), do: attrs
   defp audited_attrs_for("route_pattern_build", attrs), do: attrs
+
+  # Calendar diffs are already explicit aggregate before/after snapshots.
+  defp audited_attrs_for(type, attrs) when type in [:calendar, "calendar"], do: attrs
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
+
+  # Calendars diff two explicit aggregate snapshots instead of comparing the
+  # anchor's own fields, so this clause must precede the generic update branch.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:calendar, "calendar"] and
+              action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+  end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
