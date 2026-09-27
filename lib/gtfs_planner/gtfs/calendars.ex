@@ -164,13 +164,32 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   A service ID that appears in none of the three tables returns
   `{:error, :not_found}`; a load never invents an anchor row.
+
+  The editor needs the same derived values the list shows, so one coherent load
+  additionally carries the identity `:kind`, the effective `:active_dates`, the
+  derived `:periods`, the `:warnings` at the agency-local today, that `:today`
+  together with the resolved agency `:zone` (including its UTC fallback reason)
+  and the grouped `:usage`. Deriving them here keeps the editor from re-implementing
+  `ServiceDates` or resolving a second, disagreeing clock.
   """
   @spec get_calendar(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, payload()} | {:error, :not_found}
   def get_calendar(organization_id, version_id, service_id) when is_binary(service_id) do
     transact(fn ->
       lock_shared_published_version!(organization_id, version_id)
-      payload(organization_id, version_id, service_id) || Repo.rollback(:not_found)
+      source = payload(organization_id, version_id, service_id) || Repo.rollback(:not_found)
+      clock = DisplayClock.today(organization_id, version_id)
+      exceptions = source.exceptions
+      calendar = source.calendar
+
+      source
+      |> Map.put(:kind, kind_for(calendar))
+      |> Map.put(:active_dates, ServiceDates.active_dates(calendar, exceptions))
+      |> Map.put(:periods, ServiceDates.periods(calendar, exceptions))
+      |> Map.put(:warnings, ServiceDates.warnings(calendar, exceptions, clock.date))
+      |> Map.put(:today, clock.date)
+      |> Map.put(:zone, clock)
+      |> Map.put(:usage, one_usage(organization_id, version_id, service_id))
     end)
   end
 
@@ -1787,7 +1806,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     if plan.changed_count == 0 do
       unchanged_result(source, service_id)
     else
-      anchor = write_anchor!(plan, source)
+      # An imported identity may have no metadata anchor yet. The first committed
+      # row change reserves it in the same transaction, keeping the service ID and
+      # leaving its name nil, so the audit log always has an entity identity.
+      anchor = write_anchor!(plan, source) || insert_orphan_anchor!(service_id, audit_context)
       calendar = write_weekly!(plan, source, service_id, audit_context)
       delete_exception_dates!(plan, service_id, audit_context)
       put_exception_entries!(plan, service_id, audit_context)

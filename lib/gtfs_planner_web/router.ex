@@ -136,6 +136,11 @@ defmodule GtfsPlannerWeb.Router do
       # GTFS routes (viewer or editor roles required)
       live "/routes", Gtfs.RoutesLive, :index
       live "/calendars", Gtfs.CalendarsLive, :index
+      # Calendar detail carries its service ID as a query parameter, so imported
+      # IDs containing slashes, percent signs, spaces or the words new/show can
+      # never collide with a path segment.
+      live "/calendars/new", Gtfs.CalendarLive, :new
+      live "/calendars/show", Gtfs.CalendarLive, :show
       live "/routes/:route_id", Gtfs.RouteDetailLive, :details
       live "/routes/:route_id/patterns", Gtfs.RoutePatternLive, :index
       live "/routes/:route_id/patterns/new", Gtfs.RoutePatternLive, :new

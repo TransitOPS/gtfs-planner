@@ -121,9 +121,14 @@ test.describe("calendar list", () => {
       const oddLink = page.locator("#calendars-list tr", { hasText: "Odd service id" }).locator("td").first().locator("a");
       await expect(oddLink).toHaveAttribute("href", /service_id=svc%2Fodd\+name/);
 
-      // No control owned by the create/editor/date-change steps is presented.
+      // Calendar creation is reachable from the list; the editor and
+      // cross-calendar drawer controls are not.
+      await expect(page.locator("#calendars-create")).toHaveAttribute(
+        "href",
+        `/gtfs/${versionId}/calendars/new`,
+      );
+
       for (const label of [
-        "Create calendar",
         "Change service on a date",
         "Add break",
         "Duplicate calendar",
@@ -222,12 +227,280 @@ test.describe("calendar list", () => {
     page,
   }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await openCalendars(page, "Catalog Empty Version");
+    const versionId = await openCalendars(page, "Catalog Empty Version");
 
     await expect(page.locator("#calendars-first-use-empty")).toBeVisible();
     await expect(page.locator("#calendars-first-use-empty")).toContainText("No calendars yet");
     await expect(page.locator("#calendars-list-container")).toHaveCount(0);
     await expect(page.locator("#calendars-unavailable")).toHaveCount(0);
-    await expect(page.getByText("Create calendar", { exact: false })).toHaveCount(0);
+    await expect(page.locator("#calendars-create")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/calendars/new`,
+    );
+  });
+});
+
+// ---- Calendar editor journeys (step 6) -------------------------------------
+
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftDays(date, days) {
+  const shifted = new Date(date.getTime());
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted;
+}
+
+// The next Friday at or after today, so a Fri/Mon/Tue closure always spans a
+// weekend whatever day the suite runs.
+function nextFriday(from = new Date()) {
+  const day = from.getUTCDay();
+  const offset = (5 - day + 7) % 7;
+  return shiftDays(from, offset);
+}
+
+// The reference groups duplication and deletion behind the "Calendar actions"
+// disclosure; opening it is a state change, not an assertion, so the journey can
+// reach the actions deterministically.
+async function openCalendarActions(page) {
+  await page.evaluate(() => {
+    const disclosure = Array.from(
+      document.querySelectorAll("#calendar-editor details"),
+    ).find((element) =>
+      (element.querySelector("summary")?.textContent || "").includes(
+        "Calendar actions",
+      ),
+    );
+
+    if (disclosure) disclosure.open = true;
+  });
+  await expect(page.locator("#calendar-delete")).toBeVisible();
+}
+
+async function openEditor(page, versionName, serviceId) {
+  const versionId = await openCalendars(page, versionName);
+  return openEditorFor(page, versionId, serviceId);
+}
+
+// Navigating straight to a detail route keeps a single authenticated session, so a
+// journey with several editor visits never re-enters the login page.
+async function openEditorFor(page, versionId, serviceId) {
+  await page.goto(
+    `/gtfs/${versionId}/calendars/show?service_id=${encodeURIComponent(serviceId)}`,
+  );
+  await waitForEditorReady(page);
+  return versionId;
+}
+
+// The first paint is server-rendered, so the editor waits for the client patch
+// (which stamps `data-phx-id`) before a journey types or clicks: without it the
+// first interaction can be replaced by the arriving patch.
+async function waitForEditorReady(page) {
+  await page.waitForSelector("#calendar-form[data-phx-id]", { timeout: 15000 });
+}
+
+test.describe("calendar editor", () => {
+  test("creates a weekly calendar from the list, previews three months and deletes it", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const versionId = await openCalendars(page);
+
+    await page.click("#calendars-create");
+    await waitForEditorReady(page);
+    await expect(page.locator("#calendars-create")).toHaveCount(0);
+
+    await page.fill("#calendar-name", "Browser editor journey");
+    // The suggested service ID is derived from the name and stays editable.
+    await expect(page.locator("#calendar-service-id")).toHaveValue(
+      "browser_editor_journey",
+    );
+
+    const today = new Date();
+    await page.fill("#calendar-start-date", isoDate(shiftDays(today, -30)));
+    await page.fill("#calendar-end-date", isoDate(shiftDays(today, 60)));
+    await page.click("#calendar-save");
+
+    // A LiveView navigate swaps the page without a document load event, so the
+    // detail route is awaited through its own content.
+    await page.waitForSelector("#periods-timeline", { timeout: 15000 });
+    expect(page.url()).toContain("service_id=browser_editor_journey");
+    await expect(page.locator("h1")).toContainText("Browser editor journey");
+    await expect(page.locator("#calendar-name")).toHaveValue(
+      "Browser editor journey",
+    );
+    await expect(page.locator("#calendar-weekdays-monday")).toBeChecked();
+    await expect(page.locator("#calendar-weekdays-saturday")).not.toBeChecked();
+    await expect(page.locator("#calendar-usage")).toContainText("0 trips");
+
+    // Three months of the real derived preview, with symbols, text and a legend.
+    await expect(page.locator("#months table")).toHaveCount(3);
+    await expect(page.locator("#months-legend")).toContainText(
+      "Regular service",
+    );
+    await expect(page.locator("#months-legend")).toContainText(
+      "Service removed",
+    );
+    await expect(page.locator("#months-legend")).toContainText("Service added");
+    await expect(page.locator("#months-legend")).toContainText(
+      "No service scheduled",
+    );
+    await expect(page.locator("#periods-timeline")).toBeVisible();
+
+    // Keyboard month navigation moves the window one month.
+    const firstTitle = await page.locator("#months h3").first().innerText();
+    await page.locator("#months").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(() => page.locator("#months h3").first().innerText(), {
+        timeout: 5000,
+      })
+      .not.toBe(firstTitle);
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+
+      const overflows = await page.evaluate(
+        () => document.body.scrollWidth > window.innerWidth + 1,
+      );
+      expect(overflows).toBe(false);
+    }
+
+    // The journey cleans up after itself so the shared list fixture is intact.
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+    await expect(page.locator("#calendar-review-dialog")).toBeVisible();
+    await page.click("#calendar-review-dialog-confirm");
+    await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+    await expect(
+      page.locator("#calendars-list tr", { hasText: "Browser editor journey" }),
+    ).toHaveCount(0);
+    await expect(page.locator("#calendars-list tr")).toHaveCount(6);
+  });
+
+  test("reviews and applies a date change, guards dirty navigation and returns focus", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openEditor(page, "Browser E2E Version", "CAL_UNUSED");
+
+    // A date outside the weekly range is reviewed before anything is written.
+    const outside = isoDate(shiftDays(new Date(), 40));
+    await page.fill("#calendar-exception-date", outside);
+    await expect(page.locator("#calendar-exception-date")).toHaveValue(outside);
+    await page.click("#calendar-add-date");
+
+    await expect(page.locator("#calendar-review-dialog")).toBeVisible();
+    await expect(page.locator("#calendar-review-dialog")).toContainText(
+      "Add this service date?",
+    );
+    await page.click("#calendar-review-dialog-cancel");
+    await expect(page.locator("#calendar-review-dialog")).toBeHidden();
+    await expect(
+      page.locator(`#calendar-exception-chips-${outside}`),
+    ).toHaveCount(0);
+
+    await page.click("#calendar-add-date");
+    await page.click("#calendar-review-dialog-confirm");
+    await expect(page.locator("#calendar-status")).toContainText(
+      "date changes were stored",
+      {
+        timeout: 8000,
+      },
+    );
+    await expect(
+      page.locator(`#calendar-exception-chips-${outside}`),
+    ).toBeVisible();
+    await expect(page.locator(`#month-cell-${outside}`)).toHaveAttribute(
+      "aria-label",
+      /Service added/,
+    );
+
+    // Restore the fixture state.
+    await page.click(`#calendar-exception-chips-remove-${outside}`);
+    await expect(page.locator("#calendar-status")).toContainText(
+      "date changes were removed",
+      {
+        timeout: 8000,
+      },
+    );
+    await expect(
+      page.locator(`#calendar-exception-chips-${outside}`),
+    ).toHaveCount(0);
+
+    // A dirty schedule asks before an independent action, and Escape returns focus.
+    await page.fill("#calendar-name", "Renamed without saving");
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+    await expect(page.locator("#calendar-dirty-dialog")).toBeVisible();
+    await expect(page.locator("#calendar-dirty-dialog")).toContainText(
+      "unsaved schedule changes",
+    );
+
+    const focusedInDialog = await page.evaluate(() =>
+      document
+        .getElementById("calendar-dirty-dialog")
+        .contains(document.activeElement),
+    );
+    expect(focusedInDialog).toBe(true);
+
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#calendar-dirty-dialog")).toBeHidden();
+    await expect(page.locator("#calendar-name")).toHaveValue(
+      "Renamed without saving",
+    );
+
+    // Discarding the draft then runs the requested delete review, which is cancelled.
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+    await page.click("#calendar-dirty-dialog-confirm");
+    await expect(page.locator("#calendar-review-dialog")).toBeVisible();
+    await expect(page.locator("#calendar-review-dialog")).toContainText(
+      "Delete CAL_UNUSED?",
+    );
+    await page.click("#calendar-review-dialog-cancel");
+    await expect(page.locator("#calendar-name")).toHaveValue("Unused calendar");
+  });
+
+  test("associates validation errors and reports the trips blocking a delete", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const versionId = await openCalendars(page);
+
+    await page.goto(`/gtfs/${versionId}/calendars/new`);
+    await waitForEditorReady(page);
+    await page.fill("#calendar-name", "");
+    await page.click("#calendar-save");
+
+    await expect(page.locator("#calendar-name-error")).toBeVisible();
+    await expect(page.locator("#calendar-name-error")).toContainText(
+      "can’t be blank",
+    );
+    await expect(page.locator("#calendar-name")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+
+    await openEditorFor(page, versionId, "CAL_DAILY");
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+
+    await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+    await expect(page.locator("#calendar-delete-blocked")).toContainText(
+      "3 trips",
+    );
+    await expect(page.locator("#calendar-delete-blocked a")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/routes/CAL_ROUTE`,
+    );
+    await expect(page.locator("#calendar-review-dialog")).toBeHidden();
+    await expect(page.locator("#calendar-name")).toHaveValue(
+      "Every day service",
+    );
   });
 });

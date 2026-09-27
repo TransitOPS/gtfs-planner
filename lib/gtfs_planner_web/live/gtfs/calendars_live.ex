@@ -349,6 +349,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         <:subtitle>Set the days your trips run, including holidays and breaks.</:subtitle>
       </.header>
 
+      <div :if={@calendars_state in [:ready, :refreshing]} class="mt-4">
+        <.link
+          id="calendars-create"
+          navigate={create_path(assigns)}
+          class="btn btn-sm btn-primary min-h-11"
+        >
+          Create calendar
+        </.link>
+      </div>
+
       <div
         :if={@calendars_state == :loading}
         id="calendars-loading"
@@ -471,6 +481,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
           <.empty_state title="No calendars yet">
             Calendars say which days trips run. Start with a regular schedule, such as weekdays, or
             choose specific dates.
+            <:action>
+              <.link navigate={create_path(assigns)} class="btn btn-sm btn-primary min-h-11">
+                Create calendar
+              </.link>
+            </:action>
           </.empty_state>
         </div>
 
@@ -544,6 +559,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  defp create_path(assigns) do
+    "/gtfs/#{assigns.current_gtfs_version.id}/calendars/new"
   end
 
   defp detail_path(assigns, summary) do

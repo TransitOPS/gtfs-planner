@@ -451,8 +451,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       assert html =~
                "/gtfs/#{version.id}/calendars/show?service_id=" <> URI.encode_www_form(weird_id)
 
-      # The list exposes no create, edit or date-change control owned by later steps.
-      refute html =~ "Create calendar"
+      # Creation and detail links are reachable; the cross-calendar drawer and its
+      # date-change controls belong to step 7 and are still absent.
+      assert html =~ "/gtfs/#{version.id}/calendars/new"
+      assert html =~ "Create calendar"
       refute html =~ "Change service on a date"
       refute html =~ "Add break"
       refute html =~ "Duplicate calendar"

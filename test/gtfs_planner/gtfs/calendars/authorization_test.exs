@@ -272,4 +272,115 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuthorizationTest do
              from(l in ChangeLog, where: l.organization_id == ^context.organization.id)
            )
   end
+
+  describe "editor commands from the calendar detail screen" do
+    test "unknown or forged command tags are refused without writes", context do
+      payload = create_editor_calendar(context, "editor_commands")
+
+      forged = [
+        {:save, "editor_commands"},
+        {:convert, "editor_commands", :school_days, %{}},
+        {:add_break, "editor_commands", "not-a-date", "2026-01-07"},
+        {:put_exceptions, "editor_commands", [~D[2026-01-05]], :school_days},
+        {:put_exceptions, "editor_commands", [~D[2026-01-05]], 1},
+        {:unknown, "editor_commands"}
+      ]
+
+      for command <- forged do
+        assert {:error, :invalid_command} =
+                 Gtfs.review_calendar_change(
+                   command,
+                   %{"editor_commands" => payload.fingerprint},
+                   context.audit
+                 )
+      end
+
+      assert Repo.aggregate(
+               from(d in CalendarDate, where: d.organization_id == ^context.organization.id),
+               :count
+             ) == 0
+    end
+
+    test "a revoked membership cannot review or apply the editor's own commands", context do
+      payload = create_editor_calendar(context, "revoked_editor")
+
+      commands = [
+        {:save, "revoked_editor", %{name: "Renamed"}},
+        {:convert, "revoked_editor", :dates_only, %{name: "Renamed"}},
+        {:add_break, "revoked_editor", ~D[2026-01-06], ~D[2026-01-08]},
+        {:put_exceptions, "revoked_editor", [~D[2026-01-06]], :added},
+        {:remove_exceptions, "revoked_editor", [~D[2026-01-06]]}
+      ]
+
+      fingerprints = %{"revoked_editor" => payload.fingerprint}
+
+      # The editor may review and apply while their membership is active.
+      for command <- Enum.take(commands, 1) do
+        assert {:ok, review} = Gtfs.review_calendar_change(command, fingerprints, context.audit)
+
+        assert {:ok, _applied} =
+                 Gtfs.apply_calendar_change(command, review.fingerprint, context.audit)
+      end
+
+      deactivate_membership_fixture(context.membership)
+
+      for command <- commands do
+        assert {:error, :forbidden} =
+                 Gtfs.review_calendar_change(command, fingerprints, context.audit)
+
+        assert {:error, :forbidden} =
+                 Gtfs.apply_calendar_change(command, "reviewed-token", context.audit)
+      end
+
+      assert Repo.aggregate(
+               from(d in CalendarDate, where: d.organization_id == ^context.organization.id),
+               :count
+             ) == 0
+    end
+
+    test "a stale retained fingerprint is refused for the editor's commands", context do
+      payload = create_editor_calendar(context, "stale_editor")
+      fingerprints = %{"stale_editor" => payload.fingerprint}
+
+      command = {:add_break, "stale_editor", ~D[2026-01-06], ~D[2026-01-08]}
+
+      assert {:ok, review} = Gtfs.review_calendar_change(command, fingerprints, context.audit)
+
+      # Another committed change invalidates the reviewed token.
+      assert {:ok, _saved} =
+               Gtfs.apply_calendar_change(
+                 {:save, "stale_editor", %{name: "Renamed elsewhere"}},
+                 reviewed_fingerprint(
+                   context,
+                   "stale_editor",
+                   {:save, "stale_editor", %{name: "Renamed elsewhere"}}
+                 ),
+                 context.audit
+               )
+
+      assert {:error, :stale_review} =
+               Gtfs.apply_calendar_change(command, review.fingerprint, context.audit)
+
+      assert Repo.aggregate(
+               from(d in CalendarDate, where: d.organization_id == ^context.organization.id),
+               :count
+             ) == 0
+    end
+  end
+
+  # A reviewed token for one command is bound to its own source and command, so the
+  # test obtains it the same way the screen does instead of guessing the digest.
+  defp reviewed_fingerprint(context, service_id, command) do
+    assert {:ok, payload} =
+             Gtfs.get_calendar(context.organization.id, context.version.id, service_id)
+
+    assert {:ok, review} =
+             Gtfs.review_calendar_change(
+               command,
+               %{service_id => payload.fingerprint},
+               context.audit
+             )
+
+    review.fingerprint
+  end
 end
