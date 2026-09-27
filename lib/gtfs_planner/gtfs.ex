@@ -5392,6 +5392,7 @@ defmodule GtfsPlanner.Gtfs do
       "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
+    |> put_calendar_operation(attrs)
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
@@ -5437,6 +5438,18 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
+
+  # A bulk calendar operation records its shared operation UUID and scope alongside the
+  # per-calendar before/after snapshots, so one log per changed calendar can be
+  # reconstructed into the whole command.
+  defp put_calendar_operation(changed, attrs) do
+    Enum.reduce([:operation_id, :affected_service_ids, :selected_dates], changed, fn key, acc ->
+      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
+        nil -> acc
+        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
+      end
+    end)
+  end
 
   @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
   defp reversible_attrs_for(entity_type, attrs) when is_map(attrs) do

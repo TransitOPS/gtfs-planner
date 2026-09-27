@@ -1016,26 +1016,9 @@ defmodule GtfsPlanner.Gtfs.CalendarsTest do
   end
 
   describe "review contract" do
-    test "unimplemented, unknown and evidence-bypassing commands are refused", context do
+    test "unknown and evidence-bypassing commands are refused", context do
       payload = create_weekly!(context, %{service_id: "svc", name: "Service"})
       fingerprints = %{"svc" => payload.fingerprint}
-
-      unsupported = [
-        {:save, "svc", %{}},
-        {:convert, "svc", :dates_only, %{}},
-        {:add_break, "svc", ~D[2026-01-10], ~D[2026-01-12]},
-        {:put_exceptions, "svc", [~D[2026-01-10]], :added},
-        {:remove_exceptions, "svc", [~D[2026-01-10]]},
-        {:date_change, [~D[2026-01-10]], ["svc"], []}
-      ]
-
-      for command <- unsupported do
-        assert {:error, :unsupported_command} =
-                 Gtfs.review_calendar_change(command, fingerprints, context.audit)
-      end
-
-      assert {:error, :unsupported_command} =
-               Gtfs.apply_calendar_change(hd(unsupported), "fingerprint", context.audit)
 
       for command <- [{:frobnicate, "svc"}, {:delete, ""}, {:delete, nil}, {:delete, 42}, :delete] do
         assert {:error, :invalid_command} =

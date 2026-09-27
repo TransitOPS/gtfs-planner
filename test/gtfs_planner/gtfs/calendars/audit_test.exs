@@ -202,6 +202,99 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuditTest do
            )
   end
 
+  test "a later calendar audit failure rolls back every earlier exception upsert", context do
+    first = create_single_date_calendar(context, "rollback_a")
+    second = create_single_date_calendar(context, "rollback_b")
+
+    authored = %{
+      "rollback_a" => table_state(context, "rollback_a"),
+      "rollback_b" => table_state(context, "rollback_b")
+    }
+
+    logs_before = calendar_logs(context, "rollback_a") ++ calendar_logs(context, "rollback_b")
+
+    install_audit_rejection_trigger!("rollback_b")
+    barrier_before = barrier_value!()
+
+    command = {:date_change, [~D[2026-01-05]], ["rollback_a", "rollback_b"], []}
+
+    fingerprints = %{
+      "rollback_a" => first.fingerprint,
+      "rollback_b" => second.fingerprint
+    }
+
+    assert {:ok, review} =
+             Gtfs.review_calendar_change(command, fingerprints, context.audit)
+
+    assert review.affected_service_ids == ["rollback_a", "rollback_b"]
+
+    assert_raise Postgrex.Error, fn ->
+      Gtfs.apply_calendar_change(command, review.fingerprint, context.audit)
+    end
+
+    # The barrier is a PostgreSQL sequence, so its advance survives the rolled-back
+    # transaction and independently proves the trigger fired on the later calendar.
+    assert barrier_value!() == barrier_before + 1
+
+    assert table_state(context, "rollback_a") == authored["rollback_a"]
+    assert table_state(context, "rollback_b") == authored["rollback_b"]
+
+    assert calendar_logs(context, "rollback_a") ++ calendar_logs(context, "rollback_b") ==
+             logs_before
+  end
+
+  # Test-only fault injection: a constraint trigger scoped to one fixture service ID
+  # raises on a later affected calendar's audit insert. The trigger, function and
+  # sequence are created inside the sandbox transaction, so the guaranteed sandbox
+  # rollback removes them; no production failure switch exists.
+  defp install_audit_rejection_trigger!(service_id) do
+    Repo.query!("CREATE SEQUENCE calendar_audit_rejection_barrier")
+    # Prime the sequence once so a single trigger execution is observable as an
+    # exact increment of `last_value`.
+    Repo.query!("SELECT nextval('calendar_audit_rejection_barrier')")
+
+    Repo.query!("""
+    CREATE FUNCTION calendar_audit_rejection() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.entity_type = 'calendar' AND NEW.entity_external_id = '#{service_id}' THEN
+        PERFORM nextval('calendar_audit_rejection_barrier');
+        RAISE EXCEPTION 'calendar audit rejection fixture' USING ERRCODE = 'check_violation';
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+    """)
+
+    Repo.query!("""
+    CREATE CONSTRAINT TRIGGER calendar_audit_rejection_trigger
+    AFTER INSERT ON change_logs
+    DEFERRABLE INITIALLY IMMEDIATE
+    FOR EACH ROW
+    EXECUTE FUNCTION calendar_audit_rejection();
+    """)
+  end
+
+  # A non-consuming read: the sequence only advances when the trigger itself fires.
+  defp barrier_value! do
+    %{rows: [[value]]} = Repo.query!("SELECT last_value FROM calendar_audit_rejection_barrier")
+    value
+  end
+
+  defp create_single_date_calendar(context, service_id) do
+    assert {:ok, payload} =
+             Gtfs.create_calendar(
+               %{
+                 service_id: service_id,
+                 name: "Single #{service_id}",
+                 kind: :dates_only,
+                 dates: [~D[2026-01-05]]
+               },
+               context.audit
+             )
+
+    payload
+  end
+
   defp create_result(context, service_id, actor_id) do
     Gtfs.create_calendar(
       weekly_attrs(service_id),

@@ -23,9 +23,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   Calendar history is audit-only. Writes, anchor creation, child deletion and the
   complete aggregate before/after audit snapshot commit in one transaction through
   `Gtfs.record_change_in_transaction/5`, and station rollback refuses the
-  `calendar` entity. This step implements the reviewed command
-  `{:delete, service_id}`; the remaining tagged date commands are refused until
-  the date-mutation step implements them.
+  `calendar` entity. Save, kind conversion, break, exception and multi-calendar date
+  commands are planned from the retained source snapshot and applied under one
+  version lock and transaction; a bulk date change shares one operation UUID and
+  records the normalized selected dates and all affected service IDs in every log.
   """
 
   import Ecto.Query, warn: false
@@ -46,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @published_status "published"
   @editor_role "pathways_studio_editor"
   @added 1
+  @removed 2
   @kinds [:weekly, :dates_only]
   @taken_message "has already been taken"
   @metadata_fields ~w(
@@ -58,17 +60,15 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   )a
   @weekly_day_fields ~w(monday tuesday wednesday thursday friday saturday sunday)a
   @weekly_fields @weekly_day_fields ++ [:start_date, :end_date]
-  @unsupported_commands [
-    :save,
-    :convert,
-    :add_break,
-    :put_exceptions,
-    :remove_exceptions,
-    :date_change
-  ]
-
   @type kind :: :weekly | :dates_only
-  @type command :: {:delete, String.t()}
+  @type command ::
+          {:delete, String.t()}
+          | {:save, String.t(), map()}
+          | {:convert, String.t(), kind(), map()}
+          | {:add_break, String.t(), Date.t(), Date.t()}
+          | {:put_exceptions, String.t(), [Date.t()], 1 | 2}
+          | {:remove_exceptions, String.t(), [Date.t()]}
+          | {:date_change, [Date.t()], [String.t()], [String.t()]}
   @type calendar_usage :: %{
           optional(:service_id) => String.t(),
           trip_count: non_neg_integer(),
@@ -105,7 +105,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | :forbidden
           | :stale_review
           | :invalid_command
-          | :unsupported_command
           | :invalid_input
           | {:in_use, non_neg_integer(), [String.t()]}
   @type write_error :: Ecto.Changeset.t() | error()
@@ -280,24 +279,24 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   `source_fingerprints` must map every normalized command target to the exact
   fingerprint loaded with that form or drawer source; missing, extra, blank or
-  nil entries are refused before a review token exists. For `{:delete, service_id}`
-  a same-scope trip returns `{:in_use, trip_count, route_ids}`, and otherwise the
-  result carries the reviewed `changes`, the effective `active_date_count` and a
-  command-bound `fingerprint` that `apply_calendar_change/3` requires. The shared
-  version lock is released before the caller renders the review.
-
-  Tagged date commands that this step does not implement return
-  `{:error, :unsupported_command}`.
+  nil entries are refused before a review token exists. The retained sources are
+  compared with the current rows, then the command is planned: validation errors
+  return the owning changeset, an in-use conversion or delete returns
+  `{:in_use, trip_count, route_ids}`, and otherwise the result carries the reviewed
+  `changes`, projected `warnings`, the `affected_service_ids` that would change, the
+  projected `active_date_count` and a command-bound `fingerprint` that
+  `apply_calendar_change/3` requires. The shared version lock is released before the
+  caller renders the review.
   """
   @spec review_calendar_change(term(), map(), AuditContext.t()) ::
           {:ok, review_result()} | {:error, write_error()}
   def review_calendar_change(command, source_fingerprints, %AuditContext{} = audit_context) do
-    with {:ok, {:delete, service_id}} <- normalize_command(command),
-         :ok <- normalize_source_fingerprints(source_fingerprints, [service_id]) do
+    with {:ok, normalized} <- normalize_command(command),
+         :ok <- normalize_source_fingerprints(source_fingerprints, command_targets(normalized)) do
       transact(fn ->
         authorize_editor!(audit_context)
         lock_shared_published_version!(audit_context)
-        review_delete!(service_id, source_fingerprints, audit_context)
+        review!(normalized, source_fingerprints, audit_context)
       end)
     end
   end
@@ -305,21 +304,20 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @doc """
   Applies a previously reviewed calendar command under the write lock.
 
-  The reviewed fingerprint is recomputed from the current rows before anything
-  changes, so another committed change or a different command returns
-  `{:error, :stale_review}` with no writes. Deleting an unused identity removes
-  its weekly row, all exceptions and its metadata anchor in one transaction and
-  records one complete `"deleted"` audit snapshot.
+  The reviewed fingerprint is recomputed from the current rows and the normalized
+  command before anything changes, so another committed change or a different
+  command returns `{:error, :stale_review}` with no writes. A command whose stored
+  rows do not change writes nothing and adds no audit record.
   """
   @spec apply_calendar_change(term(), term(), AuditContext.t()) ::
           {:ok, map()} | {:error, write_error()}
   def apply_calendar_change(command, review_fingerprint, %AuditContext{} = audit_context) do
-    with {:ok, {:delete, service_id}} <- normalize_command(command),
+    with {:ok, normalized} <- normalize_command(command),
          :ok <- validate_review_fingerprint(review_fingerprint) do
       transact(fn ->
         authorize_editor!(audit_context)
         lock_published_version!(audit_context)
-        apply_delete!(service_id, review_fingerprint, audit_context)
+        apply!(normalized, review_fingerprint, audit_context)
       end)
     end
   end
@@ -806,14 +804,20 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp insert_addition_rows([], _service_id, _audit_context), do: []
 
   defp insert_addition_rows(additions, service_id, audit_context) do
-    Enum.map(additions, fn date ->
-      %CalendarDate{
-        organization_id: audit_context.organization_id,
-        gtfs_version_id: audit_context.gtfs_version_id
-      }
-      |> CalendarDate.changeset(%{service_id: service_id, date: date, exception_type: @added})
-      |> insert_or_rollback!()
-    end)
+    Enum.map(additions, &insert_exception_row!(service_id, &1, @added, audit_context))
+  end
+
+  defp insert_exception_row!(service_id, date, exception_type, audit_context) do
+    %CalendarDate{
+      organization_id: audit_context.organization_id,
+      gtfs_version_id: audit_context.gtfs_version_id
+    }
+    |> CalendarDate.changeset(%{
+      service_id: service_id,
+      date: date,
+      exception_type: exception_type
+    })
+    |> insert_or_rollback!()
   end
 
   defp audited_created!(service_id, calendar, anchor, exceptions, audit_context) do
@@ -999,24 +1003,153 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # -- Review and apply ------------------------------------------------------
 
-  defp review_delete!(service_id, source_fingerprints, audit_context) do
-    source = required_payload!(service_id, audit_context)
+  # -- Review and apply ------------------------------------------------------
 
-    unless secure_equal?(Map.fetch!(source_fingerprints, service_id), source.fingerprint) do
+  defp review!(normalized, source_fingerprints, audit_context) do
+    sources = loaded_sources!(command_targets(normalized), source_fingerprints, audit_context)
+
+    case plan_all(normalized, sources, audit_context) do
+      {:ok, plans} -> review_result(normalized, sources, plans)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp apply!(normalized, review_fingerprint, audit_context) do
+    sources = current_sources!(command_targets(normalized), audit_context)
+
+    unless secure_equal?(review_fingerprint_for(sources, normalized), review_fingerprint) do
       Repo.rollback(:stale_review)
     end
 
+    case plan_all(normalized, sources, audit_context) do
+      {:ok, plans} -> apply_plans!(normalized, sources, plans, audit_context)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp loaded_sources!(targets, source_fingerprints, audit_context) do
+    Map.new(targets, fn service_id ->
+      source = required_payload!(service_id, audit_context)
+
+      unless secure_equal?(Map.fetch!(source_fingerprints, service_id), source.fingerprint) do
+        Repo.rollback(:stale_review)
+      end
+
+      {service_id, source}
+    end)
+  end
+
+  defp current_sources!(targets, audit_context) do
+    Map.new(targets, fn service_id ->
+      {service_id, required_payload!(service_id, audit_context)}
+    end)
+  end
+
+  # The reviewed token binds every retained source fingerprint together with the
+  # normalized command, so neither a source change nor a different command can be
+  # applied against an earlier review.
+  defp review_fingerprint_for(sources, normalized) do
+    sources
+    |> Map.new(fn {service_id, source} -> {service_id, source.fingerprint} end)
+    |> review_fingerprint(normalized)
+  end
+
+  defp review_result(normalized, sources, plans) do
+    changed_ids =
+      plans
+      |> Enum.filter(fn {_service_id, plan} -> plan.changed_count > 0 end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    %{
+      fingerprint: review_fingerprint_for(sources, normalized),
+      changes: review_changes(plans, changed_ids),
+      warnings: Enum.flat_map(plans, fn {_service_id, plan} -> plan.warnings end),
+      affected_service_ids: changed_ids,
+      active_date_count:
+        plans |> Enum.map(fn {_id, plan} -> plan.active_date_count end) |> Enum.sum()
+    }
+  end
+
+  defp review_changes(plans, _changed_ids) when map_size(plans) == 1 do
+    [{_service_id, plan}] = Map.to_list(plans)
+    plan.changes
+  end
+
+  defp review_changes(plans, changed_ids) do
+    %{
+      action: :date_change,
+      affected_service_ids: changed_ids,
+      changed_count: plans |> Enum.map(fn {_id, plan} -> plan.changed_count end) |> Enum.sum(),
+      calendars:
+        Map.new(plans, fn {service_id, plan} ->
+          {service_id,
+           %{
+             changed_count: plan.changed_count,
+             kind: kind_for(plan.projected_calendar),
+             active_date_count: plan.active_date_count
+           }}
+        end)
+    }
+  end
+
+  # -- Command plans ---------------------------------------------------------
+
+  defp plan_all({:delete, service_id}, sources, audit_context) do
+    source = Map.fetch!(sources, service_id)
     usage = one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
 
     if usage.trip_count > 0 do
-      Repo.rollback({:in_use, usage.trip_count, usage.route_ids})
+      {:error, {:in_use, usage.trip_count, usage.route_ids}}
+    else
+      {:ok, %{service_id => delete_plan(service_id, source)}}
     end
+  end
 
-    command = {:delete, service_id}
+  defp plan_all({:date_change, dates, remove_from, add_to}, sources, audit_context) do
+    today = plan_today(audit_context)
+
+    removals =
+      Map.new(remove_from, fn service_id ->
+        {service_id,
+         date_change_plan(service_id, Map.fetch!(sources, service_id), dates, @removed, today)}
+      end)
+
+    additions =
+      Map.new(add_to, fn service_id ->
+        {service_id,
+         date_change_plan(service_id, Map.fetch!(sources, service_id), dates, @added, today)}
+      end)
+
+    {:ok, Map.merge(removals, additions)}
+  end
+
+  defp plan_all(command, sources, audit_context) do
+    [service_id] = command_targets(command)
+    source = Map.fetch!(sources, service_id)
+
+    case plan_command(command, source, audit_context) do
+      {:ok, plan} -> {:ok, %{service_id => plan}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_plan(service_id, source) do
     active_date_count = length(ServiceDates.active_dates(source.calendar, source.exceptions))
 
     %{
-      fingerprint: review_fingerprint(source.fingerprint, command),
+      action: :delete,
+      service_id: service_id,
+      anchor_action: :keep,
+      anchor_changeset: nil,
+      weekly_action: :keep,
+      remove_exception_dates: [],
+      put_exceptions: [],
+      projected_calendar: nil,
+      projected_exceptions: [],
+      active_date_count: active_date_count,
+      changed_count: 1,
+      warnings: [],
       changes: %{
         action: :delete,
         service_id: service_id,
@@ -1025,29 +1158,701 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         trip_count: 0,
         active_date_count: active_date_count,
         exception_count: length(source.exceptions)
-      },
-      warnings: [],
-      affected_service_ids: [service_id],
-      active_date_count: active_date_count
+      }
     }
   end
 
-  defp apply_delete!(service_id, review_fingerprint, audit_context) do
-    source = required_payload!(service_id, audit_context)
-
-    unless secure_equal?(
-             review_fingerprint(source.fingerprint, {:delete, service_id}),
-             review_fingerprint
-           ) do
-      Repo.rollback(:stale_review)
+  defp plan_command({:save, service_id, attrs}, source, audit_context) do
+    with {:ok, anchor} <- plan_anchor(source, service_id, attrs, audit_context),
+         {:ok, weekly} <- plan_save_weekly(source, attrs) do
+      {:ok,
+       finish_plan(
+         source,
+         service_id,
+         %{
+           action: :save,
+           anchor: anchor,
+           weekly: weekly,
+           changes: %{
+             action: :save,
+             service_id: service_id,
+             kind: kind_for(weekly.calendar),
+             metadata_changed: anchor.changed?,
+             weekly_changed: weekly.action != :keep
+           }
+         },
+         plan_today(audit_context)
+       )}
     end
+  end
 
+  defp plan_command({:convert, service_id, :dates_only, attrs}, source, audit_context) do
+    if is_nil(source.calendar) do
+      {:error, :invalid_command}
+    else
+      with {:ok, anchor} <- plan_anchor(source, service_id, attrs, audit_context) do
+        effective = ServiceDates.active_dates(source.calendar, source.exceptions)
+
+        {:ok,
+         finish_plan(
+           source,
+           service_id,
+           %{
+             action: :convert,
+             anchor: anchor,
+             weekly: %{action: :delete, calendar: nil, changeset: nil},
+             remove_exception_dates: Enum.map(source.exceptions, & &1.date),
+             put_exceptions: Enum.map(effective, &{&1, @added}),
+             projected_calendar: nil,
+             projected_exceptions: Enum.map(effective, &%{date: &1, exception_type: @added}),
+             row_changes: 1 + length(source.exceptions) + length(effective),
+             changes: %{
+               action: :convert,
+               service_id: service_id,
+               kind: :dates_only,
+               persisted_date_count: length(effective)
+             }
+           },
+           plan_today(audit_context)
+         )}
+      end
+    end
+  end
+
+  defp plan_command({:convert, service_id, :weekly, attrs}, source, audit_context) do
     usage = one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
 
-    if usage.trip_count > 0 do
-      Repo.rollback({:in_use, usage.trip_count, usage.route_ids})
-    end
+    cond do
+      not is_nil(source.calendar) ->
+        {:error, :invalid_command}
 
+      usage.trip_count > 0 ->
+        {:error, {:in_use, usage.trip_count, usage.route_ids}}
+
+      true ->
+        plan_convert_weekly(source, service_id, attrs, audit_context)
+    end
+  end
+
+  defp plan_command({:add_break, service_id, first_date, last_date}, source, audit_context) do
+    {:ok, add_break_plan(source, service_id, first_date, last_date, plan_today(audit_context))}
+  end
+
+  defp plan_command({:put_exceptions, service_id, dates, type}, source, audit_context) do
+    {:ok, put_exceptions_plan(service_id, source, dates, type, plan_today(audit_context))}
+  end
+
+  defp plan_command({:remove_exceptions, service_id, dates}, source, audit_context) do
+    {:ok, remove_exceptions_plan(service_id, source, dates, plan_today(audit_context))}
+  end
+
+  defp plan_convert_weekly(source, service_id, attrs, audit_context) do
+    changeset =
+      %Calendar{}
+      |> Calendar.editor_changeset(
+        attrs
+        |> weekly_updates()
+        |> Map.put(:service_id, service_id)
+        |> Map.put(:organization_id, audit_context.organization_id)
+        |> Map.put(:gtfs_version_id, audit_context.gtfs_version_id)
+      )
+
+    if changeset.valid? do
+      with {:ok, anchor} <- plan_anchor(source, service_id, attrs, audit_context) do
+        calendar = Ecto.Changeset.apply_changes(changeset)
+        before_active = ServiceDates.active_dates(source.calendar, source.exceptions)
+        projected_exceptions = exception_maps(source.exceptions)
+        introduced = ServiceDates.active_dates(calendar, projected_exceptions) -- before_active
+
+        {:ok,
+         finish_plan(
+           source,
+           service_id,
+           %{
+             action: :convert,
+             anchor: anchor,
+             weekly: %{action: :insert, calendar: calendar, changeset: changeset},
+             projected_calendar: calendar,
+             projected_exceptions: projected_exceptions,
+             row_changes: 1,
+             changes: %{
+               action: :convert,
+               service_id: service_id,
+               kind: :weekly,
+               new_service_date_count: length(introduced),
+               new_service_dates: introduced
+             }
+           },
+           plan_today(audit_context)
+         )}
+      end
+    else
+      {:error, changeset}
+    end
+  end
+
+  # A break removes only the expected weekly dates inside the inclusive range:
+  # weekends stay non-service, out-of-range additions are untouched, and dates that
+  # already carry a removal are not written twice.
+  defp add_break_plan(source, service_id, first_date, last_date, today) do
+    expected = expected_dates_in_range(source.calendar, first_date, last_date)
+
+    already_removed =
+      source.exceptions
+      |> Enum.filter(&(&1.exception_type == @removed))
+      |> MapSet.new(& &1.date)
+
+    to_remove = Enum.reject(expected, &MapSet.member?(already_removed, &1))
+
+    finish_plan(
+      source,
+      service_id,
+      %{
+        action: :add_break,
+        weekly: keep_weekly(source),
+        put_exceptions: Enum.map(to_remove, &{&1, @removed}),
+        projected_calendar: source.calendar,
+        projected_exceptions:
+          project_exceptions(source.exceptions, [], Enum.map(to_remove, &{&1, @removed})),
+        row_changes: length(to_remove),
+        changes: %{
+          action: :add_break,
+          service_id: service_id,
+          first_date: first_date,
+          last_date: last_date,
+          expected_date_count: length(expected),
+          removed_date_count: length(to_remove)
+        }
+      },
+      today
+    )
+  end
+
+  defp put_exceptions_plan(service_id, source, dates, type, today) do
+    existing = Map.new(source.exceptions, &{&1.date, &1.exception_type})
+    changed = Enum.count(dates, &(Map.get(existing, &1) != type))
+    entries = Enum.map(dates, &{&1, type})
+
+    finish_plan(
+      source,
+      service_id,
+      %{
+        action: :put_exceptions,
+        weekly: keep_weekly(source),
+        put_exceptions: entries,
+        projected_calendar: source.calendar,
+        projected_exceptions: project_exceptions(source.exceptions, [], entries),
+        row_changes: changed,
+        changes: %{
+          action: :put_exceptions,
+          service_id: service_id,
+          exception_type: type,
+          date_count: length(dates),
+          changed_row_count: changed
+        }
+      },
+      today
+    )
+  end
+
+  defp remove_exceptions_plan(service_id, source, dates, today) do
+    existing = Map.new(source.exceptions, &{&1.date, &1.exception_type})
+    removed = Enum.count(dates, &Map.has_key?(existing, &1))
+
+    finish_plan(
+      source,
+      service_id,
+      %{
+        action: :remove_exceptions,
+        weekly: keep_weekly(source),
+        remove_exception_dates: dates,
+        projected_calendar: source.calendar,
+        projected_exceptions: project_exceptions(source.exceptions, dates, []),
+        row_changes: removed,
+        changes: %{
+          action: :remove_exceptions,
+          service_id: service_id,
+          date_count: length(dates),
+          removed_row_count: removed
+        }
+      },
+      today
+    )
+  end
+
+  defp date_change_plan(service_id, source, dates, type, today) do
+    plan = put_exceptions_plan(service_id, source, dates, type, today)
+    %{plan | action: :date_change, changes: Map.put(plan.changes, :action, :date_change)}
+  end
+
+  defp plan_today(audit_context) do
+    resolve_today(audit_context.organization_id, audit_context.gtfs_version_id, [])
+  end
+
+  defp keep_weekly(source), do: %{action: :keep, calendar: source.calendar, changeset: nil}
+
+  # Row-level counts describe distinct rows whose stored value changed: an anchor is
+  # only effective when it changes, a weekly insert/update/delete counts once, and
+  # repeated identical exception writes count zero so no misleading log appears.
+  defp finish_plan(source, service_id, opts, today) do
+    anchor =
+      Map.get(opts, :anchor, %{
+        anchor: source.attributes,
+        action: :keep,
+        changeset: nil,
+        updates: %{},
+        changed?: false
+      })
+
+    weekly = Map.get(opts, :weekly, keep_weekly(source))
+    row_changes = Map.get(opts, :row_changes, 0)
+    anchor_active? = anchor.changed? and (row_changes > 0 or map_size(anchor.updates) > 0)
+    weekly_active? = weekly.action != :keep
+
+    projected_calendar = Map.get(opts, :projected_calendar, weekly.calendar)
+    projected_exceptions = Map.get(opts, :projected_exceptions, exception_maps(source.exceptions))
+
+    {anchor_action, anchor_changeset, anchor_struct} =
+      if anchor_active? do
+        {anchor.action, anchor.changeset, anchor.anchor}
+      else
+        {:keep, nil, source.attributes}
+      end
+
+    weekly_action =
+      case weekly.action do
+        :keep -> :keep
+        :delete -> :delete
+        action -> {action, weekly.changeset}
+      end
+
+    active_date_count =
+      length(ServiceDates.active_dates(projected_calendar, projected_exceptions))
+
+    changed_count = row_changes + bool_int(anchor_active?) + bool_int(weekly_active?)
+
+    %{
+      action: opts.action,
+      service_id: service_id,
+      anchor_struct: anchor_struct,
+      anchor_action: anchor_action,
+      anchor_changeset: anchor_changeset,
+      weekly_action: weekly_action,
+      remove_exception_dates: Map.get(opts, :remove_exception_dates, []),
+      put_exceptions: Map.get(opts, :put_exceptions, []),
+      projected_calendar: projected_calendar,
+      projected_exceptions: projected_exceptions,
+      active_date_count: active_date_count,
+      changed_count: changed_count,
+      warnings: projected_warnings(service_id, projected_calendar, projected_exceptions, today),
+      changes:
+        opts.changes
+        |> Map.put(:changed_count, changed_count)
+        |> Map.put(:active_date_count, active_date_count)
+    }
+  end
+
+  defp projected_warnings(service_id, calendar, exceptions, today) do
+    calendar
+    |> ServiceDates.warnings(exceptions, today)
+    |> Enum.map(&Map.put(&1, :service_id, service_id))
+  end
+
+  defp bool_int(true), do: 1
+  defp bool_int(false), do: 0
+
+  # -- Anchor and weekly planning --------------------------------------------
+
+  defp plan_anchor(source, service_id, attrs, audit_context) do
+    with {:ok, updates} <- anchor_updates(source, service_id, attrs, audit_context) do
+      case source.attributes do
+        nil -> plan_anchor_create(service_id, updates, audit_context)
+        %CalendarAttribute{} = anchor -> plan_anchor_update(anchor, updates)
+      end
+    end
+  end
+
+  defp plan_anchor_create(service_id, updates, audit_context) do
+    changeset =
+      %CalendarAttribute{
+        organization_id: audit_context.organization_id,
+        gtfs_version_id: audit_context.gtfs_version_id
+      }
+      |> CalendarAttribute.changeset(Map.put(updates, :service_id, service_id))
+
+    if changeset.valid? do
+      {:ok,
+       %{
+         anchor: Ecto.Changeset.apply_changes(changeset),
+         action: :create,
+         changeset: changeset,
+         updates: updates,
+         changed?: true
+       }}
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp plan_anchor_update(anchor, updates) do
+    changeset = CalendarAttribute.changeset(anchor, updates)
+
+    cond do
+      not changeset.valid? ->
+        {:error, changeset}
+
+      changeset.changes == %{} ->
+        {:ok, %{anchor: anchor, action: :keep, changeset: nil, updates: %{}, changed?: false}}
+
+      true ->
+        {:ok,
+         %{
+           anchor: Ecto.Changeset.apply_changes(changeset),
+           action: :update,
+           changeset: changeset,
+           updates: updates,
+           changed?: true
+         }}
+    end
+  end
+
+  defp anchor_updates(source, service_id, attrs, audit_context) do
+    with {:ok, name} <- name_update(source, service_id, attrs, audit_context) do
+      {:ok, Map.merge(metadata_attrs(attrs), name)}
+    end
+  end
+
+  # An unchanged name is never rewritten and never re-checked for uniqueness, so an
+  # imported duplicate name cannot block an unrelated native edit.
+  defp name_update(source, service_id, attrs, audit_context) do
+    case name_value(attrs) do
+      nil ->
+        {:ok, %{}}
+
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        current = source.attributes && source.attributes.service_description
+
+        cond do
+          trimmed == "" ->
+            {:error, name_error(source, "can't be blank")}
+
+          same_name?(current, trimmed) ->
+            {:ok, %{}}
+
+          name_taken?(
+            audit_context.organization_id,
+            audit_context.gtfs_version_id,
+            trimmed,
+            service_id
+          ) ->
+            {:error, name_error(source, @taken_message)}
+
+          true ->
+            {:ok, %{service_description: trimmed}}
+        end
+
+      _other ->
+        {:error, name_error(source, "is invalid")}
+    end
+  end
+
+  defp name_value(attrs) do
+    case fetch_value(attrs, :name) do
+      nil -> fetch_value(attrs, :service_description)
+      value -> value
+    end
+  end
+
+  defp same_name?(current, requested) when is_binary(current) do
+    String.downcase(String.trim(current)) == String.downcase(requested)
+  end
+
+  defp same_name?(_current, _requested), do: false
+
+  defp name_error(source, message) do
+    changeset =
+      case source.attributes do
+        %CalendarAttribute{} = anchor -> Ecto.Changeset.change(anchor)
+        nil -> Ecto.Changeset.change(%CalendarAttribute{})
+      end
+
+    Ecto.Changeset.add_error(changeset, :service_description, message)
+  end
+
+  defp plan_save_weekly(source, attrs) do
+    cond do
+      is_nil(source.calendar) ->
+        {:ok, keep_weekly(source)}
+
+      not weekly_fields_present?(attrs) ->
+        {:ok, keep_weekly(source)}
+
+      true ->
+        changeset = Calendar.editor_changeset(source.calendar, weekly_updates(attrs))
+
+        cond do
+          not changeset.valid? ->
+            {:error, changeset}
+
+          calendar_snapshot(Ecto.Changeset.apply_changes(changeset)) ==
+              calendar_snapshot(source.calendar) ->
+            {:ok, keep_weekly(source)}
+
+          true ->
+            {:ok,
+             %{
+               action: :update,
+               calendar: Ecto.Changeset.apply_changes(changeset),
+               changeset: changeset
+             }}
+        end
+    end
+  end
+
+  defp weekly_fields_present?(attrs),
+    do: Enum.any?(@weekly_fields, &key_present?(attrs, &1))
+
+  defp weekly_updates(attrs) do
+    @weekly_fields
+    |> Enum.filter(&key_present?(attrs, &1))
+    |> Map.new(&{&1, fetch_value(attrs, &1)})
+  end
+
+  defp exception_maps(exceptions) do
+    exceptions
+    |> Enum.map(&%{date: &1.date, exception_type: &1.exception_type})
+    |> Enum.sort_by(& &1.date, Date)
+  end
+
+  defp project_exceptions(source_exceptions, remove_dates, put_entries) do
+    remove = MapSet.new(remove_dates)
+
+    source_exceptions
+    |> Enum.reject(&MapSet.member?(remove, &1.date))
+    |> Map.new(&{&1.date, &1.exception_type})
+    |> then(fn acc ->
+      Enum.reduce(put_entries, acc, fn {date, type}, entries -> Map.put(entries, date, type) end)
+    end)
+    |> Enum.sort_by(&elem(&1, 0), Date)
+    |> Enum.map(fn {date, type} -> %{date: date, exception_type: type} end)
+  end
+
+  # The expected weekly baseline comes from ServiceDates itself, so break selection
+  # can never disagree with the effective-date evaluation.
+  defp expected_dates_in_range(nil, _first_date, _last_date), do: []
+
+  defp expected_dates_in_range(calendar, first_date, last_date) do
+    calendar
+    |> ServiceDates.active_dates([])
+    |> Enum.filter(fn date ->
+      Date.compare(date, first_date) != :lt and Date.compare(date, last_date) != :gt
+    end)
+  end
+
+  # -- Applying plans --------------------------------------------------------
+
+  defp apply_plans!({:delete, service_id}, sources, _plans, audit_context) do
+    apply_delete!(service_id, Map.fetch!(sources, service_id), audit_context)
+  end
+
+  # One version lock and one transaction cover every affected calendar. All logs
+  # share the operation UUID, the normalized selected dates and the complete set of
+  # affected service IDs, so a partial commit is impossible.
+  defp apply_plans!({:date_change, dates, _remove_from, _add_to}, sources, plans, audit_context) do
+    changed_ids =
+      plans
+      |> Enum.filter(fn {_service_id, plan} -> plan.changed_count > 0 end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    operation_id = Ecto.UUID.generate()
+
+    results =
+      Enum.map(changed_ids, fn service_id ->
+        apply_single_plan!(
+          Map.fetch!(plans, service_id),
+          Map.fetch!(sources, service_id),
+          service_id,
+          audit_context,
+          %{
+            operation_id: operation_id,
+            affected_service_ids: changed_ids,
+            selected_dates: dates
+          }
+        )
+      end)
+
+    %{
+      action: :date_change,
+      operation_id: operation_id,
+      affected_service_ids: changed_ids,
+      selected_dates: dates,
+      changed_count: Enum.sum(Enum.map(results, & &1.changed_count)),
+      calendars: Enum.map(results, &Map.take(&1, [:service_id, :kind, :active_date_count]))
+    }
+  end
+
+  defp apply_plans!(_command, sources, plans, audit_context) do
+    [{service_id, plan}] = Map.to_list(plans)
+    apply_single_plan!(plan, Map.fetch!(sources, service_id), service_id, audit_context, %{})
+  end
+
+  defp apply_single_plan!(plan, source, service_id, audit_context, operation) do
+    if plan.changed_count == 0 do
+      unchanged_result(source, service_id)
+    else
+      anchor = write_anchor!(plan, source)
+      calendar = write_weekly!(plan, source, service_id, audit_context)
+      delete_exception_dates!(plan, service_id, audit_context)
+      put_exception_entries!(plan, service_id, audit_context)
+
+      exceptions =
+        one_exceptions(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
+
+      before_snapshot =
+        aggregate_snapshot(service_id, source.calendar, source.attributes, source.exceptions)
+
+      after_snapshot = aggregate_snapshot(service_id, calendar, anchor, exceptions)
+
+      audit!(
+        audit_context,
+        anchor,
+        "updated",
+        Map.merge(%{before: before_snapshot, after: after_snapshot}, operation)
+      )
+
+      result(plan, service_id, calendar, anchor, exceptions, audit_context)
+    end
+  end
+
+  defp unchanged_result(source, service_id) do
+    %{
+      service_id: service_id,
+      action: :unchanged,
+      changed_count: 0,
+      calendar: source.calendar,
+      attributes: source.attributes,
+      exceptions: source.exceptions,
+      kind: kind_for(source.calendar),
+      fingerprint: source.fingerprint
+    }
+  end
+
+  defp result(plan, service_id, calendar, anchor, exceptions, audit_context) do
+    usage = one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
+
+    %{
+      service_id: service_id,
+      action: plan.action,
+      changed_count: plan.changed_count,
+      active_date_count: plan.active_date_count,
+      kind: kind_for(calendar),
+      calendar: calendar,
+      attributes: anchor,
+      exceptions: exceptions,
+      fingerprint:
+        source_fingerprint(
+          audit_context.organization_id,
+          audit_context.gtfs_version_id,
+          service_id,
+          calendar,
+          anchor,
+          exceptions,
+          usage
+        )
+    }
+  end
+
+  defp write_anchor!(%{anchor_action: :keep}, source), do: source.attributes
+
+  defp write_anchor!(%{anchor_action: :create, anchor_changeset: changeset}, _source),
+    do: insert_or_rollback!(changeset)
+
+  defp write_anchor!(%{anchor_action: :update, anchor_changeset: changeset}, _source) do
+    case Repo.update(changeset) do
+      {:ok, anchor} -> anchor
+      {:error, error} -> Repo.rollback(error)
+    end
+  end
+
+  defp write_weekly!(%{weekly_action: :keep}, source, _service_id, _audit_context),
+    do: source.calendar
+
+  defp write_weekly!(%{weekly_action: :delete}, _source, service_id, audit_context) do
+    delete_weekly_rows!(service_id, audit_context)
+    nil
+  end
+
+  defp write_weekly!(
+         %{weekly_action: {:insert, changeset}},
+         _source,
+         _service_id,
+         _audit_context
+       ),
+       do: insert_or_rollback!(changeset)
+
+  defp write_weekly!(%{weekly_action: {:update, changeset}}, _source, _service_id, _audit_context) do
+    case Repo.update(changeset) do
+      {:ok, calendar} -> calendar
+      {:error, error} -> Repo.rollback(error)
+    end
+  end
+
+  defp delete_weekly_rows!(service_id, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    Repo.delete_all(
+      from(c in Calendar,
+        where:
+          c.organization_id == ^organization_id and c.gtfs_version_id == ^version_id and
+            c.service_id == ^service_id
+      )
+    )
+  end
+
+  defp delete_exception_dates!(%{remove_exception_dates: []}, _service_id, _audit_context),
+    do: :ok
+
+  defp delete_exception_dates!(plan, service_id, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    Repo.delete_all(
+      from(d in CalendarDate,
+        where:
+          d.organization_id == ^organization_id and d.gtfs_version_id == ^version_id and
+            d.service_id == ^service_id and d.date in ^plan.remove_exception_dates
+      )
+    )
+  end
+
+  defp put_exception_entries!(%{put_exceptions: []}, _service_id, _audit_context), do: :ok
+
+  defp put_exception_entries!(plan, service_id, audit_context) do
+    existing =
+      audit_context.organization_id
+      |> one_exceptions(audit_context.gtfs_version_id, service_id)
+      |> Map.new(&{&1.date, &1})
+
+    Enum.each(plan.put_exceptions, fn {date, type} ->
+      case Map.get(existing, date) do
+        nil -> insert_exception_row!(service_id, date, type, audit_context)
+        %CalendarDate{exception_type: ^type} -> :ok
+        %CalendarDate{} = row -> update_exception_row!(row, type)
+      end
+    end)
+  end
+
+  defp update_exception_row!(row, type) do
+    case row |> CalendarDate.changeset(%{exception_type: type}) |> Repo.update() do
+      {:ok, _row} -> :ok
+      {:error, error} -> Repo.rollback(error)
+    end
+  end
+
+  defp apply_delete!(service_id, source, audit_context) do
     before_snapshot =
       aggregate_snapshot(service_id, source.calendar, source.attributes, source.exceptions)
 
@@ -1107,24 +1912,118 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   end
 
-  defp normalize_command({:delete, service_id}) when is_binary(service_id) do
-    if String.trim(service_id) == "" do
-      {:error, :invalid_command}
-    else
-      {:ok, {:delete, service_id}}
+  # -- Command normalization -------------------------------------------------
+
+  # Commands are explicit tagged tuples. `dates` accepts `Date` values, ISO-8601
+  # strings and ascending inclusive `Date.Range` values, which are expanded here at
+  # the context boundary; user strings are never converted into atoms.
+  defp normalize_command({:delete, service_id}),
+    do: normalize_command_service_id(service_id, &{:delete, &1})
+
+  defp normalize_command({:save, service_id, attrs}) when is_map(attrs),
+    do: normalize_command_service_id(service_id, &{:save, &1, attrs})
+
+  defp normalize_command({:convert, service_id, kind, attrs})
+       when kind in @kinds and is_map(attrs),
+       do: normalize_command_service_id(service_id, &{:convert, &1, kind, attrs})
+
+  defp normalize_command({:add_break, service_id, first_date, last_date}) do
+    with {:ok, service_id} <- check_service_id(service_id),
+         {:ok, first_date} <- normalize_command_date(first_date),
+         {:ok, last_date} <- normalize_command_date(last_date),
+         :ok <- check_range_order(first_date, last_date) do
+      {:ok, {:add_break, service_id, first_date, last_date}}
     end
   end
 
-  defp normalize_command({tag, _service_id}) when tag in @unsupported_commands,
-    do: {:error, :unsupported_command}
+  defp normalize_command({:put_exceptions, service_id, dates, type})
+       when type in [:added, :removed] do
+    with {:ok, service_id} <- check_service_id(service_id),
+         {:ok, dates} <- normalize_command_dates(dates) do
+      {:ok, {:put_exceptions, service_id, dates, exception_type_value(type)}}
+    end
+  end
 
-  defp normalize_command({tag, _service_id, _rest}) when tag in @unsupported_commands,
-    do: {:error, :unsupported_command}
+  defp normalize_command({:remove_exceptions, service_id, dates}) do
+    with {:ok, service_id} <- check_service_id(service_id),
+         {:ok, dates} <- normalize_command_dates(dates) do
+      {:ok, {:remove_exceptions, service_id, dates}}
+    end
+  end
 
-  defp normalize_command({tag, _service_id, _dates, _rest}) when tag in @unsupported_commands,
-    do: {:error, :unsupported_command}
+  defp normalize_command({:date_change, dates, remove_from, add_to}) do
+    with {:ok, dates} <- normalize_command_dates(dates),
+         {:ok, remove_from} <- normalize_command_service_ids(remove_from),
+         {:ok, add_to} <- normalize_command_service_ids(add_to),
+         :ok <- check_targets_present(remove_from, add_to),
+         :ok <- check_disjoint(remove_from, add_to) do
+      {:ok, {:date_change, dates, remove_from, add_to}}
+    end
+  end
 
   defp normalize_command(_command), do: {:error, :invalid_command}
+
+  defp normalize_command_service_id(service_id, fun) do
+    with {:ok, service_id} <- check_service_id(service_id), do: {:ok, fun.(service_id)}
+  end
+
+  defp check_service_id(service_id) when is_binary(service_id) and service_id != "",
+    do: {:ok, service_id}
+
+  defp check_service_id(_service_id), do: {:error, :invalid_command}
+
+  defp normalize_command_date(value) do
+    case expand_dates(value) do
+      {:ok, [date]} -> {:ok, date}
+      _other -> {:error, :invalid_command}
+    end
+  end
+
+  defp normalize_command_dates(value) do
+    case normalize_dates(value) do
+      {:ok, []} -> {:error, :invalid_command}
+      {:ok, dates} -> {:ok, dates}
+      :error -> {:error, :invalid_command}
+    end
+  end
+
+  defp normalize_command_service_ids(values) when is_list(values) do
+    if Enum.all?(values, &(is_binary(&1) and &1 != "")) do
+      {:ok, values |> Enum.uniq() |> Enum.sort()}
+    else
+      {:error, :invalid_command}
+    end
+  end
+
+  defp normalize_command_service_ids(_values), do: {:error, :invalid_command}
+
+  defp check_range_order(first_date, last_date) do
+    if Date.compare(first_date, last_date) == :gt, do: {:error, :invalid_command}, else: :ok
+  end
+
+  defp check_targets_present([], []), do: {:error, :invalid_command}
+  defp check_targets_present(_remove_from, _add_to), do: :ok
+
+  defp check_disjoint(remove_from, add_to) do
+    if MapSet.disjoint?(MapSet.new(remove_from), MapSet.new(add_to)) do
+      :ok
+    else
+      {:error, :invalid_command}
+    end
+  end
+
+  defp exception_type_value(:added), do: @added
+  defp exception_type_value(:removed), do: @removed
+
+  defp command_targets({:delete, service_id}), do: [service_id]
+  defp command_targets({:save, service_id, _attrs}), do: [service_id]
+  defp command_targets({:convert, service_id, _kind, _attrs}), do: [service_id]
+  defp command_targets({:add_break, service_id, _first_date, _last_date}), do: [service_id]
+  defp command_targets({:put_exceptions, service_id, _dates, _type}), do: [service_id]
+  defp command_targets({:remove_exceptions, service_id, _dates}), do: [service_id]
+
+  defp command_targets({:date_change, _dates, remove_from, add_to}),
+    do: remove_from |> Kernel.++(add_to) |> Enum.uniq() |> Enum.sort()
 
   # Exact keys must match the normalized targets and every value must be a real
   # non-empty fingerprint; there is no missing-key or nil bypass.
@@ -1346,34 +2245,42 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # -- Attribute helpers ----------------------------------------------------
 
-  defp normalize_dates(%Date.Range{} = range), do: range |> Enum.to_list() |> normalize_dates()
-
-  defp normalize_dates(dates) when is_list(dates) do
-    dates
-    |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
-      case normalize_date(value) do
-        {:ok, date} -> {:cont, {:ok, [date | acc]}}
-        :error -> {:halt, :error}
-      end
-    end)
-    |> case do
+  defp normalize_dates(value) do
+    case expand_dates(value) do
       {:ok, dates} -> {:ok, dates |> Enum.uniq() |> Enum.sort(Date)}
       :error -> :error
     end
   end
 
-  defp normalize_dates(_dates), do: :error
+  # Inclusive ascending ranges, `Date` values and ISO-8601 strings are expanded at
+  # this boundary. A descending range is rejected instead of silently normalized.
+  defp expand_dates(%Date.Range{} = range) do
+    if Date.compare(range.first, range.last) == :gt do
+      :error
+    else
+      {:ok, Enum.to_list(range)}
+    end
+  end
 
-  defp normalize_date(%Date{} = date), do: {:ok, date}
+  defp expand_dates(%Date{} = date), do: {:ok, [date]}
 
-  defp normalize_date(value) when is_binary(value) do
+  defp expand_dates(value) when is_binary(value) do
     case Date.from_iso8601(String.trim(value)) do
-      {:ok, date} -> {:ok, date}
+      {:ok, date} -> {:ok, [date]}
       {:error, _reason} -> :error
     end
   end
 
-  defp normalize_date(_value), do: :error
+  defp expand_dates(values) when is_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case expand_dates(value) do
+        {:ok, dates} -> {:cont, {:ok, acc ++ dates}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp expand_dates(_value), do: :error
 
   defp name_taken?(_organization_id, _version_id, name, _exclude_service_id)
        when not is_binary(name),
