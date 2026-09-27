@@ -4,11 +4,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
+  alias Ecto.Changeset
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  # The keys stay strings because LiveView params are string-keyed; an atom list
+  # would make `Map.take/2` return `%{}`.
+  @new_route_fields ~w(route_id route_type route_short_name route_long_name agency_id route_desc route_url route_color route_text_color)
+  @new_route_param_keys @new_route_fields ++ Enum.map(@new_route_fields, &("_unused_" <> &1))
 
   @impl true
   def mount(_params, _session, socket) do
@@ -30,6 +38,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:total_count, 0)
      |> assign(:routes_empty?, true)
      |> assign(:routes_state, :ready)
+     |> assign(:new_route_form, nil)
+     |> assign(:agency_options, [])
      |> stream(:routes, [])}
   end
 
@@ -238,6 +248,69 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   @impl true
+  def handle_event("open_new_route", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    agency_options =
+      organization_id
+      |> Gtfs.list_agencies(gtfs_version_id)
+      |> Enum.map(&{"#{&1.agency_name} (#{&1.agency_id})", &1.agency_id})
+
+    {:noreply,
+     socket
+     |> assign(:agency_options, agency_options)
+     |> assign(:new_route_form, to_form(Route.changeset(%Route{}, %{}), as: :route))}
+  end
+
+  @impl true
+  def handle_event("validate_new_route", %{"route" => params}, socket) do
+    if is_nil(socket.assigns.new_route_form) do
+      {:noreply, socket}
+    else
+      form =
+        socket
+        |> new_route_changeset(new_route_attrs(socket, params))
+        |> Map.put(:action, :validate)
+        |> to_form(as: :route)
+
+      {:noreply, assign(socket, :new_route_form, form)}
+    end
+  end
+
+  @impl true
+  def handle_event("validate_new_route", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("close_new_route", _params, socket) do
+    {:noreply, close_new_route(socket)}
+  end
+
+  @impl true
+  def handle_event("save_new_route", %{"route" => params}, socket) do
+    cond do
+      is_nil(socket.assigns.new_route_form) ->
+        # A replayed or late submit after the drawer closed must not insert.
+        {:noreply, socket}
+
+      not editor_access?(socket) ->
+        {:noreply,
+         socket
+         |> close_new_route()
+         |> put_flash(
+           :error,
+           "Route not created: you no longer have editor access to this organization."
+         )}
+
+      true ->
+        create_new_route(socket, params)
+    end
+  end
+
+  @impl true
+  def handle_event("save_new_route", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
     current_organization = socket.assigns.current_organization
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
@@ -277,6 +350,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       <.header>
         Routes
         <:subtitle>GTFS routes for the current version</:subtitle>
+        <:actions>
+          <.button
+            :if={@routes_state == :ready}
+            id="new-route-trigger"
+            type="button"
+            phx-click="open_new_route"
+            variant={if(first_use_empty?(assigns), do: "secondary", else: "primary")}
+            class="min-h-11"
+          >
+            Create route
+          </.button>
+        </:actions>
       </.header>
 
       <div class="mt-6 bg-base-100 border border-base-300 rounded-box p-4">
@@ -373,13 +458,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         </.empty_state>
       </div>
 
-      <div
-        :if={@routes_state == :ready and @routes_empty? and not has_active_constraints?(assigns)}
-        id="routes-first-use-empty"
-        class="mt-6"
-      >
+      <div :if={first_use_empty?(assigns)} id="routes-first-use-empty" class="mt-6">
         <.empty_state title="No routes yet">
-          Routes appear here after you import a GTFS feed.
+          Routes appear here after you import a GTFS feed or create a route.
           <:action>
             <.link
               navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
@@ -449,8 +530,242 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           entity="routes"
         />
       </div>
+
+      <.new_route_drawer form={@new_route_form} agency_options={@agency_options} />
     </Layouts.app>
     """
+  end
+
+  attr :form, :any, default: nil
+  attr :agency_options, :list, default: []
+
+  defp new_route_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="new-route-drawer"
+      open={not is_nil(@form)}
+      on_close="close_new_route"
+      title="New route"
+      initial_focus={:first_field}
+      return_focus_id="new-route-trigger"
+      class="max-w-[min(100vw,40rem)]"
+    >
+      <div id="new-route-form-panel" phx-hook="FormErrorFocus">
+        <.new_route_form :if={@form} form={@form} agency_options={@agency_options} />
+      </div>
+    </.drawer>
+    """
+  end
+
+  attr :form, :any, required: true
+  attr :agency_options, :list, required: true
+
+  defp new_route_form(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :show_errors?,
+        assigns.form.source.action == :insert and not assigns.form.source.valid?
+      )
+
+    ~H"""
+    <.form
+      for={@form}
+      id="new-route-form"
+      novalidate
+      phx-change="validate_new_route"
+      phx-submit="save_new_route"
+      class="space-y-1"
+    >
+      <div :if={@show_errors?} class="mb-4">
+        <.callout
+          id="new-route-form-error"
+          kind="error"
+          title="Check the highlighted fields"
+          tabindex="-1"
+        >
+          Nothing was saved. Correct the fields marked below, then create the route again.
+        </.callout>
+      </div>
+
+      <div class="sm:max-w-[20rem]">
+        <.input
+          field={@form[:route_id]}
+          type="text"
+          label="Route ID"
+          phx-debounce="blur"
+          help="route_id — unique within this GTFS version, such as 32 or RED."
+        />
+      </div>
+
+      <div class="sm:max-w-[16rem]">
+        <.input
+          field={@form[:route_short_name]}
+          type="text"
+          label="Short name"
+          phx-debounce="blur"
+          help="route_short_name — the short label riders see, such as 32. Enter a short name, a long name, or both."
+        />
+      </div>
+
+      <.input
+        field={@form[:route_long_name]}
+        type="text"
+        label="Long name"
+        phx-debounce="blur"
+        help="route_long_name — the full name, such as Downtown – Airport."
+      />
+
+      <div class="sm:max-w-[20rem]">
+        <.input
+          field={@form[:route_type]}
+          type="select"
+          label="Mode"
+          prompt="Select a mode"
+          options={Route.route_type_options()}
+          help="route_type — the kind of vehicle that serves this route."
+        />
+      </div>
+
+      <div :if={@agency_options != []} class="sm:max-w-[24rem]">
+        <.input
+          field={@form[:agency_id]}
+          type="select"
+          label={if(length(@agency_options) > 1, do: "Agency", else: "Agency (optional)")}
+          prompt="None"
+          options={@agency_options}
+          help="agency_id — required when this version has more than one agency."
+        />
+      </div>
+
+      <.input
+        field={@form[:route_desc]}
+        type="textarea"
+        label="Description (optional)"
+        phx-debounce="blur"
+        help="route_desc — extra detail for riders, such as service hours or major stops."
+      />
+
+      <.input
+        field={@form[:route_url]}
+        type="url"
+        label="URL (optional)"
+        phx-debounce="blur"
+        help="route_url — a web page about this route, such as https://example.com/routes/32."
+      />
+
+      <div class="grid gap-x-4 sm:grid-cols-2">
+        <.input
+          field={@form[:route_color]}
+          type="text"
+          label="Route color (optional)"
+          phx-debounce="blur"
+          help="route_color — six hex digits without #, such as 0055A4. Blank uses FFFFFF."
+        />
+        <.input
+          field={@form[:route_text_color]}
+          type="text"
+          label="Text color (optional)"
+          phx-debounce="blur"
+          help="route_text_color — six hex digits without #. Blank uses 000000."
+        />
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3 pt-3">
+        <.button
+          type="submit"
+          id="new-route-submit"
+          class="min-h-11"
+          phx-disable-with="Creating…"
+        >
+          Create route
+        </.button>
+        <.button type="button" variant="quiet" class="min-h-11" phx-click="close_new_route">
+          Cancel
+        </.button>
+      </div>
+    </.form>
+    """
+  end
+
+  defp first_use_empty?(assigns) do
+    assigns.routes_state == :ready and assigns.routes_empty? and
+      not has_active_constraints?(assigns)
+  end
+
+  defp new_route_attrs(socket, params) do
+    # `Route.changeset/2` casts the scope columns, so this allow-list is the
+    # tenant boundary. `_unused_*` keys are kept for `used_input?/1` and ignored
+    # by `cast`.
+    params
+    |> Map.take(@new_route_param_keys)
+    |> Map.put("organization_id", socket.assigns.current_organization.id)
+    |> Map.put("gtfs_version_id", socket.assigns.current_gtfs_version.id)
+  end
+
+  defp new_route_changeset(socket, attrs) do
+    agency_ids = Enum.map(socket.assigns.agency_options, &elem(&1, 1))
+
+    changeset =
+      %Route{}
+      |> Route.changeset(attrs)
+      |> Changeset.validate_inclusion(:agency_id, agency_ids,
+        message: "is not an agency in this version"
+      )
+
+    if length(agency_ids) > 1 do
+      Changeset.validate_required(changeset, [:agency_id])
+    else
+      changeset
+    end
+  end
+
+  defp close_new_route(socket) do
+    socket
+    |> assign(:new_route_form, nil)
+    |> assign(:agency_options, [])
+  end
+
+  defp create_new_route(socket, params) do
+    attrs = new_route_attrs(socket, params)
+
+    with {:ok, _validated} <-
+           socket |> new_route_changeset(attrs) |> Changeset.apply_action(:insert),
+         {:ok, route} <- Gtfs.create_route(attrs) do
+      # The patch re-enters `handle_params/3`, which reloads the catalog with
+      # the current query.
+      {:noreply,
+       socket
+       |> close_new_route()
+       |> put_flash(:info, "Route #{route.route_id} created.")
+       |> push_patch(
+         to:
+           ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{build_query_params(socket, socket.assigns.page)}"
+       )}
+    else
+      {:error, changeset} ->
+        {:noreply,
+         socket
+         |> assign(:new_route_form, to_form(changeset, as: :route))
+         |> push_event("focus_form_error", %{
+           form_id: "new-route-form",
+           fallback_id: "new-route-form-error"
+         })}
+    end
+  end
+
+  # Mount-time access is not enough for a write: the membership may have lost
+  # the editor role or been deactivated since this socket connected.
+  defp editor_access?(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id),
+         true <- is_nil(membership.deactivated_at) do
+      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+    else
+      _other -> false
+    end
   end
 
   defp has_active_constraints?(assigns) do
