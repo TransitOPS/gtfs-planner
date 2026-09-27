@@ -32,6 +32,19 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   applies the same padding rule as `Operations.create_vehicle_range/3` so
   `0098`–`0102` reads as five padded IDs, but the context remains authoritative:
   the preview is feedback and a refused submit keeps the mode and the entries.
+
+  `#vehicles-table` rows carry a checkbox and its header cell carries the
+  select-all-filtered control. The selection is a `MapSet` of vehicle UUIDs and
+  holds only what the operator or the filtered rows put there: select-all takes
+  the ids of the rows currently streamed, and a filter change clears the set. The
+  `#bulk-bar` appears while it is non-empty; `#bulk-drawer` writes one assignment
+  through `Operations.update_vehicles/4` (the blank “Not assigned” prompt clears
+  it) and bulk deletion confirms first, naming up to five vehicles.
+
+  Event ids are passed to the context unchanged, so a crafted or stale id is
+  accepted into the selection and refused by the context's ownership check
+  instead of by a page-side guess: the write changes nothing, the selection is
+  cleared and the list reloads with “Some vehicles are no longer available.”
   """
 
   use GtfsPlannerWeb, :live_view
@@ -48,6 +61,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   @vehicle_form_id "vehicle-form"
   @vehicle_form_error_id "vehicle-form-error"
   @range_form_id "vehicle-range-form"
+  @bulk_form_id "bulk-form"
+
+  # The delete confirmation names the selected vehicles; beyond this it reports
+  # how many more the request covers.
+  @bulk_name_limit 5
 
   # Mirrors the two bounds `Operations.create_vehicle_range/3` enforces before it
   # allocates anything; the preview only reports them and never relaxes them.
@@ -96,6 +114,14 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
      |> assign(:vehicle_error, nil)
      |> assign(:vehicle_type_choices, [])
      |> assign(:garage_choices, [])
+     |> assign(:selected_ids, MapSet.new())
+     |> assign(:filtered_vehicles, [])
+     |> assign(:bulk_field, nil)
+     |> assign(:bulk_form, bulk_form(%{}))
+     |> assign(:bulk_drawer_open, false)
+     |> assign(:bulk_drawer_return_focus_id, nil)
+     |> assign(:bulk_error, nil)
+     |> assign(:bulk_delete, nil)
      |> stream(:vehicles, [])
      |> stream(:vehicle_types, [])}
   end
@@ -385,6 +411,127 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   def handle_event("save_vehicle", _params, socket), do: {:noreply, socket}
 
+  # --- vehicle selection and bulk actions ------------------------------------
+
+  # The event carries an id the page never validated, and that is deliberate: the
+  # context re-validates every listed id and every target against the organization
+  # before it writes, so crafted, foreign and stale ids fail closed there and the
+  # page only reports the outcome. A row that leaves the current filter keeps its
+  # selection until the operator changes filter, which is the event that clears it.
+  @impl true
+  def handle_event("toggle_vehicle_selection", %{"vehicle_id" => id}, socket)
+      when is_binary(id) do
+    {:noreply,
+     socket
+     |> assign(:selected_ids, toggle_selection(socket.assigns.selected_ids, id))
+     |> restream_vehicles([id])}
+  end
+
+  def handle_event("toggle_vehicle_selection", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select_all_filtered", _params, socket) do
+    ids = Enum.map(socket.assigns.filtered_vehicles, & &1.id)
+
+    {:noreply, socket |> assign(:selected_ids, MapSet.new(ids)) |> restream_vehicles(ids)}
+  end
+
+  @impl true
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, clear_selection(socket)}
+  end
+
+  @impl true
+  def handle_event("open_bulk_drawer", %{"field" => field} = params, socket) do
+    case bulk_field(field) do
+      nil ->
+        {:noreply, socket}
+
+      field ->
+        {:noreply,
+         socket
+         |> assign(:bulk_field, field)
+         |> assign(:bulk_form, bulk_form(%{}))
+         |> assign(:bulk_drawer_return_focus_id, params["opener_id"])
+         |> assign(:bulk_error, nil)
+         |> assign(:bulk_drawer_open, true)}
+    end
+  end
+
+  def handle_event("open_bulk_drawer", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("close_bulk_drawer", _params, socket) do
+    {:noreply, assign(socket, :bulk_drawer_open, false)}
+  end
+
+  @impl true
+  def handle_event("save_bulk_assignment", %{"bulk" => params}, socket) do
+    field = socket.assigns.bulk_field
+
+    if is_nil(field) or empty_selection?(socket.assigns.selected_ids) do
+      {:noreply, socket}
+    else
+      assignment = {field, bulk_target(params["value"])}
+
+      case Operations.update_vehicles(
+             socket.assigns.current_organization.id,
+             actor(socket),
+             MapSet.to_list(socket.assigns.selected_ids),
+             assignment
+           ) do
+        {:ok, count} ->
+          {:noreply,
+           socket
+           |> assign(:bulk_drawer_open, false)
+           |> assign(:vehicle_notice, bulk_updated_notice(field, count))
+           |> reset_selection()
+           |> load_fleet()}
+
+        {:error, :not_found} ->
+          {:noreply, stale_selection(socket)}
+      end
+    end
+  end
+
+  def handle_event("save_bulk_assignment", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("delete_selected_vehicles", _params, socket) do
+    if empty_selection?(socket.assigns.selected_ids) do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, :bulk_delete, bulk_delete_summary(socket))}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_delete_selected_vehicles", _params, socket) do
+    {:noreply, assign(socket, :bulk_delete, nil)}
+  end
+
+  @impl true
+  def handle_event("confirm_delete_selected_vehicles", _params, socket) do
+    socket = assign(socket, :bulk_delete, nil)
+    ids = MapSet.to_list(socket.assigns.selected_ids)
+
+    if empty_selection?(socket.assigns.selected_ids) do
+      {:noreply, socket}
+    else
+      case Operations.delete_vehicles(socket.assigns.current_organization.id, ids) do
+        {:ok, count} ->
+          {:noreply,
+           socket
+           |> assign(:vehicle_notice, "#{vehicle_count_text(count)} deleted.")
+           |> reset_selection()
+           |> load_fleet()}
+
+        {:error, :not_found} ->
+          {:noreply, stale_selection(socket)}
+      end
+    end
+  end
+
   # --- rendering -------------------------------------------------------------
 
   @impl true
@@ -439,6 +586,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       <p :if={@vehicle_notice} id="vehicle-notice" role="status" class="mt-3 text-sm text-success">
         {@vehicle_notice}
       </p>
+
+      <div :if={@bulk_error} class="mt-4">
+        <.callout id="bulk-error" kind="warning" title="Selection refreshed">
+          {@bulk_error}
+        </.callout>
+      </div>
 
       <%!-- `callout/1` spreads global attributes onto its own class, so the margin
       lives on a wrapper rather than being passed to the component. --%>
@@ -614,42 +767,146 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           </.button>
         </.form>
 
+        <%!-- The reference puts the contextual bar between the filters and the
+        table, so it never pushes the filter row out of reach. --%>
+        <div
+          :if={!empty_selection?(@selected_ids)}
+          id="bulk-bar"
+          role="status"
+          class="mt-4 flex flex-wrap items-center justify-between gap-3 border border-primary/30 bg-primary/10 px-4 py-2.5"
+        >
+          <strong id="bulk-bar-count">
+            {vehicle_count_text(MapSet.size(@selected_ids))} selected
+          </strong>
+          <div class="flex flex-wrap items-center gap-2">
+            <.button
+              id="bulk-set-type"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="open_bulk_drawer"
+              phx-value-field="type"
+              phx-value-opener_id="bulk-set-type"
+            >
+              Set type
+            </.button>
+            <.button
+              id="bulk-set-garage"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="open_bulk_drawer"
+              phx-value-field="garage"
+              phx-value-opener_id="bulk-set-garage"
+            >
+              Set garage
+            </.button>
+            <.button
+              id="bulk-delete"
+              variant="danger"
+              class="min-h-11"
+              phx-click="delete_selected_vehicles"
+            >
+              Delete vehicles
+            </.button>
+            <.button
+              id="bulk-clear-selection"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="clear_selection"
+            >
+              Clear selection
+            </.button>
+          </div>
+        </div>
+
         <div :if={!@vehicles_empty? && @filtered_count > 0} class="mt-2">
+          <%!-- `table/1` has no header slot, so the checkbox column the reference
+          puts first — its header cell holding the select-all-filtered control —
+          is rendered here with the same container, stream and `data-label`
+          contract the component provides. --%>
           <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-            <.table id="vehicles-table" rows={@streams.vehicles}>
-              <:col :let={{_id, vehicle}} label="Vehicle ID">
-                <button
-                  id={"vehicle-id-#{vehicle.id}"}
-                  type="button"
-                  phx-click="open_vehicle"
-                  phx-value-vehicle_id={vehicle.id}
-                  phx-value-opener_id={"vehicle-id-#{vehicle.id}"}
-                  class="font-mono text-sm font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                >
-                  {vehicle.vehicle_id}
-                </button>
-              </:col>
-              <:col :let={{_id, vehicle}} label="Label">
-                <span :if={blank?(vehicle.vehicle_label)} class="text-base-content/70">—</span>
-                <span :if={!blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
-              </:col>
-              <:col :let={{_id, vehicle}} label="Type">
-                <span :if={is_nil(vehicle.vehicle_type)} class="badge badge-warning badge-sm">
-                  Not assigned
-                </span>
-                <span :if={vehicle.vehicle_type}>{vehicle.vehicle_type.name}</span>
-              </:col>
-              <:col :let={{_id, vehicle}} label="Garage">
-                <span :if={is_nil(vehicle.garage)} class="badge badge-warning badge-sm">
-                  Not assigned
-                </span>
-                <span :if={vehicle.garage}>{vehicle.garage.name}</span>
-              </:col>
-              <:col :let={{_id, vehicle}} label="License plate">
-                <span :if={blank?(vehicle.license_plate)} class="text-base-content/70">—</span>
-                <span :if={!blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
-              </:col>
-            </.table>
+            <div id="vehicles-table-container" class="overflow-x-auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th class="w-12">
+                      <label class="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
+                        <input
+                          id="select-all-vehicles"
+                          type="checkbox"
+                          class="checkbox"
+                          checked={all_filtered_selected?(@selected_ids, @filtered_vehicles)}
+                          aria-label="Select all filtered vehicles"
+                          phx-click="select_all_filtered"
+                        />
+                      </label>
+                    </th>
+                    <th class="text-left">Vehicle ID</th>
+                    <th class="text-left">Label</th>
+                    <th class="text-left">Type</th>
+                    <th class="text-left">Garage</th>
+                    <th class="text-left">License plate</th>
+                  </tr>
+                </thead>
+                <tbody id="vehicles-table" phx-update="stream">
+                  <tr
+                    :for={{dom_id, vehicle} <- @streams.vehicles}
+                    id={dom_id}
+                    class={[
+                      "hover:bg-base-200",
+                      MapSet.member?(@selected_ids, vehicle.id) && "bg-primary/5"
+                    ]}
+                  >
+                    <td data-label="Select" class="w-12">
+                      <label class="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
+                        <input
+                          id={"select-vehicle-#{vehicle.id}"}
+                          type="checkbox"
+                          class="checkbox"
+                          checked={MapSet.member?(@selected_ids, vehicle.id)}
+                          aria-label={"Select vehicle #{vehicle.vehicle_id}"}
+                          phx-click="toggle_vehicle_selection"
+                          phx-value-vehicle_id={vehicle.id}
+                        />
+                      </label>
+                    </td>
+                    <td data-label="Vehicle ID">
+                      <button
+                        id={"vehicle-id-#{vehicle.id}"}
+                        type="button"
+                        phx-click="open_vehicle"
+                        phx-value-vehicle_id={vehicle.id}
+                        phx-value-opener_id={"vehicle-id-#{vehicle.id}"}
+                        class="font-mono text-sm font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                      >
+                        {vehicle.vehicle_id}
+                      </button>
+                    </td>
+                    <td data-label="Label">
+                      <span :if={blank?(vehicle.vehicle_label)} class="text-base-content/70">—</span>
+                      <span :if={!blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
+                    </td>
+                    <td data-label="Type">
+                      <span :if={is_nil(vehicle.vehicle_type)} class="badge badge-warning badge-sm">
+                        Not assigned
+                      </span>
+                      <span :if={vehicle.vehicle_type}>{vehicle.vehicle_type.name}</span>
+                    </td>
+                    <td data-label="Garage">
+                      <span :if={is_nil(vehicle.garage)} class="badge badge-warning badge-sm">
+                        Not assigned
+                      </span>
+                      <span :if={vehicle.garage}>{vehicle.garage.name}</span>
+                    </td>
+                    <td data-label="License plate">
+                      <span :if={blank?(vehicle.license_plate)} class="text-base-content/70">
+                        —
+                      </span>
+                      <span :if={!blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
           <p id="vehicles-count" class="mt-2 text-sm text-base-content/70">
             {@filtered_count} of {@total_count} vehicles
@@ -697,6 +954,39 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         error={@vehicle_error}
         return_focus_id={@vehicle_drawer_return_focus_id}
       />
+
+      <.bulk_drawer
+        open={@bulk_drawer_open}
+        field={@bulk_field}
+        form={@bulk_form}
+        type_options={@vehicle_type_choices}
+        garage_options={@garage_choices}
+        count={MapSet.size(@selected_ids)}
+        return_focus_id={@bulk_drawer_return_focus_id}
+      />
+
+      <.confirm_dialog
+        :if={@bulk_delete}
+        id="bulk-delete-confirm"
+        open={true}
+        title={"Delete #{vehicle_count_text(@bulk_delete.total)}?"}
+        confirm_label="Delete vehicles"
+        pending_label="Deleting…"
+        on_confirm="confirm_delete_selected_vehicles"
+        on_cancel="cancel_delete_selected_vehicles"
+        described_by="bulk-delete-confirm-body"
+        return_focus_id="bulk-delete"
+      >
+        <p>
+          The selected vehicles are removed from this organization. Fleet checks will use the lower vehicle count.
+        </p>
+        <ul id="bulk-delete-ids" class="mt-2 font-mono">
+          <li :for={vehicle_id <- @bulk_delete.shown}>{vehicle_id}</li>
+        </ul>
+        <p :if={@bulk_delete.remaining > 0} id="bulk-delete-more" class="mt-1">
+          and {@bulk_delete.remaining} more
+        </p>
+      </.confirm_dialog>
 
       <.confirm_dialog
         :if={@type_delete_target}
@@ -1062,6 +1352,66 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     """
   end
 
+  attr :open, :boolean, required: true
+  attr :field, :atom, default: nil
+  attr :form, :any, required: true
+  attr :type_options, :list, required: true
+  attr :garage_options, :list, required: true
+  attr :count, :integer, required: true
+  attr :return_focus_id, :string, default: nil
+
+  defp bulk_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:form_id, @bulk_form_id)
+      |> assign(:title, bulk_drawer_title(assigns.field))
+      |> assign(:field_label, bulk_field_label(assigns.field))
+      |> assign(
+        :options,
+        bulk_field_options(assigns.field, assigns.type_options, assigns.garage_options)
+      )
+
+    ~H"""
+    <.drawer
+      id="bulk-drawer"
+      open={@open}
+      on_close="close_bulk_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      initial_focus_id={"#{@form_id}_value"}
+      return_focus_id={@return_focus_id}
+    >
+      <div id="bulk-drawer-content">
+        <p id="bulk-drawer-description" class="mb-4 text-sm text-base-content/70">
+          Update {vehicle_count_text(@count)} at once. Saving replaces the current value on every selected vehicle.
+        </p>
+
+        <.form for={@form} id={@form_id} phx-submit="save_bulk_assignment" class="space-y-1">
+          <.input
+            field={@form[:value]}
+            type="select"
+            label={@field_label}
+            prompt="Not assigned"
+            options={@options}
+          />
+
+          <div class="flex flex-wrap items-center gap-3 pt-3">
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">{@title}</.button>
+            <.button
+              type="button"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="close_bulk_drawer"
+            >
+              Cancel
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
   # --- fleet state -----------------------------------------------------------
 
   defp refresh_fleet(socket, params, uri) do
@@ -1072,6 +1422,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     |> assign(:fleet_filters, filters)
     |> assign(:filters_form, filters_form(filters))
     |> assign(:filters_active?, filters_active?(filters))
+    |> assign(:bulk_error, nil)
+    |> assign(:selected_ids, MapSet.new())
     |> load_fleet()
   end
 
@@ -1097,6 +1449,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     |> assign(:garage_options, garage_options(garages))
     |> assign(:total_count, counts.total)
     |> assign(:filtered_count, length(vehicles))
+    |> assign(:filtered_vehicles, vehicles)
     |> assign(:needs_assignment_count, counts.needs_assignment)
     |> assign(:summary_garages, summary_garages(summary))
     |> assign(:vehicles_empty?, counts.total == 0)
@@ -1279,6 +1632,106 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   end
 
   defp load_vehicle(_socket, _id), do: nil
+
+  # --- bulk selection state --------------------------------------------------
+
+  # Only the rows the page is currently streaming are re-inserted: a crafted id
+  # that is not on screen stays in the selection (the context refuses it on the
+  # write) but must not inject a row into the stream.
+  defp restream_vehicles(socket, ids) do
+    Enum.reduce(ids, socket, fn id, socket ->
+      case Enum.find(socket.assigns.filtered_vehicles, &(&1.id == id)) do
+        nil -> socket
+        vehicle -> stream_insert(socket, :vehicles, vehicle)
+      end
+    end)
+  end
+
+  defp clear_selection(socket) do
+    socket
+    |> reset_selection()
+    |> restream_vehicles(Enum.map(socket.assigns.filtered_vehicles, & &1.id))
+  end
+
+  # Dropping the set needs no re-stream of its own where `load_fleet/1` follows:
+  # that reset re-renders every row from the now-empty selection.
+  defp reset_selection(socket), do: assign(socket, :selected_ids, MapSet.new())
+
+  defp toggle_selection(selected, id) do
+    if MapSet.member?(selected, id) do
+      MapSet.delete(selected, id)
+    else
+      MapSet.put(selected, id)
+    end
+  end
+
+  defp empty_selection?(selected), do: MapSet.size(selected) == 0
+
+  defp all_filtered_selected?(_selected, []), do: false
+
+  defp all_filtered_selected?(selected, vehicles) do
+    Enum.all?(vehicles, &MapSet.member?(selected, &1.id))
+  end
+
+  # The two assignment fields the context accepts, spelled as the select's
+  # `phx-value-field`; anything else is refused rather than guessed.
+  defp bulk_field("type"), do: :vehicle_type_id
+  defp bulk_field("garage"), do: :garage_id
+  defp bulk_field(_field), do: nil
+
+  # The blank prompt is “Not assigned”, which clears the assignment; every other
+  # value reaches the context unchanged so its ownership check decides.
+  defp bulk_target(value) when value in [nil, ""], do: nil
+  defp bulk_target(value), do: value
+
+  defp bulk_drawer_title(:garage_id), do: "Set garage"
+  defp bulk_drawer_title(_field), do: "Set type"
+
+  defp bulk_field_label(:vehicle_type_id), do: "Vehicle type"
+  defp bulk_field_label(_field), do: "Garage"
+
+  defp bulk_field_options(:vehicle_type_id, type_options, _garage_options), do: type_options
+  defp bulk_field_options(:garage_id, _type_options, garage_options), do: garage_options
+  defp bulk_field_options(_field, _type_options, _garage_options), do: []
+
+  defp bulk_form(attrs) do
+    {%{}, %{value: :string}}
+    |> Ecto.Changeset.cast(attrs, [:value])
+    |> to_form(as: :bulk)
+  end
+
+  defp bulk_updated_notice(:vehicle_type_id, count),
+    do: "Type updated on #{vehicle_count_text(count)}."
+
+  defp bulk_updated_notice(:garage_id, count),
+    do: "Garage updated on #{vehicle_count_text(count)}."
+
+  # What the confirmation dialog names: the selected vehicles still on screen, in
+  # list order, plus the count of selected ids it cannot name (a crafted or
+  # already-deleted id), so the request's size is never understated.
+  defp bulk_delete_summary(socket) do
+    selected = socket.assigns.selected_ids
+    total = MapSet.size(selected)
+
+    shown =
+      socket.assigns.filtered_vehicles
+      |> Enum.filter(&MapSet.member?(selected, &1.id))
+      |> Enum.map(& &1.vehicle_id)
+      |> Enum.take(@bulk_name_limit)
+
+    %{total: total, shown: shown, remaining: total - length(shown)}
+  end
+
+  # The context refused the write, so nothing changed: report it, drop the stale
+  # selection and reload the list the operator is looking at.
+  defp stale_selection(socket) do
+    socket
+    |> assign(:bulk_drawer_open, false)
+    |> assign(:bulk_delete, nil)
+    |> assign(:bulk_error, "Some vehicles are no longer available. The list has been refreshed.")
+    |> reset_selection()
+    |> load_fleet()
+  end
 
   # The same padding rule `Operations.create_vehicle_range/3` applies, stated
   # here so the operator sees which IDs a group will claim before saving.
