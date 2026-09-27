@@ -35,6 +35,32 @@ defmodule GtfsPlanner.Gtfs.Calendars.MutationsTest do
     }
   end
 
+  test "create and copy return canonical identities that reload", context do
+    assert {:ok, created} =
+             Gtfs.create_calendar(
+               %{
+                 service_id: " SPACE ",
+                 name: "Space",
+                 kind: :dates_only,
+                 dates: [~D[2026-10-01]]
+               },
+               context.audit
+             )
+
+    assert created.service_id == "SPACE"
+
+    assert {:ok, _} =
+             Gtfs.fetch_calendar(context.organization.id, context.version.id, created.service_id)
+
+    assert {:ok, copied} =
+             Gtfs.duplicate_calendar(created.service_id, %{service_id: " COPY "}, context.audit)
+
+    assert copied.service_id == "COPY"
+
+    assert {:ok, _} =
+             Gtfs.fetch_calendar(context.organization.id, context.version.id, copied.service_id)
+  end
+
   describe "save" do
     test "reviewed save writes metadata and weekly changes with exact audit rows", context do
       calendar_fixture(context.organization.id, context.version.id,
@@ -292,6 +318,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.MutationsTest do
 
       assert review.changes.kind == :dates_only
       assert review.changes.persisted_date_count == 20
+      assert review.changes.changed_count == 22
       assert review.affected_service_ids == ["conv_out"]
 
       assert {:ok, result} =
@@ -338,6 +365,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.MutationsTest do
       assert {:ok, review} =
                review(context, {:convert, "free_dates", :weekly, weekly_dates_attrs()}, created)
 
+      assert review.changes.changed_count == 1
       assert review.changes.new_service_date_count > 0
       assert Enum.any?(review.warnings, &(&1.reason == :outside_range))
 

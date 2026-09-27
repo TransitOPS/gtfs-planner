@@ -144,9 +144,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   @doc """
   Renders the three-month service preview with its legend and keyboard hints.
 
-  Month cells are buttons so the grid is reachable; the container handles
-  ArrowLeft/ArrowRight (and Home) to move the window, and reports the focused
-  date in a polite status region.
+  The focusable preview container handles ArrowLeft/ArrowRight and Home to
+  move the month window. Individual cells expose their civil date and service state.
   """
   attr :id, :string, required: true
   attr :months, :list, required: true
@@ -174,9 +173,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           <table class="mt-1 w-full text-center text-xs">
             <thead>
               <tr class="text-base-content/70">
-                <th :for={day <- ~w(M T W T F S S)} scope="col" class="pb-1 font-medium">
-                  <span aria-hidden="true">{day}</span>
-                  <span class="sr-only">{weekday_name(day)}</span>
+                <th
+                  :for={day <- ~w(Monday Tuesday Wednesday Thursday Friday Saturday Sunday)}
+                  scope="col"
+                  class="pb-1 font-medium"
+                >
+                  <span aria-hidden="true">{String.first(day)}</span>
+                  <span class="sr-only">{day}</span>
                 </th>
               </tr>
             </thead>
@@ -445,7 +448,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     # the restore command removes; a break interval has no dates list of its own.
     segments =
       (break_segments ++ period_segments)
-      |> Enum.sort_by(&{&1.first_date, &1.kind == :break})
+      |> Enum.sort_by(&{Date.to_erl(&1.first_date), &1.kind == :break})
 
     Enum.map(segments, fn segment ->
       if segment.kind == :break do
@@ -540,11 +543,4 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp exception_symbol(:removed), do: "×"
 
   defp legend_order, do: [service: "●", removed: "×", added: "+", none: "–"]
-
-  defp weekday_name("M"), do: "Monday"
-  defp weekday_name("T"), do: "Tuesday"
-  defp weekday_name("W"), do: "Wednesday"
-  defp weekday_name("F"), do: "Friday"
-  defp weekday_name("S"), do: "Saturday"
-  defp weekday_name(_other), do: "Sunday"
 end

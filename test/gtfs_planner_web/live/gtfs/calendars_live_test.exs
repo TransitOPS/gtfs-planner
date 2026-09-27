@@ -225,6 +225,39 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     end
   end
 
+  describe "agency timezone disclosure" do
+    setup :use_real_adapter
+
+    for {reason, zones} <- [
+          {:missing, []},
+          {:invalid, ["Not/AZone"]},
+          {:conflicting, ["Etc/UTC", "America/New_York"]}
+        ] do
+      @reason reason
+      @zones zones
+      test "discloses #{@reason} timezone on ordinary list entry", context do
+        calendar_attribute_fixture(context.organization.id, context.version.id, %{
+          service_id: "ZONE",
+          service_description: "Timezone calendar"
+        })
+
+        for zone <- @zones,
+            do:
+              agency_fixture(context.organization.id, context.version.id, %{agency_timezone: zone})
+
+        {:ok, view, _} =
+          live(
+            log_in_user(context.conn, context.user, organization: context.organization),
+            list_path(context.version)
+          )
+
+        loaded(view)
+        assert has_element?(view, "#calendars-timezone-fallback", to_string(@reason))
+        assert has_element?(view, "#calendars-timezone-fallback", "UTC")
+      end
+    end
+  end
+
   describe "URL state through the real Repo adapter" do
     setup :use_real_adapter
 
@@ -749,6 +782,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
 
       view
       |> form("#calendar-date-change-form", date_change: %{mode: "several", date_add: second})
+      |> render_change()
+
+      assert has_element?(view, "#calendar-date-change-dates-chip-#{first}")
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "several", date_add: second})
       |> render_submit()
 
       view
@@ -762,6 +801,35 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       # A date chip is removable without touching the stored rows.
       render_click(view, "date_change_remove_date", %{"date" => first})
       refute render(view) =~ "calendar-date-change-dates-chip-#{first}"
+      assert scoped_date_count(organization, version) == 0
+    end
+
+    test "invalid range cannot apply a prior valid selection", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      today = drawer_calendars(organization, version)
+
+      {:ok, view, _} =
+        live(log_in_user(conn, user, organization: organization), list_path(version))
+
+      loaded(view)
+      render_click(view, "open_date_change", %{"date" => Date.to_iso8601(today)})
+
+      render_change(view, "date_change_form", %{
+        "date_change" => %{
+          "mode" => "range",
+          "date_from" => Date.to_iso8601(Date.add(today, 2)),
+          "date_to" => Date.to_iso8601(today)
+        }
+      })
+
+      render_click(view, "date_change_review", %{})
+      refute has_element?(view, "#calendar-date-change-apply")
+      render_click(view, "date_change_apply", %{})
+      render(view)
       assert scoped_date_count(organization, version) == 0
     end
 
@@ -857,6 +925,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       assert view |> render() =~ "rows change across"
 
       assert render_click(view, "date_change_apply", %{}) =~ "Applied the date change"
+      assert render(view) =~ "Applied the date change"
       assert render(view) =~ "rows changed"
 
       # The stored rows are exactly the authored dates, and the audit is correlated.
@@ -906,10 +975,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
         set: [service_description: "Renamed in another session"]
       )
 
-      html = render_click(view, "date_change_apply", %{})
+      render_click(view, "date_change_apply", %{})
+      html = render(view)
       assert html =~ "changed in another session"
       assert html =~ holiday_iso
       assert scoped_date_count(organization, version) == 0
+      render_click(view, "date_change_refresh", %{})
+      assert checked_services(view, "remove", ["ALL_DAYS", "EXTRA"]) == ["ALL_DAYS"]
+      assert render_click(view, "date_change_review", %{}) =~ "Result after applying"
+      render_click(view, "date_change_apply", %{})
+      assert render(view) =~ "Applied the date change"
+      assert scoped_date_count(organization, version) == 1
     end
   end
 end

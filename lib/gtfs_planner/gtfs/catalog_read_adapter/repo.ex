@@ -116,10 +116,10 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @impl true
   def load_calendar_feed_status(organization_id, gtfs_version_id) do
     case run(fn ->
-           today = DisplayClock.today(organization_id, gtfs_version_id).date
-           {today, Calendars.feed_service_gaps(organization_id, gtfs_version_id, today)}
+           zone = DisplayClock.today(organization_id, gtfs_version_id)
+           {zone, Calendars.feed_service_gaps(organization_id, gtfs_version_id, zone.date)}
          end) do
-      {:ok, {today, {:ok, gaps}}} -> {:ok, %{today: today, gaps: gaps}}
+      {:ok, {zone, {:ok, gaps}}} -> {:ok, %{today: zone.date, zone: zone, gaps: gaps}}
       {:ok, {_today, {:error, reason}}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end

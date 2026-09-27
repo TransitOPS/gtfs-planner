@@ -731,7 +731,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         if String.trim(service_id) == "" do
           {:error, :invalid_input}
         else
-          {:ok, service_id}
+          {:ok, String.trim(service_id)}
         end
 
       _other ->
@@ -982,7 +982,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp duplicate_service_id(source_service_id, attrs, audit_context) do
     case fetch_value(attrs, :service_id) do
       nil -> {:ok, available_service_id(source_service_id, audit_context)}
-      requested when is_binary(requested) -> {:ok, requested}
+      requested when is_binary(requested) -> create_service_id(attrs)
       _other -> {:error, :invalid_input}
     end
   end
@@ -1311,7 +1311,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
              put_exceptions: Enum.map(effective, &{&1, @added}),
              projected_calendar: nil,
              projected_exceptions: Enum.map(effective, &%{date: &1, exception_type: @added}),
-             row_changes: 1 + length(source.exceptions) + length(effective),
+             row_changes:
+               length(source.exceptions) + length(effective) -
+                 2 * Enum.count(source.exceptions, &(&1.exception_type == @added)),
              changes: %{
                action: :convert,
                service_id: service_id,
@@ -1380,7 +1382,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
              weekly: %{action: :insert, calendar: calendar, changeset: changeset},
              projected_calendar: calendar,
              projected_exceptions: projected_exceptions,
-             row_changes: 1,
+             row_changes: 0,
              changes: %{
                action: :convert,
                service_id: service_id,
@@ -1585,6 +1587,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         gtfs_version_id: audit_context.gtfs_version_id
       }
       |> CalendarAttribute.changeset(Map.put(updates, :service_id, service_id))
+      |> Ecto.Changeset.put_change(:service_id, service_id)
 
     if changeset.valid? do
       {:ok,

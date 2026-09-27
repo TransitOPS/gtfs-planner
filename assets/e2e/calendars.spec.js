@@ -720,3 +720,98 @@ test.describe("cross-calendar date change drawer", () => {
     }
   });
 });
+
+test("retains sequential dates, shows pending, recovers a stale write and guards dirty departures", async ({page, context}) => {
+  let held = null;
+  let holdApply = false;
+  await page.routeWebSocket(/\/live\/websocket/, ws => {
+    const server = ws.connectToServer();
+    ws.onMessage(message => {
+      if (holdApply && String(message).includes('date_change_apply')) {
+        held = () => server.send(message);
+      } else server.send(message);
+    });
+  });
+  const versionId = await openCalendars(page);
+  await page.click("#calendar-date-change");
+  await waitForDrawerReady(page);
+  const first = isoDate(nextFriday(shiftDays(new Date(), 4)));
+  const second = isoDate(shiftDays(new Date(first), 7));
+  await page.selectOption("#calendar-date-change-dates-mode", "several");
+  await page.fill("#calendar-date-change-dates-date-add", first);
+  await page.click("#calendar-date-change-dates-add");
+  await page.fill("#calendar-date-change-dates-date-add", second);
+  await expect(page.locator(`#calendar-date-change-dates-chip-${first}`)).toBeVisible();
+  await page.click("#calendar-date-change-dates-add");
+  await expect(page.locator(`#calendar-date-change-dates-chip-${second}`)).toBeVisible();
+  await page.uncheck("#calendar-date-change-remove-CAL_SCHOOL input");
+  await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
+  await page.click("#calendar-date-change-review");
+  await expect(page.locator("#calendar-date-change-review-panel")).toBeVisible();
+
+  // A second ordinary editor changes the source after review, causing a real
+  // rejected write. The database and domain writer are not mocked.
+  const other = await context.newPage();
+  await openEditorFor(other, versionId, "CAL_DAILY");
+  await other.fill("#calendar-name", "Every day service updated");
+  await other.click("#calendar-save");
+  await expect(other.locator("#calendar-status")).toContainText("Saved");
+
+  holdApply = true;
+  await page.click("#calendar-date-change-apply");
+  await expect.poll(() => held !== null).toBe(true);
+  await expect(page.locator("#calendar-date-change-apply")).toBeDisabled();
+  await expect(page.locator("#calendar-date-change-apply")).toContainText("Applying");
+  await expect(page.locator("#calendar-date-change-drawer-close")).toBeDisabled();
+  await expect(page.locator("#calendar-date-change-form")).toHaveAttribute("inert", "");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#calendar-date-change-drawer")).toBeVisible();
+  holdApply = false;
+  held();
+  await expect(page.locator("#calendar-date-change-error")).toContainText("changed in another session");
+  await page.click("#calendar-date-change-refresh");
+  await page.click("#calendar-date-change-review");
+  await expect(page.locator("#calendar-date-change-review-panel")).toContainText("Every day service updated");
+
+  await page.click("#calendar-date-change-apply");
+  await expect(page.locator("#calendars-date-change-status")).toContainText("Applied the date change");
+  await page.click("#calendar-date-change");
+  await waitForDrawerReady(page);
+
+  // Disconnect only this client's transport; no shared server/database stop.
+  await page.evaluate(() => window.liveSocket.disconnect());
+  await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
+  await page.evaluate(() => window.liveSocket.connect());
+  await expect(page.locator("#calendars-list-container")).toBeVisible();
+
+  await openEditorFor(other, versionId, "CAL_DAILY");
+  for (const date of [first, second]) {
+    await expect(other.locator(`#calendar-exception-chips-${date}`)).toContainText("Service removed");
+    await other.click(`#calendar-exception-chips-remove-${date}`);
+    await expect(other.locator("#calendar-status")).toContainText("date changes were removed");
+  }
+  await other.fill("#calendar-name", "Every day service");
+  await other.click("#calendar-save");
+  await expect(other.locator("#calendar-status")).toContainText("Saved");
+  await other.close();
+
+  await openEditorFor(page, versionId, "CAL_DAILY");
+  await page.fill("#calendar-name", "School days");
+  await page.click("#calendar-save");
+  await expect(page.locator("#calendar-name")).toHaveValue("School days");
+  await expect(page.locator("#calendar-name")).toHaveAttribute("aria-invalid", "true");
+  await page.fill("#calendar-name", "Every day service");
+  await page.click("#calendar-save");
+  await expect(page.locator("#calendar-status")).toContainText("No change was needed");
+  await page.fill("#calendar-name", "Unsaved draft");
+  await expect(page.locator("#calendar-editor")).toHaveAttribute("data-dirty", "true");
+  await page.locator('#calendar-editor nav a').click();
+  await expect(page.locator("#calendar-dirty-dialog")).toBeVisible();
+  await page.locator('#calendar-dirty-dialog [data-dialog-dismiss]').click();
+  await expect(page.locator("#calendar-name")).toHaveValue("Unsaved draft");
+  await page.evaluate(() => {
+    const event = new Event("beforeunload", {cancelable: true});
+    window.dispatchEvent(event);
+    if (!event.defaultPrevented) throw new Error("dirty unload was not guarded");
+  });
+});

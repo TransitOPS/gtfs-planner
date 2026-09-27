@@ -12,6 +12,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Repo
 
   defp editor_context(_context) do
@@ -125,6 +126,175 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
     |> LazyHTML.from_fragment()
     |> LazyHTML.query(selector)
     |> LazyHTML.attribute(attribute)
+  end
+
+  test "timeline remains chronological across a year boundary", context do
+    seeded_weekly(context, "TIMELINE", "Timeline", %{
+      start_date: ~D[2026-12-28],
+      end_date: ~D[2027-01-12]
+    })
+
+    for date <- [~D[2026-12-31], ~D[2027-01-01], ~D[2027-01-04]],
+        do:
+          calendar_date_fixture(context.organization.id, context.version.id, %{
+            service_id: "TIMELINE",
+            date: date,
+            exception_type: 2
+          })
+
+    {:ok, view, html} =
+      live(
+        log_in_user(context.conn, context.user, organization: context.organization),
+        detail_path(context.version, "TIMELINE")
+      )
+
+    ids = attribute_values(html, "[id^=periods-segment-]", "id")
+
+    assert ids == [
+             "periods-segment-period-2026-12-28",
+             "periods-segment-break-2026-12-31",
+             "periods-segment-period-2027-01-05"
+           ]
+
+    for day <- ~w(Monday Tuesday Wednesday Thursday Friday Saturday Sunday),
+        do: assert(has_element?(view, "#months th", day))
+  end
+
+  test "initial unavailable read retries the original identity", context do
+    import Mox
+    adapter = GtfsPlanner.Gtfs.CatalogReadAdapterMock
+    key = :gtfs_catalog_read_adapter
+    previous = Application.get_env(:gtfs_planner, key)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:gtfs_planner, key, previous),
+        else: Application.delete_env(:gtfs_planner, key)
+    end)
+
+    seeded_weekly(context, "RETRY", "Retry calendar")
+    Application.put_env(:gtfs_planner, key, adapter)
+    stub(adapter, :fetch_calendar, fn _, _, "RETRY" -> {:error, :unavailable} end)
+
+    {:ok, view, _} =
+      live(
+        log_in_user(context.conn, context.user, organization: context.organization),
+        detail_path(context.version, "RETRY")
+      )
+
+    stub(adapter, :fetch_calendar, fn org, version, "RETRY" ->
+      Calendars.get_calendar(org, version, "RETRY")
+    end)
+
+    render_click(view, "retry")
+    assert has_element?(view, "#calendar-name[value='Retry calendar']")
+  end
+
+  test "exception-only identity has an editor and a working reviewed delete", context do
+    calendar_date_fixture(context.organization.id, context.version.id, %{
+      service_id: "ONLY",
+      date: ~D[2026-03-03],
+      exception_type: 1
+    })
+
+    {:ok, view, _} =
+      live(
+        log_in_user(context.conn, context.user, organization: context.organization),
+        detail_path(context.version, "ONLY")
+      )
+
+    refute has_element?(view, "#calendar-date-input")
+    assert has_element?(view, "#calendar-exception-form")
+    render_click(view, "delete")
+    assert has_element?(view, "#calendar-review-dialog[data-open=true]")
+    assert {:error, {:live_redirect, _}} = render_click(view, "apply_review")
+
+    assert Gtfs.fetch_calendar(context.organization.id, context.version.id, "ONLY") ==
+             {:error, :not_found}
+  end
+
+  test "weekly save with no effective days requires explicit confirmation", context do
+    seeded_weekly(context, "LAST", "Last service")
+
+    {:ok, view, _} =
+      live(
+        log_in_user(context.conn, context.user, organization: context.organization),
+        detail_path(context.version, "LAST")
+      )
+
+    params = %{
+      "calendar" => %{
+        "name" => "Last service",
+        "weekdays" => ["monday"],
+        "start_date" => "2026-03-07",
+        "end_date" => "2026-03-07"
+      }
+    }
+
+    render_submit(view, "submit_form", params)
+    assert has_element?(view, "#calendar-review-dialog[data-open=true]")
+    assert has_element?(view, "#calendar-review-warnings", "No service days")
+    assert stored(context, "LAST").active_dates != []
+    render_click(view, "cancel_review")
+    assert stored(context, "LAST").active_dates != []
+    render_submit(view, "submit_form", params)
+    render_click(view, "apply_review")
+    assert stored(context, "LAST").active_dates == []
+  end
+
+  test "draft preview changes a service cell without writing", context do
+    today = Date.utc_today()
+    first = Date.beginning_of_month(today)
+    last = Date.end_of_month(today)
+    second = Date.add(first, 1)
+
+    seeded_weekly(context, "PREVIEW", "Preview", %{
+      start_date: first,
+      end_date: last,
+      saturday: 1,
+      sunday: 1
+    })
+
+    {:ok, view, html} =
+      live(
+        log_in_user(context.conn, context.user, organization: context.organization),
+        detail_path(context.version, "PREVIEW")
+      )
+
+    before = cell_aria_label(html, second)
+
+    render_change(view, "validate", %{
+      "calendar" => %{
+        "weekdays" => ~w(monday tuesday wednesday thursday friday saturday sunday),
+        "end_date" => Date.to_iso8601(first)
+      }
+    })
+
+    assert cell_aria_label(render(view), second) != before
+    assert stored(context, "PREVIEW").calendar.end_date == last
+    assert render(view) =~ "Preview includes your unsaved changes"
+  end
+
+  test "unnamed imported zero-day schedule permits a metadata-only save", context do
+    calendar_fixture(
+      context.organization.id,
+      context.version.id,
+      calendar_attrs("ZERO", %{monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0})
+    )
+
+    {:ok, view, _} =
+      live(
+        log_in_user(context.conn, context.user, organization: context.organization),
+        detail_path(context.version, "ZERO")
+      )
+
+    render_submit(view, "submit_form", %{
+      "calendar" => %{"name" => "", "weekdays" => [], "service_schedule_name" => "Season"}
+    })
+
+    render_click(view, "apply_review")
+    assert stored(context, "ZERO").attributes.service_schedule_name == "Season"
+    assert stored(context, "ZERO").attributes.service_description == nil
   end
 
   describe "creating either kind from ordinary navigation" do

@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      |> assign(:all_calendars, [])
      |> assign(:calendars, [])
      |> assign(:counts, %{calendars: 0, run_today: 0, ending_soon: 0})
+     |> assign(:zone, nil)
      |> assign(:today, nil)
      |> assign(:gaps, [])
      |> assign(:calendars_empty?, false)
@@ -175,19 +176,43 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   @impl true
+  def handle_event(
+        "close_date_change",
+        _params,
+        %{assigns: %{date_change_pending?: true}} = socket
+      ),
+      do: {:noreply, socket}
+
   def handle_event("close_date_change", _params, socket) do
     {:noreply, close_date_change(socket)}
   end
 
   @impl true
   def handle_event("date_change_refresh", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:date_change_sources, snapshot_sources(socket.assigns.all_calendars))
-     |> assign(:date_change_review, nil)
-     |> assign(:date_change_errors, %{})
-     |> assign(:date_change_manual?, false)
-     |> put_date_change_dates(socket.assigns.date_change_dates)}
+    case Gtfs.load_calendar_catalog(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           []
+         ) do
+      {:ok, summaries} ->
+        sources = snapshot_sources(summaries)
+        ids = MapSet.new(Map.keys(sources))
+
+        {:noreply,
+         socket
+         |> assign(:all_calendars, summaries)
+         |> assign(:date_change_sources, sources)
+         |> assign(
+           :date_change_remove,
+           MapSet.intersection(socket.assigns.date_change_remove, ids)
+         )
+         |> assign(:date_change_add, MapSet.intersection(socket.assigns.date_change_add, ids))
+         |> put_date_change_dates(socket.assigns.date_change_dates)}
+
+      {:error, _reason} ->
+        {:noreply,
+         date_change_error(socket, "targets", "The snapshot could not be refreshed. Try again.")}
+    end
   end
 
   @impl true
@@ -253,6 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
          {:ok, feed_status} <- Gtfs.load_calendar_feed_status(organization_id, version_id) do
       socket
       |> assign(:all_calendars, summaries)
+      |> assign(:zone, Map.get(feed_status, :zone))
       |> assign(:today, feed_status.today)
       |> assign(:gaps, feed_status.gaps)
       |> assign(:calendars_state, :ready)
@@ -281,6 +307,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:calendars, [])
     |> assign(:calendars_empty?, false)
     |> assign(:filtered_empty?, false)
+    |> assign(:zone, nil)
     |> assign(:today, nil)
     |> assign(:gaps, [])
     |> stream(:calendars, [], reset: true)
@@ -415,6 +442,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp update_date_change_dates(socket, params) do
     mode = allowlisted(params["mode"], @date_change_mode_keys, socket.assigns.date_change_mode)
 
+    previous_dates =
+      if mode == socket.assigns.date_change_mode, do: socket.assigns.date_change_dates, else: []
+
     socket =
       socket
       |> assign(:date_change_mode, mode)
@@ -423,12 +453,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         Map.take(params, ["date", "date_from", "date_to", "date_add"])
       )
 
-    case collect_dates(mode, params) do
+    case collect_dates(mode, Map.put(params, "selected_dates", previous_dates)) do
       {:ok, dates} ->
         put_date_change_dates(socket, dates)
 
       {:error, field, message} ->
         socket
+        |> assign(:date_change_dates, [])
         |> assign(:date_change_errors, %{field => message})
         |> assign(:date_change_review, nil)
     end
@@ -453,7 +484,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
-  defp collect_dates("several", _params), do: {:ok, []}
+  defp collect_dates("several", params), do: {:ok, params["selected_dates"] || []}
 
   defp collect_dates(_mode, _params), do: {:ok, []}
 
@@ -562,6 +593,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     add_to = socket.assigns.date_change_add |> MapSet.to_list() |> Enum.sort()
 
     cond do
+      map_size(socket.assigns.date_change_errors) > 0 ->
+        socket
+
       dates == [] ->
         date_change_error(socket, "date", "Choose at least one date to change.")
 
@@ -633,7 +667,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         end
 
       nil ->
-        socket
+        assign(socket, :date_change_pending?, false)
     end
   end
 
@@ -985,6 +1019,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 }
               ]}
             />
+            <p :if={@zone && @zone.fallback?} id="calendars-timezone-fallback" role="status">
+              Agency timezone {@zone.fallback_reason}; Today and expiry filters use UTC.
+            </p>
             <span :if={@today} id="calendars-today" class="text-sm text-base-content/70">
               Today · {format_date(@today)}
             </span>
@@ -1141,6 +1178,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       <.drawer
         id="calendar-date-change-drawer"
         open={@date_change_open?}
+        pending={@date_change_pending?}
         on_close="close_date_change"
         title="Change service on a date"
         initial_focus={:first_field}
@@ -1149,6 +1187,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         <.form
           for={@date_change_form}
           id="calendar-date-change-form"
+          phx-hook="CalendarDateChange"
           phx-change="date_change_form"
           phx-submit="date_change_add_date"
           class="space-y-6"
@@ -1322,7 +1361,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               :if={@date_change_review != nil}
               type="button"
               id="calendar-date-change-apply"
-              phx-click="date_change_apply"
+              phx-click={JS.dispatch("calendar:apply", to: "#calendar-date-change-form")}
               disabled={@date_change_pending?}
               class="btn btn-sm btn-primary min-h-11"
             >

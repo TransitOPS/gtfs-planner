@@ -151,9 +151,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     # A date entered in the specific-dates picker becomes a draft chip as soon as
     # the picker reports a complete date, so the drafted dates are part of the
     # same form values the create command reads.
-    case params["date_input"] do
-      "" -> {:noreply, put_params(socket, params, errors: [])}
-      input -> draft_date(socket, params, input)
+    case {socket.assigns.live_action, params["date_input"]} do
+      {:new, input} when input != "" -> draft_date(socket, params, input)
+      _ -> {:noreply, put_params(socket, params, errors: [])}
     end
   end
 
@@ -269,6 +269,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   @impl true
+  def handle_event("calendar_depart", %{"path" => path}, socket) do
+    if String.starts_with?(path, "/") and not String.starts_with?(path, "//") do
+      {:noreply, assign(socket, :pending_navigation, path)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("duplicate", _params, %{assigns: %{dirty?: true}} = socket) do
+    {:noreply, assign(socket, :pending_action, :duplicate)}
+  end
+
   def handle_event("duplicate", _params, socket) do
     audit = audit_context(socket)
 
@@ -377,6 +390,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp load_calendar(socket, service_id) when is_binary(service_id) do
+    socket = assign(socket, :service_id, service_id)
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
@@ -464,8 +478,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp assign_preview(socket, month) do
     first = Date.new!(month.year, month.month, 1)
     source = socket.assigns.source
-    calendar = source && source.calendar
-    exceptions = (source && source.exceptions) || []
+    calendar = preview_calendar(socket, source)
+
+    exceptions =
+      if source && source.kind == :weekly && socket.assigns.params["kind"] == "dates_only",
+        do: Enum.map(source.active_dates, &%{date: &1, exception_type: 1}),
+        else: (source && source.exceptions) || []
+
+    exceptions =
+      exceptions ++
+        Enum.map(socket.assigns.params["dates"] || [], fn iso ->
+          %{date: Date.from_iso8601!(iso), exception_type: 1}
+        end)
 
     months =
       for offset <- 0..2 do
@@ -473,6 +497,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       end
 
     assign(socket, months: months, preview_month: first)
+  end
+
+  defp preview_calendar(socket, source) do
+    case {socket.assigns.params["kind"], weekly_attrs(socket.assigns.params)} do
+      {"dates_only", _} -> nil
+      {"weekly", {:ok, attrs}} -> struct(GtfsPlanner.Gtfs.Calendar, attrs)
+      _ -> source && source.calendar
+    end
   end
 
   defp move_preview(socket, month) do
@@ -649,6 +681,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     |> assign(:form, to_form(params, as: @params_as, errors: errors))
     |> assign(:dirty?, baseline != nil and params != baseline)
     |> maybe_clear_messages(opts)
+    |> assign_preview(socket.assigns.preview_month || socket.assigns.today || Date.utc_today())
   end
 
   defp maybe_clear_messages(socket, opts) do
@@ -750,6 +783,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     date_change_confirmation(review)
   end
 
+  defp confirm_required?({:save, _service_id, _attrs}, review),
+    do: date_change_confirmation(review)
+
   defp confirm_required?(_command, _review), do: false
 
   defp date_change_confirmation(review) do
@@ -822,12 +858,27 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp params_to_command(socket, params) do
     kind = String.to_existing_atom(params["kind"])
 
-    with {:ok, name} <- required_name(params),
+    with {:ok, name} <- save_name(socket, params),
          {:ok, metadata} <- metadata_attrs(params),
-         {:ok, weekly} <- weekly_attrs_for(kind, params) do
+         {:ok, weekly} <- save_weekly(socket, kind, params) do
       attrs = metadata |> Map.merge(%{name: name, kind: kind}) |> Map.merge(weekly)
       command_for(socket, kind, attrs, params)
     end
+  end
+
+  defp save_name(socket, params) do
+    if socket.assigns.live_action == :show and params["name"] == socket.assigns.baseline["name"],
+      do: {:ok, blank_to_nil(params["name"])},
+      else: required_name(params)
+  end
+
+  defp save_weekly(socket, kind, params) do
+    keys = ["kind", "weekdays", "start_date", "end_date"]
+
+    if socket.assigns.live_action == :show and
+         Map.take(params, keys) == Map.take(socket.assigns.baseline, keys),
+       do: {:ok, %{}},
+       else: weekly_attrs_for(kind, params)
   end
 
   defp weekly_attrs_for(:weekly, params), do: weekly_attrs(params)
@@ -962,6 +1013,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       end
     end
   end
+
+  defp run_command(socket, :duplicate), do: handle_event("duplicate", %{}, socket)
 
   defp run_command(socket, command) do
     review_or_apply(socket, socket.assigns.params, command)
@@ -1136,7 +1189,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   # from the browser, so a detail load can never be pointed at another identity.
   defp source_payload_value(source, :service_id) do
     (source.attributes && source.attributes.service_id) ||
-      (source.calendar && source.calendar.service_id)
+      (source.calendar && source.calendar.service_id) ||
+      (List.first(source.exceptions) && List.first(source.exceptions).service_id)
   end
 
   defp empty_periods,
@@ -1171,7 +1225,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="calendar-editor" phx-hook="FormErrorFocus" class="mt-6">
+      <div id="calendar-editor" phx-hook="CalendarEditor" data-dirty={to_string(@dirty?)} class="mt-6">
         <nav aria-label="Breadcrumb" class="text-sm">
           <.link navigate={list_path_for(@current_gtfs_version.id)} class="link">Calendars</.link>
           <span class="text-base-content/70">{" / "}{breadcrumb_label(assigns)}</span>
@@ -1408,7 +1462,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               <% else %>
                 <div class="mt-4">
                   <p class="text-sm">
-                    Trips run only on these dates. There is no weekly schedule.
+                    Trips run only on specific dates. There is no weekly schedule. For an existing calendar, use the date changes section below to add or remove service dates.
                   </p>
                   <ul
                     :if={@params["dates"] != []}
@@ -1431,7 +1485,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                       </button>
                     </li>
                   </ul>
-                  <div class="mt-3 w-44">
+                  <div :if={@live_action == :new} class="mt-3 w-44">
                     <.input
                       id="calendar-date-input"
                       field={@form[:date_input]}
@@ -1722,7 +1776,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
             </p>
             <ul :if={@review_dialog} class="mt-2 text-sm">
               <li :for={line <- dialog_details(@review_dialog)}>{line}</li>
+              <li :for={date <- command_dates(@review_dialog.command)}>Selected date: {date}</li>
             </ul>
+            <CalendarComponents.warning_list
+              :if={@review_dialog}
+              id="calendar-review-warnings"
+              warnings={@review_dialog.warnings}
+              service_label={@service_id || "Calendar"}
+            />
           </div>
         </.confirm_dialog>
 
@@ -1861,8 +1922,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp dialog_body(_assigns), do: "Review the change below before applying it."
 
+  defp command_dates({:put_exceptions, _id, dates, _type}), do: dates
+  defp command_dates({:remove_exceptions, _id, dates}), do: dates
+  defp command_dates({:add_break, _id, first, last}), do: [first, last]
+  defp command_dates(_command), do: []
+
   defp dialog_details(%{changes: changes, warnings: warnings}) do
-    change_lines(changes, warnings)
+    change_lines(changes, warnings) ++
+      ["#{changes.active_date_count} effective service dates remain."] ++
+      Enum.map(Map.get(changes, :new_service_dates, []), &"New service on #{&1}.")
   end
 
   defp change_lines(%{action: :delete, active_date_count: count}, _warnings),
