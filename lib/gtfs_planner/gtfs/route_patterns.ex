@@ -1303,10 +1303,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp persist_timing_edit!(pattern, timing, rows) do
     trips = linked_timing_trips(pattern, timing.id)
-    Enum.each(trips, &materialize_timing_trip!(&1, pattern, timing, rows))
+    occurrences = pattern_occurrences(pattern)
+
+    Enum.each(trips, fn trip ->
+      rematerialize_trip!(trip, occurrences, rows, current_trip_start!(trip, occurrences))
+    end)
+
     update_trip_timestamps!(trips)
 
-    Enum.zip(pattern_occurrences(pattern), rows)
+    Enum.zip(occurrences, rows)
     |> Enum.each(fn {occurrence, attrs} -> update_timing_row!(timing, occurrence, attrs) end)
 
     if rows != [] do
@@ -1449,6 +1454,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp trip_start_seconds([first | _]), do: GtfsTime.parse(first.departure_time)
 
+  # The single caller of `rematerialize_trip!/4` resolves each trip's current
+  # first departure itself and passes it in, so the shared seam takes the start
+  # as an argument instead of reading it from the trip's first stop time.
+  defp current_trip_start!(trip, occurrences) do
+    stop_times = trip_stop_times(trip)
+
+    if length(stop_times) != length(occurrences),
+      do: Repo.rollback(:trip_stop_times_mismatch)
+
+    case trip_start_seconds(stop_times) do
+      {:ok, start_seconds} -> start_seconds
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
   defp persist_structural_rows!(
          trip,
          rows,
@@ -1538,25 +1558,41 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp materialize_timing_trip!(trip, pattern, _timing, rows) do
+  @doc """
+  Re-materializes one linked trip's stop times from a timing's offsets.
+
+  Rewrites each existing `StopTime` row of `trip` positionally against
+  `occurrences` (the pattern's stops ordered by position) using `timing_rows`,
+  starting from `start_seconds`. Only `arrival_time`, `departure_time`,
+  `stop_headsign`, `pickup_type`, `drop_off_type` and `timepoint` change: row
+  IDs, `stop_sequence` labels, `shape_dist_traveled`, the continuous fields and
+  `inserted_at` are preserved.
+
+  Call only inside `Repo.transaction/1`, after the route and pattern locks. It
+  takes the trip's stop times with `FOR UPDATE` and rolls back
+  `:trip_stop_times_mismatch` when their number differs from `occurrences`.
+  """
+  def rematerialize_trip!(trip, occurrences, timing_rows, start_seconds) do
     stop_times = trip_stop_times(trip)
-    occurrences = pattern_occurrences(pattern)
-    if length(stop_times) != length(occurrences), do: Repo.rollback(:trip_stop_times_mismatch)
 
-    with {:ok, start} <- GtfsTime.parse(List.first(stop_times).departure_time),
-         {:ok, materialized} <- Materializer.materialize(start, occurrences, rows) do
-      Enum.zip([stop_times, materialized, rows])
-      |> Enum.each(fn {old, value, timing_row} ->
-        attrs =
-          Map.merge(
-            preserved_clocks(old, value),
-            Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
-          )
+    if length(stop_times) != length(occurrences),
+      do: Repo.rollback(:trip_stop_times_mismatch)
 
-        old |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
-      end)
-    else
-      {:error, reason} -> Repo.rollback(reason)
+    case Materializer.materialize(start_seconds, occurrences, timing_rows) do
+      {:ok, materialized} ->
+        Enum.zip([stop_times, materialized, timing_rows])
+        |> Enum.each(fn {old, value, timing_row} ->
+          attrs =
+            Map.merge(
+              preserved_clocks(old, value),
+              Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
+            )
+
+          old |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
+        end)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
     end
   end
 
@@ -1712,7 +1748,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp lock_published_route!(%AuditContext{} = audit, route_id) do
+  @doc """
+  Locks one published route of the audit context's organization and version with `FOR UPDATE`.
+
+  Call only inside `Repo.transaction/1`. This is a lock, not a transaction: it takes the row lock
+  and rolls back `:not_found` when the route does not exist or its version is not published.
+  """
+  def lock_published_route!(%AuditContext{} = audit, route_id) do
     route =
       from(route in Route,
         where:
@@ -1735,7 +1777,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp lock_pattern!(route, pattern_id) do
+  @doc """
+  Locks one scoped pattern of a locked route with `FOR UPDATE`.
+
+  Call only inside `Repo.transaction/1`, after `lock_published_route!/2`. This is a lock, not a
+  transaction: it takes the row lock and rolls back `:not_found` when the pattern is out of scope.
+  """
+  def lock_pattern!(route, pattern_id) do
     case from(pattern in RoutePattern,
            where:
              pattern.organization_id == ^route.organization_id and
