@@ -135,6 +135,8 @@ defmodule GtfsPlannerWeb.Router do
       ] do
       # GTFS routes (viewer or editor roles required)
       live "/routes", Gtfs.RoutesLive, :index
+      # Transfers joins the routes area as a placeholder until that feature ships.
+      live "/transfers", Gtfs.ComingSoonLive, :transfers
       live "/calendars", Gtfs.CalendarsLive, :index
       # Calendar detail carries its service ID as a query parameter, so imported
       # IDs containing slashes, percent signs, spaces or the words new/show can
@@ -151,9 +153,16 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
-      # Blocks holds the organization-wide operational assets (garages and
-      # vehicles). They ignore the version in the URL, which is navigation
-      # context and selects the stop IDs the garage conflict notice compares.
+      live "/stops/:stop_id/evolutions", Gtfs.ComingSoonLive, :evolutions
+      # Operations placeholders. They group under the Operations area, separately
+      # from the organization-wide asset routes below them: those ignore the
+      # version in the URL, which is navigation context and selects the stop IDs
+      # the garage conflict notice compares.
+      live "/blocks", Gtfs.ComingSoonLive, :blocks
+      live "/runs", Gtfs.ComingSoonLive, :runs
+      live "/rosters", Gtfs.ComingSoonLive, :rosters
+      # Flex has no area bar of its own in the architecture's groups.
+      live "/flex", Gtfs.ComingSoonLive, :flex
       live "/blocks/garages", Gtfs.GaragesLive, :index
       live "/blocks/fleet", Gtfs.FleetLive, :index
       live "/import", Gtfs.ImportLive, :index
