@@ -80,6 +80,42 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
              ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
   end
 
+  test "registers the operations export type, reuses its active run, and rejects unknown types" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    assert {:ok, operations_run} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :operations)
+
+    assert operations_run.export_type == :operations
+    assert operations_run.state == :pending
+
+    assert {:ok, reused} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :operations)
+
+    assert reused.id == operations_run.id
+
+    assert {:ok, full_run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    assert full_run.id != operations_run.id
+
+    assert %Run{id: operations_id} =
+             ExportRuns.latest_for_version(organization.id, version.id, :operations)
+
+    assert operations_id == operations_run.id
+
+    assert %Run{id: full_id} = ExportRuns.latest_for_version(organization.id, version.id, :full)
+    assert full_id == full_run.id
+
+    assert ExportRuns.latest_for_version(organization.id, version.id, :pathways) == nil
+    assert ExportRuns.latest_for_version(Ecto.UUID.generate(), version.id, :operations) == nil
+
+    assert {:error, :invalid_export_type} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :crew)
+
+    assert {:error, :invalid_export_type} =
+             ExportRuns.latest_for_version(organization.id, version.id, :crew)
+  end
+
   test "normalizes scope, expiry, cancellation, retry, and claim cleanup races" do
     organization = organization_fixture()
     other_organization = organization_fixture()
