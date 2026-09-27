@@ -3,9 +3,12 @@ defmodule GtfsPlanner.Gtfs.Import.Result do
   Typed completion result for a full GTFS feed import.
 
   Carries the core import counts, unrecognized filenames, the progress topic,
-  any archive-expansion warnings, and the extension phase status. A result is
-  only publishable when there are no archive warnings and the extension phase
-  either was absent or completed fully.
+  any archive-expansion warnings, and the extension phase status. Counts also
+  include the bounded route-pattern derivation counters (`patterns_created`,
+  `timings_created`, `trips_linked`, `trips_custom`) as plain non-negative
+  integers. A result is only publishable when there are no archive warnings and
+  the extension phase either was absent or completed fully; an expected
+  route-local derivation failure does not make the result non-publishable.
   """
 
   @enforce_keys [:counts, :unrecognized_files, :topic, :archive_warnings, :extensions]

@@ -3,6 +3,15 @@ defmodule GtfsPlanner.Gtfs do
   The Gtfs context.
   """
 
+  @structured_audit_entity_types [
+    :route_pattern,
+    "route_pattern",
+    :timed_pattern,
+    "timed_pattern",
+    :route_pattern_build,
+    "route_pattern_build"
+  ]
+
   import Ecto.Query, warn: false
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
@@ -37,6 +46,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StationEditingStatus
@@ -150,6 +161,26 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, [RoutePattern.t()]} | {:error, :unavailable}
   def load_catalog_route_patterns(organization_id, gtfs_version_id, route_id) do
     catalog_read_adapter().load_route_patterns(organization_id, gtfs_version_id, route_id)
+  end
+
+  @doc """
+  Loads the scoped pattern editor read model for one published route.
+
+  `opts` may carry `:pattern_id` and `:timing_id` to include one pattern's detail
+  with only that timing's rows, and `:include_stop_choices` to include the
+  version's eligible stop choices. A route or pattern outside the loaded
+  organization/version/route scope is `{:error, :not_found}`; a lost database
+  connection is `{:error, :unavailable}`.
+  """
+  @spec load_route_pattern_screen(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, :not_found | :unavailable}
+  def load_route_pattern_screen(organization_id, gtfs_version_id, route_id, opts \\ []) do
+    catalog_read_adapter().load_route_pattern_screen(
+      organization_id,
+      gtfs_version_id,
+      route_id,
+      opts
+    )
   end
 
   @doc """
@@ -392,6 +423,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Searches the version's eligible stops for the pattern editor.
+
+  Returns at most 20 stops or platforms (`location_type` nil/0) ordered by name
+  then ID through the configured catalog read adapter, with a `truncated?` flag
+  when more matches exist. A lost database connection is `{:error, :unavailable}`.
+  """
+  @spec search_pattern_stops(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, %{stops: [GtfsPlanner.Gtfs.Stop.t()], truncated?: boolean()}}
+          | {:error, :unavailable}
+  def search_pattern_stops(organization_id, gtfs_version_id, query) do
+    catalog_read_adapter().search_stops(organization_id, gtfs_version_id, query)
+  end
+
+  @doc """
+  Returns the read-only proposal for a staged stop edit without requiring
+  acknowledgement, so the editor can show every timing's proposed values before
+  staff acknowledge them. Writes nothing.
+  """
+  def preview_stop_edit(pattern_id, operation, %AuditContext{} = audit_context),
+    do: RoutePatterns.preview_stop_edit(pattern_id, operation, audit_context)
+
+  @doc """
   Returns the list of route patterns for a specific route.
 
   ## Examples
@@ -408,6 +461,48 @@ defmodule GtfsPlanner.Gtfs do
     )
     |> Repo.all()
   end
+
+  @doc "Returns the scoped editable patterns for a published route."
+  def list_patterns(organization_id, gtfs_version_id, route_id),
+    do: RoutePatterns.list_patterns(organization_id, gtfs_version_id, route_id)
+
+  @doc "Loads one editable pattern and an optional timing in its route scope."
+  def get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id \\ nil),
+    do:
+      RoutePatterns.get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id)
+
+  @doc "Creates a pattern, its ordered occurrences, an unassigned Timing A and one audit row."
+  def create_pattern(route_id, attrs, %AuditContext{} = audit_context),
+    do: RoutePatterns.create_pattern(route_id, attrs, audit_context)
+
+  @doc "Reviews an audit-only pattern or timing lifecycle command."
+  def review(pattern_id, operation, source_fingerprint, %AuditContext{} = audit_context),
+    do: RoutePatterns.review(pattern_id, operation, source_fingerprint, audit_context)
+
+  @doc "Applies a previously reviewed pattern or timing lifecycle command."
+  def apply_review(pattern_id, operation, fingerprint, %AuditContext{} = audit_context),
+    do: RoutePatterns.apply_review(pattern_id, operation, fingerprint, audit_context)
+
+  @doc """
+  Builds or retries derived route patterns for one published route as an
+  authorized editor.
+
+  Runs derivation inside the route transaction and records one actor-bound
+  `route_pattern_build` summary there. A route with no pending trips is refused:
+  custom classification alone is not retryable.
+  """
+  def build_route_patterns(route_id, %AuditContext{} = audit_context) when is_binary(route_id) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    if Derivation.pending_trip_count(organization_id, version_id, route_id) == 0 do
+      {:error, :nothing_pending}
+    else
+      Derivation.derive_route(organization_id, version_id, route_id, {:editor, audit_context})
+    end
+  end
+
+  def build_route_patterns(_route_id, _audit_context), do: {:error, :invalid_input}
 
   @doc """
   Returns the count of levels for an organization and GTFS version.
@@ -4040,11 +4135,12 @@ defmodule GtfsPlanner.Gtfs do
 
   defp apply_stop_sort(query, sort_by, sort_dir)
        when sort_by in [:stop_id, :stop_name, :location_type] and sort_dir in [:asc, :desc] do
-    order_by(query, [s], [{^sort_dir, field(s, ^sort_by)}])
+    order_by(query, [s], [{^sort_dir, field(s, ^sort_by)}, asc: s.stop_id])
   end
 
+  # Equal sort keys must not leave the page order to the database.
   defp apply_stop_sort(query, _sort_by, _sort_dir) do
-    order_by(query, [s], asc: s.stop_name)
+    order_by(query, [s], asc: s.stop_name, asc: s.stop_id)
   end
 
   defp maybe_search(query, nil), do: query
@@ -4740,7 +4836,7 @@ defmodule GtfsPlanner.Gtfs do
   def record_change(%AuditContext{} = ctx, entity_type, entity_or_nil, action, attrs \\ %{}) do
     snapshot = build_snapshot(entity_type, entity_or_nil)
     changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
-    changed_fields = build_changed_fields(action, snapshot, changed_fields_attrs)
+    changed_fields = build_changed_fields(entity_type, action, snapshot, changed_fields_attrs)
 
     entity_external_id = entity_external_id_for(entity_type, entity_or_nil, attrs)
     entity_id = entity_id_for(entity_or_nil)
@@ -4782,7 +4878,7 @@ defmodule GtfsPlanner.Gtfs do
       ) do
     snapshot = build_snapshot(entity_type, entity_or_nil)
     changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
-    changed_fields = build_changed_fields(action, snapshot, changed_fields_attrs)
+    changed_fields = build_changed_fields(entity_type, action, snapshot, changed_fields_attrs)
 
     %ChangeLog{}
     |> ChangeLog.changeset(%{
@@ -4851,7 +4947,7 @@ defmodule GtfsPlanner.Gtfs do
   defp import_entity_schema(:pathway), do: {Pathway, :pathway_id}
 
   defp changed_fields_attrs("updated", entity_type, attrs),
-    do: reversible_attrs_for(entity_type, attrs)
+    do: audited_attrs_for(entity_type, attrs)
 
   defp changed_fields_attrs(_action, _entity_type, attrs), do: attrs
 
@@ -4931,6 +5027,14 @@ defmodule GtfsPlanner.Gtfs do
   def reversible_fields_for(:level), do: reversible_fields_for("level")
   def reversible_fields_for("level"), do: ~w(level_name level_index)
 
+  def reversible_fields_for(type)
+      when type in [:route_pattern, :timed_pattern, :route_pattern_build],
+      do: []
+
+  def reversible_fields_for(type)
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      do: []
+
   @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.
 
@@ -4956,6 +5060,10 @@ defmodule GtfsPlanner.Gtfs do
     {:error, :unauthorized}
   end
 
+  def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      do: {:error, :audit_only_entity}
+
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
     with {:ok, target_snapshot} <- rollback_target_snapshot(log),
          {:ok, entity} <- rollback_entity_for_log(log),
@@ -4969,6 +5077,10 @@ defmodule GtfsPlanner.Gtfs do
   Calculates the snapshot an entity should be restored to for a rollback.
   """
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
+  def rollback_target_snapshot(%ChangeLog{entity_type: type})
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
+      do: {:error, :audit_only_entity}
+
   def rollback_target_snapshot(%ChangeLog{action: action})
       when action in ["created", "deleted"] do
     {:error, :cannot_rollback_create_or_delete}
@@ -5046,6 +5158,19 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot(:stop, %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot(:pathway, %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot(:level, %Level{} = level), do: snapshot_level(level)
+
+  defp build_snapshot(:route_pattern, %RoutePattern{} = pattern),
+    do: snapshot_route_pattern(pattern)
+
+  defp build_snapshot("route_pattern", %RoutePattern{} = pattern),
+    do: snapshot_route_pattern(pattern)
+
+  defp build_snapshot(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing),
+    do: snapshot_timed_pattern(timing)
+
+  defp build_snapshot("timed_pattern", %GtfsPlanner.Gtfs.TimedPattern{} = timing),
+    do: snapshot_timed_pattern(timing)
+
   defp build_snapshot("stop", %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot("pathway", %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot("level", %Level{} = level), do: snapshot_level(level)
@@ -5088,6 +5213,12 @@ defmodule GtfsPlanner.Gtfs do
     %{level_name: level.level_name, level_index: level.level_index}
   end
 
+  defp snapshot_route_pattern(pattern),
+    do: RoutePatterns.audit_snapshot(pattern)
+
+  defp snapshot_timed_pattern(timing),
+    do: RoutePatterns.audit_timing_snapshot(timing)
+
   # -- Entity identity helpers --
 
   defp entity_id_for(nil), do: nil
@@ -5109,13 +5240,49 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for(:pathway, %Pathway{} = pw, _attrs), do: pw.pathway_id
   defp entity_external_id_for(:level, %Level{} = level, _attrs), do: level.level_id
 
+  defp entity_external_id_for(:route_pattern, %RoutePattern{} = pattern, _attrs),
+    do: pattern.route_pattern_id
+
+  defp entity_external_id_for(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing, attrs) do
+    pattern_natural_id =
+      Map.get(attrs, :pattern_route_pattern_id) || Map.get(attrs, "pattern_route_pattern_id") ||
+        "unknown"
+
+    "#{timing.id}:#{pattern_natural_id}"
+  end
+
+  defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
+
+  defp entity_external_id_for(:route_pattern_build, nil, attrs),
+    do: Map.get(attrs, :route_id) || Map.get(attrs, "route_id")
+
   defp entity_module_for("stop"), do: Stop
   defp entity_module_for("pathway"), do: Pathway
   defp entity_module_for("level"), do: Level
 
+  defp audited_attrs_for(type, attrs) when type in [:route_pattern, "route_pattern"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(
+        route_pattern_name route_pattern_time_desc direction_id
+        route_pattern_typicality headsign canonical_route_pattern route_pattern_sort_order
+        occurrences timings before after affected_trips
+      )
+    end)
+  end
+
+  defp audited_attrs_for(type, attrs) when type in [:timed_pattern, "timed_pattern"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(name headsign rows before after affected_trips)
+    end)
+  end
+
+  defp audited_attrs_for(:route_pattern_build, attrs), do: attrs
+  defp audited_attrs_for("route_pattern_build", attrs), do: attrs
+  defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
+
   # -- Diff and rollback helpers --
 
-  defp build_changed_fields(action, snapshot, attrs)
+  defp build_changed_fields(_entity_type, action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
     snapshot_str_keys = stringify_map_keys(snapshot)
 
@@ -5135,7 +5302,29 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
-  defp build_changed_fields(_action, _snapshot, _attrs), do: nil
+  defp build_changed_fields(entity_type, "created", snapshot, attrs)
+       when entity_type in @structured_audit_entity_types and not is_nil(snapshot) do
+    after_snapshot = Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
+    %{"before" => nil, "after" => normalize_value(after_snapshot)}
+  end
+
+  defp build_changed_fields(entity_type, "deleted", snapshot, _attrs)
+       when entity_type in @structured_audit_entity_types and not is_nil(snapshot),
+       do: %{"before" => normalize_value(snapshot), "after" => nil}
+
+  defp build_changed_fields(entity_type, "updated", _snapshot, attrs)
+       when entity_type in [:route_pattern_build, "route_pattern_build"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after"))),
+      "patterns_created" =>
+        normalize_value(Map.get(attrs, :patterns_created, Map.get(attrs, "patterns_created"))),
+      "timings_created" =>
+        normalize_value(Map.get(attrs, :timings_created, Map.get(attrs, "timings_created")))
+    }
+  end
+
+  defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
 
   @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
   defp reversible_attrs_for(entity_type, attrs) when is_map(attrs) do

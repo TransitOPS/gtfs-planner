@@ -9,14 +9,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
-  alias GtfsPlanner.Gtfs.RoutePattern
 
   @adapter_key :gtfs_catalog_read_adapter
 
   setup :verify_on_exit!
 
-  setup do
+  # The real context serves every successful read; the adapter substitution
+  # exists only to simulate a lost database connection, and is restored on exit.
+  defp substitute_read_adapter(_context) do
     previous = Application.fetch_env(:gtfs_planner, @adapter_key)
     Application.put_env(:gtfs_planner, @adapter_key, CatalogReadAdapterMock)
 
@@ -26,11 +28,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
         :error -> Application.delete_env(:gtfs_planner, @adapter_key)
       end
     end)
+
+    :ok
   end
 
-  defp shared_setup(_context) do
-    organization = organization_fixture()
-    user = user_fixture()
+  defp shared_setup(%{conn: conn}) do
+    organization =
+      organization_fixture(%{alias: "route-detail-#{System.system_time(:nanosecond)}"})
+
+    user =
+      user_fixture(%{email: "route-detail-#{System.unique_integer([:positive])}@example.com"})
 
     Accounts.create_user_org_membership(%{
       user_id: user.id,
@@ -40,30 +47,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     gtfs_version = gtfs_version_fixture(organization.id)
 
-    %{user: user, organization: organization, gtfs_version: gtfs_version}
-  end
-
-  defp build_route_pattern(attrs) do
-    %RoutePattern{
-      id: Ecto.UUID.generate(),
-      route_pattern_id:
-        Map.get(attrs, :route_pattern_id, "RP_#{System.unique_integer([:positive])}"),
-      route_id: Map.get(attrs, :route_id, "R1"),
-      direction_id: Map.get(attrs, :direction_id, 0),
-      route_pattern_name: Map.get(attrs, :route_pattern_name, "Outbound via Main"),
-      route_pattern_typicality: Map.get(attrs, :route_pattern_typicality, 1),
-      route_pattern_sort_order: Map.get(attrs, :route_pattern_sort_order, 0),
-      organization_id: Map.get(attrs, :organization_id, Ecto.UUID.generate()),
-      gtfs_version_id: Map.get(attrs, :gtfs_version_id, Ecto.UUID.generate())
+    %{
+      conn: log_in_user(conn, user, organization: organization),
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
     }
-  end
-
-  defp stub_fetch_route(result) do
-    stub(CatalogReadAdapterMock, :fetch_route, fn _org, _ver, _route_id -> result end)
-  end
-
-  defp stub_load_patterns(result) do
-    stub(CatalogReadAdapterMock, :load_route_patterns, fn _org, _ver, _route_id -> result end)
   end
 
   describe "route facts rendering" do
@@ -71,12 +60,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "renders facts in dl/dt/dd with one h1, no field-label headings", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
           route_id: "FACTS1",
@@ -85,9 +71,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
           route_color: "FF0000",
           route_text_color: "FFFFFF"
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
@@ -103,21 +86,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "valid https URL renders as link with rel=noopener; malformed URL is plain text", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
           route_id: "URL1",
           route_short_name: "U1",
           route_url: "https://example.com/route"
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
@@ -126,21 +103,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "missing URL renders em dash, not a link", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
           route_id: "NOURL1",
           route_short_name: "NU",
           route_url: nil
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
@@ -154,21 +125,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "malformed URL renders as noninteractive text", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
           route_id: "BADURL1",
           route_short_name: "BU",
           route_url: "not-a-url"
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
@@ -178,12 +143,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "route badge renders via RouteIdentity; raw color metadata shown as mono text", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
           route_id: "BADGE1",
@@ -191,9 +153,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
           route_color: "00FF00",
           route_text_color: "000000"
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
@@ -210,15 +169,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "not-found route redirects with flash", %{
       conn: conn,
-      user: user,
-      organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      stub_fetch_route({:error, :not_found})
-      stub_load_patterns({:ok, []})
-
       assert {:error, {:live_redirect, %{to: to}}} =
                live(conn, "/gtfs/#{version.id}/routes/MISSING")
 
@@ -227,14 +179,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "unavailable route renders error state with retry button", %{
       conn: conn,
-      user: user,
-      organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
+      substitute_read_adapter(%{})
 
-      stub_fetch_route({:error, :unavailable})
-      stub_load_patterns({:ok, []})
+      stub(CatalogReadAdapterMock, :fetch_route, fn _org, _ver, _route_id ->
+        {:error, :unavailable}
+      end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/UNAVAIL")
 
@@ -244,11 +195,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "retry restores route after unavailable", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
+      substitute_read_adapter(%{})
 
       route =
         route_fixture(organization.id, version.id, %{
@@ -258,17 +208,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       call_count = :atomics.new(1, [])
 
-      stub(CatalogReadAdapterMock, :fetch_route, fn _org, _ver, _route_id ->
+      stub(CatalogReadAdapterMock, :fetch_route, fn org, ver, route_id ->
         count = :atomics.add_get(call_count, 1, 1)
 
         if count <= 2 do
           {:error, :unavailable}
         else
-          {:ok, route}
+          CatalogReadAdapter.Repo.fetch_route(org, ver, route_id)
         end
       end)
-
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/RETRY1")
 
@@ -280,176 +228,31 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       refute has_element?(view, "#route-unavailable")
       assert has_element?(view, "dl")
+      assert route.route_id == "RETRY1"
     end
   end
 
-  describe "patterns state" do
+  describe "patterns tab" do
     setup :shared_setup
 
-    test "patterns unavailable shows callout with retry", %{
+    test "links into the pattern editor for the selected route", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
-          route_id: "PATUNAV1",
-          route_short_name: "PU"
+          route_id: "PATNAV1",
+          route_short_name: "PN"
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:error, :unavailable})
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/patterns")
+        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
-      assert has_element?(view, "#patterns-unavailable")
-      assert has_element?(view, "#patterns-retry")
-    end
-
-    test "retry restores patterns table after unavailable", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      route =
-        route_fixture(organization.id, version.id, %{
-          route_id: "PATRETRY1",
-          route_short_name: "PR"
-        })
-
-      pattern =
-        build_route_pattern(%{
-          route_pattern_id: "RP_RETRY",
-          route_id: route.route_id,
-          organization_id: organization.id,
-          gtfs_version_id: version.id
-        })
-
-      call_count = :atomics.new(1, [])
-
-      stub(CatalogReadAdapterMock, :load_route_patterns, fn _org, _ver, _route_id ->
-        count = :atomics.add_get(call_count, 1, 1)
-
-        if count <= 2 do
-          {:error, :unavailable}
-        else
-          {:ok, [pattern]}
-        end
-      end)
-
-      stub_fetch_route({:ok, route})
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/patterns")
-
-      assert has_element?(view, "#patterns-unavailable")
-
-      view
-      |> element("#patterns-retry")
-      |> render_click()
-
-      refute has_element?(view, "#patterns-unavailable")
-      assert has_element?(view, "#route-patterns-table-container")
-    end
-
-    test "patterns empty shows empty state with no retry", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      route =
-        route_fixture(organization.id, version.id, %{
-          route_id: "PATEMPTY1",
-          route_short_name: "PE"
-        })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/patterns")
-
-      assert has_element?(view, "#patterns-empty")
-      refute has_element?(view, "#patterns-retry")
-    end
-
-    test "patterns table contains no stop-sequence column", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      route =
-        route_fixture(organization.id, version.id, %{
-          route_id: "NOSEQ1",
-          route_short_name: "NS"
-        })
-
-      pattern =
-        build_route_pattern(%{
-          route_pattern_id: "RP_NOSEQ",
-          route_id: route.route_id,
-          organization_id: organization.id,
-          gtfs_version_id: version.id
-        })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, [pattern]})
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/patterns")
-
-      html = render(view)
-      refute html =~ "Stop Sequence"
-      refute html =~ "stop-sequence"
-      refute html =~ "stop_sequence"
-    end
-
-    test "patterns table uses responsive stack with stable IDs", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      route =
-        route_fixture(organization.id, version.id, %{
-          route_id: "STACK1",
-          route_short_name: "ST"
-        })
-
-      pattern =
-        build_route_pattern(%{
-          route_pattern_id: "RP_STACK",
-          route_id: route.route_id,
-          organization_id: organization.id,
-          gtfs_version_id: version.id
-        })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, [pattern]})
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/patterns")
-
-      html = render(view)
-      doc = LazyHTML.from_fragment(html)
-
-      assert Enum.count(LazyHTML.query(doc, "table.ds-stack-table")) == 1
-      assert has_element?(view, "#route-patterns-table-container")
+      assert has_element?(
+               view,
+               "nav[aria-label='Route navigation'] a[href='/gtfs/#{version.id}/routes/#{route.route_id}/patterns']"
+             )
     end
   end
 
@@ -458,20 +261,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
     test "renders blank/deferred state with no schedule content or navigation", %{
       conn: conn,
-      user: user,
       organization: organization,
       gtfs_version: version
     } do
-      conn = log_in_user(conn, user, organization: organization)
-
       route =
         route_fixture(organization.id, version.id, %{
           route_id: "SCHED1",
           route_short_name: "SC"
         })
-
-      stub_fetch_route({:ok, route})
-      stub_load_patterns({:ok, []})
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/schedules")

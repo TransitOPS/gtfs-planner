@@ -92,7 +92,32 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
         {"block_id", :block_id},
         {"shape_id", :shape_id},
         {"wheelchair_accessible", :wheelchair_accessible},
-        {"bikes_allowed", :bikes_allowed}
+        {"bikes_allowed", :bikes_allowed},
+        {"route_pattern_id", :route_pattern_id}
+      ]
+    }
+  end
+
+  @doc """
+  Route patterns as the nine-column GTFS extension, in full export only.
+
+  App-owned timing, classification, signature and audit fields are never GTFS
+  exports, so they are absent from this field list.
+  """
+  def route_patterns_spec do
+    %{
+      filename: "route_patterns.txt",
+      schema: Gtfs.RoutePattern,
+      fields: [
+        {"route_pattern_id", :route_pattern_id},
+        {"route_id", :route_id},
+        {"direction_id", :direction_id},
+        {"route_pattern_name", :route_pattern_name},
+        {"route_pattern_time_desc", :route_pattern_time_desc},
+        {"route_pattern_typicality", :route_pattern_typicality},
+        {"route_pattern_sort_order", :route_pattern_sort_order},
+        {"representative_trip_id", :representative_trip_id},
+        {"canonical_route_pattern", :canonical_route_pattern}
       ]
     }
   end
@@ -319,7 +344,8 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       pathways_spec(),
       levels_spec(),
       feed_info_spec(),
-      attributions_spec()
+      attributions_spec(),
+      route_patterns_spec()
     ]
   end
 

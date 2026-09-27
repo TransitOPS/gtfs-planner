@@ -420,3 +420,108 @@ test.describe("Stable ID contracts", () => {
     await expect(page.locator("#route-filter-form")).toBeAttached();
   });
 });
+
+test.describe("Route pattern editor responsive contracts", () => {
+  async function openPatternTask(page, task, patternId = "BROWSER-EDIT-UNUSED") {
+    await logIn(page);
+    const versionId = await getVersionId(page);
+    await page.goto(
+      `/gtfs/${versionId}/routes/BROWSER_PATTERNS_EDIT_UNUSED/patterns/${patternId}?task=${task}`,
+    );
+    await page.waitForSelector("#pattern-editor-content", { timeout: 15000 });
+    return versionId;
+  }
+
+  for (const viewport of VIEWPORTS) {
+    test(`stops task fits the ${viewport.label} viewport without horizontal overflow`, async ({
+      page,
+    }) => {
+      await openPatternTask(page, "stops");
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+
+      await expect(page.locator("#pattern-stops-task")).toBeAttached();
+      expect(await bodyFitsViewport(page), "stops task overflows").toBe(true);
+    });
+
+    test(`timings task fits the ${viewport.label} viewport without horizontal overflow`, async ({
+      page,
+    }) => {
+      await openPatternTask(page, "timings");
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+
+      await expect(page.locator("#timing-rows")).toBeAttached();
+      expect(await bodyFitsViewport(page), "timings task overflows").toBe(true);
+    });
+
+    test(`stop rows and task actions meet 44px at ${viewport.label}`, async ({ page }) => {
+      await openPatternTask(page, "stops");
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+
+      const targets = [
+        "#pattern-save-stops",
+        "#pattern-stop-2-move-up",
+        "#pattern-stop-2-move-down",
+        "#pattern-remove-stop-1",
+      ];
+
+      for (const selector of targets) {
+        const box = await page.locator(selector).boundingBox();
+        expect(box, selector).not.toBeNull();
+        expect(box.height, selector).toBeGreaterThanOrEqual(44);
+      }
+    });
+
+    test(`timing inputs and actions meet 44px at ${viewport.label}`, async ({ page }) => {
+      await openPatternTask(page, "timings");
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+
+      await page.locator("#timing-boarding-2 summary").click();
+
+      const targets = [
+        "#timing-save",
+        "#timing-add",
+        "#timing-arrival-1",
+        "#timing-departure-1",
+        "#timing-pickup-2",
+      ];
+
+      for (const selector of targets) {
+        const box = await page.locator(selector).boundingBox();
+        expect(box, selector).not.toBeNull();
+        expect(box.height, selector).toBeGreaterThanOrEqual(44);
+      }
+    });
+  }
+
+  test("timing rows use labelled fields with paired arrival and departure inputs", async ({
+    page,
+  }) => {
+    await openPatternTask(page, "timings");
+
+    await expect(page.locator("#timing-row-1")).toContainText(
+      "Arrival relative to first departure",
+    );
+    await expect(page.locator('label[for="timing-arrival-1"]')).toContainText(
+      "Arrival relative to first departure",
+    );
+    await expect(page.locator('label[for="timing-departure-1"]')).toContainText("Depart +mm:ss");
+    await expect(page.locator("#timing-arrival-1")).toHaveAttribute("name", "timing[1][arrival]");
+    await expect(page.locator("#timing-origin")).toContainText(
+      "Times are measured from the first departure",
+    );
+  });
+
+  test("the stop search announces its results and the review keeps stable ids", async ({
+    page,
+  }) => {
+    await openPatternTask(page, "stops");
+
+    const input = page.locator('#pattern-stop-search input[type="text"]');
+    await input.click();
+    await input.fill("Pattern Stop");
+
+    await expect(page.locator("#pattern-stop-search-status")).toContainText("matches");
+    await expect(page.locator("#pattern-stop-option-BROWSER_PATTERN_STOP_1")).toBeAttached();
+    await expect(page.locator("#pattern-insert-after")).toBeAttached();
+  });
+});

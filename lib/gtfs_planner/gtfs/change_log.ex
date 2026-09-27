@@ -54,7 +54,14 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       :gtfs_version_id
     ])
     |> validate_entity_id()
-    |> validate_inclusion(:entity_type, ["stop", "pathway", "level"])
+    |> validate_inclusion(:entity_type, [
+      "stop",
+      "pathway",
+      "level",
+      "route_pattern",
+      "timed_pattern",
+      "route_pattern_build"
+    ])
     |> validate_inclusion(:action, ["created", "updated", "deleted", "rolled_back"])
     |> validate_rollback_reference()
   end

@@ -1639,7 +1639,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   without truncation. `confirm_variant="danger"` (default) keeps the
   `bg-error`/`text-error-content` confirm button; `confirm_variant="primary"`
   swaps to `bg-primary`/`text-primary-content` for non-destructive bulk
-  review. The closed axes mirror `<.button>`'s variant precedent; a third
+  review. `cancel_label` names the cancel action when the outcome needs a
+  clearer word than “Cancel”, such as “Keep editing” for unsaved changes. The closed axes mirror `<.button>`'s variant precedent; a third
   presentation axis would call for a dedicated review component instead
   of widening this one.
 
@@ -1683,6 +1684,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :pending_label, :string, required: true
   attr :on_confirm, :string, required: true
   attr :on_cancel, :string, required: true
+  attr :cancel_label, :string, default: "Cancel"
   attr :target, :any, default: nil
   attr :pending, :boolean, default: false
   attr :return_focus_id, :string, default: nil
@@ -1690,6 +1692,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :close_on_backdrop, :boolean, default: false
   attr :size, :string, values: ~w(sm lg), default: "sm"
   attr :confirm_variant, :string, values: ~w(primary danger), default: "danger"
+
+  attr :confirm_disabled, :boolean,
+    default: false,
+    doc: "disables the confirm action without pending state"
+
+  attr :single_action, :boolean,
+    default: false,
+    doc: "renders only the dismiss action, for informational dialogs"
+
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -1715,6 +1726,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       |> assign(:body_class, confirm_dialog_body_class(assigns.size))
       |> assign(:variant_bg, variant_bg)
       |> assign(:variant_text, variant_text)
+      |> assign(:pending, assigns.pending == true)
 
     ~H"""
     <dialog
@@ -1745,9 +1757,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
               data-dialog-dismiss
               disabled={@pending}
             >
-              Cancel
+              {@cancel_label}
             </button>
             <button
+              :if={not @single_action}
               id={"#{@id}-confirm"}
               type="button"
               class={[
@@ -1759,7 +1772,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               phx-click={@on_confirm}
               phx-target={@target}
               phx-disable-with={@pending_label}
-              disabled={@pending}
+              disabled={@pending or @confirm_disabled}
             >
               {if @pending, do: @pending_label, else: @confirm_label}
             </button>

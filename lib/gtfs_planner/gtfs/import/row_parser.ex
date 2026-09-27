@@ -166,6 +166,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   @doc """
   Converts a trip CSV row to attributes map.
 
+  `route_pattern_id` is the supplied MBTA-extension pattern identity and is read
+  verbatim: an omitted or blank value stays nil (no supplied pattern), while an
+  unknown supplied value is preserved for derivation to classify as custom.
+
   ## Parameters
 
     * `row_map` - Map of CSV column names to values
@@ -199,6 +203,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          wheelchair_accessible: wheelchair_accessible,
          bikes_allowed: bikes_allowed,
          cars_allowed: cars_allowed,
+         route_pattern_id: empty_to_nil(row_map["route_pattern_id"]),
          organization_id: organization_id,
          gtfs_version_id: gtfs_version_id
        }}

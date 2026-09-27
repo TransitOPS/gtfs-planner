@@ -1,3 +1,5 @@
+import zlib from "node:zlib";
+
 export const VIEWPORTS = [
   { label: "320px", width: 320, height: 568 },
   { label: "768px", width: 768, height: 1024 },
@@ -45,4 +47,45 @@ export async function bodyFitsViewport(page) {
   return page.evaluate(
     () => document.body.scrollWidth <= window.innerWidth,
   );
+}
+
+/**
+ * Reads one text member out of a ZIP archive without adding a runtime
+ * dependency: the central directory is walked to find the entry, and its
+ * bytes are inflated with Node's zlib when the entry is deflated.
+ */
+export function readZipTextMember(buffer, memberName) {
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const decode = new TextDecoder("utf-8");
+
+  let offset = 0;
+  while (offset + 30 <= view.byteLength) {
+    if (view.getUint32(offset, true) !== 0x04034b50) break;
+
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = decode.decode(
+      new Uint8Array(buffer.buffer, buffer.byteOffset + nameStart, nameLength),
+    );
+    const dataStart = nameStart + nameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+
+    if (name === memberName) {
+      const compressed = buffer.subarray(dataStart, dataEnd);
+
+      if (method === 0) return decode.decode(compressed);
+      if (method === 8) {
+        return zlib.inflateRawSync(compressed).toString("utf8");
+      }
+
+      throw new Error(`Unsupported ZIP compression method ${method}`);
+    }
+
+    offset = dataEnd;
+  }
+
+  throw new Error(`${memberName} is not present in the archive`);
 }

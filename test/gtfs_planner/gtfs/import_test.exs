@@ -502,18 +502,26 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       end
     end
 
-    test "StopLevel is first and the rest follow reverse import dependency order" do
+    test "StopLevel and the app-owned pattern children come first, then import schemas reversed" do
       schemas = Import.cleanup_schemas()
 
-      assert hd(schemas) == GtfsPlanner.Gtfs.StopLevel
+      pattern_children = [
+        GtfsPlanner.Gtfs.TimedPatternStop,
+        GtfsPlanner.Gtfs.TimedPattern,
+        GtfsPlanner.Gtfs.RoutePatternStop
+      ]
+
+      # StopLevel is not an import schema and must be removed first; the pattern
+      # tables follow in child-before-parent order so a RESTRICT child cannot
+      # outlive the parent (INV-5).
+      assert Enum.take(schemas, 4) == [GtfsPlanner.Gtfs.StopLevel | pattern_children]
 
       import_schemas = Enum.map(Import.import_specs(), fn {_k, _f, s, _p, _ph} -> s end)
 
-      # After StopLevel, the remainder must equal the import schemas reversed.
-      assert tl(schemas) == Enum.reverse(import_schemas)
-
-      # And the manifest is exactly one StopLevel plus every import schema.
-      assert length(schemas) == length(import_schemas) + 1
+      # The remainder is exactly the import schemas reversed, so the imported
+      # `route_patterns` parent is deleted after its pattern children.
+      assert Enum.drop(schemas, 4) == Enum.reverse(import_schemas)
+      assert length(schemas) == length(import_schemas) + 4
     end
   end
 

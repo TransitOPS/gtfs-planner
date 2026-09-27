@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
   schema "route_patterns" do
     field :route_pattern_id, :string
     field :route_id, :string
+    field :headsign, :string
+    field :derivation_key, :string
     field :direction_id, :integer
     field :route_pattern_name, :string
     field :route_pattern_time_desc, :string
@@ -32,6 +34,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
           gtfs_version_id: Ecto.UUID.t(),
           route_pattern_id: String.t(),
           route_id: String.t(),
+          headsign: String.t() | nil,
+          derivation_key: String.t() | nil,
           direction_id: integer(),
           route_pattern_name: String.t() | nil,
           route_pattern_time_desc: String.t() | nil,
@@ -50,6 +54,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
     |> cast(attrs, [
       :route_pattern_id,
       :route_id,
+      :headsign,
+      :derivation_key,
       :direction_id,
       :route_pattern_name,
       :route_pattern_time_desc,
@@ -74,6 +80,9 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
     |> validate_inclusion(:canonical_route_pattern, 0..2)
     |> validate_number(:route_pattern_sort_order, greater_than_or_equal_to: 0)
     |> unique_constraint([:organization_id, :gtfs_version_id, :route_pattern_id])
+    |> unique_constraint([:organization_id, :gtfs_version_id, :route_id, :derivation_key],
+      name: :route_patterns_scoped_derivation_key_index
+    )
     |> foreign_key_constraint(:organization_id)
   end
 
@@ -86,8 +95,30 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
   def typicality_label(5), do: "Canonical reference"
   def typicality_label(_), do: "Unknown"
 
-  @doc "Returns human-readable label for direction_id."
-  def direction_label(0), do: "Outbound"
-  def direction_label(1), do: "Inbound"
-  def direction_label(_), do: "Unknown"
+  @doc """
+  Returns the label for a GTFS direction value.
+
+  A GTFS direction value is not inherently inbound or outbound, so the default
+  label is neutral. A route-specific label may be supplied by the caller; it
+  replaces, and never reinterprets, the numeric value.
+  """
+  def direction_label(direction_id, route_label \\ nil)
+  def direction_label(0, nil), do: "Direction 0"
+  def direction_label(1, nil), do: "Direction 1"
+
+  def direction_label(_direction_id, route_label)
+      when is_binary(route_label) and route_label != "",
+      do: route_label
+
+  def direction_label(_direction_id, _route_label), do: "Direction unknown"
+
+  @doc "Returns the selectable labels for the supported direction values."
+  def direction_options do
+    for direction_id <- [0, 1], do: {direction_label(direction_id), direction_id}
+  end
+
+  @doc "Returns the selectable labels for the typicality values 0 through 5."
+  def typicality_options do
+    for typicality <- 0..5, do: {typicality_label(typicality), typicality}
+  end
 end
