@@ -950,7 +950,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
 
   attr :active_tab, :atom,
-    values: [:details, :diagram, :report, :reachability],
+    values: [:details, :diagram, :report, :reachability, :evolutions],
     default: :details
 
   slot :actions, doc: "contextual action buttons"
@@ -1013,6 +1013,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
             aria-current={@active_tab == :reachability && "page"}
           >
             Reachability
+          </.link>
+          <.link
+            id="station-tab-evolutions"
+            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/evolutions"}
+            class={sub_nav_link_class(@active_tab == :evolutions)}
+            aria-current={@active_tab == :evolutions && "page"}
+          >
+            Evolutions
           </.link>
         </div>
       </nav>
@@ -1151,6 +1159,225 @@ defmodule GtfsPlannerWeb.CoreComponents do
         >
           Fleet
         </.link>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
+  Renders the Routes area tabs shared by the routes list and Transfers.
+
+  The tabs reuse the underline presentation of `route_sub_nav/1` and
+  `blocks_sub_nav/1` and render in `Layouts.app`'s sub-header slot.
+
+  ## Examples
+
+      <.routes_tabs gtfs_version_id={@current_gtfs_version.id} active_tab={:routes} />
+  """
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+  attr :active_tab, :atom, values: [:routes, :transfers], default: :routes
+
+  def routes_tabs(assigns) do
+    ~H"""
+    <nav id="routes-tabs" aria-label="Routes sections" class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="overflow-x-auto border-b border-base-300">
+        <div class="flex min-w-max items-end gap-1 sm:min-w-0">
+          <.link
+            id="routes-tab-routes"
+            navigate={"/gtfs/#{@gtfs_version_id}/routes"}
+            class={sub_nav_link_class(@active_tab == :routes)}
+            aria-current={@active_tab == :routes && "page"}
+          >
+            Routes
+          </.link>
+          <.link
+            id="routes-tab-transfers"
+            navigate={"/gtfs/#{@gtfs_version_id}/transfers"}
+            class={sub_nav_link_class(@active_tab == :transfers)}
+            aria-current={@active_tab == :transfers && "page"}
+          >
+            Transfers
+          </.link>
+        </div>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
+  Renders the Operations area tabs shared by Blocks, Runs and Rosters.
+
+  ## Examples
+
+      <.operations_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:blocks} />
+  """
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+  attr :active_tab, :atom, values: [:blocks, :runs, :rosters], default: :blocks
+
+  def operations_sub_nav(assigns) do
+    ~H"""
+    <nav id="operations-sub-nav" aria-label="Operations sections" class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="overflow-x-auto border-b border-base-300">
+        <div class="flex min-w-max items-end gap-1 sm:min-w-0">
+          <.link
+            id="operations-tab-blocks"
+            navigate={"/gtfs/#{@gtfs_version_id}/blocks"}
+            class={sub_nav_link_class(@active_tab == :blocks)}
+            aria-current={@active_tab == :blocks && "page"}
+          >
+            Blocks
+          </.link>
+          <.link
+            id="operations-tab-runs"
+            navigate={"/gtfs/#{@gtfs_version_id}/runs"}
+            class={sub_nav_link_class(@active_tab == :runs)}
+            aria-current={@active_tab == :runs && "page"}
+          >
+            Runs
+          </.link>
+          <.link
+            id="operations-tab-rosters"
+            navigate={"/gtfs/#{@gtfs_version_id}/rosters"}
+            class={sub_nav_link_class(@active_tab == :rosters)}
+            aria-current={@active_tab == :rosters && "page"}
+          >
+            Rosters
+          </.link>
+        </div>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
+  Renders the GTFS area tabs shared by Export and Import.
+
+  ## Examples
+
+      <.gtfs_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:export} />
+  """
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+  attr :active_tab, :atom, values: [:export, :import], default: :export
+
+  def gtfs_sub_nav(assigns) do
+    ~H"""
+    <nav id="gtfs-sub-nav" aria-label="GTFS sections" class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="overflow-x-auto border-b border-base-300">
+        <div class="flex min-w-max items-end gap-1 sm:min-w-0">
+          <.link
+            id="gtfs-tab-export"
+            navigate={"/gtfs/#{@gtfs_version_id}/export"}
+            class={sub_nav_link_class(@active_tab == :export)}
+            aria-current={@active_tab == :export && "page"}
+          >
+            Export
+          </.link>
+          <.link
+            id="gtfs-tab-import"
+            navigate={"/gtfs/#{@gtfs_version_id}/import"}
+            class={sub_nav_link_class(@active_tab == :import)}
+            aria-current={@active_tab == :import && "page"}
+          >
+            Import
+          </.link>
+        </div>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
+  Renders the Settings tabs for the version-scoped, all-version and asset sections.
+
+  ## Examples
+
+      <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:index} />
+  """
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+
+  attr :active_tab, :atom,
+    values: [
+      :index,
+      :feed_details,
+      :agencies,
+      :fares,
+      :export_defaults,
+      :feed_url,
+      :garages,
+      :fleet
+    ],
+    default: :index
+
+  def settings_nav(assigns) do
+    ~H"""
+    <nav id="settings-nav" aria-label="Settings sections" class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="overflow-x-auto border-b border-base-300">
+        <div class="flex min-w-max items-end gap-1 sm:min-w-0">
+          <.link
+            id="settings-tab-index"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings"}
+            class={sub_nav_link_class(@active_tab == :index)}
+            aria-current={@active_tab == :index && "page"}
+          >
+            Overview
+          </.link>
+          <.link
+            id="settings-tab-feed_details"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/feed-details"}
+            class={sub_nav_link_class(@active_tab == :feed_details)}
+            aria-current={@active_tab == :feed_details && "page"}
+          >
+            Feed details
+          </.link>
+          <.link
+            id="settings-tab-agencies"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/agencies"}
+            class={sub_nav_link_class(@active_tab == :agencies)}
+            aria-current={@active_tab == :agencies && "page"}
+          >
+            Agencies
+          </.link>
+          <.link
+            id="settings-tab-fares"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/fares"}
+            class={sub_nav_link_class(@active_tab == :fares)}
+            aria-current={@active_tab == :fares && "page"}
+          >
+            Fares
+          </.link>
+          <.link
+            id="settings-tab-export_defaults"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/export-defaults"}
+            class={sub_nav_link_class(@active_tab == :export_defaults)}
+            aria-current={@active_tab == :export_defaults && "page"}
+          >
+            Export defaults
+          </.link>
+          <.link
+            id="settings-tab-feed_url"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/feed-url"}
+            class={sub_nav_link_class(@active_tab == :feed_url)}
+            aria-current={@active_tab == :feed_url && "page"}
+          >
+            Feed URL
+          </.link>
+          <.link
+            id="settings-tab-garages"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/garages"}
+            class={sub_nav_link_class(@active_tab == :garages)}
+            aria-current={@active_tab == :garages && "page"}
+          >
+            Garages
+          </.link>
+          <.link
+            id="settings-tab-fleet"
+            navigate={"/gtfs/#{@gtfs_version_id}/settings/fleet"}
+            class={sub_nav_link_class(@active_tab == :fleet)}
+            aria-current={@active_tab == :fleet && "page"}
+          >
+            Fleet
+          </.link>
+        </div>
       </div>
     </nav>
     """

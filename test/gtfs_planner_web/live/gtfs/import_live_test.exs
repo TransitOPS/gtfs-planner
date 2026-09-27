@@ -1433,4 +1433,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert length(published_versions(organization.id)) == before_published
     end
   end
+
+  describe "GTFS area navigation" do
+    setup :editor_context
+
+    test "mounts the GTFS tabs with Import current above the unchanged page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/import")
+
+      assert has_element?(view, "#gtfs-sub-nav")
+      assert has_element?(view, "#gtfs-tab-import[aria-current='page']")
+      assert has_element?(view, "#gtfs-tab-export[href='/gtfs/#{version.id}/export']")
+      refute has_element?(view, "#gtfs-tab-export[aria-current='page']")
+
+      assert html =~ "Import GTFS"
+      assert has_element?(view, "#gtfs-import-form")
+      assert has_element?(view, "#gtfs-import-destination")
+    end
+  end
 end

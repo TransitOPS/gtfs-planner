@@ -593,4 +593,66 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       )
     end
   end
+
+  describe "RoutesLive area navigation" do
+    setup :shared_setup
+
+    test "mounts the Routes tabs with Routes current above the unchanged catalog", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      stub_catalog(fn _opts -> {:ok, route_page([], 0, 1, [], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "#routes-tabs")
+      assert has_element?(view, "#routes-tab-routes[aria-current='page']")
+
+      assert has_element?(
+               view,
+               "#routes-tab-transfers[href='/gtfs/#{version.id}/transfers']"
+             )
+
+      refute has_element?(view, "#routes-tab-transfers[aria-current='page']")
+
+      # The page keeps its own heading and filter form; the bar adds no heading.
+      assert has_element?(view, "#route-filter-form")
+      assert has_element?(view, "#route-search-form")
+
+      assert Enum.count(LazyHTML.query(LazyHTML.from_fragment(render(view)), "#routes-tabs h1")) ==
+               0
+    end
+
+    test "loads the route catalog through the production adapter on an ordinary mount", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      # This module swaps in CatalogReadAdapterMock for its other cases. An
+      # ordinary mount takes the default Repo adapter, so remove the override
+      # here; the setup's on_exit restores the previous configuration.
+      Application.delete_env(:gtfs_planner, @adapter_key)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "REAL1",
+          route_short_name: "R1"
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      html = render(view)
+
+      assert has_element?(view, "#routes-tabs")
+      assert has_element?(view, "#routes-tab-routes[aria-current='page']")
+      assert has_element?(view, "#routes-tab-transfers")
+      assert html =~ route.route_id
+      refute html =~ "Route catalog unavailable"
+    end
+  end
 end

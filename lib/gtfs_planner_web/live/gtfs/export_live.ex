@@ -323,6 +323,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
+      <:sub_header>
+        <.gtfs_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:export} />
+      </:sub_header>
+
       <.header>
         Export & Validate
         <:subtitle>

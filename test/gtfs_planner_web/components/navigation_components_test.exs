@@ -90,6 +90,54 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     |> Enum.map(&String.trim(LazyHTML.text(&1)))
   end
 
+  defp sub_nav_links(html, nav_id) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("##{nav_id} a")
+  end
+
+  defp sub_nav_texts(links), do: Enum.map(links, &String.trim(LazyHTML.text(&1)))
+
+  defp sub_nav_attr(links, name), do: LazyHTML.attribute(links, name)
+
+  defp current_sub_nav_links(links) do
+    Enum.filter(links, &(LazyHTML.attribute(&1, "aria-current") == ["page"]))
+  end
+
+  # The contract every area bar shares: ordinary links with the underline/focus
+  # presentation, unique stable IDs, exactly one current link, and horizontal
+  # scrolling contained by the bar itself.
+  defp assert_sub_nav_contract(html, nav_id) do
+    doc = LazyHTML.from_fragment(html)
+    links = LazyHTML.query(doc, "##{nav_id} a")
+
+    refute Enum.empty?(links)
+    assert Enum.empty?(LazyHTML.query(doc, "##{nav_id} [role=\"tablist\"]"))
+    assert Enum.empty?(LazyHTML.query(doc, "##{nav_id} [role=\"tab\"]"))
+    refute html =~ "aria-selected"
+
+    ids = sub_nav_attr(links, "id")
+    assert length(ids) == length(links)
+    assert Enum.uniq(ids) == ids
+
+    for class <- sub_nav_attr(links, "class") do
+      assert class =~ "min-h-11"
+      assert class =~ "border-b-2"
+      assert class =~ "focus-visible:ring-2"
+    end
+
+    nav_class = LazyHTML.attribute(LazyHTML.query(doc, "##{nav_id}"), "class") |> List.first()
+    assert nav_class =~ "px-4 sm:px-6 lg:px-8"
+
+    scrollable =
+      doc
+      |> LazyHTML.query("##{nav_id} > *")
+      |> LazyHTML.attribute("class")
+      |> Enum.any?(&(&1 =~ "overflow-x-auto"))
+
+    assert scrollable, "expected a locally scrolling container inside ##{nav_id}"
+  end
+
   describe "top_nav excludes account actions" do
     test "task navigation omits the Account settings link" do
       html = render_nav(admin_assigns("/"))
@@ -527,11 +575,49 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       refute html =~ "switch_level"
     end
 
-    test "renders exactly four navigation links" do
+    test "renders exactly five navigation links" do
       html = render_station_sub_nav(%{})
       doc = LazyHTML.from_fragment(html)
       links = LazyHTML.query(doc, "#station-sub-nav nav a")
-      assert Enum.count(links) == 4
+      assert Enum.count(links) == 5
+    end
+
+    test "appends Evolutions after Reachability and keeps the station identity" do
+      html = render_station_sub_nav(%{active_tab: :reachability})
+      doc = LazyHTML.from_fragment(html)
+      links = LazyHTML.query(doc, "#station-sub-nav nav a")
+
+      assert sub_nav_texts(links) == [
+               "Details",
+               "Floorplans",
+               "Reports",
+               "Reachability",
+               "Evolutions"
+             ]
+
+      assert sub_nav_attr(links, "href") |> List.last() ==
+               "/gtfs/42/stops/stop-1/evolutions"
+
+      current = current_sub_nav_links(links)
+      assert sub_nav_texts(current) == ["Reachability"]
+
+      assert Enum.count(
+               LazyHTML.query(doc, ~s(#station-sub-nav a[aria-label="Back to stations list"]))
+             ) == 1
+
+      assert LazyHTML.text(LazyHTML.query(doc, "#station-sub-nav h1")) == "Central Station"
+    end
+
+    test "Evolutions tab carries the stable link ID and becomes current" do
+      html = render_station_sub_nav(%{active_tab: :evolutions})
+      doc = LazyHTML.from_fragment(html)
+      links = LazyHTML.query(doc, "#station-sub-nav nav a")
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#station-tab-evolutions"), "href") == [
+               "/gtfs/42/stops/stop-1/evolutions"
+             ]
+
+      assert sub_nav_texts(current_sub_nav_links(links)) == ["Evolutions"]
     end
 
     test "Floorplans link points to diagram route" do
@@ -591,6 +677,162 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert Enum.count(back) == 1
       classes = LazyHTML.attribute(back, "class") |> List.first()
       assert classes =~ "min-h-11"
+    end
+  end
+
+  describe "routes_tabs" do
+    defp render_routes_tabs(active_tab) do
+      assigns = %{active_tab: active_tab}
+
+      rendered_to_string(~H"""
+      <.routes_tabs gtfs_version_id={42} active_tab={@active_tab} />
+      """)
+    end
+
+    test "declares Routes then Transfers with exact destinations and stable link IDs" do
+      html = render_routes_tabs(:routes)
+      links = sub_nav_links(html, "routes-tabs")
+
+      assert sub_nav_texts(links) == ["Routes", "Transfers"]
+      assert sub_nav_attr(links, "href") == ["/gtfs/42/routes", "/gtfs/42/transfers"]
+
+      assert sub_nav_attr(links, "id") == [
+               "routes-tab-routes",
+               "routes-tab-transfers"
+             ]
+
+      assert_sub_nav_contract(html, "routes-tabs")
+    end
+
+    for {active_tab, label} <- [{:routes, "Routes"}, {:transfers, "Transfers"}] do
+      test "#{active_tab} marks exactly one current link" do
+        links = sub_nav_links(render_routes_tabs(unquote(active_tab)), "routes-tabs")
+
+        assert sub_nav_attr(links, "aria-current") == ["page"]
+        assert sub_nav_texts(current_sub_nav_links(links)) == [unquote(label)]
+      end
+    end
+  end
+
+  describe "operations_sub_nav" do
+    defp render_operations_sub_nav(active_tab) do
+      assigns = %{active_tab: active_tab}
+
+      rendered_to_string(~H"""
+      <.operations_sub_nav gtfs_version_id={42} active_tab={@active_tab} />
+      """)
+    end
+
+    test "declares Blocks, Runs, Rosters with exact destinations and stable link IDs" do
+      html = render_operations_sub_nav(:blocks)
+      links = sub_nav_links(html, "operations-sub-nav")
+
+      assert sub_nav_texts(links) == ["Blocks", "Runs", "Rosters"]
+
+      assert sub_nav_attr(links, "href") == [
+               "/gtfs/42/blocks",
+               "/gtfs/42/runs",
+               "/gtfs/42/rosters"
+             ]
+
+      assert sub_nav_attr(links, "id") == [
+               "operations-tab-blocks",
+               "operations-tab-runs",
+               "operations-tab-rosters"
+             ]
+
+      assert_sub_nav_contract(html, "operations-sub-nav")
+    end
+
+    for {active_tab, label} <- [
+          {:blocks, "Blocks"},
+          {:runs, "Runs"},
+          {:rosters, "Rosters"}
+        ] do
+      test "#{active_tab} marks exactly one current link" do
+        links =
+          sub_nav_links(render_operations_sub_nav(unquote(active_tab)), "operations-sub-nav")
+
+        assert sub_nav_attr(links, "aria-current") == ["page"]
+        assert sub_nav_texts(current_sub_nav_links(links)) == [unquote(label)]
+      end
+    end
+  end
+
+  describe "gtfs_sub_nav" do
+    defp render_gtfs_sub_nav(active_tab) do
+      assigns = %{active_tab: active_tab}
+
+      rendered_to_string(~H"""
+      <.gtfs_sub_nav gtfs_version_id={42} active_tab={@active_tab} />
+      """)
+    end
+
+    test "declares Export then Import with exact destinations and stable link IDs" do
+      html = render_gtfs_sub_nav(:export)
+      links = sub_nav_links(html, "gtfs-sub-nav")
+
+      assert sub_nav_texts(links) == ["Export", "Import"]
+      assert sub_nav_attr(links, "href") == ["/gtfs/42/export", "/gtfs/42/import"]
+      assert sub_nav_attr(links, "id") == ["gtfs-tab-export", "gtfs-tab-import"]
+
+      assert_sub_nav_contract(html, "gtfs-sub-nav")
+    end
+
+    for {active_tab, label} <- [{:export, "Export"}, {:import, "Import"}] do
+      test "#{active_tab} marks exactly one current link" do
+        links = sub_nav_links(render_gtfs_sub_nav(unquote(active_tab)), "gtfs-sub-nav")
+
+        assert sub_nav_attr(links, "aria-current") == ["page"]
+        assert sub_nav_texts(current_sub_nav_links(links)) == [unquote(label)]
+      end
+    end
+  end
+
+  describe "settings_nav" do
+    @settings_tabs [
+      {:index, "Overview", "/gtfs/42/settings", "settings-tab-index"},
+      {:feed_details, "Feed details", "/gtfs/42/settings/feed-details",
+       "settings-tab-feed_details"},
+      {:agencies, "Agencies", "/gtfs/42/settings/agencies", "settings-tab-agencies"},
+      {:fares, "Fares", "/gtfs/42/settings/fares", "settings-tab-fares"},
+      {:export_defaults, "Export defaults", "/gtfs/42/settings/export-defaults",
+       "settings-tab-export_defaults"},
+      {:feed_url, "Feed URL", "/gtfs/42/settings/feed-url", "settings-tab-feed_url"},
+      {:garages, "Garages", "/gtfs/42/settings/garages", "settings-tab-garages"},
+      {:fleet, "Fleet", "/gtfs/42/settings/fleet", "settings-tab-fleet"}
+    ]
+
+    defp render_settings_nav(active_tab) do
+      assigns = %{active_tab: active_tab}
+
+      rendered_to_string(~H"""
+      <.settings_nav gtfs_version_id={42} active_tab={@active_tab} />
+      """)
+    end
+
+    test "declares the eight Settings sections in order with exact destinations" do
+      html = render_settings_nav(:index)
+      links = sub_nav_links(html, "settings-nav")
+
+      assert sub_nav_texts(links) ==
+               Enum.map(@settings_tabs, fn {_key, label, _href, _id} -> label end)
+
+      assert sub_nav_attr(links, "href") ==
+               Enum.map(@settings_tabs, fn {_k, _l, href, _id} -> href end)
+
+      assert sub_nav_attr(links, "id") == Enum.map(@settings_tabs, fn {_k, _l, _h, id} -> id end)
+
+      assert_sub_nav_contract(html, "settings-nav")
+    end
+
+    for {active_tab, label, _href, _id} <- @settings_tabs do
+      test "#{active_tab} marks exactly one current link" do
+        links = sub_nav_links(render_settings_nav(unquote(active_tab)), "settings-nav")
+
+        assert sub_nav_attr(links, "aria-current") == ["page"]
+        assert sub_nav_texts(current_sub_nav_links(links)) == [unquote(label)]
+      end
     end
   end
 
