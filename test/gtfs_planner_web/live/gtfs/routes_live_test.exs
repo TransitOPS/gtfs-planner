@@ -214,6 +214,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
 
       assert has_element?(view, "#routes-unavailable")
       assert has_element?(view, "#routes-retry")
+      refute has_element?(view, "#new-route-trigger")
     end
 
     test "retry restores rows after unavailable", %{

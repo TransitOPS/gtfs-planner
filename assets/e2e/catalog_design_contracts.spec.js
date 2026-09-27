@@ -107,7 +107,55 @@ test.describe("Route catalog responsive contracts", () => {
         expect(box.height, `route link ${i}`).toBeGreaterThanOrEqual(44);
       }
     });
+
+    test(`create route drawer fits the ${viewport.label} viewport`, async ({
+      page,
+    }) => {
+      await openRouteCatalog(page);
+      await page.waitForSelector("[data-phx-main].phx-connected");
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+
+      await page.locator("#new-route-trigger").click();
+      await expect(page.getByRole("dialog", { name: "New route" })).toBeVisible();
+      await page
+        .locator("#new-route-drawer")
+        .evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+
+      expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+      const drawerBody = page.locator("#new-route-drawer-body");
+      expect(
+        await drawerBody.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        "drawer body overflows",
+      ).toBe(true);
+
+      const panel = await page.locator("#new-route-drawer").boundingBox();
+      expect(panel, "drawer panel").not.toBeNull();
+      expect(Math.abs(panel.x + panel.width - viewport.width)).toBeLessThanOrEqual(1);
+    });
   }
+
+  test("create route drawer moves focus to Route ID and back to the trigger", async ({
+    page,
+  }) => {
+    await openRouteCatalog(page);
+    await page.waitForSelector("[data-phx-main].phx-connected");
+
+    await page.locator("#new-route-trigger").click();
+    await expect(page.locator("#route_route_id")).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#new-route-drawer-overlay")).toBeHidden();
+    await expect(page.locator("#new-route-trigger")).toBeFocused();
+
+    await page.locator("#new-route-trigger").click();
+    await expect(page.getByRole("dialog", { name: "New route" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.locator("#new-route-trigger")).toBeFocused();
+  });
 
   test("route catalog supports keyboard traversal", async ({ page }) => {
     await openRouteCatalog(page);
