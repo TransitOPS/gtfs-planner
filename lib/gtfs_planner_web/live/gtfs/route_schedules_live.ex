@@ -309,6 +309,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           frequency?: row.frequency?,
           service_id: socket.assigns.filters.service_id,
           return_focus_id: return_focus,
+          transfer_count:
+            Gtfs.count_trip_transfers(
+              socket.assigns.current_organization.id,
+              socket.assigns.current_gtfs_version.id,
+              [row.trip_id]
+            ),
           error: nil
         }
 
@@ -338,6 +344,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         frequency?: Enum.any?(selected, & &1.frequency?),
         service_id: service_id,
         return_focus_id: "schedules-delete-selected",
+        transfer_count:
+          Gtfs.count_trip_transfers(
+            socket.assigns.current_organization.id,
+            socket.assigns.current_gtfs_version.id,
+            Enum.map(selected, & &1.trip_id)
+          ),
         error: nil
       }
 

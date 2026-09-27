@@ -21,6 +21,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
@@ -665,6 +666,161 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert html =~ ScheduleComponents.error_message(:stale)
       assert count_trips(scope, "EDT_T0700") == 1
     end
+
+    test "the bulk confirmation states the transfer consequence", context do
+      scope = editing_scope(context)
+      seed_pair_transfers(scope)
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
+
+      html = render_click(view, "delete_selected")
+
+      assert renders(view, "#delete-dialog-transfers") =~
+               "It also removes 2 transfer records that name these trips."
+
+      assert html =~ "This removes the trips and their stop times from this published version."
+
+      assert html =~
+               ~r/id="delete-dialog-transfers">It also removes 2 transfer records that name these trips\.<\/span>\s+You cannot\s+undo this\./
+    end
+
+    test "the frequency confirmation states the transfer consequence too", context do
+      scope = editing_scope(context)
+
+      transfer_fixture(scope.organization_id, scope.version.id, %{
+        transfer_type: 4,
+        from_trip_id: "EDT_FREQ",
+        to_trip_id: "EDT_T0900"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      html = render_click(view, "open_delete_trip", %{"trip" => trip_row(scope, "EDT_FREQ").id})
+
+      assert html =~ ~r/including\s+frequency service\./
+
+      assert html =~
+               ~r/id="delete-dialog-transfers">It also removes 1 transfer record that names this trip\.<\/span>\s+You cannot\s+undo this\./
+    end
+
+    test "the bulk confirmation keeps one transfer singular across several trips", context do
+      scope = editing_scope(context)
+
+      transfer_fixture(scope.organization_id, scope.version.id, %{
+        transfer_type: 4,
+        from_trip_id: "EDT_T0600",
+        to_trip_id: "EDT_T0700"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
+      render_click(view, "delete_selected")
+
+      assert renders(view, "#delete-dialog-transfers") =~
+               "It also removes 1 transfer record that names these trips."
+    end
+
+    test "the single confirmation states the one transfer that names the trip", context do
+      scope = editing_scope(context)
+
+      transfer_fixture(scope.organization_id, scope.version.id, %{
+        transfer_type: 4,
+        from_trip_id: "EDT_T0800",
+        to_trip_id: "EDT_T0900"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_delete_trip", %{"trip" => trip_row(scope, "EDT_T0800").id})
+
+      assert renders(view, "#delete-dialog-transfers") =~
+               "It also removes 1 transfer record that names this trip."
+    end
+
+    test "the single confirmation counts every transfer that names the trip", context do
+      scope = editing_scope(context)
+
+      transfer_fixture(scope.organization_id, scope.version.id, %{
+        transfer_type: 4,
+        from_trip_id: "EDT_T0600",
+        to_trip_id: "EDT_T0700"
+      })
+
+      transfer_fixture(scope.organization_id, scope.version.id, %{
+        transfer_type: 4,
+        from_trip_id: "EDT_T0700",
+        to_trip_id: "EDT_T0900"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_delete_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
+
+      assert renders(view, "#delete-dialog-transfers") =~
+               "It also removes 2 transfer records that name this trip."
+    end
+
+    test "a trip no transfer names keeps the dialog and flash unchanged", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_delete_trip", %{"trip" => trip_row(scope, "EDT_T0800").id})
+
+      assert has_element?(view, "#delete-dialog[data-open='true']")
+      refute has_element?(view, "#delete-dialog-transfers")
+
+      render_click(view, "confirm_delete")
+
+      assert render(view) =~ "Deleted 1 trip from Weekday."
+    end
+
+    test "a transfer in another version of the organization does not count", context do
+      scope = editing_scope(context)
+      other_version = gtfs_version_fixture(scope.organization.id)
+
+      transfer_fixture(scope.organization_id, other_version.id, %{
+        transfer_type: 4,
+        from_trip_id: "EDT_T0600",
+        to_trip_id: "EDT_T0700"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_delete_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
+
+      assert has_element?(view, "#delete-dialog[data-open='true']")
+      refute has_element?(view, "#delete-dialog-transfers")
+      assert count_transfers_naming(scope, other_version.id, ["EDT_T0600"]) == 1
+    end
+
+    test "the confirmed bulk deletion removes the transfers and names them in the flash",
+         context do
+      scope = editing_scope(context)
+      seed_pair_transfers(scope)
+
+      bystander =
+        transfer_fixture(scope.organization_id, scope.version.id, %{
+          transfer_type: 4,
+          from_trip_id: "EDT_T0900",
+          to_trip_id: "EDT_T1000"
+        })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
+      render_click(view, "delete_selected")
+      render_click(view, "confirm_delete")
+
+      assert render(view) =~ "Deleted 2 trips and 2 transfer records from Weekday."
+      assert count_transfers_naming(scope, scope.version.id, ["EDT_T0600", "EDT_T0700"]) == 0
+      assert Repo.get!(Transfer, bystander.id) == bystander
+    end
   end
 
   describe "error copy and states" do
@@ -1062,6 +1218,35 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
     |> Enum.flat_map(& &1.rows)
     |> Enum.find(&(&1.trip_id == trip_id)) ||
       raise("no row for #{trip_id}; the fixture is wrong")
+  end
+
+  # Two transfers name the pair EDT_T0600/EDT_T0700: an in-seat row between the
+  # two trips and a stop-to-stop row that also names EDT_T0600.
+  defp seed_pair_transfers(scope) do
+    transfer_fixture(scope.organization_id, scope.version.id, %{
+      transfer_type: 4,
+      from_trip_id: "EDT_T0600",
+      to_trip_id: "EDT_T0700"
+    })
+
+    transfer_fixture(scope.organization_id, scope.version.id, %{
+      transfer_type: 2,
+      from_stop_id: "EDT_S1",
+      to_stop_id: "EDT_S2",
+      from_trip_id: "EDT_T0600",
+      min_transfer_time: 120
+    })
+  end
+
+  defp count_transfers_naming(scope, version_id, trip_ids) do
+    Repo.aggregate(
+      from(t in Transfer,
+        where:
+          t.organization_id == ^scope.organization_id and t.gtfs_version_id == ^version_id and
+            (t.from_trip_id in ^trip_ids or t.to_trip_id in ^trip_ids)
+      ),
+      :count
+    )
   end
 
   defp count_trips(scope, trip_id \\ nil) do
