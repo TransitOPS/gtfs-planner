@@ -738,7 +738,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp summary(trip_data, direction) do
     complete = Enum.filter(trip_data, &match?(%{bounds: {:ok, _, _}}, &1))
 
-    direction_data = Enum.filter(trip_data, &(&1.trip.direction_id == direction))
+    direction_data = Enum.filter(complete, &(&1.trip.direction_id == direction))
 
     {scheduled, frequency} =
       Enum.split_with(direction_data, &(frequency_windows(&1.frequencies) == []))

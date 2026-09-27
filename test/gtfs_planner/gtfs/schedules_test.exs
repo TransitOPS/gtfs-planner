@@ -553,11 +553,30 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
         stop_times: []
       })
 
+      for stop_times <- [
+            [{"A", "09:00:00", "09:00:00"}, {"B", nil, nil}],
+            [{"A", nil, nil}, {"B", "09:10:00", "09:10:00"}]
+          ] do
+        schedule_trip_fixture(context.organization.id, context.version.id, "12i", bundle, %{
+          service_id: service,
+          state: "custom",
+          timed_pattern_id: nil,
+          stop_times: stop_times,
+          frequencies: [%{start_time: "09:00:00", end_time: "10:00:00", headway_secs: 600}]
+        })
+      end
+
       assert {:ok, payload} = load(context, "12i", %{})
 
-      assert payload.summary.incomplete_trip_count == 3
+      assert payload.summary.incomplete_trip_count == 5
       assert payload.summary.vehicles == %{count: 1, at_secs: 90_600}
       assert payload.summary.trips_per_hour == [{25, 1, false}]
+
+      # Incomplete trips stay in the timetable, without contributing scheduled
+      # departures or frequency windows to the pattern's headway bands.
+      assert [section] = payload.sections
+      assert length(section.rows) == 6
+      assert [%{kind: :irregular, trip_count: 1, first_secs: 90_600}] = section.bands
     end
 
     test "trips per hour includes zero hours and hours at or beyond 24", context do

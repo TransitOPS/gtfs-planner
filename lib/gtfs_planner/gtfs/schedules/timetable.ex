@@ -151,10 +151,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
       |> Enum.map(&build_row(&1, pattern, occurrences, all_columns, timings))
       |> Enum.sort_by(&row_sort_key/1)
 
-    scheduled_departures =
-      for row <- rows, not row.frequency?, row.start_secs != nil, do: row.start_secs
+    complete_trips = Enum.filter(trips, &complete_times?/1)
 
-    frequency_windows = Enum.flat_map(trips, &frequency_windows/1)
+    scheduled_departures =
+      for trip <- complete_trips, Map.get(trip, :frequencies, []) == [] do
+        trip |> Map.get(:stop_times, []) |> sort_stop_times() |> first_departure()
+      end
+
+    frequency_windows = Enum.flat_map(complete_trips, &frequency_windows/1)
 
     %{
       pattern: pattern,
@@ -297,6 +301,20 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     case GtfsTime.parse(Map.get(first, :departure_time)) do
       {:ok, start_secs} -> start_secs
       {:error, :invalid_time} -> nil
+    end
+  end
+
+  # Keep incomplete trips visible, but exclude them from planning summaries.
+  defp complete_times?(trip) do
+    stop_times = trip |> Map.get(:stop_times, []) |> sort_stop_times()
+
+    case stop_times do
+      [] ->
+        false
+
+      [first | _] ->
+        match?({:ok, _}, GtfsTime.parse(Map.get(first, :departure_time))) and
+          match?({:ok, _}, GtfsTime.parse(Map.get(List.last(stop_times), :arrival_time)))
     end
   end
 
