@@ -152,24 +152,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     # the picker reports a complete date, so the drafted dates are part of the
     # same form values the create command reads.
     case params["date_input"] do
-      "" ->
-        {:noreply, put_params(socket, params, errors: [])}
-
-      input ->
-        case parse_date(input) do
-          {:ok, date} ->
-            iso = Date.to_iso8601(date)
-
-            params =
-              params
-              |> Map.put("date_input", "")
-              |> Map.update!("dates", fn dates -> Enum.sort(Enum.uniq(dates ++ [iso])) end)
-
-            {:noreply, put_params(socket, params, errors: [])}
-
-          :error ->
-            {:noreply, reject_input(socket, params, date_error())}
-        end
+      "" -> {:noreply, put_params(socket, params, errors: [])}
+      input -> draft_date(socket, params, input)
     end
   end
 
@@ -533,29 +517,45 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp params_from_source(source) do
     attributes = source.attributes
-    calendar = source.calendar
 
     %{
       "service_id" => to_string(source_payload_value(source, :service_id)),
-      "name" => (attributes && attributes.service_description) || "",
+      "name" => attribute_value(attributes, :service_description, ""),
       "kind" => to_string(source.kind),
+      "date_input" => "",
+      "dates" => []
+    }
+    |> Map.merge(weekly_form_values(source.calendar))
+    |> Map.merge(metadata_form_values(attributes))
+  end
+
+  defp weekly_form_values(calendar) do
+    %{
       "weekdays" =>
         Enum.filter(@weekday_fields, fn field ->
           calendar && Map.get(calendar, String.to_existing_atom(field)) == 1
         end),
       "start_date" => date_string(calendar && calendar.start_date),
-      "end_date" => date_string(calendar && calendar.end_date),
-      "date_input" => "",
-      "dates" => [],
-      "service_schedule_name" => (attributes && attributes.service_schedule_name) || "",
-      "service_schedule_type" => (attributes && attributes.service_schedule_type) || "",
-      "service_schedule_typicality" =>
-        to_string((attributes && attributes.service_schedule_typicality) || 0),
-      "rating_start_date" => date_string(attributes && attributes.rating_start_date),
-      "rating_end_date" => date_string(attributes && attributes.rating_end_date),
-      "rating_description" => (attributes && attributes.rating_description) || ""
+      "end_date" => date_string(calendar && calendar.end_date)
     }
   end
+
+  # Every optional schedule attribute keeps its own empty value, so a cleared
+  # field is submitted as blank rather than as the previous stored text.
+  defp metadata_form_values(attributes) do
+    %{
+      "service_schedule_name" => attribute_value(attributes, :service_schedule_name, ""),
+      "service_schedule_type" => attribute_value(attributes, :service_schedule_type, ""),
+      "service_schedule_typicality" =>
+        to_string(attribute_value(attributes, :service_schedule_typicality, 0)),
+      "rating_start_date" => date_string(attribute_value(attributes, :rating_start_date, nil)),
+      "rating_end_date" => date_string(attribute_value(attributes, :rating_end_date, nil)),
+      "rating_description" => attribute_value(attributes, :rating_description, "")
+    }
+  end
+
+  defp attribute_value(nil, _field, default), do: default
+  defp attribute_value(attributes, field, default), do: Map.get(attributes, field) || default
 
   # The submitted map only carries the controls the form owns; the draft date list
   # and the kind selection are server state, so they are preserved deliberately.
@@ -800,47 +800,58 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   ## Command building
 
+  # A complete picker value becomes a sorted, unique draft chip; an unreadable one
+  # is refused on its own control without touching the stored rows.
+  defp draft_date(socket, params, input) do
+    case parse_date(input) do
+      {:ok, date} ->
+        iso = Date.to_iso8601(date)
+
+        params =
+          params
+          |> Map.put("date_input", "")
+          |> Map.update!("dates", fn dates -> Enum.sort(Enum.uniq(dates ++ [iso])) end)
+
+        {:noreply, put_params(socket, params, errors: [])}
+
+      :error ->
+        {:noreply, reject_input(socket, params, date_error())}
+    end
+  end
+
   defp params_to_command(socket, params) do
     kind = String.to_existing_atom(params["kind"])
 
     with {:ok, name} <- required_name(params),
-         {:ok, metadata} <- metadata_attrs(params) do
-      attrs = Map.merge(metadata, %{name: name, kind: kind})
-
-      weekly_result =
-        case kind do
-          :weekly -> weekly_attrs(params)
-          :dates_only -> {:ok, %{}}
-        end
-
-      with {:ok, weekly} <- weekly_result do
-        attrs = Map.merge(attrs, weekly)
-
-        case socket.assigns.live_action do
-          :new ->
-            dates_result =
-              case kind do
-                :dates_only -> additions(params)
-                :weekly -> {:ok, %{}}
-              end
-
-            with {:ok, additions} <- dates_result,
-                 {:ok, service_id} <- required_service_id(params) do
-              {:ok, :create, Map.merge(attrs, Map.merge(%{service_id: service_id}, additions))}
-            end
-
-          :show ->
-            case {socket.assigns.kind, kind} do
-              {current, requested} when current != requested ->
-                {:ok, {:convert, socket.assigns.service_id, kind, attrs}}
-
-              _unchanged ->
-                {:ok, {:save, socket.assigns.service_id, attrs}}
-            end
-        end
-      end
+         {:ok, metadata} <- metadata_attrs(params),
+         {:ok, weekly} <- weekly_attrs_for(kind, params) do
+      attrs = metadata |> Map.merge(%{name: name, kind: kind}) |> Map.merge(weekly)
+      command_for(socket, kind, attrs, params)
     end
   end
+
+  defp weekly_attrs_for(:weekly, params), do: weekly_attrs(params)
+  defp weekly_attrs_for(:dates_only, _params), do: {:ok, %{}}
+
+  # A new calendar carries its own service ID and draft dates; an existing one is
+  # either converted to the requested kind or saved in place.
+  defp command_for(%{assigns: %{live_action: :new}} = _socket, kind, attrs, params) do
+    with {:ok, additions} <- additions_for(kind, params),
+         {:ok, service_id} <- required_service_id(params) do
+      {:ok, :create, Map.merge(attrs, Map.merge(%{service_id: service_id}, additions))}
+    end
+  end
+
+  defp command_for(socket, kind, attrs, _params) do
+    if socket.assigns.kind == kind do
+      {:ok, {:save, socket.assigns.service_id, attrs}}
+    else
+      {:ok, {:convert, socket.assigns.service_id, kind, attrs}}
+    end
+  end
+
+  defp additions_for(:dates_only, params), do: additions(params)
+  defp additions_for(:weekly, _params), do: {:ok, %{}}
 
   defp required_name(params) do
     case String.trim(params["name"] || "") do
@@ -858,29 +869,37 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp weekly_attrs(params) do
     case parse_date(params["start_date"]) do
-      {:ok, start_date} ->
-        case parse_date(params["end_date"]) do
-          {:ok, end_date} ->
-            if Date.compare(end_date, start_date) == :lt do
-              {:error, [end_date: "must be on or after the start date"]}
-            else
-              days =
-                Map.new(@weekday_fields, fn field ->
-                  {String.to_existing_atom(field),
-                   if(field in params["weekdays"], do: 1, else: 0)}
-                end)
-
-              {:ok, Map.merge(days, %{start_date: start_date, end_date: end_date})}
-            end
-
-          :error ->
-            {:error, [end_date: "choose an end date"]}
-        end
-
-      :error ->
-        {:error, [start_date: "choose a start date"]}
+      :error -> {:error, [start_date: "choose a start date"]}
+      {:ok, start_date} -> weekly_end_attrs(params, start_date)
     end
   end
+
+  defp weekly_end_attrs(params, start_date) do
+    case parse_date(params["end_date"]) do
+      :error ->
+        {:error, [end_date: "choose an end date"]}
+
+      {:ok, end_date} ->
+        ordered_weekly_attrs(params, start_date, end_date)
+    end
+  end
+
+  # Civil dates compare chronologically through Date.compare/2; struct ordering
+  # would compare the day before the month and misread a year boundary.
+  defp ordered_weekly_attrs(params, start_date, end_date) do
+    if Date.compare(end_date, start_date) == :lt do
+      {:error, [end_date: "must be on or after the start date"]}
+    else
+      days =
+        @weekday_fields
+        |> Enum.map(fn field -> {String.to_existing_atom(field), weekday_flag(field, params)} end)
+        |> Map.new()
+
+      {:ok, Map.merge(days, %{start_date: start_date, end_date: end_date})}
+    end
+  end
+
+  defp weekday_flag(field, params), do: if(field in params["weekdays"], do: 1, else: 0)
 
   defp additions(params) do
     case parse_dates(Enum.join(params["dates"], ",")) do
@@ -1155,7 +1174,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       <div id="calendar-editor" phx-hook="FormErrorFocus" class="mt-6">
         <nav aria-label="Breadcrumb" class="text-sm">
           <.link navigate={list_path_for(@current_gtfs_version.id)} class="link">Calendars</.link>
-          <span class="text-base-content/70"> /   {breadcrumb_label(assigns)}</span>
+          <span class="text-base-content/70">{" / "}{breadcrumb_label(assigns)}</span>
         </nav>
 
         <div
@@ -1210,7 +1229,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 <span :if={@source.attributes == nil or blank_name?(@source)}>
                   · Unnamed imported service
                 </span>
-                <span> ·   {kind_label(@kind)}</span>
+                <span>{" · "}{kind_label(@kind)}</span>
               </p>
             </div>
             <details :if={@live_action == :show} class="mt-3">

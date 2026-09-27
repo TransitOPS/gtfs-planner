@@ -71,9 +71,14 @@ test.describe("calendar list", () => {
     const versionId = await openCalendars(page);
 
     for (const viewport of VIEWPORTS) {
-      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
       await page.goto(`/gtfs/${versionId}/calendars`);
-      await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+      await page.waitForSelector("#calendars-list-container", {
+        timeout: 15000,
+      });
 
       // The navigation item owns an active Calendars surface.
       const calendarsNav = page.locator('nav[aria-label="Main navigation"] a', {
@@ -96,8 +101,12 @@ test.describe("calendar list", () => {
       expect(await rowNames(page)).toEqual(SEEDED_NAMES);
 
       // Count strip, agency-local today, and the feed-gap callout.
-      await expect(page.locator("#calendar-counts-item-calendars")).toContainText("6");
-      await expect(page.locator("#calendar-counts-item-run-today")).toContainText("1");
+      await expect(
+        page.locator("#calendar-counts-item-calendars"),
+      ).toContainText("6");
+      await expect(
+        page.locator("#calendar-counts-item-run-today"),
+      ).toContainText("1");
       await expect(page.locator("#calendars-today")).toContainText("Today ·");
       await expect(page.locator("#calendars-feed-gap")).toBeVisible();
 
@@ -112,24 +121,46 @@ test.describe("calendar list", () => {
       expect(statusText).toContain("Not used by trips");
 
       // Grouped trip usage is numeric and right-aligned in its own column.
-      const dailyRow = page.locator("#calendars-list tr", { hasText: "Every day service" });
+      const dailyRow = page.locator("#calendars-list tr", {
+        hasText: "Every day service",
+      });
       await expect(dailyRow.locator("td").nth(3)).toHaveText("3");
-      await expect(page.locator("#calendars-list tr", { hasText: "School days" }).locator("td").nth(3)).toHaveText("2");
-      await expect(page.locator("#calendars-list tr", { hasText: "Legacy service" }).locator("td").nth(3)).toHaveText("1");
+      await expect(
+        page
+          .locator("#calendars-list tr", { hasText: "School days" })
+          .locator("td")
+          .nth(3),
+      ).toHaveText("2");
+      await expect(
+        page
+          .locator("#calendars-list tr", { hasText: "Legacy service" })
+          .locator("td")
+          .nth(3),
+      ).toHaveText("1");
 
       // Detail links keep URI-encoded service IDs.
-      const oddLink = page.locator("#calendars-list tr", { hasText: "Odd service id" }).locator("td").first().locator("a");
-      await expect(oddLink).toHaveAttribute("href", /service_id=svc%2Fodd\+name/);
+      const oddLink = page
+        .locator("#calendars-list tr", { hasText: "Odd service id" })
+        .locator("td")
+        .first()
+        .locator("a");
+      await expect(oddLink).toHaveAttribute(
+        "href",
+        /service_id=svc%2Fodd\+name/,
+      );
 
-      // Calendar creation is reachable from the list; the editor and
-      // cross-calendar drawer controls are not.
+      // Calendar creation and the cross-calendar drawer are reachable from the
+      // list; the editor's own controls are not.
       await expect(page.locator("#calendars-create")).toHaveAttribute(
         "href",
         `/gtfs/${versionId}/calendars/new`,
       );
 
-      for (const label of [
+      await expect(page.locator("#calendar-date-change")).toHaveText(
         "Change service on a date",
+      );
+
+      for (const label of [
         "Add break",
         "Duplicate calendar",
         "Delete calendar",
@@ -146,26 +177,36 @@ test.describe("calendar list", () => {
     }
   });
 
-  test("search, status filters and sorting round-trip through the URL", async ({ page }) => {
+  test("search, status filters and sorting round-trip through the URL", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await openCalendars(page);
 
     // Search by name.
     await page.fill("#calendar-search", "school");
-    await expect.poll(() => rowNames(page), { timeout: 5000 }).toEqual(["School days"]);
+    await expect
+      .poll(() => rowNames(page), { timeout: 5000 })
+      .toEqual(["School days"]);
     await expect(page.locator("#calendars-list tr")).toHaveCount(1);
     await expect(page.locator("#result-count")).toHaveText("1 of 6 calendars");
 
     // Search by service ID.
     await page.fill("#calendar-search", "CAL_LEGACY");
-    await expect.poll(() => rowNames(page), { timeout: 5000 }).toEqual(["Legacy service"]);
+    await expect
+      .poll(() => rowNames(page), { timeout: 5000 })
+      .toEqual(["Legacy service"]);
 
     // A search with no matches keeps the counts and offers to clear the filters.
     await page.fill("#calendar-search", "no such calendar");
-    await expect(page.locator("#calendars-filtered-empty")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("#calendars-filtered-empty")).toBeVisible({
+      timeout: 5000,
+    });
     await expect(page.locator("#result-count")).toHaveText("0 of 6 calendars");
     await page.click("#calendars-clear-filters");
-    await expect(page.locator("#calendars-list tr")).toHaveCount(6, { timeout: 5000 });
+    await expect(page.locator("#calendars-list tr")).toHaveCount(6, {
+      timeout: 5000,
+    });
 
     // Status filters with the documented allowlist.
     await page.selectOption("#calendar-status", "ended");
@@ -175,10 +216,18 @@ test.describe("calendar list", () => {
     await expectRows(page, ["Every day service"]);
 
     await page.selectOption("#calendar-status", "active_period");
-    await expectRows(page, ["Every day service", "School days", "Unused calendar"]);
+    await expectRows(page, [
+      "Every day service",
+      "School days",
+      "Unused calendar",
+    ]);
 
     await page.selectOption("#calendar-status", "unused");
-    await expectRows(page, ["Metadata only", "Odd service id", "Unused calendar"]);
+    await expectRows(page, [
+      "Metadata only",
+      "Odd service id",
+      "Unused calendar",
+    ]);
 
     await page.selectOption("#calendar-status", "all");
     await expectRows(page, SEEDED_NAMES);
@@ -186,23 +235,35 @@ test.describe("calendar list", () => {
     // The URL carries the state, and reloading it reproduces the list.
     await page.fill("#calendar-search", "service");
     await page.selectOption("#calendar-status", "all");
-    await expectRows(page, ["Every day service", "Legacy service", "Odd service id"]);
+    await expectRows(page, [
+      "Every day service",
+      "Legacy service",
+      "Odd service id",
+    ]);
     expect(page.url()).toContain("search=service");
 
     await page.reload();
     await page.waitForSelector("#calendars-list-container");
     await expect(page.locator("#calendar-search")).toHaveValue("service");
-    await expectRows(page, ["Every day service", "Legacy service", "Odd service id"]);
+    await expectRows(page, [
+      "Every day service",
+      "Legacy service",
+      "Odd service id",
+    ]);
 
     // Keyboard-reachable sort controls toggle direction through the URL.
     await page.goto(page.url().split("?")[0]);
     await page.waitForSelector("#calendars-list-container");
 
-    const nameHeader = page.locator("#calendars-list-container thead th").first();
+    const nameHeader = page
+      .locator("#calendars-list-container thead th")
+      .first();
     await expect(nameHeader).toHaveAttribute("aria-sort", "ascending");
 
     await nameHeader.locator("button").click();
-    await expect(nameHeader).toHaveAttribute("aria-sort", "descending", { timeout: 5000 });
+    await expect(nameHeader).toHaveAttribute("aria-sort", "descending", {
+      timeout: 5000,
+    });
     await expectRows(page, [...SEEDED_NAMES].reverse());
     expect(page.url()).toContain("sort_dir=desc");
 
@@ -211,13 +272,17 @@ test.describe("calendar list", () => {
       hasText: "Service dates",
     });
     await periodHeader.locator("button").click();
-    await expect(periodHeader).toHaveAttribute("aria-sort", "ascending", { timeout: 5000 });
+    await expect(periodHeader).toHaveAttribute("aria-sort", "ascending", {
+      timeout: 5000,
+    });
     await expect
       .poll(async () => (await rowNames(page)).at(-1), { timeout: 8000 })
       .toBe("Metadata only");
 
     await periodHeader.locator("button").click();
-    await expect(periodHeader).toHaveAttribute("aria-sort", "descending", { timeout: 5000 });
+    await expect(periodHeader).toHaveAttribute("aria-sort", "descending", {
+      timeout: 5000,
+    });
     await expect
       .poll(async () => (await rowNames(page)).at(-1), { timeout: 8000 })
       .toBe("Metadata only");
@@ -230,7 +295,9 @@ test.describe("calendar list", () => {
     const versionId = await openCalendars(page, "Catalog Empty Version");
 
     await expect(page.locator("#calendars-first-use-empty")).toBeVisible();
-    await expect(page.locator("#calendars-first-use-empty")).toContainText("No calendars yet");
+    await expect(page.locator("#calendars-first-use-empty")).toContainText(
+      "No calendars yet",
+    );
     await expect(page.locator("#calendars-list-container")).toHaveCount(0);
     await expect(page.locator("#calendars-unavailable")).toHaveCount(0);
     await expect(page.locator("#calendars-create")).toHaveAttribute(
@@ -502,5 +569,154 @@ test.describe("calendar editor", () => {
     await expect(page.locator("#calendar-name")).toHaveValue(
       "Every day service",
     );
+  });
+});
+
+// ---- Cross-calendar date change drawer (step 7) ----------------------------
+
+async function waitForDrawerReady(page) {
+  await page.waitForSelector("#calendar-date-change-form[data-phx-id]", {
+    timeout: 15000,
+  });
+}
+
+test.describe("cross-calendar date change drawer", () => {
+  test("reviews and applies one atomic date change for several calendars at both desktop viewports", async ({
+    page,
+  }) => {
+    await page.setViewportSize(VIEWPORTS[0]);
+    const versionId = await openCalendars(page);
+
+    // A Friday inside CAL_SCHOOL's range and clear of the seeded date changes.
+    const serviceDate = isoDate(nextFriday(shiftDays(new Date(), 4)));
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await page.goto(`/gtfs/${versionId}/calendars`);
+      await page.waitForSelector("#calendars-list-container", {
+        timeout: 15000,
+      });
+
+      // Keyboard activation opens the drawer and moves focus into it.
+      await page.locator("#calendar-date-change").focus();
+      await page.keyboard.press("Enter");
+      await expect(page.locator("#calendar-date-change-drawer")).toBeVisible();
+      await waitForDrawerReady(page);
+
+      expect(
+        await page.evaluate(() =>
+          document
+            .getElementById("calendar-date-change-drawer")
+            .contains(document.activeElement),
+        ),
+      ).toBe(true);
+
+      // A reversed range is refused on its own control and writes nothing.
+      await page.selectOption("#calendar-date-change-dates-mode", "range");
+      await page.fill("#calendar-date-change-dates-date-from", serviceDate);
+      await page.fill(
+        "#calendar-date-change-dates-date-to",
+        isoDate(shiftDays(new Date(serviceDate), -3)),
+      );
+      await expect(
+        page.locator("#calendar-date-change-dates-date-to"),
+      ).toHaveValue(isoDate(shiftDays(new Date(serviceDate), -3)));
+      await expect(
+        page.locator("#calendar-date-change-dates-date-to-error"),
+      ).toContainText("on or after");
+
+      // A single date defaults removal to the calendars running that day.
+      await page.selectOption("#calendar-date-change-dates-mode", "single");
+      await page.fill("#calendar-date-change-dates-date", serviceDate);
+      await expect(
+        page.locator("#calendar-date-change-dates-date"),
+      ).toHaveValue(serviceDate);
+      await expect(
+        page.locator("#calendar-date-change-remove-CAL_SCHOOL input"),
+      ).toBeChecked();
+      await expect(
+        page.locator("#calendar-date-change-remove-CAL_DAILY input"),
+      ).toBeChecked();
+
+      // Stop the school calendar and run the unused one instead, in one review.
+      await page.uncheck("#calendar-date-change-remove-CAL_DAILY input");
+      await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
+      await expect(
+        page.locator("#calendar-date-change-remove-CAL_DAILY input"),
+      ).not.toBeChecked();
+      await page.check("#calendar-date-change-add-CAL_UNUSED input");
+      await expect(
+        page.locator("#calendar-date-change-add-CAL_UNUSED input"),
+      ).toBeChecked();
+
+      await page.click("#calendar-date-change-review");
+      await expect(
+        page.locator("#calendar-date-change-review-panel"),
+      ).toContainText("Result after applying");
+      await expect(
+        page.locator("#calendar-date-change-review-panel"),
+      ).toContainText("Stop School days");
+      await expect(
+        page.locator("#calendar-date-change-review-panel"),
+      ).toContainText("Run Unused calendar");
+      await expect(
+        page.locator("#calendar-date-change-review-count"),
+      ).toContainText("rows change across");
+
+      await page.click("#calendar-date-change-apply");
+      await expect(page.locator("#calendars-date-change-status")).toContainText(
+        "Applied the date change",
+        { timeout: 10000 },
+      );
+      await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
+
+      // The committed rows survive a real reload through the editor surfaces.
+      await openEditorFor(page, versionId, "CAL_SCHOOL");
+      await expect(
+        page.locator(`#calendar-exception-chips-${serviceDate}`),
+      ).toBeVisible();
+      await expect(
+        page.locator(`#calendar-exception-chips-${serviceDate}`),
+      ).toContainText("Service removed");
+
+      await openEditorFor(page, versionId, "CAL_UNUSED");
+      await expect(
+        page.locator(`#calendar-exception-chips-${serviceDate}`),
+      ).toBeVisible();
+      await expect(
+        page.locator(`#calendar-exception-chips-${serviceDate}`),
+      ).toContainText("Service added");
+
+      // Restore the fixture state through the same reviewed command.
+      await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
+      await expect(page.locator("#calendar-status")).toContainText(
+        "date changes were removed",
+        {
+          timeout: 10000,
+        },
+      );
+      await openEditorFor(page, versionId, "CAL_SCHOOL");
+      await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
+      await expect(page.locator("#calendar-status")).toContainText(
+        "date changes were removed",
+        {
+          timeout: 10000,
+        },
+      );
+
+      // Escape closes the drawer and focus returns to the entry control.
+      await page.goto(`/gtfs/${versionId}/calendars`);
+      await page.waitForSelector("#calendars-list-container", {
+        timeout: 15000,
+      });
+      await page.click("#calendar-date-change");
+      await waitForDrawerReady(page);
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
+      await expect(page.locator("#calendar-date-change")).toBeFocused();
+    }
   });
 });

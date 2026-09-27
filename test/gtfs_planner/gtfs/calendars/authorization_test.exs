@@ -368,6 +368,108 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuthorizationTest do
     end
   end
 
+  describe "cross-calendar date change command" do
+    test "refuses forged, missing, extra and swapped source fingerprints without writes",
+         context do
+      first = create_editor_calendar(context, "bulk_first")
+      second = create_editor_calendar(context, "bulk_second")
+
+      command = {:date_change, [~D[2026-01-06]], ["bulk_first"], ["bulk_second"]}
+      exact = %{"bulk_first" => first.fingerprint, "bulk_second" => second.fingerprint}
+
+      assert {:ok, _review} = Gtfs.review_calendar_change(command, exact, context.audit)
+
+      for forged <- [
+            %{"bulk_first" => first.fingerprint},
+            Map.put(exact, "extra_service", first.fingerprint),
+            %{"bulk_first" => "", "bulk_second" => second.fingerprint},
+            %{"bulk_first" => second.fingerprint, "bulk_second" => first.fingerprint}
+          ] do
+        assert {:error, :stale_review} =
+                 Gtfs.review_calendar_change(command, forged, context.audit)
+      end
+
+      assert Repo.aggregate(
+               from(d in CalendarDate, where: d.organization_id == ^context.organization.id),
+               :count
+             ) == 0
+    end
+
+    test "refuses an empty target list, an overlapping target, an unknown service and a reversed range",
+         context do
+      first = create_editor_calendar(context, "bulk_targets")
+      fingerprints = %{"bulk_targets" => first.fingerprint}
+      fingerprints_with_unknown = Map.put(fingerprints, "unknown_service", "forged-token")
+
+      for command <- [
+            {:date_change, [~D[2026-01-06]], [], []},
+            {:date_change, [~D[2026-01-06]], ["bulk_targets"], ["bulk_targets"]},
+            {:date_change, [], ["bulk_targets"], []}
+          ] do
+        assert {:error, :invalid_command} =
+                 Gtfs.review_calendar_change(command, fingerprints, context.audit)
+      end
+
+      # An unknown target is only a forged extra key; the scope never resolves it.
+      assert {:error, :stale_review} =
+               Gtfs.review_calendar_change(
+                 {:date_change, [~D[2026-01-06]], ["unknown_service"], []},
+                 fingerprints_with_unknown,
+                 context.audit
+               )
+
+      assert Repo.aggregate(
+               from(d in CalendarDate, where: d.organization_id == ^context.organization.id),
+               :count
+             ) == 0
+    end
+
+    test "a foreign scope, an unpublished version or a revoked membership cannot apply the reviewed token",
+         context do
+      first = create_editor_calendar(context, "bulk_scope")
+      fingerprints = %{"bulk_scope" => first.fingerprint}
+      command = {:date_change, [~D[2026-01-06]], ["bulk_scope"], []}
+
+      assert {:ok, review} = Gtfs.review_calendar_change(command, fingerprints, context.audit)
+
+      other_organization = organization_fixture()
+
+      {:ok, other_version} =
+        Versions.create_gtfs_version(other_organization.id, %{name: "Foreign published"})
+
+      foreign = %{
+        context.audit
+        | organization_id: other_organization.id,
+          gtfs_version_id: other_version.id
+      }
+
+      # The foreign organization's scope has no membership for this actor.
+      assert {:error, :forbidden} =
+               Gtfs.review_calendar_change(command, fingerprints, foreign)
+
+      assert {:error, :forbidden} =
+               Gtfs.apply_calendar_change(command, review.fingerprint, foreign)
+
+      {:ok, staging} =
+        Versions.create_staging_gtfs_version(context.organization.id, %{name: "Staging"})
+
+      unpublished = %{context.audit | gtfs_version_id: staging.id}
+
+      assert {:error, :not_found} =
+               Gtfs.apply_calendar_change(command, review.fingerprint, unpublished)
+
+      deactivate_membership_fixture(context.membership)
+
+      assert {:error, :forbidden} =
+               Gtfs.apply_calendar_change(command, review.fingerprint, context.audit)
+
+      assert Repo.aggregate(
+               from(d in CalendarDate, where: d.organization_id == ^context.organization.id),
+               :count
+             ) == 0
+    end
+  end
+
   # A reviewed token for one command is bound to its own source and command, so the
   # test obtains it the same way the screen does instead of guessing the digest.
   defp reviewed_fingerprint(context, service_id, command) do

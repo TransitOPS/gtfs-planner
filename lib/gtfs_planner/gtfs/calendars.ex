@@ -91,6 +91,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           calendar: Calendar.t() | nil,
           attributes: CalendarAttribute.t() | nil,
           trip_count: non_neg_integer(),
+          active_dates: [Date.t()],
           first_active_date: Date.t() | nil,
           last_active_date: Date.t() | nil,
           fingerprint: String.t(),
@@ -434,6 +435,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       calendar: calendar,
       attributes: attribute,
       trip_count: service_usage.trip_count,
+      active_dates: active_dates,
       first_active_date: List.first(active_dates),
       last_active_date: List.last(active_dates),
       fingerprint:

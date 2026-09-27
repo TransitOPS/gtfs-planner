@@ -78,7 +78,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           <span>
             <span :if={segment.kind == :break} class="font-semibold">Break · </span>
             <strong>{segment.range_label}</strong>
-            <span class="text-base-content/70"> ·  {segment.detail}</span>
+            <span class="text-base-content/70">{" · "}{segment.detail}</span>
           </span>
           <button
             :if={segment.kind == :break and @editable}
@@ -265,6 +265,115 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       </li>
     </ul>
     """
+  end
+
+  @doc """
+  Renders the shared date selection for a reviewed date change.
+
+  The mode, its date inputs and the removable chips are the same control on every
+  surface, so a normalized selection means the same thing in the drawer and in the
+  editor. `errors` maps a field name to its message and each message is attached
+  to the input it belongs to, so a reversed range or an unreadable date is
+  announced with its own control.
+  """
+  attr :id, :string, required: true
+  attr :form, :any, required: true
+  attr :mode, :string, required: true
+  attr :dates, :list, required: true
+  attr :errors, :map, default: %{}
+  attr :mode_options, :list, required: true
+
+  def date_selection(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-3">
+      <.input
+        id={"#{@id}-mode"}
+        field={@form[:mode]}
+        type="select"
+        label="Dates to change"
+        options={@mode_options}
+        errors={errors_for(@errors, "mode")}
+      />
+
+      <div :if={@mode == "single"}>
+        <.input
+          id={"#{@id}-date"}
+          field={@form[:date]}
+          type="date"
+          label="Date"
+          errors={errors_for(@errors, "date")}
+        />
+      </div>
+
+      <div :if={@mode == "range"} class="grid gap-3 sm:grid-cols-2">
+        <.input
+          id={"#{@id}-date-from"}
+          field={@form[:date_from]}
+          type="date"
+          label="First date"
+          errors={errors_for(@errors, "date_from")}
+        />
+        <.input
+          id={"#{@id}-date-to"}
+          field={@form[:date_to]}
+          type="date"
+          label="Last date"
+          errors={errors_for(@errors, "date_to")}
+        />
+      </div>
+
+      <div :if={@mode == "several"} class="space-y-2">
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="w-48">
+            <.input
+              id={"#{@id}-date-add"}
+              field={@form[:date_add]}
+              type="date"
+              label="Add dates"
+              errors={errors_for(@errors, "date_add")}
+            />
+          </div>
+          <button id={"#{@id}-add"} type="submit" class="btn btn-sm btn-outline min-h-11">
+            Add date
+          </button>
+        </div>
+
+        <ul
+          :if={@dates != []}
+          id={"#{@id}-chips"}
+          class="flex flex-wrap gap-2"
+          aria-label="Selected dates"
+        >
+          <li
+            :for={date <- @dates}
+            id={"#{@id}-chip-#{Date.to_iso8601(date)}"}
+            class="inline-flex items-center gap-2 rounded-full border border-control-border px-3 py-1 text-sm"
+          >
+            <span class="font-medium">{format_date(date)}</span>
+            <button
+              id={"#{@id}-chip-remove-#{Date.to_iso8601(date)}"}
+              type="button"
+              class="link text-xs"
+              phx-click="date_change_remove_date"
+              phx-value-date={Date.to_iso8601(date)}
+            >
+              <span aria-hidden="true">Remove</span>
+              <span class="sr-only">Remove {format_date(date)} from the selected dates</span>
+            </button>
+          </li>
+        </ul>
+
+        <p :if={@dates == []} class="text-sm text-base-content/70">Add each date to change.</p>
+      </div>
+    </div>
+    """
+  end
+
+  defp errors_for(errors, field) do
+    case Map.get(errors, field) do
+      nil -> []
+      message -> [message]
+    end
   end
 
   @doc """

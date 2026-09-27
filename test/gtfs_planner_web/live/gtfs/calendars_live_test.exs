@@ -8,7 +8,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
 
+  import Ecto.Query
+
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Repo
@@ -455,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       # date-change controls belong to step 7 and are still absent.
       assert html =~ "/gtfs/#{version.id}/calendars/new"
       assert html =~ "Create calendar"
-      refute html =~ "Change service on a date"
+      assert html =~ ~s(id="calendar-date-change")
       refute html =~ "Add break"
       refute html =~ "Duplicate calendar"
       refute html =~ "Delete calendar"
@@ -617,6 +621,295 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       assert render_click(view, "gtfs_version_loaded", %{
                "version_id" => to_string(version.id)
              }) =~ "Local calendar"
+    end
+  end
+
+  defp every_day_attrs(service_id, start_date, end_date) do
+    %{
+      service_id: service_id,
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 1,
+      sunday: 1,
+      start_date: start_date,
+      end_date: end_date
+    }
+  end
+
+  defp drawer_calendars(organization, version) do
+    today = postgres_local_today("Etc/UTC")
+
+    for {service_id, name, start_date, end_date} <- [
+          {"ALL_DAYS", "Every day service", Date.add(today, -10), Date.add(today, 30)},
+          {"EXTRA", "Extra dates service", Date.add(today, -1), Date.add(today, 60)}
+        ] do
+      calendar_fixture(
+        organization.id,
+        version.id,
+        every_day_attrs(service_id, start_date, end_date)
+      )
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: service_id,
+        service_description: name
+      })
+    end
+
+    today
+  end
+
+  defp scoped_date_count(organization, version) do
+    Repo.aggregate(
+      from(d in CalendarDate,
+        where: d.organization_id == ^organization.id and d.gtfs_version_id == ^version.id
+      ),
+      :count
+    )
+  end
+
+  defp checked_services(view, group, service_ids) do
+    Enum.filter(service_ids, fn service_id ->
+      has_element?(view, "#calendar-date-change-#{group}-#{service_id} input[checked]")
+    end)
+  end
+
+  describe "cross-calendar date change drawer" do
+    setup :use_real_adapter
+
+    test "opens from the toolbar, defaults removal to calendars running on the date and keeps a manual choice",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = drawer_calendars(organization, version)
+      inside = Date.to_iso8601(Date.add(today, 3))
+      outside = Date.to_iso8601(Date.add(today, 40))
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      assert loaded(view) =~ "Every day service"
+
+      assert render_click(view, "open_date_change", %{}) =~ "Change service on a date"
+      assert view |> render() =~ "calendar-date-change-drawer"
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "single", date: inside})
+      |> render_change()
+
+      assert checked_services(view, "remove", ["ALL_DAYS", "EXTRA"]) == ["ALL_DAYS", "EXTRA"]
+
+      # Unchecking both is the reviewer's own choice; changing the date keeps it.
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "ALL_DAYS"})
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "EXTRA"})
+      assert checked_services(view, "remove", ["ALL_DAYS", "EXTRA"]) == []
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "single", date: outside})
+      |> render_change()
+
+      # The reviewer's own choice survives the date change.
+      assert checked_services(view, "remove", ["ALL_DAYS", "EXTRA"]) == []
+
+      # A fresh drawer recomputes the default for the only calendar active on that date.
+      render_click(view, "close_date_change", %{})
+      render_click(view, "open_date_change", %{"date" => outside})
+      assert checked_services(view, "remove", ["ALL_DAYS", "EXTRA"]) == ["EXTRA"]
+    end
+
+    test "opens from the gap callout with that date and normalizes several dates uniquely", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      drawer_calendars(organization, version)
+      today = postgres_local_today("Etc/UTC")
+      first = Date.to_iso8601(Date.add(today, 3))
+      second = Date.to_iso8601(Date.add(today, 5))
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      assert loaded(view) =~ "Every day service"
+
+      # The gap entry prefills the missing date.
+      assert render_click(view, "open_date_change", %{"date" => first}) =~ ~s(value="#{first}")
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "several"})
+      |> render_change()
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "several", date_add: first})
+      |> render_submit()
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "several", date_add: second})
+      |> render_submit()
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "several", date_add: first})
+      |> render_submit()
+
+      html = render(view)
+      assert html =~ "calendar-date-change-dates-chip-#{first}"
+      assert html =~ "calendar-date-change-dates-chip-#{second}"
+
+      # A date chip is removable without touching the stored rows.
+      render_click(view, "date_change_remove_date", %{"date" => first})
+      refute render(view) =~ "calendar-date-change-dates-chip-#{first}"
+      assert scoped_date_count(organization, version) == 0
+    end
+
+    test "rejects reversed ranges, overlapping or missing targets and unknown services without writing",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = drawer_calendars(organization, version)
+      later = Date.to_iso8601(Date.add(today, 10))
+      earlier = Date.to_iso8601(Date.add(today, 2))
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      assert loaded(view) =~ "Every day service"
+      render_click(view, "open_date_change", %{})
+
+      # A reversed range is refused on its own control.
+      view |> form("#calendar-date-change-form", date_change: %{mode: "range"}) |> render_change()
+
+      html =
+        view
+        |> form("#calendar-date-change-form",
+          date_change: %{mode: "range", date_from: later, date_to: earlier}
+        )
+        |> render_change()
+
+      assert html =~ "Choose a last date on or after the first date."
+
+      # No target at all is refused.
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "single"})
+      |> render_change()
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "single", date: later})
+      |> render_change()
+
+      # Unchecking every default leaves no target at all.
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "ALL_DAYS"})
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "EXTRA"})
+
+      assert render_click(view, "date_change_review", %{}) =~
+               "Choose at least one calendar to change."
+
+      # Overlapping groups are refused by name.
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "ALL_DAYS"})
+      render_click(view, "date_change_toggle", %{"group" => "add", "service-id" => "ALL_DAYS"})
+
+      assert render_click(view, "date_change_review", %{}) =~
+               "A calendar cannot be stopped and run on the same date."
+
+      # A forged or unknown service ID never becomes a target.
+      assert render_click(view, "date_change_toggle", %{
+               "group" => "add",
+               "service-id" => "FOREIGN_SERVICE"
+             }) =~ "That calendar is not in this service version."
+
+      assert scoped_date_count(organization, version) == 0
+    end
+
+    test "reviews real changed rows and applies the atomic date change to several calendars", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = drawer_calendars(organization, version)
+      holiday = Date.add(today, 3)
+      holiday_iso = Date.to_iso8601(holiday)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      assert loaded(view) =~ "Every day service"
+      render_click(view, "open_date_change", %{})
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "single", date: holiday_iso})
+      |> render_change()
+
+      # Stop the weekday calendar and run the replacement on that exact date.
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "EXTRA"})
+      render_click(view, "date_change_toggle", %{"group" => "add", "service-id" => "EXTRA"})
+
+      html = render_click(view, "date_change_review", %{})
+      assert html =~ "calendar-date-change-review-panel"
+      assert html =~ "Result after applying"
+      assert html =~ "Stop Every day service"
+      assert html =~ "Run Extra dates service"
+      assert html =~ "calendar-date-change-review-count"
+      assert view |> render() =~ "rows change across"
+
+      assert render_click(view, "date_change_apply", %{}) =~ "Applied the date change"
+      assert render(view) =~ "rows changed"
+
+      # The stored rows are exactly the authored dates, and the audit is correlated.
+      rows =
+        Repo.all(
+          from(cd in CalendarDate,
+            where: cd.organization_id == ^organization.id and cd.gtfs_version_id == ^version.id,
+            order_by: [asc: cd.service_id]
+          )
+        )
+
+      assert [
+               %{service_id: "ALL_DAYS", date: ^holiday, exception_type: 2},
+               %{service_id: "EXTRA", date: ^holiday, exception_type: 1}
+             ] = rows
+
+      assert Enum.all?(rows, &(&1.date == holiday))
+    end
+
+    test "a stale review rejects apply, keeps the input and writes nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = drawer_calendars(organization, version)
+      holiday = Date.add(today, 3)
+      holiday_iso = Date.to_iso8601(holiday)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      assert loaded(view) =~ "Every day service"
+      render_click(view, "open_date_change", %{})
+
+      view
+      |> form("#calendar-date-change-form", date_change: %{mode: "single", date: holiday_iso})
+      |> render_change()
+
+      render_click(view, "date_change_toggle", %{"group" => "remove", "service-id" => "EXTRA"})
+      assert render_click(view, "date_change_review", %{}) =~ "Result after applying"
+
+      # Another session changes the same identity after the review was taken.
+      Repo.update_all(
+        from(ca in CalendarAttribute,
+          where: ca.organization_id == ^organization.id and ca.service_id == "ALL_DAYS"
+        ),
+        set: [service_description: "Renamed in another session"]
+      )
+
+      html = render_click(view, "date_change_apply", %{})
+      assert html =~ "changed in another session"
+      assert html =~ holiday_iso
+      assert scoped_date_count(organization, version) == 0
     end
   end
 end

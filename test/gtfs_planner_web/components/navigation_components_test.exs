@@ -132,6 +132,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "Organizations",
                "Users",
                "Routes",
+               "Calendars",
                "Stops & stations",
                "Import",
                "Export"
