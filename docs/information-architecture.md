@@ -217,7 +217,8 @@ badges; New route drawer.
 - A calendar and direction picker, with one timetable section per pattern.
 - Add, edit, duplicate and delete trips, plus bulk delete.
 - Planning summaries and **Paste timetable**.
-- After the planned basic-blocking work, `block_id` is read-only here and links to Blocks.
+- After the planned basic-blocking work, `block_id` is read-only here and links to Blocks for the
+  trip's first day type. Duplicated and new trips start without a block.
 - Proposed additions:
   - Grid keyboard navigation.
   - Bulk actions: Shift times, Change timing, Change calendar, Copy to calendar.
@@ -259,7 +260,8 @@ Operations                          /gtfs/:version/…
 - **Blocks** (planned basic and advanced blocking): one day type at a time.
   - Planned drawers for deadhead times, relief points and interlining stay on this page.
   - *Proposed:* the block drawer lists each trip-to-trip connection with a **Riders stay on
-    board** toggle, which writes a type 4 transfer.
+    board** choice: follows the block (default, no row), stay on board (type 4) or must re-board
+    (type 5). Block edits flag, never delete, a row that no longer matches the block.
   - When no garages exist, the empty state links to Settings › Garages.
 - **Runs** (planned basic runs): cuts blocks into operator work for a day type.
 - **Rosters** (planned basic rosters): weekly bid lines built from runs, with operator assignment
@@ -451,7 +453,7 @@ its feature is specified.
 
 | Requirement | Written requirement | Agreed placement |
 |---|---|---|
-| [AC-TRIP-041, AC-TRIP-042](requirements/trips-requirements.md) | "In-seat transfers allowed" checkbox on the trip form | Riders stay on board toggle on the block connection |
+| [AC-TRIP-041, AC-TRIP-042](requirements/trips-requirements.md) | "In-seat transfers allowed" checkbox on the trip form | Riders stay on board choice on the block connection |
 | [AC-TRIP-038 to AC-TRIP-040](requirements/trips-requirements.md) | Weekday checkboxes on each trip | Service days come only from the trip's calendar |
 | [AC-STOP-023 to AC-STOP-026](requirements/stops-and-stations-requirements.md) | Zone list in a Stops "Stop Zones" sub-section; zone dropdown when editing a stop | Settings › Fares › Zones; stop details shows the zone read-only |
 | [AC-PAT-004](requirements/patterns-and-alignments-requirements.md) | A matrix of all patterns, grouped by direction | Compare page for two selected patterns |

@@ -196,7 +196,13 @@ School days           ████ █████│███ ██           
 - series creation, duplicate and single-trip editing.
 
 Frequency trips are read-only there. The planned basic-blocking work makes `block_id` read-only on
-Schedules and edits it on Blocks.
+Schedules and edits it on Blocks:
+- A duplicated or newly created trip starts without a block and appears in the Blocks pool. A
+  copied block would put the trip on a vehicle where Schedules can't show or change it.
+- Retiming a trip or changing its calendar keeps its block. If the block gains an overlap or
+  another problem, Schedules warns and links to Blocks.
+- The block link opens the first day type, in the Blocks list order, that contains the trip, with
+  the trip selected. A trip often runs in several day types; its drawer on Blocks lists them.
 
 **Added to Schedules** (no competing place):
 - keyboard navigation in the grid;
@@ -215,7 +221,18 @@ minutes". A frequency row opens a windows editor.
   it hides the service type from the page where service is shown.
 
 **In-seat transfers decision.** The Blocks › block drawer lists each trip-to-trip connection with
-a **Riders stay on board** toggle, which writes a type 4 transfer.
+a **Riders stay on board** choice. It has three settings:
+- **Follows the block** (the default) writes nothing. Google infers stay-on-board from a shared
+  `block_id` when the trips are consecutive at the same or nearby stops, and OpenTripPlanner does
+  the same within 200 m.
+- **Riders stay on board** writes a type 4 transfer.
+- **Riders must re-board** writes a type 5 transfer. Google ignores types 4 and 5, so the choice
+  says so.
+
+An explicit row wins over the block in the GTFS reference, OpenTripPlanner and the Transit app.
+Agencies publish these rows selectively: MBTA has type 4 on 6.5% of its block connections, and
+TriMet has none. They can't be derived from blocks, so a block edit never deletes one. Blocks flags
+a row whose trips are no longer consecutive in one block.
 - *Rejected:* a "Continues as trip…" picker in the Schedules drawer, because it can't show
   whether the two trips share a vehicle.
 - AC-TRIP-041 asks for a checkbox on the trip form; that difference is still open.
