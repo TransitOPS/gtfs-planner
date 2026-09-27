@@ -260,6 +260,41 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Expands a departure series for the Add trips preview through `Schedules`.
+
+  Without a repeat this is the single departure `[start_secs]`; with an interval it
+  is every `start + k * every` departure at or before `until_secs`, bounded to the
+  maximum series size. The drawer preview and `create_trips/3` share this function,
+  so what staff see is what the write stores.
+  """
+  @spec series_starts(non_neg_integer(), pos_integer() | nil, non_neg_integer() | nil) ::
+          {:ok, [non_neg_integer()]}
+          | {:error, :invalid_interval | :until_before_start | :too_many_trips}
+  def series_starts(start_secs, every_minutes, until_secs) do
+    Schedules.series_starts(start_secs, every_minutes, until_secs)
+  end
+
+  @doc """
+  Creates one departure or a bounded series of trips on one of a route's patterns.
+
+  `attrs` carries `:pattern_id`, `:timed_pattern_id`, `:service_id`, `:start_time`
+  and an optional `:repeat` (`%{every_minutes: pos_integer(), until: clock}`). The
+  write takes the version, route and pattern locks in the rule-table order,
+  materializes each stop time from the timing through spec 01's `Materializer`, and
+  writes one `"trip"` audit log per created trip in the same transaction. An
+  invalid series or scope is refused before or without any write.
+  """
+  @spec create_trips(String.t(), Schedules.create_attrs(), AuditContext.t()) ::
+          {:ok, %{trips: [GtfsPlanner.Gtfs.Trip.t()]}}
+          | {:error, Ecto.Changeset.t() | Schedules.create_error()}
+  def create_trips(route_id, attrs, %AuditContext{} = audit_context)
+      when is_map(attrs) do
+    Schedules.create_trips(route_id, attrs, audit_context)
+  end
+
+  def create_trips(_route_id, _attrs, _audit_context), do: {:error, :invalid_input}
+
+  @doc """
   Loads the independent station-detail regions (child stops, levels, pathways,
   and editing status) for a fetched station through the configured catalog read
   adapter.

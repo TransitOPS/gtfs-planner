@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Schedules do
   @moduledoc """
-  Scoped reads for one route's Schedules tab.
+  Scoped reads and trip creation for one route's Schedules tab.
 
   `load_route_schedule/4` loads everything one Schedules page renders from one
   published organization/version/route scope. It runs in one read transaction
@@ -14,17 +14,29 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `GtfsTime`; no SQL string `MIN`/`MAX` orders times. The query count is constant
   and independent of the trip count.
 
+  `create_trips/3` creates one departure or a bounded series from a pattern timing
+  in one transaction. It reuses spec 01's locks and transaction boundary and spec
+  02's calendar reference lock, takes the locks in the rule-table order (version
+  `FOR SHARE` -> route `FOR UPDATE` -> pattern `FOR UPDATE`), loads the timing rows
+  after the route lock, materializes the stored stop times through spec 01's
+  `Materializer`, and writes one audit log per created trip.
+
   Every result is scoped: a foreign, invalid or unpublished organization,
   version or route rolls back to `{:error, :not_found}`.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.Timetable
@@ -35,6 +47,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
+
+  # A series is bounded so one drawer submission cannot create an unbounded
+  # number of trips and audit rows; stop times are inserted in fixed chunks.
+  @max_series_trips 200
+  @stop_time_chunk_size 1_000
+  # Spec 01's bounded retry for serialization or lock contention.
+  @write_attempts 3
 
   @type filters :: %{
           service_id: String.t() | nil,
@@ -78,6 +97,86 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         }
 
   @type error :: :not_found
+
+  @type create_attrs :: %{
+          pattern_id: Ecto.UUID.t(),
+          timed_pattern_id: Ecto.UUID.t(),
+          service_id: String.t(),
+          start_time: String.t(),
+          repeat: nil | %{every_minutes: pos_integer(), until: String.t()}
+        }
+
+  @type create_error ::
+          :invalid_input
+          | :invalid_time
+          | :invalid_interval
+          | :until_before_start
+          | :too_many_trips
+          | :not_found
+          | :calendar_not_found
+          | :trip_id_conflict
+          | :negative_time
+          | :invalid_chronology
+          | :busy
+
+  @doc """
+  Expands a series of departure seconds from `start_secs`.
+
+  Without a repeat the series is the single departure `[start_secs]`. With
+  `every_minutes` it is `start + k * every` for every `k >= 0` whose departure is
+  at or before `until_secs`, so a departure after midnight is above 24 hours and
+  `until_secs` is included only when a departure lands exactly on it.
+
+  A non-positive or missing interval and a missing end are
+  `{:error, :invalid_interval}`, an end before the start is
+  `{:error, :until_before_start}`, and more than #{@max_series_trips} departures is
+  `{:error, :too_many_trips}`.
+  """
+  @spec series_starts(non_neg_integer(), pos_integer() | nil, non_neg_integer() | nil) ::
+          {:ok, [non_neg_integer()]}
+          | {:error, :invalid_interval | :until_before_start | :too_many_trips}
+  def series_starts(start_secs, nil, _until_secs)
+      when is_integer(start_secs) and start_secs >= 0,
+      do: {:ok, [start_secs]}
+
+  def series_starts(start_secs, every_minutes, until_secs)
+      when is_integer(start_secs) and start_secs >= 0 do
+    cond do
+      not (is_integer(every_minutes) and every_minutes > 0) -> {:error, :invalid_interval}
+      not (is_integer(until_secs) and until_secs >= 0) -> {:error, :invalid_interval}
+      until_secs < start_secs -> {:error, :until_before_start}
+      true -> series(start_secs, every_minutes * 60, until_secs)
+    end
+  end
+
+  def series_starts(_start_secs, _every_minutes, _until_secs), do: {:error, :invalid_interval}
+
+  @doc """
+  Creates one departure or a bounded series on one of the route's patterns.
+
+  `attrs` carries `:pattern_id` (a route pattern UUID), `:timed_pattern_id` (a
+  timing of that pattern), `:service_id`, `:start_time` and `:repeat`
+  (`nil` or `%{every_minutes: pos_integer(), until: clock}`). The departures are
+  exactly `series_starts/3`, and the request is refused before any lock is taken
+  when that expansion fails.
+
+  Each created trip takes the pattern's direction and natural ID, the timing, the
+  `linked` derivation state and `timing.headsign || pattern.headsign`, with a
+  fresh `route-direction-service-HHMM` trip ID and a new stop time per pattern
+  occurrence materialized from the timing's offsets. One audit log per trip is
+  written in the same transaction with one shared `operation_id`, so an audit
+  failure rolls back every row this call created. A unique-index violation on
+  `trip_id` rolls back `:trip_id_conflict` rather than renaming the ID.
+  """
+  @spec create_trips(String.t(), create_attrs(), AuditContext.t()) ::
+          {:ok, %{trips: [Trip.t()]}} | {:error, Ecto.Changeset.t() | create_error()}
+  def create_trips(route_id, attrs, %AuditContext{} = audit_context) when is_map(attrs) do
+    with {:ok, starts} <- departure_seconds(attrs) do
+      run_write(route_id, starts, attrs, audit_context, @write_attempts)
+    end
+  end
+
+  def create_trips(_route_id, _attrs, _audit_context), do: {:error, :invalid_input}
 
   @doc """
   Loads one route's Schedules read for `organization_id`/`version_id`.
@@ -617,4 +716,381 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       %{start_secs: start_secs, until_secs: until_secs, headway_secs: headway_secs}
     end
   end
+
+  # -- Creation ---------------------------------------------------------------
+
+  # The series is expanded before any lock is taken, so an invalid interval or an
+  # over-long series refuses without a transaction or a write.
+  defp departure_seconds(attrs) do
+    with {:ok, start_secs} <- GtfsTime.parse(attr(attrs, :start_time)) do
+      case attr(attrs, :repeat) do
+        nil -> {:ok, [start_secs]}
+        repeat -> expand_repeat(start_secs, repeat)
+      end
+    end
+  end
+
+  defp expand_repeat(start_secs, repeat) when is_map(repeat) do
+    with {:ok, until_secs} <- GtfsTime.parse(attr(repeat, :until)) do
+      series_starts(start_secs, attr(repeat, :every_minutes), until_secs)
+    end
+  end
+
+  defp expand_repeat(_start_secs, _repeat), do: {:error, :invalid_input}
+
+  # Spec 01's bounded retry: a serialization failure or lock contention retries
+  # the whole transaction; every other failure is returned unchanged.
+  defp run_write(route_id, starts, attrs, audit_context, attempts) do
+    case run_write_transaction(fn -> insert_trips!(route_id, starts, attrs, audit_context) end) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:serialization_failure, _error} ->
+        retry_write(route_id, starts, attrs, audit_context, attempts)
+
+      {:error, reason} ->
+        retry_write_error(reason, route_id, starts, attrs, audit_context, attempts)
+    end
+  end
+
+  defp retry_write(route_id, starts, attrs, audit_context, attempts) when attempts > 1,
+    do: run_write(route_id, starts, attrs, audit_context, attempts - 1)
+
+  defp retry_write(_route_id, _starts, _attrs, _audit_context, _attempts), do: {:error, :busy}
+
+  defp retry_write_error(reason, route_id, starts, attrs, audit_context, attempts) do
+    if serialization_failure?(reason),
+      do: retry_write(route_id, starts, attrs, audit_context, attempts),
+      else: {:error, reason}
+  end
+
+  defp run_write_transaction(transaction) do
+    write_transaction_module().run(transaction)
+  rescue
+    error in Postgrex.Error ->
+      if serialization_failure?(error) do
+        {:serialization_failure, error}
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp write_transaction_module do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransaction.Repo
+    )
+  end
+
+  defp serialization_failure?(%Postgrex.Error{postgres: %{code: code}})
+       when code in [:serialization_failure, "40001"],
+       do: true
+
+  defp serialization_failure?(_error), do: false
+
+  defp insert_trips!(route_id, starts, attrs, audit_context) do
+    pattern_id = attr(attrs, :pattern_id)
+    timed_pattern_id = attr(attrs, :timed_pattern_id)
+    service_id = attr(attrs, :service_id)
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    unless uuid?(pattern_id) and uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
+
+    # Rule-table lock order: the calendar's version row `FOR SHARE` first, then the
+    # route `FOR UPDATE`, then the pattern `FOR UPDATE`. Timing rows are loaded
+    # after the route lock, so a created trip always matches the committed timing.
+    :ok = Calendars.lock_service_for_reference!(organization_id, version_id, service_id)
+    route = RoutePatterns.lock_published_route!(audit_context, route_id)
+    pattern = RoutePatterns.lock_pattern!(route, pattern_id)
+    timing = locked_timing!(pattern, timed_pattern_id)
+
+    occurrences = pattern_occurrences(pattern)
+    rows = timing_rows(timing)
+    materialized = materialized_stop_times(starts, occurrences, rows)
+
+    existing_trip_ids = version_trip_ids(organization_id, version_id)
+
+    trip_ids =
+      allocate_trip_ids(
+        route.route_id,
+        pattern.direction_id,
+        service_id,
+        starts,
+        existing_trip_ids
+      )
+
+    trips =
+      insert_trip_batch!(starts, trip_ids, route, pattern, timing, service_id, audit_context)
+
+    now = DateTime.utc_now()
+
+    trips
+    |> Enum.zip(materialized)
+    |> Enum.flat_map(fn {trip, stop_times} -> stop_time_rows(trip, stop_times, now) end)
+    |> insert_stop_times!()
+
+    audit_created_trips!(trips, starts, materialized, timing, audit_context)
+
+    %{trips: trips}
+  end
+
+  defp materialized_stop_times(starts, occurrences, timing_rows) do
+    Enum.map(starts, fn start_secs ->
+      case Materializer.materialize(start_secs, occurrences, timing_rows) do
+        {:ok, stop_times} -> stop_times
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp insert_trip_batch!(starts, trip_ids, route, pattern, timing, service_id, audit_context) do
+    headsign = timing.headsign || pattern.headsign
+
+    starts
+    |> Enum.zip(trip_ids)
+    |> Enum.map(fn {_start_secs, trip_id} ->
+      insert_trip!(%{
+        trip_id: trip_id,
+        route_id: route.route_id,
+        service_id: service_id,
+        direction_id: pattern.direction_id,
+        trip_headsign: headsign,
+        organization_id: audit_context.organization_id,
+        gtfs_version_id: audit_context.gtfs_version_id,
+        route_pattern_id: pattern.route_pattern_id,
+        timed_pattern_id: timing.id,
+        pattern_derivation_state: "linked"
+      })
+    end)
+  end
+
+  # Application-owned linkage fields are set from the loaded records, never cast
+  # from the request (CR-4). A unique-index violation on `trip_id` rolls the call
+  # back with `:trip_id_conflict` instead of renaming the allocated ID.
+  defp insert_trip!(attrs) do
+    changeset =
+      %Trip{}
+      |> Trip.changeset(attrs)
+      |> Ecto.Changeset.change(
+        Map.take(attrs, [
+          :route_pattern_id,
+          :timed_pattern_id,
+          :pattern_derivation_state,
+          :pattern_derivation_reason
+        ])
+      )
+
+    case Repo.insert(changeset) do
+      {:ok, trip} ->
+        trip
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if unique_conflict?(changeset),
+          do: Repo.rollback(:trip_id_conflict),
+          else: Repo.rollback(changeset)
+    end
+  end
+
+  defp unique_conflict?(changeset) do
+    Enum.any?(changeset.errors, fn {_field, {_message, meta}} ->
+      constraint_type(meta) == :unique
+    end)
+  end
+
+  defp constraint_type(meta) when is_list(meta), do: Keyword.get(meta, :constraint)
+  defp constraint_type(meta) when is_map(meta), do: Map.get(meta, :constraint)
+  defp constraint_type(_meta), do: nil
+
+  defp stop_time_rows(trip, materialized, now) do
+    Enum.map(materialized, fn row ->
+      %{
+        trip_id: trip.trip_id,
+        stop_id: row.stop_id,
+        stop_sequence: row.stop_sequence,
+        arrival_time: row.arrival_time,
+        departure_time: row.departure_time,
+        stop_headsign: row.stop_headsign,
+        pickup_type: row.pickup_type,
+        drop_off_type: row.drop_off_type,
+        timepoint: row.timepoint,
+        continuous_pickup: nil,
+        continuous_drop_off: nil,
+        shape_dist_traveled: nil,
+        organization_id: trip.organization_id,
+        gtfs_version_id: trip.gtfs_version_id,
+        inserted_at: now,
+        updated_at: now
+      }
+    end)
+  end
+
+  defp insert_stop_times!(rows) do
+    rows
+    |> Enum.chunk_every(@stop_time_chunk_size)
+    |> Enum.each(fn chunk -> Repo.insert_all(StopTime, chunk) end)
+
+    :ok
+  end
+
+  # One log per created trip through the shared audit dispatch, all sharing one
+  # `operation_id` and the batch's affected trip UUIDs. Any audit error rolls the
+  # whole transaction back, so no created row survives a partial audit.
+  defp audit_created_trips!(trips, starts, materialized, timing, audit_context) do
+    operation_id = Ecto.UUID.generate()
+    affected_trip_ids = Enum.map(trips, & &1.id)
+
+    Enum.zip([trips, starts, materialized])
+    |> Enum.each(fn {trip, start_secs, stop_times} ->
+      snapshot = created_trip_snapshot(trip, timing, start_secs, length(stop_times))
+
+      case Gtfs.record_change_in_transaction(audit_context, :trip, trip, "created", %{
+             before: nil,
+             after: snapshot,
+             operation_id: operation_id,
+             affected_trip_ids: affected_trip_ids
+           }) do
+        {:ok, _log} -> :ok
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+
+    :ok
+  end
+
+  defp created_trip_snapshot(trip, timing, start_secs, stop_time_count) do
+    %{
+      "trip_id" => trip.trip_id,
+      "route_id" => trip.route_id,
+      "service_id" => trip.service_id,
+      "direction_id" => trip.direction_id,
+      "route_pattern_id" => trip.route_pattern_id,
+      "timed_pattern_id" => trip.timed_pattern_id,
+      "timing_name" => timing.name,
+      "pattern_derivation_state" => trip.pattern_derivation_state,
+      "trip_headsign" => trip.trip_headsign,
+      "trip_short_name" => trip.trip_short_name,
+      "block_id" => trip.block_id,
+      "wheelchair_accessible" => trip.wheelchair_accessible,
+      "bikes_allowed" => trip.bikes_allowed,
+      "shape_id" => trip.shape_id,
+      "start_time" => GtfsTime.format(start_secs),
+      "stop_time_count" => stop_time_count,
+      "frequencies" => []
+    }
+  end
+
+  defp locked_timing!(pattern, timed_pattern_id) do
+    query =
+      from(t in TimedPattern,
+        where: t.route_pattern_id == ^pattern.id and t.id == ^timed_pattern_id
+      )
+
+    case Repo.one(query) do
+      %TimedPattern{} = timing -> timing
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp pattern_occurrences(pattern) do
+    from(o in RoutePatternStop,
+      where:
+        o.organization_id == ^pattern.organization_id and
+          o.gtfs_version_id == ^pattern.gtfs_version_id and
+          o.route_pattern_id == ^pattern.id,
+      order_by: [asc: o.position, asc: o.id]
+    )
+    |> Repo.all()
+  end
+
+  defp timing_rows(timing) do
+    from(row in TimedPatternStop,
+      join: occurrence in RoutePatternStop,
+      on: occurrence.id == row.route_pattern_stop_id,
+      where:
+        row.timed_pattern_id == ^timing.id and
+          occurrence.organization_id == ^timing.organization_id and
+          occurrence.gtfs_version_id == ^timing.gtfs_version_id,
+      order_by: [asc: occurrence.position, asc: occurrence.id],
+      select: %{
+        stop_id: occurrence.stop_id,
+        position: occurrence.position,
+        arrival_offset: row.arrival_offset,
+        departure_offset: row.departure_offset,
+        timepoint: row.timepoint,
+        pickup_type: row.pickup_type,
+        drop_off_type: row.drop_off_type,
+        stop_headsign: row.stop_headsign
+      }
+    )
+    |> Repo.all()
+  end
+
+  defp version_trip_ids(organization_id, version_id) do
+    from(t in Trip,
+      where: t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id,
+      select: t.trip_id
+    )
+    |> Repo.all()
+  end
+
+  # Trip IDs are unique within the organization and version, so the version's
+  # existing IDs seed the candidate set. Across the batch, a later departure can
+  # never reuse an ID this call already reserved.
+  defp allocate_trip_ids(route_id, direction_id, service_id, starts, existing_trip_ids) do
+    {trip_ids, _taken} =
+      Enum.map_reduce(starts, MapSet.new(existing_trip_ids), fn start_secs, taken ->
+        base = trip_id_base(route_id, direction_id, service_id, start_secs)
+        trip_id = next_free_trip_id(base, taken)
+
+        {trip_id, MapSet.put(taken, trip_id)}
+      end)
+
+    trip_ids
+  end
+
+  # The base itself when free; otherwise the smallest free suffix at or above 2.
+  defp next_free_trip_id(base, taken) do
+    if MapSet.member?(taken, base) do
+      suffix =
+        2
+        |> Stream.iterate(&(&1 + 1))
+        |> Enum.find(fn candidate -> not MapSet.member?(taken, "#{base}-#{candidate}") end)
+
+      "#{base}-#{suffix}"
+    else
+      base
+    end
+  end
+
+  defp trip_id_base(route_id, direction_id, service_id, start_secs) do
+    "#{route_id}-#{direction_id}-#{service_id}-#{trip_id_stamp(start_secs)}"
+  end
+
+  # `HHMM` is unwrapped `hours * 100 + minutes`, zero-padded to four digits, so
+  # `25:10` is `2510`.
+  defp trip_id_stamp(start_secs) do
+    hours = div(start_secs, 3_600)
+    minutes = start_secs |> rem(3_600) |> div(60)
+
+    (hours * 100 + minutes)
+    |> Integer.to_string()
+    |> String.pad_leading(4, "0")
+  end
+
+  defp series(start_secs, every_secs, until_secs) do
+    count = div(until_secs - start_secs, every_secs) + 1
+
+    if count > @max_series_trips do
+      {:error, :too_many_trips}
+    else
+      {:ok, Enum.map(0..(count - 1), &(start_secs + &1 * every_secs))}
+    end
+  end
+
+  defp uuid?(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+
+  defp attr(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key)))
+  defp attr(_map, _key), do: nil
 end

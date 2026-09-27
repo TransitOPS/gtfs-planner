@@ -296,6 +296,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   Generate a schedule pattern: the pattern, its ordered occurrences and one named timing.
 
   `attrs` accepts `:route_id` (required), `:direction_id`, `:route_pattern_name`,
+  `:route_pattern_id` (an explicit natural ID for literal expectations),
   `:headsign`, `:route_pattern_sort_order`, `:timing_name`, `:timing_headsign` and
   `:stops` as `[{stop_id, arrival_offset, departure_offset, timepoint}]` in
   position order. The returned map carries `:pattern`, `:occurrences`, `:timing`
@@ -305,15 +306,19 @@ defmodule GtfsPlanner.GtfsFixtures do
   def schedule_pattern_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
     attrs = Map.new(attrs)
 
-    pattern =
-      route_pattern_fixture(organization_id, gtfs_version_id, %{
+    pattern_attrs =
+      %{
         route_id: Map.fetch!(attrs, :route_id),
         direction_id: Map.get(attrs, :direction_id, 0),
         route_pattern_name:
           Map.get(attrs, :route_pattern_name, "Pattern #{System.unique_integer([:positive])}"),
         headsign: Map.get(attrs, :headsign),
-        route_pattern_sort_order: Map.get(attrs, :route_pattern_sort_order, 0)
-      })
+        route_pattern_sort_order: Map.get(attrs, :route_pattern_sort_order, 0),
+        route_pattern_id: Map.get(attrs, :route_pattern_id)
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    pattern = route_pattern_fixture(organization_id, gtfs_version_id, pattern_attrs)
 
     timing =
       timed_pattern_fixture(pattern, %{

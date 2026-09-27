@@ -11,9 +11,24 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Export
+  alias GtfsPlanner.Gtfs.Frequency
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -798,6 +813,585 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
     end
   end
 
+  describe "series expansion" do
+    test "expands aligned departures, includes an aligned end and keeps unwrapped hours" do
+      assert {:ok, starts} = Gtfs.series_starts(clock("06:00:00"), 25, clock("07:00:00"))
+      assert Enum.map(starts, &GtfsTime.format/1) == ["06:00:00", "06:25:00", "06:50:00"]
+
+      assert {:ok, aligned} = Gtfs.series_starts(clock("06:00:00"), 30, clock("07:00:00"))
+      assert Enum.map(aligned, &GtfsTime.format/1) == ["06:00:00", "06:30:00", "07:00:00"]
+
+      assert {:ok, late} = Gtfs.series_starts(clock("23:50:00"), 20, clock("24:30:00"))
+      assert Enum.map(late, &GtfsTime.format/1) == ["23:50:00", "24:10:00", "24:30:00"]
+    end
+
+    test "a missing repeat is the single departure and the function is public for the drawer" do
+      assert Gtfs.series_starts(clock("06:00:00"), nil, nil) == {:ok, [clock("06:00:00")]}
+      assert function_exported?(Schedules, :series_starts, 3)
+      assert Schedules.series_starts(clock("06:00:00"), nil, nil) == {:ok, [clock("06:00:00")]}
+    end
+
+    test "accepts 200 departures and refuses the 201st" do
+      assert {:ok, two_hundred} = Gtfs.series_starts(0, 1, clock("03:19:00"))
+      assert length(two_hundred) == 200
+      assert List.last(two_hundred) == clock("03:19:00")
+
+      assert Gtfs.series_starts(0, 1, clock("03:20:00")) == {:error, :too_many_trips}
+    end
+
+    test "refuses non-positive intervals and an end before the start" do
+      assert Gtfs.series_starts(clock("06:00:00"), 0, clock("07:00:00")) ==
+               {:error, :invalid_interval}
+
+      assert Gtfs.series_starts(clock("06:00:00"), -5, clock("07:00:00")) ==
+               {:error, :invalid_interval}
+
+      assert Gtfs.series_starts(clock("06:00:00"), 25, clock("05:50:00")) ==
+               {:error, :until_before_start}
+    end
+  end
+
+  describe "trip creation" do
+    test "creates exactly the expanded departures with the pattern's fields and materialized stop times",
+         context do
+      scope =
+        schedule_scope!(context, "12n", %{
+          timing_headsign: "Timing Sign",
+          pattern_headsign: "Pattern Sign",
+          stops: [{"A", 0, 0, 1}, {"B", 300, 330, 1}, {"C", 720, 720, 1}]
+        })
+
+      [first_row | _] = scope.bundle.rows
+
+      Repo.update!(
+        Ecto.Changeset.change(first_row, %{
+          stop_headsign: "Signed",
+          pickup_type: 1,
+          drop_off_type: 2
+        })
+      )
+
+      before = DateTime.utc_now()
+
+      assert {:ok, %{trips: trips}} =
+               Gtfs.create_trips(
+                 "12n",
+                 create_attrs(scope, %{repeat: %{every_minutes: 25, until: "07:00:00"}}),
+                 context.audit
+               )
+
+      base = "12n-0-#{scope.service}"
+      assert Enum.map(trips, & &1.trip_id) == ["#{base}-0600", "#{base}-0625", "#{base}-0650"]
+
+      Enum.each(trips, fn trip ->
+        assert trip.route_id == "12n"
+        assert trip.service_id == scope.service
+        assert trip.direction_id == scope.bundle.pattern.direction_id
+        assert trip.route_pattern_id == scope.bundle.pattern.route_pattern_id
+        assert trip.timed_pattern_id == scope.bundle.timing.id
+        assert trip.pattern_derivation_state == "linked"
+        assert trip.pattern_derivation_reason == nil
+        assert trip.trip_headsign == "Timing Sign"
+        assert trip.trip_short_name == nil
+        assert trip.block_id == nil
+        assert trip.shape_id == nil
+        assert trip.wheelchair_accessible == nil
+        assert trip.bikes_allowed == nil
+
+        # INV-3's create half: spec 04's stale-plan fingerprint reads updated_at.
+        assert DateTime.compare(trip.updated_at, before) in [:eq, :gt]
+      end)
+
+      assert persisted_stop_times(Enum.map(trips, & &1.trip_id)) ==
+               [
+                 {"#{base}-0600",
+                  [
+                    {1, "A", "06:00:00", "06:00:00", "Signed", 1, 2, 1, nil},
+                    {2, "B", "06:05:00", "06:05:30", nil, nil, nil, 1, nil},
+                    {3, "C", "06:12:00", "06:12:00", nil, nil, nil, 1, nil}
+                  ]},
+                 {"#{base}-0625",
+                  [
+                    {1, "A", "06:25:00", "06:25:00", "Signed", 1, 2, 1, nil},
+                    {2, "B", "06:30:00", "06:30:30", nil, nil, nil, 1, nil},
+                    {3, "C", "06:37:00", "06:37:00", nil, nil, nil, 1, nil}
+                  ]},
+                 {"#{base}-0650",
+                  [
+                    {1, "A", "06:50:00", "06:50:00", "Signed", 1, 2, 1, nil},
+                    {2, "B", "06:55:00", "06:55:30", nil, nil, nil, 1, nil},
+                    {3, "C", "07:02:00", "07:02:00", nil, nil, nil, 1, nil}
+                  ]}
+               ]
+    end
+
+    test "accepts a 200-departure series and refuses the 201st", context do
+      scope = schedule_scope!(context, "12b", %{stops: [{"A", 0, 0, 1}, {"B", 60, 60, 1}]})
+
+      assert {:ok, %{trips: trips}} =
+               Gtfs.create_trips(
+                 "12b",
+                 create_attrs(scope, %{
+                   start_time: "00:00:00",
+                   repeat: %{every_minutes: 1, until: "03:19:00"}
+                 }),
+                 context.audit
+               )
+
+      assert length(trips) == 200
+      assert List.first(trips).trip_id == "12b-0-#{scope.service}-0000"
+      assert List.last(trips).trip_id == "12b-0-#{scope.service}-0319"
+
+      assert {:error, :too_many_trips} =
+               Gtfs.create_trips(
+                 "12b",
+                 create_attrs(scope, %{
+                   start_time: "00:00:00",
+                   repeat: %{every_minutes: 1, until: "03:20:00"}
+                 }),
+                 context.audit
+               )
+
+      assert Repo.aggregate(
+               from(t in Trip, where: t.organization_id == ^context.organization.id),
+               :count
+             ) == 200
+    end
+
+    test "refuses an invalid series, timing, calendar or scope without creating a row", context do
+      scope = schedule_scope!(context, "12r")
+
+      assert {:error, :invalid_time} =
+               Gtfs.create_trips("12r", create_attrs(scope, %{start_time: "nope"}), context.audit)
+
+      assert {:error, :too_many_trips} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{
+                   start_time: "00:00:00",
+                   repeat: %{every_minutes: 1, until: "03:20:00"}
+                 }),
+                 context.audit
+               )
+
+      assert {:error, :invalid_interval} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{repeat: %{every_minutes: 0, until: "07:00:00"}}),
+                 context.audit
+               )
+
+      assert {:error, :invalid_interval} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{repeat: %{every_minutes: -5, until: "07:00:00"}}),
+                 context.audit
+               )
+
+      assert {:error, :until_before_start} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{repeat: %{every_minutes: 25, until: "05:50:00"}}),
+                 context.audit
+               )
+
+      assert {:error, :not_found} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{timed_pattern_id: Ecto.UUID.generate()}),
+                 context.audit
+               )
+
+      assert {:error, :not_found} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{pattern_id: Ecto.UUID.generate()}),
+                 context.audit
+               )
+
+      assert {:error, :calendar_not_found} =
+               Gtfs.create_trips(
+                 "12r",
+                 create_attrs(scope, %{service_id: "missing_service"}),
+                 context.audit
+               )
+
+      assert {:error, :not_found} =
+               Gtfs.create_trips("missing", create_attrs(scope), context.audit)
+
+      assert Repo.aggregate(
+               from(t in Trip, where: t.organization_id == ^context.organization.id),
+               :count
+             ) ==
+               0
+
+      assert Repo.aggregate(
+               from(l in ChangeLog,
+                 where: l.organization_id == ^context.organization.id and l.entity_type == "trip"
+               ),
+               :count
+             ) == 0
+    end
+
+    test "the real exporter emits exactly the literal authored trip and stop time rows",
+         context do
+      scope =
+        schedule_scope!(context, "12x", %{
+          route_pattern_id: "12X-PATTERN",
+          timing_headsign: "Downtown",
+          stops: [{"A", 0, 0, 1}, {"B", 300, 330, 1}, {"C", 720, 720, 1}]
+        })
+
+      [first_row | _] = scope.bundle.rows
+
+      Repo.update!(
+        Ecto.Changeset.change(first_row, %{
+          stop_headsign: "Signed",
+          pickup_type: 1,
+          drop_off_type: 2
+        })
+      )
+
+      assert {:ok, %{trips: trips}} =
+               Gtfs.create_trips(
+                 "12x",
+                 create_attrs(scope, %{repeat: %{every_minutes: 25, until: "06:25:00"}}),
+                 context.audit
+               )
+
+      base = "12x-0-#{scope.service}"
+      assert Enum.map(trips, & &1.trip_id) == ["#{base}-0600", "#{base}-0625"]
+
+      # The oracle exports through the real exporter and compares the emitted CSV
+      # with rows authored here; Materializer is never used to build expectations.
+      assert {:ok, zip} = Export.export_to_zip(context.organization.id, context.version.id, :full)
+      files = unzip(zip)
+
+      assert csv_rows(files, "trips.txt") |> Enum.sort_by(& &1["trip_id"]) ==
+               [
+                 %{
+                   "route_id" => "12x",
+                   "service_id" => scope.service,
+                   "trip_id" => "#{base}-0600",
+                   "trip_headsign" => "Downtown",
+                   "trip_short_name" => "",
+                   "direction_id" => "0",
+                   "block_id" => "",
+                   "shape_id" => "",
+                   "wheelchair_accessible" => "",
+                   "bikes_allowed" => "",
+                   "route_pattern_id" => "12X-PATTERN"
+                 },
+                 %{
+                   "route_id" => "12x",
+                   "service_id" => scope.service,
+                   "trip_id" => "#{base}-0625",
+                   "trip_headsign" => "Downtown",
+                   "trip_short_name" => "",
+                   "direction_id" => "0",
+                   "block_id" => "",
+                   "shape_id" => "",
+                   "wheelchair_accessible" => "",
+                   "bikes_allowed" => "",
+                   "route_pattern_id" => "12X-PATTERN"
+                 }
+               ]
+               |> Enum.sort_by(& &1["trip_id"])
+
+      assert csv_rows(files, "stop_times.txt")
+             |> Enum.sort_by(&{&1["trip_id"], &1["stop_sequence"]}) ==
+               literal_stop_time_rows(base)
+               |> Enum.sort_by(&{&1["trip_id"], &1["stop_sequence"]})
+    end
+  end
+
+  describe "trip ID allocation" do
+    test "same-minute trips across two patterns take the smallest free suffix", context do
+      route_fixture(context.organization.id, context.version.id, %{route_id: "12i"})
+      service = weekly_calendar!(context, %{name: "Colliding"})
+
+      first =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12i",
+          stops: [{"A", 0, 0, 1}, {"B", 60, 60, 1}]
+        })
+
+      second =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12i",
+          stops: [{"A", 0, 0, 1}, {"B", 90, 90, 1}]
+        })
+
+      third =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12i",
+          stops: [{"A", 0, 0, 1}, {"B", 120, 120, 1}]
+        })
+
+      assert {:ok, %{trips: [first_trip]}} =
+               Gtfs.create_trips(
+                 "12i",
+                 create_attrs(%{service: service, bundle: first}, %{}),
+                 context.audit
+               )
+
+      assert first_trip.trip_id == "12i-0-#{service}-0600"
+
+      assert {:ok, %{trips: [second_trip]}} =
+               Gtfs.create_trips(
+                 "12i",
+                 create_attrs(%{service: service, bundle: second}, %{}),
+                 context.audit
+               )
+
+      assert second_trip.trip_id == "12i-0-#{service}-0600-2"
+
+      assert {:ok, %{trips: [third_trip]}} =
+               Gtfs.create_trips(
+                 "12i",
+                 create_attrs(%{service: service, bundle: third}, %{}),
+                 context.audit
+               )
+
+      assert third_trip.trip_id == "12i-0-#{service}-0600-3"
+
+      # The suffix never renames a trip created earlier in the same batch.
+      assert Enum.map([first_trip, second_trip, third_trip], & &1.trip_id) ==
+               ["12i-0-#{service}-0600", "12i-0-#{service}-0600-2", "12i-0-#{service}-0600-3"]
+    end
+
+    test "the same base in another version or organization gets no suffix", context do
+      route_id = "12v"
+      service = "vv_#{System.unique_integer([:positive])}"
+
+      route_fixture(context.organization.id, context.version.id, %{route_id: route_id})
+      weekly_calendar_for!(context.audit, %{service_id: service, name: "Version A"})
+
+      first =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: route_id,
+          stops: [{"A", 0, 0, 1}, {"B", 60, 60, 1}]
+        })
+
+      assert {:ok, %{trips: [trip]}} =
+               Gtfs.create_trips(
+                 "12v",
+                 create_attrs(%{service: service, bundle: first}, %{}),
+                 context.audit
+               )
+
+      assert trip.trip_id == "12v-0-#{service}-0600"
+
+      other_version = gtfs_version_fixture(context.organization.id)
+      other_audit = %{context.audit | gtfs_version_id: other_version.id}
+      route_fixture(context.organization.id, other_version.id, %{route_id: route_id})
+      weekly_calendar_for!(other_audit, %{service_id: service, name: "Version B"})
+
+      second =
+        schedule_pattern_fixture(context.organization.id, other_version.id, %{
+          route_id: route_id,
+          stops: [{"A", 0, 0, 1}, {"B", 60, 60, 1}]
+        })
+
+      assert {:ok, %{trips: [sibling]}} =
+               Gtfs.create_trips(
+                 "12v",
+                 create_attrs(%{service: service, bundle: second}, %{}),
+                 other_audit
+               )
+
+      assert sibling.trip_id == trip.trip_id
+
+      other_organization = organization_fixture()
+      other_actor = editor_fixture(other_organization)
+      foreign_version = gtfs_version_fixture(other_organization.id)
+
+      foreign_audit = %AuditContext{
+        organization_id: other_organization.id,
+        gtfs_version_id: foreign_version.id,
+        station_stop_id: nil,
+        actor_id: other_actor.id,
+        actor_email: other_actor.email
+      }
+
+      route_fixture(other_organization.id, foreign_version.id, %{route_id: route_id})
+      weekly_calendar_for!(foreign_audit, %{service_id: service, name: "Other tenant"})
+
+      third =
+        schedule_pattern_fixture(other_organization.id, foreign_version.id, %{
+          route_id: route_id,
+          stops: [{"A", 0, 0, 1}, {"B", 60, 60, 1}]
+        })
+
+      assert {:ok, %{trips: [foreign]}} =
+               Gtfs.create_trips(
+                 "12v",
+                 create_attrs(%{service: service, bundle: third}, %{}),
+                 foreign_audit
+               )
+
+      assert foreign.trip_id == trip.trip_id
+    end
+  end
+
+  describe "trip creation audit" do
+    test "logs one row per created trip with the shared operation and its snapshot", context do
+      scope = schedule_scope!(context, "12a", %{timing_name: "Peak", timing_headsign: "Downtown"})
+
+      assert {:ok, %{trips: trips}} =
+               Gtfs.create_trips(
+                 "12a",
+                 create_attrs(scope, %{repeat: %{every_minutes: 25, until: "06:25:00"}}),
+                 context.audit
+               )
+
+      base = "12a-0-#{scope.service}"
+      logs = trip_logs(context)
+      trip_ids = Enum.map(trips, & &1.trip_id)
+
+      assert length(logs) == length(trips)
+      assert Enum.map(logs, & &1.entity_external_id) == trip_ids
+      assert Enum.map(logs, & &1.entity_id) == Enum.map(trips, & &1.id)
+
+      assert Enum.all?(logs, fn log ->
+               log.entity_type == "trip" and log.action == "created" and
+                 log.station_stop_id == nil and log.organization_id == context.organization.id and
+                 log.gtfs_version_id == context.version.id and log.actor_id == context.actor.id
+             end)
+
+      assert logs |> Enum.map(& &1.changed_fields["operation_id"]) |> Enum.uniq() |> length() == 1
+
+      assert Enum.all?(logs, fn log ->
+               log.changed_fields["affected_trip_ids"] == Enum.map(trips, & &1.id)
+             end)
+
+      assert Enum.all?(logs, fn log ->
+               MapSet.new(Map.keys(log.changed_fields)) ==
+                 MapSet.new(~w(before after operation_id affected_trip_ids))
+             end)
+
+      assert Enum.map(logs, & &1.changed_fields["before"]) == [nil, nil]
+
+      assert Enum.map(logs, & &1.changed_fields["after"]) == [
+               %{
+                 "trip_id" => "#{base}-0600",
+                 "route_id" => "12a",
+                 "service_id" => scope.service,
+                 "direction_id" => 0,
+                 "route_pattern_id" => scope.bundle.pattern.route_pattern_id,
+                 "timed_pattern_id" => scope.bundle.timing.id,
+                 "timing_name" => "Peak",
+                 "pattern_derivation_state" => "linked",
+                 "trip_headsign" => "Downtown",
+                 "trip_short_name" => nil,
+                 "block_id" => nil,
+                 "wheelchair_accessible" => nil,
+                 "bikes_allowed" => nil,
+                 "shape_id" => nil,
+                 "start_time" => "06:00:00",
+                 "stop_time_count" => 3,
+                 "frequencies" => []
+               },
+               %{
+                 "trip_id" => "#{base}-0625",
+                 "route_id" => "12a",
+                 "service_id" => scope.service,
+                 "direction_id" => 0,
+                 "route_pattern_id" => scope.bundle.pattern.route_pattern_id,
+                 "timed_pattern_id" => scope.bundle.timing.id,
+                 "timing_name" => "Peak",
+                 "pattern_derivation_state" => "linked",
+                 "trip_headsign" => "Downtown",
+                 "trip_short_name" => nil,
+                 "block_id" => nil,
+                 "wheelchair_accessible" => nil,
+                 "bikes_allowed" => nil,
+                 "shape_id" => nil,
+                 "start_time" => "06:25:00",
+                 "stop_time_count" => 3,
+                 "frequencies" => []
+               }
+             ]
+    end
+
+    test "an audit failure after the stop-time insert rolls back every created row", context do
+      scope = schedule_scope!(context, "12f")
+      install_trip_audit_rejection_trigger!()
+
+      assert_raise Postgrex.Error, fn ->
+        Gtfs.create_trips(
+          "12f",
+          create_attrs(scope, %{repeat: %{every_minutes: 25, until: "06:25:00"}}),
+          context.audit
+        )
+      end
+
+      remove_trip_audit_rejection_trigger!()
+
+      assert Repo.aggregate(
+               from(t in Trip,
+                 where: t.organization_id == ^context.organization.id and t.route_id == "12f"
+               ),
+               :count
+             ) == 0
+
+      assert Repo.aggregate(
+               from(st in StopTime,
+                 where:
+                   st.organization_id == ^context.organization.id and like(st.trip_id, "12f-%")
+               ),
+               :count
+             ) == 0
+
+      assert Repo.aggregate(
+               from(l in ChangeLog,
+                 where: l.organization_id == ^context.organization.id and l.entity_type == "trip"
+               ),
+               :count
+             ) == 0
+    end
+  end
+
+  describe "trip ID conflict" do
+    test "a committed trip holding the allocated ID rolls the batch back with :trip_id_conflict" do
+      scope = seed_committed_create_scope()
+      on_exit(fn -> cleanup_committed_create_scope(scope) end)
+
+      parent = self()
+      base = "#{scope.route_id}-0-#{scope.service}-0600"
+
+      blocker = Task.async(fn -> hold_blocking_trip(scope, base, parent) end)
+      assert_receive :blocker_inserted, 5_000
+
+      creator =
+        Task.async(fn ->
+          unboxed(fn -> Gtfs.create_trips(scope.route_id, scope.attrs, scope.audit) end)
+        end)
+
+      assert_receive {:creator_pid, creator_pid}, 5_000
+      assert wait_until_locked(creator_pid)
+
+      send(blocker.pid, :commit)
+
+      assert Task.await(blocker, 10_000) == {:ok, :ok}
+      assert Task.await(creator, 10_000) == {:error, :trip_id_conflict}
+
+      assert Repo.all(
+               from(t in Trip,
+                 where: t.organization_id == ^scope.organization.id,
+                 select: t.trip_id
+               )
+             ) == [base]
+
+      assert Repo.aggregate(
+               from(l in ChangeLog,
+                 where: l.organization_id == ^scope.organization.id and l.entity_type == "trip"
+               ),
+               :count
+             ) == 0
+    end
+  end
+
   describe "scope and outage" do
     test "foreign, unknown and unpublished scopes return not_found", context do
       route_fixture(context.organization.id, context.version.id, %{route_id: "12o"})
@@ -913,7 +1507,9 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
     }
   end
 
-  defp weekly_calendar!(context, attrs) do
+  defp weekly_calendar!(context, attrs), do: weekly_calendar_for!(context.audit, attrs)
+
+  defp weekly_calendar_for!(audit, attrs) do
     attrs =
       Map.merge(
         %{
@@ -933,7 +1529,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
         Map.new(attrs)
       )
 
-    assert {:ok, _payload} = Gtfs.create_calendar(attrs, context.audit)
+    assert {:ok, _payload} = Gtfs.create_calendar(attrs, audit)
     attrs.service_id
   end
 
@@ -1019,6 +1615,285 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       fun.()
     after
       GtfsPlanner.Repo.put_dynamic_repo(previous)
+    end
+  end
+
+  # -- Creation helpers -------------------------------------------------------
+
+  defp clock(value) do
+    {:ok, seconds} = GtfsTime.parse(value)
+    seconds
+  end
+
+  defp schedule_scope!(context, route_id, attrs \\ %{}) do
+    attrs = Map.new(attrs)
+    route_fixture(context.organization.id, context.version.id, %{route_id: route_id})
+
+    service =
+      Map.get(attrs, :service) || weekly_calendar!(context, %{name: "Schedules #{route_id}"})
+
+    pattern_attrs =
+      %{
+        route_id: route_id,
+        direction_id: Map.get(attrs, :direction_id, 0),
+        route_pattern_id: Map.get(attrs, :route_pattern_id),
+        headsign: Map.get(attrs, :pattern_headsign),
+        timing_name: Map.get(attrs, :timing_name),
+        timing_headsign: Map.get(attrs, :timing_headsign),
+        stops: Map.get(attrs, :stops, [{"A", 0, 0, 1}, {"B", 300, 330, 1}, {"C", 720, 720, 1}])
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    bundle = schedule_pattern_fixture(context.organization.id, context.version.id, pattern_attrs)
+
+    %{route_id: route_id, service: service, bundle: bundle}
+  end
+
+  defp create_attrs(scope, attrs \\ %{}) do
+    Map.merge(
+      %{
+        pattern_id: scope.bundle.pattern.id,
+        timed_pattern_id: scope.bundle.timing.id,
+        service_id: scope.service,
+        start_time: "06:00:00",
+        repeat: nil
+      },
+      Map.new(attrs)
+    )
+  end
+
+  defp persisted_stop_times(trip_ids) do
+    from(st in StopTime,
+      where: st.trip_id in ^trip_ids,
+      order_by: [asc: st.trip_id, asc: st.stop_sequence]
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.trip_id)
+    |> Enum.map(fn {trip_id, rows} ->
+      {trip_id,
+       Enum.map(rows, fn row ->
+         {row.stop_sequence, row.stop_id, row.arrival_time, row.departure_time, row.stop_headsign,
+          row.pickup_type, row.drop_off_type, row.timepoint, row.shape_dist_traveled}
+       end)}
+    end)
+    |> Enum.sort()
+  end
+
+  defp trip_logs(context) do
+    Repo.all(
+      from(l in ChangeLog,
+        where: l.organization_id == ^context.organization.id and l.entity_type == "trip",
+        order_by: [asc: l.entity_external_id]
+      )
+    )
+  end
+
+  defp unzip(zip) do
+    {:ok, entries} = :zip.unzip(zip, [:memory])
+    entries
+  end
+
+  defp csv_rows(files, name) do
+    case Enum.find(files, fn {entry_name, _content} -> to_string(entry_name) == name end) do
+      nil ->
+        flunk("expected #{name} in the export")
+
+      {_entry, content} ->
+        {:ok, parsed} = CsvParser.stream(name, to_string(content))
+        Enum.map(parsed.events, fn {:ok, _row_number, row} -> row end)
+    end
+  end
+
+  defp literal_stop_time_rows(base) do
+    [
+      {"#{base}-0600", "1", "A", "06:00:00", "06:00:00", "Signed", "1", "2"},
+      {"#{base}-0600", "2", "B", "06:05:00", "06:05:30", "", "", ""},
+      {"#{base}-0600", "3", "C", "06:12:00", "06:12:00", "", "", ""},
+      {"#{base}-0625", "1", "A", "06:25:00", "06:25:00", "Signed", "1", "2"},
+      {"#{base}-0625", "2", "B", "06:30:00", "06:30:30", "", "", ""},
+      {"#{base}-0625", "3", "C", "06:37:00", "06:37:00", "", "", ""}
+    ]
+    |> Enum.map(fn {trip_id, sequence, stop_id, arrival, departure, headsign, pickup, drop_off} ->
+      %{
+        "trip_id" => trip_id,
+        "arrival_time" => arrival,
+        "departure_time" => departure,
+        "stop_id" => stop_id,
+        "stop_sequence" => sequence,
+        "stop_headsign" => headsign,
+        "pickup_type" => pickup,
+        "drop_off_type" => drop_off,
+        "continuous_pickup" => "",
+        "continuous_drop_off" => "",
+        "shape_dist_traveled" => "",
+        "timepoint" => "1"
+      }
+    end)
+  end
+
+  # Test-only fault injection: a constraint trigger on `change_logs` raises on the
+  # next trip audit insert, after the trip and stop-time rows are written. It is
+  # created inside the sandbox transaction, so the guaranteed test rollback removes
+  # it, and this test also drops it explicitly. No production failure switch exists.
+  defp install_trip_audit_rejection_trigger! do
+    Repo.query!("""
+    CREATE FUNCTION trip_audit_rejection() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.entity_type = 'trip' THEN
+        RAISE EXCEPTION 'trip audit rejection fixture' USING ERRCODE = 'check_violation';
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+    """)
+
+    Repo.query!("""
+    CREATE CONSTRAINT TRIGGER trip_audit_rejection_trigger
+    AFTER INSERT ON change_logs
+    DEFERRABLE INITIALLY IMMEDIATE
+    FOR EACH ROW
+    EXECUTE FUNCTION trip_audit_rejection();
+    """)
+  end
+
+  defp remove_trip_audit_rejection_trigger! do
+    Repo.query!("DROP TRIGGER IF EXISTS trip_audit_rejection_trigger ON change_logs")
+    Repo.query!("DROP FUNCTION IF EXISTS trip_audit_rejection()")
+  end
+
+  # A committed organization/version/route/calendar/pattern scope plus the write
+  # attributes, used only by the ID-conflict race, which needs the colliding row to
+  # be uncommitted on an independent connection.
+  defp seed_committed_create_scope do
+    unboxed(fn ->
+      organization =
+        organization_fixture(%{alias: "schedule-create-#{System.unique_integer([:positive])}"})
+
+      version = gtfs_version_fixture(organization.id)
+      route_id = "rc#{System.unique_integer([:positive])}"
+      route_fixture(organization.id, version.id, %{route_id: route_id})
+      actor = editor_fixture(organization)
+
+      audit = %AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        station_stop_id: nil,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+
+      service = "race_#{System.unique_integer([:positive])}"
+      weekly_calendar_for!(audit, %{service_id: service, name: "Race"})
+
+      bundle =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route_id,
+          stops: [{"A", 0, 0, 1}, {"B", 300, 330, 1}]
+        })
+
+      %{
+        organization: organization,
+        version: version,
+        actor: actor,
+        audit: audit,
+        service: service,
+        route_id: route_id,
+        attrs: %{
+          pattern_id: bundle.pattern.id,
+          timed_pattern_id: bundle.timing.id,
+          service_id: service,
+          start_time: "06:00:00",
+          repeat: nil
+        }
+      }
+    end)
+  end
+
+  defp cleanup_committed_create_scope(scope) do
+    unboxed(fn ->
+      organization_id = scope.organization.id
+
+      Repo.delete_all(
+        from(r in TimedPatternStop,
+          where:
+            r.timed_pattern_id in subquery(
+              from(t in TimedPattern,
+                where: t.organization_id == ^organization_id,
+                select: t.id
+              )
+            )
+        )
+      )
+
+      Repo.delete_all(from(st in StopTime, where: st.organization_id == ^organization_id))
+      Repo.delete_all(from(f in Frequency, where: f.organization_id == ^organization_id))
+      Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
+      Repo.delete_all(from(t in TimedPattern, where: t.organization_id == ^organization_id))
+      Repo.delete_all(from(r in RoutePatternStop, where: r.organization_id == ^organization_id))
+      Repo.delete_all(from(p in RoutePattern, where: p.organization_id == ^organization_id))
+
+      Repo.delete_all(from(c in CalendarAttribute, where: c.organization_id == ^organization_id))
+
+      Repo.delete_all(from(c in CalendarDate, where: c.organization_id == ^organization_id))
+      Repo.delete_all(from(c in Calendar, where: c.organization_id == ^organization_id))
+      Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
+      Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
+      Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
+      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+      Repo.delete_all(from(u in GtfsPlanner.Accounts.User, where: u.id == ^scope.actor.id))
+    end)
+  end
+
+  # Holds one uncommitted trip row with the base trip ID on an independent
+  # connection until the test says to commit, so the creator's allocator cannot see
+  # it and its insert must wait on the unique index.
+  defp hold_blocking_trip(scope, trip_id, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.insert!(
+          Ecto.Changeset.change(%Trip{}, %{
+            organization_id: scope.organization.id,
+            gtfs_version_id: scope.version.id,
+            trip_id: trip_id,
+            route_id: scope.route_id,
+            service_id: scope.service,
+            direction_id: 0
+          })
+        )
+
+        send(parent, :blocker_inserted)
+
+        receive do
+          :commit -> :ok
+        after
+          10_000 -> Repo.rollback(:timeout)
+        end
+      end)
+    end)
+  end
+
+  # The creating backend reports itself in a lock wait once its insert blocks on
+  # the uncommitted row, which is deterministic; the test then commits the row.
+  defp wait_until_locked(pid, attempts \\ 500) do
+    {:ok, %{rows: [[waiting]]}} =
+      unboxed(fn ->
+        Repo.query(
+          "select count(*) from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'",
+          [pid]
+        )
+      end)
+
+    cond do
+      waiting > 0 ->
+        true
+
+      attempts <= 0 ->
+        flunk("the creating backend never waited on the unique index")
+
+      true ->
+        Process.sleep(10)
+        wait_until_locked(pid, attempts - 1)
     end
   end
 end
