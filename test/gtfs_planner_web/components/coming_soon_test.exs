@@ -1,0 +1,199 @@
+defmodule GtfsPlannerWeb.Components.ComingSoonTest do
+  use GtfsPlannerWeb.ConnCase, async: true
+
+  import Phoenix.Component
+  import Phoenix.LiveViewTest
+
+  import GtfsPlannerWeb.ComingSoon, only: [coming_soon: 1]
+
+  alias GtfsPlannerWeb.ComingSoon
+
+  # Literal expectations transcribed from the finalized content table. They are
+  # written here rather than read back from the catalog under test.
+  @catalog [
+    transfers: %{
+      title: "Transfers",
+      scope: :version,
+      summary:
+        "Tell trip planners where riders can change vehicles: between stops, routes or two specific trips.",
+      section_names: ["Transfer list", "New transfer", "In-seat transfers"]
+    },
+    blocks: %{
+      title: "Blocks",
+      scope: :version,
+      summary: "Plan which trips each vehicle runs in sequence, one day type at a time.",
+      section_names: [
+        "Timeline",
+        "Unassigned trips",
+        "Checks",
+        "Riders stay on board",
+        "Deadheads and relief points"
+      ]
+    },
+    runs: %{
+      title: "Runs",
+      scope: :version,
+      summary: "Cut vehicle blocks into each operator’s daily work.",
+      section_names: ["Duty chart", "Suggest runs", "Work rules", "Checks"]
+    },
+    rosters: %{
+      title: "Rosters",
+      scope: :version,
+      summary: "Group runs into weekly lines and record which operator holds each line.",
+      section_names: ["Weekly lines", "Open work", "Operators", "Crew export"]
+    },
+    flex: %{
+      title: "Flex",
+      scope: :version,
+      summary:
+        "Describe on-demand service on your fixed routes, such as drop-off near a stop by request.",
+      section_names: ["Flex services", "Area", "Boarding", "Booking", "Export preview"]
+    },
+    evolutions: %{
+      title: "Evolutions",
+      scope: :version,
+      summary:
+        "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
+      section_names: ["Closures", "Access check"]
+    },
+    alignment: %{
+      title: "Alignment",
+      scope: :version,
+      summary: "Draw the path this pattern travels between stops.",
+      section_names: [
+        "Segment status",
+        "Generate along streets",
+        "Edit points",
+        "Shared segments"
+      ]
+    },
+    feed_details: %{
+      title: "Feed details",
+      scope: :version,
+      summary: "Describe this version’s feed for data consumers.",
+      section_names: ["Publisher", "Languages", "Service dates", "Feed version", "Contact"]
+    },
+    agencies: %{
+      title: "Agencies",
+      scope: :version,
+      summary: "Manage the agencies that operate this version’s routes.",
+      section_names: ["Agency list", "One timezone", "Removing an agency"]
+    },
+    fares: %{
+      title: "Fares",
+      scope: :version,
+      summary: "Set up fare zones and the fare rules that use them.",
+      section_names: ["Zones", "Fare rules"]
+    },
+    export_defaults: %{
+      title: "Export defaults",
+      scope: :all_versions,
+      summary: "Choose how future exports are written.",
+      section_names: ["ID formats", "Stop times between timepoints", "GTFS-flex files"]
+    },
+    feed_url: %{
+      title: "Published feed URL",
+      scope: :all_versions,
+      summary: "Give data consumers one permanent address for your feed.",
+      section_names: ["Feed URL", "What’s live", "Publishing"]
+    }
+  ]
+
+  describe "feature/1" do
+    test "returns the finalized copy for every fixed key" do
+      assert length(@catalog) == 12
+
+      Enum.each(@catalog, fn {key, expected} ->
+        entry = ComingSoon.feature(key)
+
+        assert entry.title == expected.title
+        assert entry.scope == expected.scope
+        assert entry.summary == expected.summary
+        assert Enum.map(entry.sections, & &1.name) == expected.section_names
+        assert Enum.all?(entry.sections, &(&1.text != ""))
+      end)
+    end
+
+    test "raises for a key outside the catalog" do
+      assert_raise FunctionClauseError, fn -> apply(ComingSoon, :feature, [:unbuilt]) end
+    end
+
+    test "does not convert a string into a catalog key" do
+      assert_raise FunctionClauseError, fn -> apply(ComingSoon, :feature, ["transfers"]) end
+    end
+  end
+
+  describe "coming_soon/1" do
+    test "renders the title, scope, summary and subsection count for every feature" do
+      Enum.each(@catalog, fn {key, expected} ->
+        doc = render_doc(ComingSoon.feature(key), "All versions")
+
+        assert text_of(doc, "#coming-soon-title") == expected.title
+        assert text_of(doc, "#coming-soon-status") == "Coming soon"
+        assert text_of(doc, "#coming-soon-scope") == "All versions"
+        assert text_of(doc, "#coming-soon") =~ expected.summary
+
+        assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) ==
+                 length(expected.section_names)
+      end)
+    end
+
+    test "renders the caller's scope label verbatim" do
+      doc = render_doc(ComingSoon.feature(:blocks), "This version: Fall 2026")
+
+      assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
+    end
+
+    test "renders exactly one title element at the requested heading level" do
+      for level <- [1, 2, 3] do
+        doc = render_doc(ComingSoon.feature(:transfers), "All versions", level)
+
+        assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
+        assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1
+        assert Enum.count(LazyHTML.query(doc, "h1, h2, h3")) == 1
+      end
+    end
+
+    test "defaults to a level-one title" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.coming_soon feature={ComingSoon.feature(:flex)} scope_label="All versions" />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "h1#coming-soon-title")) == 1
+    end
+
+    test "renders a labelled section with a semantic subsection list and no controls" do
+      doc = render_doc(ComingSoon.feature(:flex), "This version: Fall 2026")
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "section#coming-soon"), "aria-labelledby") ==
+               ["coming-soon-title"]
+
+      assert Enum.count(LazyHTML.query(doc, "ul#coming-soon-sections")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) == 5
+      assert text_of(doc, "#coming-soon") =~ "What it will include"
+
+      for selector <- ["form", "button", "a", "input", "select", "textarea"] do
+        assert Enum.count(LazyHTML.query(doc, "#coming-soon #{selector}")) == 0
+      end
+    end
+  end
+
+  defp render_doc(feature, scope_label, heading_level \\ 1) do
+    assigns = %{feature: feature, scope_label: scope_label, heading_level: heading_level}
+
+    ~H"""
+    <.coming_soon feature={@feature} scope_label={@scope_label} heading_level={@heading_level} />
+    """
+    |> rendered_to_string()
+    |> LazyHTML.from_fragment()
+  end
+
+  defp text_of(doc, selector) do
+    doc |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+  end
+end
