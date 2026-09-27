@@ -188,7 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   def handle_event("validate_garage", %{"garage" => params} = payload, socket) do
     target = payload["_target"]
 
-    {params, id_touched?} = default_garage_id(socket, params, target)
+    {params, id_touched?, derived_id} = default_garage_id(socket, params, target)
     params = fill_selected_address(socket, params, target)
 
     changeset =
@@ -200,7 +200,8 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     {:noreply,
      socket
      |> assign(:garage_id_touched?, id_touched?)
-     |> assign(:garage_form, to_form(changeset, as: :garage))}
+     |> assign(:garage_form, to_form(changeset, as: :garage))
+     |> push_derived_garage_id(derived_id)}
   end
 
   def handle_event("validate_garage", _payload, socket), do: {:noreply, socket}
@@ -209,6 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   def handle_event("save_garage", %{"garage" => params}, socket) do
     organization_id = socket.assigns.current_organization.id
     actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
+    params = submitted_garage_id(socket, params)
 
     result =
       case socket.assigns.garage_entity do
@@ -576,6 +578,12 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
             phx-blur="validate_garage"
           />
 
+          <%!-- LiveView skips the `value` of a form input that already holds
+          focus, so the derived ID would stay invisible for an operator who tabs
+          out of the name field. This ignored host carries the hook that writes
+          the pushed value into the ID field. --%>
+          <span id="garage-id-default" phx-hook=".GarageIdDefault" phx-update="ignore" hidden></span>
+
           <.input
             field={@form[:garage_id]}
             type="text"
@@ -677,6 +685,22 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
         </.form>
       </div>
     </.drawer>
+
+    <%!-- LiveView skips the `value` of a form input that already holds focus, and
+    an operator who tabs out of the name field has focused the ID field by the
+    time the derived ID arrives. This hook writes the pushed value into the field
+    so the ID on screen is the ID that will be saved, and never overwrites an ID
+    the operator has started typing. --%>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".GarageIdDefault">
+      export default {
+        mounted() {
+          this.handleEvent("set_garage_id", ({value}) => {
+            const field = document.getElementById("garage_garage_id");
+            if (field && field.value === "") field.value = value;
+          });
+        }
+      };
+    </script>
     """
   end
 
@@ -735,15 +759,38 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   defp default_garage_id(socket, params, target) do
     id_touched? = socket.assigns.garage_id_touched? or garage_id_target?(target)
 
-    params =
-      if is_nil(socket.assigns.garage_entity) and not id_touched? do
-        Map.put(params, @garage_id_field, Operations.default_garage_id(params["name"]))
-      else
-        params
-      end
-
-    {params, id_touched?}
+    if is_nil(socket.assigns.garage_entity) and not id_touched? do
+      derived_id = Operations.default_garage_id(params["name"])
+      {Map.put(params, @garage_id_field, derived_id), id_touched?, derived_id}
+    else
+      {params, id_touched?, nil}
+    end
   end
+
+  # LiveView never patches the `value` of the form input that currently holds
+  # focus, and the operator's Tab puts focus on the ID field before this reply
+  # arrives, so a derived ID would stay invisible. The drawer's hook writes the
+  # derived value into the field instead.
+  defp push_derived_garage_id(socket, nil), do: socket
+
+  defp push_derived_garage_id(socket, ""), do: socket
+
+  defp push_derived_garage_id(socket, derived_id),
+    do: push_event(socket, "set_garage_id", %{value: derived_id})
+
+  # An operator can submit straight from the name field, before the derived
+  # value reached the browser, so the same rule applies to the submitted ID.
+  defp submitted_garage_id(%{assigns: %{garage_entity: nil}} = socket, params) do
+    if socket.assigns.garage_id_touched? or present?(params[@garage_id_field]) do
+      params
+    else
+      Map.put(params, @garage_id_field, Operations.default_garage_id(params["name"]))
+    end
+  end
+
+  defp submitted_garage_id(_socket, params), do: params
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp garage_id_target?(@garage_id_target), do: true
   defp garage_id_target?(_target), do: false
