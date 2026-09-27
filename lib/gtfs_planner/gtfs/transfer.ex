@@ -28,8 +28,8 @@ defmodule GtfsPlanner.Gtfs.Transfer do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
-          from_stop_id: String.t(),
-          to_stop_id: String.t(),
+          from_stop_id: String.t() | nil,
+          to_stop_id: String.t() | nil,
           from_route_id: String.t() | nil,
           to_route_id: String.t() | nil,
           from_trip_id: String.t() | nil,
@@ -56,24 +56,32 @@ defmodule GtfsPlanner.Gtfs.Transfer do
       :gtfs_version_id
     ])
     |> trim_string_fields()
-    |> validate_required([
-      :from_stop_id,
-      :to_stop_id,
-      :transfer_type,
-      :organization_id,
-      :gtfs_version_id
-    ])
+    |> validate_required([:transfer_type, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:transfer_type, 0..5)
-    |> unique_constraint([
-      :organization_id,
-      :gtfs_version_id,
-      :from_stop_id,
-      :to_stop_id,
-      :from_route_id,
-      :to_route_id,
-      :from_trip_id,
-      :to_trip_id
-    ])
+    |> validate_endpoints()
+    |> unique_constraint(
+      [
+        :organization_id,
+        :gtfs_version_id,
+        :from_stop_id,
+        :to_stop_id,
+        :from_route_id,
+        :to_route_id,
+        :from_trip_id,
+        :to_trip_id
+      ],
+      name: :transfers_org_id_version_id_from_to_stop_route_trip_index
+    )
     |> foreign_key_constraint(:organization_id)
+  end
+
+  # Types 4 and 5 are in-seat transfers between two trips, so the trips identify
+  # the pair and the stops may be empty; every other type needs both stops.
+  defp validate_endpoints(changeset) do
+    if get_field(changeset, :transfer_type) in [4, 5] do
+      validate_required(changeset, [:from_trip_id, :to_trip_id])
+    else
+      validate_required(changeset, [:from_stop_id, :to_stop_id])
+    end
   end
 end
