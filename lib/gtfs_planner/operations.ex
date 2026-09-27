@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Operations do
 
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
   alias GtfsPlanner.Repo
@@ -568,6 +569,88 @@ defmodule GtfsPlanner.Operations do
     end)
   end
 
+  # --- TODS import -----------------------------------------------------------
+
+  @doc """
+  Classifies a parsed TODS file against the organization's stored records.
+
+  Accepted rows whose ID already exists in the organization become `update`
+  entries; the rest become `add` entries. A new garage without both coordinates
+  is an error (`"New garage needs stop_lat and stop_lon."`) instead of an add,
+  so a non-empty `errors` list blocks apply. Skipped rows, `ignored_columns` and
+  the other blocking errors come from `Tods.classify/1` unchanged.
+  """
+  @spec preview_tods_import(Ecto.UUID.t(), Tods.parsed()) :: Tods.preview()
+  def preview_tods_import(organization_id, parsed) do
+    %{accepted: accepted} = classification = Tods.classify(parsed)
+    existing = load_existing(organization_id, parsed.kind, Enum.map(accepted, & &1.id), false)
+
+    assemble_preview(parsed.kind, accepted, existing, classification)
+  end
+
+  @doc """
+  Applies a previewed TODS import in one transaction, or changes nothing.
+
+  Matching stored rows are locked `FOR UPDATE` in ID order and the preview is
+  recomputed from them. A recomputed preview with errors returns
+  `{:error, {:invalid, preview}}`; one whose `add` or `update` IDs differ from
+  `preview` returns `{:error, {:preview_changed, preview}}`. Adds are inserted
+  with `on_conflict: :nothing`; a short insert (a concurrent insert claimed an
+  ID after the recompute) rolls back every write and returns a freshly read
+  `{:error, {:preview_changed, preview}}`.
+
+  Updates write only the fields the file carries under the TODS field rules and
+  record `updated_by_id`: an absent column preserves a stored value, a blank
+  optional vehicle field clears, a blank required garage field preserves, and a
+  new garage without a name is named by its ID. A garage's address and a
+  vehicle's type and garage are never touched, absent records are never deleted,
+  and an update keeps the record's UUID.
+  """
+  @spec apply_tods_import(Ecto.UUID.t(), actor(), Tods.parsed(), Tods.preview()) ::
+          {:ok, %{added: non_neg_integer(), updated: non_neg_integer()}}
+          | {:error, {:invalid | :preview_changed, Tods.preview()}}
+  def apply_tods_import(organization_id, actor, parsed, preview) do
+    outcome =
+      Repo.transaction(fn ->
+        %{accepted: accepted} = classification = Tods.classify(parsed)
+        existing = load_existing(organization_id, parsed.kind, Enum.map(accepted, & &1.id), true)
+        fresh = assemble_preview(parsed.kind, accepted, existing, classification)
+        fields_by_id = Map.new(accepted, &{&1.id, &1.fields})
+
+        cond do
+          fresh.errors != [] ->
+            Repo.rollback({:invalid, fresh})
+
+          not same_plan?(fresh, preview) ->
+            Repo.rollback({:preview_changed, fresh})
+
+          true ->
+            write_import(
+              organization_id,
+              actor_id(actor),
+              parsed.kind,
+              existing,
+              fields_by_id,
+              fresh
+            )
+        end
+      end)
+
+    case outcome do
+      {:ok, %{added: _, updated: _} = result} ->
+        {:ok, result}
+
+      {:error, {:invalid, fresh}} ->
+        {:error, {:invalid, fresh}}
+
+      {:error, {:preview_changed, fresh}} ->
+        {:error, {:preview_changed, fresh}}
+
+      {:error, :short_insert} ->
+        {:error, {:preview_changed, preview_tods_import(organization_id, parsed)}}
+    end
+  end
+
   # --- private ---------------------------------------------------------------
 
   # Parses the numbered-group bounds. The digit count is checked before
@@ -810,6 +893,224 @@ defmodule GtfsPlanner.Operations do
     |> where([v], v.organization_id == ^organization_id and field(v, ^field) == ^id)
     |> Repo.aggregate(:count, :id)
   end
+
+  # Maps the classified accepted rows onto the organization's stored records. A
+  # matching row becomes an update; a new garage without both coordinates is a
+  # blocking error rather than an add. Error notes from classification and from
+  # this step are merged in row order.
+  defp assemble_preview(kind, accepted, existing, classification) do
+    {add, update, preview_errors} =
+      Enum.reduce(accepted, {[], [], []}, fn row, acc ->
+        classify_preview_row(kind, row, existing, acc)
+      end)
+
+    %{
+      kind: kind,
+      add: Enum.reverse(add),
+      update: Enum.reverse(update),
+      skipped: classification.skipped,
+      errors: Enum.sort_by(classification.errors ++ Enum.reverse(preview_errors), & &1.row),
+      ignored_columns: classification.ignored_columns
+    }
+  end
+
+  defp classify_preview_row(kind, row, existing, acc) do
+    if Map.has_key?(existing, row.id) do
+      update_preview_row(row.id, acc)
+    else
+      add_or_error_preview_row(kind, row, acc)
+    end
+  end
+
+  defp update_preview_row(id, {add, update, errors}), do: {add, [id | update], errors}
+
+  defp add_or_error_preview_row(kind, %{id: id, row: row, fields: fields}, {add, update, errors}) do
+    case new_row_error(kind, fields) do
+      nil -> {[id | add], update, errors}
+      reason -> {add, update, [%{row: row, id: id, reason: reason} | errors]}
+    end
+  end
+
+  defp new_row_error(:garages, fields) do
+    if present_non_blank?(fields, :lat) and present_non_blank?(fields, :lon) do
+      nil
+    else
+      "New garage needs stop_lat and stop_lon."
+    end
+  end
+
+  defp new_row_error(:vehicles, _fields), do: nil
+
+  defp same_plan?(fresh, preview) do
+    Enum.sort(fresh.add) == Enum.sort(Map.get(preview, :add, [])) and
+      Enum.sort(fresh.update) == Enum.sort(Map.get(preview, :update, []))
+  end
+
+  defp write_import(organization_id, actor_id, kind, existing, fields_by_id, fresh) do
+    Enum.each(fresh.update, fn id ->
+      {:ok, _record} =
+        update_record(kind, Map.fetch!(existing, id), Map.fetch!(fields_by_id, id), actor_id)
+    end)
+
+    added = insert_adds(kind, organization_id, actor_id, fields_by_id, fresh.add)
+
+    %{added: added, updated: length(fresh.update)}
+  end
+
+  defp update_record(:garages, garage, fields, actor_id) do
+    garage
+    |> Garage.changeset(garage_update_fields(fields))
+    |> put_change(:updated_by_id, actor_id)
+    |> Repo.update()
+  end
+
+  defp update_record(:vehicles, vehicle, fields, actor_id) do
+    vehicle
+    |> Vehicle.changeset(vehicle_update_fields(fields))
+    |> put_change(:updated_by_id, actor_id)
+    |> Repo.update()
+  end
+
+  # A blank or absent `stop_name`, `stop_lat` or `stop_lon` preserves the stored
+  # value, so only a present, non-blank value is written.
+  defp garage_update_fields(fields) do
+    %{}
+    |> put_non_blank(fields, :name)
+    |> put_non_blank(fields, :lat)
+    |> put_non_blank(fields, :lon)
+  end
+
+  # A present `vehicle_label` or `license_plate` is written, mapping a blank to
+  # nil; an absent column is left out so the stored value is preserved.
+  defp vehicle_update_fields(fields) do
+    %{}
+    |> put_present(fields, :vehicle_label)
+    |> put_present(fields, :license_plate)
+  end
+
+  defp put_non_blank(attrs, fields, key) do
+    case Map.get(fields, key) do
+      blank when blank in [nil, ""] -> attrs
+      value -> Map.put(attrs, key, value)
+    end
+  end
+
+  defp put_present(attrs, fields, key) do
+    case Map.fetch(fields, key) do
+      {:ok, value} -> Map.put(attrs, key, blank_to_nil(value))
+      :error -> attrs
+    end
+  end
+
+  defp present_non_blank?(fields, key) do
+    case Map.get(fields, key) do
+      blank when blank in [nil, ""] -> false
+      _value -> true
+    end
+  end
+
+  defp insert_adds(_kind, _organization_id, _actor_id, _fields_by_id, []), do: 0
+
+  defp insert_adds(:garages, organization_id, actor_id, fields_by_id, add_ids) do
+    now = DateTime.utc_now()
+
+    entries =
+      Enum.map(add_ids, fn id ->
+        fields = Map.fetch!(fields_by_id, id)
+
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          garage_id: id,
+          name: new_garage_name(id, fields),
+          address: nil,
+          lat: Decimal.new(Map.fetch!(fields, :lat)),
+          lon: Decimal.new(Map.fetch!(fields, :lon)),
+          updated_by_id: actor_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    insert_planned(Garage, entries, length(add_ids))
+  end
+
+  defp insert_adds(:vehicles, organization_id, actor_id, fields_by_id, add_ids) do
+    now = DateTime.utc_now()
+
+    entries =
+      Enum.map(add_ids, fn id ->
+        fields = Map.fetch!(fields_by_id, id)
+
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          vehicle_id: id,
+          vehicle_label: present_value(fields, :vehicle_label),
+          license_plate: present_value(fields, :license_plate),
+          updated_by_id: actor_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    insert_planned(Vehicle, entries, length(add_ids))
+  end
+
+  # `insert_all/3` bypasses the changeset, so every persisted field is supplied
+  # above; the classification already validated the ID and value rules. A short
+  # insert means a concurrent writer claimed an ID after the recompute, and the
+  # transaction is rolled back so no partial import survives.
+  defp insert_planned(schema, entries, planned) do
+    case Repo.insert_all(schema, entries, on_conflict: :nothing) do
+      {count, _rows} when count == planned -> count
+      {_count, _rows} -> Repo.rollback(:short_insert)
+    end
+  end
+
+  defp new_garage_name(id, fields) do
+    case Map.get(fields, :name) do
+      blank when blank in [nil, ""] -> id
+      name -> name
+    end
+  end
+
+  defp present_value(fields, key) do
+    case Map.fetch(fields, key) do
+      {:ok, value} -> blank_to_nil(value)
+      :error -> nil
+    end
+  end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  defp load_existing(_organization_id, _kind, [], _lock?), do: %{}
+
+  defp load_existing(organization_id, :garages, ids, lock?) do
+    garage_ids = Enum.uniq(ids)
+
+    from(g in Garage, where: g.organization_id == ^organization_id and g.garage_id in ^garage_ids)
+    |> lock_rows(lock?)
+    |> order_by([g], asc: g.garage_id)
+    |> Repo.all()
+    |> Map.new(&{&1.garage_id, &1})
+  end
+
+  defp load_existing(organization_id, :vehicles, ids, lock?) do
+    vehicle_ids = Enum.uniq(ids)
+
+    from(v in Vehicle,
+      where: v.organization_id == ^organization_id and v.vehicle_id in ^vehicle_ids
+    )
+    |> lock_rows(lock?)
+    |> order_by([v], asc: v.vehicle_id)
+    |> Repo.all()
+    |> Map.new(&{&1.vehicle_id, &1})
+  end
+
+  defp lock_rows(query, true), do: lock(query, "FOR UPDATE")
+  defp lock_rows(query, false), do: query
 
   defp vehicle_counts_by(organization_id, field) do
     Vehicle
