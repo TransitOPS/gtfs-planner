@@ -5265,14 +5265,14 @@ defmodule GtfsPlanner.Gtfs do
       to_string(key) in ~w(
         route_pattern_name route_pattern_time_desc direction_id
         route_pattern_typicality headsign canonical_route_pattern route_pattern_sort_order
-        occurrences timings before after
+        occurrences timings before after affected_trips
       )
     end)
   end
 
   defp audited_attrs_for(type, attrs) when type in [:timed_pattern, "timed_pattern"] do
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(name headsign rows before after)
+      to_string(key) in ~w(name headsign rows before after affected_trips)
     end)
   end
 

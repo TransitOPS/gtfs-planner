@@ -680,6 +680,203 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert length(patterns_for(context, r2.route_id)) == 1
   end
 
+  test "a supplied pattern without a representative uses its most common eligible sequence",
+       context do
+    _route = route_fixture(context.organization.id, context.version.id, %{route_id: "F1"})
+    stops = stops_fixture(context, [{"A", "Alpine"}, {"B", "Birch"}, {"C", "Cedar"}])
+    [a, b, c] = [stops["A"], stops["B"], stops["C"]]
+
+    supplied_pattern(context, "F1", "F1-1-0")
+
+    for trip_id <- ["f1-t1", "f1-t2"] do
+      imported_trip(context, "F1", trip_id, %{
+        direction_id: 0,
+        route_pattern_id: "F1-1-0",
+        rows: [
+          time_row(a, "08:00:00"),
+          time_row(b, "08:05:00"),
+          time_row(c, "08:10:00")
+        ]
+      })
+    end
+
+    imported_trip(context, "F1", "f1-t3", %{
+      direction_id: 0,
+      route_pattern_id: "F1-1-0",
+      rows: [time_row(a, "08:00:00"), time_row(c, "08:10:00")]
+    })
+
+    assert {:ok, summary} = derive_route(context, "F1")
+    assert summary.trips_linked == 2
+    assert summary.trips_custom == 1
+
+    pattern = red_pattern(context, "F1-1-0")
+
+    assert Enum.map(occurrences(pattern.id), &{&1.position, &1.stop_id}) ==
+             [{1, "A"}, {2, "B"}, {3, "C"}]
+
+    assert custom("f1-t3").pattern_derivation_reason == "different_stops"
+    assert linked("f1-t1").timed_pattern_id == linked("f1-t2").timed_pattern_id
+  end
+
+  test "competing eligible sequences are broken by the lexical representative trip id", context do
+    _route = route_fixture(context.organization.id, context.version.id, %{route_id: "F1T"})
+    stops = stops_fixture(context, [{"A", "Alpine"}, {"B", "Birch"}, {"C", "Cedar"}])
+    [a, b, c] = [stops["A"], stops["B"], stops["C"]]
+
+    supplied_pattern(context, "F1T", "F1T-1-0")
+
+    imported_trip(context, "F1T", "f1t-a", %{
+      direction_id: 0,
+      route_pattern_id: "F1T-1-0",
+      rows: [time_row(a, "08:00:00"), time_row(b, "08:05:00"), time_row(c, "08:10:00")]
+    })
+
+    imported_trip(context, "F1T", "f1t-b", %{
+      direction_id: 0,
+      route_pattern_id: "F1T-1-0",
+      rows: [time_row(a, "08:00:00"), time_row(c, "08:05:00"), time_row(b, "08:10:00")]
+    })
+
+    assert {:ok, summary} = derive_route(context, "F1T")
+    assert summary.trips_linked == 1
+    assert summary.trips_custom == 1
+
+    assert Enum.map(occurrences(red_pattern(context, "F1T-1-0").id), & &1.stop_id) == [
+             "A",
+             "B",
+             "C"
+           ]
+
+    assert custom("f1t-b").pattern_derivation_reason == "different_stops"
+  end
+
+  test "a direction-mismatched or missing-direction supplied reference stays custom", context do
+    _route = route_fixture(context.organization.id, context.version.id, %{route_id: "F2"})
+    stops = stops_fixture(context, [{"A", "Alpine"}, {"B", "Birch"}])
+    [a, b] = [stops["A"], stops["B"]]
+
+    supplied_pattern(context, "F2", "F2-1-0")
+
+    rows = [time_row(a, "08:00:00"), time_row(b, "08:05:00")]
+
+    imported_trip(context, "F2", "f2-opposite", %{
+      direction_id: 1,
+      route_pattern_id: "F2-1-0",
+      rows: rows
+    })
+
+    imported_trip(context, "F2", "f2-nodir", %{
+      direction_id: nil,
+      route_pattern_id: "F2-1-0",
+      rows: rows
+    })
+
+    assert {:ok, summary} = derive_route(context, "F2")
+    assert summary.trips_linked == 0
+    assert summary.trips_custom == 2
+    assert custom("f2-opposite").pattern_derivation_reason == "scope_mismatch"
+    assert custom("f2-nodir").pattern_derivation_reason == "missing_direction"
+    assert occurrences(red_pattern(context, "F2-1-0").id) == []
+  end
+
+  test "a station stop type never becomes an editable pattern stop", context do
+    _route = route_fixture(context.organization.id, context.version.id, %{route_id: "F3"})
+    stops = stops_fixture(context, [{"A", "Alpine"}, {"B", "Birch"}])
+    [a, b] = [stops["A"], stops["B"]]
+
+    station =
+      stop_fixture(context.organization.id, context.version.id, %{
+        stop_id: "F3STATION",
+        stop_name: "F3 Station",
+        location_type: 1
+      })
+
+    supplied_pattern(context, "F3", "F3-1-0", %{representative_trip_id: "f3-rep"})
+
+    # The representative references a station, so the pattern falls back to the
+    # eligible sequence another trip actually uses.
+    imported_trip(context, "F3", "f3-rep", %{
+      direction_id: 0,
+      route_pattern_id: "F3-1-0",
+      rows: [time_row(station, "08:00:00"), time_row(b, "08:05:00")]
+    })
+
+    imported_trip(context, "F3", "f3-ok", %{
+      direction_id: 0,
+      route_pattern_id: "F3-1-0",
+      rows: [time_row(a, "08:00:00"), time_row(b, "08:05:00")]
+    })
+
+    assert {:ok, summary} = derive_route(context, "F3")
+    assert summary.trips_linked == 1
+    assert summary.trips_custom == 1
+
+    pattern = red_pattern(context, "F3-1-0")
+    assert Enum.map(occurrences(pattern.id), & &1.stop_id) == ["A", "B"]
+    assert custom("f3-rep").pattern_derivation_reason == "unusable_stops"
+
+    # A trip without a supplied pattern is grouped the same way: a station in its
+    # sequence keeps it custom instead of creating a derived pattern.
+    _derived_route =
+      route_fixture(context.organization.id, context.version.id, %{route_id: "F3D"})
+
+    imported_trip(context, "F3D", "f3d-1", %{
+      direction_id: 0,
+      rows: [time_row(station, "09:00:00"), time_row(b, "09:05:00")]
+    })
+
+    assert {:ok, derived} = derive_route(context, "F3D")
+    assert derived.patterns_created == 0
+    assert derived.trips_custom == 1
+    assert patterns_for(context, "F3D") == []
+    assert custom("f3d-1").pattern_derivation_reason == "unusable_stops"
+  end
+
+  test "a supplied pattern with known stops and no representable trip keeps a zero Timing A",
+       context do
+    _route = route_fixture(context.organization.id, context.version.id, %{route_id: "F4"})
+    stops = stops_fixture(context, [{"A", "Alpine"}, {"B", "Birch"}])
+    [a, b] = [stops["A"], stops["B"]]
+
+    supplied_pattern(context, "F4", "F4-1-0", %{representative_trip_id: "f4-rep"})
+
+    imported_trip(context, "F4", "f4-rep", %{
+      direction_id: 0,
+      route_pattern_id: "F4-1-0",
+      rows: [time_row(a, "08:00:00", "08:00:00", 1), time_row(b, nil, nil, 2)]
+    })
+
+    assert {:ok, summary} = derive_route(context, "F4")
+    assert summary.trips_linked == 0
+    assert summary.trips_custom == 1
+    assert summary.timings_created == 1
+
+    pattern = red_pattern(context, "F4-1-0")
+    assert Enum.map(occurrences(pattern.id), & &1.stop_id) == ["A", "B"]
+
+    assert [timing] = timings(pattern.id)
+    assert timing.name == "Timing A"
+    assert is_nil(timing.derivation_key)
+
+    assert Enum.map(timing_rows(timing.id), &{&1.arrival_offset, &1.departure_offset}) ==
+             [{0, 0}, {0, 0}]
+
+    custom_trip = custom("f4-rep")
+    assert is_nil(custom_trip.timed_pattern_id)
+
+    # A retry of the same route reuses the template timing instead of adding a
+    # second one, and never rebuilds the initialized occurrences.
+    custom_trip
+    |> Ecto.Changeset.change(pattern_derivation_state: "pending")
+    |> Repo.update!()
+
+    assert {:ok, retry} = derive_route(context, "F4")
+    assert retry.timings_created == 0
+    assert length(timings(pattern.id)) == 1
+    assert length(occurrences(pattern.id)) == 2
+  end
+
   # --- helpers --------------------------------------------------------------
 
   defp derive_route(context, route_id) do
@@ -849,6 +1046,24 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
       order_by: [asc: p.direction_id, asc: p.route_pattern_id]
     )
     |> Repo.all()
+  end
+
+  defp supplied_pattern(context, route_id, natural_id, attrs \\ %{}) do
+    %RoutePattern{}
+    |> RoutePattern.changeset(
+      Map.merge(
+        %{
+          route_pattern_id: natural_id,
+          route_id: route_id,
+          direction_id: 0,
+          route_pattern_name: natural_id,
+          organization_id: context.organization.id,
+          gtfs_version_id: context.version.id
+        },
+        attrs
+      )
+    )
+    |> Repo.insert!()
   end
 
   defp red_pattern(context, natural_id) do

@@ -10,7 +10,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Repo
 
   setup do
@@ -227,6 +229,131 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     assert deleted_log.entity_external_id == stable_identity
     assert deleted_log.changed_fields["before"]["name"] == "Evening"
     assert deleted_log.changed_fields["after"] == nil
+  end
+
+  test "a structural edit snapshots the real before structure and its affected count", context do
+    third = stop_fixture(context.organization.id, context.version.id, %{stop_id: "third"})
+    stops = context.stops ++ [third]
+
+    assert {:ok, pattern} =
+             Gtfs.create_pattern(context.route.route_id, attrs(stops), context.audit)
+
+    assert length(occurrences(pattern)) == 3
+
+    {:ok, %{source_fingerprint: source}} =
+      Gtfs.get_pattern(
+        context.organization.id,
+        context.version.id,
+        context.route.route_id,
+        pattern.id
+      )
+
+    kept = Enum.take(occurrences(pattern), 2)
+    operation = {:stops, Enum.map(kept, &%{id: &1.id, stop_id: &1.stop_id}), %{}}
+
+    assert {:ok, %{fingerprint: reviewed}} =
+             Gtfs.review(pattern.id, operation, source, context.audit)
+
+    assert {:ok, %{trips_updated: 0}} =
+             Gtfs.apply_review(pattern.id, operation, reviewed, context.audit)
+
+    [log] =
+      Repo.all(
+        from log in ChangeLog,
+          where:
+            log.entity_type == "route_pattern" and log.entity_id == ^pattern.id and
+              log.action == "updated"
+      )
+
+    before_snapshot = log.changed_fields["before"]["to"]
+    after_snapshot = log.changed_fields["after"]["to"]
+
+    # The before snapshot is the structure that was actually replaced, not the
+    # post-mutation one, and its timing rows still describe all three stops.
+    assert snapshot_stop_ids(before_snapshot) == Enum.map(stops, & &1.stop_id)
+    assert snapshot_stop_ids(after_snapshot) == Enum.map(kept, & &1.stop_id)
+
+    [before_timing] = snapshot_value(before_snapshot, "timings")
+    [after_timing] = snapshot_value(after_snapshot, "timings")
+    assert length(snapshot_value(before_timing, "rows")) == 3
+    assert length(snapshot_value(after_timing, "rows")) == 2
+
+    # The dedicated audit clause keeps the affected-trip count for both entity
+    # types instead of dropping it as an unknown field.
+    assert log.changed_fields["affected_trips"] == %{"from" => nil, "to" => 0}
+  end
+
+  test "an identical timing vector writes no rows, signature change or audit", context do
+    assert {:ok, pattern} =
+             Gtfs.create_pattern(context.route.route_id, attrs(context.stops), context.audit)
+
+    [timing] =
+      Repo.all(from timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+
+    before_pattern = Repo.get!(RoutePattern, pattern.id)
+    before_timing = Repo.get!(TimedPattern, timing.id)
+    before_rows = timing_row_values(timing.id)
+    before_logs = Repo.aggregate(ChangeLog, :count)
+
+    {:ok, %{source_fingerprint: source}} =
+      Gtfs.get_pattern(
+        context.organization.id,
+        context.version.id,
+        context.route.route_id,
+        pattern.id
+      )
+
+    operation = {:timing, timing.id, %{rows: before_rows}}
+
+    assert {:ok, %{fingerprint: reviewed}} =
+             Gtfs.review(pattern.id, operation, source, context.audit)
+
+    assert {:ok, %{trips_updated: 0, pattern: unchanged}} =
+             Gtfs.apply_review(pattern.id, operation, reviewed, context.audit)
+
+    assert unchanged.id == before_pattern.id
+    assert Repo.aggregate(ChangeLog, :count) == before_logs
+    assert timing_row_values(timing.id) == before_rows
+    assert Repo.get!(TimedPattern, timing.id).updated_at == before_timing.updated_at
+    assert Repo.get!(RoutePattern, pattern.id).updated_at == before_pattern.updated_at
+  end
+
+  # Snapshot values round-trip through the JSON column, so keys are strings on
+  # read; accept either shape so the assertion does not depend on encoding.
+  defp snapshot_value(map, key),
+    do: Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
+
+  defp snapshot_stop_ids(snapshot) do
+    snapshot
+    |> snapshot_value("occurrences")
+    |> Enum.map(&snapshot_value(&1, "stop_id"))
+  end
+
+  defp occurrences(pattern) do
+    Repo.all(
+      from occurrence in RoutePatternStop,
+        where: occurrence.route_pattern_id == ^pattern.id,
+        order_by: [asc: occurrence.position]
+    )
+  end
+
+  defp timing_row_values(timing_id) do
+    Repo.all(
+      from row in TimedPatternStop,
+        join: occurrence in RoutePatternStop,
+        on: occurrence.id == row.route_pattern_stop_id,
+        where: row.timed_pattern_id == ^timing_id,
+        order_by: [asc: occurrence.position],
+        select: %{
+          route_pattern_stop_id: row.route_pattern_stop_id,
+          arrival_offset: row.arrival_offset,
+          departure_offset: row.departure_offset,
+          timepoint: row.timepoint,
+          pickup_type: row.pickup_type,
+          drop_off_type: row.drop_off_type,
+          stop_headsign: row.stop_headsign
+        }
+    )
   end
 
   defp attrs(stops) do

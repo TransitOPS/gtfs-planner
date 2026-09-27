@@ -200,6 +200,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
     })
   end
 
+  # Types into the review dialog through its real form: the element is located
+  # in the DOM, its rendered input values are collected, and only the edited
+  # fields are overridden, exactly as a browser change event does.
+  defp fill_review_values(view, timing_id, key, values) do
+    view
+    |> form("#stop-review-values-form")
+    |> render_change(%{
+      "review" => %{timing_id => %{key => values}},
+      "_target" => ["review", timing_id, key, "arrival"]
+    })
+  end
+
   describe "stop search" do
     setup :editor_scope
 
@@ -701,6 +713,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert trip_clocks(custom) == custom_before
     end
 
+    test "a timing save keeps another task's staged stops and another timing's draft",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, pattern: pattern, occurrences: occurrence_rows, timing: first} =
+        three_stop_pattern(organization, version, "SAVE9", [{0, 0}, {240, 300}, {600, 660}])
+
+      second = timing(pattern, occurrence_rows, "Weekend", [{0, 0}, {300, 360}, {720, 780}])
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
+
+      # A staged stop removal on the Stops task, then a draft on the other timing.
+      render_click(view, "remove_stop", %{"index" => "3"})
+      render_click(view, "switch_task", %{"task" => "timings"})
+
+      render_change(view, "select_timing", %{"timing_id" => second.id})
+      change_timing(view, 2, "departure", "06:00")
+      assert has_element?(view, "#timing-departure-2[value='06:00']")
+
+      # Saving the selected timing clears only that timing's draft.
+      render_change(view, "select_timing", %{"timing_id" => first.id})
+      change_timing(view, 2, "departure", "06:00")
+      render_click(view, "save_timing")
+
+      assert audit_count() == 1
+      assert has_element?(view, "#status", "Changes saved in this version.")
+
+      render_click(view, "switch_task", %{"task" => "stops"})
+      refute has_element?(view, "#pattern-stop-3")
+      assert has_element?(view, "#pattern-stops[data-dirty='true']")
+
+      render_click(view, "switch_task", %{"task" => "timings"})
+      render_change(view, "select_timing", %{"timing_id" => second.id})
+      assert has_element?(view, "#timing-departure-2[value='06:00']")
+    end
+
     test "timings can be added from a copy or blank, renamed, and deletion blocks a used or last timing",
          %{conn: conn, organization: organization, version: version} do
       %{route: route, pattern: pattern, timing: first} =
@@ -832,6 +878,56 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert length(occurrence_rows(pattern)) == 4
     end
 
+    test "a stale timing apply offers Refresh review and recomputes the impact",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, stops: stops, pattern: pattern, trip: trip} =
+        used_pattern(organization, version, "TCONFLICT1")
+
+      {:ok, stale_view, _html} =
+        live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      {:ok, other_view, _html} =
+        live(conn, pattern_path(version, route, pattern, "?task=details"))
+
+      change_timing(stale_view, 2, "departure", "06:00")
+      render_click(stale_view, "save_timing")
+      assert has_element?(stale_view, "#timing-review-dialog[data-open='true']")
+      assert has_element?(stale_view, "#timing-review-dialog-title", "Update 1 trip?")
+
+      # The other session changes the pattern while the timing review is open.
+      render_submit(
+        element(other_view, "#pattern-details-form"),
+        %{"pattern" => %{"name" => "Renamed later"}}
+      )
+
+      logs_before = audit_count()
+
+      render_click(stale_view, "apply_timing_review")
+
+      assert has_element?(stale_view, "#timing-review-error", "changed since")
+      assert has_element?(stale_view, "#timing-review-refresh", "Refresh review")
+      # The submitted rows survive the stale rejection.
+      assert has_element?(stale_view, "#timing-departure-2[value='06:00']")
+      assert arrival_clocks(trip) == ["08:00:00", "08:04:00", "08:10:00"]
+      assert audit_count() == logs_before
+
+      render_click(stale_view, "refresh_timing_review")
+
+      assert has_element?(stale_view, "#timing-review-dialog[data-open='true']")
+      assert has_element?(stale_view, "#timing-review-dialog-title", "Update 1 trip?")
+      assert has_element?(stale_view, "#timing-departure-2[value='06:00']")
+
+      render_click(stale_view, "apply_timing_review")
+
+      assert has_element?(stale_view, "#status", "1 trips updated")
+
+      assert trip_clocks(trip) == [
+               {Enum.at(stops, 0).stop_id, 1, "08:00:00", "08:00:00"},
+               {Enum.at(stops, 1).stop_id, 2, "08:04:00", "08:06:00"},
+               {Enum.at(stops, 2).stop_id, 3, "08:10:00", "08:11:00"}
+             ]
+    end
+
     test "a repeated apply writes one reviewed operation",
          %{conn: conn, organization: organization, version: version} do
       %{route: route, pattern: pattern, timing: timing_row, trip: trip} =
@@ -850,7 +946,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert length(trip_clocks(trip)) == 2
     end
 
-    test "a save that needs explicit end-stop values keeps the staged values and offers a retry",
+    test "a save that needs explicit end-stop values renders real inputs and applies them",
          %{conn: conn, organization: organization, version: version} do
       %{route: route, stops: stops, pattern: pattern, timing: timing_row, trip: trip} =
         used_pattern(organization, version, "CONFLICT3")
@@ -867,15 +963,35 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert has_element?(view, "#stop-review-dialog[data-open='true']")
       assert has_element?(view, "#stop-review-error", "Enter arrival and departure")
       assert has_element?(view, "#stop-review-retry", "Try review again")
+      assert has_element?(view, "#stop-review-dialog-confirm[disabled]")
 
-      set_review_values(view, timing_row.id, "new-1", %{"arrival" => "20:00"})
+      # The terminal addition has real arrival/departure inputs to fill, so the
+      # values the proposal requires can actually be provided.
+      assert has_element?(
+               view,
+               "#stop-review-value-#{timing_row.id}-new-1-arrival[name='review[#{timing_row.id}][new-1][arrival]']"
+             )
 
-      set_review_values(view, timing_row.id, "new-1", %{
+      assert has_element?(
+               view,
+               "#stop-review-value-#{timing_row.id}-new-1-departure[name='review[#{timing_row.id}][new-1][departure]']"
+             )
+
+      fill_review_values(view, timing_row.id, "new-1", %{"arrival" => "20:00"})
+
+      assert has_element?(
+               view,
+               "#stop-review-value-#{timing_row.id}-new-1-arrival[value='20:00']"
+             )
+
+      fill_review_values(view, timing_row.id, "new-1", %{
         "arrival" => "20:00",
         "departure" => "30:00"
       })
 
       render_click(view, "retry_review")
+      refute has_element?(view, "#stop-review-error", "Enter arrival and departure")
+
       render_click(view, "acknowledge_review_timing", %{"timing_id" => timing_row.id})
       render_click(view, "apply_stop_review")
 
@@ -887,6 +1003,64 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
              ]
 
       assert has_element?(view, "#pattern-stop-4", "CONFLICT3 Last")
+    end
+  end
+
+  describe "permission loss on a connected session" do
+    setup :editor_scope
+
+    test "a revoked editor role denies mutation events and renders unavailable editing",
+         %{conn: conn, organization: organization, version: version, user: user} do
+      %{route: route, pattern: pattern, trip: trip} = used_pattern(organization, version, "ACL1")
+
+      before_name = Repo.get!(RoutePattern, pattern.id).route_pattern_name
+
+      {:ok, stops_view, _html} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
+
+      {:ok, details_view, _html} =
+        live(conn, pattern_path(version, route, pattern, "?task=details"))
+
+      {:ok, timing_view, _html} =
+        live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      membership |> Ecto.Changeset.change(roles: []) |> Repo.update!()
+
+      # Every connected session keeps its socket, but the mutation boundary
+      # re-checks the current membership before writing anything.
+      render_click(stops_view, "remove_stop", %{"index" => "3"})
+      render_click(stops_view, "save_stops")
+
+      render_submit(
+        element(details_view, "#pattern-details-form"),
+        %{"pattern" => %{"name" => "Unauthorized rename"}}
+      )
+
+      change_timing(timing_view, 2, "departure", "06:00")
+      render_click(timing_view, "save_timing")
+
+      assert Repo.get!(RoutePattern, pattern.id).route_pattern_name == before_name
+      assert length(occurrence_rows(pattern)) == 3
+      assert audit_count() == 0
+      assert arrival_clocks(trip) == ["08:00:00", "08:04:00", "08:10:00"]
+
+      for view <- [stops_view, details_view, timing_view] do
+        assert has_element?(view, "#pattern-editor-revoked", "Editing unavailable")
+      end
+
+      # Reloading keeps the page unavailable while the role is still missing.
+      render_click(stops_view, "reload_patterns")
+      assert has_element?(stops_view, "#pattern-editor-revoked")
+
+      # Restoring the role and reloading brings the editor back instead of
+      # leaving a sticky unavailable page.
+      Accounts.get_user_org_membership(user.id, organization.id)
+      |> Ecto.Changeset.change(roles: ["pathways_studio_editor"])
+      |> Repo.update!()
+
+      render_click(stops_view, "reload_patterns")
+      refute has_element?(stops_view, "#pattern-editor-revoked")
+      assert has_element?(stops_view, "#pattern-stops")
     end
   end
 

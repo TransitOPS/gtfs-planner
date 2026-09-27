@@ -203,11 +203,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
   defp inserted_row(new, index, old_rows, added) do
     previous = nearest_retained(new, index, -1, old_rows)
     following = nearest_retained(new, index, 1, old_rows)
-    bracketed? = previous != nil and following != nil
 
-    with {:ok, row} <- estimated_or_supplied(previous, following, added, bracketed?) do
+    # The run of k inserted stops between two retained anchors divides that
+    # interval: the j-th insertion sits at floor(j * gap / (k + 1)).
+    run =
+      if previous && following, do: {index - previous.index, following.index - previous.index - 1}
+
+    with {:ok, row} <- estimated_or_supplied(previous, following, added, run) do
       estimate =
-        if bracketed? and is_nil(added) do
+        if run && is_nil(added) do
           %{
             key: field(Enum.at(new, index), :key),
             arrival_offset: row.arrival_offset,
@@ -223,18 +227,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     end
   end
 
-  defp estimated_or_supplied(previous, following, added, true) when is_nil(added) do
+  defp estimated_or_supplied(previous, following, nil, {j, k}) do
     previous_departure = integer!(field(previous.row, :departure_offset))
     following_arrival = integer!(field(following.row, :arrival_offset))
-    count = 1
-    time = previous_departure + div(following_arrival - previous_departure, count + 1)
+    time = previous_departure + div(j * (following_arrival - previous_departure), k + 1)
     {:ok, default_new_row(time, time)}
   end
 
-  defp estimated_or_supplied(_previous, _following, nil, false),
+  defp estimated_or_supplied(_previous, _following, nil, nil),
     do: {:error, :explicit_terminal_values_required}
 
-  defp estimated_or_supplied(_previous, _following, added, _bracketed?) when is_map(added) do
+  defp estimated_or_supplied(_previous, _following, added, _run) when is_map(added) do
     with {:ok, arrival} <- input_offset(added, :arrival_offset, :arrival_time),
          {:ok, departure} <- input_offset(added, :departure_offset, :departure_time),
          true <- departure >= arrival do

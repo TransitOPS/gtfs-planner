@@ -243,7 +243,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
       maybe_inject_route_failure!(route_id)
 
-      state = second_pass(route, plan)
+      state =
+        second_pass(route, plan)
+        |> initialize_template_timings(plan)
+
       finalize_timing_headsigns(state)
 
       clear_route_error!(route)
@@ -330,14 +333,33 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     supplied = supplied_patterns(route, supplied_ids)
     derived = derived_patterns(route)
 
+    eligible_stops = eligible_stop_ids(route)
+
     %{
       supplied_ids: supplied_ids,
       supplied: supplied,
       derived: derived,
       occurrences: occurrence_rows(pattern_ids(supplied, derived)),
-      representatives: representative_sequences(route, supplied),
+      representatives: representative_sequences(route, supplied, eligible_stops),
+      eligible_stops: eligible_stops,
       names: pattern_names(route)
     }
+  end
+
+  # A usable stop sequence contains only this version's boarding stops/platforms
+  # (location_type nil/0), the same eligibility the interactive stop editor
+  # enforces; a station, entrance or unknown reference can never become an
+  # editable pattern stop.
+  defp eligible_stop_ids(route) do
+    from(stop in Stop,
+      where:
+        stop.organization_id == ^route.organization_id and
+          stop.gtfs_version_id == ^route.gtfs_version_id and
+          (is_nil(stop.location_type) or stop.location_type == 0),
+      select: stop.stop_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
   end
 
   defp pending_supplied_ids(route) do
@@ -390,7 +412,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Enum.group_by(& &1.route_pattern_id)
   end
 
-  defp representative_sequences(route, supplied) do
+  defp representative_sequences(route, supplied, eligible_stops) do
     supplied
     |> Map.values()
     |> Enum.filter(
@@ -398,14 +420,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
           &1.representative_trip_id != "")
     )
     |> Enum.reduce(%{}, fn pattern, acc ->
-      case representative_sequence(route, pattern) do
+      case representative_sequence(route, pattern, eligible_stops) do
         nil -> acc
         sequence -> Map.put(acc, pattern.id, sequence)
       end
     end)
   end
 
-  defp representative_sequence(route, pattern) do
+  defp representative_sequence(route, pattern, eligible_stops) do
     trip_id =
       Repo.one(
         from(t in Trip,
@@ -423,7 +445,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     else
       labels = Map.get(page_labels(route, {trip_id, trip_id}), trip_id, [])
 
-      if usable_labels?(labels), do: Enum.map(labels, &elem(&1, 0)), else: nil
+      if usable_labels?(labels, eligible_stops), do: Enum.map(labels, &elem(&1, 0)), else: nil
     end
   end
 
@@ -465,14 +487,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp accumulate_first_pass(route, context, trip, labels, acc) do
     if is_nil(trip.route_pattern_id) do
-      accumulate_derived_first_pass(route, trip, labels, acc)
+      accumulate_derived_first_pass(route, context, trip, labels, acc)
     else
       accumulate_supplied_first_pass(route, context, trip, labels, acc)
     end
   end
 
-  defp accumulate_derived_first_pass(_route, trip, labels, acc) do
-    if trip.direction_id in [0, 1] and usable_labels?(labels) do
+  defp accumulate_derived_first_pass(_route, context, trip, labels, acc) do
+    if trip.direction_id in [0, 1] and usable_labels?(labels, context.eligible_stops) do
       sequence = Enum.map(labels, &elem(&1, 0))
       key = {trip.direction_id, sequence_key(sequence)}
       update_in(acc.derived, &accumulate_sequence(&1, key, sequence, trip.trip_id))
@@ -484,18 +506,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   defp accumulate_supplied_first_pass(route, context, trip, labels, acc) do
     case Map.get(context.supplied, trip.route_pattern_id) do
       %RoutePattern{} = pattern ->
-        accumulate_supplied_pattern(route, trip, labels, acc, pattern)
+        accumulate_supplied_pattern(route, context.eligible_stops, trip, labels, acc, pattern)
 
       nil ->
         acc
     end
   end
 
-  defp accumulate_supplied_pattern(route, trip, labels, acc, pattern) do
+  defp accumulate_supplied_pattern(route, eligible_stops, trip, labels, acc, pattern) do
     if pattern.route_id == route.route_id and trip.direction_id == pattern.direction_id do
       acc
       |> put_supplied_referenced(trip.route_pattern_id)
-      |> accumulate_supplied_sequence(labels, pattern, trip.trip_id)
+      |> accumulate_supplied_sequence(labels, pattern, trip.trip_id, eligible_stops)
     else
       acc
     end
@@ -505,17 +527,35 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     update_in(acc.supplied_referenced, &MapSet.put(&1, natural_id))
   end
 
-  defp accumulate_supplied_sequence(acc, labels, pattern, trip_id) do
-    if usable_labels?(labels) do
+  defp accumulate_supplied_sequence(acc, labels, pattern, trip_id, eligible_stops) do
+    if usable_labels?(labels, eligible_stops) do
       sequence = Enum.map(labels, &elem(&1, 0))
 
       update_in(
         acc.supplied,
-        &accumulate_sequence(&1, pattern.route_pattern_id, sequence, trip_id)
+        &accumulate_supplied_pattern_sequence(
+          &1,
+          pattern.route_pattern_id,
+          sequence,
+          trip_id
+        )
       )
     else
       acc
     end
+  end
+
+  # A supplied pattern accumulates one record per distinct ordered stop-ID
+  # sequence, so the most-common-eligible-sequence rule has real counts to
+  # compare instead of one shared counter.
+  defp accumulate_supplied_pattern_sequence(supplied, natural_id, sequence, trip_id) do
+    sequences = Map.get(supplied, natural_id, %{})
+
+    Map.put(
+      supplied,
+      natural_id,
+      accumulate_sequence(sequences, sequence_key(sequence), sequence, trip_id)
+    )
   end
 
   defp accumulate_sequence(sequences, key, sequence, trip_id) do
@@ -552,7 +592,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       status: status,
       supplied: supplied,
       derived: derived,
-      patterns_created: patterns_created
+      patterns_created: patterns_created,
+      eligible_stops: context.eligible_stops
     }
   end
 
@@ -608,12 +649,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp winning_sequence(nil), do: nil
 
-  defp winning_sequence(sequences) do
+  defp winning_sequence(sequences) when map_size(sequences) > 0 do
     sequences
     |> Enum.min_by(fn {_key, entry} -> {-entry.count, entry.representative} end)
     |> elem(1)
     |> Map.fetch!(:sequence)
   end
+
+  defp winning_sequence(_sequences), do: nil
 
   defp plan_derived_targets(route, context, stage_one, names) do
     planning = %{
@@ -888,7 +931,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       trip.direction_id not in [0, 1] ->
         custom_decision(trip, :missing_direction, state)
 
-      not usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence})) ->
+      not usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence}), plan.eligible_stops) ->
         custom_decision(trip, :unusable_stops, state)
 
       true ->
@@ -911,15 +954,30 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         custom_decision(trip, :scope_mismatch, state)
 
       :ok ->
-        target = Map.fetch!(plan.supplied, trip.route_pattern_id)
-        assign_supplied_trip(target, trip, rows, state)
+        # Planning only targets references that agree with the supplied pattern's
+        # route and direction, so a same-route reference with another direction
+        # has no target at all; it stays a preserved custom reference instead of
+        # aborting the route transaction with a missing fetch.
+        case Map.fetch(plan.supplied, trip.route_pattern_id) do
+          {:ok, target} -> assign_supplied_trip(target, trip, rows, plan.eligible_stops, state)
+          :error -> custom_decision(trip, direction_reason(trip), state)
+        end
 
       nil ->
         custom_decision(trip, :missing_pattern, state)
     end
   end
 
-  defp assign_supplied_trip(%{pattern: pattern, sequence: canonical} = target, trip, rows, state) do
+  defp direction_reason(%{direction_id: nil}), do: :missing_direction
+  defp direction_reason(_trip), do: :scope_mismatch
+
+  defp assign_supplied_trip(
+         %{pattern: pattern, sequence: canonical} = target,
+         trip,
+         rows,
+         eligible_stops,
+         state
+       ) do
     cond do
       is_nil(canonical) ->
         custom_decision(trip, :unusable_stops, state)
@@ -930,7 +988,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       trip.direction_id != pattern.direction_id ->
         custom_decision(trip, :scope_mismatch, state)
 
-      not usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence})) ->
+      not usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence}), eligible_stops) ->
         custom_decision(trip, :unusable_stops, state)
 
       Enum.map(rows, & &1.stop_id) != canonical ->
@@ -1215,6 +1273,30 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     end
   end
 
+  # A supplied pattern whose known stops could not link any trip still keeps the
+  # promised editable starting point: exactly one zero-valued, unassigned Timing
+  # A. Custom trips and their imported stop times stay untouched, and retry skips
+  # any pattern that already has a timing.
+  defp initialize_template_timings(state, plan) do
+    Enum.reduce(Map.values(plan.supplied), state, fn target, state ->
+      if length(target.occurrences) >= 2 and not pattern_has_timing?(target.pattern.id) do
+        {_timing_id, state} =
+          create_timing(target, nil, zero_rows(length(target.occurrences)), state)
+
+        state
+      else
+        state
+      end
+    end)
+  end
+
+  defp pattern_has_timing?(pattern_id) do
+    Repo.exists?(from(t in TimedPattern, where: t.route_pattern_id == ^pattern_id))
+  end
+
+  defp zero_rows(count),
+    do: List.duplicate(%{arrival_offset: 0, departure_offset: 0}, count)
+
   defp finalize_timing_headsigns(state) do
     state.created_timings
     |> Enum.flat_map(fn timing_id ->
@@ -1326,7 +1408,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
   end
 
-  defp usable_labels?([_, _ | _] = labels) do
+  defp usable_labels?([_, _ | _] = labels, eligible_stops) do
     sequences = Enum.map(labels, &elem(&1, 1))
 
     not Enum.any?(
@@ -1334,10 +1416,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       fn [left, right] -> elem(left, 0) == elem(right, 0) end
     ) and
       sequences == Enum.sort(sequences) and
-      length(sequences) == length(Enum.uniq(sequences))
+      length(sequences) == length(Enum.uniq(sequences)) and
+      Enum.all?(labels, fn {stop_id, _sequence} -> MapSet.member?(eligible_stops, stop_id) end)
   end
 
-  defp usable_labels?(_labels), do: false
+  defp usable_labels?(_labels, _eligible_stops), do: false
 
   defp sequence_key(sequence) do
     sequence

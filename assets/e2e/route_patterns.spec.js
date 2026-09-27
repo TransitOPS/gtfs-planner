@@ -32,6 +32,8 @@ const VIEWPORTS = [
     height: 1000,
     usedRoute: "BROWSER_PATTERNS_EDIT_USED",
     usedPattern: "BROWSER-EDIT-USED",
+    timingRoute: "BROWSER_PATTERNS_EDIT_EXPORT",
+    timingPattern: "BROWSER-EDIT-EXPORT",
     deleteRoute: "BROWSER_PATTERNS_EDIT_DELETE",
     deletePattern: "BROWSER-EDIT-DELETE",
   },
@@ -41,6 +43,8 @@ const VIEWPORTS = [
     height: 800,
     usedRoute: "BROWSER_PATTERNS_EDIT_USED_B",
     usedPattern: "BROWSER-EDIT-USED-B",
+    timingRoute: "BROWSER_PATTERNS_EDIT_EXPORT_B",
+    timingPattern: "BROWSER-EDIT-EXPORT-B",
     deleteRoute: "BROWSER_PATTERNS_EDIT_DELETE",
     deletePattern: "BROWSER-EDIT-DELETE-B",
   },
@@ -335,8 +339,8 @@ for (const viewport of VIEWPORTS) {
     await openPattern(
       page,
       versionId,
-      "BROWSER_PATTERNS_EDIT_EXPORT",
-      "BROWSER-EDIT-EXPORT",
+      viewport.timingRoute,
+      viewport.timingPattern,
       "timings",
     );
 
@@ -492,6 +496,74 @@ test("a second session's stale review keeps the edits and offers Refresh review"
   } finally {
     await context.close();
   }
+});
+
+test("a terminal stop addition collects explicit values before it can be applied", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const versionId = await getVersionId(page);
+
+  await openPattern(
+    page,
+    versionId,
+    "BROWSER_PATTERNS_EDIT_TERMINAL",
+    "BROWSER-EDIT-TERMINAL",
+    "stops",
+  );
+
+  // Appending after the last occurrence leaves no bracketing time, so the
+  // review cannot propose a value until the operator supplies one.
+  await page.selectOption("#pattern-insert-after", "3");
+  await searchAndSelectStop(page, "Pattern Stop 4");
+  await expect(page.locator("#pattern-stop-4")).toContainText("Pattern Stop 4");
+
+  await page.locator("#pattern-save-stops").click();
+
+  await expect(page.locator("#stop-review-dialog[data-open='true']")).toBeVisible();
+  await expect(page.locator("#stop-review-error")).toContainText(
+    "Enter arrival and departure",
+  );
+  await expect(page.locator("#stop-review-dialog-confirm")).toBeDisabled();
+
+  // The review offers the real fields the requirement asks for, and typing in
+  // them is what makes the proposal possible.
+  const arrival = page.locator('#stop-review-values-form input[name$="[arrival]"]');
+  const departure = page.locator('#stop-review-values-form input[name$="[departure]"]');
+
+  await expect(arrival).toBeVisible();
+  await expect(departure).toBeVisible();
+  await capture(page, "step7-terminal-review-1440px", { fullPage: false });
+  await arrival.fill("20:00");
+  await departure.fill("30:00");
+  await expect(arrival).toHaveValue("20:00");
+
+  // Supplying the values lets the server propose the row again, so the error
+  // and the retry action clear without a separate retry click.
+  await expect(page.locator("#stop-review-error")).not.toContainText(
+    "Enter arrival and departure",
+  );
+
+  await acknowledgeReview(page);
+  await expect(page.locator("#stop-review-dialog-confirm")).toBeEnabled();
+  await page.locator("#stop-review-dialog-confirm").click();
+
+  await expect(page.locator("#status")).toContainText("1 trips updated", { timeout: 15000 });
+  await expect(page.locator("#stop-review-dialog[data-open='true']")).toBeHidden();
+
+  // The appended stop and the supplied times are persisted service, read back
+  // from the server rather than from the page that submitted them.
+  await openPattern(
+    page,
+    versionId,
+    "BROWSER_PATTERNS_EDIT_TERMINAL",
+    "BROWSER-EDIT-TERMINAL",
+    "timings",
+  );
+
+  await expect(page.locator("#timing-arrival-4")).toHaveValue("20:00");
+  await expect(page.locator("#timing-departure-4")).toHaveValue("30:00");
 });
 
 test("dirty navigation asks before discarding staged edits", async ({ page }) => {

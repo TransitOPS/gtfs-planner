@@ -568,7 +568,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:ok, rows} <- validate_timing_rows(pattern, timing, rows_input) do
       before = audit_timing_snapshot(timing)
 
-      if same_values?(timing, values) and is_nil(rows) do
+      if same_values?(timing, values) and timing_rows_unchanged?(timing, rows) do
         %{pattern: pattern, trips_updated: 0}
       else
         apply_timing_edit!(pattern, timing, values, rows, before, audit_context)
@@ -721,12 +721,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     do: %{pattern: pattern, trips_updated: 0}
 
   defp apply_stop_edit!(pattern, edit, audit_context) do
+    # The before snapshot has to be read before any occurrence/timing row is
+    # written; querying it after persistence would record the post-mutation
+    # structure as its own predecessor.
+    before = pattern_snapshot(pattern)
     trips_updated = persist_stop_edit!(pattern, edit)
     clear_structure_signatures!(pattern)
     after_pattern = load_pattern_for_audit!(pattern.id)
 
     audit!(audit_context, :route_pattern, after_pattern, "updated", %{
-      before: pattern_snapshot(pattern),
+      before: before,
       after: pattern_snapshot(after_pattern),
       affected_trips: trips_updated
     })
@@ -1254,6 +1258,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       true ->
         nil
     end
+  end
+
+  # A submitted vector that matches the stored timing row-for-row is a no-op: it
+  # must not write rows, clear a derivation signature or record an audit entry.
+  defp timing_rows_unchanged?(_timing, nil), do: true
+
+  defp timing_rows_unchanged?(timing, rows) do
+    stored =
+      Enum.map(timing_rows(timing.id), fn row ->
+        Map.merge(timing_row_attrs(row), %{route_pattern_stop_id: row.route_pattern_stop_id})
+      end)
+
+    stored == rows
   end
 
   defp persist_timing_edit!(pattern, timing, rows) do

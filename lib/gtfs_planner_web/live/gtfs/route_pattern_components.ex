@@ -1042,7 +1042,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             {block.name}
             <span class="font-normal text-base-content/70">
               · {block.trip_count_label}
-              <span :if={block.shift}> · start shifts by        {block.shift}</span>
+              <span :if={block.shift}>{" · start shifts by " <> block.shift}</span>
             </span>
           </p>
 
@@ -1145,6 +1145,26 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <p id="timing-review-error" role="alert" class="mt-2 text-sm text-error">
           {@review.error && @review.error.message}
         </p>
+        <div :if={@review.error && @review.error.action == :refresh} class="mt-2">
+          <button
+            id="timing-review-refresh"
+            type="button"
+            phx-click="refresh_timing_review"
+            class="btn btn-sm btn-outline min-h-11"
+          >
+            Refresh review
+          </button>
+        </div>
+        <div :if={@review.error && @review.error.action == :retry} class="mt-2">
+          <button
+            id="timing-review-retry"
+            type="button"
+            phx-click="retry_timing_review"
+            class="btn btn-sm btn-outline min-h-11"
+          >
+            Try saving again
+          </button>
+        </div>
       </div>
     </.confirm_dialog>
     """

@@ -1059,7 +1059,9 @@ case Accounts.register_first_admin(%{
         {"BROWSER_PATTERNS_EDIT_DELETE", "PEL", "Browser Pattern Delete"},
         {"BROWSER_PATTERNS_EDIT_USED_B", "PEV", "Browser Pattern Used Second"},
         {"BROWSER_PATTERNS_EDIT_STALE", "PES", "Browser Pattern Stale"},
-        {"BROWSER_PATTERNS_EDIT_EXPORT", "PEX", "Browser Pattern Export"}
+        {"BROWSER_PATTERNS_EDIT_EXPORT", "PEX", "Browser Pattern Export"},
+        {"BROWSER_PATTERNS_EDIT_EXPORT_B", "PEY", "Browser Pattern Export Second"},
+        {"BROWSER_PATTERNS_EDIT_TERMINAL", "PET", "Browser Pattern Terminal"}
       ]
       |> Enum.map(fn {route_id, short_name, long_name} ->
         {:ok, route} =
@@ -1297,6 +1299,44 @@ case Accounts.register_first_admin(%{
 
     seed_pattern_trip_times.("BROWSER_EXPORT_T1")
 
+    # A second used pattern, so each viewport's timing journey starts from its
+    # own unmodified records.
+    export_b_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_EXPORT_B")
+
+    export_b_pattern =
+      editing_pattern.(export_b_route, "BROWSER-EDIT-EXPORT-B",
+        route_pattern_name: "Browser Editing Export Second",
+        direction_id: 0
+      )
+
+    export_b_occurrences = occurrence_fixture.(export_b_pattern, Enum.take(pattern_stops, 3))
+
+    export_b_timing =
+      timing_with_offsets.(export_b_pattern, "Weekday", export_b_occurrences, [
+        {0, 0},
+        {240, 300},
+        {600, 660}
+      ])
+
+    {:ok, export_b_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: export_b_route.route_id,
+        trip_id: "BROWSER_EXPORT_T1_B",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(export_b_trip, %{
+      route_pattern_id: "BROWSER-EDIT-EXPORT-B",
+      timed_pattern_id: export_b_timing.id,
+      pattern_derivation_state: "linked"
+    })
+
+    seed_pattern_trip_times.("BROWSER_EXPORT_T1_B")
+
     delete_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_DELETE")
 
     delete_pattern =
@@ -1317,8 +1357,46 @@ case Accounts.register_first_admin(%{
     delete_b_occurrences = occurrence_fixture.(delete_b_pattern, Enum.take(pattern_stops, 2))
     timing_fixture.(delete_b_pattern, "Timing A", delete_b_occurrences)
 
-    IO.puts("Browser seed: route pattern editing routes (used, unused, custom, deletable)")
+    # A dedicated used pattern for the terminal-insertion journey: appending a
+    # stop after the last occurrence has no bracketing time, so the editor has to
+    # collect explicit arrival/departure values before it can propose anything.
+    terminal_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_TERMINAL")
 
+    terminal_pattern =
+      editing_pattern.(terminal_route, "BROWSER-EDIT-TERMINAL",
+        route_pattern_name: "Browser Editing Terminal",
+        direction_id: 0
+      )
+
+    terminal_occurrences = occurrence_fixture.(terminal_pattern, Enum.take(pattern_stops, 3))
+
+    terminal_timing =
+      timing_with_offsets.(terminal_pattern, "Weekday", terminal_occurrences, [
+        {0, 0},
+        {240, 300},
+        {600, 660}
+      ])
+
+    {:ok, terminal_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: terminal_route.route_id,
+        trip_id: "BROWSER_TERMINAL_T1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(terminal_trip, %{
+      route_pattern_id: "BROWSER-EDIT-TERMINAL",
+      timed_pattern_id: terminal_timing.id,
+      pattern_derivation_state: "linked"
+    })
+
+    seed_pattern_trip_times.("BROWSER_TERMINAL_T1")
+
+    IO.puts("Browser seed: route pattern editing routes (used, unused, custom, deletable)")
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

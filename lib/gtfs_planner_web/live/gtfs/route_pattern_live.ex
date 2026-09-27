@@ -17,6 +17,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
@@ -26,6 +28,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias LiveSelect.Component, as: LiveSelectComponent
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  # Mount-time access is not enough: these events can write pattern/timing data,
+  # so each one re-checks the actor's current organization membership at the
+  # server mutation boundary.
+  @editor_write_events ~w(
+    build_patterns save_details apply_details_review create_pattern
+    save_stops update_review_value acknowledge_review_timing refresh_review
+    retry_review apply_stop_review save_timing apply_timing_review
+    refresh_timing_review retry_timing_review confirm_timing_dialog
+    confirm_delete_timing copy_pattern confirm_delete_pattern
+  )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
   @creation_defaults %{
@@ -44,6 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     {:ok,
      socket
      |> assign(:page_title, "Patterns")
+     |> assign(:editor_revoked?, false)
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
      |> assign(:route, nil)
      |> assign(:route_id, nil)
@@ -105,7 +119,43 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:pending_navigation, nil)
      |> assign(:error_message, nil)
      |> assign(:status_message, nil)
-     |> stream(:patterns, [])}
+     |> stream(:patterns, [])
+     |> attach_hook(:editor_write_gate, :handle_event, &editor_write_gate/3)}
+  end
+
+  defp editor_write_gate(event, _params, socket) do
+    if event in @editor_write_events and not editor_access?(socket) do
+      {:halt, revoke_editor_access(socket)}
+    else
+      {:cont, socket}
+    end
+  end
+
+  defp editor_access?(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id) do
+      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+    else
+      _ -> false
+    end
+  end
+
+  # A lost role or membership renders unavailable editing and closes every open
+  # confirmation, so nothing is committed through a connection that was opened
+  # while the actor still had access.
+  defp revoke_editor_access(socket) do
+    socket
+    |> assign(:editor_revoked?, true)
+    |> assign(:applying?, false)
+    |> assign(:review, nil)
+    |> assign(:timing_dialog, nil)
+    |> assign(:timing_delete_dialog, nil)
+    |> assign(:pattern_delete_dialog, nil)
+    |> assign(:blocked_dialog, nil)
+    |> assign(:impact_dialog, nil)
+    |> assign(:status_message, nil)
   end
 
   @impl true
@@ -134,7 +184,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("reload_patterns", _params, socket) do
-    {:noreply, load_screen(socket)}
+    {:noreply,
+     socket
+     |> assign(:editor_revoked?, not editor_access?(socket))
+     |> load_screen()}
   end
 
   @impl true
@@ -523,21 +576,36 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                audit_context(socket)
              ) do
           {:ok, %{trips_updated: updated}} ->
-            {:noreply, saved(socket, affected_message(updated))}
+            {:noreply, saved(socket, affected_message(updated), timing_scope(review.operation))}
 
           {:error, reason} ->
-            {:noreply,
-             socket
-             |> assign(:applying?, false)
-             |> assign(:review, %{
-               review
-               | error: %{message: reasons_message(reason)},
-                 busy: false
-             })}
+            {:noreply, timing_review_failure(socket, review, reason)}
         end
 
       _ ->
         {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("refresh_timing_review", _params, socket) do
+    case socket.assigns.review do
+      %{kind: :timing, operation: {:timing, _timing_id, attrs}} ->
+        # Refresh the loaded source but keep the submitted rows, so a stale
+        # review is re-run against the current values and counts instead of
+        # silently reusing an old fingerprint.
+        socket |> load_screen() |> review_timing(attrs)
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("retry_timing_review", _params, socket) do
+    case socket.assigns.review do
+      %{kind: :timing, operation: {:timing, _timing_id, attrs}} -> review_timing(socket, attrs)
+      _ -> {:noreply, socket}
     end
   end
 
@@ -658,7 +726,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             {:noreply,
              socket
              |> assign(:timing_delete_dialog, nil)
-             |> saved("Timing deleted.")}
+             |> saved("Timing deleted.", {:timing, timing_id})}
 
           {:error, reason} ->
             {:noreply,
@@ -864,6 +932,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                     class="btn btn-sm btn-outline mt-2 min-h-11"
                   >
                     Retry
+                  </button>
+                </.callout>
+              </div>
+            <% @editor_revoked? -> %>
+              <div id="pattern-editor-revoked" class="mt-2">
+                <.callout kind="error" title="Editing unavailable">
+                  Your editing access to this organization was removed, so this page can no
+                  longer change patterns, timings or stops. Ask an administrator to restore the
+                  editor role, then reload.
+                  <button
+                    id="pattern-editor-reload"
+                    type="button"
+                    phx-click="reload_patterns"
+                    class="btn btn-sm btn-outline mt-2 min-h-11"
+                  >
+                    Reload
                   </button>
                 </.callout>
               </div>
@@ -1141,6 +1225,36 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # A creation load, a pattern switch and a completed save all drop the staged
   # edit state; every other reload keeps it so a stale review can be refreshed
   # without discarding work.
+  # A completed save only drops the draft it saved. Unrelated staged stop edits
+  # and other timings' drafts stay on the page until the operator saves or
+  # explicitly discards them; a creation load or pattern switch drops everything.
+  defp reset_editing_state(socket, {:timing, timing_id}) do
+    socket
+    |> assign(:timing_edits, Map.delete(socket.assigns.timing_edits, timing_id))
+    |> assign(:timing_headsign_edits, Map.delete(socket.assigns.timing_headsign_edits, timing_id))
+    |> assign(:timing_error, nil)
+    |> assign(:review, nil)
+    |> assign(:applying?, false)
+    |> put_timing_rows()
+  end
+
+  defp reset_editing_state(socket, :timing_add) do
+    socket
+    |> assign(:timing_dialog, nil)
+    |> assign(:review, nil)
+    |> assign(:applying?, false)
+    |> put_timing_rows()
+  end
+
+  defp reset_editing_state(socket, :details) do
+    socket
+    |> assign(:review, nil)
+    |> assign(:applying?, false)
+    |> put_timing_rows()
+  end
+
+  defp reset_editing_state(socket, :stops), do: reset_editing_state(socket)
+
   defp reset_editing_state(socket) do
     socket
     |> assign(:staged_occurrences, loaded_occurrences(socket.assigns.occurrences))
@@ -1276,7 +1390,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     case Gtfs.apply_review(pattern_uuid(socket), {:details, attrs}, fingerprint, audit) do
       {:ok, %{trips_updated: updated}} ->
-        {:noreply, saved(socket, affected_message(updated))}
+        {:noreply, saved(socket, affected_message(updated), :details)}
 
       {:error, reason} ->
         {:noreply, assign(socket, :error_message, reasons_message(reason))}
@@ -1632,12 +1746,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp stop_review_blocks(socket, review) do
     proposed = review.proposed || %{}
-    occurrences = Map.get(proposed, :occurrences, [])
     rows_by_timing = Map.new(Map.get(proposed, :timing_rows, []), &{&1.timing_id, &1.rows})
     estimates = Map.get(proposed, :estimates, []) || []
 
+    # Added stops come from the staged list, not from a successful proposal: a
+    # terminal insertion needs its arrival/departure inputs rendered before any
+    # proposal can exist, so staff can supply the values it asks for.
     added =
-      occurrences
+      socket.assigns.staged_occurrences
       |> Enum.with_index()
       |> Enum.filter(fn {occurrence, _index} -> is_nil(occurrence.id) end)
 
@@ -1772,7 +1888,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                audit_context(socket)
              ) do
           {:ok, %{trips_updated: updated}} ->
-            {:noreply, saved(socket, affected_message(updated))}
+            {:noreply, saved(socket, affected_message(updated), :stops)}
 
           {:error, reason} ->
             {:noreply, stop_review_failure(socket, review, reason)}
@@ -2132,12 +2248,36 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp apply_timing(socket, operation, fingerprint, _impact) do
     case Gtfs.apply_review(pattern_uuid(socket), operation, fingerprint, audit_context(socket)) do
       {:ok, %{trips_updated: updated}} ->
-        {:noreply, saved(socket, affected_message(updated))}
+        {:noreply, saved(socket, affected_message(updated), timing_scope(operation))}
 
       {:error, reason} ->
         reject_editor(socket, reasons_message(reason), "timing-save")
     end
   end
+
+  defp timing_review_failure(socket, review, :stale_review) do
+    assign(socket, :review, %{
+      review
+      | error: %{
+          message:
+            "This pattern changed since you reviewed it. Refresh the review to see the current counts and confirm the save again; your edits are still here.",
+          action: :refresh
+        },
+        busy: false
+    })
+  end
+
+  defp timing_review_failure(socket, review, reason) do
+    assign(socket, :review, %{
+      review
+      | error: %{message: reasons_message(reason), action: :retry},
+        busy: false
+    })
+  end
+
+  # A timing save only clears the draft it saved; adding a timing clears none.
+  defp timing_scope({:timing, timing_id, _attrs}), do: {:timing, timing_id}
+  defp timing_scope(_operation), do: :timing_add
 
   defp timing_review(%{kind: :timing} = review), do: review
   defp timing_review(_review), do: nil
@@ -2193,7 +2333,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             {:noreply,
              socket
              |> assign(:timing_dialog, nil)
-             |> saved(timing_dialog_saved_message(dialog))}
+             |> saved(timing_dialog_saved_message(dialog), timing_dialog_scope(dialog, socket))}
 
           {:error, reason} ->
             {:noreply, assign(socket, :timing_dialog, %{dialog | error: reasons_message(reason)})}
@@ -2206,6 +2346,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp timing_dialog_saved_message(%{mode: :add}), do: "Timing added. Assign trips in schedules."
   defp timing_dialog_saved_message(_dialog), do: "Timing renamed."
+
+  # Renaming clears the renamed timing's draft; adding a timing leaves every
+  # other draft alone.
+  defp timing_dialog_scope(%{mode: :rename}, socket),
+    do: {:timing, socket.assigns.selected_timing_id}
+
+  defp timing_dialog_scope(_dialog, _socket), do: :timing_add
 
   defp name_taken?(socket, dialog, name) do
     selected_id = socket.assigns.selected_timing_id
@@ -2504,12 +2651,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  defp saved(socket, message) do
+  defp saved(socket, message, scope) do
     socket
     |> assign(:review, nil)
     |> assign(:applying?, false)
     |> load_screen()
-    |> reset_editing_state()
+    |> reset_editing_state(scope)
     |> annotate(message)
   end
 

@@ -110,11 +110,23 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
       station: station
     } do
       task_pids_before = MapSet.new(Task.Supervisor.children(GtfsPlanner.TaskSupervisor))
-      assert {:ok, run} = Reachability.start_run(org.id, version.id, station.stop_id)
+
+      # The real runner runs behind a test-controlled gate so the spawned task
+      # cannot complete before the test observes the persisted running row; the
+      # status assertion below therefore no longer races the background write.
+      Process.register(self(), :reachability_integration_gate)
+
+      assert {:ok, run} =
+               Reachability.start_run(org.id, version.id, station.stop_id,
+                 runner: __MODULE__.GatedRunner
+               )
 
       assert run.status == "running"
       assert run.engine == "pathways_router"
       assert run.result_schema_version == 1
+
+      assert_receive {:reachability_run_gated, task_pid}, 5_000
+      send(task_pid, :reachability_run_continue)
 
       run = wait_for_completion(run.id, task_pids_before)
 
@@ -268,6 +280,24 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
         ref = Process.monitor(task_pid)
         assert_receive {:DOWN, ^ref, :process, ^task_pid, :normal}, 5_000
         Repo.get!(ValidationRun, run_id)
+    end
+  end
+
+  # The runner seam in `Reachability.start_run/4` is used with the real runner
+  # behind a test-controlled gate: the spawned task reports that it reached the
+  # runner and then waits, so the test observes the persisted running row
+  # without racing the background completion.
+  defmodule GatedRunner do
+    @moduledoc false
+
+    alias GtfsPlanner.Reachability.Runner
+
+    def run(snapshot, started_at) do
+      send(:reachability_integration_gate, {:reachability_run_gated, self()})
+
+      receive do
+        :reachability_run_continue -> Runner.run(snapshot, started_at)
+      end
     end
   end
 end

@@ -24,6 +24,80 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MaterializerTest do
            ]
   end
 
+  test "divides a bracketed interval between every inserted stop it holds" do
+    old = [%{id: "a", stop_id: "A"}, %{id: "b", stop_id: "B"}]
+
+    new = [
+      %{id: "a", stop_id: "A"},
+      %{key: "x", stop_id: "X"},
+      %{key: "y", stop_id: "Y"},
+      %{id: "b", stop_id: "B"}
+    ]
+
+    rows = [
+      %{arrival_offset: 0, departure_offset: 0},
+      %{arrival_offset: 600, departure_offset: 600}
+    ]
+
+    assert {:ok, %{timing_rows: [timing]}} =
+             Materializer.review_stops(old, new, [%{timing_id: "t1", rows: rows}], %{"t1" => %{}})
+
+    assert Enum.map(timing.rows, & &1.arrival_offset) == [0, 200, 400, 600]
+
+    # Three insertions floor each share of an interval that does not divide
+    # evenly: floor(10/4), floor(20/4), floor(30/4).
+    three = [
+      %{id: "a", stop_id: "A"},
+      %{key: "x", stop_id: "X"},
+      %{key: "y", stop_id: "Y"},
+      %{key: "z", stop_id: "Z"},
+      %{id: "b", stop_id: "B"}
+    ]
+
+    short_rows = [
+      %{arrival_offset: 0, departure_offset: 0},
+      %{arrival_offset: 10, departure_offset: 10}
+    ]
+
+    assert {:ok, %{timing_rows: [short]}} =
+             Materializer.review_stops(old, three, [%{timing_id: "t1", rows: short_rows}], %{
+               "t1" => %{}
+             })
+
+    assert Enum.map(short.rows, & &1.arrival_offset) == [0, 2, 5, 7, 10]
+  end
+
+  test "interpolates each timing against its own anchors" do
+    old = [%{id: "a", stop_id: "A"}, %{id: "b", stop_id: "B"}]
+    new = [%{id: "a", stop_id: "A"}, %{key: "x", stop_id: "X"}, %{id: "b", stop_id: "B"}]
+
+    timings = [
+      %{
+        timing_id: "weekday",
+        rows: [
+          %{arrival_offset: 0, departure_offset: 0},
+          %{arrival_offset: 600, departure_offset: 600}
+        ]
+      },
+      %{
+        timing_id: "weekend",
+        rows: [
+          %{arrival_offset: 0, departure_offset: 0},
+          %{arrival_offset: 900, departure_offset: 1_200}
+        ]
+      }
+    ]
+
+    values = %{"weekday" => %{}, "weekend" => %{}}
+
+    assert {:ok, %{timing_rows: timing_rows}} =
+             Materializer.review_stops(old, new, timings, values)
+
+    by_id = Map.new(timing_rows, fn row -> {row.timing_id, row.rows} end)
+    assert Enum.map(by_id["weekday"], & &1.arrival_offset) == [0, 300, 600]
+    assert Enum.map(by_id["weekend"], & &1.arrival_offset) == [0, 450, 900]
+  end
+
   test "materializes absolute clocks and rejects a negative resulting time or chronology" do
     occurrences = [%{id: "a", stop_id: "A"}, %{id: "b", stop_id: "B"}]
 
