@@ -8,10 +8,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator
+  alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   require Logger
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  # The URL is the single source of truth for the selected export type: only
+  # these query values are accepted, and `export_type_from_param/1` maps them
+  # onto the atoms `ExportRuns` accepts.
+  @export_type_params ~w(full pathways operations)
+  @conflict_warning_code "garage_stop_id_conflict"
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
@@ -37,13 +44,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_params(_params, _uri, socket) do
+  def handle_params(params, _uri, socket) do
     organization_id = socket.assigns.current_organization.id
     ExportRuns.reconcile_expired(organization_id)
     ExportRuns.cleanup_expired(organization_id)
 
+    export_type = export_type_from_param(params["type"])
+
     {:noreply,
      socket
+     |> assign(:export_type, export_type)
+     |> assign(:export_form, export_form(export_type))
      |> refresh_export_run()
      |> refresh_file_inventory()
      |> assign_recent_validation_data()}
@@ -79,20 +90,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("select_export_type", %{"export" => %{"type" => type}}, socket) do
-    # Use whitelist mapping to prevent atom exhaustion from user input
-    export_type =
-      case type do
-        "full" -> :full
-        "pathways" -> :pathways
-        _ -> :full
-      end
-
-    {:noreply,
-     socket
-     |> assign(:export_type, export_type)
-     |> assign(:export_form, export_form(export_type))
-     |> refresh_file_inventory()
-     |> refresh_export_run()}
+    # Whitelisted before it reaches the URL, so no arbitrary value or new atom
+    # can travel through the query string; `handle_params/3` owns the refresh.
+    if type in @export_type_params do
+      {:noreply,
+       push_patch(socket,
+         to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/export?type=#{type}"
+       )}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl Phoenix.LiveView
@@ -289,7 +296,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         </h3>
         <ul class="mt-2 space-y-1 text-sm">
           <li :for={issue <- @export_warnings} class="border-l-2 border-warning/60 pl-3">
-            <p>{Map.get(issue, :detail, Map.get(issue, "detail", "Preflight reported an issue"))}</p>
+            <p>{export_warning_detail(issue, "Preflight reported an issue")}</p>
             <% details_line = format_export_warning_details(issue) %>
             <p
               :if={details_line}
@@ -376,9 +383,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   />
                   <span class="text-sm font-medium">Pathways export</span>
                 </label>
+                <label class="flex min-h-11 items-center gap-2 border border-base-300 px-3 py-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input
+                    type="radio"
+                    id="export-type-operations"
+                    name={@export_form[:type].name}
+                    value="operations"
+                    checked={@export_type == :operations}
+                    class="radio radio-sm"
+                  />
+                  <span class="text-sm font-medium">GTFS + operations (TODS)</span>
+                </label>
               </div>
             </fieldset>
           </.form>
+
+          <%!-- The callout owns no spacing class: `core_components` spreads global
+          attributes onto its own class, so the margin lives on a wrapper. --%>
+          <div :if={@export_type == :operations} class="mt-5">
+            <.callout
+              id="operations-export-note"
+              kind="info"
+              title="Operations export"
+            >
+              For CAD/AVL and operations systems. Riders' apps use the full export. Garages and vehicles are shared across service versions; vehicle types and garage assignments stay in this app.
+            </.callout>
+          </div>
 
           <div id="export-inventory" class="mt-6 overflow-x-auto border-y border-base-300">
             <table class="w-full text-sm">
@@ -414,9 +444,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 label={export_state_label(@export_run)}
               />
               <p class="mt-2 text-sm text-base-content/70">{export_state_detail(@export_run)}</p>
+              <.callout
+                :if={export_conflict?(@export_run)}
+                id="export-conflict-panel"
+                kind="error"
+                title="Garage ID conflicts with a public stop"
+              >
+                Some garage IDs match public stop IDs in this version. Change those garage IDs, then retry the export.
+                <ul id="export-conflicts" class="mt-2 space-y-1 text-sm">
+                  <li
+                    :for={conflict <- conflict_warnings(@export_run.warnings)}
+                    class="border-l-2 border-error/60 pl-3"
+                  >
+                    {export_warning_detail(conflict)}
+                  </li>
+                </ul>
+                <.link
+                  id="export-edit-garages"
+                  href={"/gtfs/#{@current_gtfs_version.id}/blocks/garages"}
+                  class="mt-2 inline-flex min-h-11 items-center font-medium text-primary underline"
+                >
+                  Edit garages
+                </.link>
+              </.callout>
+              <% other_warnings = non_conflict_warnings(@export_run.warnings) %>
               <.export_warning_panel
-                :if={@export_run.warnings != []}
-                export_warnings={@export_run.warnings}
+                :if={other_warnings != []}
+                export_warnings={other_warnings}
               />
               <.link
                 :if={@export_run.state == :ready}
@@ -766,6 +820,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp export_form(export_type),
     do: to_form(%{"type" => Atom.to_string(export_type)}, as: :export)
 
+  defp export_type_from_param("pathways"), do: :pathways
+  defp export_type_from_param("operations"), do: :operations
+  defp export_type_from_param(_type), do: :full
+
   defp mobility_result_count_items(summary) do
     [
       %{key: "errors", label: "Errors", count: summary.errors, tone: :error},
@@ -805,14 +863,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp refresh_file_inventory(socket) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
+    export_type = socket.assigns.export_type
+    # The operations export packages the full GTFS file set; its TODS additions
+    # come from the organization, not from the version.
+    base_type = if export_type == :operations, do: :full, else: export_type
 
     file_inventory =
       organization_id
-      |> Gtfs.get_file_inventory(version_id, socket.assigns.export_type)
+      |> Gtfs.get_file_inventory(version_id, base_type)
+      |> Kernel.++(tods_inventory(organization_id, export_type))
       |> Enum.sort_by(fn {filename, _count} -> filename end)
 
     assign(socket, :file_inventory, file_inventory)
   end
+
+  defp tods_inventory(organization_id, :operations),
+    do: Operations.tods_file_inventory(organization_id)
+
+  defp tods_inventory(_organization_id, _export_type), do: []
 
   defp refresh_export_run(socket) do
     organization_id = socket.assigns.current_organization.id
@@ -879,10 +947,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp export_state_detail(%{state: :pending}),
     do: "Your export is queued and will begin shortly."
 
+  defp export_warning_detail(issue, default \\ nil),
+    do: Map.get(issue, :detail, Map.get(issue, "detail", default))
+
+  # Persisted warnings are read back from `jsonb[]` with string keys, so both
+  # key spellings resolve through one accessor.
+  defp export_warning_code(issue), do: Map.get(issue, :code, Map.get(issue, "code"))
+
+  defp export_conflict?(%{failure_code: code}), do: code == @conflict_warning_code
+  defp export_conflict?(_run), do: false
+
+  defp conflict_warnings(warnings),
+    do: Enum.filter(warnings, &(export_warning_code(&1) == @conflict_warning_code))
+
+  defp non_conflict_warnings(warnings),
+    do: Enum.reject(warnings, &(export_warning_code(&1) == @conflict_warning_code))
+
   defp format_export_warning_details(issue) do
-    issue
-    |> Map.get(:code, Map.get(issue, "code"))
-    |> case do
+    case export_warning_code(issue) do
       nil -> nil
       code -> "Code: #{code}"
     end
