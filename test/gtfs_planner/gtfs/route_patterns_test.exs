@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
@@ -31,6 +32,131 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     }
 
     %{organization: organization, version: version, route: route, audit: audit}
+  end
+
+  test "missing scoped reviews return not_found without building a nil route query", context do
+    assert {:error, :not_found} = Gtfs.review(Ecto.UUID.generate(), :copy, nil, context.audit)
+
+    assert {:error, :not_found} =
+             Gtfs.preview_stop_edit(Ecto.UUID.generate(), {:stops, [], %{}}, context.audit)
+  end
+
+  test "normalized metadata no-ops do not audit and all editable metadata invalidates source",
+       context do
+    stops = for _ <- 1..2, do: stop_fixture(context.organization.id, context.version.id)
+
+    {:ok, pattern} =
+      Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
+
+    timing = Repo.one!(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+    count = Repo.aggregate(ChangeLog, :count)
+
+    for operation <- [
+          {:details, %{headsign: " Harbor ", direction_id: "0"}},
+          {:timing, timing.id, %{name: " Timing A "}}
+        ] do
+      {:ok, %{fingerprint: fingerprint}} = Gtfs.review(pattern.id, operation, nil, context.audit)
+
+      assert {:ok, %{trips_updated: 0}} =
+               Gtfs.apply_review(pattern.id, operation, fingerprint, context.audit)
+
+      assert Repo.aggregate(ChangeLog, :count) == count
+    end
+
+    {:ok, loaded} =
+      Gtfs.get_pattern(
+        context.organization.id,
+        context.version.id,
+        context.route.route_id,
+        pattern.id
+      )
+
+    operation = {:details, %{route_pattern_sort_order: 2, canonical_route_pattern: 1}}
+
+    {:ok, %{fingerprint: fingerprint}} =
+      Gtfs.review(pattern.id, operation, loaded.source_fingerprint, context.audit)
+
+    assert {:ok, _} = Gtfs.apply_review(pattern.id, operation, fingerprint, context.audit)
+
+    assert {:error, :stale_review} =
+             Gtfs.review(
+               pattern.id,
+               {:details, %{route_pattern_sort_order: 3}},
+               loaded.source_fingerprint,
+               context.audit
+             )
+
+    snapshot = RoutePatterns.audit_snapshot(Repo.get!(RoutePattern, pattern.id))
+    assert snapshot.route_pattern_sort_order == 2
+    assert snapshot.canonical_route_pattern == 1
+  end
+
+  test "wrong-route custom references prevent deletion and stop codes are searchable", context do
+    stops = for _ <- 1..2, do: stop_fixture(context.organization.id, context.version.id)
+
+    {:ok, pattern} =
+      Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
+
+    other = route_fixture(context.organization.id, context.version.id)
+
+    trip_fixture(context.organization.id, context.version.id, other.route_id)
+    |> Ecto.Changeset.change(
+      route_pattern_id: pattern.route_pattern_id,
+      pattern_derivation_state: "custom",
+      pattern_derivation_reason: "scope_mismatch"
+    )
+    |> Repo.update!()
+
+    assert {:error, :pattern_in_use} = Gtfs.review(pattern.id, :delete, nil, context.audit)
+    stop = hd(stops)
+
+    assert {:ok, %{stops: [match]}} =
+             RoutePatterns.search_stops(
+               context.organization.id,
+               context.version.id,
+               stop.stop_id
+             )
+
+    assert match.id == stop.id
+  end
+
+  test "invalid timing enums never write and structural conflicts report stale before shape errors",
+       context do
+    stops = for _ <- 1..3, do: stop_fixture(context.organization.id, context.version.id)
+
+    {:ok, pattern} =
+      Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
+
+    timing = Repo.one!(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+
+    occurrences =
+      Repo.all(
+        from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, order_by: o.position
+      )
+
+    rows =
+      Enum.map(
+        occurrences,
+        &%{route_pattern_stop_id: &1.id, arrival_offset: 0, departure_offset: 0, pickup_type: 99}
+      )
+
+    before = Repo.aggregate(ChangeLog, :count)
+
+    assert {:error, :invalid_input} =
+             Gtfs.review(pattern.id, {:timing, timing.id, %{rows: rows}}, nil, context.audit)
+
+    assert Repo.aggregate(ChangeLog, :count) == before
+    operation = {:stops, Enum.map(occurrences, &%{id: &1.id, stop_id: &1.stop_id}), %{}}
+    {:ok, %{fingerprint: fingerprint}} = Gtfs.review(pattern.id, operation, nil, context.audit)
+    changed = {:stops, Enum.take(elem(operation, 1), 2), %{}}
+
+    {:ok, %{fingerprint: changed_fingerprint}} =
+      Gtfs.review(pattern.id, changed, nil, context.audit)
+
+    assert {:ok, _} = Gtfs.apply_review(pattern.id, changed, changed_fingerprint, context.audit)
+
+    assert {:error, :stale_review} =
+             Gtfs.apply_review(pattern.id, operation, fingerprint, context.audit)
   end
 
   test "the Gtfs facade creates a scoped pattern, occurrences, Timing A and one actor-bound audit",

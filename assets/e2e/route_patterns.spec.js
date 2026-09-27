@@ -179,6 +179,7 @@ async function acknowledgeReview(page) {
 async function downloadExport(page) {
   await page.goto("/gtfs/" + (await getVersionId(page)) + "/export");
   await page.waitForSelector("#start-export", { timeout: 15000 });
+  await waitForLiveView(page);
 
   const previousHref = await page.locator("#export-download-link").getAttribute("href");
 
@@ -575,14 +576,30 @@ test("dirty navigation asks before discarding staged edits", async ({ page }) =>
     "details",
   );
 
+  await page.locator("#pattern-back").click();
+  await page.locator("#pattern-open-BROWSER-EDIT-UNUSED").click();
+  await expect(page.locator("#pattern-stops")).toBeVisible();
+  await page.locator("#pattern-task-details").click();
+  await expect(page).toHaveURL(/task=details/);
   await page.fill("#pattern-details-name", "Unsaved browser rename");
   await expect(page.locator("#edit-status")).toContainText("Unsaved changes");
+
+  await page.locator('nav[aria-label="Route navigation"]').getByRole("link", {name: "Details", exact: true}).click();
+  await expect(page.locator("#discard-changes-dialog[data-open='true']")).toBeVisible();
+  await page.locator("#discard-changes-dialog-cancel").click();
+  await expect(page.locator("#pattern-details-name")).toHaveValue("Unsaved browser rename");
 
   await page.locator("#pattern-back").click();
   await expect(page.locator("#discard-changes-dialog[data-open='true']")).toBeVisible();
   await page.locator("#discard-changes-dialog-cancel").click();
 
   await expect(page.locator("#discard-changes-dialog[data-open='true']")).toBeHidden();
+  await expect(page.locator("#pattern-details-name")).toHaveValue("Unsaved browser rename");
+  await page.evaluate(() => history.go(-2));
+  await expect(page.locator("#discard-changes-dialog[data-open='true']")).toBeVisible();
+  await page.locator("#discard-changes-dialog-cancel").click();
+  // A task patch may restore Stops; the draft remains owned by this editor.
+  await page.locator("#pattern-task-details").click();
   await expect(page.locator("#pattern-details-name")).toHaveValue("Unsaved browser rename");
 });
 

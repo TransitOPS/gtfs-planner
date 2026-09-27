@@ -100,6 +100,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         The last loaded patterns and counts remain available. Refresh to try again.
       </.callout>
 
+      <div :if={@derivation_error} class="mt-3">
+        <.callout
+          kind="error"
+          id="patterns-derivation-error"
+          title="Pattern building stopped for this route"
+        >
+          <span class="font-mono text-xs">{@derivation_error}</span>
+          <div class="mt-3">
+            <button
+              id="patterns-build-error-retry"
+              type="button"
+              phx-click="build_patterns"
+              disabled={@build_state == :building}
+              class="btn btn-sm btn-outline min-h-11"
+            >
+              Build patterns from trips
+            </button>
+          </div>
+        </.callout>
+      </div>
+
+      <p :if={@build_error} id="patterns-build-error" class="mt-3 text-sm text-error">
+        {@build_error}
+      </p>
+
       <%= cond do %>
         <% not @patterns_empty? -> %>
           <div class="flex flex-wrap items-center justify-between gap-3">
@@ -133,31 +158,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               </div>
             </.callout>
           </div>
-
-          <div :if={@derivation_error} class="mt-3">
-            <.callout
-              kind="error"
-              id="patterns-derivation-error"
-              title="Pattern building stopped for this route"
-            >
-              <span class="font-mono text-xs">{@derivation_error}</span>
-              <div class="mt-3">
-                <button
-                  id="patterns-build-error-retry"
-                  type="button"
-                  phx-click="build_patterns"
-                  disabled={@build_state == :building}
-                  class="btn btn-sm btn-outline min-h-11"
-                >
-                  Build patterns from trips
-                </button>
-              </div>
-            </.callout>
-          </div>
-
-          <p :if={@build_error} id="patterns-build-error" class="mt-3 text-sm text-error">
-            {@build_error}
-          </p>
 
           <.pattern_list patterns={@patterns} class="mt-4" />
 
@@ -790,7 +790,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </div>
 
         <form id="timing-edit-form" class="mt-4" phx-change="validate_timing_row">
-          <table class="table ds-stack-table">
+          <table class="table pattern-timing-table">
             <thead>
               <tr>
                 <th>Stop</th>
@@ -868,6 +868,67 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
                     <span class="text-xs text-base-content/70">Timepoint</span>
                   </label>
                 </td>
+                <td class="timing-boarding-cell" colspan="5">
+                  <details
+                    id={"timing-boarding-#{row.position}"}
+                    class="border border-base-300 bg-base-100 p-3"
+                  >
+                    <summary class="min-h-11 cursor-pointer text-sm font-medium">
+                      Boarding &amp; headsign · {row.name}
+                    </summary>
+                    <div class="mt-3 grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <label class="block text-sm" for={"timing-pickup-#{row.position}"}>
+                          Pickup
+                        </label>
+                        <select
+                          id={"timing-pickup-#{row.position}"}
+                          name={"timing[#{row.position}][pickup]"}
+                          class="select select-bordered min-h-11 w-full"
+                        >
+                          <option
+                            :for={option <- pickup_options()}
+                            value={option.value}
+                            selected={row.pickup == option.value}
+                          >
+                            {option.label}
+                          </option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm" for={"timing-dropoff-#{row.position}"}>
+                          Drop-off
+                        </label>
+                        <select
+                          id={"timing-dropoff-#{row.position}"}
+                          name={"timing[#{row.position}][drop_off]"}
+                          class="select select-bordered min-h-11 w-full"
+                        >
+                          <option
+                            :for={option <- pickup_options()}
+                            value={option.value}
+                            selected={row.drop_off == option.value}
+                          >
+                            {option.label}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+                    <label class="mt-3 block text-sm" for={"timing-stop-headsign-#{row.position}"}>
+                      Stop headsign (optional)
+                    </label>
+                    <input
+                      id={"timing-stop-headsign-#{row.position}"}
+                      name={"timing[#{row.position}][headsign]"}
+                      type="text"
+                      value={row.stop_headsign}
+                      class="input input-bordered min-h-11 w-full"
+                    />
+                    <p class="mt-1 text-sm text-base-content/70">
+                      Use only if the destination shown to riders changes at this stop.
+                    </p>
+                  </details>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -878,65 +939,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           <p id="timing-help" class="mt-1 text-sm text-base-content/70">
             Pickup and drop-off: 0 Regular, 1 Not available, 2 Phone agency, 3 Arrange with driver.
           </p>
-
-          <div class="mt-4 space-y-3">
-            <details
-              :for={row <- @timing_rows}
-              id={"timing-boarding-#{row.position}"}
-              class="border border-base-300 bg-base-100 p-3"
-            >
-              <summary class="min-h-11 cursor-pointer text-sm font-medium">
-                Boarding &amp; headsign · {row.name}
-              </summary>
-              <div class="mt-3 grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label class="block text-sm" for={"timing-pickup-#{row.position}"}>Pickup</label>
-                  <select
-                    id={"timing-pickup-#{row.position}"}
-                    name={"timing[#{row.position}][pickup]"}
-                    class="select select-bordered min-h-11 w-full"
-                  >
-                    <option
-                      :for={option <- pickup_options()}
-                      value={option.value}
-                      selected={row.pickup == option.value}
-                    >
-                      {option.label}
-                    </option>
-                  </select>
-                </div>
-                <div>
-                  <label class="block text-sm" for={"timing-dropoff-#{row.position}"}>Drop-off</label>
-                  <select
-                    id={"timing-dropoff-#{row.position}"}
-                    name={"timing[#{row.position}][drop_off]"}
-                    class="select select-bordered min-h-11 w-full"
-                  >
-                    <option
-                      :for={option <- pickup_options()}
-                      value={option.value}
-                      selected={row.drop_off == option.value}
-                    >
-                      {option.label}
-                    </option>
-                  </select>
-                </div>
-              </div>
-              <label class="mt-3 block text-sm" for={"timing-stop-headsign-#{row.position}"}>
-                Stop headsign (optional)
-              </label>
-              <input
-                id={"timing-stop-headsign-#{row.position}"}
-                name={"timing[#{row.position}][headsign]"}
-                type="text"
-                value={row.stop_headsign}
-                class="input input-bordered min-h-11 w-full"
-              />
-              <p class="mt-1 text-sm text-base-content/70">
-                Use only if the destination shown to riders changes at this stop.
-              </p>
-            </details>
-          </div>
 
           <div class="mt-4 max-w-md">
             <.input
@@ -1070,6 +1072,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
                 type="text"
                 inputmode="numeric"
                 value={added.arrival}
+                aria-invalid={added.invalid? && "true"}
+                aria-describedby={added.invalid? && "stop-review-error"}
                 class="input input-bordered w-24 min-h-11"
               />
             </div>
@@ -1086,6 +1090,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
                 type="text"
                 inputmode="numeric"
                 value={added.departure}
+                aria-invalid={added.invalid? && "true"}
+                aria-describedby={added.invalid? && "stop-review-error"}
                 class="input input-bordered w-24 min-h-11"
               />
             </div>
@@ -1125,6 +1131,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     ~H"""
     <.confirm_dialog
       id="timing-review-dialog"
+      confirm_disabled={@review != nil and @review.error != nil}
       open={@review != nil}
       title={review_title(@review, "Update trips?")}
       confirm_label="Update trips"

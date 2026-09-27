@@ -117,6 +117,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:dirty?, false)
      |> assign(:impact_dialog, nil)
      |> assign(:pending_navigation, nil)
+     |> assign(:details_stale?, false)
      |> assign(:error_message, nil)
      |> assign(:status_message, nil)
      |> stream(:patterns, [])
@@ -386,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("save_stops", _params, socket) do
-    case stop_edit_blocker(socket) do
+    case stop_save_blocker(socket) do
       nil ->
         socket = assign(socket, :error_message, nil)
 
@@ -594,7 +595,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         # Refresh the loaded source but keep the submitted rows, so a stale
         # review is re-run against the current values and counts instead of
         # silently reusing an old fingerprint.
-        socket |> load_screen() |> review_timing(attrs)
+        socket
+        |> load_screen()
+        |> assign(:applying?, false)
+        |> assign(:error_message, nil)
+        |> review_timing(attrs, true)
 
       _ ->
         {:noreply, socket}
@@ -612,6 +617,38 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("cancel_timing_review", _params, socket) do
     {:noreply, assign(socket, :review, nil)}
+  end
+
+  @impl true
+  def handle_event("discard_timing_drafts", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:timing_edits, %{})
+     |> assign(:timing_headsign_edits, %{})
+     |> assign(:error_message, nil)
+     |> put_timing_rows()
+     |> assign_dirty()}
+  end
+
+  @impl true
+  def handle_event("guard_editor_navigation", %{"path" => path}, socket) do
+    if String.starts_with?(path, "/") and not String.starts_with?(path, "//"),
+      do: guard_navigation(socket, path),
+      else: {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("refresh_details_review", _params, socket) do
+    socket =
+      socket |> load_screen() |> assign(:error_message, nil) |> assign(:details_stale?, false)
+
+    case validate_details(socket.assigns.details_params) do
+      {:ok, attrs} ->
+        submit_details_review(socket, attrs)
+
+      {:error, errors, message} ->
+        {:noreply, reject_details(socket, socket.assigns.details_params, errors, message)}
+    end
   end
 
   # --- timing CRUD -----------------------------------------------------------
@@ -700,7 +737,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             blocked(
               socket,
               "Keep this timing",
-              "#{timing_trip_label(socket, timing)}. Move or remove those trips in schedules before deleting this timing."
+              "#{timing_trip_label(socket, timing)}. Trip assignment and removal are outside this interface. Copy the pattern to work on separate service."
             )
 
           {:error, reason} ->
@@ -729,10 +766,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
              |> saved("Timing deleted.", {:timing, timing_id})}
 
           {:error, reason} ->
-            {:noreply,
-             socket
-             |> assign(:timing_delete_dialog, nil)
-             |> reject_editor(reasons_message(reason), "timing-delete")}
+            socket
+            |> assign(:timing_delete_dialog, nil)
+            |> reject_editor(reasons_message(reason), "timing-delete")
         end
     end
   end
@@ -761,7 +797,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> push_navigate(to: pattern_path(socket, copied.route_pattern_id, "?task=stops"))}
 
       {:error, reason} ->
-        {:noreply, reject_editor(socket, reasons_message(reason), "pattern-copy")}
+        reject_editor(socket, reasons_message(reason), "pattern-copy")
     end
   end
 
@@ -779,11 +815,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         blocked(
           socket,
           "This pattern is in use",
-          "#{trip_count_text(socket.assigns.detail_trip_count)} still #{trip_verb(socket.assigns.detail_trip_count)} this pattern. Remove or move them in schedules before deleting it. Copy the pattern to work on separate service."
+          "#{trip_count_text(socket.assigns.detail_trip_count)} still #{trip_verb(socket.assigns.detail_trip_count)} this pattern. Trip assignment and removal are outside this interface. Copy the pattern to work on separate service."
         )
 
       {:error, reason} ->
-        {:noreply, reject_editor(socket, reasons_message(reason), "pattern-delete")}
+        reject_editor(socket, reasons_message(reason), "pattern-delete")
     end
   end
 
@@ -803,10 +839,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
              |> push_navigate(to: patterns_path(socket))}
 
           {:error, reason} ->
-            {:noreply,
-             socket
-             |> assign(:pattern_delete_dialog, nil)
-             |> reject_editor(reasons_message(reason), "pattern-delete")}
+            socket
+            |> assign(:pattern_delete_dialog, nil)
+            |> reject_editor(reasons_message(reason), "pattern-delete")
         end
     end
   end
@@ -868,7 +903,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       path =
         case socket.assigns.live_action do
           :new -> version_patterns_path(socket, version_id) <> "/new"
-          :show -> version_pattern_path(socket, version_id)
+          :show -> version_patterns_path(socket, version_id)
           _ -> version_patterns_path(socket, version_id)
         end
 
@@ -993,6 +1028,27 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 />
 
                 <RoutePatternComponents.connectivity_banner offline?={@offline?} />
+                <button
+                  :if={@details_stale?}
+                  id="details-refresh-review"
+                  type="button"
+                  phx-click="refresh_details_review"
+                  class="btn btn-outline min-h-11"
+                >
+                  Refresh review
+                </button>
+                <button
+                  :if={
+                    @task == :stops and
+                      (map_size(@timing_edits) > 0 or map_size(@timing_headsign_edits) > 0)
+                  }
+                  id="discard-timing-drafts"
+                  type="button"
+                  phx-click="discard_timing_drafts"
+                  class="btn btn-outline min-h-11"
+                >
+                  Discard timing edits
+                </button>
 
                 <%= cond do %>
                   <% @task == :details -> %>
@@ -1222,9 +1278,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  # A creation load, a pattern switch and a completed save all drop the staged
-  # edit state; every other reload keeps it so a stale review can be refreshed
-  # without discarding work.
   # A completed save only drops the draft it saved. Unrelated staged stop edits
   # and other timings' drafts stay on the page until the operator saves or
   # explicitly discards them; a creation load or pattern switch drops everything.
@@ -1247,13 +1300,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp reset_editing_state(socket, :details) do
+    params = details_params_from_pattern(socket.assigns.pattern)
+
     socket
+    |> put_details(params, params)
     |> assign(:review, nil)
     |> assign(:applying?, false)
     |> put_timing_rows()
   end
 
-  defp reset_editing_state(socket, :stops), do: reset_editing_state(socket)
+  defp reset_editing_state(socket, :stops) do
+    socket
+    |> assign(:staged_occurrences, loaded_occurrences(socket.assigns.occurrences))
+    |> assign(:stops_dirty?, false)
+    |> assign(:review, nil)
+    |> assign(:applying?, false)
+    |> put_timing_rows()
+  end
 
   defp reset_editing_state(socket) do
     socket
@@ -1349,7 +1412,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  defp submit_details_review(socket, attrs) do
+  defp submit_details_review(socket, attrs, confirm? \\ false) do
     audit = audit_context(socket)
 
     case Gtfs.review(
@@ -1358,7 +1421,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            socket.assigns.source_fingerprint,
            audit
          ) do
-      {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: affected}}} when affected > 0 ->
+      {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: affected}}}
+      when affected > 0 or confirm? ->
         {:noreply,
          assign(socket, :impact_dialog, %{
            attrs: attrs,
@@ -1370,7 +1434,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         apply_details(socket, attrs, fingerprint)
 
       {:error, reason} ->
-        {:noreply, assign(socket, :error_message, reasons_message(reason))}
+        {:noreply,
+         socket
+         |> assign(:details_stale?, reason == :stale_review)
+         |> assign(:error_message, reasons_message(reason))}
     end
   end
 
@@ -1393,7 +1460,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply, saved(socket, affected_message(updated), :details)}
 
       {:error, reason} ->
-        {:noreply, assign(socket, :error_message, reasons_message(reason))}
+        {:noreply,
+         socket
+         |> assign(:details_stale?, reason == :stale_review)
+         |> assign(:error_message, reasons_message(reason))}
     end
   end
 
@@ -1568,7 +1638,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp stage_stop(socket, stop) do
     occurrences = socket.assigns.staged_occurrences
     index = insert_index(socket.assigns.insert_after, length(occurrences))
-    left = Enum.at(occurrences, index - 1)
+    left = if index > 0, do: Enum.at(occurrences, index - 1), else: nil
     right = Enum.at(occurrences, index)
 
     if (left != nil and left.stop_id == stop.stop_id) or
@@ -1683,6 +1753,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # --- stop review -----------------------------------------------------------
 
+  defp stop_save_blocker(socket) do
+    if socket.assigns.stops_dirty? and
+         (map_size(socket.assigns.timing_edits) > 0 or
+            map_size(socket.assigns.timing_headsign_edits) > 0) do
+      "Save your timing edits before changing stops, or discard timing edits below. Your stop edits are still here."
+    else
+      stop_edit_blocker(socket)
+    end
+  end
+
   defp start_stop_review(socket) do
     review = %{
       kind: :stops,
@@ -1761,6 +1841,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       rows = Map.get(rows_by_timing, timing.id, [])
       supplied = Map.get(review.values, timing.id, %{})
 
+      shift =
+        Enum.find_value(Map.get(proposed, :start_shifts, []), 0, fn item ->
+          if item.timing_id == timing.id, do: item.start_shift
+        end)
+
       %{
         timing_id: timing.id,
         name: timing.name,
@@ -1773,10 +1858,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             values = Map.get(supplied, occurrence.key, %{})
 
             %{
+              invalid?: invalid_review_values?(values),
               key: occurrence.key,
               name: stop_name(socket.assigns.stops, occurrence.stop_id),
-              arrival: values["arrival"] || offset_input(row[:arrival_offset]),
-              departure: values["departure"] || offset_input(row[:departure_offset]),
+              arrival:
+                values["arrival"] ||
+                  raw_review_offset(row[:arrival_offset], shift),
+              departure:
+                values["departure"] ||
+                  raw_review_offset(row[:departure_offset], shift),
               estimated?:
                 values == %{} and
                   Enum.any?(estimates, &(&1[:key] == occurrence.key))
@@ -1785,6 +1875,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       }
     end)
   end
+
+  defp invalid_review_values?(values) when map_size(values) == 0, do: false
+
+  defp invalid_review_values?(values),
+    do: not Enum.all?(["arrival", "departure"], &is_integer(elapsed_seconds(values[&1])))
+
+  defp raw_review_offset(value, shift) when is_integer(value), do: offset_input(value + shift)
+  defp raw_review_offset(_value, _shift), do: ""
 
   defp shift_label(shifts, timing_id) when is_list(shifts) do
     case Enum.find(shifts, &(Map.get(&1, :timing_id) == timing_id)) do
@@ -1864,9 +1962,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       arrival = elapsed_seconds(fields["arrival"])
       departure = elapsed_seconds(fields["departure"])
 
-      if is_integer(arrival) and is_integer(departure),
-        do: Map.put(acc, key, %{arrival_offset: arrival, departure_offset: departure}),
-        else: acc
+      Map.put(acc, key, %{arrival_offset: arrival, departure_offset: departure})
     end)
   end
 
@@ -2103,8 +2199,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp previous_departure(acc), do: acc |> List.last() |> Map.get(:departure_offset)
 
   defp validate_timing_row(row, index, preceding) do
-    with {:ok, arrival} <- parse_elapsed_field(row.arrival, :arrival),
-         {:ok, departure} <- parse_elapsed_field(row.departure, :departure) do
+    with {:ok, arrival} <- parse_elapsed_field(row.arrival, {row.position, :arrival}),
+         {:ok, departure} <- parse_elapsed_field(row.departure, {row.position, :departure}) do
       cond do
         departure < arrival ->
           {:error, "Departure must be at or after arrival.", {row.position, :departure}}
@@ -2129,7 +2225,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:ok, seconds}
 
       {:error, message} ->
-        {:error, message, {nil, field}}
+        {:error, message, field}
     end
   end
 
@@ -2217,7 +2313,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     if is_binary(headsign), do: Map.put(attrs, :headsign, blank_to_nil(headsign)), else: attrs
   end
 
-  defp review_timing(socket, attrs) do
+  defp review_timing(socket, attrs, confirm? \\ false) do
     operation = {:timing, socket.assigns.selected_timing.id, attrs}
 
     case Gtfs.review(
@@ -2226,12 +2322,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            socket.assigns.source_fingerprint,
            audit_context(socket)
          ) do
-      {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: 0} = impact}} ->
+      {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: 0} = impact}}
+      when not confirm? ->
         apply_timing(socket, operation, fingerprint, impact)
 
       {:ok, %{fingerprint: fingerprint, impact: impact}} ->
         {:noreply,
-         assign(socket, :review, %{
+         socket
+         |> assign(:applying?, false)
+         |> assign(:review, %{
            kind: :timing,
            operation: operation,
            fingerprint: fingerprint,
@@ -2241,7 +2340,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          })}
 
       {:error, reason} ->
-        reject_editor(socket, reasons_message(reason), "timing-save")
+        {:noreply,
+         timing_review_failure(
+           socket,
+           %{
+             kind: :timing,
+             operation: operation,
+             fingerprint: nil,
+             impact: %{trips_affected: 0},
+             error: nil,
+             busy: false
+           },
+           reason
+         )}
     end
   end
 
@@ -2251,12 +2362,26 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply, saved(socket, affected_message(updated), timing_scope(operation))}
 
       {:error, reason} ->
-        reject_editor(socket, reasons_message(reason), "timing-save")
+        {:noreply,
+         timing_review_failure(
+           socket,
+           %{
+             kind: :timing,
+             operation: operation,
+             fingerprint: nil,
+             impact: %{trips_affected: 0},
+             error: nil,
+             busy: false
+           },
+           reason
+         )}
     end
   end
 
   defp timing_review_failure(socket, review, :stale_review) do
-    assign(socket, :review, %{
+    socket
+    |> assign(:applying?, false)
+    |> assign(:review, %{
       review
       | error: %{
           message:
@@ -2268,7 +2393,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp timing_review_failure(socket, review, reason) do
-    assign(socket, :review, %{
+    socket
+    |> assign(:applying?, false)
+    |> assign(:review, %{
       review
       | error: %{message: reasons_message(reason), action: :retry},
         busy: false
@@ -2344,13 +2471,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  defp timing_dialog_saved_message(%{mode: :add}), do: "Timing added. Assign trips in schedules."
+  defp timing_dialog_saved_message(%{mode: :add}), do: "Timing added."
   defp timing_dialog_saved_message(_dialog), do: "Timing renamed."
 
-  # Renaming clears the renamed timing's draft; adding a timing leaves every
-  # other draft alone.
-  defp timing_dialog_scope(%{mode: :rename}, socket),
-    do: {:timing, socket.assigns.selected_timing_id}
+  # Name-only operations do not persist row or headsign drafts.
+  defp timing_dialog_scope(%{mode: :rename}, _socket),
+    do: :timing_add
 
   defp timing_dialog_scope(_dialog, _socket), do: :timing_add
 
@@ -2657,6 +2783,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:applying?, false)
     |> load_screen()
     |> reset_editing_state(scope)
+    |> assign_dirty()
     |> annotate(message)
   end
 
@@ -2763,11 +2890,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     "/gtfs/#{version_id}/routes/#{socket.assigns.route_id}/patterns"
   end
 
-  defp version_pattern_path(socket, version_id) do
-    "#{version_patterns_path(socket, version_id)}/#{socket.assigns.pattern_id}" <>
-      task_query(socket)
-  end
-
   defp pattern_path(socket, pattern_id, query) do
     "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns/#{pattern_id}#{query}"
   end
@@ -2782,7 +2904,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     "#{base}?#{task_query(socket, task)}"
   end
 
-  defp task_query(socket, task \\ nil) do
+  defp task_query(socket, task) do
     task = task || socket.assigns.task
 
     case socket.assigns.selected_timing_id do

@@ -320,8 +320,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
       |> Repo.update!()
 
     [first, second] =
-      insert_trip_times(context, trip, stops, [10, 40], ["08:00:00", "08:10:00"], [
-        "08:00:00",
+      insert_trip_times(context, trip, stops, [10, 40], ["8:00:00", "08:10:00"], [
+        "8:00:00",
         "08:11:00"
       ])
 
@@ -348,7 +348,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
     assert Enum.map(after_rows, &{&1.id, &1.stop_sequence}) == [{first.id, 10}, {second.id, 40}]
 
     assert Enum.map(after_rows, &{&1.arrival_time, &1.departure_time}) == [
-             {"08:00:00", "08:00:00"},
+             {"8:00:00", "8:00:00"},
              {"08:11:00", "08:12:00"}
            ]
 

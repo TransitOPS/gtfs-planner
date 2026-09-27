@@ -877,6 +877,70 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert length(occurrences(pattern.id)) == 2
   end
 
+  test "an unsupplied all-custom derived group has an unassigned zero timing", context do
+    route_fixture(context.organization.id, context.version.id, %{route_id: "CUSTOM"})
+    stops = stops_fixture(context, [{"A", "A"}, {"B", "B"}])
+
+    imported_trip(context, "CUSTOM", "custom-only", %{
+      rows: [time_row(stops["A"], "08:00:00", "08:00:00", 1), time_row(stops["B"], nil, nil, 2)]
+    })
+
+    assert {:ok, summary} = derive_route(context, "CUSTOM")
+    assert summary.trips_custom == 1
+    assert summary.timings_created == 1
+    pattern = Repo.one!(from p in RoutePattern, where: p.route_id == "CUSTOM")
+    assert [timing] = timings(pattern.id)
+
+    assert Enum.map(timing_rows(timing.id), &{&1.arrival_offset, &1.departure_offset}) == [
+             {0, 0},
+             {0, 0}
+           ]
+
+    assert is_nil(custom("custom-only").timed_pattern_id)
+  end
+
+  test "sparse pending pages query exact trip membership across interleaved routes", context do
+    for route <- ["Sparse", "Other"],
+        do: route_fixture(context.organization.id, context.version.id, %{route_id: route})
+
+    stops = stops_fixture(context, [{"A", "A"}, {"B", "B"}])
+
+    rows = [
+      time_row(stops["A"], "08:00:00", "08:00:00", 1),
+      time_row(stops["B"], "08:10:00", "08:10:00", 2)
+    ]
+
+    for id <- ["000", "zzz"], do: imported_trip(context, "Sparse", id, %{rows: rows})
+    imported_trip(context, "Other", "middle", %{rows: rows})
+    handler = "page-membership-#{System.unique_integer([:positive])}"
+    owner = self()
+
+    :telemetry.attach(
+      handler,
+      [:gtfs_planner, :repo, :query],
+      fn _, _, metadata, _ ->
+        if metadata.source == "stop_times" and String.starts_with?(metadata.query, "SELECT"),
+          do: send(owner, {:page_query, metadata.query})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    assert {:ok, %{trips_linked: 2}} = derive_route(context, "Sparse")
+    assert Repo.get_by!(Trip, trip_id: "middle").pattern_derivation_state == "pending"
+    queries = collect_page_queries([])
+    assert Enum.count(queries, &String.contains?(&1, "= ANY")) >= 2
+    refute Enum.any?(queries, &String.contains?(&1, ">="))
+  end
+
+  defp collect_page_queries(acc) do
+    receive do
+      {:page_query, query} -> collect_page_queries([query | acc])
+    after
+      0 -> acc
+    end
+  end
+
   # --- helpers --------------------------------------------------------------
 
   defp derive_route(context, route_id) do

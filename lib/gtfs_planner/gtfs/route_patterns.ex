@@ -386,11 +386,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   def preview_stop_edit(pattern_id, operation, %AuditContext{} = audit_context)
       when is_binary(pattern_id) do
     Repo.transaction(fn ->
-      with {:ok, %{pattern: pattern} = loaded} <-
+      with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context),
+           {:ok, %{pattern: pattern} = loaded} <-
              get_pattern(
                audit_context.organization_id,
                audit_context.gtfs_version_id,
-               pattern_route_id(pattern_id, audit_context),
+               route_id,
                pattern_id
              ),
            :ok <-
@@ -455,11 +456,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
       end
 
-      with {:ok, %{pattern: pattern} = loaded} <-
+      with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context),
+           {:ok, %{pattern: pattern} = loaded} <-
              get_pattern(
                audit_context.organization_id,
                audit_context.gtfs_version_id,
-               pattern_route_id(pattern_id, audit_context),
+               route_id,
                pattern_id
              ),
            true <- is_nil(source_fingerprint) or source_fingerprint == loaded.source_fingerprint,
@@ -532,6 +534,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, attrs} <- normalize_allowed_attrs(attrs, @pattern_fields),
          :ok <- validate_noop_or_pattern(pattern, attrs) do
+      attrs = RoutePattern.changeset(pattern, attrs).changes
+
       if same_values?(pattern, attrs) do
         %{pattern: pattern, trips_updated: 0}
       else
@@ -539,7 +543,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
         updated = pattern |> RoutePattern.changeset(attrs) |> update_or_rollback!()
         maybe_clear_pattern_signature!(pattern, attrs)
-        audit!(audit_context, :route_pattern, pattern, "updated", attrs)
+
+        audit!(
+          audit_context,
+          :route_pattern,
+          pattern,
+          "updated",
+          Map.put(attrs, :affected_trips, trips_updated)
+        )
+
         %{pattern: load_pattern_for_audit!(updated.id), trips_updated: trips_updated}
       end
     else
@@ -566,6 +578,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          %TimedPattern{} = timing <- scoped_timing(pattern, timing_id),
          :ok <- validate_timing_attrs(values),
          {:ok, rows} <- validate_timing_rows(pattern, timing, rows_input) do
+      values = TimedPattern.changeset(timing, values).changes
       before = audit_timing_snapshot(timing)
 
       if same_values?(timing, values) and timing_rows_unchanged?(timing, rows) do
@@ -824,6 +837,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp verify_review_fingerprint!(loaded_view, operation, fingerprint) do
+    reviewed_source = fingerprint |> String.split(":", parts: 2) |> hd()
+
+    unless secure_equal?(reviewed_source, loaded_view.source_fingerprint),
+      do: Repo.rollback(:stale_review)
+
     pattern = loaded_view.pattern
     impact = operation_impact(operation, %{pattern: pattern})
 
@@ -958,7 +976,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     do: %{trips_affected: count_timing_trips(pattern, timing_id)}
 
   defp operation_impact({:details, attrs}, %{pattern: pattern}) when is_map(attrs) do
-    if Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id"),
+    changes = RoutePattern.changeset(pattern, attrs).changes
+
+    if Map.has_key?(changes, :direction_id),
       do: %{trips_affected: count_pattern_trips(pattern)},
       else: %{trips_affected: 0}
   end
@@ -1216,6 +1236,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     with true <- length(normalized) == length(occurrences),
          true <-
            Enum.map(normalized, & &1.route_pattern_stop_id) == Enum.map(occurrences, & &1.id),
+         true <- Enum.all?(normalized, &valid_service_row?/1),
          :ok <- validate_relative_rows(normalized) do
       {:ok, normalized}
     else
@@ -1225,6 +1246,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp validate_timing_rows(_pattern, _timing, _rows), do: {:error, :invalid_input}
+
+  defp valid_service_row?(row) do
+    row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and
+      row.drop_off_type in [nil, 0, 1, 2, 3] and
+      is_integer(row.arrival_offset) and row.arrival_offset in -2_147_483_647..2_147_483_647 and
+      is_integer(row.departure_offset) and row.departure_offset in 0..2_147_483_647
+  end
 
   defp validate_relative_rows(rows) do
     rows
@@ -1495,7 +1523,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       old_row ->
         attrs =
           Map.merge(
-            Map.take(materialized, [:arrival_time, :departure_time]),
+            preserved_clocks(old_row, materialized),
             Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
           )
           |> Map.merge(%{stop_id: occurrence.stop_id, stop_sequence: sequence})
@@ -1521,7 +1549,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       |> Enum.each(fn {old, value, timing_row} ->
         attrs =
           Map.merge(
-            Map.take(value, [:arrival_time, :departure_time]),
+            preserved_clocks(old, value),
             Map.take(timing_row, [:stop_headsign, :pickup_type, :drop_off_type, :timepoint])
           )
 
@@ -1530,6 +1558,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     else
       {:error, reason} -> Repo.rollback(reason)
     end
+  end
+
+  defp preserved_clocks(old, values) do
+    Map.new([:arrival_time, :departure_time], fn field ->
+      existing = Map.get(old, field)
+      proposed = Map.fetch!(values, field)
+
+      value =
+        if GtfsTime.parse(existing) == GtfsTime.parse(proposed), do: existing, else: proposed
+
+      {field, value}
+    end)
   end
 
   defp stop_time_attrs(trip, occurrence, materialized, timing_row, sequence) do
@@ -1773,13 +1813,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp pattern_route_id(pattern_id, audit) do
-    case route_id_for_pattern(pattern_id, audit) do
-      {:ok, route_id} -> route_id
-      {:error, _} -> nil
-    end
-  end
-
   defp load_eligible_stops!(route, stop_ids) do
     eligible =
       from(stop in Stop,
@@ -1929,8 +1962,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         where:
           trip.route_pattern_id == ^pattern.route_pattern_id and
             trip.organization_id == ^pattern.organization_id and
-            trip.gtfs_version_id == ^pattern.gtfs_version_id and
-            trip.route_id == ^pattern.route_id
+            trip.gtfs_version_id == ^pattern.gtfs_version_id
       )
 
     Repo.exists?(query)
@@ -1976,6 +2008,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       route_pattern_time_desc: pattern.route_pattern_time_desc,
       route_pattern_typicality: pattern.route_pattern_typicality,
       headsign: pattern.headsign,
+      canonical_route_pattern: pattern.canonical_route_pattern,
+      route_pattern_sort_order: pattern.route_pattern_sort_order,
       representative_trip_id: pattern.representative_trip_id,
       derivation_key: pattern.derivation_key,
       occurrences:
@@ -2084,7 +2118,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end)
   end
 
-  defp review_fingerprint(source, operation), do: digest({source, canonical(operation)})
+  defp review_fingerprint(source, operation),
+    do: source <> ":" <> digest({source, canonical(operation)})
 
   defp digest(value),
     do: :crypto.hash(:sha256, canonical_binary(value)) |> Base.encode16(case: :lower)

@@ -92,10 +92,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   end
 
   defp derive_pending_routes(organization_id, version_id, provenance, pending_routes) do
+    existing = existing_route_ids(organization_id, version_id)
+
     {missing_routes, present_routes} =
       Enum.split_with(
         pending_routes,
-        &(&1 not in existing_route_ids(organization_id, version_id))
+        &(&1 not in existing)
       )
 
     missing_custom = classify_missing_routes(organization_id, version_id, missing_routes)
@@ -443,7 +445,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     if is_nil(trip_id) do
       nil
     else
-      labels = Map.get(page_labels(route, {trip_id, trip_id}), trip_id, [])
+      labels = Map.get(page_labels(route, [trip_id]), trip_id, [])
 
       if usable_labels?(labels, eligible_stops), do: Enum.map(labels, &elem(&1, 0)), else: nil
     end
@@ -1273,12 +1275,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     end
   end
 
-  # A supplied pattern whose known stops could not link any trip still keeps the
+  # A pattern whose known stops could not link any trip still keeps the
   # promised editable starting point: exactly one zero-valued, unassigned Timing
   # A. Custom trips and their imported stop times stay untouched, and retry skips
   # any pattern that already has a timing.
   defp initialize_template_timings(state, plan) do
-    Enum.reduce(Map.values(plan.supplied), state, fn target, state ->
+    Enum.reduce(Map.values(plan.supplied) ++ Map.values(plan.derived), state, fn target, state ->
       if length(target.occurrences) >= 2 and not pattern_has_timing?(target.pattern.id) do
         {_timing_id, state} =
           create_timing(target, nil, zero_rows(length(target.occurrences)), state)
@@ -1365,18 +1367,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     :ok
   end
 
-  # A page is a contiguous `trip_id` slice of the route's pending trips, so a
-  # bounded trip_id range reads exactly that page's rows through the
-  # (organization, version, trip_id) index without a per-id plan. The returned
-  # maps are the page's working window: a constant number of rows, never the feed.
-  defp page_range(trips), do: {hd(trips).trip_id, List.last(trips).trip_id}
+  # Restrict each working window to the exact pending page, including sparse retries.
+  defp page_range(trips), do: Enum.map(trips, & &1.trip_id)
 
-  defp page_labels(route, {first_trip_id, last_trip_id}) do
+  defp page_labels(route, trip_ids) do
     from(st in StopTime,
       where:
         st.organization_id == ^route.organization_id and
-          st.gtfs_version_id == ^route.gtfs_version_id and st.trip_id >= ^first_trip_id and
-          st.trip_id <= ^last_trip_id,
+          st.gtfs_version_id == ^route.gtfs_version_id and st.trip_id in ^trip_ids,
       order_by: [asc: st.trip_id, asc: st.stop_sequence, asc: st.id],
       select: {st.trip_id, st.stop_id, st.stop_sequence}
     )
@@ -1384,12 +1382,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Enum.group_by(&elem(&1, 0), fn {_trip_id, stop_id, sequence} -> {stop_id, sequence} end)
   end
 
-  defp page_rows(route, {first_trip_id, last_trip_id}) do
+  defp page_rows(route, trip_ids) do
     from(st in StopTime,
       where:
         st.organization_id == ^route.organization_id and
-          st.gtfs_version_id == ^route.gtfs_version_id and st.trip_id >= ^first_trip_id and
-          st.trip_id <= ^last_trip_id,
+          st.gtfs_version_id == ^route.gtfs_version_id and st.trip_id in ^trip_ids,
       order_by: [asc: st.trip_id, asc: st.stop_sequence, asc: st.id],
       select:
         {st.trip_id,

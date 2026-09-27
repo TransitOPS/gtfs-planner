@@ -212,6 +212,180 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
     })
   end
 
+  describe "final conflict and draft regressions" do
+    setup :editor_scope
+
+    test "rename preserves timing drafts and structural save requires explicit discard", %{
+      conn: conn,
+      organization: org,
+      version: version
+    } do
+      %{route: route, pattern: pattern} = three_stop_pattern(org, version, "DRAFT2")
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+      change_timing(view, 2, "departure", "06:00")
+      render_click(view, "open_timing_dialog", %{"mode" => "rename"})
+      render_change(view, "validate_timing_dialog", %{"name" => "Renamed"})
+      render_click(view, "confirm_timing_dialog")
+      assert has_element?(view, "#timing-departure-2[value='06:00']")
+      render_click(view, "switch_task", %{"task" => "stops"})
+      render_click(view, "save_stops")
+      render_click(view, "switch_task", %{"task" => "timings"})
+      assert has_element?(view, "#timing-departure-2[value='06:00']")
+      render_click(view, "switch_task", %{"task" => "stops"})
+      render_click(view, "remove_stop", %{"index" => "3"})
+      render_click(view, "save_stops")
+      assert has_element?(view, "#error", "Save your timing edits")
+      assert length(occurrence_rows(pattern)) == 3
+      view |> element("#discard-timing-drafts") |> render_click()
+      render_click(view, "save_stops")
+      assert length(occurrence_rows(pattern)) == 2
+      refute has_element?(view, "#edit-status", "Unsaved changes")
+    end
+
+    test "stale copy and delete events preserve the session instead of nesting callback tuples",
+         %{conn: conn, organization: org, version: version} do
+      %{route: route, pattern: pattern} = three_stop_pattern(org, version, "ERROR2")
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
+      render_click(view, "open_delete_pattern")
+      pattern |> Ecto.Changeset.change(route_pattern_name: "Concurrent") |> Repo.update!()
+      render_click(view, "confirm_delete_pattern")
+      assert has_element?(view, "#error", "changed since")
+      render_click(view, "copy_pattern")
+      assert has_element?(view, "#error", "changed since")
+      render_click(view, "open_delete_pattern")
+      assert has_element?(view, "#error", "changed since")
+      assert Repo.get!(RoutePattern, pattern.id)
+    end
+
+    test "stale timing before review has refresh recovery and invalid text identifies its row", %{
+      conn: conn,
+      organization: org,
+      version: version
+    } do
+      %{route: route, pattern: pattern} = used_pattern(org, version, "EARLY2")
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+      change_timing(view, 2, "arrival", "bogus")
+      render_click(view, "save_timing")
+      assert has_element?(view, "#timing-arrival-2[aria-invalid='true']")
+      change_timing(view, 2, "arrival", "04:30")
+      pattern |> Ecto.Changeset.change(route_pattern_name: "Concurrent") |> Repo.update!()
+      render_click(view, "save_timing")
+      assert has_element?(view, "#timing-review-refresh")
+      view |> element("#timing-review-refresh") |> render_click()
+      refute has_element?(view, "#timing-review-dialog-confirm[disabled]")
+      view |> element("#timing-review-dialog-confirm") |> render_click()
+      assert has_element?(view, "#status", "1 trips updated")
+    end
+
+    test "details stale before review and before apply can refresh without losing input", %{
+      conn: conn,
+      organization: org,
+      version: version
+    } do
+      %{route: route, pattern: pattern} = used_pattern(org, version, "DETAIL2")
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=details"))
+      pattern |> Ecto.Changeset.change(route_pattern_name: "Concurrent") |> Repo.update!()
+
+      view
+      |> form("#pattern-details-form", pattern: %{name: "My draft", direction_id: "1"})
+      |> render_submit()
+
+      assert has_element?(view, "#details-refresh-review")
+      view |> element("#details-refresh-review") |> render_click()
+      assert has_element?(view, "#pattern-details-name[value='My draft']")
+
+      Repo.get!(RoutePattern, pattern.id)
+      |> Ecto.Changeset.change(route_pattern_sort_order: 99)
+      |> Repo.update!()
+
+      render_click(view, "apply_details_review")
+      assert has_element?(view, "#details-refresh-review")
+      view |> element("#details-refresh-review") |> render_click()
+      render_click(view, "apply_details_review")
+      assert Repo.get!(RoutePattern, pattern.id).route_pattern_name == "My draft"
+      log = Repo.one!(from l in ChangeLog, where: l.entity_id == ^pattern.id)
+      assert log.changed_fields["affected_trips"] == %{"from" => nil, "to" => 1}
+    end
+
+    test "remove-first insertion edits use the old origin and invalid explicit input blocks apply",
+         %{conn: conn, organization: org, version: version} do
+      %{route: route, pattern: pattern, timing: timing, trip: trip} =
+        used_pattern(org, version, "ORIGIN2")
+
+      extra = stop(org, version, "ORIGIN2", 99, "Inserted")
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
+      render_click(view, "remove_stop", %{"index" => "1"})
+
+      render_change(view, "live_select_change", %{
+        "id" => "pattern-stop-search",
+        "text" => "Inserted"
+      })
+
+      render_change(view, "set_insert_after", %{"insert" => %{"insert_after" => "1"}})
+      render_change(view, "choose_stop", %{"stop_search" => %{"stop_id" => extra.stop_id}})
+      render_click(view, "save_stops")
+      assert has_element?(view, "#stop-review-value-#{timing.id}-new-1-arrival[value='07:30']")
+      fill_review_values(view, timing.id, "new-1", %{"arrival" => "oops", "departure" => "08:00"})
+      assert has_element?(view, "#stop-review-dialog-confirm[disabled]")
+      fill_review_values(view, timing.id, "new-1", %{"arrival" => "07:30", "departure" => ""})
+      assert has_element?(view, "#stop-review-dialog-confirm[disabled]")
+
+      fill_review_values(view, timing.id, "new-1", %{"arrival" => "07:30", "departure" => "08:00"})
+
+      render_click(view, "acknowledge_review_timing", %{"timing_id" => timing.id})
+      render_click(view, "apply_stop_review")
+      assert arrival_clocks(trip) == ["08:04:00", "08:07:30", "08:10:00"]
+    end
+
+    test "switching versions from a pattern opens the new version Patterns tab", %{
+      conn: conn,
+      organization: org,
+      version: version
+    } do
+      %{route: route, pattern: pattern} = three_stop_pattern(org, version, "VERSION2")
+      other = gtfs_version_fixture(org.id)
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+      render_click(view, "switch_gtfs_version", %{"version" => other.id})
+      assert_redirect(view, "/gtfs/#{other.id}/routes/#{route.route_id}/patterns")
+    end
+
+    test "build errors remain visible when no pattern exists", %{
+      conn: conn,
+      organization: org,
+      version: version
+    } do
+      route = route(org, version, "BUILD2")
+
+      route
+      |> Ecto.Changeset.change(pattern_derivation_error: "stop_times_unreadable")
+      |> Repo.update!()
+
+      {:ok, view, _} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/patterns")
+      assert has_element?(view, "#patterns-derivation-error", "stop_times_unreadable")
+      assert has_element?(view, "#patterns-build-error-retry")
+    end
+
+    test "prepend may repeat the nonadjacent last stop", %{
+      conn: conn,
+      organization: org,
+      version: version
+    } do
+      %{route: route, pattern: pattern, stops: stops} = three_stop_pattern(org, version, "LOOP2")
+      last = List.last(stops)
+      {:ok, view, _} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
+
+      render_change(view, "live_select_change", %{
+        "id" => "pattern-stop-search",
+        "text" => last.stop_id
+      })
+
+      render_change(view, "set_insert_after", %{"insert" => %{"insert_after" => "-1"}})
+      render_change(view, "choose_stop", %{"stop_search" => %{"stop_id" => last.stop_id}})
+      assert has_element?(view, "#pattern-stop-1", last.stop_name)
+      assert has_element?(view, "#pattern-stop-4", last.stop_name)
+    end
+  end
+
   describe "stop search" do
     setup :editor_scope
 
