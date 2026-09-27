@@ -151,6 +151,11 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
+      # Blocks holds the organization-wide operational assets (garages and
+      # vehicles). They ignore the version in the URL, which is navigation
+      # context and selects the stop IDs the garage conflict notice compares.
+      live "/blocks/garages", Gtfs.GaragesLive, :index
+      live "/blocks/fleet", Gtfs.FleetLive, :index
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index
       live "/validation/:validation_id", Gtfs.ValidationResultLive, :show
