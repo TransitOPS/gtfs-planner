@@ -295,6 +295,73 @@ defmodule GtfsPlanner.Gtfs do
   def create_trips(_route_id, _attrs, _audit_context), do: {:error, :invalid_input}
 
   @doc """
+  Edits one trip in place through `Schedules.update_trip/5`.
+
+  `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
+  `:trip_headsign`, `:trip_short_name`, `:block_id`, `:wheelchair_accessible` and
+  `:bikes_allowed`. `expected_updated_at` must match the stored trip, otherwise
+  `{:error, :stale}` is returned with no write. A frequency trip refuses a start
+  or timing change with `:frequency_trip`, a linked trip re-materializes its stop
+  times in place against a timing of its own pattern, and a custom trip adopts a
+  timing only when its ordered stops and direction match or returns
+  `:stops_differ`. The trip ID never changes.
+  """
+  @spec update_trip(
+          String.t(),
+          Ecto.UUID.t(),
+          Schedules.update_attrs(),
+          DateTime.t() | String.t() | nil,
+          AuditContext.t()
+        ) ::
+          {:ok, GtfsPlanner.Gtfs.Trip.t()}
+          | {:error, Ecto.Changeset.t() | Schedules.update_error()}
+  def update_trip(route_id, trip_id, attrs, expected_updated_at, %AuditContext{} = audit_context)
+      when is_map(attrs) do
+    Schedules.update_trip(route_id, trip_id, attrs, expected_updated_at, audit_context)
+  end
+
+  def update_trip(_route_id, _trip_id, _attrs, _expected_updated_at, _audit_context),
+    do: {:error, :invalid_input}
+
+  @doc """
+  Duplicates one trip through `Schedules.duplicate_trip/4`.
+
+  The new trip lands on the source trip's pattern at the submitted start and
+  timing, copies the source's service and rider-facing metadata with a fresh
+  allocated trip ID and newly materialized stop times, and is audited as created.
+  A frequency source returns `{:error, :frequency_trip}` with no write.
+  """
+  @spec duplicate_trip(String.t(), Ecto.UUID.t(), Schedules.duplicate_attrs(), AuditContext.t()) ::
+          {:ok, GtfsPlanner.Gtfs.Trip.t()}
+          | {:error, Ecto.Changeset.t() | Schedules.update_error()}
+  def duplicate_trip(route_id, trip_id, attrs, %AuditContext{} = audit_context)
+      when is_map(attrs) do
+    Schedules.duplicate_trip(route_id, trip_id, attrs, audit_context)
+  end
+
+  def duplicate_trip(_route_id, _trip_id, _attrs, _audit_context), do: {:error, :invalid_input}
+
+  @doc """
+  Deletes a whole list of trips on one calendar through `Schedules.delete_trips/4`.
+
+  The list is validated in full before anything is deleted: a trip outside this
+  organization, version or route returns `{:error, :not_found}` and a trip on
+  another calendar returns `{:error, :stale}`, either with no writes. Otherwise
+  the trips' stop times and frequencies are removed before the trips in one
+  transaction and the deleted count is returned, with one shared-operation audit
+  log per trip.
+  """
+  @spec delete_trips(String.t(), String.t() | nil, [Ecto.UUID.t()], AuditContext.t()) ::
+          {:ok, non_neg_integer()} | {:error, Schedules.delete_error()}
+  def delete_trips(route_id, service_id, trip_ids, %AuditContext{} = audit_context)
+      when is_list(trip_ids) do
+    Schedules.delete_trips(route_id, service_id, trip_ids, audit_context)
+  end
+
+  def delete_trips(_route_id, _service_id, _trip_ids, _audit_context),
+    do: {:error, :invalid_input}
+
+  @doc """
   Loads the independent station-detail regions (child stops, levels, pathways,
   and editing status) for a fetched station through the configured catalog read
   adapter.
