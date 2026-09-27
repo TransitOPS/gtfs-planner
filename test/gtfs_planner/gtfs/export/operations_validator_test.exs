@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsValidatorTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Export
+  alias GtfsPlanner.GtfsValidatorCli
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OperationsFixtures
@@ -54,8 +55,10 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsValidatorTest do
 
     assert Enum.sort(operations_entries) == Enum.sort(full_entries ++ @tods_files)
 
-    full_report = run_validator!(Path.join(tmp_dir, "full-report"), full_zip)
-    operations_report = run_validator!(Path.join(tmp_dir, "operations-report"), operations_zip)
+    full_report = GtfsValidatorCli.run!(Path.join(tmp_dir, "full-report"), full_zip)
+
+    operations_report =
+      GtfsValidatorCli.run!(Path.join(tmp_dir, "operations-report"), operations_zip)
 
     assert report_summary(full_report)["validatorVersion"] == @validator_version
     assert report_summary(operations_report)["validatorVersion"] == @validator_version
@@ -144,35 +147,6 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsValidatorTest do
     Enum.map(entries, fn {name, _content} -> List.to_string(name) end)
   end
 
-  defp run_validator!(output_dir, zip_path) do
-    java_path = Application.get_env(:gtfs_planner, :java_path, "java")
-    jar_path = Application.fetch_env!(:gtfs_planner, :gtfs_validator_path)
-
-    assert System.find_executable(java_path),
-           "configured JDK (config/runtime.exs :java_path) is not executable: #{java_path}"
-
-    assert File.regular?(jar_path), "tracked validator jar is missing: #{jar_path}"
-
-    File.mkdir_p!(output_dir)
-
-    args = ["-jar", jar_path, "-i", zip_path, "-o", output_dir, "--skip_validator_update"]
-
-    {output, exit_code} = System.cmd(java_path, args, stderr_to_stdout: true)
-
-    assert exit_code == 0,
-           "validator exited #{exit_code} for #{Path.basename(zip_path)}:\n#{output}"
-
-    report_path = Path.join(output_dir, "report.json")
-    assert File.regular?(report_path), "validator wrote no report.json for #{zip_path}"
-
-    report = report_path |> File.read!() |> Jason.decode!()
-
-    assert is_map(report_summary(report)), "report.json has no summary object for #{zip_path}"
-    assert is_list(report["notices"]), "report.json has no notices list for #{zip_path}"
-
-    report
-  end
-
   defp report_summary(report), do: report["summary"]
 
   # The 7.1.0 report holds one entry per notice code:
@@ -180,26 +154,22 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsValidatorTest do
   #   "totalNotices" => n, "sampleNotices" => [%{"filename" => ...}, ...]}
   defp error_codes(report) do
     report
-    |> notices()
-    |> Enum.filter(&(notice_severity(&1) == "ERROR"))
+    |> GtfsValidatorCli.notices()
+    |> Enum.filter(&(GtfsValidatorCli.severity(&1) == "ERROR"))
     |> Enum.map(& &1["code"])
     |> MapSet.new()
   end
 
   defp tods_file_notices(report) do
     report
-    |> notices()
+    |> GtfsValidatorCli.notices()
     |> Enum.flat_map(fn notice ->
       notice
       |> mentioned_files()
       |> Enum.filter(&(&1 in @tods_files))
-      |> Enum.map(fn file -> {file, notice["code"], notice_severity(notice)} end)
+      |> Enum.map(fn file -> {file, notice["code"], GtfsValidatorCli.severity(notice)} end)
     end)
   end
-
-  defp notices(report), do: Map.get(report, "notices", [])
-
-  defp notice_severity(notice), do: notice["severity"] |> to_string() |> String.upcase()
 
   defp mentioned_files(notice) do
     notice
