@@ -26,6 +26,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   optional limit is edited as hours and stored as minutes by
   `Operations.VehicleType`, and in-use deletion is refused by the database
   constraint the delete translates to a message.
+
+  `#vehicle-drawer` edits one vehicle and creates a numbered group. Adding uses
+  a One vehicle / Numbered group mode switch; the numbered-group `#range-preview`
+  applies the same padding rule as `Operations.create_vehicle_range/3` so
+  `0098`–`0102` reads as five padded IDs, but the context remains authoritative:
+  the preview is feedback and a refused submit keeps the mode and the entries.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -33,11 +39,20 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   import GtfsPlannerWeb.Gtfs.OperationsComponents, only: [scope_note: 1]
 
   alias GtfsPlanner.Operations
+  alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
   alias GtfsPlanner.Versions
 
   @vehicle_type_form_id "vehicle-type-form"
   @vehicle_type_form_error_id "vehicle-type-form-error"
+  @vehicle_form_id "vehicle-form"
+  @vehicle_form_error_id "vehicle-form-error"
+  @range_form_id "vehicle-range-form"
+
+  # Mirrors the two bounds `Operations.create_vehicle_range/3` enforces before it
+  # allocates anything; the preview only reports them and never relaxes them.
+  @range_limit 200
+  @max_vehicle_id_length 255
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -69,6 +84,18 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
      |> assign(:type_notice, nil)
      |> assign(:type_delete_target, nil)
      |> assign(:type_in_use, nil)
+     |> assign(:vehicle_drawer_open, false)
+     |> assign(:vehicle_mode, :single)
+     |> assign(:vehicle_entity, nil)
+     |> assign(:vehicle_form, vehicle_form(%Vehicle{}, %{}))
+     |> assign(:range_form, vehicle_range_form(%{}))
+     |> assign(:range_preview, range_preview_message("", ""))
+     |> assign(:vehicle_drawer_title, "Add vehicles")
+     |> assign(:vehicle_drawer_return_focus_id, nil)
+     |> assign(:vehicle_notice, nil)
+     |> assign(:vehicle_error, nil)
+     |> assign(:vehicle_type_choices, [])
+     |> assign(:garage_choices, [])
      |> stream(:vehicles, [])
      |> stream(:vehicle_types, [])}
   end
@@ -162,15 +189,14 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   @impl true
   def handle_event("save_vehicle_type", %{"vehicle_type" => params}, socket) do
     organization_id = socket.assigns.current_organization.id
-    actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
 
     result =
       case socket.assigns.type_entity do
         nil ->
-          Operations.create_vehicle_type(organization_id, actor, params)
+          Operations.create_vehicle_type(organization_id, actor(socket), params)
 
         vehicle_type ->
-          Operations.update_vehicle_type(organization_id, actor, vehicle_type.id, params)
+          Operations.update_vehicle_type(organization_id, actor(socket), vehicle_type.id, params)
       end
 
     case result do
@@ -234,24 +260,130 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     end
   end
 
-  defp delete_vehicle_type(socket, vehicle_type) do
-    case Operations.delete_vehicle_type(socket.assigns.current_organization.id, vehicle_type.id) do
-      {:ok, deleted} ->
-        {:noreply,
-         socket
-         |> assign(:type_delete_target, nil)
-         |> close_vehicle_type_drawer()
-         |> load_fleet()
-         |> assign(:type_notice, "#{deleted.name} deleted.")}
+  # --- vehicle drawer --------------------------------------------------------
 
-      {:error, {:in_use, vehicles: _count}} ->
-        {:noreply,
-         socket |> assign(:type_delete_target, nil) |> assign(:type_in_use, vehicle_type)}
+  @impl true
+  def handle_event("open_vehicle", %{"vehicle_id" => id} = params, socket)
+      when is_binary(id) and id != "" do
+    case load_vehicle(socket, id) do
+      nil ->
+        {:noreply, socket}
 
-      {:error, :not_found} ->
-        {:noreply, socket |> assign(:type_delete_target, nil) |> load_fleet()}
+      vehicle ->
+        {:noreply, open_edit_vehicle(socket, vehicle, params["opener_id"])}
     end
   end
+
+  def handle_event("open_vehicle", params, socket) do
+    {:noreply, open_add_vehicle(socket, params["opener_id"])}
+  end
+
+  @impl true
+  def handle_event("close_vehicle_drawer", _params, socket) do
+    {:noreply, close_vehicle_drawer(socket)}
+  end
+
+  @impl true
+  def handle_event("select_vehicle_mode", %{"vehicle_mode" => mode}, socket) do
+    case vehicle_mode(mode) do
+      nil -> {:noreply, socket}
+      mode -> {:noreply, switch_vehicle_mode(socket, mode)}
+    end
+  end
+
+  def handle_event("select_vehicle_mode", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("validate_vehicle", %{"vehicle" => params}, socket) do
+    changeset =
+      socket
+      |> vehicle_base()
+      |> Operations.change_vehicle(params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, :vehicle_form, to_form(changeset, as: :vehicle))}
+  end
+
+  def handle_event("validate_vehicle", _payload, socket), do: {:noreply, socket}
+
+  # The preview is recomputed from the submitted entries, so the server owns the
+  # padding rule and the browser never has to. Editing the range also clears a
+  # previous refusal, which the operator is correcting.
+  @impl true
+  def handle_event("validate_vehicle_range", %{"range" => params}, socket) do
+    {:noreply, socket |> assign_vehicle_range(params) |> assign(:vehicle_error, nil)}
+  end
+
+  def handle_event("validate_vehicle_range", _payload, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_vehicle", %{"vehicle" => params}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    actor = actor(socket)
+    editing? = not is_nil(socket.assigns.vehicle_entity)
+
+    result =
+      case socket.assigns.vehicle_entity do
+        nil -> Operations.create_vehicle(organization_id, actor, params)
+        vehicle -> Operations.update_vehicle(organization_id, actor, vehicle.id, params)
+      end
+
+    case result do
+      {:ok, vehicle} ->
+        {:noreply,
+         socket
+         |> close_vehicle_drawer()
+         |> load_fleet()
+         |> assign(:vehicle_notice, vehicle_saved_notice(vehicle.vehicle_id, editing?))}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:vehicle_form, to_form(changeset, as: :vehicle))
+         |> push_event("focus_form_error", %{
+           form_id: @vehicle_form_id,
+           fallback_id: @vehicle_form_error_id
+         })}
+
+      {:error, :not_found} ->
+        # The vehicle or one of its assignments disappeared before the save.
+        {:noreply, socket |> close_vehicle_drawer() |> load_fleet()}
+    end
+  end
+
+  def handle_event("save_vehicle", %{"range" => params}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    actor = actor(socket)
+
+    case Operations.create_vehicle_range(organization_id, actor, params) do
+      {:ok, vehicles} ->
+        {:noreply,
+         socket
+         |> close_vehicle_drawer()
+         |> load_fleet()
+         |> assign(:vehicle_notice, vehicles_added_notice(length(vehicles)))}
+
+      # A rejected batch changes nothing, so the mode and the entries stay put.
+      {:error, {:invalid_range, message}} ->
+        {:noreply,
+         socket
+         |> assign_vehicle_range(params)
+         |> assign(:vehicle_error, message)
+         |> focus_vehicle_form_error()}
+
+      {:error, {:ids_taken, ids}} ->
+        {:noreply,
+         socket
+         |> assign_vehicle_range(params)
+         |> assign(:vehicle_error, ids_taken_message(ids))
+         |> focus_vehicle_form_error()}
+
+      {:error, :not_found} ->
+        {:noreply, socket |> close_vehicle_drawer() |> load_fleet()}
+    end
+  end
+
+  def handle_event("save_vehicle", _params, socket), do: {:noreply, socket}
 
   # --- rendering -------------------------------------------------------------
 
@@ -284,8 +416,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
             id="add-vehicles-header"
             variant={if(@vehicles_empty?, do: "secondary", else: "primary")}
             class="min-h-11"
-            disabled
-            title="Not available yet"
+            phx-click="open_vehicle"
+            phx-value-opener_id="add-vehicles-header"
           >
             Add vehicles
           </.button>
@@ -295,13 +427,17 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       <.scope_note organization_name={@current_organization.name} class="mt-2" />
 
       <p id="fleet-actions-note" class="mt-2 text-sm text-base-content/70">
-        Adding and importing vehicles are not available yet.
+        Importing vehicles is not available yet.
       </p>
 
       <.blocks_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:fleet} />
 
       <p :if={@type_notice} id="vehicle-type-notice" role="status" class="mt-3 text-sm text-success">
         {@type_notice}
+      </p>
+
+      <p :if={@vehicle_notice} id="vehicle-notice" role="status" class="mt-3 text-sm text-success">
+        {@vehicle_notice}
       </p>
 
       <%!-- `callout/1` spreads global attributes onto its own class, so the margin
@@ -424,7 +560,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         >
           Enter one vehicle or add a numbered group, such as 1201 through 1215.
           <:action>
-            <.button id="add-vehicles" class="min-h-11" disabled title="Not available yet">
+            <.button
+              id="add-vehicles"
+              class="min-h-11"
+              phx-click="open_vehicle"
+              phx-value-opener_id="add-vehicles"
+            >
               Add vehicles
             </.button>
           </:action>
@@ -477,7 +618,16 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
             <.table id="vehicles-table" rows={@streams.vehicles}>
               <:col :let={{_id, vehicle}} label="Vehicle ID">
-                <span class="font-mono text-sm font-semibold">{vehicle.vehicle_id}</span>
+                <button
+                  id={"vehicle-id-#{vehicle.id}"}
+                  type="button"
+                  phx-click="open_vehicle"
+                  phx-value-vehicle_id={vehicle.id}
+                  phx-value-opener_id={"vehicle-id-#{vehicle.id}"}
+                  class="font-mono text-sm font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                >
+                  {vehicle.vehicle_id}
+                </button>
               </:col>
               <:col :let={{_id, vehicle}} label="Label">
                 <span :if={blank?(vehicle.vehicle_label)} class="text-base-content/70">—</span>
@@ -534,6 +684,20 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         return_focus_id={@type_drawer_return_focus_id}
       />
 
+      <.vehicle_drawer
+        open={@vehicle_drawer_open}
+        title={@vehicle_drawer_title}
+        mode={@vehicle_mode}
+        entity={@vehicle_entity}
+        form={@vehicle_form}
+        range_form={@range_form}
+        type_options={@vehicle_type_choices}
+        garage_options={@garage_choices}
+        range_preview={@range_preview}
+        error={@vehicle_error}
+        return_focus_id={@vehicle_drawer_return_focus_id}
+      />
+
       <.confirm_dialog
         :if={@type_delete_target}
         id="vehicle-type-delete-confirm"
@@ -569,6 +733,40 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       </.confirm_dialog>
     </Layouts.app>
     """
+  end
+
+  defp focus_vehicle_form_error(socket) do
+    push_event(socket, "focus_form_error", %{
+      form_id: @vehicle_form_id,
+      fallback_id: @vehicle_form_error_id
+    })
+  end
+
+  # A submit does not set the form's params, so a refused batch re-assigns them
+  # from the payload: the entries and the preview survive the refusal.
+  defp assign_vehicle_range(socket, params) do
+    socket
+    |> assign(:range_form, vehicle_range_form(params))
+    |> assign(:range_preview, range_preview_message(params["first"], params["last"]))
+  end
+
+  defp delete_vehicle_type(socket, vehicle_type) do
+    case Operations.delete_vehicle_type(socket.assigns.current_organization.id, vehicle_type.id) do
+      {:ok, deleted} ->
+        {:noreply,
+         socket
+         |> assign(:type_delete_target, nil)
+         |> close_vehicle_type_drawer()
+         |> load_fleet()
+         |> assign(:type_notice, "#{deleted.name} deleted.")}
+
+      {:error, {:in_use, vehicles: _count}} ->
+        {:noreply,
+         socket |> assign(:type_delete_target, nil) |> assign(:type_in_use, vehicle_type)}
+
+      {:error, :not_found} ->
+        {:noreply, socket |> assign(:type_delete_target, nil) |> load_fleet()}
+    end
   end
 
   attr :open, :boolean, required: true
@@ -669,6 +867,201 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     """
   end
 
+  attr :open, :boolean, required: true
+  attr :title, :string, required: true
+  attr :mode, :atom, required: true
+  attr :entity, :any, default: nil
+  attr :form, :any, required: true
+  attr :range_form, :any, required: true
+  attr :type_options, :list, required: true
+  attr :garage_options, :list, required: true
+  attr :range_preview, :string, required: true
+  attr :error, :string, default: nil
+  attr :return_focus_id, :string, default: nil
+
+  defp vehicle_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:form_id, @vehicle_form_id)
+      |> assign(:form_error_id, @vehicle_form_error_id)
+      |> assign(:range_form_id, @range_form_id)
+      # Adding always opens on the one-vehicle form, so the field that takes
+      # focus on open is fixed. Switching mode keeps focus on the mode control
+      # the operator just used; the form's own first field is one Tab away.
+      |> assign(:focus_field_id, "vehicle_vehicle_id")
+
+    ~H"""
+    <.drawer
+      id="vehicle-drawer"
+      open={@open}
+      on_close="close_vehicle_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      initial_focus_id={@focus_field_id}
+      return_focus_id={@return_focus_id}
+    >
+      <div id="vehicle-drawer-content" phx-hook="FormErrorFocus">
+        <p id="vehicle-drawer-description" class="mb-4 text-sm text-base-content/70">
+          {if @entity,
+            do: "Update this vehicle’s details.",
+            else: "Enter one vehicle or add a numbered group at once."}
+        </p>
+
+        <div :if={@error} class="mb-4">
+          <.callout id={@form_error_id} kind="error" title="Nothing was saved" tabindex="-1">
+            {@error}
+          </.callout>
+        </div>
+
+        <.segmented_control
+          :if={is_nil(@entity)}
+          id="vehicle-mode"
+          name="vehicle_mode"
+          legend="Number of vehicles"
+          options={[{"One vehicle", "single"}, {"Numbered group", "range"}]}
+          value={Atom.to_string(@mode)}
+          event="select_vehicle_mode"
+          appearance={:joined}
+        />
+
+        <.form
+          :if={@mode == :single or not is_nil(@entity)}
+          for={@form}
+          id={@form_id}
+          novalidate
+          phx-change="validate_vehicle"
+          phx-submit="save_vehicle"
+          class="mt-4 space-y-1"
+        >
+          <div :if={is_nil(@error) and save_failed?(@form)} class="mb-4">
+            <.callout
+              id={@form_error_id}
+              kind="error"
+              title="Check the highlighted fields"
+              tabindex="-1"
+            >
+              Nothing was saved. Correct the fields marked below, then save again.
+            </.callout>
+          </div>
+
+          <.input
+            field={@form[:vehicle_id]}
+            type="text"
+            label="Vehicle ID"
+            spellcheck="false"
+          />
+
+          <.input field={@form[:vehicle_label]} type="text" label="Label (optional)" />
+
+          <.input
+            field={@form[:vehicle_type_id]}
+            type="select"
+            label="Vehicle type (optional)"
+            prompt="Not assigned"
+            options={@type_options}
+          />
+
+          <.input
+            field={@form[:garage_id]}
+            type="select"
+            label="Garage (optional)"
+            prompt="Not assigned"
+            options={@garage_options}
+          />
+
+          <.input field={@form[:license_plate]} type="text" label="License plate (optional)" />
+
+          <.vehicle_assignment_hint />
+
+          <div class="flex flex-wrap items-center gap-3 pt-3">
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+              {if @entity, do: "Save vehicle", else: "Add vehicle"}
+            </.button>
+            <.button
+              type="button"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="close_vehicle_drawer"
+            >
+              Cancel
+            </.button>
+          </div>
+        </.form>
+
+        <.form
+          :if={@mode == :range and is_nil(@entity)}
+          for={@range_form}
+          id={@range_form_id}
+          novalidate
+          phx-change="validate_vehicle_range"
+          phx-submit="save_vehicle"
+          class="mt-4 space-y-1"
+        >
+          <div class="grid gap-4 sm:grid-cols-2">
+            <.input
+              field={@range_form[:first]}
+              type="text"
+              inputmode="numeric"
+              label="First number"
+            />
+
+            <.input field={@range_form[:last]} type="text" inputmode="numeric" label="Last number" />
+          </div>
+
+          <p
+            id="range-preview"
+            aria-live="polite"
+            class="mt-1 rounded-box border border-base-300 bg-base-200 px-3 py-2 text-sm"
+          >
+            {@range_preview}
+          </p>
+
+          <.input
+            field={@range_form[:vehicle_type_id]}
+            type="select"
+            label="Vehicle type (optional)"
+            prompt="Not assigned"
+            options={@type_options}
+          />
+
+          <.input
+            field={@range_form[:garage_id]}
+            type="select"
+            label="Garage (optional)"
+            prompt="Not assigned"
+            options={@garage_options}
+          />
+
+          <.vehicle_assignment_hint />
+
+          <div class="flex flex-wrap items-center gap-3 pt-3">
+            <.button type="submit" class="min-h-11" phx-disable-with="Adding…">
+              Add vehicles
+            </.button>
+            <.button
+              type="button"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="close_vehicle_drawer"
+            >
+              Cancel
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # One spelling for the copy that sits under both mode's assignment selects.
+  defp vehicle_assignment_hint(assigns) do
+    ~H"""
+    <p class="pt-1 text-sm text-base-content/70">
+      Vehicles without a type or garage are saved, but may be missing from fleet checks.
+    </p>
+    """
+  end
+
   # --- fleet state -----------------------------------------------------------
 
   defp refresh_fleet(socket, params, uri) do
@@ -682,9 +1075,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     |> load_fleet()
   end
 
-  # Loads every list the page renders from the current filter state. Both a URL
-  # change and a type mutation reuse it, so a renamed type's name also updates
-  # the vehicle rows and the summary breakdown without a separate query path.
+  # Loads every list the page renders from the current filter state. A URL
+  # change, a type mutation and a vehicle mutation all reuse it, so a renamed
+  # type's name also updates the vehicle rows and the summary breakdown without a
+  # separate query path.
   defp load_fleet(socket) do
     organization_id = socket.assigns.current_organization.id
 
@@ -697,6 +1091,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     counts = summary_counts(summary)
 
     socket
+    |> assign(:vehicle_type_choices, Enum.map(vehicle_types, &{&1.name, &1.id}))
+    |> assign(:garage_choices, Enum.map(garages, &{&1.name, &1.id}))
     |> assign(:vehicle_type_options, vehicle_type_options(vehicle_types))
     |> assign(:garage_options, garage_options(garages))
     |> assign(:total_count, counts.total)
@@ -710,10 +1106,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     |> stream(:vehicle_types, vehicle_types, reset: true)
   end
 
-  # Both option lists are the organization's own rows, ordered by name, so they
+  # The option lists are the organization's own rows, ordered by name, so they
   # are rebuilt from the loaded rows on every refresh rather than cached across
-  # a mutation. "Not assigned" is the `none` filter the context accepts, which
-  # selects the rows whose garage or type is nil.
+  # a mutation. The filters append "Not assigned", which is the `none` filter the
+  # context accepts and selects the rows whose garage or type is nil; the drawer
+  # spends only a blank prompt on the same state, which clears the assignment.
   defp vehicle_type_options(vehicle_types) do
     Enum.map(vehicle_types, &{&1.name, &1.id}) ++ [{"Not assigned", "none"}]
   end
@@ -792,6 +1189,161 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       "" -> fleet_path(socket.assigns.current_gtfs_version.id, nil)
       encoded -> fleet_path(socket.assigns.current_gtfs_version.id, encoded)
     end
+  end
+
+  # --- vehicle drawer state --------------------------------------------------
+
+  defp actor(socket) do
+    %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
+  end
+
+  defp vehicle_form(vehicle, attrs) do
+    vehicle
+    |> Operations.change_vehicle(attrs)
+    |> to_form(as: :vehicle)
+  end
+
+  # The type and garage selects are outside `Vehicle.changeset/2`'s cast list,
+  # because the context validates each assignment against the organization
+  # before it writes. `to_form/2` still reads them from the vehicle struct (or
+  # from the submitted params), so the drawer shows the stored assignment and
+  # keeps the operator's choice across a change event.
+  defp vehicle_base(socket), do: socket.assigns.vehicle_entity || %Vehicle{}
+
+  # A numbered group has no schema to change: the four entries are handed to
+  # `Operations.create_vehicle_range/3` unchanged and the context validates them.
+  defp vehicle_range_form(attrs) do
+    types = %{first: :string, last: :string, vehicle_type_id: :string, garage_id: :string}
+
+    {%{}, types}
+    |> Ecto.Changeset.cast(attrs, Map.keys(types))
+    |> to_form(as: :range)
+  end
+
+  defp vehicle_mode("single"), do: :single
+  defp vehicle_mode("range"), do: :range
+  defp vehicle_mode(_mode), do: nil
+
+  defp open_add_vehicle(socket, opener_id) do
+    socket
+    |> assign(:vehicle_entity, nil)
+    |> assign(:vehicle_mode, :single)
+    |> assign(:vehicle_form, vehicle_form(%Vehicle{}, %{}))
+    |> assign(:range_form, vehicle_range_form(%{}))
+    |> assign(:range_preview, range_preview_message("", ""))
+    |> assign(:vehicle_drawer_title, "Add vehicles")
+    |> assign(:vehicle_drawer_return_focus_id, opener_id)
+    |> assign(:vehicle_notice, nil)
+    |> assign(:vehicle_error, nil)
+    |> assign(:vehicle_drawer_open, true)
+  end
+
+  defp open_edit_vehicle(socket, vehicle, opener_id) do
+    socket
+    |> assign(:vehicle_entity, vehicle)
+    |> assign(:vehicle_mode, :single)
+    |> assign(:vehicle_form, vehicle_form(vehicle, %{}))
+    |> assign(:vehicle_drawer_title, "Edit vehicle")
+    |> assign(:vehicle_drawer_return_focus_id, opener_id)
+    |> assign(:vehicle_notice, nil)
+    |> assign(:vehicle_error, nil)
+    |> assign(:vehicle_drawer_open, true)
+  end
+
+  # Switching modes starts the other form empty, as the reference drawer does;
+  # the opener id survives the close so the OverlayDialog hook can still read it.
+  defp switch_vehicle_mode(socket, mode) do
+    socket
+    |> assign(:vehicle_mode, mode)
+    |> assign(:vehicle_form, vehicle_form(%Vehicle{}, %{}))
+    |> assign(:range_form, vehicle_range_form(%{}))
+    |> assign(:range_preview, range_preview_message("", ""))
+    |> assign(:vehicle_error, nil)
+  end
+
+  defp close_vehicle_drawer(socket) do
+    socket
+    |> assign(:vehicle_drawer_open, false)
+    |> assign(:vehicle_entity, nil)
+    |> assign(:vehicle_mode, :single)
+    |> assign(:vehicle_error, nil)
+  end
+
+  # The row trigger carries the vehicle's UUID, so the drawer re-reads the
+  # organization's own rows rather than trusting the event; a malformed or
+  # foreign id selects nothing.
+  defp load_vehicle(socket, id) when is_binary(id) do
+    socket.assigns.current_organization.id
+    |> Operations.list_vehicles(%{})
+    |> Enum.find(&(&1.id == id))
+  end
+
+  defp load_vehicle(_socket, _id), do: nil
+
+  # The same padding rule `Operations.create_vehicle_range/3` applies, stated
+  # here so the operator sees which IDs a group will claim before saving.
+  # `0098`–`0102` reads as five four-digit IDs. Anything the rule cannot accept
+  # falls back to the limit sentence, and the context still decides the save.
+  defp range_preview_message(first, last) do
+    case range_preview_ids(first, last) do
+      {:ok, ids} ->
+        "Adds #{hd(ids)}–#{List.last(ids)} (#{vehicle_count_text(length(ids))})"
+
+      :error ->
+        "Choose a numbered group of 1 to 200 vehicles."
+    end
+  end
+
+  defp range_preview_ids(first, last) do
+    with {:ok, first_value, width} <- range_preview_bound(first),
+         {:ok, last_value, _last_digits} <- range_preview_bound(last),
+         {:ok, count} <- range_preview_count(first_value, last_value) do
+      range_preview_padded_ids(first_value, count, width)
+    else
+      :error -> :error
+    end
+  end
+
+  defp range_preview_count(first_value, last_value) do
+    count = last_value - first_value + 1
+
+    if count in 1..@range_limit, do: {:ok, count}, else: :error
+  end
+
+  defp range_preview_padded_ids(first_value, count, width) do
+    ids =
+      Enum.map(
+        first_value..(first_value + count - 1),
+        &String.pad_leading(Integer.to_string(&1), width, "0")
+      )
+
+    if Enum.all?(ids, &(String.length(&1) <= @max_vehicle_id_length)),
+      do: {:ok, ids},
+      else: :error
+  end
+
+  defp range_preview_bound(value) when is_binary(value) do
+    digits = String.trim(value)
+
+    cond do
+      String.length(digits) > @max_vehicle_id_length -> :error
+      Regex.match?(~r/^\d+$/, digits) -> {:ok, String.to_integer(digits), String.length(digits)}
+      true -> :error
+    end
+  end
+
+  defp range_preview_bound(_value), do: :error
+
+  defp vehicle_saved_notice(vehicle_id, true), do: "#{vehicle_id} saved."
+  defp vehicle_saved_notice(vehicle_id, false), do: "#{vehicle_id} added."
+
+  defp vehicles_added_notice(count), do: "#{vehicle_count_text(count)} added."
+
+  defp vehicle_count_text(1), do: "1 vehicle"
+  defp vehicle_count_text(count), do: "#{count} vehicles"
+
+  defp ids_taken_message(ids) do
+    "No vehicles were added. These IDs already exist: #{Enum.join(ids, ", ")}. Choose unused numbers."
   end
 
   # --- vehicle type state ----------------------------------------------------
