@@ -775,11 +775,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert created.route_pattern_id == scope.long.pattern.route_pattern_id
       assert length(Repo.all(from(s in StopTime, where: s.trip_id == ^created.trip_id))) == 2
 
-      # One audit entry names the created trip.
+      # One audit entry names the created trip. The query is scoped to this
+      # case's own organization and version: an unscoped count also matches
+      # created-trip logs left on the same partition by the browser journeys,
+      # which made the assertion depend on suite ordering.
       assert [log] =
                Repo.all(
                  from(l in GtfsPlanner.Gtfs.ChangeLog,
-                   where: l.entity_type == "trip" and l.action == "created"
+                   where:
+                     l.entity_type == "trip" and l.action == "created" and
+                       l.organization_id == ^scope.organization_id and
+                       l.gtfs_version_id == ^scope.version.id
                  )
                )
 
