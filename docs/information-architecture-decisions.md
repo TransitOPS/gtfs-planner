@@ -199,8 +199,12 @@ Frequency trips are read-only there. The planned basic-blocking work makes `bloc
 Schedules and edits it on Blocks:
 - A duplicated or newly created trip starts without a block and appears in the Blocks pool. A
   copied block would put the trip on a vehicle where Schedules can't show or change it.
-- Retiming a trip or changing its calendar keeps its block. If the block gains an overlap or
-  another problem, Schedules warns and links to Blocks.
+- Retiming a trip keeps its block, and Schedules warns and links to Blocks if the block has an
+  overlap or another problem.
+- Changing a trip's calendar keeps its block only if the trip would run with the same block-mates
+  as before. Otherwise the block is cleared and Schedules says why: "Removed from block 101: on
+  Saturdays, block 101 is another vehicle's work." Agencies reuse block numbers across weekday
+  and weekend service, so keeping the number would silently join a different vehicle's work.
 - The block link opens the first day type, in the Blocks list order, that contains the trip, with
   the trip selected. A trip often runs in several day types; its drawer on Blocks lists them.
 
