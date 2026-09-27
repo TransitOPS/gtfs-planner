@@ -27,6 +27,39 @@ defmodule GtfsPlanner.OperationsFixtures do
   end
 
   @doc """
+  Generate a vehicle type in an organization.
+
+  Pass `"max_out_hours"` to set the optional limit; it is stored as minutes.
+  """
+  def vehicle_type_fixture(organization_id, attrs \\ %{}) do
+    attrs =
+      Enum.into(
+        normalize_keys(attrs),
+        %{"name" => "Type #{System.unique_integer([:positive])}"}
+      )
+
+    {:ok, vehicle_type} = Operations.create_vehicle_type(organization_id, actor(), attrs)
+    vehicle_type
+  end
+
+  @doc """
+  Generate a vehicle in an organization.
+
+  Pass `"vehicle_type_id"` and/or `"garage_id"` to assign organization-owned
+  parents.
+  """
+  def vehicle_fixture(organization_id, attrs \\ %{}) do
+    attrs =
+      Enum.into(
+        normalize_keys(attrs),
+        %{"vehicle_id" => "vehicle_#{System.unique_integer([:positive])}"}
+      )
+
+    {:ok, vehicle} = Operations.create_vehicle(organization_id, actor(), attrs)
+    vehicle
+  end
+
+  @doc """
   Generate an opaque actor map for Operations writes.
   """
   def operations_actor, do: actor()
