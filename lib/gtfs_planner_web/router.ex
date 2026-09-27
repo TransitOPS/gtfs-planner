@@ -165,6 +165,12 @@ defmodule GtfsPlannerWeb.Router do
       live "/flex", Gtfs.ComingSoonLive, :flex
       live "/blocks/garages", Gtfs.GaragesLive, :index
       live "/blocks/fleet", Gtfs.FleetLive, :index
+      # Settings holds the version's rarely changed configuration, including its
+      # organization-level group. The overview is declared before the section
+      # route so it is never treated as an unknown slug; the literal garages and
+      # fleet routes join it ahead of the section route when those pages move.
+      live "/settings", Gtfs.SettingsLive, :index
+      live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index
       live "/validation/:validation_id", Gtfs.ValidationResultLive, :show

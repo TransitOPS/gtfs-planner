@@ -622,8 +622,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       assert has_element?(view, "#route-filter-form")
       assert has_element?(view, "#route-search-form")
 
-      assert Enum.count(LazyHTML.query(LazyHTML.from_fragment(render(view)), "#routes-tabs h1")) ==
-               0
+      assert Enum.empty?(LazyHTML.query(LazyHTML.from_fragment(render(view)), "#routes-tabs h1"))
     end
 
     test "loads the route catalog through the production adapter on an ordinary mount", %{

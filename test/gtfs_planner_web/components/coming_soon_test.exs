@@ -115,11 +115,18 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "raises for a key outside the catalog" do
-      assert_raise FunctionClauseError, fn -> apply(ComingSoon, :feature, [:unbuilt]) end
+      # `Function.identity/1` passes the value through while keeping it out of the
+      # compiler's type checker, which would otherwise warn that the literal
+      # cannot match the closed clause set. The call under test is unchanged.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:unbuilt))
+      end
     end
 
     test "does not convert a string into a catalog key" do
-      assert_raise FunctionClauseError, fn -> apply(ComingSoon, :feature, ["transfers"]) end
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity("transfers"))
+      end
     end
   end
 
@@ -178,7 +185,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       assert text_of(doc, "#coming-soon") =~ "What it will include"
 
       for selector <- ["form", "button", "a", "input", "select", "textarea"] do
-        assert Enum.count(LazyHTML.query(doc, "#coming-soon #{selector}")) == 0
+        assert Enum.empty?(LazyHTML.query(doc, "#coming-soon #{selector}"))
       end
     end
   end
