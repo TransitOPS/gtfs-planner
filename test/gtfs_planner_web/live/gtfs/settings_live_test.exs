@@ -74,7 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   defp assert_entry(doc, key, title, href, status) do
     entry = entry_doc(doc, key)
 
-    assert LazyHTML.query(entry, "a") != []
+    refute Enum.empty?(LazyHTML.query(entry, "a"))
     assert LazyHTML.text(LazyHTML.query(entry, "a")) |> String.trim() == title
     assert LazyHTML.attribute(LazyHTML.query(entry, "a"), "href") == [href]
     assert LazyHTML.text(entry) =~ status
@@ -91,7 +91,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       doc = LazyHTML.from_fragment(render(view))
 
       # One h1 on the page, and the Settings bar with Overview current.
-      assert LazyHTML.query(doc, "h1") |> length() == 1
+      assert Enum.count(LazyHTML.query(doc, "h1")) == 1
       assert text_of(doc, "h1") == "Settings"
 
       assert LazyHTML.attribute(
@@ -99,10 +99,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
                "href"
              ) == [settings_path(version.id)]
 
-      assert LazyHTML.query(doc, "#settings-nav a[aria-current='page']") |> length() == 1
+      assert Enum.count(LazyHTML.query(doc, "#settings-nav a[aria-current='page']")) == 1
 
       # The two scope groups, in the sitemap's order, and no admin group.
-      assert LazyHTML.query(doc, "#settings-overview section") |> length() == 2
+      assert Enum.count(LazyHTML.query(doc, "#settings-overview section")) == 2
       assert text_of(doc, "#settings-version h2") == "This version: #{version.name}"
       assert text_of(doc, "#settings-all-versions h2") == "All versions"
       refute has_element?(view, "#settings-organization")
@@ -212,7 +212,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         feature = ComingSoon.feature(unquote(section.key))
 
         # The feature title is the page's only h1: Settings itself is not repeated.
-        assert LazyHTML.query(doc, "h1") |> length() == 1
+        assert Enum.count(LazyHTML.query(doc, "h1")) == 1
         assert text_of(doc, "h1") == feature.title
         refute has_element?(view, "#settings-overview")
 
@@ -224,7 +224,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
         assert LazyHTML.text(LazyHTML.query(doc, "#coming-soon")) =~ feature.summary
 
-        assert LazyHTML.query(doc, "#coming-soon-sections li") |> length() ==
+        assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) ==
                  length(feature.sections)
 
         assert has_element?(view, "#coming-soon-status", "Coming soon")
@@ -234,7 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
                  "href"
                ) == [section_path(version.id, unquote(section.slug))]
 
-        assert LazyHTML.query(doc, "#settings-nav a[aria-current='page']") |> length() == 1
+        assert Enum.count(LazyHTML.query(doc, "#settings-nav a[aria-current='page']")) == 1
       end
     end
 

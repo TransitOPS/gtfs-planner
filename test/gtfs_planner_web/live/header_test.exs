@@ -2,11 +2,14 @@ defmodule GtfsPlannerWeb.HeaderTest do
   use GtfsPlannerWeb.ConnCase
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   describe "Header - Unauthenticated Users (Auth Layout)" do
     test "displays Pathways Studio brand with semantic tokens", %{conn: conn} do
@@ -187,7 +190,6 @@ defmodule GtfsPlannerWeb.HeaderTest do
              )
 
       refute has_element?(view, "#main-navigation a[href$='/import']")
-      refute has_element?(view, "#main-navigation a[href$='/export']")
     end
 
     test "Account settings lives in the account menu, not the task nav", %{conn: conn} do
@@ -311,12 +313,55 @@ defmodule GtfsPlannerWeb.HeaderTest do
         roles: ["pathways_studio_editor"]
       })
 
+      # organization_fixture/1 seeds a default published version, so the
+      # versionless editor state must be built explicitly: removing it makes
+      # AssignOrganization assign a nil current_gtfs_version.
+      Repo.delete_all(from v in GtfsVersion, where: v.organization_id == ^organization.id)
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, ~p"/")
 
       refute has_element?(view, "#settings-link")
       refute has_element?(view, "#user-menu-panel p.text-muted", organization.name)
+    end
+
+    test "an editor with a version keeps the version Settings as an organization administrator",
+         %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor", "pathways_studio_admin"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      # The version target wins over the organization-administrator fallback.
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/gtfs/#{version.id}/settings']"
+             )
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link",
+               "Agencies, fares, exports, garages, fleet"
+             )
+    end
+
+    test "a login without an organization has no Settings item", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      refute has_element?(view, "#settings-link")
     end
 
     test "the account trigger shows the viewer's initials", %{conn: conn} do

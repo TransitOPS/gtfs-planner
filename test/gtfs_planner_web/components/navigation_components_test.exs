@@ -146,7 +146,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     refute html =~ "aria-selected"
 
     ids = sub_nav_attr(links, "id")
-    assert length(ids) == length(links)
+    assert Enum.count(ids) == Enum.count(links)
     assert Enum.uniq(ids) == ids
 
     for class <- sub_nav_attr(links, "class") do
@@ -221,7 +221,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       html = render_nav(editor_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
-      assert LazyHTML.query(doc, "#main-navigation svg") == []
+      assert Enum.empty?(LazyHTML.query(doc, "#main-navigation svg"))
 
       for retired <- ["Users", "Blocks", "Import", "Export"] do
         refute retired in nav_link_texts(html)
@@ -240,16 +240,18 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       doc = LazyHTML.from_fragment(render_nav(admin_assigns("/")))
       nav = LazyHTML.query(doc, "#main-navigation")
 
-      assert LazyHTML.query(doc, "#main-navigation span[aria-hidden='true'].bg-subtle") != []
+      refute Enum.empty?(
+               LazyHTML.query(doc, "#main-navigation span[aria-hidden='true'].bg-subtle")
+             )
 
       # The divider is the element immediately before Organizations.
-      assert LazyHTML.text(LazyHTML.query(nav, "a:last-of-type")) == "Organizations"
+      assert String.trim(LazyHTML.text(LazyHTML.query(nav, "a:last-of-type"))) == "Organizations"
     end
 
     test "an editor without the administrator role has no divider" do
       doc = LazyHTML.from_fragment(render_nav(editor_assigns("/")))
 
-      assert LazyHTML.query(doc, "#main-navigation span[aria-hidden='true']") == []
+      assert Enum.empty?(LazyHTML.query(doc, "#main-navigation span[aria-hidden='true']"))
     end
   end
 
@@ -347,7 +349,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
   end
 
-  describe "path-family matching — admin links" do
+  describe "path-family matching — admin links and account-menu Settings" do
     test "Organizations activates on /admin/organizations" do
       html = render_nav(admin_assigns("/admin/organizations"))
       doc = LazyHTML.from_fragment(html)
@@ -364,20 +366,20 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.text(link) =~ "Organizations"
     end
 
-    test "Users activates on /admin/users" do
-      html = render_nav(admin_assigns("/admin/users"))
-      doc = LazyHTML.from_fragment(html)
+    test "the account-menu Settings item is current on the admin/users family" do
+      for path <- ["/admin/users", "/admin/users/456"] do
+        doc =
+          menu_doc(%{
+            current_path: path,
+            current_organization: org(),
+            user_roles: ["pathways_studio_admin"]
+          })
 
-      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
-      assert LazyHTML.text(link) =~ "Users"
-    end
-
-    test "Users activates on nested /admin/users/456" do
-      html = render_nav(admin_assigns("/admin/users/456"))
-      doc = LazyHTML.from_fragment(html)
-
-      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
-      assert LazyHTML.text(link) =~ "Users"
+        assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-link"), "aria-current") == [
+                 "page"
+               ],
+               "#{path} should mark the account-menu Settings item current"
+      end
     end
 
     test "Organizations does NOT activate on /admin/users" do
@@ -388,12 +390,15 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(org_link, "aria-current") == []
     end
 
-    test "Users does NOT activate on /admin/organizations" do
-      html = render_nav(admin_assigns("/admin/organizations"))
-      doc = LazyHTML.from_fragment(html)
+    test "the account-menu Settings item is not current on /admin/organizations" do
+      doc =
+        menu_doc(%{
+          current_path: "/admin/organizations",
+          current_organization: org(),
+          user_roles: ["pathways_studio_admin"]
+        })
 
-      users_link = LazyHTML.query(doc, ~s(a[href="/admin/users"]))
-      assert LazyHTML.attribute(users_link, "aria-current") == []
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-link"), "aria-current") == []
     end
   end
 
@@ -428,7 +433,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                ],
                "#{path} should select Operations"
 
-        assert LazyHTML.query(doc, "#main-navigation a[aria-current='page']") |> length() == 1
+        assert Enum.count(LazyHTML.query(doc, "#main-navigation a[aria-current='page']")) == 1
       end
     end
 
@@ -463,7 +468,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
         assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-gtfs"), "aria-current") == ["page"],
                "#{path} should select GTFS"
 
-        assert LazyHTML.query(doc, "#main-navigation a[aria-current='page']") |> length() == 1
+        assert Enum.count(LazyHTML.query(doc, "#main-navigation a[aria-current='page']")) == 1
       end
     end
 
@@ -498,7 +503,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       html = render_nav(editor_assigns("/gtfs/42/imported-things"))
       doc = LazyHTML.from_fragment(html)
 
-      assert LazyHTML.query(doc, "#main-navigation a[aria-current='page']") == []
+      assert Enum.empty?(LazyHTML.query(doc, "#main-navigation a[aria-current='page']"))
     end
 
     test "no link is active on the settings family or an unrelated path" do
@@ -506,7 +511,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
         html = render_nav(editor_assigns(path))
         doc = LazyHTML.from_fragment(html)
 
-        assert LazyHTML.query(doc, "#main-navigation a[aria-current='page']") == []
+        assert Enum.empty?(LazyHTML.query(doc, "#main-navigation a[aria-current='page']"))
       end
     end
   end
@@ -516,7 +521,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       doc =
         menu_doc(%{current_gtfs_version: gtfs_version(), user_roles: ["pathways_studio_editor"]})
 
-      assert LazyHTML.query(doc, "#settings-link") == []
+      assert Enum.empty?(LazyHTML.query(doc, "#settings-link"))
       refute LazyHTML.text(LazyHTML.query(doc, "#user-menu-panel")) =~ "Test Org"
     end
 
@@ -570,7 +575,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       for roles <- [[], ["pathways_studio_viewer"]] do
         doc = menu_doc(%{current_organization: org(), user_roles: roles})
 
-        assert LazyHTML.query(doc, "#settings-link") == []
+        assert Enum.empty?(LazyHTML.query(doc, "#settings-link"))
         refute LazyHTML.text(LazyHTML.query(doc, "#user-menu-panel")) =~ "Test Org"
       end
     end
@@ -579,9 +584,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       doc = LazyHTML.from_fragment(render_nav(editor_assigns("/gtfs/42/export")))
       nav = LazyHTML.query(doc, "#main-navigation")
 
-      assert LazyHTML.query(nav, "a[href*='settings']") == []
+      assert Enum.empty?(LazyHTML.query(nav, "a[href*='settings']"))
       refute LazyHTML.text(nav) =~ "Settings"
-      assert LazyHTML.query(nav, "a[href$='/import']") == []
+      assert Enum.empty?(LazyHTML.query(nav, "a[href$='/import']"))
     end
   end
 
@@ -737,12 +742,27 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       refute html =~ "Organizations"
     end
 
-    test "editor sees GTFS task links" do
+    test "editor sees the six label-only task links and their destinations" do
       html = render_nav(editor_assigns("/"))
-      assert html =~ "Routes"
-      assert html =~ "Stops"
-      assert html =~ "Import"
-      assert html =~ "Export"
+      doc = LazyHTML.from_fragment(html)
+
+      assert nav_link_texts(html) == [
+               "Routes",
+               "Calendars",
+               "Operations",
+               "Stops & stations",
+               "Flex",
+               "GTFS"
+             ]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#main-navigation a"), "href") == [
+               "/gtfs/42/routes",
+               "/gtfs/42/calendars",
+               "/gtfs/42/blocks",
+               "/gtfs/42/stops",
+               "/gtfs/42/flex",
+               "/gtfs/42/export"
+             ]
     end
 
     test "user without editor role does not see GTFS links" do
@@ -879,7 +899,8 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                LazyHTML.query(doc, ~s(#station-sub-nav a[aria-label="Back to stations list"]))
              ) == 1
 
-      assert LazyHTML.text(LazyHTML.query(doc, "#station-sub-nav h1")) == "Central Station"
+      assert String.trim(LazyHTML.text(LazyHTML.query(doc, "#station-sub-nav h1"))) ==
+               "Central Station"
     end
 
     test "Evolutions tab carries the stable link ID and becomes current" do
@@ -1456,7 +1477,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "workspace-mode-option-map-reason"
              ]
 
-      assert LazyHTML.query(doc, "#workspace-mode-option-map-reason") != []
+      refute Enum.empty?(LazyHTML.query(doc, "#workspace-mode-option-map-reason"))
 
       assert LazyHTML.text(LazyHTML.query(doc, "#workspace-mode-option-map-reason")) =~
                "Upload a diagram first"

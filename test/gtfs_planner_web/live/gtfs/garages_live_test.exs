@@ -126,7 +126,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       doc = LazyHTML.from_fragment(render(view))
 
       # A Settings page carries no current main-navigation task.
-      assert main_nav_current(doc) == []
+      assert Enum.empty?(main_nav_current(doc))
       assert settings_nav_links(doc) == @settings_tabs
       assert settings_nav_current_href(doc) == ["/gtfs/#{version.id}#{@garages_path}"]
     end
@@ -150,7 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
       doc = LazyHTML.from_fragment(render(view))
 
-      assert main_nav_current(doc) == []
+      assert Enum.empty?(main_nav_current(doc))
       assert settings_nav_links(doc) == @settings_tabs
       assert settings_nav_current_href(doc) == ["/gtfs/#{version.id}#{@fleet_path}"]
     end
