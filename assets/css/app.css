@@ -701,6 +701,23 @@ dialog[role="alertdialog"][open] > div > div {
   }
 }
 
+/* ── Fleet vehicle table ──
+   A long fleet list scrolls inside its own region so the summary and filters
+   stay reachable; the column headings repeat at the top of that region while it
+   scrolls. The heading needs an opaque background, because daisyUI's `.table th`
+   is transparent and the streamed rows would otherwise show through it. */
+#vehicles-table-container {
+  max-height: 430px;
+  overflow-y: auto;
+}
+
+#vehicles-table-container thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--color-base-100);
+}
+
 /* A timing is one record; paired clocks stay together at narrow widths. */
 .pattern-timing-table tbody tr { display: grid; grid-template-columns: 2fr 1fr 1fr 1.5fr 1fr; }
 .pattern-timing-table thead tr { display: grid; grid-template-columns: 2fr 1fr 1fr 1.5fr 1fr; }
