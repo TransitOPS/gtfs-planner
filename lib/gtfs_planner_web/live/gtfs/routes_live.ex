@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   """
   use GtfsPlannerWeb, :live_view
   alias Ecto.Changeset
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
@@ -283,6 +285,30 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   def handle_event("close_new_route", _params, socket) do
     {:noreply, close_new_route(socket)}
   end
+
+  @impl true
+  def handle_event("save_new_route", %{"route" => params}, socket) do
+    cond do
+      is_nil(socket.assigns.new_route_form) ->
+        # A replayed or late submit after the drawer closed must not insert.
+        {:noreply, socket}
+
+      not editor_access?(socket) ->
+        {:noreply,
+         socket
+         |> close_new_route()
+         |> put_flash(
+           :error,
+           "Route not created: you no longer have editor access to this organization."
+         )}
+
+      true ->
+        create_new_route(socket, params)
+    end
+  end
+
+  @impl true
+  def handle_event("save_new_route", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
@@ -698,6 +724,48 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     socket
     |> assign(:new_route_form, nil)
     |> assign(:agency_options, [])
+  end
+
+  defp create_new_route(socket, params) do
+    attrs = new_route_attrs(socket, params)
+
+    with {:ok, _validated} <-
+           socket |> new_route_changeset(attrs) |> Changeset.apply_action(:insert),
+         {:ok, route} <- Gtfs.create_route(attrs) do
+      # The patch re-enters `handle_params/3`, which reloads the catalog with
+      # the current query.
+      {:noreply,
+       socket
+       |> close_new_route()
+       |> put_flash(:info, "Route #{route.route_id} created.")
+       |> push_patch(
+         to:
+           ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{build_query_params(socket, socket.assigns.page)}"
+       )}
+    else
+      {:error, changeset} ->
+        {:noreply,
+         socket
+         |> assign(:new_route_form, to_form(changeset, as: :route))
+         |> push_event("focus_form_error", %{
+           form_id: "new-route-form",
+           fallback_id: "new-route-form-error"
+         })}
+    end
+  end
+
+  # Mount-time access is not enough for a write: the membership may have lost
+  # the editor role or been deactivated since this socket connected.
+  defp editor_access?(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id),
+         true <- is_nil(membership.deactivated_at) do
+      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+    else
+      _other -> false
+    end
   end
 
   defp has_active_constraints?(assigns) do

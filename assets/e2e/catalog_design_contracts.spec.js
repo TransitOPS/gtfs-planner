@@ -157,6 +157,21 @@ test.describe("Route catalog responsive contracts", () => {
     await expect(page.locator("#new-route-trigger")).toBeFocused();
   });
 
+  test("create route drawer focuses the first invalid field after a failed submit", async ({
+    page,
+  }) => {
+    await openRouteCatalog(page);
+    await page.waitForSelector("[data-phx-main].phx-connected");
+
+    await page.locator("#new-route-trigger").click();
+    await expect(page.getByRole("dialog", { name: "New route" })).toBeVisible();
+
+    await page.locator("#new-route-submit").click();
+
+    await expect(page.locator("#new-route-form-error")).toBeVisible();
+    await expect(page.locator("#route_route_id")).toBeFocused();
+  });
+
   test("route catalog supports keyboard traversal", async ({ page }) => {
     await openRouteCatalog(page);
 
