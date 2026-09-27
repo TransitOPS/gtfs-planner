@@ -1,0 +1,6 @@
+stop_id,stop_name,stop_lat,stop_lon,location_type,TODS_location_type,TODS_delete,zone_id
+garage_main,Main garage,45.5121,-122.6587,0,garage,,
+garage_east,East depot,45.5231,-122.6765,0,Garage,,
+garage-waypoint,Waypoint stop,45.5300,-122.6800,0,waypoint,,
+stop_401,Public stop 401,45.5400,-122.6900,0,,,
+garage_old,Old depot,45.5500,-122.7000,0,garage,1,
