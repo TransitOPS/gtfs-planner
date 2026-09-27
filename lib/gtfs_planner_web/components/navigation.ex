@@ -94,6 +94,19 @@ defmodule GtfsPlannerWeb.Navigation do
         </.link>
       <% end %>
 
+      <%!-- Blocks opens Garages until spec 05 adds the Blocks page; spec 05 then
+      repoints this one pill rather than adding a second. --%>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
+              @current_gtfs_version do %>
+        <.link
+          navigate={"/gtfs/#{@current_gtfs_version.id}/blocks/garages"}
+          class={nav_link_class(gtfs_family_active?(@current_path, "blocks"))}
+          aria-current={gtfs_family_active?(@current_path, "blocks") && "page"}
+        >
+          <.icon name="hero-truck" class="w-4 h-4" /> Blocks
+        </.link>
+      <% end %>
+
       <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
               @current_gtfs_version do %>
         <.link

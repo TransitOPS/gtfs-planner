@@ -1,15 +1,51 @@
 defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.{Run, Worker}
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
 
   import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
+
+  # Stands in for the configured OTP preflight module so a full warning buffer
+  # can be observed without an OTP graph.
+  defmodule HundredWarningPreflight do
+    def run(_organization_id, _gtfs_version_id) do
+      {:error,
+       Enum.map(0..99, fn index ->
+         %{code: "preflight_#{index}", message: "Preflight issue #{index}"}
+       end)}
+    end
+  end
+
+  defmodule TwoWarningPreflight do
+    def run(_organization_id, _gtfs_version_id) do
+      {:error,
+       [
+         %{code: "preflight_0", message: "Preflight issue 0"},
+         %{code: "preflight_1", message: "Preflight issue 1"}
+       ]}
+    end
+  end
+
+  # Builds the real ZIP and replaces its warnings with one the `Run` schema
+  # rejects, which is one way the fenced warning write fails while the lease is
+  # still current. The composition cases above use the concrete adapter as-is.
+  defmodule UnsupportedWarningExport do
+    def build_zip(organization_id, gtfs_version_id, export_type) do
+      {:ok, zip_bytes, _warnings} =
+        Export.build_zip(organization_id, gtfs_version_id, export_type)
+
+      {:ok, zip_bytes,
+       [%{code: "unsupported", detail: "unsupported warning", extra_key: "unsupported"}]}
+    end
+  end
 
   setup do
     root = Path.join(System.tmp_dir!(), "export-worker-#{System.unique_integer([:positive])}")
@@ -87,6 +123,195 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
 
     assert :ok = Worker.build(current, current_generation, current_token, ExportRuns.topic(run))
     assert %Run{state: :ready} = Repo.get!(Run, run.id)
+  end
+
+  test "an operations run without vehicles reaches ready with the omitted-file warning", %{
+    root: root
+  } do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "STOP1")
+    garage_fixture(organization.id, garage_id: "garage_main", name: "Main garage")
+    {run, claimed, generation, token} = claim_run(organization, version, :operations)
+
+    # The default composition is the concrete `Export` adapter.
+    assert Application.get_env(:gtfs_planner, :gtfs_export_module) == nil
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert ready.artifact_key
+    assert ready.warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
+
+    entries = published_zip_entries(root)
+
+    assert Map.has_key?(entries, "stops.txt")
+    assert entries["stops_supplement.txt"] =~ "garage_main,Main garage"
+    refute Map.has_key?(entries, "vehicles.txt")
+  end
+
+  test "keeps the operations omission ahead of 100 preflight warnings" do
+    with_preflight_module(HundredWarningPreflight)
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "STOP1")
+    garage_fixture(organization.id, garage_id: "garage_main")
+    {run, claimed, generation, token} = claim_run(organization, version, :operations)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert length(ready.warnings) == 100
+    assert hd(ready.warnings) == tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")
+    assert Enum.at(ready.warnings, 1) == preflight_warning(0)
+
+    assert Enum.map(tl(ready.warnings), & &1["code"]) ==
+             Enum.map(0..98, &"preflight_#{&1}")
+  end
+
+  test "a garage/stop collision fails the run, names garage and stop, and publishes nothing", %{
+    root: root
+  } do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "STOP1", stop_name: "Main Street")
+    garage_fixture(organization.id, garage_id: "STOP1", name: "Main garage")
+    {run, claimed, generation, token} = claim_run(organization, version, :operations)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    failed = Repo.get!(Run, run.id)
+
+    assert failed.state == :failed
+    assert failed.failure_code == "garage_stop_id_conflict"
+    assert failed.artifact_key == nil
+
+    assert [warning] = failed.warnings
+    assert warning["code"] == "garage_stop_id_conflict"
+    assert warning["file"] == "stops_supplement.txt"
+    assert warning["entity_type"] == "garage"
+    assert warning["detail"] =~ "Main garage"
+    assert warning["detail"] =~ "STOP1"
+    assert warning["detail"] =~ "Main Street"
+
+    assert published_files(root) == []
+  end
+
+  test "bounds more than 100 conflicting garages to 99 details and the remaining count", %{
+    root: root
+  } do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    conflicting_ids = Enum.map(1..101, &conflict_id/1)
+
+    for garage_id <- conflicting_ids do
+      stop_fixture(organization.id, version.id,
+        stop_id: garage_id,
+        stop_name: "Stop #{garage_id}"
+      )
+
+      garage_fixture(organization.id, garage_id: garage_id, name: "Garage #{garage_id}")
+    end
+
+    {run, claimed, generation, token} = claim_run(organization, version, :operations)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    failed = Repo.get!(Run, run.id)
+
+    assert failed.state == :failed
+    assert failed.failure_code == "garage_stop_id_conflict"
+    assert length(failed.warnings) == 100
+
+    details = Enum.take(failed.warnings, 99) |> Enum.map(& &1["detail"])
+
+    assert Enum.zip(details, Enum.take(conflicting_ids, 99))
+           |> Enum.all?(fn {detail, garage_id} ->
+             String.contains?(detail, "Garage \"Garage #{garage_id}\" (#{garage_id})") and
+               String.contains?(detail, "the stop \"Stop #{garage_id}\"")
+           end)
+
+    assert List.last(failed.warnings) == %{
+             "code" => "garage_stop_id_conflict",
+             "file" => "stops_supplement.txt",
+             "entity_type" => "garage",
+             "detail" =>
+               "2 more garages match stop IDs in this exported version. Open Garages to review all current conflicts."
+           }
+
+    assert published_files(root) == []
+  end
+
+  test "a rejected warning write leaves the run failed without publishing", %{root: root} do
+    with_export_module(UnsupportedWarningExport)
+    with_preflight_module(TwoWarningPreflight)
+
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "STOP1")
+    garage_fixture(organization.id, garage_id: "garage_main")
+    {run, claimed, generation, token} = claim_run(organization, version, :operations)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    failed = Repo.get!(Run, run.id)
+
+    assert failed.state == :failed
+    assert failed.failure_code == "export_failed"
+    assert failed.artifact_key == nil
+    # The rejected write neither published nor replaced the stored warnings.
+    assert failed.warnings == [preflight_warning(0), preflight_warning(1)]
+    assert published_files(root) == []
+  end
+
+  defp claim_run(organization, version, export_type) do
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, export_type)
+    {:ok, claimed, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
+    {run, claimed, generation, token}
+  end
+
+  defp with_preflight_module(module), do: put_module(:otp_preflight_module, module)
+
+  defp with_export_module(module), do: put_module(:gtfs_export_module, module)
+
+  defp put_module(config_key, module) do
+    previous = Application.get_env(:gtfs_planner, config_key)
+    Application.put_env(:gtfs_planner, config_key, module)
+    on_exit(fn -> restore_env(config_key, previous) end)
+  end
+
+  defp conflict_id(index), do: "CONFLICT" <> String.pad_leading("#{index}", 3, "0")
+
+  defp published_files(root) do
+    root
+    |> Path.join("**")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.filter(&File.regular?/1)
+  end
+
+  defp published_zip_entries(root) do
+    [path] = published_files(root)
+    {:ok, entries} = path |> File.read!() |> :zip.unzip([:memory])
+    Map.new(entries, fn {name, content} -> {to_string(name), content} end)
+  end
+
+  # `gtfs_export_runs.warnings` is a `jsonb[]`, so a row read back from the
+  # database carries string keys; the worker writes atom-keyed maps.
+  defp tods_omitted_warning(filename, entity_type, label) do
+    %{
+      "code" => "tods_file_omitted",
+      "detail" => "#{filename} was not included because this organization has no #{label}.",
+      "file" => filename,
+      "entity_type" => entity_type
+    }
+  end
+
+  defp preflight_warning(index) do
+    %{"code" => "preflight_#{index}", "detail" => "Preflight issue #{index}"}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:gtfs_planner, key)

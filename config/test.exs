@@ -32,7 +32,17 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   secret_key_base: "Vlqg9A56iIf2P4HgwZAFhhA0raEXyKKmoZ5xjBmuiZUjDE1FI9/OpjJ/HRgFfTIE",
   server: false
 
-config :gtfs_planner, :geocoding_service, GtfsPlanner.GeocodingMock
+# Browser journeys search an address in a real browser, where no process-owned
+# Mox expectation exists. Ordinary ExUnit cases keep the mock; production keeps
+# GtfsPlanner.Geocoding.Geoapify.
+geocoding_module =
+  if System.get_env("BROWSER_E2E") == "true" do
+    GtfsPlanner.BrowserGeocoding
+  else
+    GtfsPlanner.GeocodingMock
+  end
+
+config :gtfs_planner, :geocoding_service, geocoding_module
 
 # Route Req HTTP calls in the map tiles controller through Req.Test so
 # tests can stub upstream tile responses.

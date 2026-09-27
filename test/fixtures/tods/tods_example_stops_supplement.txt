@@ -1,0 +1,3 @@
+stop_id,location_type,TODS_location_type
+garage,0,garage
+garage-waypoint,0,

@@ -3,7 +3,9 @@ defmodule GtfsPlanner.GeocodingTest do
 
   import Mox
 
+  alias GtfsPlanner.BrowserGeocoding
   alias GtfsPlanner.Geocoding
+  alias GtfsPlanner.Geocoding.Result
 
   describe "autocomplete/2" do
     test "returns error when text is less than 3 characters" do
@@ -57,6 +59,42 @@ defmodule GtfsPlanner.GeocodingTest do
       end)
 
       assert {:error, :network_error} == Geocoding.autocomplete("test query")
+    end
+
+    test "dispatches through the adapter configured for this environment" do
+      expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Depot", [] ->
+        {:ok, [%Result{formatted_address: "120 Depot Road, Cedar Valley", lat: 1.0, lon: 2.0}]}
+      end)
+
+      assert {:ok, [%Result{formatted_address: "120 Depot Road, Cedar Valley"}]} =
+               Geocoding.autocomplete("Depot")
+    end
+  end
+
+  describe "browser journey configuration" do
+    test "selects the deterministic browser adapter only under BROWSER_E2E" do
+      configured = Application.get_env(:gtfs_planner, :geocoding_service)
+
+      if System.get_env("BROWSER_E2E") == "true" do
+        assert configured == BrowserGeocoding
+      else
+        assert configured == GtfsPlanner.GeocodingMock
+      end
+    end
+
+    test "the browser adapter returns the deterministic result for a long enough query" do
+      assert {:ok, [result]} = BrowserGeocoding.autocomplete("Depot", [])
+
+      assert %Result{
+               formatted_address: "120 Depot Road, Cedar Valley",
+               lat: 44.4759,
+               lon: -73.2121
+             } = result
+    end
+
+    test "the browser adapter keeps the production short-query error" do
+      assert {:error, :text_too_short} == BrowserGeocoding.autocomplete("ab", [])
+      assert {:error, :text_too_short} == BrowserGeocoding.autocomplete("", [])
     end
   end
 end

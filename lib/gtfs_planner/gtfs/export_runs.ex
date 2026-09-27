@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   @type actor :: %{required(:id) => Ecto.UUID.t(), required(:email) => String.t()}
 
+  @export_types Run.export_types()
   @lease_seconds Application.compile_env(:gtfs_planner, :export_run_lease_seconds, 300)
   @download_claim_seconds Application.compile_env(
                             :gtfs_planner,
@@ -25,10 +26,10 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
                           )
   @terminal_states [:ready, :failed, :interrupted, :cancelled, :expired]
 
-  @spec create_pending(Ecto.UUID.t(), Ecto.UUID.t(), actor(), :full | :pathways) ::
+  @spec create_pending(Ecto.UUID.t(), Ecto.UUID.t(), actor(), :full | :pathways | :operations) ::
           {:ok, Run.t()} | {:error, term()}
   def create_pending(organization_id, version_id, actor, export_type)
-      when export_type in [:full, :pathways] do
+      when export_type in @export_types do
     transaction_with_broadcast(fn ->
       create_pending_transition(organization_id, version_id, actor, export_type)
     end)
@@ -299,9 +300,10 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     |> Repo.one()
   end
 
-  @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways) :: Run.t() | nil
+  @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+          Run.t() | nil | {:error, :invalid_export_type}
   def latest_for_version(organization_id, version_id, export_type)
-      when export_type in [:full, :pathways] do
+      when export_type in @export_types do
     from(r in Run,
       where:
         r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id and
@@ -311,6 +313,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     )
     |> Repo.one()
   end
+
+  def latest_for_version(_, _, _), do: {:error, :invalid_export_type}
 
   @spec topic(Run.t() | Ecto.UUID.t()) :: String.t()
   def topic(%Run{id: id}), do: topic(id)

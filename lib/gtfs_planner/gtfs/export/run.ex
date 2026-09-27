@@ -7,7 +7,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions.GtfsVersion
 
-  @export_types [:full, :pathways]
+  @export_types [:full, :pathways, :operations]
   @states [:pending, :building, :ready, :failed, :interrupted, :cancelled, :expired]
   @phases [:preflight, :packaging, :publishing, :cleanup]
   @terminal_states [:ready, :failed, :interrupted, :cancelled, :expired]
