@@ -15,7 +15,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   stop rows. Station-detail regions resolve independently so one failing region
   does not erase the others. Calendar list and detail reads delegate to
   `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
-  preserving the domain's own `{:error, :not_found}`. Nothing else is rescued, so
+  preserving the domain's own `{:error, :not_found}`. The calendar list feed
+  status resolves the agency-local today once and reports the version-wide
+  service gaps with it. Nothing else is rescued, so
   a malformed id, a bad query, or any other defect still raises rather than being
   reported as downtime.
   """
@@ -23,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @behaviour GtfsPlanner.Gtfs.CatalogReadAdapter
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{Calendars, Route, RoutePatterns, Stop}
+  alias GtfsPlanner.Gtfs.{Calendars, DisplayClock, Route, RoutePatterns, Stop}
 
   @default_per_page 25
 
@@ -107,6 +109,18 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     case run(fn -> Calendars.list_calendars(organization_id, gtfs_version_id, opts) end) do
       {:ok, {:ok, summaries}} -> {:ok, summaries}
       {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_calendar_feed_status(organization_id, gtfs_version_id) do
+    case run(fn ->
+           today = DisplayClock.today(organization_id, gtfs_version_id).date
+           {today, Calendars.feed_service_gaps(organization_id, gtfs_version_id, today)}
+         end) do
+      {:ok, {today, {:ok, gaps}}} -> {:ok, %{today: today, gaps: gaps}}
+      {:ok, {_today, {:error, reason}}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end
   end

@@ -75,6 +75,17 @@ defmodule GtfsPlannerWeb.Navigation do
       <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
               @current_gtfs_version do %>
         <.link
+          navigate={"/gtfs/#{@current_gtfs_version.id}/calendars"}
+          class={nav_link_class(gtfs_family_active?(@current_path, "calendars"))}
+          aria-current={gtfs_family_active?(@current_path, "calendars") && "page"}
+        >
+          <.icon name="hero-calendar-days" class="w-4 h-4" /> Calendars
+        </.link>
+      <% end %>
+
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
+              @current_gtfs_version do %>
+        <.link
           navigate={"/gtfs/#{@current_gtfs_version.id}/stops"}
           class={nav_link_class(gtfs_family_active?(@current_path, "stops"))}
           aria-current={gtfs_family_active?(@current_path, "stops") && "page"}

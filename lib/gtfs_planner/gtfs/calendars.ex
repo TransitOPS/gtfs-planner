@@ -75,6 +75,15 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           route_ids: [String.t()],
           routes: [%{route_id: String.t(), trip_count: non_neg_integer()}]
         }
+  @type summary_status :: %{
+          no_service?: boolean(),
+          ended?: boolean(),
+          ends_soon?: boolean(),
+          days_remaining: non_neg_integer() | nil,
+          active_today?: boolean(),
+          active_period?: boolean(),
+          used_by_trips?: boolean()
+        }
   @type summary :: %{
           service_id: String.t(),
           name: String.t() | nil,
@@ -85,7 +94,8 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           first_active_date: Date.t() | nil,
           last_active_date: Date.t() | nil,
           fingerprint: String.t(),
-          warnings: [ServiceDates.warning()]
+          warnings: [ServiceDates.warning()],
+          status: summary_status()
         }
   @type payload :: %{
           calendar: Calendar.t() | nil,
@@ -108,6 +118,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | :invalid_input
           | {:in_use, non_neg_integer(), [String.t()]}
   @type write_error :: Ecto.Changeset.t() | error()
+  @type feed_gap :: %{first_date: Date.t(), last_date: Date.t()}
   @type review_result :: %{
           fingerprint: String.t(),
           changes: map(),
@@ -125,6 +136,17 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   first/last active dates, a source fingerprint and the `ServiceDates` warnings
   for the supplied `:today` (defaulting to the agency-local date resolved through
   PostgreSQL). Reads never write.
+
+  The `status` projection answers the list filters without exposing raw date sets:
+  `active_today?` tests the effective active set, `active_period?` tests a derived
+  weekly period containing today (falling back to the effective set for
+  dates-only calendars and out-of-range additions), `ends_soon?`/`ended?` and
+  `days_remaining` come from the same warning pass, and `used_by_trips?` reads the
+  grouped usage count.
+
+  `opts`: `:today` as above, `:sort_by` (`:name` default or `:period`) and
+  `:sort_dir` (`:asc` default or `:desc`). Period order uses the first effective
+  active date, with identities that have no active date last in both directions.
 
   Returns `{:error, :not_found}` for a foreign, invalid or unpublished scope.
   """
@@ -193,7 +215,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   date.
   """
   @spec feed_service_gaps(Ecto.UUID.t(), Ecto.UUID.t(), Date.t()) ::
-          {:ok, [ServiceDates.interval()]} | {:error, :not_found}
+          {:ok, [feed_gap()]} | {:error, :not_found}
   def feed_service_gaps(organization_id, version_id, _today) do
     transact(fn ->
       lock_shared_published_version!(organization_id, version_id)
@@ -343,6 +365,30 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       &summary(&1, organization_id, version_id, calendars, attributes, exceptions, usage, today)
     )
     |> Enum.sort_by(fn summary -> {sort_name(summary), summary.service_id} end)
+    |> sort_summaries(opts)
+  end
+
+  defp sort_summaries(summaries, opts) do
+    case {Keyword.get(opts, :sort_by, :name), Keyword.get(opts, :sort_dir, :asc)} do
+      {:period, direction} -> sort_by_period(summaries, direction)
+      {_name, :desc} -> Enum.sort_by(summaries, &{sort_name(&1), &1.service_id}, :desc)
+      {_name, _ascending} -> summaries
+    end
+  end
+
+  defp sort_by_period(summaries, direction) do
+    {dated, undated} = Enum.split_with(summaries, & &1.first_active_date)
+
+    # `Date` structs compare by field name order, so the sort key uses the
+    # chronological `{year, month, day}` tuple instead.
+    sorted =
+      Enum.sort_by(
+        dated,
+        &{Date.to_erl(&1.first_active_date), sort_name(&1), &1.service_id},
+        direction
+      )
+
+    sorted ++ undated
   end
 
   defp summary(
@@ -360,6 +406,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     service_exceptions = Map.get(exceptions, service_id, [])
     service_usage = Map.get(usage, service_id, empty_usage())
     active_dates = ServiceDates.active_dates(calendar, service_exceptions)
+    warnings = ServiceDates.warnings(calendar, service_exceptions, today)
 
     %{
       service_id: service_id,
@@ -380,8 +427,46 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           service_exceptions,
           service_usage
         ),
-      warnings: ServiceDates.warnings(calendar, service_exceptions, today)
+      warnings: warnings,
+      status:
+        summary_status(
+          calendar,
+          service_exceptions,
+          active_dates,
+          warnings,
+          service_usage.trip_count,
+          today
+        )
     }
+  end
+
+  defp summary_status(calendar, exceptions, active_dates, warnings, trip_count, today) do
+    ends_soon = Enum.find(warnings, &match?(%{reason: :ends_soon}, &1))
+
+    %{
+      no_service?: active_dates == [],
+      ended?: Enum.any?(warnings, &match?(%{reason: :ended}, &1)),
+      ends_soon?: ends_soon != nil,
+      days_remaining: ends_soon && ends_soon.days_remaining,
+      active_today?: today in active_dates,
+      active_period?: active_period?(calendar, exceptions, active_dates, today),
+      used_by_trips?: trip_count > 0
+    }
+  end
+
+  defp active_period?(nil, _exceptions, active_dates, today), do: today in active_dates
+
+  defp active_period?(%Calendar{} = calendar, exceptions, active_dates, today) do
+    in_period? =
+      calendar
+      |> ServiceDates.periods(exceptions)
+      |> Map.fetch!(:periods)
+      |> Enum.any?(fn period ->
+        Date.compare(period.first_date, today) in [:eq, :lt] and
+          Date.compare(period.last_date, today) in [:eq, :gt]
+      end)
+
+    in_period? or today in active_dates
   end
 
   defp sort_name(%{name: name, service_id: service_id}) when is_binary(name) do

@@ -4035,6 +4035,10 @@ defmodule GtfsPlanner.Gtfs do
   def list_calendars(organization_id, gtfs_version_id, opts \\ []),
     do: Calendars.list_calendars(organization_id, gtfs_version_id, opts)
 
+  @doc "Resolves the agency-local today and the version-wide calendar service gaps for the list."
+  def load_calendar_feed_status(organization_id, gtfs_version_id),
+    do: catalog_read_adapter().load_calendar_feed_status(organization_id, gtfs_version_id)
+
   @doc "Loads one calendar identity as its weekly row, anchor, exceptions and fingerprint."
   def get_calendar(organization_id, gtfs_version_id, service_id),
     do: Calendars.get_calendar(organization_id, gtfs_version_id, service_id)

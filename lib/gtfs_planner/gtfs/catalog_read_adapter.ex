@@ -12,6 +12,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   Calendar reads keep their domain tagged results: `{:ok, ...}` for a coherent
   scoped load and `{:error, :not_found}` for a foreign, unpublished or unknown
   scope, with only `DBConnection.ConnectionError` becoming `{:error, :unavailable}`.
+  The calendar list resolves its agency-local today and version-wide feed gaps
+  through one operational read so the list header and its gap callout come from
+  the same clock resolution.
 
   `GtfsPlanner.Gtfs.CatalogReadAdapter.Repo` is the production implementation.
   `GtfsPlanner.Gtfs` resolves the module at call time from
@@ -60,6 +63,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               {:ok, calendar_page()} | {:error, :not_found | :unavailable}
   @callback fetch_calendar(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, Calendars.payload()} | {:error, :not_found | :unavailable}
+  @callback load_calendar_feed_status(Ecto.UUID.t(), Ecto.UUID.t()) ::
+              {:ok, %{today: Date.t(), gaps: [Calendars.feed_gap()]}}
+              | {:error, :not_found | :unavailable}
   @callback load_stop_regions(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t()) :: %{
               child_stops: stop_region([Stop.t()]),
               levels: stop_region(list()),
