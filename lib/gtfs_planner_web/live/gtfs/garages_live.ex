@@ -17,17 +17,25 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   `garage_id` is a correctable external ID: creation derives it from the name
   until the user edits the ID field (tracked from the form event's `_target`),
   and a saved garage's ID is never regenerated from a name change.
+
+  "Import from TODS file" opens the shared `tods_import_drawer/1`: the chosen
+  file is parsed by `Tods` and previewed through `Operations.preview_tods_import/2`,
+  and only the reviewed plan may be applied. The review describes exactly one
+  upload, so closing the drawer, cancelling the upload or choosing another file
+  discards it rather than leaving a plan that no longer matches the screen.
   """
 
   require Logger
 
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.Gtfs.OperationsComponents, only: [scope_note: 1]
+  import GtfsPlannerWeb.Gtfs.OperationsComponents,
+    only: [scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
 
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Versions
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -64,6 +72,20 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
      |> assign(:address_unavailable?, false)
      |> assign(:garage_delete_target, nil)
      |> assign(:garage_in_use, nil)
+     |> assign(:tods_import_open, false)
+     |> assign(:tods_import_filename, nil)
+     |> assign(:tods_import_parsed, nil)
+     |> assign(:tods_import_preview, nil)
+     |> assign(:tods_import_parse_error, nil)
+     |> assign(:tods_import_stale?, false)
+     |> assign(:tods_import_return_focus_id, nil)
+     |> allow_upload(:tods_file,
+       accept: ~w(.txt .csv),
+       max_entries: 1,
+       max_file_size: Tods.max_import_bytes(),
+       auto_upload: true,
+       progress: &handle_tods_file_progress/3
+     )
      |> stream(:garages, [])}
   end
 
@@ -93,6 +115,51 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
       {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/blocks/garages")}
     else
+      {:noreply, socket}
+    end
+  end
+
+  # --- TODS import -----------------------------------------------------------
+
+  @impl true
+  def handle_event("open_tods_import", params, socket) do
+    {:noreply,
+     socket
+     |> reset_tods_import_review()
+     |> assign(:tods_import_return_focus_id, params["opener_id"] || "import-tods")
+     |> assign(:tods_import_open, true)}
+  end
+
+  @impl true
+  def handle_event("close_tods_import_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> discard_tods_upload()
+     |> reset_tods_import_review()
+     |> assign(:tods_import_open, false)}
+  end
+
+  @impl true
+  def handle_event("cancel_tods_upload", %{"ref" => ref}, socket) do
+    {:noreply, socket |> cancel_upload(:tods_file, ref) |> reset_tods_import_review()}
+  end
+
+  def handle_event("cancel_tods_upload", _params, socket), do: {:noreply, socket}
+
+  # LiveView routes the file input's change through the drawer's form, so the form
+  # declares a change event; the drawer holds no other form state to validate.
+  @impl true
+  def handle_event("validate_tods_import", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("apply_tods_import", _params, socket) do
+    parsed = socket.assigns.tods_import_parsed
+    preview = socket.assigns.tods_import_preview
+
+    if is_map(parsed) and tods_review_current?(preview, socket.assigns.uploads.tods_file) do
+      apply_reviewed_tods_import(socket, parsed, preview)
+    else
+      # A crafted or stale event finds no reviewed file to apply.
       {:noreply, socket}
     end
   end
@@ -291,8 +358,8 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
             id="import-tods"
             variant="secondary"
             class="min-h-11"
-            disabled
-            title="Not available yet"
+            phx-click="open_tods_import"
+            phx-value-opener_id="import-tods"
           >
             Import from TODS file
           </.button>
@@ -309,10 +376,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       </.header>
 
       <.scope_note organization_name={@current_organization.name} class="mt-2" />
-
-      <p id="garages-actions-note" class="mt-2 text-sm text-base-content/70">
-        Importing garages is not available yet.
-      </p>
 
       <p :if={@garage_notice} id="garage-notice" role="status" class="mt-2 text-sm text-success">
         {@garage_notice}
@@ -401,6 +464,17 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
           </.button>
         </:action>
       </.empty_state>
+
+      <.tods_import_drawer
+        open={@tods_import_open}
+        kind={:garages}
+        upload={@uploads.tods_file}
+        preview={@tods_import_preview}
+        filename={@tods_import_filename}
+        parse_error={@tods_import_parse_error}
+        stale?={@tods_import_stale?}
+        return_focus_id={@tods_import_return_focus_id}
+      />
 
       <.garage_drawer
         open={@garage_drawer_open}
@@ -730,6 +804,96 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
        do: true
 
   defp save_failed?(_form), do: false
+
+  # --- TODS import state ------------------------------------------------------
+
+  # A file that finished uploading is parsed and previewed immediately, so the
+  # drawer always shows the plan for the file the operator chose. `Tods.parse/3`
+  # returns `{:error, message}` for a structural fault, which blocks the preview.
+  defp handle_tods_file_progress(:tods_file, entry, socket) do
+    if entry.done? do
+      {:noreply, review_tods_file(socket, entry)}
+    else
+      # A newly chosen file replaces the review on screen; whatever was reviewed
+      # before it must not stay applicable while this one uploads.
+      {:noreply, reset_tods_import_review(socket)}
+    end
+  end
+
+  defp review_tods_file(socket, entry) do
+    file = entry.client_name
+    organization_id = socket.assigns.current_organization.id
+
+    case consume_uploaded_entry(socket, entry, fn uploaded ->
+           {:ok, parse_tods_file(uploaded, file)}
+         end) do
+      {:ok, parsed} ->
+        socket
+        |> assign(:tods_import_filename, file)
+        |> assign(:tods_import_parsed, parsed)
+        |> assign(:tods_import_preview, Operations.preview_tods_import(organization_id, parsed))
+        |> assign(:tods_import_parse_error, nil)
+        |> assign(:tods_import_stale?, false)
+
+      {:error, message} ->
+        socket
+        |> assign(:tods_import_filename, file)
+        |> assign(:tods_import_parsed, nil)
+        |> assign(:tods_import_preview, nil)
+        |> assign(:tods_import_parse_error, message)
+        |> assign(:tods_import_stale?, false)
+    end
+  end
+
+  defp parse_tods_file(%{path: path}, file) do
+    case File.read(path) do
+      {:ok, content} -> Tods.parse(:garages, file, content)
+      {:error, _reason} -> {:error, "#{file} could not be read."}
+    end
+  end
+
+  defp apply_reviewed_tods_import(socket, parsed, preview) do
+    organization_id = socket.assigns.current_organization.id
+    actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
+
+    case Operations.apply_tods_import(organization_id, actor, parsed, preview) do
+      {:ok, %{added: added, updated: updated}} ->
+        {:noreply,
+         socket
+         |> reset_tods_import_review()
+         |> assign(:tods_import_open, false)
+         |> refresh_garages()
+         |> assign(:garage_notice, "Garages imported: #{added} added, #{updated} updated.")}
+
+      # The context refuses a plan whose recomputed rows differ and hands back the
+      # refreshed preview, so the drawer keeps the reviewed state visible, swaps in
+      # the new counts and moves focus to the message.
+      {:error, {_reason, refreshed_preview}} ->
+        {:noreply,
+         socket
+         |> assign(:tods_import_preview, refreshed_preview)
+         |> assign(:tods_import_stale?, true)
+         |> push_event("focus_scoped_target", %{id: "tods-import-error"})}
+    end
+  end
+
+  # The review describes exactly one upload: closing the drawer, cancelling the
+  # upload, choosing another file and a successful apply all drop it. The opener
+  # id survives so the OverlayDialog hook can still return focus to the trigger.
+  defp reset_tods_import_review(socket) do
+    socket
+    |> assign(:tods_import_filename, nil)
+    |> assign(:tods_import_parsed, nil)
+    |> assign(:tods_import_preview, nil)
+    |> assign(:tods_import_parse_error, nil)
+    |> assign(:tods_import_stale?, false)
+  end
+
+  defp discard_tods_upload(socket) do
+    Enum.reduce(socket.assigns.uploads.tods_file.entries, socket, fn entry, acc ->
+      cancel_upload(acc, :tods_file, entry.ref)
+    end)
+  end
 
   defp garage_has_address?(garage), do: garage.address not in [nil, ""]
 

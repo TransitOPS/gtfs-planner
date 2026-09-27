@@ -58,7 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
       {:ok, view, _html} = live(conn, fleet_url(version))
 
       assert has_element?(view, "#vehicles-first-use-empty")
-      assert has_element?(view, "#fleet-actions-note", "Importing vehicles is not available yet.")
+      assert has_element?(view, "#import-tods:not([disabled])")
       refute has_element?(view, "#add-vehicles[disabled]")
 
       open_add_drawer(view, "#add-vehicles")
@@ -123,7 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
       assert has_element?(view, "tr#vehicles-#{vehicle.id} td[data-label='Vehicle ID']", "1201")
       assert has_element?(view, "#vehicles-count", "1 of 1 vehicles")
       assert has_element?(view, "#add-vehicles-header:not([disabled])")
-      assert has_element?(view, "#import-tods[disabled]")
+      assert has_element?(view, "#import-tods:not([disabled])")
     end
 
     test "a taken vehicle ID shows the field error and inserts nothing", %{
