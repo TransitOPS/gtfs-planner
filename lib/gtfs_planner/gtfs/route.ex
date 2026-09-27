@@ -6,6 +6,17 @@ defmodule GtfsPlanner.Gtfs.Route do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @route_types [0, 1, 2, 3, 4, 5, 6, 7, 11, 12]
+  @text_fields [
+    :route_id,
+    :route_short_name,
+    :route_long_name,
+    :agency_id,
+    :route_desc,
+    :route_url,
+    :network_id
+  ]
+
   schema "routes" do
     field :route_id, :string
     field :route_type, :integer
@@ -76,15 +87,26 @@ defmodule GtfsPlanner.Gtfs.Route do
       :gtfs_version_id
     ])
     |> trim_string_fields()
+    # The route text columns are varchar(255), and Postgres counts code points.
+    |> then(fn changeset ->
+      Enum.reduce(
+        @text_fields,
+        changeset,
+        &validate_length(&2, &1, max: 255, count: :codepoints)
+      )
+    end)
     |> validate_required([:route_id, :route_type, :organization_id, :gtfs_version_id])
     |> validate_route_name()
-    |> validate_inclusion(:route_type, [0, 1, 2, 3, 4, 5, 6, 7, 11, 12])
+    |> validate_inclusion(:route_type, @route_types)
     |> validate_inclusion(:continuous_pickup, 0..3)
     |> validate_inclusion(:continuous_drop_off, 0..3)
     |> validate_number(:route_sort_order, greater_than_or_equal_to: 0)
     |> validate_hex_color(:route_color)
     |> validate_hex_color(:route_text_color)
-    |> unique_constraint([:organization_id, :gtfs_version_id, :route_id])
+    # routes_organization_id_gtfs_version_id_route_id_index binds to :route_id.
+    |> unique_constraint([:organization_id, :gtfs_version_id, :route_id],
+      error_key: :route_id
+    )
     |> foreign_key_constraint(:organization_id)
   end
 
@@ -104,6 +126,10 @@ defmodule GtfsPlanner.Gtfs.Route do
       _ -> "Unknown"
     end
   end
+
+  @doc "Returns the accepted route types as labelled options."
+  @spec route_type_options() :: [{String.t(), integer()}]
+  def route_type_options, do: Enum.map(@route_types, &{route_type_label(&1), &1})
 
   # Private validation functions
 

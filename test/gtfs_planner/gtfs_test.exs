@@ -5740,6 +5740,116 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "create_route/1 constraints" do
+    setup do
+      organization = organization_fixture()
+      version_a = gtfs_version_fixture(organization.id)
+      version_b = gtfs_version_fixture(organization.id)
+      %{organization: organization, version_a: version_a, version_b: version_b}
+    end
+
+    test "reports a duplicate route_id on route_id", %{
+      organization: org,
+      version_a: version_a
+    } do
+      attrs =
+        valid_route_attrs(%{route_id: "DUP1"})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version_a.id)
+
+      assert {:ok, _route} = Gtfs.create_route(attrs)
+      assert {:error, changeset} = Gtfs.create_route(attrs)
+
+      errors = errors_on(changeset)
+      assert errors.route_id == ["has already been taken"]
+      refute Map.has_key?(errors, :organization_id)
+
+      count =
+        from(r in GtfsPlanner.Gtfs.Route,
+          where:
+            r.organization_id == ^org.id and r.gtfs_version_id == ^version_a.id and
+              r.route_id == "DUP1"
+        )
+        |> Repo.aggregate(:count)
+
+      assert count == 1
+    end
+
+    test "accepts the same route_id in another version", %{
+      organization: org,
+      version_a: version_a,
+      version_b: version_b
+    } do
+      attrs = valid_route_attrs(%{route_id: "DUP1"})
+
+      assert {:ok, _route} =
+               Gtfs.create_route(
+                 attrs
+                 |> Map.put(:organization_id, org.id)
+                 |> Map.put(:gtfs_version_id, version_a.id)
+               )
+
+      assert {:ok, _route} =
+               Gtfs.create_route(
+                 attrs
+                 |> Map.put(:organization_id, org.id)
+                 |> Map.put(:gtfs_version_id, version_b.id)
+               )
+    end
+
+    test "stores text of exactly 255 code points", %{
+      organization: org,
+      version_a: version_a
+    } do
+      attrs =
+        valid_route_attrs(%{route_id: "LEN255", route_desc: String.duplicate("a", 255)})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version_a.id)
+
+      assert {:ok, route} = Gtfs.create_route(attrs)
+      assert route.route_desc == String.duplicate("a", 255)
+    end
+
+    test "rejects text over 255 code points instead of raising", %{
+      organization: org,
+      version_a: version_a
+    } do
+      attrs =
+        valid_route_attrs(%{route_id: "LEN256", route_desc: String.duplicate("a", 256)})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version_a.id)
+
+      assert {:error, changeset} = Gtfs.create_route(attrs)
+      assert errors_on(changeset).route_desc == ["should be at most 255 character(s)"]
+
+      count =
+        from(r in GtfsPlanner.Gtfs.Route,
+          where:
+            r.organization_id == ^org.id and r.gtfs_version_id == ^version_a.id and
+              r.route_id == "LEN256"
+        )
+        |> Repo.aggregate(:count)
+
+      assert count == 0
+    end
+
+    test "counts combining marks toward the limit", %{
+      organization: org,
+      version_a: version_a
+    } do
+      attrs =
+        valid_route_attrs(%{
+          route_id: "COMBINING",
+          route_long_name: String.duplicate("e\u0301", 128)
+        })
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version_a.id)
+
+      assert {:error, changeset} = Gtfs.create_route(attrs)
+      assert errors_on(changeset).route_long_name == ["should be at most 255 character(s)"]
+    end
+  end
+
   describe "preview_stop_level_alignment/4" do
     @describetag :alignment_review
     setup do
