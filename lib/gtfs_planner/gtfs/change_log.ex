@@ -43,7 +43,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       :organization_id,
       :gtfs_version_id
     ])
-    |> trim_string_fields()
+    |> trim_string_fields(except: [:entity_external_id])
     |> validate_required([
       :entity_type,
       :entity_external_id,
@@ -60,7 +60,8 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       "level",
       "route_pattern",
       "timed_pattern",
-      "route_pattern_build"
+      "route_pattern_build",
+      "calendar"
     ])
     |> validate_inclusion(:action, ["created", "updated", "deleted", "rolled_back"])
     |> validate_rollback_reference()

@@ -1961,6 +1961,154 @@ case Accounts.register_first_admin(%{
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
     |> Repo.update!()
 
+    # ── Calendar list scenario data (isolated to the Browser E2E Version) ──
+    #
+    # Dates are relative to the version's agency-local today, so the list
+    # statuses (runs today, ends soon, ended, not used, no service) stay
+    # deterministic whatever day the suite runs. The rows are inserted directly
+    # because this fixture supplies scenario data, not an audited edit.
+    calendar_today = Gtfs.DisplayClock.today(org.id, diagram_version.id).date
+    calendar_now = DateTime.utc_now()
+
+    {:ok, _calendar_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "CAL_ROUTE",
+        route_short_name: "CAL",
+        route_long_name: "Calendar scenario route",
+        route_type: 3,
+        route_color: "0055AA"
+      })
+
+    daily = %{
+      service_id: "CAL_DAILY",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 1,
+      sunday: 1,
+      start_date: Date.add(calendar_today, -30),
+      end_date: Date.add(calendar_today, 30)
+    }
+
+    school = %{
+      service_id: "CAL_SCHOOL",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: Date.add(calendar_today, -30),
+      end_date: Date.add(calendar_today, 10)
+    }
+
+    legacy = %{
+      service_id: "CAL_LEGACY",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: Date.add(calendar_today, -60),
+      end_date: Date.add(calendar_today, -10)
+    }
+
+    unused = %{
+      service_id: "CAL_UNUSED",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: Date.add(calendar_today, -10),
+      end_date: Date.add(calendar_today, 30)
+    }
+
+    [daily, school, legacy, unused]
+    |> Enum.map(
+      &Map.merge(&1, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      })
+    )
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.Calendar, &1))
+
+    [
+      {"CAL_DAILY", "Every day service"},
+      {"CAL_SCHOOL", "School days"},
+      {"CAL_LEGACY", "Legacy service"},
+      {"CAL_UNUSED", "Unused calendar"},
+      {"CAL_META", "Metadata only"},
+      {"svc/odd name", "Odd service id"}
+    ]
+    |> Enum.map(fn {service_id, description} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        service_id: service_id,
+        service_description: description,
+        service_schedule_name: nil,
+        service_schedule_type: nil,
+        service_schedule_typicality: 0,
+        rating_start_date: nil,
+        rating_end_date: nil,
+        rating_description: nil,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
+
+    [
+      {Date.add(calendar_today, 1), 2},
+      {Date.add(calendar_today, 2), 2},
+      {Date.add(calendar_today, 3), 2},
+      {Date.add(calendar_today, 5), 1}
+    ]
+    |> Enum.map(fn {date, exception_type} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        service_id: if(exception_type == 1, do: "svc/odd name", else: "CAL_SCHOOL"),
+        date: date,
+        exception_type: exception_type,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarDate, &1))
+
+    for {service_id, count} <- [{"CAL_DAILY", 3}, {"CAL_SCHOOL", 2}, {"CAL_LEGACY", 1}],
+        index <- 1..count do
+      {:ok, _trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: "CAL_ROUTE",
+          trip_id: "CAL_TRIP_#{service_id}_#{index}",
+          service_id: service_id,
+          trip_headsign: "Calendar scenario"
+        })
+    end
+
+    IO.puts(
+      "Browser seed: 6 calendar identities in #{diagram_version.id} (today #{calendar_today})"
+    )
+
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
   {:error, changeset} ->

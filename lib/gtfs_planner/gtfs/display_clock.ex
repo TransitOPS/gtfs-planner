@@ -24,6 +24,12 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
           fallback?: boolean(),
           fallback_reason: fallback_reason()
         }
+  @type today_resolution :: %{
+          timezone: String.t(),
+          fallback?: boolean(),
+          fallback_reason: fallback_reason(),
+          date: Date.t()
+        }
 
   @doc """
   Resolves the display zone for one organization/version.
@@ -66,6 +72,38 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
       )
 
     Enum.map(rows, fn [local] -> local end)
+  end
+
+  @doc """
+  Converts one UTC instant to the resolved zone's civil date.
+
+  The conversion happens in PostgreSQL, so no Elixir IANA timezone database is
+  required. A UTC fallback resolution returns the UTC civil date, which lets a
+  caller disclose the fallback instead of silently using the wrong agency day.
+  """
+  @spec local_date(DateTime.t(), zone_resolution()) :: Date.t()
+  def local_date(%DateTime{} = utc, %{timezone: timezone}) do
+    %Postgrex.Result{rows: [[local_date]]} =
+      SQL.query!(
+        Repo,
+        "SELECT ($1::timestamptz AT TIME ZONE $2)::date",
+        [DateTime.truncate(utc, :microsecond), timezone]
+      )
+
+    local_date
+  end
+
+  @doc """
+  Resolves the agency-local current date for one organization/version scope.
+
+  Combines `resolve_zone/2` with `local_date/2`, so the returned map carries both
+  the civil date and the disclosed zone resolution (including any
+  `:missing`/`:invalid`/`:conflicting` UTC fallback).
+  """
+  @spec today(Ecto.UUID.t(), Ecto.UUID.t()) :: today_resolution()
+  def today(organization_id, gtfs_version_id) do
+    resolution = resolve_zone(organization_id, gtfs_version_id)
+    Map.put(resolution, :date, local_date(DateTime.utc_now(), resolution))
   end
 
   @doc """

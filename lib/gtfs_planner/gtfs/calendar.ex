@@ -86,4 +86,39 @@ defmodule GtfsPlanner.Gtfs.Calendar do
     |> unique_constraint([:organization_id, :gtfs_version_id, :service_id])
     |> foreign_key_constraint(:organization_id)
   end
+
+  @weekday_fields [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday]
+
+  @doc """
+  Creates a changeset for an interactively created or changed weekly definition.
+
+  Import acceptance stays permissive: an imported weekly row may carry all-zero
+  weekday columns and `changeset/2` remains the import path. Editor input must name at
+  least one service day and put the end date on or after the start date, so both rules
+  are added here instead of tightening the shared changeset.
+  """
+  def editor_changeset(calendar, attrs) do
+    calendar
+    |> changeset(attrs)
+    |> validate_service_days()
+    |> validate_ordered_dates()
+  end
+
+  defp validate_service_days(changeset) do
+    if Enum.any?(@weekday_fields, fn field -> get_field(changeset, field) == 1 end) do
+      changeset
+    else
+      add_error(changeset, :service_days, "select at least one service day")
+    end
+  end
+
+  defp validate_ordered_dates(%{valid?: false} = changeset), do: changeset
+
+  defp validate_ordered_dates(changeset) do
+    if Date.compare(get_field(changeset, :end_date), get_field(changeset, :start_date)) == :lt do
+      add_error(changeset, :end_date, "must be on or after the start date")
+    else
+      changeset
+    end
+  end
 end

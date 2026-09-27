@@ -849,6 +849,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   """
   attr :id, :string, required: true
+  attr :pending, :boolean, default: false
   attr :open, :boolean, default: false
   attr :on_close, :string, default: "close_drawer"
   attr :target, :any, default: nil
@@ -868,6 +869,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       phx-mounted={JS.ignore_attributes("open")}
       phx-hook="OverlayDialog"
       data-open={to_string(@open)}
+      data-pending={to_string(@pending)}
       data-initial-focus={to_string(@initial_focus)}
       data-initial-focus-id={@initial_focus_id}
       data-return-focus-id={@return_focus_id}
@@ -899,6 +901,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               <button
                 type="button"
                 id={"#{@id}-close"}
+                disabled={@pending}
                 phx-click={@on_close}
                 phx-target={@target}
                 data-dialog-dismiss

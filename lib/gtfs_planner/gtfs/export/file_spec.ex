@@ -174,6 +174,26 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
     }
   end
 
+  @doc """
+  Calendar attributes as the eight-column MBTA GTFS extension, in full export.
+  """
+  def calendar_attributes_spec do
+    %{
+      filename: "calendar_attributes.txt",
+      schema: Gtfs.CalendarAttribute,
+      fields: [
+        {"service_id", :service_id},
+        {"service_description", :service_description},
+        {"service_schedule_name", :service_schedule_name},
+        {"service_schedule_type", :service_schedule_type},
+        {"service_schedule_typicality", :service_schedule_typicality},
+        {"rating_start_date", :rating_start_date},
+        {"rating_end_date", :rating_end_date},
+        {"rating_description", :rating_description}
+      ]
+    }
+  end
+
   def fare_attributes_spec do
     %{
       filename: "fare_attributes.txt",
@@ -336,6 +356,7 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       stop_times_spec(),
       calendar_spec(),
       calendar_dates_spec(),
+      calendar_attributes_spec(),
       fare_attributes_spec(),
       fare_rules_spec(),
       shapes_spec(),
