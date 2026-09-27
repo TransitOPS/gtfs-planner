@@ -1365,7 +1365,13 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
 
       creator =
         Task.async(fn ->
-          unboxed(fn -> Gtfs.create_trips(scope.route_id, scope.attrs, scope.audit) end)
+          unboxed(fn ->
+            # The unboxed run pins one connection, so its backend pid is the
+            # session whose insert will wait on the blocker's uncommitted row.
+            {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
+            send(parent, {:creator_pid, backend_pid})
+            Gtfs.create_trips(scope.route_id, scope.attrs, scope.audit)
+          end)
         end)
 
       assert_receive {:creator_pid, creator_pid}, 5_000
@@ -1457,7 +1463,10 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
              ]
 
       # The version row must be committed before a second session can lock it, so
-      # this one scope is seeded outside the sandbox and removed on exit.
+      # this one scope is seeded outside the sandbox and removed on exit. The
+      # read transaction also runs on its own committed connection: the sandbox
+      # owner would still hold the FOR SHARE lock when this test's on_exit
+      # cleanup runs before the DataCase owner stops.
       lock_scope = seed_committed_lock_scope()
       on_exit(fn -> cleanup_committed_lock_scope(lock_scope) end)
 
@@ -1465,23 +1474,28 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       assert {:ok, %{rows: [[_id]]}} = probe_version_lock(lock_scope.version.id)
 
       assert {:ok, payload} =
-               Repo.transaction(fn ->
-                 assert {:ok, payload} =
-                          Gtfs.load_route_schedule(
-                            lock_scope.organization.id,
-                            lock_scope.version.id,
-                            "12lock",
-                            %{}
-                          )
+               Task.async(fn ->
+                 unboxed(fn ->
+                   Repo.transaction(fn ->
+                     assert {:ok, payload} =
+                              Gtfs.load_route_schedule(
+                                lock_scope.organization.id,
+                                lock_scope.version.id,
+                                "12lock",
+                                %{}
+                              )
 
-                 # The read transaction took the version row FOR SHARE through
-                 # `Calendars.list_calendars/3` and still holds it, so a cooperating
-                 # calendar write cannot take it meanwhile.
-                 assert {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}} =
-                          probe_version_lock(lock_scope.version.id)
+                     # The read transaction took the version row FOR SHARE through
+                     # `Calendars.list_calendars/3` and still holds it, so a
+                     # cooperating calendar write cannot take it meanwhile.
+                     assert {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}} =
+                              probe_version_lock(lock_scope.version.id)
 
-                 payload
+                     payload
+                   end)
+                 end)
                end)
+               |> Task.await(10_000)
 
       assert payload.route.route_id == "12lock"
       assert payload.calendars == []

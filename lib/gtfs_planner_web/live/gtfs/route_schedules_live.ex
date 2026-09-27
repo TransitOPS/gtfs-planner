@@ -355,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     {:noreply, delete_or_refuse(socket)}
   end
 
-  defp submit_or_refuse(socket, nil), do: socket
+  defp submit_or_refuse(socket, nil), do: {:noreply, socket}
 
   defp submit_or_refuse(socket, drawer) do
     if editor_access?(socket) do

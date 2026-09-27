@@ -844,7 +844,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
 
       other_organization = organization_fixture()
       other_actor = editor_fixture(other_organization)
-      other_audit = audit_context(other_organization, context.version.id, other_actor)
+      other_audit = audit_context(other_organization, context.version, other_actor)
 
       assert {:error, :not_found} =
                Gtfs.update_trip(
@@ -862,7 +862,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
                Versions.create_staging_gtfs_version(context.organization.id, %{name: "Staging"})
 
       staging_route = route_fixture(context.organization.id, staging.id, %{route_id: "12stg"})
-      staging_audit = audit_context(context.organization.id, staging.id, context.actor)
+      staging_audit = audit_context(context.organization, staging, context.actor)
 
       assert {:error, :not_found} =
                Gtfs.delete_trips(staging_route.route_id, scope.service, [trip.id], staging_audit)

@@ -158,7 +158,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
     test "a delete that commits first refuses the waiting create with :calendar_not_found", %{
       supervisor: supervisor
     } do
-      scope = seed_scope("delete-then-create")
+      # Without the seeded trip the calendar has no trips, so the reviewed
+      # delete can commit and the scenario can exercise the refused create.
+      scope = seed_scope("delete-then-create", false)
       on_exit(fn -> cleanup([scope]) end)
 
       {:ok, reviewed} = review_calendar_delete(scope)
@@ -200,7 +202,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
     end
 
     test "a create that commits first leaves the delete refused as in use", _context do
-      scope = seed_scope("create-then-delete")
+      # Only the created trip references the calendar, so the refusal counts 1.
+      scope = seed_scope("create-then-delete", false)
       on_exit(fn -> cleanup([scope]) end)
 
       assert {:ok, %{trips: [created]}} =
@@ -341,7 +344,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
 
   # -- Committed scope and reads ---------------------------------------------
 
-  defp seed_scope(suffix) do
+  # `seed_existing?` is false for the calendar-delete scenarios, which need a
+  # calendar with no trips so the reviewed delete can commit; the timing
+  # scenarios compare against the seeded 06:00 trip and keep it.
+  defp seed_scope(suffix, seed_existing? \\ true) do
     unboxed(fn ->
       unique = "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive])}"
 
@@ -391,11 +397,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
         })
 
       existing =
-        schedule_trip_fixture(organization.id, version.id, route_id, bundle, %{
-          trip_id: "#{route_id}-0-#{service}-0600",
-          service_id: service,
-          start_time: "06:00:00"
-        }).trip
+        if seed_existing? do
+          schedule_trip_fixture(organization.id, version.id, route_id, bundle, %{
+            trip_id: "#{route_id}-0-#{service}-0600",
+            service_id: service,
+            start_time: "06:00:00"
+          }).trip
+        end
 
       %{
         organization: organization,

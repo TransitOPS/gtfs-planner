@@ -24,7 +24,7 @@ import { resolve } from "node:path";
 
 const EDITOR_USER = {
   email: "diagram-test@gtfs-planner.test",
-  password: "EDITOR_PASSWORD_PLACEHOLDER",
+  password: "DiagramTest123!",
 };
 
 const READY_ROUTE = "BROWSER_SCHEDULES_READY";
@@ -123,7 +123,7 @@ for (const viewport of VIEWPORTS) {
       const section = page.locator("#section-BROWSER-SCHED-P1-heading");
       await expect(section).toContainText("Downtown – Valley College");
       await expect(page.locator("#trip-BROWSER_SCHED_T1-start")).toHaveText("06:00");
-      await expect(page.locator("#trip-BROWSER_SCHED_TFREQ-frequency")).toContainText(
+      await expect(page.locator("#trip-BROWSER_SCHED_FREQ-frequency")).toContainText(
         "Every 20 min, 09:00–12:00",
       );
       await expect(page.locator("#section-BROWSER-SCHED-P1-omitted")).toContainText(
@@ -164,7 +164,8 @@ for (const viewport of VIEWPORTS) {
 
       await expect(page.locator("#schedules-stops-legend")).toContainText("All stops shown");
       await expect(page.locator("#section-BROWSER-SCHED-P1-omitted")).toHaveCount(0);
-      await expect(page.locator("#section-BROWSER-SCHED-P1-table thead th")).toHaveCount(8);
+      // 5 stop columns + selection, Departure, Timing, Trip no., Block and Actions.
+      await expect(page.locator("#section-BROWSER-SCHED-P1-table thead th")).toHaveCount(11);
 
       await page.goBack();
       await expect(page.locator("#section-BROWSER-SCHED-P1-omitted")).toContainText(

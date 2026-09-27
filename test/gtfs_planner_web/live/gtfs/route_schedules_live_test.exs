@@ -491,7 +491,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(view, "#trip-SCH1_TCUSTOM-start", "09:00")
 
       html = render(element(view, "#trip-SCH1_TCUSTOM"))
-      doc = LazyHTML.from_fragment(html)
+      # A bare <tr> fragment loses its cells to HTML5 table-context parsing, so
+      # the row is parsed inside a table wrapper.
+      doc = LazyHTML.from_fragment("<table>#{html}</table>")
       cells = LazyHTML.query(doc, "td")
 
       assert Enum.count(cells, &(LazyHTML.text(&1) =~ ~r/\d\d:\d\d/)) == 1
@@ -509,7 +511,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(view, "#trip-SCH1_TNOTIME-start", "No time")
 
       html = render(element(view, "#trip-SCH1_TNOTIME"))
-      doc = LazyHTML.from_fragment(html)
+      # Wrapped for the same table-context reason as the custom row above.
+      doc = LazyHTML.from_fragment("<table>#{html}</table>")
       cells = LazyHTML.query(doc, "td")
 
       assert Enum.count(cells, &(String.trim(LazyHTML.text(&1)) == "—")) == 4
@@ -521,6 +524,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
     test "no patterns shows the first-use empty state with a link to Patterns",
          %{conn: conn, version: version} = context do
+      # The no-calendars state takes precedence, so this route's version needs a
+      # calendar before the no-patterns state is reachable.
+      weekly_calendar(context.organization, version, "SCH_NOPAT_WKD", "No patterns")
+
       route =
         route_fixture(context.organization.id, version.id, %{
           route_id: "SCH_NOPAT",
@@ -603,9 +610,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
     test "the first paint shows the table skeleton", %{conn: conn, version: version} = context do
       rich = rich_route(context)
 
-      {:ok, _view, static_html} = live(conn, schedules_path(version, rich.route))
+      # `live/2` returns the post-mount connected render, so the disconnected
+      # first paint is observed through a plain request instead.
+      html = conn |> get(schedules_path(version, rich.route)) |> html_response(200)
 
-      assert static_html =~ "schedules-loading"
+      assert html =~ "schedules-loading"
+      refute html =~ "schedules-add-trips"
     end
 
     test "an unavailable read shows the retry callout and recovers",
@@ -678,7 +688,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
   describe "selection" do
     setup :editor_scope
 
-    test "checkboxes render with no mutation control",
+    test "checkboxes render alongside the mutation controls",
          %{conn: conn, version: version} = context do
       rich = rich_route(context)
       section_id = rich.downtown.pattern.route_pattern_id
@@ -690,12 +700,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(view, "#trip-select-SCH1_TNOTIME")
       refute has_element?(view, "#trip-select-SCH1_TUNL1")
 
-      refute has_element?(view, "#schedules-add-trips")
+      # The step-7 mutation controls are present; the bulk toolbar still needs a
+      # selection.
+      assert has_element?(view, "#schedules-add-trips")
+      assert has_element?(view, "#trip-SCH1_T0600-edit")
       refute has_element?(view, "#schedules-bulk-toolbar")
-      refute has_element?(view, "button", "Add trips")
-      refute has_element?(view, "button", "Edit")
-      refute has_element?(view, "button", "Delete")
-      refute has_element?(view, "a", "Duplicate trip")
     end
 
     test "a selection never enters the URL and clears on a params change",

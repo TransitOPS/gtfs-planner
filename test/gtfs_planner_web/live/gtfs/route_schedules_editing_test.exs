@@ -58,10 +58,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
       open_add_drawer(view)
 
+      # No viewer role exists; a revoked editor is a membership with no roles.
       {:ok, _membership} =
-        Accounts.update_user_org_membership(context.membership, %{
-          roles: ["pathways_studio_viewer"]
-        })
+        Accounts.update_user_org_membership(context.membership, %{roles: []})
 
       before = count_trips(scope)
 
@@ -72,7 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       # The event is refused before any context call, so the drawer keeps its
       # input and shows the fixed copy; nothing was written.
-      assert html =~ "You don't have permission to change this route's trips."
+      assert html =~ "You don&#39;t have permission to change this route&#39;s trips."
       assert count_trips(scope) == before
     end
 
@@ -86,7 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       render_click(view, "open_edit_drawer", %{"trip" => forged})
       render_click(view, "open_delete_trip", %{"trip" => forged})
 
-      refute has_element?(view, "#trip-drawer[data-open='true']")
+      refute has_element?(view, "#trip-drawer-overlay[data-open='true']")
       refute has_element?(view, "#delete-dialog[data-open='true']")
       assert count_trips(scope) == before
     end
@@ -124,7 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       render_click(view, "open_edit_drawer", %{"trip" => other.trip.id})
 
-      refute has_element?(view, "#trip-drawer[data-open='true']")
+      refute has_element?(view, "#trip-drawer-overlay[data-open='true']")
       assert count_trips(scope, "EDT_OTHER_T1") == 1
     end
 
@@ -197,20 +196,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       html = render_submit(view, "drawer_submit", %{"drawer" => add_params(scope, every_params)})
 
       assert html =~ "Added 3 trips to Weekday."
-      assert_patched(view, schedules_path(scope, %{"pattern" => scope.long.pattern.id}))
+      # The post-add patch carries the canonical filters, which include the
+      # calendar the trips landed on.
+      assert_patched(
+        view,
+        schedules_path(scope, %{"pattern" => scope.long.pattern.id, "service_id" => @weekday})
+      )
 
       # The three persisted rows carry the previewed departures and the scoped
       # allocated IDs, read back with an independent query.
+      # The seeded natural fixture IDs do not pre-take the generated base IDs, so
+      # the allocator returns each base unsuffixed (spec AC-8: suffix only when
+      # the base is taken; EV-2 covers the colliding `-2` case).
       assert created_trip_ids(scope) == [
-               "EDT1-0-EDT_WKD-0600-2",
+               "EDT1-0-EDT_WKD-0600",
                "EDT1-0-EDT_WKD-0630",
-               "EDT1-0-EDT_WKD-0700-2"
+               "EDT1-0-EDT_WKD-0700"
              ]
 
       assert first_departures(scope, [
-               "EDT1-0-EDT_WKD-0600-2",
+               "EDT1-0-EDT_WKD-0600",
                "EDT1-0-EDT_WKD-0630",
-               "EDT1-0-EDT_WKD-0700-2"
+               "EDT1-0-EDT_WKD-0700"
              ]) ==
                ["06:00:00", "06:30:00", "07:00:00"]
     end
@@ -283,7 +290,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       before_rows = stop_times(scope, "EDT_T0600")
 
       render_click(view, "open_edit_drawer", %{"trip" => trip.id})
-      assert has_element?(view, "#trip-drawer[data-open='true']")
+      assert has_element?(view, "#trip-drawer-overlay[data-open='true']")
 
       html =
         render_submit(view, "drawer_submit", %{
@@ -301,7 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
         })
 
       assert html =~ "Saved the 05:00 trip."
-      refute has_element?(view, "#trip-drawer[data-open='true']")
+      refute has_element?(view, "#trip-drawer-overlay[data-open='true']")
 
       after_rows = stop_times(scope, "EDT_T0600")
 
@@ -353,7 +360,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       # The reload action re-opens the drawer with the row that is now stored.
       reloaded = render_click(view, "reload_drawer")
       assert reloaded =~ "From the other session"
-      assert has_element?(view, "#trip-drawer[data-open='true']")
+      assert has_element?(view, "#trip-drawer-overlay[data-open='true']")
     end
 
     test "a failed save keeps every entry so the user can retry", context do
@@ -375,7 +382,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       # The context changeset refused the enum; the drawer is still open with the
       # typed values, and nothing was written.
-      assert has_element?(view, "#trip-drawer[data-open='true']")
+      assert has_element?(view, "#trip-drawer-overlay[data-open='true']")
       assert html =~ "Kept heading"
       assert html =~ "E-KEEP"
       assert html =~ ~s(id="trip-access-error")
@@ -429,15 +436,29 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       assert html =~ "This trip has custom stop times"
       assert html =~ "Keep custom times"
-      assert html =~ "This trip's stops differ from the pattern, so its custom times are kept."
+
+      assert html =~
+               "This trip&#39;s stops differ from the pattern, so its custom times are kept."
+
       # The incompatible choices are disabled with a visible reason.
       assert html =~ ~s(disabled="disabled")
-      assert html =~ "This trip's stops differ from the pattern"
+      assert html =~ "This trip&#39;s stops differ from the pattern"
       # The departure field is disabled while the custom times are kept.
       assert has_element?(view, "#trip-start[disabled]")
 
       compatible = trip_row(scope, "EDT_CUSTOM_SAME")
       html = render_click(view, "open_edit_drawer", %{"trip" => compatible.id})
+
+      assert html =~ "Use timing: Long time · 360 min total"
+
+      # The departure enables only once a timing is chosen (adoption), even for
+      # a compatible custom trip.
+      assert has_element?(view, "#trip-start[disabled]")
+
+      html =
+        render_change(view, "drawer_change", %{
+          "drawer" => edit_params(scope, %{"timed_pattern_id" => scope.long.timing.id})
+        })
 
       assert html =~ "Use timing: Long time · 360 min total"
       refute has_element?(view, "#trip-start[disabled]")
@@ -482,7 +503,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       # The row menu disables Duplicate with the reason in visible text.
       assert has_element?(view, "#trip-EDT_FREQ-duplicate-disabled[disabled]")
       assert has_element?(view, "#trip-EDT_FREQ-duplicate-reason")
-      assert render(view) =~ "Frequency service can't be duplicated"
+      assert render(view) =~ "Frequency service can&#39;t be duplicated"
       assert has_element?(view, "#trip-EDT_T0600-duplicate")
     end
   end
@@ -562,7 +583,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       assert html =~ "Delete 3 trips from Weekday?"
       assert html =~ "This removes the trips and their stop times from this published version."
-      assert html =~ "You cannot undo this."
+
+      # The template line-wraps between "cannot" and "undo this.".
+      assert html =~ ~r/You cannot\s+undo this\./
       assert has_element?(view, "#delete-dialog[data-open='true']")
     end
 
@@ -676,7 +699,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       assert Enum.all?(copy, &is_binary/1)
       assert Enum.all?(copy, &(&1 =~ " "))
-      refute Enum.any?(copy, &String.contains?(&1, ":"))
+
+      # No atom may reach the screen. A leaked atom renders as ":atom"; the
+      # HH:MM clock examples in the fixed copy are not atom-shaped.
+      refute Enum.any?(copy, &Regex.match?(~r/:[a-z_]+/, &1))
 
       # An unknown atom still shows a sentence, never the atom itself.
       assert ScheduleComponents.error_message(:something_new) ==
@@ -713,11 +739,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert html =~ ~s(data-return-focus-id="schedules-add-trips")
 
       render_click(view, "close_drawer")
-      refute has_element?(view, "#trip-drawer[data-open='true']")
+      refute has_element?(view, "#trip-drawer-overlay[data-open='true']")
 
       trip = trip_row(scope, "EDT_T0600")
       html = render_click(view, "open_edit_drawer", %{"trip" => trip.id})
       assert html =~ ~s(data-return-focus-id="trip-EDT_T0600-edit")
+
+      # The delete dialog returns focus to the row menu only when no drawer is
+      # open; with a drawer open it would return to the drawer's own control.
+      render_click(view, "close_drawer")
 
       html = render_click(view, "open_delete_trip", %{"trip" => trip.id})
       assert html =~ ~s(data-return-focus-id="trip-EDT_T0600-menu")
@@ -919,6 +949,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
     %{
       organization: organization,
       organization_id: organization_id,
+      user: context.user,
       version: version,
       route: route,
       long: long,
@@ -962,7 +993,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
   defp open_add_drawer(view) do
     render_click(view, "open_add_drawer")
-    assert has_element?(view, "#trip-drawer[data-open='true']")
+    assert has_element?(view, "#trip-drawer-overlay[data-open='true']")
   end
 
   defp add_params(scope, overrides) do
