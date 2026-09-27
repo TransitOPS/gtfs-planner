@@ -651,7 +651,49 @@ defmodule GtfsPlanner.Operations do
     end
   end
 
+  # --- TODS export -----------------------------------------------------------
+
+  @doc """
+  Loads the rows the TODS export files carry for the organization.
+
+  Garages are ordered by `garage_id` and vehicles by ID length then value, which
+  is the prepared `stops_supplement.txt` and `vehicles.txt` order.
+  """
+  @spec tods_export_rows(Ecto.UUID.t()) :: %{garages: [Garage.t()], vehicles: [Vehicle.t()]}
+  def tods_export_rows(organization_id) do
+    garages =
+      Garage
+      |> where([g], g.organization_id == ^organization_id)
+      |> order_by([g], asc: g.garage_id)
+      |> Repo.all()
+
+    vehicles =
+      Vehicle
+      |> where([v], v.organization_id == ^organization_id)
+      |> order_by([v], asc: fragment("char_length(?)", v.vehicle_id), asc: v.vehicle_id)
+      |> Repo.all()
+
+    %{garages: garages, vehicles: vehicles}
+  end
+
+  @doc """
+  Counts the rows each TODS export file would carry for the organization.
+  """
+  @spec tods_file_inventory(Ecto.UUID.t()) :: [{String.t(), non_neg_integer()}]
+  def tods_file_inventory(organization_id) do
+    [
+      {Tods.stops_supplement_spec().filename, count_rows(Garage, organization_id)},
+      {Tods.vehicles_spec().filename, count_rows(Vehicle, organization_id)}
+    ]
+  end
+
   # --- private ---------------------------------------------------------------
+
+  defp count_rows(schema, organization_id) do
+    schema
+    |> where([r], r.organization_id == ^organization_id)
+    |> Repo.aggregate(:count)
+  end
 
   # Parses the numbered-group bounds. The digit count is checked before
   # `String.to_integer/1` and before the range is built, so an over-long bound

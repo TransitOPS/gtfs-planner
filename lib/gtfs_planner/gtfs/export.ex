@@ -17,13 +17,26 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   - `:full` - All GTFS files (agency, stops, routes, trips, etc.)
   - `:pathways` - Pathways subset (stops, levels, pathways only)
+  - `:operations` - The full GTFS files plus the TODS `stops_supplement.txt` and
+    `vehicles.txt` files, with omission warnings and a garage/stop ID collision
+    check
   """
 
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, Snapshot, StreamBuilder}
   alias GtfsPlanner.Gtfs.Extensions
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Operations
+  alias GtfsPlanner.Operations.Tods
+  alias GtfsPlanner.Repo
 
   require Logger
+
+  @type warning :: %{
+          code: String.t(),
+          detail: String.t(),
+          file: String.t(),
+          entity_type: String.t()
+        }
 
   @doc """
   Exports GTFS data to a ZIP archive binary.
@@ -32,7 +45,7 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   - `organization_id` - UUID of the organization
   - `gtfs_version_id` - UUID of the GTFS version to export
-  - `export_type` - Either `:full` or `:pathways`
+  - `export_type` - `:full`, `:pathways` or `:operations`
   - `opts` - Optional keyword list (reserved for future use)
 
   ## Returns
@@ -49,6 +62,40 @@ defmodule GtfsPlanner.Gtfs.Export do
       # => {:ok, <<binary zip data>>}
   """
   def export_to_zip(organization_id, gtfs_version_id, export_type, _opts \\ []) do
+    case build_zip(organization_id, gtfs_version_id, export_type) do
+      {:ok, zip_binary, _warnings} -> {:ok, zip_binary}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Exports GTFS data to a ZIP archive binary and returns its export warnings.
+
+  `:full` and `:pathways` take the unchanged export path and return `[]`
+  warnings. `:operations` adds the TODS `stops_supplement.txt` and
+  `vehicles.txt` files to the unchanged full export:
+
+  1. the organization's garages and vehicles are loaded once;
+  2. their garage IDs are checked against the exported version's `stops.stop_id`
+     and a collision rolls back before any file is written;
+  3. the full file specs are exported, checking every stop record actually
+     written against the loaded garage IDs so a collision that appears after the
+     preliminary check cannot reach a ZIP;
+  4. the TODS files are written from the same loaded rows;
+  5. each TODS file whose table is empty is omitted with a `tods_file_omitted`
+     warning.
+
+  ## Returns
+
+  - `{:ok, zip_binary, warnings}` on success
+  - `{:error, :no_data}` for a version without GTFS records
+  - `{:error, {:garage_stop_id_conflict, conflicts}}` when a garage ID equals an
+    emitted `stop_id`; no ZIP is produced
+  """
+  @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+          {:ok, binary(), [warning()]}
+          | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
+  def build_zip(organization_id, gtfs_version_id, export_type) do
     # Generate unique temp directory
     temp_dir = generate_temp_dir()
 
@@ -56,26 +103,15 @@ defmodule GtfsPlanner.Gtfs.Export do
       # Create temp directory
       File.mkdir_p!(temp_dir)
 
-      # Get file specifications for export type
-      file_specs = FileSpec.get_specs(export_type)
-
       # Export every file from one read snapshot
       result =
         with_read_snapshot(fn ->
-          lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
-          export_files(temp_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
+          build_export(temp_dir, organization_id, gtfs_version_id, export_type)
         end)
 
       case result do
-        {:ok, file_paths} ->
-          # Create ZIP from exported files, appending extensions entries
-          zip_binary =
-            create_zip_archive(file_paths, organization_id, gtfs_version_id)
-
-          {:ok, zip_binary}
-
-        {:error, reason} ->
-          {:error, reason}
+        {:ok, {zip_binary, warnings}} -> {:ok, zip_binary, warnings}
+        {:error, reason} -> {:error, reason}
       end
     rescue
       e ->
@@ -113,7 +149,11 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       with_read_snapshot(fn ->
         lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
-        export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
+
+        {file_paths, _conflicts} =
+          export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
+
+        file_paths
       end)
     rescue
       e ->
@@ -121,6 +161,52 @@ defmodule GtfsPlanner.Gtfs.Export do
         {:error, "Export failed: #{Exception.message(e)}"}
     end
   end
+
+  # Builds the export inside its read snapshot. The operations path keeps the
+  # public files untouched and adds the TODS files beside them.
+  defp build_export(temp_dir, organization_id, gtfs_version_id, :operations) do
+    %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
+
+    conflict_rollback(
+      Operations.garage_stop_id_conflicts(organization_id, gtfs_version_id, garages)
+    )
+
+    garage_map = Map.new(garages, &{&1.garage_id, &1.name})
+
+    {file_paths, emitted_conflicts} =
+      export_files(
+        temp_dir,
+        FileSpec.get_specs(:full),
+        organization_id,
+        gtfs_version_id,
+        %{},
+        garage_map
+      )
+
+    conflict_rollback(emitted_conflicts)
+
+    file_paths = file_paths ++ export_tods_files(temp_dir, garages, vehicles)
+
+    zip_binary = create_zip_archive(file_paths, organization_id, gtfs_version_id)
+
+    {zip_binary, tods_omission_warnings(garages, vehicles)}
+  end
+
+  defp build_export(temp_dir, organization_id, gtfs_version_id, export_type) do
+    {file_paths, _conflicts} =
+      export_files(
+        temp_dir,
+        FileSpec.get_specs(export_type),
+        organization_id,
+        gtfs_version_id,
+        %{}
+      )
+
+    {create_zip_archive(file_paths, organization_id, gtfs_version_id), []}
+  end
+
+  defp conflict_rollback([]), do: :ok
+  defp conflict_rollback(conflicts), do: Repo.rollback({:garage_stop_id_conflict, conflicts})
 
   # Runs the whole GTFS read inside one transaction whose snapshot is established
   # before the first query, so route patterns, trips and stop times describe a
@@ -151,21 +237,35 @@ defmodule GtfsPlanner.Gtfs.Export do
     %{}
   end
 
-  # Exports all files for the given specs
-  defp export_files(temp_dir, file_specs, organization_id, gtfs_version_id, lookup_maps) do
-    file_paths =
-      file_specs
-      |> Enum.filter(fn spec ->
+  # Exports all files for the given specs. Returns the written file paths and the
+  # garage/stop collisions seen in the records actually written, ordered by
+  # garage ID. `garage_map` holds the organization's garage IDs and names; it is
+  # empty for exports that check no collisions.
+  defp export_files(
+         temp_dir,
+         file_specs,
+         organization_id,
+         gtfs_version_id,
+         lookup_maps,
+         garage_map \\ %{}
+       ) do
+    specs =
+      Enum.filter(file_specs, fn spec ->
         has_records?(spec.schema, organization_id, gtfs_version_id)
       end)
-      |> Enum.map(fn spec ->
-        export_file(temp_dir, spec, organization_id, gtfs_version_id, lookup_maps)
-      end)
 
-    if Enum.empty?(file_paths) do
+    if Enum.empty?(specs) do
       Repo.rollback(:no_data)
     else
-      file_paths
+      results =
+        Enum.map(specs, fn spec ->
+          export_file(temp_dir, spec, organization_id, gtfs_version_id, lookup_maps, garage_map)
+        end)
+
+      file_paths = Enum.map(results, &elem(&1, 0))
+      conflicts = results |> Enum.flat_map(&elem(&1, 1)) |> Enum.sort_by(& &1.garage_id)
+
+      {file_paths, conflicts}
     end
   end
 
@@ -179,8 +279,11 @@ defmodule GtfsPlanner.Gtfs.Export do
     |> Repo.exists?()
   end
 
-  # Exports a single GTFS file
-  defp export_file(temp_dir, spec, organization_id, gtfs_version_id, lookup_maps) do
+  # Exports a single GTFS file and returns its path with the garage/stop
+  # collisions among the records it wrote. The garage map is checked against the
+  # exact streamed stop records, so a stop ID that changed after the preliminary
+  # conflict query is still caught before any ZIP can be returned.
+  defp export_file(temp_dir, spec, organization_id, gtfs_version_id, lookup_maps, garage_map) do
     file_path = Path.join(temp_dir, spec.filename)
     file = File.open!(file_path, [:write, :utf8])
 
@@ -189,15 +292,76 @@ defmodule GtfsPlanner.Gtfs.Export do
       CsvWriter.write_header(file, spec)
 
       # Stream and write records
-      StreamBuilder.stream_records(Repo, spec.schema, organization_id, gtfs_version_id)
-      |> Enum.each(fn record ->
-        CsvWriter.write_row(file, record, spec, lookup_maps)
-      end)
+      conflicts =
+        StreamBuilder.stream_records(Repo, spec.schema, organization_id, gtfs_version_id)
+        |> Enum.reduce([], fn record, acc ->
+          CsvWriter.write_row(file, record, spec, lookup_maps)
+          collect_garage_conflict(acc, record, garage_map)
+        end)
 
+      {file_path, conflicts}
+    after
+      File.close(file)
+    end
+  end
+
+  # Keeps only the garages whose ID is written as a stop ID, using that stop's
+  # name. Other records never match the garage IDs.
+  defp collect_garage_conflict(conflicts, %Stop{} = stop, garage_map) do
+    case Map.fetch(garage_map, stop.stop_id) do
+      {:ok, garage_name} ->
+        [
+          %{garage_id: stop.stop_id, garage_name: garage_name, stop_name: stop.stop_name}
+          | conflicts
+        ]
+
+      :error ->
+        conflicts
+    end
+  end
+
+  defp collect_garage_conflict(conflicts, _record, _garage_map), do: conflicts
+
+  # Writes the TODS files whose table is not empty and returns their paths.
+  defp export_tods_files(temp_dir, garages, vehicles) do
+    [
+      {Tods.stops_supplement_spec(), garages, &Tods.garage_export_row/1},
+      {Tods.vehicles_spec(), vehicles, &Tods.vehicle_export_row/1}
+    ]
+    |> Enum.reject(fn {_spec, rows, _mapper} -> rows == [] end)
+    |> Enum.map(fn {spec, rows, mapper} ->
+      write_tods_file(temp_dir, spec, Enum.map(rows, mapper))
+    end)
+  end
+
+  defp write_tods_file(temp_dir, spec, rows) do
+    file_path = Path.join(temp_dir, spec.filename)
+    file = File.open!(file_path, [:write, :utf8])
+
+    try do
+      CsvWriter.write_header(file, spec)
+      Enum.each(rows, &CsvWriter.write_row(file, &1, spec, %{}))
       file_path
     after
       File.close(file)
     end
+  end
+
+  # An empty table omits its file rather than exporting an empty one.
+  defp tods_omission_warnings(garages, vehicles) do
+    [
+      {Tods.stops_supplement_spec().filename, garages, "garage", "garages"},
+      {Tods.vehicles_spec().filename, vehicles, "vehicle", "vehicles"}
+    ]
+    |> Enum.reject(fn {_filename, rows, _entity_type, _label} -> rows != [] end)
+    |> Enum.map(fn {filename, _rows, entity_type, label} ->
+      %{
+        code: "tods_file_omitted",
+        detail: "#{filename} was not included because this organization has no #{label}.",
+        file: filename,
+        entity_type: entity_type
+      }
+    end)
   end
 
   # Creates ZIP archive from file paths and returns binary

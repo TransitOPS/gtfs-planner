@@ -1,9 +1,17 @@
 defmodule GtfsPlanner.Gtfs.ExportTest do
   use GtfsPlanner.DataCase
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs.Export
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Operations
+  alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Vehicle
+  alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Versions.GtfsVersion
 
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
@@ -279,5 +287,327 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
       assert stops_csv =~ "STOP1"
       refute stops_csv =~ "OTHER_STOP"
     end
+  end
+
+  describe "build_zip/3 with the :operations type" do
+    test "keeps every :full entry byte-for-byte and adds exactly the TODS files", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      agency_fixture(org_id, version_id, agency_id: "AGENCY1")
+      stop_fixture(org_id, version_id, stop_id: "STOP1")
+      garage_fixture(org_id, garage_id: "garage_main", name: "Main garage")
+      vehicle_fixture(org_id, vehicle_id: "bus-1")
+
+      assert {:ok, full_zip} = Export.export_to_zip(org_id, version_id, :full)
+      assert {:ok, operations_zip, []} = Export.build_zip(org_id, version_id, :operations)
+
+      full = zip_entries(full_zip)
+      operations = zip_entries(operations_zip)
+
+      assert Enum.sort(Map.keys(operations) -- Map.keys(full)) == [
+               "stops_supplement.txt",
+               "vehicles.txt"
+             ]
+
+      assert Map.keys(full) -- Map.keys(operations) == []
+
+      for {filename, content} <- full do
+        assert operations[filename] == content
+      end
+
+      # Garages never enter the public stop file.
+      refute operations["stops.txt"] =~ "garage_main"
+    end
+
+    test "writes stops_supplement.txt with the prepared columns in garage ID order", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "STOP1")
+
+      garage_fixture(org_id,
+        garage_id: "garage_b",
+        name: "Depot, North",
+        lat: Decimal.new("44.4759"),
+        lon: Decimal.new("-73.2121")
+      )
+
+      garage_fixture(org_id, garage_id: "garage_a", name: "Alpha depot")
+
+      assert {:ok, zip_binary, warnings} = Export.build_zip(org_id, version_id, :operations)
+
+      assert warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
+
+      assert zip_entries(zip_binary)["stops_supplement.txt"] ==
+               """
+               stop_id,stop_name,stop_lat,stop_lon,location_type,TODS_location_type
+               garage_a,Alpha depot,40.7128,-74.0060,0,garage
+               garage_b,"Depot, North",44.4759,-73.2121,0,garage
+               """
+    end
+
+    test "writes vehicles.txt ordered by ID length then value with escaped labels", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "STOP1")
+
+      vehicle_fixture(org_id,
+        vehicle_id: "bus-2",
+        vehicle_label: "Buster, Jr.",
+        license_plate: "OR-E251432"
+      )
+
+      vehicle_fixture(org_id, vehicle_id: "10", vehicle_label: "Ten")
+      vehicle_fixture(org_id, vehicle_id: "9", vehicle_label: "Nine")
+
+      assert {:ok, zip_binary, warnings} = Export.build_zip(org_id, version_id, :operations)
+
+      assert warnings == [
+               tods_omitted_warning("stops_supplement.txt", "garage", "garages")
+             ]
+
+      assert zip_entries(zip_binary)["vehicles.txt"] ==
+               """
+               vehicle_id,vehicle_label,license_plate
+               9,Nine,
+               10,Ten,
+               bus-2,"Buster, Jr.",OR-E251432
+               """
+    end
+
+    test "omits both TODS files with one warning each when nothing is stored", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "STOP1")
+
+      assert {:ok, zip_binary, warnings} = Export.build_zip(org_id, version_id, :operations)
+      files = zip_entries(zip_binary)
+
+      refute Map.has_key?(files, "stops_supplement.txt")
+      refute Map.has_key?(files, "vehicles.txt")
+
+      assert warnings == [
+               tods_omitted_warning("stops_supplement.txt", "garage", "garages"),
+               tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")
+             ]
+    end
+
+    test "keeps the TODS file whose table has rows", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "STOP1")
+      garage_fixture(org_id, garage_id: "garage_main")
+
+      assert {:ok, zip_binary, warnings} = Export.build_zip(org_id, version_id, :operations)
+      files = zip_entries(zip_binary)
+
+      assert Map.has_key?(files, "stops_supplement.txt")
+      refute Map.has_key?(files, "vehicles.txt")
+
+      assert warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
+    end
+
+    test "export_to_zip/4 returns the operations ZIP bytes", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "STOP1")
+      garage_fixture(org_id, garage_id: "garage_main")
+      vehicle_fixture(org_id, vehicle_id: "bus-1")
+
+      assert {:ok, zip_binary} = Export.export_to_zip(org_id, version_id, :operations)
+      assert is_binary(zip_binary)
+
+      files = zip_entries(zip_binary)
+      assert Map.has_key?(files, "stops_supplement.txt")
+      assert Map.has_key?(files, "vehicles.txt")
+    end
+
+    test "reports the TODS file inventory counts of the organization", %{
+      organization_id: org_id
+    } do
+      garage_fixture(org_id, garage_id: "garage_main")
+      vehicle_fixture(org_id, vehicle_id: "bus-1")
+      vehicle_fixture(org_id, vehicle_id: "bus-2")
+
+      other_organization = organization_fixture()
+      garage_fixture(other_organization.id, garage_id: "garage_other")
+
+      assert Operations.tods_file_inventory(org_id) == [
+               {"stops_supplement.txt", 1},
+               {"vehicles.txt", 2}
+             ]
+    end
+
+    test "rejects a garage ID equal to a stop ID with no ZIP", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      garage_fixture(org_id, garage_id: "STOP1", name: "Main garage")
+      stop_fixture(org_id, version_id, stop_id: "STOP1", stop_name: "Main St")
+
+      assert {:error, {:garage_stop_id_conflict, conflicts}} =
+               Export.build_zip(org_id, version_id, :operations)
+
+      assert conflicts == [
+               %{garage_id: "STOP1", garage_name: "Main garage", stop_name: "Main St"}
+             ]
+
+      assert {:error, {:garage_stop_id_conflict, [_conflict]}} =
+               Export.export_to_zip(org_id, version_id, :operations)
+    end
+
+    test "rejects a stop ID that starts colliding after the preliminary check" do
+      temp_dirs_before = export_temp_dirs()
+
+      organization = unboxed(fn -> organization_fixture() end)
+      version = unboxed(fn -> gtfs_version_fixture(organization.id) end)
+      on_exit(fn -> cleanup_export_fixtures([organization.id]) end)
+
+      stop =
+        unboxed(fn ->
+          stop_fixture(organization.id, version.id, stop_id: "STOP_LATE", stop_name: "Late stop")
+        end)
+
+      unboxed(fn ->
+        garage_fixture(organization.id, garage_id: "garage_late", name: "Late garage")
+      end)
+
+      # The same call succeeds while nothing collides.
+      assert {:ok, zip_binary} =
+               unboxed(fn -> Export.export_to_zip(organization.id, version.id, :operations) end)
+
+      assert Map.has_key?(zip_entries(zip_binary), "stops_supplement.txt")
+
+      parent = self()
+
+      task =
+        Task.async(fn ->
+          receive do
+            :start_export -> :ok
+          end
+
+          unboxed(fn ->
+            %Postgrex.Result{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
+            send(parent, {:exporter_backend, self(), backend_pid})
+
+            Export.build_zip(organization.id, version.id, :operations)
+          end)
+        end)
+
+      handler_id = {__MODULE__, :operations_export_race}
+      attach_stop_barrier(handler_id, parent, task.pid)
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      send(task.pid, :start_export)
+
+      assert_receive {:exporter_backend, exporter_pid, exporter_backend}, 10_000
+      assert exporter_pid == task.pid
+      assert_receive {:export_paused, ^exporter_pid}, 10_000
+
+      writer_backend =
+        unboxed(fn ->
+          %Postgrex.Result{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
+          backend_pid
+        end)
+
+      assert writer_backend != exporter_backend
+
+      assert {1, nil} =
+               unboxed(fn ->
+                 Repo.update_all(from(s in Stop, where: s.id == ^stop.id),
+                   set: [stop_id: "garage_late"]
+                 )
+               end)
+
+      send(exporter_pid, :resume_export)
+
+      assert {:error, {:garage_stop_id_conflict, conflicts}} = Task.await(task, 15_000)
+
+      assert conflicts == [
+               %{garage_id: "garage_late", garage_name: "Late garage", stop_name: "Late stop"}
+             ]
+
+      assert_no_export_temp_dir_leak(temp_dirs_before)
+    end
+  end
+
+  # --- operations export helpers ---------------------------------------------
+
+  defp zip_entries(zip_binary) do
+    {:ok, files} = :zip.unzip(zip_binary, [:memory])
+    Map.new(files, fn {name, content} -> {to_string(name), content} end)
+  end
+
+  defp tods_omitted_warning(filename, entity_type, label) do
+    %{
+      code: "tods_file_omitted",
+      detail: "#{filename} was not included because this organization has no #{label}.",
+      file: filename,
+      entity_type: entity_type
+    }
+  end
+
+  # The first `stops` query of the operations export is the preliminary conflict
+  # SELECT. Pausing there lets the writer commit a new stop ID after that check
+  # and before the stop stream reads the row.
+  defp attach_stop_barrier(handler_id, parent, exporter_pid) do
+    :telemetry.attach(
+      handler_id,
+      [:gtfs_planner, :repo, :query],
+      fn _event, _measurements, metadata, {owner, exporter} ->
+        if self() == exporter and metadata[:source] == "stops" do
+          :telemetry.detach(handler_id)
+          send(owner, {:export_paused, self()})
+
+          receive do
+            :resume_export -> :ok
+          after
+            30_000 -> :ok
+          end
+        end
+      end,
+      {parent, exporter_pid}
+    )
+  end
+
+  defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
+
+  defp export_temp_dirs do
+    Path.wildcard(Path.join(System.tmp_dir!(), "gtfs_export_*"))
+  end
+
+  # Export cases in this partition share the system temp root, so a directory
+  # seen right after the call may belong to another module's in-flight export.
+  # Poll briefly for the root to settle back to its earlier state.
+  defp assert_no_export_temp_dir_leak(before, attempts \\ 20) do
+    leaked = export_temp_dirs() -- before
+
+    cond do
+      leaked == [] ->
+        :ok
+
+      attempts == 0 ->
+        flunk("temporary export directories were left behind: #{inspect(leaked)}")
+
+      true ->
+        Process.sleep(50)
+        assert_no_export_temp_dir_leak(before, attempts - 1)
+    end
+  end
+
+  # The race case commits its own rows so a second connection can see them.
+  defp cleanup_export_fixtures(organization_ids) do
+    unboxed(fn ->
+      Repo.delete_all(from(v in Vehicle, where: v.organization_id in ^organization_ids))
+      Repo.delete_all(from(g in Garage, where: g.organization_id in ^organization_ids))
+      Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
+      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
+    end)
   end
 end

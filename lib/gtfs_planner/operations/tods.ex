@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Operations.Tods do
   @moduledoc """
-  Pure TODS file parsing and classification for garages and vehicles.
+  Pure TODS file parsing, classification and export row mapping for garages and
+  vehicles.
 
   `parse/3` runs the shared strict CSV parser over an uploaded
   `stops_supplement.txt` or `vehicles.txt`; `classify/1` splits the parsed rows
@@ -16,6 +17,8 @@ defmodule GtfsPlanner.Operations.Tods do
   """
 
   alias GtfsPlanner.Gtfs.Import.{CsvParser, ParseError}
+  alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Vehicle
 
   @max_import_bytes 2_000_000
   @max_value_length 255
@@ -127,6 +130,69 @@ defmodule GtfsPlanner.Operations.Tods do
       skipped: Enum.reverse(skipped),
       errors: Enum.reverse(errors),
       ignored_columns: Enum.reject(headers, &(&1 in @mapped_headers[kind]))
+    }
+  end
+
+  @doc """
+  Column spec for the exported `stops_supplement.txt`.
+
+  `location_type` is always `0` and `TODS_location_type` always `garage`, so a
+  consumer's merged view only learns that the stop is a garage.
+  """
+  @spec stops_supplement_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def stops_supplement_spec do
+    %{
+      filename: "stops_supplement.txt",
+      fields: [
+        {"stop_id", :stop_id},
+        {"stop_name", :stop_name},
+        {"stop_lat", :stop_lat},
+        {"stop_lon", :stop_lon},
+        {"location_type", :location_type},
+        {"TODS_location_type", :tods_location_type}
+      ]
+    }
+  end
+
+  @doc """
+  Column spec for the exported `vehicles.txt`.
+  """
+  @spec vehicles_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def vehicles_spec do
+    %{
+      filename: "vehicles.txt",
+      fields: [
+        {"vehicle_id", :vehicle_id},
+        {"vehicle_label", :vehicle_label},
+        {"license_plate", :license_plate}
+      ]
+    }
+  end
+
+  @doc """
+  Maps a garage to its `stops_supplement.txt` row.
+  """
+  @spec garage_export_row(Garage.t()) :: map()
+  def garage_export_row(%Garage{} = garage) do
+    %{
+      stop_id: garage.garage_id,
+      stop_name: garage.name,
+      stop_lat: garage.lat,
+      stop_lon: garage.lon,
+      location_type: 0,
+      tods_location_type: "garage"
+    }
+  end
+
+  @doc """
+  Maps a vehicle to its `vehicles.txt` row.
+  """
+  @spec vehicle_export_row(Vehicle.t()) :: map()
+  def vehicle_export_row(%Vehicle{} = vehicle) do
+    %{
+      vehicle_id: vehicle.vehicle_id,
+      vehicle_label: vehicle.vehicle_label,
+      license_plate: vehicle.license_plate
     }
   end
 
