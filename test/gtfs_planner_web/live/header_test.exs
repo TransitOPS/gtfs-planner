@@ -3,6 +3,10 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
+
+  alias GtfsPlanner.Accounts
 
   describe "Header - Unauthenticated Users (Auth Layout)" do
     test "displays Pathways Studio brand with semantic tokens", %{conn: conn} do
@@ -31,31 +35,74 @@ defmodule GtfsPlannerWeb.HeaderTest do
   end
 
   describe "Header - Authenticated Users" do
-    test "displays Pathways Studio brand link with semantic tokens", %{conn: conn} do
+    test "displays the Pathways Studio wordmark link with the design-system face", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      assert has_element?(view, "#app-header a[href='/']", "Pathways Studio")
-      assert has_element?(view, "#app-header .bg-brand img")
-      assert has_element?(view, "#app-header span.text-brand", "Pathways Studio")
+      assert has_element?(
+               view,
+               "#app-header a[href='/'][aria-label='Pathways Studio - Go to homepage']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-header a[href='/'] span.font-display",
+               "Pathways Studio"
+             )
+
+      # The header no longer carries the logo tile; only the auth layout keeps it.
+      refute has_element?(view, "#app-header .bg-brand")
     end
 
-    test "account menu trigger is icon-only, labeled and paneled with the email", %{conn: conn} do
+    test "shows the organization name beneath the product name", %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#app-header a[href='/'] span.text-muted",
+               organization.name
+             )
+    end
+
+    test "omits the organization name when there is no organization", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      # Icon-only trigger: identity is in the accessible name and the panel, not
-      # visible header text.
+      assert has_element?(view, "#app-header a[href='/'] span.font-display")
+      refute has_element?(view, "#app-header a[href='/'] span.text-muted")
+    end
+
+    test "account menu trigger is labeled and paneled with the email", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      # The visible trigger is the account's initials; identity is in the
+      # accessible name and the panel.
       trigger_html =
         view
         |> element("#app-header #user-menu [data-user-menu-trigger][aria-haspopup='menu']")
         |> render()
 
       assert trigger_html =~ user.email
+      assert trigger_html =~ "bg-navy-100"
+      refute trigger_html =~ "hero-user-circle"
       assert has_element?(view, "#user-menu-panel", "Signed in as")
       assert has_element?(view, "#user-menu-panel", user.email)
     end
@@ -101,7 +148,46 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      assert has_element?(view, "#app-header nav[aria-label='Main navigation']")
+      assert has_element?(view, "#app-header nav#main-navigation[aria-label='Main navigation']")
+    end
+
+    test "role-aware main navigation is a plain link list without daisyUI pills", %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      for {id, label} <- [
+            {"nav-routes", "Routes"},
+            {"nav-calendars", "Calendars"},
+            {"nav-operations", "Operations"},
+            {"nav-stops", "Stops & stations"},
+            {"nav-flex", "Flex"},
+            {"nav-gtfs", "GTFS"}
+          ] do
+        assert has_element?(view, "#main-navigation ##{id}", label)
+      end
+
+      assert has_element?(view, "#main-navigation #nav-routes[aria-current='page']")
+      refute has_element?(view, "#main-navigation svg")
+      assert has_element?(view, "#main-navigation #nav-gtfs[href='/gtfs/#{version.id}/export']")
+
+      assert has_element?(
+               view,
+               "#main-navigation #nav-operations[href='/gtfs/#{version.id}/blocks']"
+             )
+
+      refute has_element?(view, "#main-navigation a[href$='/import']")
+      refute has_element?(view, "#main-navigation a[href$='/export']")
     end
 
     test "Account settings lives in the account menu, not the task nav", %{conn: conn} do
@@ -119,6 +205,132 @@ defmodule GtfsPlannerWeb.HeaderTest do
       refute has_element?(
                view,
                "#app-header nav[aria-label='Main navigation'] a[href='/users/settings']"
+             )
+    end
+
+    test "no Settings link renders in the main navigation for an editor", %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      refute has_element?(view, "#main-navigation a[href*='settings']")
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/gtfs/#{version.id}/settings']"
+             )
+    end
+
+    test "an editor's Settings entry is current on the version Settings family", %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/settings")
+
+      assert has_element?(view, "#settings-link[aria-current='page']")
+      assert has_element?(view, "[data-user-menu-trigger][data-current='true']")
+    end
+
+    test "an org-admin-only login opens the account menu and follows Settings to Users",
+         %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_admin"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      # The menu names the organization and gives the admin fallback copy.
+      assert has_element?(view, "#user-menu-panel", organization.name)
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/admin/users'][role='menuitem']",
+               "Settings"
+             )
+
+      assert has_element?(view, "#user-menu-panel #settings-link", "Organization name, users")
+
+      # Following it reaches the unchanged Users page through the real router.
+      assert {:error, {:live_redirect, %{to: "/admin/users"}}} =
+               view |> element("#settings-link") |> render_click()
+    end
+
+    test "an org-admin-only login keeps Users reachable and marks Settings current",
+         %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_admin"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      assert has_element?(view, "#settings-link[href='/admin/users'][aria-current='page']")
+      assert has_element?(view, "[data-user-menu-trigger][data-current='true']")
+    end
+
+    test "an editor without a version has no Settings item and no organization label",
+         %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      refute has_element?(view, "#settings-link")
+      refute has_element?(view, "#user-menu-panel p.text-muted", organization.name)
+    end
+
+    test "the account trigger shows the viewer's initials", %{conn: conn} do
+      user = user_fixture(%{email: "dana@northcoast.example"})
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(view, "#user-menu [data-user-menu-trigger] span", "D")
+      assert has_element?(view, "#user-menu [data-user-menu-trigger] span.bg-navy-100")
+
+      assert has_element?(
+               view,
+               "[data-user-menu-trigger][aria-label='Account menu for dana@northcoast.example']"
              )
     end
 

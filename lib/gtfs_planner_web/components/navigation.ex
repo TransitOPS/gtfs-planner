@@ -9,15 +9,54 @@ defmodule GtfsPlannerWeb.Navigation do
   import GtfsPlannerWeb.CoreComponents
   import GtfsPlannerWeb.UserAuth, only: [is_administrator?: 1]
 
+  # The main task areas in the information architecture's order. Each entry is
+  # `{link key, {label, families}}`, where the families are the path segments
+  # under `/gtfs/:version` that mark the link current and the first family is
+  # also the link's own destination. GTFS holds Export and Import, whose pages
+  # carry their own tabs.
+  defp main_tasks do
+    [
+      routes: {"Routes", ["routes", "transfers"]},
+      calendars: {"Calendars", ["calendars"]},
+      operations: {"Operations", ["blocks", "runs", "rosters"]},
+      stops: {"Stops & stations", ["stops"]},
+      flex: {"Flex", ["flex"]},
+      gtfs: {"GTFS", ["export", "import", "validation", "station-reachability"]}
+    ]
+  end
+
+  # Design-system task link: a label-only target that takes the selection tint
+  # from its own `aria-current`, so the state is never signalled by hue alone.
+  defp task_link_class do
+    "flex min-h-11 items-center whitespace-nowrap rounded-control px-3 text-sm font-semibold no-underline text-muted hover:bg-canvas hover:text-strong aria-[current=page]:bg-selection aria-[current=page]:text-action"
+  end
+
+  # Account-menu item, sized for the 44px target and using the design system's
+  # canvas hover instead of daisyUI's base-200. Exactly one text color is applied
+  # per state, so no two utilities compete for the same property.
+  defp menu_item_class(current?) do
+    [
+      "flex min-h-11 items-center rounded-control px-3 text-sm no-underline hover:bg-canvas focus:bg-canvas",
+      if(current?, do: "bg-selection font-semibold text-action", else: "text-strong")
+    ]
+  end
+
   @doc """
-  Renders a role-aware top navigation component using left-aligned pill-style links.
+  Renders the role-aware main navigation: the six task areas in the information
+  architecture's order, then Organizations after a divider for system
+  administrators.
+
+  Task links are label-only and carry the design system's selection tint on the
+  current area; each task owns its path family, so `/gtfs/:version/runs` marks
+  Operations and `/gtfs/:version/import` marks GTFS.
 
   ## Attributes
 
     * `:current_user` - The currently authenticated user
     * `:current_organization` - The user's current organization context
     * `:user_roles` - List of role strings for the current user in the current organization
-    * `:current_path` - The current URL path for highlighting active pill
+    * `:current_path` - The current URL path for highlighting the current task
+    * `:current_gtfs_version` - The current GTFS version, for the task destinations
 
   ## Examples
 
@@ -26,6 +65,7 @@ defmodule GtfsPlannerWeb.Navigation do
         current_organization={@current_organization}
         user_roles={@user_roles}
         current_path={@current_path}
+        current_gtfs_version={@current_gtfs_version}
       />
   """
   attr :current_user, :map, required: true
@@ -35,97 +75,40 @@ defmodule GtfsPlannerWeb.Navigation do
   attr :current_gtfs_version, :map, default: nil
 
   def top_nav(assigns) do
+    assigns =
+      assign(assigns,
+        show_tasks:
+          has_role?(assigns.user_roles, :pathways_studio_editor) &&
+            assigns.current_organization && assigns.current_gtfs_version
+      )
+
     ~H"""
     <nav
+      id="main-navigation"
       role="navigation"
       aria-label="Main navigation"
-      class="flex flex-wrap items-center gap-1"
+      class="flex min-h-[72px] flex-wrap items-center gap-1"
     >
+      <.link
+        :for={{key, {label, families}} <- main_tasks()}
+        :if={@show_tasks}
+        id={"nav-#{key}"}
+        navigate={"/gtfs/#{@current_gtfs_version.id}/#{hd(families)}"}
+        class={task_link_class()}
+        aria-current={gtfs_family_active?(@current_path, families) && "page"}
+      >
+        {label}
+      </.link>
+
       <%= if is_administrator?(@current_user) do %>
+        <span :if={@show_tasks} aria-hidden="true" class="mx-2 h-6 w-px shrink-0 bg-subtle"></span>
         <.link
+          id="nav-organizations"
           navigate="/admin/organizations"
-          class={nav_link_class(path_family_active?(@current_path, ["admin", "organizations"]))}
+          class={task_link_class()}
           aria-current={path_family_active?(@current_path, ["admin", "organizations"]) && "page"}
         >
           Organizations
-        </.link>
-      <% end %>
-
-      <%= if has_role?(@user_roles, :pathways_studio_admin) && @current_organization do %>
-        <.link
-          navigate="/admin/users"
-          class={nav_link_class(path_family_active?(@current_path, ["admin", "users"]))}
-          aria-current={path_family_active?(@current_path, ["admin", "users"]) && "page"}
-        >
-          <.icon name="hero-user-group" class="w-4 h-4" /> Users
-        </.link>
-      <% end %>
-
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
-              @current_gtfs_version do %>
-        <.link
-          navigate={"/gtfs/#{@current_gtfs_version.id}/routes"}
-          class={nav_link_class(gtfs_family_active?(@current_path, "routes"))}
-          aria-current={gtfs_family_active?(@current_path, "routes") && "page"}
-        >
-          <.icon name="hero-arrow-path" class="w-4 h-4" /> Routes
-        </.link>
-      <% end %>
-
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
-              @current_gtfs_version do %>
-        <.link
-          navigate={"/gtfs/#{@current_gtfs_version.id}/calendars"}
-          class={nav_link_class(gtfs_family_active?(@current_path, "calendars"))}
-          aria-current={gtfs_family_active?(@current_path, "calendars") && "page"}
-        >
-          <.icon name="hero-calendar-days" class="w-4 h-4" /> Calendars
-        </.link>
-      <% end %>
-
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
-              @current_gtfs_version do %>
-        <.link
-          navigate={"/gtfs/#{@current_gtfs_version.id}/stops"}
-          class={nav_link_class(gtfs_family_active?(@current_path, "stops"))}
-          aria-current={gtfs_family_active?(@current_path, "stops") && "page"}
-        >
-          <.icon name="hero-map-pin" class="w-4 h-4" /> Stops &amp; stations
-        </.link>
-      <% end %>
-
-      <%!-- The Operations family's Blocks destination. Garages and Fleet moved
-      into Settings, so this pill opens the Blocks area instead of them. --%>
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
-              @current_gtfs_version do %>
-        <.link
-          navigate={"/gtfs/#{@current_gtfs_version.id}/blocks"}
-          class={nav_link_class(gtfs_family_active?(@current_path, "blocks"))}
-          aria-current={gtfs_family_active?(@current_path, "blocks") && "page"}
-        >
-          <.icon name="hero-truck" class="w-4 h-4" /> Blocks
-        </.link>
-      <% end %>
-
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
-              @current_gtfs_version do %>
-        <.link
-          navigate={"/gtfs/#{@current_gtfs_version.id}/import"}
-          class={nav_link_class(gtfs_family_active?(@current_path, "import"))}
-          aria-current={gtfs_family_active?(@current_path, "import") && "page"}
-        >
-          <.icon name="hero-arrow-down-tray" class="w-4 h-4" /> Import
-        </.link>
-      <% end %>
-
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
-              @current_gtfs_version do %>
-        <.link
-          navigate={"/gtfs/#{@current_gtfs_version.id}/export"}
-          class={nav_link_class(gtfs_family_active?(@current_path, "export"))}
-          aria-current={gtfs_family_active?(@current_path, "export") && "page"}
-        >
-          <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
         </.link>
       <% end %>
     </nav>
@@ -133,39 +116,70 @@ defmodule GtfsPlannerWeb.Navigation do
   end
 
   @doc """
-  Renders the account menu: an icon-only trigger that opens a dropdown with
-  account-scoped actions (Account settings, Log out).
+  Renders the account menu: a trigger showing the user's initials that opens a
+  dropdown with the scoped Settings entry and the signed-in account's own
+  actions.
 
-  These actions are grouped here — separate from the task navigation in
-  `top_nav/1` — because they concern the signed-in account, not the transit data.
-  The trigger stays icon-only to keep the header uncluttered; the account's email
-  is carried in the trigger's `aria-label` and shown in the panel's "Signed in as"
-  header, so identity is available without competing with the task nav visually.
+  Settings lives here rather than in the task bar because it is not a task area.
+  The target follows the viewer's context: an editor with a version gets that
+  version's Settings, an organization administrator without a qualifying editor
+  context gets the organization's Users page, and anyone else gets no Settings
+  entry and no organization label.
 
   ## Attributes
 
     * `:current_user` - The currently authenticated user (email used for the
-      accessible label and the panel's "Signed in as" line)
-    * `:current_path` - The current URL path, for marking Account settings active
+      accessible label, the panel's "Signed in as" line and the initials)
+    * `:current_path` - The current URL path, for marking the account and
+      Settings entries current
+    * `:current_organization` - The user's current organization context
+    * `:user_roles` - List of role strings for the current user in the current organization
+    * `:current_gtfs_version` - The current GTFS version, part of the editor's
+      Settings path
   """
   attr :current_user, :map, required: true
   attr :current_path, :string, default: "/"
+  attr :current_organization, :map, default: nil
+  attr :user_roles, :list, default: []
+  attr :current_gtfs_version, :map, default: nil
 
   def user_menu(assigns) do
+    assigns =
+      assign(assigns,
+        initials: initials(assigns.current_user.email),
+        settings:
+          settings_target(
+            assigns.current_organization,
+            assigns.user_roles,
+            assigns.current_gtfs_version
+          ),
+        settings_current?: settings_family_active?(assigns.current_path),
+        menu_current?: menu_current_family?(assigns.current_path)
+      )
+
     ~H"""
     <div id="user-menu" phx-hook="UserMenu" class="relative">
       <button
         type="button"
         data-user-menu-trigger
+        data-current={@menu_current? && "true"}
         aria-haspopup="menu"
         aria-expanded="false"
         aria-controls="user-menu-panel"
         aria-label={"Account menu for #{@current_user.email}"}
         title="Account"
-        class="inline-flex items-center justify-center gap-1 min-h-11 min-w-11 rounded-md px-2.5 py-2 text-base-content/70 hover:text-base-content hover:bg-base-200 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+        class={[
+          "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-control px-1.5",
+          if(@menu_current?,
+            do: "bg-selection text-action",
+            else: "text-muted hover:bg-canvas hover:text-strong"
+          )
+        ]}
       >
-        <.icon name="hero-user-circle" class="w-6 h-6 flex-none" />
-        <.icon name="hero-chevron-down" class="w-4 h-4 flex-none" />
+        <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-navy-100 text-[13px] font-semibold leading-none tracking-[0.02em] text-strong">
+          {@initials}
+        </span>
+        <.icon name="hero-chevron-down" class="size-4 shrink-0" />
       </button>
 
       <div
@@ -174,51 +188,88 @@ defmodule GtfsPlannerWeb.Navigation do
         role="menu"
         aria-label="Account"
         hidden
-        class="absolute right-0 mt-1 w-56 z-50 rounded-box border border-base-300 bg-base-100 py-1 shadow-lg"
+        class="absolute right-0 mt-1 w-80 z-50 rounded-card border border-subtle bg-white p-2 shadow-float"
       >
-        <div class="px-3 py-2 border-b border-base-300">
-          <p class="text-xs text-base-content/70">Signed in as</p>
-          <p class="text-sm font-medium text-base-content truncate">{@current_user.email}</p>
+        <%= if @settings do %>
+          <p class="px-3 pb-1 pt-2 text-[13px] font-semibold text-muted">
+            {@current_organization.name}
+          </p>
+          <.link
+            id="settings-link"
+            navigate={@settings.href}
+            role="menuitem"
+            aria-current={@settings_current? && "page"}
+            class={[
+              "flex min-h-11 flex-col justify-center rounded-control px-3 py-2 no-underline",
+              if(@settings_current?,
+                do: "bg-selection text-action",
+                else: "text-strong hover:bg-canvas focus:bg-canvas"
+              )
+            ]}
+          >
+            <span class="text-sm font-semibold">Settings</span>
+            <span class="text-[13px] leading-snug text-muted">{@settings.hint}</span>
+          </.link>
+          <div class="my-1 border-t border-subtle"></div>
+        <% end %>
+
+        <div class="flex items-center gap-3 px-3 pb-2 pt-2">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-navy-100 text-[13px] font-semibold leading-none tracking-[0.02em] text-strong">
+            {@initials}
+          </span>
+          <div class="min-w-0">
+            <p class="text-[13px] leading-snug text-muted">Signed in as</p>
+            <p class="truncate text-sm font-semibold text-strong">{@current_user.email}</p>
+          </div>
         </div>
+
         <.link
           navigate="/users/settings"
           role="menuitem"
-          class={[
-            "flex items-center gap-2 min-h-11 px-3 py-2 text-sm focus:bg-base-200 focus:outline-2 focus:outline-offset-[-2px] focus:outline-primary",
-            if(path_family_active?(@current_path, ["users", "settings"]),
-              do: "font-semibold text-base-content bg-base-200",
-              else: "text-base-content/80 hover:bg-base-200 hover:text-base-content"
-            )
-          ]}
+          class={menu_item_class(path_family_active?(@current_path, ["users", "settings"]))}
           aria-current={path_family_active?(@current_path, ["users", "settings"]) && "page"}
         >
-          <.icon name="hero-cog-6-tooth" class="w-4 h-4 flex-none" /> Account settings
+          Account settings
         </.link>
-        <.link
-          href="/users/log_out"
-          method="delete"
-          role="menuitem"
-          class="flex items-center gap-2 min-h-11 px-3 py-2 text-sm text-base-content/80 hover:bg-base-200 hover:text-base-content focus:bg-base-200 focus:outline-2 focus:outline-offset-[-2px] focus:outline-primary"
-        >
-          <.icon name="hero-arrow-right-on-rectangle" class="w-4 h-4 flex-none" /> Log out
+        <.link href="/users/log_out" method="delete" role="menuitem" class={menu_item_class(false)}>
+          Log out
         </.link>
       </div>
     </div>
     """
   end
 
-  defp nav_link_class(is_active) do
-    base =
-      "inline-flex items-center gap-1.5 px-3 py-2 min-h-11 rounded-md text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+  # The Settings entry for this viewer's context, or nil when the viewer has no
+  # Settings destination. An editor with a version wins over the organization
+  # administrator fallback, and an organization is required for both.
+  defp settings_target(nil, _user_roles, _current_gtfs_version), do: nil
 
-    state =
-      if is_active do
-        "font-semibold text-brand bg-brand/10"
-      else
-        "font-medium text-base-content/70 hover:text-base-content hover:bg-base-200"
-      end
+  defp settings_target(_organization, user_roles, current_gtfs_version) do
+    cond do
+      has_role?(user_roles, :pathways_studio_editor) && current_gtfs_version ->
+        %{
+          href: "/gtfs/#{current_gtfs_version.id}/settings",
+          hint: "Agencies, fares, exports, garages, fleet"
+        }
 
-    [base, state]
+      has_role?(user_roles, :pathways_studio_admin) ->
+        %{href: "/admin/users", hint: "Organization name, users"}
+
+      true ->
+        nil
+    end
+  end
+
+  # Initials for the avatar: the first letter of up to two parts of the email's
+  # local part, split on `.`, `_`, `-` and `+`. Users have no name field, and an
+  # email with an empty local part falls back to its first grapheme.
+  defp initials(email) do
+    [local_part | _rest] = String.split(email, "@", parts: 2)
+
+    case String.split(local_part, [".", "_", "-", "+"], trim: true) do
+      [] -> email |> String.first() |> String.upcase()
+      parts -> parts |> Enum.take(2) |> Enum.map_join(&String.upcase(String.first(&1)))
+    end
   end
 
   defp path_segments(current_path) do
@@ -233,11 +284,31 @@ defmodule GtfsPlannerWeb.Navigation do
     Enum.take(segments, length(family_segments)) == family_segments
   end
 
-  defp gtfs_family_active?(current_path, task) do
-    segments = path_segments(current_path)
+  # The version-prefixed settings family (`/gtfs/:version/settings...`), matched
+  # on the literal segment so a lookalike slug cannot select it.
+  defp gtfs_settings_family_active?(current_path) do
+    case path_segments(current_path) do
+      ["gtfs", _version, "settings" | _rest] -> true
+      _ -> false
+    end
+  end
 
-    case segments do
-      ["gtfs", _version, ^task | _rest] -> true
+  # Settings is current on its two destination families; the menu trigger is
+  # current there as well as on the account's own settings page.
+  defp settings_family_active?(current_path) do
+    gtfs_settings_family_active?(current_path) ||
+      path_family_active?(current_path, ["admin", "users"])
+  end
+
+  defp menu_current_family?(current_path) do
+    settings_family_active?(current_path) ||
+      path_family_active?(current_path, ["users", "settings"])
+  end
+
+  # A task is current when the segment after the version is one of its families.
+  defp gtfs_family_active?(current_path, families) do
+    case path_segments(current_path) do
+      ["gtfs", _version, segment | _rest] -> segment in families
       _ -> false
     end
   end

@@ -66,45 +66,53 @@ defmodule GtfsPlannerWeb.Layouts do
     </a>
     <header
       id="app-header"
-      class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8 py-3"
+      class="relative z-30 border-b border-subtle bg-white font-ds text-strong"
     >
-      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <div class="flex-none">
+      <div class="px-4 sm:px-6 lg:px-8">
+        <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8">
           <.link
             href={~p"/"}
-            class="flex items-center gap-2 min-h-11"
+            class="flex min-h-[72px] shrink-0 flex-col justify-center"
             aria-label="Pathways Studio - Go to homepage"
           >
-            <div class="bg-brand p-2 rounded-lg">
-              <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
-            </div>
-            <span class="text-xl font-semibold tracking-tight text-brand">Pathways Studio</span>
+            <span class="font-display text-[21px] font-semibold leading-none tracking-[-0.04em] text-strong">
+              Pathways Studio
+            </span>
+            <span :if={@current_organization} class="mt-1.5 text-[13px] leading-none text-muted">
+              {@current_organization.name}
+            </span>
           </.link>
-        </div>
 
-        <%= if @current_user do %>
-          <Navigation.top_nav
-            current_user={@current_user}
-            current_organization={assigns[:current_organization]}
-            user_roles={@user_roles}
-            current_path={@current_path}
-            current_gtfs_version={@current_gtfs_version}
-          />
-          <div class="flex flex-wrap items-center gap-3 sm:ml-auto">
-            <%= if @current_organization && @current_gtfs_version && @available_versions != [] do %>
-              <.live_component
-                module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}
-                id="gtfs-version-switcher"
-                current_version={@current_gtfs_version}
-                versions={@available_versions}
-                organization_id={@current_organization.id}
+          <%= if @current_user do %>
+            <Navigation.top_nav
+              current_user={@current_user}
+              current_organization={assigns[:current_organization]}
+              user_roles={@user_roles}
+              current_path={@current_path}
+              current_gtfs_version={@current_gtfs_version}
+            />
+            <div class="ml-auto flex min-h-16 flex-wrap items-center justify-end gap-2">
+              <%= if @current_organization && @current_gtfs_version && @available_versions != [] do %>
+                <.live_component
+                  module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}
+                  id="gtfs-version-switcher"
+                  current_version={@current_gtfs_version}
+                  versions={@available_versions}
+                  organization_id={@current_organization.id}
+                />
+              <% end %>
+              <Navigation.user_menu
+                current_user={@current_user}
+                current_path={@current_path}
+                current_organization={assigns[:current_organization]}
+                user_roles={@user_roles}
+                current_gtfs_version={@current_gtfs_version}
               />
-            <% end %>
-            <Navigation.user_menu current_user={@current_user} current_path={@current_path} />
-          </div>
-        <% else %>
-          <div class="flex-1"></div>
-        <% end %>
+            </div>
+          <% else %>
+            <div class="ml-auto flex-1"></div>
+          <% end %>
+        </div>
       </div>
     </header>
 

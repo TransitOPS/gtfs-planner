@@ -63,7 +63,11 @@ async function setLiveUploadFiles(page, inputSelector, entriesSelector, file) {
 
 async function openRoute(page, route, { authenticate = true } = {}) {
   if (authenticate) await logIn(page);
-  await page.locator(`#app-header a[href$='/${route}']`).first().click();
+  // The header's GTFS area owns Export and Import; its two pages are the bar's
+  // tabs, so the journey enters through the task link and then the tab.
+  await page.locator("#main-navigation #nav-gtfs").click();
+  await page.waitForURL(/\/gtfs\/[^/]+\/export$/);
+  await page.locator(`#gtfs-tab-${route}`).click();
   await page.waitForURL(new RegExp(`/gtfs/[^/]+/${route}$`));
   await page.locator(`#gtfs-${route}-form`).waitFor({ state: "visible" });
   await waitForLiveView(page);
