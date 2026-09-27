@@ -23,7 +23,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   mocking `Repo` or Postgrex.
   """
 
-  alias GtfsPlanner.Gtfs.{Calendars, Route, RoutePattern, Stop}
+  alias GtfsPlanner.Gtfs.{Calendars, Route, RoutePattern, Schedules, Stop}
 
   @type unavailable :: {:error, :unavailable}
   @type route_page :: %{
@@ -66,6 +66,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   @callback load_calendar_feed_status(Ecto.UUID.t(), Ecto.UUID.t()) ::
               {:ok, %{today: Date.t(), gaps: [Calendars.feed_gap()]}}
               | {:error, :not_found | :unavailable}
+  @callback load_route_schedule(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), Schedules.filters()) ::
+              {:ok, Schedules.schedule()} | {:error, :not_found | :unavailable}
   @callback load_stop_regions(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t()) :: %{
               child_stops: stop_region([Stop.t()]),
               levels: stop_region(list()),

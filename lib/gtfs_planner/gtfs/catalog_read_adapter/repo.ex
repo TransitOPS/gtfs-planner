@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @behaviour GtfsPlanner.Gtfs.CatalogReadAdapter
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{Calendars, DisplayClock, Route, RoutePatterns, Stop}
+  alias GtfsPlanner.Gtfs.{Calendars, DisplayClock, Route, RoutePatterns, Schedules, Stop}
 
   @default_per_page 25
 
@@ -129,6 +129,17 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   def fetch_calendar(organization_id, gtfs_version_id, service_id) do
     case run(fn -> Calendars.get_calendar(organization_id, gtfs_version_id, service_id) end) do
       {:ok, {:ok, payload}} -> {:ok, payload}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_route_schedule(organization_id, gtfs_version_id, route_id, filters) do
+    case run(fn ->
+           Schedules.load_route_schedule(organization_id, gtfs_version_id, route_id, filters)
+         end) do
+      {:ok, {:ok, schedule}} -> {:ok, schedule}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end

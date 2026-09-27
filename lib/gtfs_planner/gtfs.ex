@@ -11,7 +11,9 @@ defmodule GtfsPlanner.Gtfs do
     :route_pattern_build,
     "route_pattern_build",
     :calendar,
-    "calendar"
+    "calendar",
+    :trip,
+    "trip"
   ]
 
   import Ecto.Query, warn: false
@@ -53,6 +55,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal
@@ -233,6 +236,27 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Calendars.payload()} | {:error, :not_found | :unavailable}
   def fetch_calendar(organization_id, gtfs_version_id, service_id) do
     catalog_read_adapter().fetch_calendar(organization_id, gtfs_version_id, service_id)
+  end
+
+  @doc """
+  Loads one route's scoped Schedules read through the configured catalog read adapter.
+
+  The read canonicalizes the requested calendar, direction, pattern and stops
+  filters against the published scope, then returns the route, the version's
+  calendars with this route's trip counts, the route's patterns with their
+  timings, the sections built from the stored stop times, the planning summary
+  and the direction labels. A foreign, invalid or unpublished scope is
+  `{:error, :not_found}`; a lost database connection is `{:error, :unavailable}`.
+  """
+  @spec load_route_schedule(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), Schedules.filters()) ::
+          {:ok, Schedules.schedule()} | {:error, :not_found | :unavailable}
+  def load_route_schedule(organization_id, gtfs_version_id, route_id, filters) do
+    catalog_read_adapter().load_route_schedule(
+      organization_id,
+      gtfs_version_id,
+      route_id,
+      filters
+    )
   end
 
   @doc """
@@ -5147,7 +5171,7 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar"],
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar", "trip"],
       do: {:error, :audit_only_entity}
 
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
@@ -5164,7 +5188,7 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   def rollback_target_snapshot(%ChangeLog{entity_type: type})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar"],
+      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar", "trip"],
       do: {:error, :audit_only_entity}
 
   def rollback_target_snapshot(%ChangeLog{action: action})
@@ -5270,6 +5294,11 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot("calendar", %CalendarAttribute{} = anchor),
     do: Calendars.audit_snapshot(anchor)
 
+  # A trip's audit identity is the trip UUID plus its GTFS `trip_id`; the complete
+  # aggregate before/after snapshots are passed explicitly by Schedules, so the
+  # entity itself never yields a snapshot.
+  defp build_snapshot(type, %Trip{}) when type in [:trip, "trip"], do: nil
+
   defp build_snapshot(_, _), do: nil
 
   defp snapshot_stop(stop) do
@@ -5353,6 +5382,9 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for("calendar", %CalendarAttribute{} = anchor, _attrs),
     do: anchor.service_id
 
+  defp entity_external_id_for(type, %Trip{} = trip, _attrs) when type in [:trip, "trip"],
+    do: trip.trip_id
+
   defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
 
   defp entity_external_id_for(:route_pattern_build, nil, attrs),
@@ -5383,6 +5415,15 @@ defmodule GtfsPlanner.Gtfs do
 
   # Calendar diffs are already explicit aggregate before/after snapshots.
   defp audited_attrs_for(type, attrs) when type in [:calendar, "calendar"], do: attrs
+
+  # A trip update carries the explicit before/after snapshots and its operation
+  # scope; no trip column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs) when type in [:trip, "trip"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(before after operation_id affected_trip_ids)
+    end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -5397,6 +5438,18 @@ defmodule GtfsPlanner.Gtfs do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_calendar_operation(attrs)
+  end
+
+  # Trips, like calendars, diff two explicit aggregate snapshots. The log carries
+  # no trip-column diff, and a bulk operation records its shared operation UUID
+  # and affected trip UUIDs alongside the snapshot.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:trip, "trip"] and action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+    |> put_trip_operation(attrs)
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
@@ -5448,6 +5501,18 @@ defmodule GtfsPlanner.Gtfs do
   # reconstructed into the whole command.
   defp put_calendar_operation(changed, attrs) do
     Enum.reduce([:operation_id, :affected_service_ids, :selected_dates], changed, fn key, acc ->
+      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
+        nil -> acc
+        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
+      end
+    end)
+  end
+
+  # A bulk trip operation records its shared operation UUID and the affected trip
+  # UUIDs alongside the per-trip before/after snapshot, so one log per affected
+  # trip can be reconstructed into the whole command.
+  defp put_trip_operation(changed, attrs) do
+    Enum.reduce([:operation_id, :affected_trip_ids], changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
