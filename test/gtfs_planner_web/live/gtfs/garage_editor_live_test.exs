@@ -13,7 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Operations
 
-  @garages_path "/blocks/garages"
+  @garages_path "/settings/garages"
 
   @selected_result %GtfsPlanner.Geocoding.Result{
     formatted_address: "120 Depot Road, Cedar Valley",

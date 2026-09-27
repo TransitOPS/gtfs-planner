@@ -10,7 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Operations
 
-  @fleet_path "/blocks/fleet"
+  @fleet_path "/settings/fleet"
 
   defp editor_setup(_context) do
     organization = organization_fixture()

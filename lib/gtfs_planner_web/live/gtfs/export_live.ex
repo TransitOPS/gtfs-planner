@@ -465,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 </ul>
                 <.link
                   id="export-edit-garages"
-                  href={"/gtfs/#{@current_gtfs_version.id}/blocks/garages"}
+                  href={"/gtfs/#{@current_gtfs_version.id}/settings/garages"}
                   class="mt-2 inline-flex min-h-11 items-center font-medium text-primary underline"
                 >
                   Edit garages

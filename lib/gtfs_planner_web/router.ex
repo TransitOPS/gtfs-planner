@@ -154,22 +154,24 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
       live "/stops/:stop_id/evolutions", Gtfs.ComingSoonLive, :evolutions
-      # Operations placeholders. They group under the Operations area, separately
-      # from the organization-wide asset routes below them: those ignore the
-      # version in the URL, which is navigation context and selects the stop IDs
-      # the garage conflict notice compares.
+      # Operations placeholders. They group under the Operations area; the
+      # organization-wide Garages and Fleet pages live in Settings, where the
+      # version in the URL is navigation context and selects the stop IDs the
+      # garage conflict notice compares.
       live "/blocks", Gtfs.ComingSoonLive, :blocks
       live "/runs", Gtfs.ComingSoonLive, :runs
       live "/rosters", Gtfs.ComingSoonLive, :rosters
       # Flex has no area bar of its own in the architecture's groups.
       live "/flex", Gtfs.ComingSoonLive, :flex
-      live "/blocks/garages", Gtfs.GaragesLive, :index
-      live "/blocks/fleet", Gtfs.FleetLive, :index
       # Settings holds the version's rarely changed configuration, including its
-      # organization-level group. The overview is declared before the section
-      # route so it is never treated as an unknown slug; the literal garages and
-      # fleet routes join it ahead of the section route when those pages move.
+      # organization-level group. Garages and Fleet list organization-wide data
+      # under the All versions group; the version in their URL is navigation
+      # context, as the tables themselves ignore it. Their literal routes are
+      # declared ahead of the section route so they are never read as slugs, and
+      # there is no redirect from the Blocks paths they used before.
       live "/settings", Gtfs.SettingsLive, :index
+      live "/settings/garages", Gtfs.GaragesLive, :index
+      live "/settings/fleet", Gtfs.FleetLive, :index
       live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index

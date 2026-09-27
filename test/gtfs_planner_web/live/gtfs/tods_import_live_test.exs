@@ -11,8 +11,8 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Tods
 
-  @garages_path "/blocks/garages"
-  @fleet_path "/blocks/fleet"
+  @garages_path "/settings/garages"
+  @fleet_path "/settings/fleet"
 
   @garage_file "test/fixtures/tods/stops_supplement.txt"
   @vehicle_file "test/fixtures/tods/tods_example_vehicles.txt"

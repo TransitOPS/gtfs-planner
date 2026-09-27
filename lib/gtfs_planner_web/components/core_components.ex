@@ -1124,51 +1124,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
-  Renders the Blocks sub-navigation shared by the Garages and Fleet pages.
-
-  The tabs reuse the underline presentation of `station_sub_nav/1` and
-  `route_sub_nav/1`. Until a Blocks page exists the tabs are Garages and Fleet;
-  the spec-05 handoff adds a Blocks tab at the front.
-
-  ## Examples
-
-      <.blocks_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:garages} />
-  """
-  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
-  attr :active_tab, :atom, values: [:garages, :fleet], default: :garages
-
-  def blocks_sub_nav(assigns) do
-    ~H"""
-    <nav
-      id="blocks-sub-nav"
-      aria-label="Blocks sections"
-      class="mt-4 overflow-x-auto border-b border-base-300"
-    >
-      <div class="flex min-w-max items-end gap-1 sm:min-w-0">
-        <.link
-          navigate={"/gtfs/#{@gtfs_version_id}/blocks/garages"}
-          class={sub_nav_link_class(@active_tab == :garages)}
-          aria-current={@active_tab == :garages && "page"}
-        >
-          Garages
-        </.link>
-        <.link
-          navigate={"/gtfs/#{@gtfs_version_id}/blocks/fleet"}
-          class={sub_nav_link_class(@active_tab == :fleet)}
-          aria-current={@active_tab == :fleet && "page"}
-        >
-          Fleet
-        </.link>
-      </div>
-    </nav>
-    """
-  end
-
-  @doc """
   Renders the Routes area tabs shared by the routes list and Transfers.
 
   The tabs reuse the underline presentation of `route_sub_nav/1` and
-  `blocks_sub_nav/1` and render in `Layouts.app`'s sub-header slot.
+  `station_sub_nav/1` and render in `Layouts.app`'s sub-header slot.
 
   ## Examples
 

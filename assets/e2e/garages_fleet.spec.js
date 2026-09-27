@@ -67,7 +67,7 @@ async function currentVersionId(page, name = VERSION_NAME) {
   return versionId;
 }
 
-async function openBlocksPage(page, path, name = VERSION_NAME) {
+async function openMovedPage(page, path, name = VERSION_NAME) {
   const versionId = await currentVersionId(page, name);
   await page.goto(`/gtfs/${versionId}${path}`);
   return versionId;
@@ -141,7 +141,7 @@ async function setUpload(page, file) {
 }
 
 async function createGarage(page, versionId, { name, garageId, lat, lon }) {
-  await page.goto(`/gtfs/${versionId}/blocks/garages`);
+  await page.goto(`/gtfs/${versionId}/settings/garages`);
   await openDrawer(page, "#add-garage", "garage-drawer");
 
   await page.fill("#garage_name", name);
@@ -255,7 +255,7 @@ async function vehicleRows(page) {
 // ── journey ────────────────────────────────────────────────────────────────
 
 test.describe("Garages, Fleet and operations export", () => {
-  test("the Blocks pill opens Garages and an address choice persists its coordinates", async ({
+  test("Settings opens Garages and an address choice persists its coordinates", async ({
     page,
   }, testInfo) => {
     test.setTimeout(120_000);
@@ -263,14 +263,20 @@ test.describe("Garages, Fleet and operations export", () => {
     await logIn(page);
     const versionId = await currentVersionId(page);
 
-    await page.locator('#app-header a[href$="/blocks/garages"]').click();
-    await page.waitForURL(new RegExp(`/gtfs/${versionId}/blocks/garages$`));
+    // The Settings overview is the in-app entry to the moved page, which now
+    // carries the Settings bar and the All versions scope instead of the
+    // retired Blocks navigation.
+    await page.goto(`/gtfs/${versionId}/settings`);
+    await page.locator("#settings-entry-garages a").click();
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/garages$`));
     await expect(page.locator("h1")).toContainText("Garages");
-    await expect(page.locator('#app-header a[href$="/blocks/garages"]')).toHaveAttribute(
-      "aria-current",
-      "page",
+    await expect(page.locator("body")).toContainText(
+      "All versions · Set where your vehicles start and end the day.",
     );
-    await expect(page.locator("#blocks-sub-nav a[aria-current='page']")).toHaveText("Garages");
+    await expect(page.locator("#settings-nav a[aria-current='page']")).toHaveText("Garages");
+    await expect(
+      page.locator('#app-header nav[aria-label="Main navigation"] a[aria-current="page"]'),
+    ).toHaveCount(0);
     await expect(page.locator("body")).toContainText(
       `Shared across all service versions for ${ORGANIZATION_NAME}.`,
     );
@@ -328,7 +334,7 @@ test.describe("Garages, Fleet and operations export", () => {
     test.setTimeout(120_000);
 
     await logIn(page);
-    await openBlocksPage(page, "/blocks/garages");
+    await openMovedPage(page, "/settings/garages");
     await expect(page.locator("#garages-table, #garages-first-use-empty").first()).toBeVisible();
 
     await openDrawer(page, "#import-tods", "tods-import-drawer");
@@ -390,7 +396,7 @@ test.describe("Garages, Fleet and operations export", () => {
     const rangeLast = rangeBase + 14;
 
     await createGarage(page, versionId, { name: garageName });
-    await page.goto(`/gtfs/${versionId}/blocks/fleet`);
+    await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
 
     // A type with a 10-hour limit: the disclosure opens, the drawer saves it.
@@ -512,7 +518,7 @@ test.describe("Garages, Fleet and operations export", () => {
     const versionId = await currentVersionId(page);
     await page.setViewportSize(MOBILE);
 
-    await page.goto(`/gtfs/${versionId}/blocks/garages`);
+    await page.goto(`/gtfs/${versionId}/settings/garages`);
     await expect(page.locator("h1")).toContainText("Garages");
     await expect(page.locator("#garages-table")).toBeVisible();
     expect(await bodyFitsViewport(page), "Garages overflows at 375px").toBe(true);
@@ -530,12 +536,12 @@ test.describe("Garages, Fleet and operations export", () => {
     await expectActivationTargets(page, [
       "#import-tods",
       "#add-garage",
-      "#blocks-sub-nav a",
+      "#settings-nav a",
       "#garages-table td[data-label='Actions'] a",
     ]);
     await page.screenshot({ path: testInfo.outputPath("garages-375x812.png") });
 
-    await page.goto(`/gtfs/${versionId}/blocks/fleet`);
+    await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
     await expect(page.locator("#vehicles-table")).toBeVisible();
     expect(await bodyFitsViewport(page), "Fleet overflows at 375px").toBe(true);
@@ -553,7 +559,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await expectActivationTargets(page, [
       "#import-tods",
       "#add-vehicles-header",
-      "#blocks-sub-nav a",
+      "#settings-nav a",
       "#vehicle-types-summary",
       // The checkbox input is the browser's own 24px box; the label around it
       // carries the 44px activation area.
@@ -571,7 +577,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await logIn(page);
     const versionId = await currentVersionId(page);
 
-    await page.goto(`/gtfs/${versionId}/blocks/garages`);
+    await page.goto(`/gtfs/${versionId}/settings/garages`);
     await expect(page.locator("h1")).toContainText("Garages");
 
     const garageTrigger = "add-garage";
@@ -586,7 +592,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await expect(page.locator(`#${garageTrigger}`)).toBeFocused();
     expect(await focusVisible(page), "focus must be visibly restored").toBe(true);
 
-    await page.goto(`/gtfs/${versionId}/blocks/fleet`);
+    await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
 
     const fleetTrigger = "add-vehicles-header";
@@ -620,7 +626,7 @@ test.describe("Garages, Fleet and operations export", () => {
 
     // The operations ZIP carries vehicles.txt only when the organization has
     // vehicles, so the journey imports the committed vehicle fixture first.
-    await page.goto(`/gtfs/${versionId}/blocks/fleet`);
+    await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await openDrawer(page, "#import-tods", "tods-import-drawer");
     await setUpload(page, VEHICLE_FIXTURE);
     await expect(page.locator("#apply-tods-import")).toHaveText("Import 2 vehicles");
@@ -645,14 +651,20 @@ test.describe("Garages, Fleet and operations export", () => {
     await expect(page.locator("#retry-export")).toBeVisible();
     await expect(page.locator("#export-edit-garages")).toHaveAttribute(
       "href",
-      `/gtfs/${versionId}/blocks/garages`,
+      `/gtfs/${versionId}/settings/garages`,
     );
 
     await page.setViewportSize(DESKTOP);
     await page.screenshot({ path: testInfo.outputPath("export-conflict-1440x1000.png") });
 
+    // The recovery link itself must reach the moved Garages page, so the
+    // correction continues through the conflict panel rather than a fresh URL.
+    await page.locator("#export-edit-garages").click();
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/garages$`));
+    await expect(page.locator("h1")).toContainText("Garages");
+    await expect(page.locator("#settings-nav a[aria-current='page']")).toHaveText("Garages");
+
     // Correcting the garage ID clears the collision.
-    await page.goto(`/gtfs/${versionId}/blocks/garages`);
     await page
       .locator("#garages-table tr")
       .filter({ hasText: garageName })

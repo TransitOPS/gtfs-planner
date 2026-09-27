@@ -239,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(view, "#export-conflicts", "Main Street")
 
       assert attribute_values(render(view), "#export-edit-garages", "href") == [
-               "/gtfs/#{version.id}/blocks/garages"
+               "/gtfs/#{version.id}/settings/garages"
              ]
 
       # The conflict detail belongs to the conflict panel only.
