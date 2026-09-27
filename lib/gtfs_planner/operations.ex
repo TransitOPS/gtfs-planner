@@ -29,6 +29,11 @@ defmodule GtfsPlanner.Operations do
           stop_name: String.t() | nil
         }
 
+  # AC-5: a numbered group creates between 1 and 200 vehicles, and a bound is
+  # rejected once it exceeds the vehicle_id column limit.
+  @range_limit 200
+  @max_vehicle_id_length 255
+
   # --- garages ---------------------------------------------------------------
 
   @doc """
@@ -362,7 +367,366 @@ defmodule GtfsPlanner.Operations do
     outcome
   end
 
+  @doc """
+  Creates a numbered group of 1 to 200 vehicles and records the acting user.
+
+  `attrs` carries the `"first"` and `"last"` numbers plus the optional
+  `"vehicle_type_id"` and `"garage_id"` assignments. Generated IDs keep the
+  digit width of the first number, so `0098` to `0102` creates `0098`, `0099`,
+  `0100`, `0101` and `0102`. A reversed, non-numeric, longer than 255 digit or
+  larger than 200 number range returns `{:error, {:invalid_range, message}}` and
+  inserts nothing. A malformed, missing or foreign assignment target returns
+  `{:error, :not_found}` and inserts nothing.
+
+  When any generated ID already exists nothing is inserted and
+  `{:error, {:ids_taken, ids}}` names every existing ID. A concurrent writer
+  that claims part of the range rolls the batch back and reports the same error
+  from a fresh read, so a partial range never survives.
+  """
+  @spec create_vehicle_range(Ecto.UUID.t(), actor(), map()) ::
+          {:ok, [Vehicle.t()]}
+          | {:error, {:invalid_range, String.t()} | {:ids_taken, [String.t()]} | :not_found}
+  def create_vehicle_range(organization_id, actor, attrs) do
+    with {:ok, vehicle_ids} <- range_vehicle_ids(attrs) do
+      outcome =
+        Repo.transaction(fn ->
+          with {:ok, vehicle_type_id} <-
+                 validate_assignment(
+                   organization_id,
+                   VehicleType,
+                   present_assignment(attrs, "vehicle_type_id")
+                 ),
+               {:ok, garage_id} <-
+                 validate_assignment(
+                   organization_id,
+                   Garage,
+                   present_assignment(attrs, "garage_id")
+                 ) do
+            case existing_vehicle_ids(organization_id, vehicle_ids) do
+              [] ->
+                insert_vehicle_range(
+                  organization_id,
+                  actor,
+                  vehicle_ids,
+                  vehicle_type_id,
+                  garage_id
+                )
+
+              taken ->
+                {:ids_taken, taken}
+            end
+          end
+        end)
+
+      case outcome do
+        {:ok, {:ok, vehicles}} ->
+          {:ok, vehicles}
+
+        {:ok, {:ids_taken, taken}} ->
+          {:error, {:ids_taken, taken}}
+
+        {:ok, {:error, :not_found}} ->
+          {:error, :not_found}
+
+        {:error, {:short_insert, _count}} ->
+          {:error, {:ids_taken, existing_vehicle_ids(organization_id, vehicle_ids)}}
+      end
+    end
+  end
+
+  @doc """
+  Sets one assignment field on every listed vehicle and records the acting user.
+
+  `assignment` names the single field to write (`:vehicle_type_id` or
+  `:garage_id`) and its value; `nil` clears it and leaves the other assignment
+  untouched. IDs are deduplicated and cast, and every one must belong to the
+  organization: a malformed, missing or foreign vehicle, or a malformed, missing
+  or foreign target, returns `{:error, :not_found}` and changes nothing. An
+  empty list returns `{:ok, 0}`; otherwise the affected count is returned.
+  """
+  @spec update_vehicles(
+          Ecto.UUID.t(),
+          actor(),
+          [Ecto.UUID.t()],
+          {:vehicle_type_id | :garage_id, Ecto.UUID.t() | nil}
+        ) :: {:ok, non_neg_integer()} | {:error, :not_found}
+  def update_vehicles(organization_id, actor, ids, assignment) do
+    with {:ok, ids} <- cast_vehicle_ids(ids),
+         {:ok, field, value} <- bulk_assignment(assignment) do
+      if ids == [] do
+        {:ok, 0}
+      else
+        outcome =
+          Repo.transaction(fn ->
+            # The target is locked before the vehicles so a concurrent parent
+            # deletion cannot hold the parent while waiting for these rows.
+            with {:ok, value} <-
+                   validate_assignment(organization_id, assignment_schema(field), value),
+                 {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
+              now = DateTime.utc_now()
+
+              {count, _} =
+                Vehicle
+                |> where([v], v.organization_id == ^organization_id and v.id in ^locked_ids)
+                |> Repo.update_all(
+                  set: [
+                    {field, value},
+                    {:updated_by_id, actor_id(actor)},
+                    {:updated_at, now}
+                  ]
+                )
+
+              if count == length(locked_ids) do
+                {:ok, count}
+              else
+                Repo.rollback(:count_mismatch)
+              end
+            end
+          end)
+
+        case outcome do
+          {:ok, {:ok, count}} -> {:ok, count}
+          {:ok, {:error, :not_found}} -> {:error, :not_found}
+          {:error, _reason} -> {:error, :not_found}
+        end
+      end
+    end
+  end
+
+  @doc """
+  Deletes every listed vehicle of the organization, or none of them.
+
+  IDs are deduplicated and cast, and every one must belong to the organization:
+  a malformed, missing or foreign vehicle returns `{:error, :not_found}` and
+  deletes nothing, including the rows already selected. An empty list returns
+  `{:ok, 0}`; otherwise the deleted count is returned.
+  """
+  @spec delete_vehicles(Ecto.UUID.t(), [Ecto.UUID.t()]) ::
+          {:ok, non_neg_integer()} | {:error, :not_found}
+  def delete_vehicles(organization_id, ids) do
+    with {:ok, ids} <- cast_vehicle_ids(ids) do
+      if ids == [] do
+        {:ok, 0}
+      else
+        outcome =
+          Repo.transaction(fn ->
+            with {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
+              {count, _} =
+                Vehicle
+                |> where([v], v.organization_id == ^organization_id and v.id in ^locked_ids)
+                |> Repo.delete_all()
+
+              if count == length(locked_ids) do
+                {:ok, count}
+              else
+                Repo.rollback(:count_mismatch)
+              end
+            end
+          end)
+
+        case outcome do
+          {:ok, {:ok, count}} -> {:ok, count}
+          {:ok, {:error, :not_found}} -> {:error, :not_found}
+          {:error, _reason} -> {:error, :not_found}
+        end
+      end
+    end
+  end
+
+  @doc """
+  Counts the organization's vehicles per garage and vehicle type pair.
+
+  Every pair that has vehicles produces one bucket, including the `nil` garage
+  and `nil` vehicle type buckets, so the bucket counts sum to the organization's
+  vehicle count. Buckets are ordered by garage then type name, with unassigned
+  values last; an organization without vehicles returns `[]`.
+  """
+  @spec fleet_summary(Ecto.UUID.t()) :: [
+          %{garage: Garage.t() | nil, vehicle_type: VehicleType.t() | nil, count: pos_integer()}
+        ]
+  def fleet_summary(organization_id) do
+    pairs =
+      Vehicle
+      |> where([v], v.organization_id == ^organization_id)
+      |> group_by([v], [v.garage_id, v.vehicle_type_id])
+      |> select([v], {v.garage_id, v.vehicle_type_id, count(v.id)})
+      |> Repo.all()
+
+    garages = rows_by_id(Garage, organization_id, Enum.map(pairs, &elem(&1, 0)))
+    vehicle_types = rows_by_id(VehicleType, organization_id, Enum.map(pairs, &elem(&1, 1)))
+
+    pairs
+    |> Enum.map(fn {garage_id, vehicle_type_id, count} ->
+      %{
+        garage: Map.get(garages, garage_id),
+        vehicle_type: Map.get(vehicle_types, vehicle_type_id),
+        count: count
+      }
+    end)
+    |> Enum.sort_by(fn bucket ->
+      {summary_sort_key(bucket.garage), summary_sort_key(bucket.vehicle_type)}
+    end)
+  end
+
   # --- private ---------------------------------------------------------------
+
+  # Parses the numbered-group bounds. The digit count is checked before
+  # `String.to_integer/1` and before the range is built, so an over-long bound
+  # allocates neither an integer nor a range.
+  defp range_vehicle_ids(attrs) do
+    with {:ok, first, first_digits} <- range_bound(attrs, "first"),
+         {:ok, last, _last_digits} <- range_bound(attrs, "last") do
+      count = last - first + 1
+      width = String.length(first_digits)
+
+      cond do
+        count < 1 ->
+          {:error, {:invalid_range, "The last number must be the same as or after the first."}}
+
+        count > @range_limit ->
+          {:error, {:invalid_range, "Choose a numbered group of 1 to 200 vehicles."}}
+
+        true ->
+          vehicle_ids =
+            Enum.map(first..last, &String.pad_leading(Integer.to_string(&1), width, "0"))
+
+          if Enum.any?(vehicle_ids, &(String.length(&1) > @max_vehicle_id_length)) do
+            {:error, {:invalid_range, "Vehicle IDs must be 255 characters or fewer."}}
+          else
+            {:ok, vehicle_ids}
+          end
+      end
+    end
+  end
+
+  defp range_bound(attrs, key) do
+    case fetch_attr(attrs, key) do
+      value when is_binary(value) ->
+        digits = String.trim(value)
+
+        cond do
+          String.length(digits) > @max_vehicle_id_length ->
+            {:error, {:invalid_range, "The first and last numbers must be at most 255 digits."}}
+
+          Regex.match?(~r/^\d+$/, digits) ->
+            {:ok, String.to_integer(digits), digits}
+
+          true ->
+            {:error, {:invalid_range, "Enter whole numbers for the first and last numbers."}}
+        end
+
+      _missing ->
+        {:error, {:invalid_range, "Enter whole numbers for the first and last numbers."}}
+    end
+  end
+
+  # `insert_all/3` bypasses the changeset, so every persisted field is supplied
+  # here. A short insert means another writer claimed part of the range, and the
+  # transaction is rolled back so no partial batch survives.
+  defp insert_vehicle_range(organization_id, actor, vehicle_ids, vehicle_type_id, garage_id) do
+    now = DateTime.utc_now()
+    updated_by_id = actor_id(actor)
+
+    entries =
+      Enum.map(vehicle_ids, fn vehicle_id ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          vehicle_id: vehicle_id,
+          vehicle_type_id: vehicle_type_id,
+          garage_id: garage_id,
+          updated_by_id: updated_by_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    case Repo.insert_all(Vehicle, entries, on_conflict: :nothing) do
+      {count, _} when count == length(vehicle_ids) ->
+        {:ok, vehicles_by_ids(organization_id, vehicle_ids)}
+
+      {count, _} ->
+        Repo.rollback({:short_insert, count})
+    end
+  end
+
+  defp vehicles_by_ids(organization_id, vehicle_ids) do
+    index = Map.new(Enum.with_index(vehicle_ids))
+
+    Vehicle
+    |> where([v], v.organization_id == ^organization_id and v.vehicle_id in ^vehicle_ids)
+    |> Repo.all()
+    |> Enum.sort_by(&Map.fetch!(index, &1.vehicle_id))
+  end
+
+  defp existing_vehicle_ids(organization_id, vehicle_ids) do
+    index = Map.new(Enum.with_index(vehicle_ids))
+
+    Vehicle
+    |> where([v], v.organization_id == ^organization_id and v.vehicle_id in ^vehicle_ids)
+    |> select([v], v.vehicle_id)
+    |> Repo.all()
+    |> Enum.sort_by(&Map.fetch!(index, &1))
+  end
+
+  # Deduplicates and casts a caller-supplied id list into one canonical, sorted
+  # order; a single malformed entry fails the whole request without touching the
+  # database.
+  defp cast_vehicle_ids(ids) when is_list(ids) do
+    case Enum.reduce_while(ids, {:ok, []}, fn value, {:ok, acc} ->
+           case Ecto.UUID.cast(value) do
+             {:ok, id} -> {:cont, {:ok, [String.downcase(id) | acc]}}
+             :error -> {:halt, {:error, :not_found}}
+           end
+         end) do
+      {:ok, cast_ids} -> {:ok, cast_ids |> Enum.uniq() |> Enum.sort()}
+      {:error, :not_found} -> {:error, :not_found}
+    end
+  end
+
+  defp cast_vehicle_ids(_ids), do: {:error, :not_found}
+
+  # Locks every listed vehicle `FOR UPDATE` in sorted UUID order and verifies the
+  # cardinality, so a missing or foreign row fails the whole request instead of
+  # writing a subset.
+  defp lock_vehicles(organization_id, ids) do
+    locked_ids =
+      Vehicle
+      |> where([v], v.organization_id == ^organization_id and v.id in ^ids)
+      |> order_by([v], asc: v.id)
+      |> select([v], v.id)
+      |> lock("FOR UPDATE")
+      |> Repo.all()
+
+    if length(locked_ids) == length(ids) do
+      {:ok, locked_ids}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp bulk_assignment({field, value}) when field in [:vehicle_type_id, :garage_id],
+    do: {:ok, field, value}
+
+  defp bulk_assignment(_assignment), do: {:error, :not_found}
+
+  defp assignment_schema(:vehicle_type_id), do: VehicleType
+  defp assignment_schema(:garage_id), do: Garage
+
+  defp rows_by_id(schema, organization_id, ids) do
+    case ids |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [] ->
+        %{}
+
+      ids ->
+        from(row in schema, where: row.organization_id == ^organization_id and row.id in ^ids)
+        |> Repo.all()
+        |> Map.new(&{&1.id, &1})
+    end
+  end
+
+  defp summary_sort_key(nil), do: {1, ""}
+  defp summary_sort_key(%{name: name}), do: {0, name}
 
   defp fetch_vehicle(organization_id, id) do
     case Ecto.UUID.cast(id) do
