@@ -347,12 +347,13 @@ defmodule GtfsPlanner.Gtfs do
   The list is validated in full before anything is deleted: a trip outside this
   organization, version or route returns `{:error, :not_found}` and a trip on
   another calendar returns `{:error, :stale}`, either with no writes. Otherwise
-  the trips' stop times and frequencies are removed before the trips in one
-  transaction and the deleted count is returned, with one shared-operation audit
+  the trips' stop times, frequencies and trip-scoped transfers are removed before
+  the trips in one transaction, and `%{trips: ..., transfers: ...}` reports the
+  number of deleted trips and removed transfers, with one shared-operation audit
   log per trip.
   """
   @spec delete_trips(String.t(), String.t() | nil, [Ecto.UUID.t()], AuditContext.t()) ::
-          {:ok, non_neg_integer()} | {:error, Schedules.delete_error()}
+          {:ok, Schedules.delete_result()} | {:error, Schedules.delete_error()}
   def delete_trips(route_id, service_id, trip_ids, %AuditContext{} = audit_context)
       when is_list(trip_ids) do
     Schedules.delete_trips(route_id, service_id, trip_ids, audit_context)
@@ -360,6 +361,17 @@ defmodule GtfsPlanner.Gtfs do
 
   def delete_trips(_route_id, _service_id, _trip_ids, _audit_context),
     do: {:error, :invalid_input}
+
+  @doc """
+  Counts the transfers of one organization and version that name any of `trip_ids`.
+
+  `trip_ids` are natural `trips.trip_id` values. See
+  `Schedules.count_trip_transfers/3`.
+  """
+  @spec count_trip_transfers(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: non_neg_integer()
+  def count_trip_transfers(organization_id, gtfs_version_id, trip_ids) do
+    Schedules.count_trip_transfers(organization_id, gtfs_version_id, trip_ids)
+  end
 
   @doc """
   Loads the independent station-detail regions (child stops, levels, pathways,

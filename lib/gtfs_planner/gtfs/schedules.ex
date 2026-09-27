@@ -27,7 +27,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   before writing, enforces the custom-compatibility and frequency rules at the
   context boundary, and writes one `"trip"` audit log per affected trip. A bulk
   deletion validates the whole list before deleting anything and removes
-  stop_times and frequencies before the trips.
+  stop_times, frequencies and trip-scoped transfers before the trips.
 
   Every result is scoped: a foreign, invalid or unpublished organization,
   version or route rolls back to `{:error, :not_found}`.
@@ -52,6 +52,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -156,6 +157,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         }
 
   @type delete_error :: :invalid_input | :not_found | :stale | :busy
+  @type delete_result :: %{trips: non_neg_integer(), transfers: non_neg_integer()}
 
   @doc """
   Expands a series of departure seconds from `start_secs`.
@@ -275,18 +277,22 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   def duplicate_trip(_route_id, _trip_id, _attrs, _audit_context), do: {:error, :invalid_input}
 
   @doc """
-  Deletes every listed trip of one route and calendar with its stop times and frequencies.
+  Deletes every listed trip of one route and calendar with its stop times,
+  frequencies and trip-scoped transfers.
 
   The IDs are deduplicated and locked by UUID. The whole list is validated before
   anything is deleted: an ID that is not a trip of this organization, version and
   route is `:not_found`, and a trip on another calendar is `:stale`. Otherwise
   stop_times and frequencies are removed by `(organization_id, gtfs_version_id,
-  trip_id)` and then the trips, in one transaction, and the deleted count is
-  returned. One `"trip"` audit log per deleted trip shares a single
-  `operation_id` and lists the affected trip UUIDs.
+  trip_id)`, every transfer of this organization and version whose `from_trip_id`
+  or `to_trip_id` equals one of the deleted natural `trip_id`s is removed, and
+  then the trips, all in one transaction. Returns `%{trips: ..., transfers: ...}`
+  with the number of deleted trips and removed transfers. One `"trip"` audit log
+  per deleted trip shares a single `operation_id` and lists the affected trip
+  UUIDs; removed transfers are not audited.
   """
   @spec delete_trips(String.t(), String.t() | nil, [Ecto.UUID.t()], AuditContext.t()) ::
-          {:ok, non_neg_integer()} | {:error, delete_error()}
+          {:ok, delete_result()} | {:error, delete_error()}
   def delete_trips(route_id, service_id, trip_ids, %AuditContext{} = audit_context)
       when is_list(trip_ids) do
     case run_write(fn ->
@@ -300,6 +306,21 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   def delete_trips(_route_id, _service_id, _trip_ids, _audit_context),
     do: {:error, :invalid_input}
+
+  @doc """
+  Counts the transfers of one organization and version that name any of `trip_ids`.
+
+  `trip_ids` are natural `trips.trip_id` values, not trip UUIDs. The count runs
+  the same query `delete_trips/4` removes, so a caller can state the consequence
+  before a deletion; an empty list counts nothing without a query.
+  """
+  @spec count_trip_transfers(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: non_neg_integer()
+  def count_trip_transfers(_organization_id, _version_id, []), do: 0
+
+  def count_trip_transfers(organization_id, version_id, trip_ids) when is_list(trip_ids) do
+    trip_transfers_query(organization_id, version_id, trip_ids)
+    |> Repo.aggregate(:count)
+  end
 
   @doc """
   Loads one route's Schedules read for `organization_id`/`version_id`.
@@ -1485,6 +1506,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     delete_children!(:stop_times, organization_id, version_id, natural_ids)
     delete_children!(:frequencies, organization_id, version_id, natural_ids)
+
+    {transfers, nil} =
+      Repo.delete_all(trip_transfers_query(organization_id, version_id, natural_ids))
+
     count = delete_trip_rows!(organization_id, version_id, trip_uuids)
 
     operation_id = Ecto.UUID.generate()
@@ -1502,7 +1527,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       )
     end)
 
-    count
+    %{trips: count, transfers: transfers}
   end
 
   defp lock_matching_trips!(organization_id, version_id, route_id, trip_uuids) do
@@ -1561,6 +1586,17 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     )
 
     :ok
+  end
+
+  # One builder for the counted read and the deletion, so the count a caller sees
+  # is the set the deletion removes. The trip columns hold natural `trip_id`
+  # values, never `trips.id` UUIDs.
+  defp trip_transfers_query(organization_id, version_id, trip_ids) do
+    from(t in Transfer,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          (t.from_trip_id in ^trip_ids or t.to_trip_id in ^trip_ids)
+    )
   end
 
   defp delete_trip_rows!(organization_id, version_id, trip_uuids) do

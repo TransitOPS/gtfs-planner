@@ -390,8 +390,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp delete_visible(socket, dialog, ids) do
     case Gtfs.delete_trips(socket.assigns.route_id, dialog.service_id, ids, audit_context(socket)) do
-      {:ok, count} -> deleted(socket, dialog, count, ids)
-      {:error, reason} -> dialog_problem(socket, dialog, reason)
+      {:ok, %{trips: trips, transfers: transfers}} ->
+        deleted(socket, dialog, trips, transfers, ids)
+
+      {:error, reason} ->
+        dialog_problem(socket, dialog, reason)
     end
   end
 
@@ -725,18 +728,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> reload_or_fail()
   end
 
-  defp deleted(socket, dialog, count, ids) do
+  defp deleted(socket, dialog, trips, transfers, ids) do
     selected = MapSet.difference(socket.assigns.selected_ids, MapSet.new(ids))
     label = calendar_label(socket.assigns.payload.calendars, dialog.service_id)
 
     socket
-    |> put_flash(:info, "Deleted #{trip_count_label(count)} from #{label}.")
+    |> put_flash(:info, "Deleted #{deleted_label(trips, transfers)} from #{label}.")
     |> assign(:delete_dialog, nil)
     |> assign(:selected_ids, selected)
     |> assign(:selected_count, MapSet.size(selected))
     |> assign(:vehicle_change_from, current_vehicle_count(socket))
     |> reload_or_fail()
   end
+
+  # The flash names the removed transfers only when the transaction removed any,
+  # and always keeps the trip count first.
+  defp deleted_label(trips, 0), do: trip_count_label(trips)
+  defp deleted_label(trips, 1), do: "#{trip_count_label(trips)} and 1 transfer record"
+
+  defp deleted_label(trips, transfers),
+    do: "#{trip_count_label(trips)} and #{transfers} transfer records"
 
   defp reload_or_fail(socket) do
     case reload_schedule(socket) do

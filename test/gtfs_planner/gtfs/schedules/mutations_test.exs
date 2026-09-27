@@ -1,5 +1,5 @@
 defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
-  # EV-3: the trip edit, duplicate and delete contracts observed through the real
+  # EV-4: the trip edit, duplicate and delete contracts observed through the real
   # `Gtfs` facade, spec 01's locks and rematerializer and the shared audit
   # dispatch. Every expectation that can be authored literally is: pre-mutation
   # row IDs, sequence labels, shape distances and continuous fields are captured
@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Versions
 
@@ -535,7 +536,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert moved.service_id == second
 
       # Deletion removes every frequency row with the trip.
-      assert {:ok, 1} = Gtfs.delete_trips("12f", second, [trip.id], context.audit)
+      assert {:ok, %{trips: 1, transfers: 0}} =
+               Gtfs.delete_trips("12f", second, [trip.id], context.audit)
+
       refute Repo.exists?(from(f in Frequency, where: f.trip_id == ^trip.trip_id))
       refute Repo.exists?(from(t in Trip, where: t.id == ^trip.id))
     end
@@ -699,8 +702,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
           ]
         }).trip
 
-      # A deduplicated list of two UUIDs reports two deletions.
-      assert {:ok, 2} =
+      # A deduplicated list of two UUIDs reports two deletions and no transfers.
+      assert {:ok, %{trips: 2, transfers: 0}} =
                Gtfs.delete_trips(
                  "12k",
                  scope.service,
@@ -801,6 +804,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
 
       before = Enum.map([first, foreign_route, other_calendar], &raw_stop_times(&1.trip_id))
 
+      transfer =
+        transfer_fixture(context.organization.id, context.version.id, %{
+          transfer_type: 4,
+          from_trip_id: first.trip_id,
+          to_trip_id: other_calendar.trip_id
+        })
+
       assert {:error, :not_found} =
                Gtfs.delete_trips(
                  "12m",
@@ -830,6 +840,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
                Repo.exists?(from(t in Trip, where: t.id == ^trip.id))
              end)
 
+      # A rejected list removes no transfer naming its trips.
+      assert Gtfs.count_trip_transfers(context.organization.id, context.version.id, [
+               first.trip_id
+             ]) == 1
+
+      assert Repo.get!(Transfer, transfer.id) == transfer
       assert trip_logs(context) == []
     end
 
@@ -877,6 +893,201 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
 
       assert Repo.get!(Trip, trip.id).trip_headsign == nil
       assert trip_logs(context) == []
+    end
+  end
+
+  describe "transfers on deletion" do
+    test "removes every transfer naming a deleted trip and leaves every other transfer",
+         context do
+      scope = schedule_scope!(context, "12t", %{stops: [{"S1", 0, 0, 1}, {"S2", 300, 330, 1}]})
+
+      other_scope =
+        schedule_scope!(context, "12u", %{stops: [{"S1", 0, 0, 1}, {"S2", 300, 330, 1}]})
+
+      trip =
+        schedule_trip_fixture(context.organization.id, context.version.id, "12t", scope.bundle, %{
+          trip_id: "12t-0-#{scope.service}-0600",
+          service_id: scope.service,
+          start_time: "06:00:00"
+        }).trip
+
+      kept =
+        schedule_trip_fixture(
+          context.organization.id,
+          context.version.id,
+          "12u",
+          other_scope.bundle,
+          %{
+            trip_id: "12u-0-#{other_scope.service}-0600",
+            service_id: other_scope.service,
+            start_time: "06:00:00"
+          }
+        ).trip
+
+      other_trip =
+        schedule_trip_fixture(
+          context.organization.id,
+          context.version.id,
+          "12u",
+          other_scope.bundle,
+          %{
+            trip_id: "12u-0-#{other_scope.service}-0700",
+            service_id: other_scope.service,
+            start_time: "07:00:00"
+          }
+        ).trip
+
+      # Three rows name the deleted trip: a stopless in-seat pair on the from
+      # column, a stop-to-stop row that also names it on the from column, and an
+      # in-seat pair that names it on the to column.
+      removed =
+        Enum.map(
+          [
+            %{transfer_type: 4, from_trip_id: trip.trip_id, to_trip_id: kept.trip_id},
+            %{
+              transfer_type: 2,
+              from_stop_id: "S1",
+              to_stop_id: "S2",
+              from_trip_id: trip.trip_id,
+              min_transfer_time: 120
+            },
+            %{transfer_type: 4, from_trip_id: other_trip.trip_id, to_trip_id: trip.trip_id}
+          ],
+          &transfer_fixture(context.organization.id, context.version.id, &1)
+        )
+
+      # Four rows in this version name no deleted trip: a stop-only row, a
+      # route-scoped row, an in-seat pair between two other trips, and a
+      # stop-to-stop row that names the surviving trip.
+      survivors =
+        Enum.map(
+          [
+            %{transfer_type: 0, from_stop_id: "S1", to_stop_id: "S2", min_transfer_time: 60},
+            %{
+              transfer_type: 1,
+              from_stop_id: "S1",
+              to_stop_id: "S2",
+              from_route_id: "12t",
+              to_route_id: "12z",
+              min_transfer_time: 45
+            },
+            %{transfer_type: 4, from_trip_id: other_trip.trip_id, to_trip_id: kept.trip_id},
+            %{
+              transfer_type: 2,
+              from_stop_id: "S1",
+              to_stop_id: "S2",
+              from_trip_id: kept.trip_id,
+              min_transfer_time: 90
+            }
+          ],
+          &transfer_fixture(context.organization.id, context.version.id, &1)
+        )
+
+      # The same natural trip ID in another version and in another
+      # organization's version keeps its row.
+      other_version = gtfs_version_fixture(context.organization.id)
+
+      other_version_transfer =
+        transfer_fixture(context.organization.id, other_version.id, %{
+          transfer_type: 4,
+          from_trip_id: trip.trip_id,
+          to_trip_id: kept.trip_id
+        })
+
+      other_organization = organization_fixture()
+      other_organization_version = gtfs_version_fixture(other_organization.id)
+
+      other_organization_transfer =
+        transfer_fixture(other_organization.id, other_organization_version.id, %{
+          transfer_type: 4,
+          from_trip_id: trip.trip_id,
+          to_trip_id: kept.trip_id
+        })
+
+      expected_export_rows = [
+        %{
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2",
+          "from_route_id" => "",
+          "to_route_id" => "",
+          "from_trip_id" => "",
+          "to_trip_id" => "",
+          "transfer_type" => "0",
+          "min_transfer_time" => "60"
+        },
+        %{
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2",
+          "from_route_id" => "12t",
+          "to_route_id" => "12z",
+          "from_trip_id" => "",
+          "to_trip_id" => "",
+          "transfer_type" => "1",
+          "min_transfer_time" => "45"
+        },
+        %{
+          "from_stop_id" => "",
+          "to_stop_id" => "",
+          "from_route_id" => "",
+          "to_route_id" => "",
+          "from_trip_id" => other_trip.trip_id,
+          "to_trip_id" => kept.trip_id,
+          "transfer_type" => "4",
+          "min_transfer_time" => ""
+        },
+        %{
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2",
+          "from_route_id" => "",
+          "to_route_id" => "",
+          "from_trip_id" => kept.trip_id,
+          "to_trip_id" => "",
+          "transfer_type" => "2",
+          "min_transfer_time" => "90"
+        }
+      ]
+
+      # The count a caller states before the deletion is the set it removes.
+      assert Gtfs.count_trip_transfers(context.organization.id, context.version.id, [
+               trip.trip_id
+             ]) == 3
+
+      assert {:ok, %{trips: 1, transfers: 3}} =
+               Gtfs.delete_trips("12t", scope.service, [trip.id], context.audit)
+
+      refute Repo.exists?(from(t in Trip, where: t.id == ^trip.id))
+      refute Repo.exists?(from(t in Transfer, where: t.id in ^Enum.map(removed, & &1.id)))
+
+      # Every other row is byte-identical, and exactly the four survivors remain.
+      assert Enum.all?(survivors, &(Repo.get!(Transfer, &1.id) == &1))
+      assert Repo.get!(Transfer, other_version_transfer.id) == other_version_transfer
+      assert Repo.get!(Transfer, other_organization_transfer.id) == other_organization_transfer
+
+      assert Repo.all(
+               from(t in Transfer,
+                 where:
+                   t.organization_id == ^context.organization.id and
+                     t.gtfs_version_id == ^context.version.id,
+                 order_by: t.id,
+                 select: t.id
+               )
+             ) == Enum.sort(Enum.map(survivors, & &1.id))
+
+      assert Gtfs.count_trip_transfers(context.organization.id, context.version.id, [
+               trip.trip_id
+             ]) == 0
+
+      # The full export carries no row naming the deleted trip and still carries
+      # the four same-version survivors field for field.
+      assert {:ok, zip} = Export.export_to_zip(context.organization.id, context.version.id, :full)
+      files = unzip(zip)
+      exported_rows = csv_rows(files, "transfers.txt")
+
+      refute Enum.any?(exported_rows, fn row ->
+               row["from_trip_id"] == trip.trip_id or row["to_trip_id"] == trip.trip_id
+             end)
+
+      assert MapSet.new(exported_rows) == MapSet.new(expected_export_rows)
     end
   end
 
@@ -991,6 +1202,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
           start_time: "07:00:00"
         }).trip
 
+      victim_transfer =
+        transfer_fixture(context.organization.id, context.version.id, %{
+          transfer_type: 4,
+          from_trip_id: victim.trip_id,
+          to_trip_id: target.trip_id
+        })
+
       before = persistence_state(context, [target.trip_id, victim.trip_id])
 
       install_trip_audit_rejection_trigger!()
@@ -1021,6 +1239,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       remove_trip_audit_rejection_trigger!()
 
       assert persistence_state(context, [target.trip_id, victim.trip_id]) == before
+      assert Repo.get!(Transfer, victim_transfer.id) == victim_transfer
       assert trip_logs(context) == []
     end
 
@@ -1042,7 +1261,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
                  context.audit
                )
 
-      assert {:ok, 0} = Gtfs.delete_trips("12q", scope.service, [], context.audit)
+      # An empty list deletes and removes nothing.
+      assert {:ok, %{trips: 0, transfers: 0}} =
+               Gtfs.delete_trips("12q", scope.service, [], context.audit)
+
+      assert Gtfs.count_trip_transfers(context.organization.id, context.version.id, []) == 0
       assert trip_logs(context) == []
     end
   end
@@ -1165,6 +1388,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       trips: Repo.all(from(t in Trip, where: t.trip_id in ^trip_ids, order_by: t.id)),
       stop_times: Repo.all(from(st in StopTime, where: st.trip_id in ^trip_ids, order_by: st.id)),
       frequencies: Repo.all(from(f in Frequency, where: f.trip_id in ^trip_ids, order_by: f.id)),
+      transfers:
+        Repo.all(
+          from(t in Transfer,
+            where: t.organization_id == ^context.organization.id,
+            order_by: t.id
+          )
+        ),
       logs:
         Repo.all(
           from(l in ChangeLog,
