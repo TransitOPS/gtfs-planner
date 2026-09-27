@@ -297,8 +297,9 @@ defmodule GtfsPlanner.GtfsFixtures do
 
   `attrs` accepts `:route_id` (required), `:direction_id`, `:route_pattern_name`,
   `:route_pattern_id` (an explicit natural ID for literal expectations),
-  `:headsign`, `:route_pattern_sort_order`, `:timing_name`, `:timing_headsign` and
-  `:stops` as `[{stop_id, arrival_offset, departure_offset, timepoint}]` in
+  `:headsign`, `:route_pattern_sort_order`, `:route_pattern_typicality`,
+  `:timing_name`, `:timing_headsign` and `:stops` as
+  `[{stop_id, arrival_offset, departure_offset, timepoint}]` in
   position order. The returned map carries `:pattern`, `:occurrences`, `:timing`
   and `:rows`; rows are zipped to occurrences by position, so the same stop ID may
   appear more than once (a loop).
@@ -314,6 +315,7 @@ defmodule GtfsPlanner.GtfsFixtures do
           Map.get(attrs, :route_pattern_name, "Pattern #{System.unique_integer([:positive])}"),
         headsign: Map.get(attrs, :headsign),
         route_pattern_sort_order: Map.get(attrs, :route_pattern_sort_order, 0),
+        route_pattern_typicality: Map.get(attrs, :route_pattern_typicality, 0),
         route_pattern_id: Map.get(attrs, :route_pattern_id)
       }
       |> Map.reject(fn {_key, value} -> is_nil(value) end)

@@ -256,27 +256,64 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
-  describe "schedules action" do
+  describe "route tab bar" do
     setup :shared_setup
 
-    test "renders blank/deferred state with no schedule content or navigation", %{
+    test "every route page renders the three tabs with aria-current on the current one", %{
       conn: conn,
       organization: organization,
       gtfs_version: version
     } do
       route =
         route_fixture(organization.id, version.id, %{
-          route_id: "SCHED1",
-          route_short_name: "SC"
+          route_id: "TABS1",
+          route_short_name: "TB"
         })
 
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}/schedules")
+      base = "/gtfs/#{version.id}/routes/#{route.route_id}"
+      nav = "nav[aria-label='Route navigation']"
 
-      assert has_element?(view, "#schedules-deferred")
-      html = render(view)
-      assert html =~ "future update"
-      refute has_element?(view, "nav[aria-label='Route navigation']")
+      {:ok, details_view, _html} = live(conn, base)
+
+      assert has_element?(
+               details_view,
+               "#{nav} a[href='#{base}'][aria-current='page']",
+               "Details"
+             )
+
+      assert has_element?(details_view, "#{nav} a[href='#{base}/patterns']", "Patterns")
+      assert has_element?(details_view, "#{nav} a[href='#{base}/schedules']", "Schedules")
+      refute has_element?(details_view, "#{nav} a[href='#{base}/patterns'][aria-current='page']")
+      refute has_element?(details_view, "#schedules-deferred")
+
+      {:ok, patterns_view, _html} = live(conn, "#{base}/patterns")
+
+      assert has_element?(
+               patterns_view,
+               "#{nav} a[href='#{base}/patterns'][aria-current='page']",
+               "Patterns"
+             )
+
+      assert has_element?(patterns_view, "#{nav} a[href='#{base}/schedules']", "Schedules")
+      refute has_element?(patterns_view, "#{nav} a[href='#{base}'][aria-current='page']")
+
+      {:ok, schedules_view, _html} = live(conn, "#{base}/schedules")
+
+      assert has_element?(
+               schedules_view,
+               "#{nav} a[href='#{base}/schedules'][aria-current='page']",
+               "Schedules"
+             )
+
+      assert has_element?(schedules_view, "#{nav} a[href='#{base}']", "Details")
+      assert has_element?(schedules_view, "#{nav} a[href='#{base}/patterns']", "Patterns")
+
+      refute has_element?(
+               schedules_view,
+               "#{nav} a[href='#{base}/patterns'][aria-current='page']"
+             )
+
+      refute has_element?(schedules_view, "#schedules-deferred")
     end
   end
 end
