@@ -349,10 +349,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
       Enum.any?(new_ids, &(&1 not in old_ids)) ->
         {:error, :invalid_input}
 
-      Enum.map(Enum.filter(new, &field(&1, :id)), &field(&1, :id)) !=
-          Enum.filter(old_ids, &(&1 in new_ids)) ->
-        {:error, :invalid_occurrence_order}
-
       adjacent_duplicate_stops?(new) ->
         {:error, :adjacent_duplicate_stops}
 

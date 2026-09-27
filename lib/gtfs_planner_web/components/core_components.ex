@@ -1692,6 +1692,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :close_on_backdrop, :boolean, default: false
   attr :size, :string, values: ~w(sm lg), default: "sm"
   attr :confirm_variant, :string, values: ~w(primary danger), default: "danger"
+
+  attr :confirm_disabled, :boolean,
+    default: false,
+    doc: "disables the confirm action without pending state"
+
+  attr :single_action, :boolean,
+    default: false,
+    doc: "renders only the dismiss action, for informational dialogs"
+
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -1717,6 +1726,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       |> assign(:body_class, confirm_dialog_body_class(assigns.size))
       |> assign(:variant_bg, variant_bg)
       |> assign(:variant_text, variant_text)
+      |> assign(:pending, assigns.pending == true)
 
     ~H"""
     <dialog
@@ -1750,6 +1760,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               {@cancel_label}
             </button>
             <button
+              :if={not @single_action}
               id={"#{@id}-confirm"}
               type="button"
               class={[
@@ -1761,7 +1772,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               phx-click={@on_confirm}
               phx-target={@target}
               phx-disable-with={@pending_label}
-              disabled={@pending}
+              disabled={@pending or @confirm_disabled}
             >
               {if @pending, do: @pending_label, else: @confirm_label}
             </button>

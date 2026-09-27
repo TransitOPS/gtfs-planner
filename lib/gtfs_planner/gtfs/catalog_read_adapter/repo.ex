@@ -82,6 +82,15 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   end
 
   @impl true
+  def search_stops(organization_id, gtfs_version_id, query) do
+    case run(fn -> RoutePatterns.search_stops(organization_id, gtfs_version_id, query) end) do
+      {:ok, {:ok, result}} -> {:ok, result}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
   def fetch_stop(organization_id, gtfs_version_id, stop_id) do
     case run(fn -> Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) end) do
       {:ok, nil} -> {:error, :not_found}

@@ -423,6 +423,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Searches the version's eligible stops for the pattern editor.
+
+  Returns at most 20 stops or platforms (`location_type` nil/0) ordered by name
+  then ID through the configured catalog read adapter, with a `truncated?` flag
+  when more matches exist. A lost database connection is `{:error, :unavailable}`.
+  """
+  @spec search_pattern_stops(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, %{stops: [GtfsPlanner.Gtfs.Stop.t()], truncated?: boolean()}}
+          | {:error, :unavailable}
+  def search_pattern_stops(organization_id, gtfs_version_id, query) do
+    catalog_read_adapter().search_stops(organization_id, gtfs_version_id, query)
+  end
+
+  @doc """
+  Returns the read-only proposal for a staged stop edit without requiring
+  acknowledgement, so the editor can show every timing's proposed values before
+  staff acknowledge them. Writes nothing.
+  """
+  def preview_stop_edit(pattern_id, operation, %AuditContext{} = audit_context),
+    do: RoutePatterns.preview_stop_edit(pattern_id, operation, audit_context)
+
+  @doc """
   Returns the list of route patterns for a specific route.
 
   ## Examples

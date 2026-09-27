@@ -1022,6 +1022,303 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: route pattern routes (ready with 2 patterns, empty, unlinked trips)")
 
+    seed_pattern_trip_times = fn trip_id ->
+      [
+        {"BROWSER_PATTERN_STOP_1", "08:00:00", "08:00:00"},
+        {"BROWSER_PATTERN_STOP_2", "08:04:00", "08:05:00"},
+        {"BROWSER_PATTERN_STOP_3", "08:10:00", "08:11:00"}
+      ]
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{stop_id, arrival, departure}, sequence} ->
+        {:ok, _stop_time} =
+          Gtfs.create_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            trip_id: trip_id,
+            stop_id: stop_id,
+            stop_sequence: sequence,
+            arrival_time: arrival,
+            departure_time: departure
+          })
+      end)
+    end
+
+    # ── Route pattern editing fixtures ──
+    #
+    # Four isolated routes give the mutate/review/apply journeys their own
+    # records: a used pattern with a linked trip and two timings, an unused
+    # pattern for copy and reorder, a custom-trip pattern for the blocked
+    # states, and an unused pattern for a successful deletion. They reuse the
+    # version's four pattern stops and never touch the read-only catalog or
+    # pattern-list records.
+    editing_routes =
+      [
+        {"BROWSER_PATTERNS_EDIT_USED", "PEU", "Browser Pattern Used"},
+        {"BROWSER_PATTERNS_EDIT_UNUSED", "PED", "Browser Pattern Unused"},
+        {"BROWSER_PATTERNS_EDIT_CUSTOM", "PEC", "Browser Pattern Custom"},
+        {"BROWSER_PATTERNS_EDIT_DELETE", "PEL", "Browser Pattern Delete"},
+        {"BROWSER_PATTERNS_EDIT_USED_B", "PEV", "Browser Pattern Used Second"},
+        {"BROWSER_PATTERNS_EDIT_STALE", "PES", "Browser Pattern Stale"},
+        {"BROWSER_PATTERNS_EDIT_EXPORT", "PEX", "Browser Pattern Export"}
+      ]
+      |> Enum.map(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end)
+      |> Map.new(&{&1.route_id, &1})
+
+    editing_pattern = fn route, pattern_id, attrs ->
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(
+        org.id,
+        diagram_version.id,
+        Map.merge(
+          %{
+            route_id: route.route_id,
+            route_pattern_id: pattern_id,
+            route_pattern_name: pattern_id,
+            direction_id: 0
+          },
+          Map.new(attrs)
+        )
+      )
+    end
+
+    used_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_USED")
+
+    used_pattern =
+      editing_pattern.(used_route, "BROWSER-EDIT-USED",
+        route_pattern_name: "Browser Editing Used",
+        direction_id: 0,
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 1
+      )
+
+    timing_with_offsets = fn route_pattern, name, occurrences, offsets ->
+      timing = GtfsPlanner.GtfsFixtures.timed_pattern_fixture(route_pattern, %{name: name})
+
+      occurrences
+      |> Enum.zip(offsets)
+      |> Enum.each(fn {occurrence, {arrival, departure}} ->
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, occurrence, %{
+          arrival_offset: arrival,
+          departure_offset: departure
+        })
+      end)
+
+      timing
+    end
+
+    used_occurrences = occurrence_fixture.(used_pattern, Enum.take(pattern_stops, 3))
+
+    used_timing =
+      timing_with_offsets.(used_pattern, "Weekday", used_occurrences, [
+        {0, 0},
+        {240, 300},
+        {600, 660}
+      ])
+
+    timing_fixture.(used_pattern, "Weekend", used_occurrences)
+
+    {:ok, used_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: used_route.route_id,
+        trip_id: "BROWSER_EDIT_T1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(used_trip, %{
+      route_pattern_id: "BROWSER-EDIT-USED",
+      timed_pattern_id: used_timing.id,
+      pattern_derivation_state: "linked"
+    })
+
+    seed_pattern_trip_times.("BROWSER_EDIT_T1")
+
+    unused_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_UNUSED")
+
+    unused_edit_pattern =
+      editing_pattern.(unused_route, "BROWSER-EDIT-UNUSED",
+        route_pattern_name: "Browser Editing Unused",
+        direction_id: 1
+      )
+
+    unused_edit_occurrences =
+      occurrence_fixture.(unused_edit_pattern, Enum.take(pattern_stops, 3))
+
+    timing_fixture.(unused_edit_pattern, "Timing A", unused_edit_occurrences)
+
+    custom_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_CUSTOM")
+
+    custom_pattern =
+      editing_pattern.(custom_route, "BROWSER-EDIT-CUSTOM",
+        route_pattern_name: "Browser Editing Custom",
+        direction_id: 0
+      )
+
+    custom_occurrences = occurrence_fixture.(custom_pattern, Enum.take(pattern_stops, 3))
+    custom_timing = timing_fixture.(custom_pattern, "All day", custom_occurrences)
+
+    {:ok, custom_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: custom_route.route_id,
+        trip_id: "BROWSER_EDIT_C1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(custom_trip, %{
+      route_pattern_id: "BROWSER-EDIT-CUSTOM",
+      timed_pattern_id: nil,
+      pattern_derivation_state: "custom",
+      pattern_derivation_reason: "missing_times"
+    })
+
+    # A second used pattern and a second deletable pattern, so each viewport's
+    # journey starts from its own unmodified records.
+    used_b_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_USED_B")
+
+    used_b_pattern =
+      editing_pattern.(used_b_route, "BROWSER-EDIT-USED-B",
+        route_pattern_name: "Browser Editing Used Second",
+        direction_id: 0
+      )
+
+    used_b_occurrences = occurrence_fixture.(used_b_pattern, Enum.take(pattern_stops, 3))
+
+    used_b_timing =
+      timing_with_offsets.(used_b_pattern, "Weekday", used_b_occurrences, [
+        {0, 0},
+        {240, 300},
+        {600, 660}
+      ])
+
+    timing_fixture.(used_b_pattern, "Weekend", used_b_occurrences)
+
+    {:ok, used_b_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: used_b_route.route_id,
+        trip_id: "BROWSER_EDIT_TB1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(used_b_trip, %{
+      route_pattern_id: "BROWSER-EDIT-USED-B",
+      timed_pattern_id: used_b_timing.id,
+      pattern_derivation_state: "linked"
+    })
+
+    seed_pattern_trip_times.("BROWSER_EDIT_TB1")
+
+    # Two more linked patterns: one for the second-session stale review and one
+    # whose timing save is asserted through a real downloaded export.
+    stale_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_STALE")
+
+    stale_pattern =
+      editing_pattern.(stale_route, "BROWSER-EDIT-STALE",
+        route_pattern_name: "Browser Editing Stale",
+        direction_id: 0
+      )
+
+    stale_occurrences = occurrence_fixture.(stale_pattern, Enum.take(pattern_stops, 3))
+    stale_timing = timing_fixture.(stale_pattern, "Weekday", stale_occurrences)
+
+    {:ok, stale_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: stale_route.route_id,
+        trip_id: "BROWSER_STALE_T1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(stale_trip, %{
+      route_pattern_id: "BROWSER-EDIT-STALE",
+      timed_pattern_id: stale_timing.id,
+      pattern_derivation_state: "linked"
+    })
+
+    seed_pattern_trip_times.("BROWSER_STALE_T1")
+
+    export_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_EXPORT")
+
+    export_pattern =
+      editing_pattern.(export_route, "BROWSER-EDIT-EXPORT",
+        route_pattern_name: "Browser Editing Export",
+        direction_id: 0
+      )
+
+    export_occurrences = occurrence_fixture.(export_pattern, Enum.take(pattern_stops, 3))
+
+    export_timing =
+      timing_with_offsets.(export_pattern, "Weekday", export_occurrences, [
+        {0, 0},
+        {240, 300},
+        {600, 660}
+      ])
+
+    {:ok, export_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: export_route.route_id,
+        trip_id: "BROWSER_EXPORT_T1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Valley Hospital",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(export_trip, %{
+      route_pattern_id: "BROWSER-EDIT-EXPORT",
+      timed_pattern_id: export_timing.id,
+      pattern_derivation_state: "linked"
+    })
+
+    seed_pattern_trip_times.("BROWSER_EXPORT_T1")
+
+    delete_route = Map.fetch!(editing_routes, "BROWSER_PATTERNS_EDIT_DELETE")
+
+    delete_pattern =
+      editing_pattern.(delete_route, "BROWSER-EDIT-DELETE",
+        route_pattern_name: "Browser Editing Delete",
+        direction_id: 0
+      )
+
+    delete_occurrences = occurrence_fixture.(delete_pattern, Enum.take(pattern_stops, 2))
+    timing_fixture.(delete_pattern, "Timing A", delete_occurrences)
+
+    delete_b_pattern =
+      editing_pattern.(delete_route, "BROWSER-EDIT-DELETE-B",
+        route_pattern_name: "Browser Editing Delete Second",
+        direction_id: 0
+      )
+
+    delete_b_occurrences = occurrence_fixture.(delete_b_pattern, Enum.take(pattern_stops, 2))
+    timing_fixture.(delete_b_pattern, "Timing A", delete_b_occurrences)
+
+    IO.puts("Browser seed: route pattern editing routes (used, unused, custom, deletable)")
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

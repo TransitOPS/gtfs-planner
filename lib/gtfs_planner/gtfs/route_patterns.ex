@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @pattern_fields ~w(route_pattern_name route_pattern_time_desc route_pattern_typicality direction_id headsign canonical_route_pattern route_pattern_sort_order)
+  @stop_search_limit 20
   @timing_fields ~w(name headsign)
   @forbidden_linkage_fields ~w(timed_pattern_id pattern_derivation_state pattern_derivation_reason trip_id trip_ids derivation_key)
 
@@ -201,6 +202,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          selected_timing_rows: detail_timing_rows(pattern, selected, stops),
          stop_count: length(occurrences),
          trip_count: pattern_trip_count(pattern),
+         custom_trip_count: pattern_state_count(pattern, "custom"),
+         linked_trip_count: pattern_state_count(pattern, "linked"),
          source_fingerprint: source_fingerprint(pattern)
        }}
     end
@@ -245,6 +248,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     )
   end
 
+  # The pattern's own custom (and linked) trip counts, so the editor explains a
+  # blocked stop list with this pattern's figures rather than the route's.
+  defp pattern_state_count(pattern, state) do
+    Repo.aggregate(
+      from(trip in Trip,
+        where:
+          trip.organization_id == ^pattern.organization_id and
+            trip.gtfs_version_id == ^pattern.gtfs_version_id and
+            trip.route_pattern_id == ^pattern.route_pattern_id and
+            trip.pattern_derivation_state == ^state
+      ),
+      :count
+    )
+  end
+
   # Only the selected timing's rows are read, and each row is bounded to its
   # occurrence position and offset values; no full stop-time vector list is
   # retained for any other timing.
@@ -255,10 +273,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       where: row.timed_pattern_id == ^timing_id and occurrence.route_pattern_id == ^pattern_id,
       order_by: [asc: occurrence.position],
       select: %{
+        route_pattern_stop_id: occurrence.id,
         position: occurrence.position,
         stop_id: occurrence.stop_id,
         arrival_offset: row.arrival_offset,
-        departure_offset: row.departure_offset
+        departure_offset: row.departure_offset,
+        timepoint: row.timepoint,
+        pickup_type: row.pickup_type,
+        drop_off_type: row.drop_off_type,
+        stop_headsign: row.stop_headsign
       }
     )
     |> Repo.all()
@@ -309,6 +332,83 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     )
     |> Repo.all()
   end
+
+  @doc """
+  Scoped stop search for the pattern editor.
+
+  Returns at most `@stop_search_limit` GTFS stops or platforms (`location_type`
+  nil or 0) in the loaded organization/version scope, ordered by name then ID,
+  and a `truncated?` flag when more matches exist. A blank or non-binary query
+  returns no matches, so a blank field never scans the feed.
+  """
+  def search_stops(organization_id, version_id, query) when is_binary(query) do
+    case query |> String.trim() |> search_pattern() do
+      nil ->
+        {:ok, %{stops: [], truncated?: false}}
+
+      pattern ->
+        rows =
+          from(stop in Stop,
+            where:
+              stop.organization_id == ^organization_id and
+                stop.gtfs_version_id == ^version_id and
+                (is_nil(stop.location_type) or stop.location_type == 0) and
+                (ilike(stop.stop_name, ^pattern) or ilike(stop.stop_id, ^pattern)),
+            order_by: [asc: stop.stop_name, asc: stop.stop_id],
+            limit: @stop_search_limit + 1
+          )
+          |> Repo.all()
+
+        {matches, extra} = Enum.split(rows, @stop_search_limit)
+        {:ok, %{stops: matches, truncated?: extra != []}}
+    end
+  end
+
+  def search_stops(_organization_id, _version_id, _query),
+    do: {:ok, %{stops: [], truncated?: false}}
+
+  # Wraps a trimmed query as a substring pattern and neutralizes the LIKE
+  # wildcards a user could otherwise type to scan the version's stops.
+  defp search_pattern(""), do: nil
+
+  defp search_pattern(query) do
+    "%" <> String.replace(query, ~r/[\\%_]/, fn match -> "\\" <> match end) <> "%"
+  end
+
+  @doc """
+  Read-only preview of a staged stop edit.
+
+  Returns the proposed timing rows, estimates, start shifts and affected trip
+  count for the editor to display before staff acknowledge them. It writes
+  nothing and does not require acknowledgement, so the acknowledgements bound by
+  `review/4` always describe values the editor actually showed.
+  """
+  def preview_stop_edit(pattern_id, operation, %AuditContext{} = audit_context)
+      when is_binary(pattern_id) do
+    Repo.transaction(fn ->
+      with {:ok, %{pattern: pattern} = loaded} <-
+             get_pattern(
+               audit_context.organization_id,
+               audit_context.gtfs_version_id,
+               pattern_route_id(pattern_id, audit_context),
+               pattern_id
+             ),
+           :ok <-
+             validate_lifecycle_operation(pattern, operation, loaded,
+               require_acknowledgements: false
+             ),
+           {:ok, proposal} <-
+             review_proposal(pattern, operation, loaded, require_acknowledgements: false) do
+        {:ok, %{proposed: proposal, impact: operation_impact(operation, loaded)}}
+      else
+        nil -> Repo.rollback(:not_found)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_read_transaction()
+  end
+
+  def preview_stop_edit(_, _, _), do: {:error, :invalid_input}
 
   def create_pattern(route_id, attrs, %AuditContext{} = audit_context) when is_map(attrs) do
     with :ok <- reject_forged_linkage(attrs),
@@ -482,11 +582,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp apply_lifecycle_operation!(_route, pattern, {:add_timing, attrs}, audit_context) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
-         :ok <- validate_timing_attrs(values) do
+         :ok <- validate_timing_attrs(values),
+         {:ok, source} <- copy_source_timing(pattern, attrs) do
       name = Map.get(values, :name) || next_timing_name(pattern.id)
       timing = insert_timing!(pattern, name, Map.get(values, :headsign))
       occurrences = pattern_occurrences(pattern.id)
-      insert_timing_rows!(timing, occurrences, zero_timing_rows(length(occurrences)))
+
+      if source,
+        do: copy_timing_rows!(timing, occurrences, timing_rows(source.id)),
+        else: insert_timing_rows!(timing, occurrences, zero_timing_rows(length(occurrences)))
 
       audit!(
         audit_context,
@@ -586,6 +690,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp apply_lifecycle_operation!(_route, _pattern, _operation, _audit_context),
     do: Repo.rollback(:invalid_operation)
+
+  # A new timing either starts blank or copies another timing of the same
+  # pattern; the source is resolved from the loaded pattern, never trusted as a
+  # browser-supplied identity.
+  defp copy_source_timing(pattern, attrs) do
+    case map_value(attrs, :source_timing_id) do
+      nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      source_id ->
+        case scoped_timing(pattern, source_id) do
+          %TimedPattern{} = source -> {:ok, source}
+          nil -> {:error, :not_found}
+        end
+    end
+  end
 
   defp update_direction_trips(pattern, attrs) do
     case Map.fetch(attrs, :direction_id) do
@@ -754,21 +877,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp serialization_failure?(_), do: false
 
-  defp validate_lifecycle_operation(pattern, {:details, attrs}, _loaded) do
+  # `opts` carries `require_acknowledgements: false` for the read-only preview, so
+  # the editor can show proposed values before staff acknowledge them.
+  defp validate_lifecycle_operation(pattern, operation, loaded, opts \\ [])
+
+  defp validate_lifecycle_operation(pattern, {:stops, entries, reviewed_values}, loaded, opts) do
+    case prepare_stop_edit(pattern, entries, reviewed_values, loaded, opts) do
+      {:ok, _edit} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_lifecycle_operation(pattern, {:details, attrs}, _loaded, _opts) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields) do
       validate_noop_or_pattern(pattern, values)
     end
   end
 
-  defp validate_lifecycle_operation(pattern, {:stops, entries, reviewed_values}, loaded) do
-    case prepare_stop_edit(pattern, entries, reviewed_values, loaded) do
-      {:ok, _edit} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp validate_lifecycle_operation(pattern, {:timing, timing_id, attrs}, _loaded) do
+  defp validate_lifecycle_operation(pattern, {:timing, timing_id, attrs}, _loaded, _opts) do
     with %TimedPattern{} <- scoped_timing(pattern, timing_id),
          {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
          :ok <- validate_timing_attrs(values),
@@ -781,14 +908,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp validate_lifecycle_operation(_pattern, {:add_timing, attrs}, _loaded) do
+  defp validate_lifecycle_operation(pattern, {:add_timing, attrs}, _loaded, _opts) do
     with :ok <- reject_forged_linkage(attrs),
-         {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields) do
-      validate_timing_attrs(values)
+         {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
+         :ok <- validate_timing_attrs(values) do
+      case copy_source_timing(pattern, attrs) do
+        {:ok, _source} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
-  defp validate_lifecycle_operation(pattern, {:delete_timing, timing_id}, _loaded) do
+  defp validate_lifecycle_operation(pattern, {:delete_timing, timing_id}, _loaded, _opts) do
     timing = scoped_timing(pattern, timing_id)
 
     cond do
@@ -799,15 +930,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp validate_lifecycle_operation(pattern, :copy, _loaded) do
+  defp validate_lifecycle_operation(pattern, :copy, _loaded, _opts) do
     if is_nil(pattern), do: {:error, :not_found}, else: :ok
   end
 
-  defp validate_lifecycle_operation(pattern, :delete, _loaded) do
+  defp validate_lifecycle_operation(pattern, :delete, _loaded, _opts) do
     if pattern_used?(nil, pattern), do: {:error, :pattern_in_use}, else: :ok
   end
 
-  defp validate_lifecycle_operation(_pattern, _, _), do: {:error, :invalid_operation}
+  defp validate_lifecycle_operation(_pattern, _, _, _), do: {:error, :invalid_operation}
 
   defp operation_impact({:delete_timing, timing_id}, %{pattern: pattern}) do
     %{trips_affected: count_timing_trips(pattern, timing_id)}
@@ -839,8 +970,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp operation_proposal(operation, _pattern), do: operation
 
-  defp review_proposal(pattern, {:stops, entries, reviewed_values}, loaded) do
-    with {:ok, edit} <- prepare_stop_edit(pattern, entries, reviewed_values, loaded) do
+  defp review_proposal(pattern, operation, loaded, opts \\ [])
+
+  defp review_proposal(pattern, {:stops, entries, reviewed_values}, loaded, opts) do
+    with {:ok, edit} <- prepare_stop_edit(pattern, entries, reviewed_values, loaded, opts) do
       {:ok,
        %{
          occurrences: Enum.map(edit.new_occurrences, &occurrence_proposal/1),
@@ -853,7 +986,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp review_proposal(pattern, {:timing, timing_id, attrs}, _loaded) do
+  defp review_proposal(pattern, {:timing, timing_id, attrs}, _loaded, _opts) do
     timing = scoped_timing(pattern, timing_id)
 
     with {:ok, rows} <- validate_timing_rows(pattern, timing, map_value(attrs, :rows)) do
@@ -861,10 +994,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp review_proposal(_pattern, operation, _loaded),
+  defp review_proposal(_pattern, operation, _loaded, _opts),
     do: {:ok, operation_proposal(operation, nil)}
 
-  defp prepare_stop_edit(pattern, entries, reviewed_values, loaded \\ nil) do
+  defp prepare_stop_edit(pattern, entries, reviewed_values, loaded \\ nil, opts \\ []) do
     old_occurrences = if loaded, do: loaded.occurrences, else: pattern_occurrences(pattern)
     timings = if loaded, do: loaded.timings, else: pattern_timings(pattern)
     trips = pattern_trips(pattern)
@@ -886,7 +1019,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
              new_occurrences,
              old_occurrences,
              reviewed_values,
-             trips
+             trips,
+             timings,
+             opts
            ),
          true <- timing_ids_match?(timings, reviewed.timing_rows) do
       new_ids = MapSet.new(Enum.map(new_occurrences, &Map.get(&1, :id)))
@@ -949,13 +1084,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       linked? and retained == [] ->
         {:error, :retained_occurrence_required}
 
-      true ->
+      linked? ->
         old_ids = Enum.map(old_occurrences, & &1.id)
         new_ids = Enum.map(retained, & &1.id)
 
         if new_ids == Enum.filter(old_ids, &(&1 in new_ids)),
           do: :ok,
           else: {:error, :invalid_occurrence_order}
+
+      true ->
+        :ok
     end
   end
 
@@ -1013,14 +1151,22 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
      Enum.map(timings, fn timing -> %{timing_id: timing.id, rows: timing_rows(timing.id)} end)}
   end
 
-  defp require_timing_acknowledgements(new, _old, values, trips) do
+  # An unseen added-stop value can never be silently acknowledged: when an
+  # addition affects trips, every timing in the edit must carry an explicit
+  # acknowledgement, not only the timings a caller happened to supply.
+  defp require_timing_acknowledgements(new, _old, values, trips, timings, opts) do
     added? = Enum.any?(new, &(not Map.has_key?(&1, :id)))
     affected? = trips != []
 
-    if added? and affected? do
-      timings = Map.values(values)
+    if added? and affected? and Keyword.get(opts, :require_acknowledgements, true) do
+      acknowledged =
+        for {timing_id, entry} <- values,
+            map_value(entry, :acknowledged) == true,
+            do: to_string(timing_id)
 
-      if Enum.all?(timings, &(map_value(&1, :acknowledged) == true)),
+      required = Enum.map(timings, &to_string(&1.id))
+
+      if Enum.sort(acknowledged) == Enum.sort(required),
         do: :ok,
         else: {:error, :timing_acknowledgement_required}
     else
@@ -1337,7 +1483,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
           )
           |> Map.merge(%{stop_id: occurrence.stop_id, stop_sequence: sequence})
 
-        old_row |> Ecto.Changeset.change(attrs) |> update_or_rollback!()
+        # The retained row was moved to a temporary sequence before this final
+        # assignment, so the sequence has to be written even when every other
+        # value is unchanged; otherwise the temporary value would survive.
+        old_row
+        |> Ecto.Changeset.change(attrs)
+        |> Ecto.Changeset.force_change(:stop_sequence, sequence)
+        |> update_or_rollback!()
     end
   end
 

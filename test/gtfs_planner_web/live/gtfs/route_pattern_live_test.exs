@@ -766,8 +766,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert Enum.map(assigns.selected_timing_rows, & &1.position) == [1, 2, 3]
       assert has_element?(view, "#timing-rows", "Timing Stop 1")
-      assert has_element?(view, "#timing-row-1", "01:00")
-      refute has_element?(view, "#timing-rows", "00:00")
+      assert has_element?(view, "#timing-arrival-1[value='01:00']")
+      assert has_element?(view, "#timing-departure-1[value='01:00']")
+      refute has_element?(view, "#timing-arrival-1[value='00:00']")
     end
 
     test "a timing belonging to another pattern is refused with an error, not a leak",
