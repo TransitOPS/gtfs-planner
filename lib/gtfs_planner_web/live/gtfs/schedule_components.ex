@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   # known offset without measuring the rendered table.
   defp selection_cell_class, do: "sticky left-0 z-20 w-12 min-w-12 max-w-12 px-0 text-center"
   defp start_cell_class, do: "sticky left-12 z-20"
+  defp actions_cell_class, do: "sticky right-0 z-20 whitespace-nowrap"
 
   @doc """
   Renders the controls row: calendar and pattern selects, the direction and
@@ -37,6 +38,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :filters, :map, required: true
   attr :direction_labels, :map, required: true
   attr :calendars_path, :string, required: true
+  attr :can_add?, :boolean, required: true
+  attr :add_reason, :string, default: nil
 
   def controls(assigns) do
     assigns =
@@ -93,7 +96,21 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         value={@stops_value}
       />
 
-      <div class="sm:ml-auto">
+      <div class="flex items-center gap-4 sm:ml-auto">
+        <p :if={not @can_add?} id="schedules-add-blocked" class="text-sm text-base-content/70">
+          {@add_reason}
+        </p>
+        <button
+          :if={@can_add?}
+          id="schedules-add-trips"
+          type="button"
+          phx-click="open_add_drawer"
+          class="btn btn-primary min-h-11"
+          phx-disconnected={JS.set_attribute({"disabled", ""})}
+          phx-connected={JS.remove_attribute("disabled")}
+        >
+          Add trips
+        </button>
         <.link
           navigate={@calendars_path}
           id="schedules-manage-calendars"
@@ -104,6 +121,734 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       </div>
     </div>
     """
+  end
+
+  @doc """
+  Renders the disconnected notice and the review confirmation.
+
+  The Save and Add controls bind their own `phx-disconnected`/`phx-connected`
+  pairs, so a lost socket disables committing until it returns; this notice
+  explains why and disappears on reconnect.
+  """
+  def connectivity_notice(assigns) do
+    ~H"""
+    <div
+      id="schedules-disconnected"
+      hidden
+      phx-disconnected={JS.remove_attribute("hidden")}
+      phx-connected={JS.set_attribute({"hidden", ""})}
+    >
+      <.callout kind="warning" title="Connection lost">
+        Showing the last loaded schedule. Saving and adding trips stay unavailable until the
+        connection returns.
+      </.callout>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the bulk toolbar for the current selection.
+
+  It totals the selected rows across sections and offers the bulk delete. The
+  count and the delete action come from the selection the server owns, so a
+  toolbar left on screen after a view change cannot act on hidden trips.
+  """
+  attr :selected_count, :integer, required: true
+
+  def bulk_toolbar(assigns) do
+    ~H"""
+    <div
+      :if={@selected_count > 0}
+      id="schedules-bulk-toolbar"
+      role="status"
+      class="flex flex-wrap items-center justify-between gap-4 rounded-box border border-base-300 bg-base-200 px-4 py-3"
+    >
+      <p class="text-sm font-semibold">{@selected_count} trips selected</p>
+      <div class="flex items-center gap-3">
+        <button
+          id="schedules-clear-selection"
+          type="button"
+          phx-click="clear_selection"
+          class="btn btn-ghost btn-sm min-h-11"
+        >
+          Clear selection
+        </button>
+        <button
+          id="schedules-delete-selected"
+          type="button"
+          phx-click="delete_selected"
+          class="btn btn-outline btn-error btn-sm min-h-11"
+          phx-disconnected={JS.set_attribute({"disabled", ""})}
+          phx-connected={JS.remove_attribute("disabled")}
+        >
+          Delete {(@selected_count == 1 && "1 trip") || "#{@selected_count} trips"}
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one row's actions: an Edit control and a menu with Duplicate and Delete.
+
+  The menu is a native popover anchored under its trigger. A popover renders in
+  the browser's top layer, so it escapes the timetable's scroll container instead
+  of being clipped by it, and the browser owns light-dismiss and Escape. A
+  frequency row shows Duplicate disabled with the reason in visible text rather
+  than a hover-only tooltip.
+  """
+  attr :row, :map, required: true
+
+  def row_actions(assigns) do
+    assigns =
+      assign(assigns, :menu_id, "trip-#{assigns.row.trip_id}-menu-panel")
+      |> assign(:anchor_name, "--trip-menu-#{assigns.row.id}")
+
+    ~H"""
+    <div class="relative flex items-center justify-end gap-1">
+      <button
+        id={"trip-#{@row.trip_id}-edit"}
+        type="button"
+        phx-click="open_edit_drawer"
+        phx-value-trip={@row.id}
+        class="btn btn-ghost btn-sm min-h-11 text-primary"
+        phx-disconnected={JS.set_attribute({"disabled", ""})}
+        phx-connected={JS.remove_attribute("disabled")}
+      >
+        Edit
+      </button>
+      <button
+        id={"trip-#{@row.trip_id}-menu"}
+        type="button"
+        popovertarget={@menu_id}
+        style={"anchor-name: #{@anchor_name}"}
+        class="btn btn-ghost btn-sm btn-circle min-h-11 min-w-11"
+        aria-label={"More actions for trip #{@row.trip_id}"}
+        aria-haspopup="menu"
+        title="More actions"
+      >
+        <.icon name="hero-ellipsis-horizontal" class="size-4" />
+      </button>
+
+      <div
+        id={@menu_id}
+        popover="auto"
+        role="menu"
+        aria-label={"Actions for trip #{@row.trip_id}"}
+        style={
+          "inset: auto; position-anchor: #{@anchor_name}; top: anchor(bottom);" <>
+            " right: anchor(right); margin: 0.25rem 0 0 0;" <>
+            " position-try-fallbacks: flip-block, flip-inline;"
+        }
+        class="w-64 rounded-box border border-base-300 bg-base-100 p-1 text-left shadow-lg"
+      >
+        <button
+          :if={not @row.frequency?}
+          id={"trip-#{@row.trip_id}-duplicate"}
+          type="button"
+          role="menuitem"
+          popovertarget={@menu_id}
+          popovertargetaction="hide"
+          phx-click="open_duplicate_drawer"
+          phx-value-trip={@row.id}
+          class="block w-full min-h-11 px-3 py-2 text-left text-sm hover:bg-base-200 focus:bg-base-200 focus:outline-none"
+        >
+          Duplicate trip
+        </button>
+        <button
+          :if={@row.frequency?}
+          id={"trip-#{@row.trip_id}-duplicate-disabled"}
+          type="button"
+          role="menuitem"
+          disabled
+          class="block w-full min-h-11 px-3 py-2 text-left text-sm opacity-60"
+        >
+          Duplicate trip
+        </button>
+        <p
+          :if={@row.frequency?}
+          id={"trip-#{@row.trip_id}-duplicate-reason"}
+          class="px-3 pb-1 text-xs text-base-content/70"
+        >
+          Frequency service can't be duplicated
+        </p>
+        <button
+          id={"trip-#{@row.trip_id}-delete"}
+          type="button"
+          role="menuitem"
+          popovertarget={@menu_id}
+          popovertargetaction="hide"
+          phx-click="open_delete_trip"
+          phx-value-trip={@row.id}
+          class="block w-full min-h-11 px-3 py-2 text-left text-sm text-error hover:bg-base-200 focus:bg-base-200 focus:outline-none"
+        >
+          Delete trip
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the single and bulk delete confirmation.
+
+  The dialog names the count and calendar for a bulk delete and the trip's start
+  and pattern for a single delete, states that the trips leave the published
+  version and that this cannot be undone, and keeps any delete failure on screen
+  with a retry.
+  """
+  attr :dialog, :any, required: true
+
+  def delete_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="delete-dialog"
+      open={@dialog != nil}
+      title={dialog_title(@dialog)}
+      confirm_label={dialog_confirm_label(@dialog)}
+      pending_label="Deleting…"
+      on_confirm="confirm_delete"
+      on_cancel="close_delete"
+      described_by="delete-dialog-body"
+      return_focus_id={@dialog && @dialog.return_focus_id}
+    >
+      <div :if={@dialog}>
+        <p :if={@dialog.detail} id="delete-dialog-detail">{@dialog.detail}</p>
+        <p class={["text-base-content/70", @dialog.detail && "mt-2"]}>
+          <%= if @dialog.frequency? do %>
+            This removes the trips and their stop times from this published version, including
+            frequency service. You cannot undo this.
+          <% else %>
+            This removes the trips and their stop times from this published version. You cannot
+            undo this.
+          <% end %>
+        </p>
+        <p :if={@dialog.error} id="delete-error" role="alert" class="mt-2 text-sm text-error">
+          {@dialog.error}
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  defp dialog_title(nil), do: "Delete trips?"
+  defp dialog_title(%{title: title}), do: title
+
+  defp dialog_confirm_label(nil), do: "Delete"
+  defp dialog_confirm_label(%{confirm_label: label}), do: label
+
+  @doc """
+  Renders the Add trips, Edit trip and Duplicate drawers.
+
+  The Add drawer previews the exact departures `Gtfs.series_starts/3` will
+  create and the primary label counts them. The Edit drawer keeps a custom trip's
+  stop times unless a timing is chosen, disables the departure for frequency
+  service with a visible reason, and hides the optional accessibility fields and
+  the stable trip ID behind a disclosure. Every field error carries its own
+  stable id and `aria-invalid`, so the `FormErrorFocus` hook lands on the first
+  invalid field.
+  """
+  attr :drawer, :any, required: true
+  attr :patterns, :list, required: true
+  attr :calendars, :list, required: true
+  attr :block_suggestions, :list, required: true
+  attr :patterns_path, :string, required: true
+
+  def trip_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:title, drawer_title(assigns.drawer))
+      |> assign(:pattern, drawer_pattern(assigns.drawer, assigns.patterns))
+      |> assign(:custom?, assigns.drawer != nil and assigns.drawer.custom?)
+      |> assign(:frequency?, assigns.drawer != nil and assigns.drawer.frequency?)
+      |> assign(:stops_differ?, assigns.drawer != nil and assigns.drawer.stops_differ?)
+      |> assign(:values, assigns.drawer && assigns.drawer.values)
+
+    ~H"""
+    <.drawer
+      id="trip-drawer"
+      open={@drawer != nil}
+      title={@title}
+      on_close="close_drawer"
+      initial_focus={:first_field}
+      initial_focus_id={drawer_initial_focus_id(@drawer)}
+      return_focus_id={@drawer && @drawer.return_focus_id}
+    >
+      <.form
+        :if={@drawer}
+        for={%{}}
+        as={:drawer}
+        id="trip-drawer-form"
+        phx-change="drawer_change"
+        phx-submit="drawer_submit"
+        class="space-y-4"
+      >
+        <p id="trip-drawer-route" class="text-sm text-base-content/70">
+          {drawer_route_line(@drawer, @pattern)}
+        </p>
+
+        <.drawer_notice drawer={@drawer} />
+
+        <div :if={(@drawer.mode == :add and @pattern) && @pattern.timings == []}>
+          <.callout kind="warning" title="Add a timing first">
+            Timings set the minutes between stops for each trip.
+            <.link navigate={@patterns_path} class="link ml-1 inline-flex min-h-11 items-center">
+              Go to patterns
+            </.link>
+          </.callout>
+        </div>
+
+        <div :if={@custom?}>
+          <.callout kind="warning" title="This trip has custom stop times">
+            Choose “Use timing” to change its departure or stop times. Other trip details can still
+            be saved.
+          </.callout>
+        </div>
+
+        <div :if={@frequency?}>
+          <.callout kind="info" title={frequency_title(@drawer)}>
+            Frequency times are shown for reference. This schedule shows frequency service read
+            only.
+          </.callout>
+        </div>
+
+        <div :if={@drawer.mode == :add} class="fieldset mb-2">
+          <.input
+            id="trip-pattern"
+            name="drawer[pattern_id]"
+            type="select"
+            label="Pattern"
+            value={@values["pattern_id"]}
+            options={pattern_options(@patterns)}
+            help="The stops this trip serves."
+            errors={error_list(@drawer, :pattern_id)}
+          />
+        </div>
+
+        <div :if={not (@frequency? and @drawer.mode == :edit)} class="fieldset mb-2">
+          <.input
+            id="trip-timing"
+            name="drawer[timed_pattern_id]"
+            type="select"
+            label="Timing"
+            value={@values["timed_pattern_id"]}
+            options={timing_select_options(@drawer, @pattern)}
+            help="A timing is the minutes between stops, not a clock time."
+            errors={error_list(@drawer, :timed_pattern_id)}
+          />
+          <p
+            :if={@custom? and @stops_differ?}
+            id="trip-timing-reason"
+            class="mt-1 text-sm text-base-content/70"
+          >
+            This trip's stops differ from the pattern, so its custom times are kept.
+          </p>
+        </div>
+
+        <div :if={@drawer.mode != :duplicate} class="fieldset mb-2">
+          <.input
+            id="trip-calendar"
+            name="drawer[service_id]"
+            type="select"
+            label="Calendar"
+            value={@values["service_id"]}
+            options={calendar_options(@calendars)}
+            help="The days this trip runs."
+            errors={error_list(@drawer, :service_id)}
+          />
+        </div>
+
+        <div class="fieldset mb-2">
+          <.input
+            id="trip-start"
+            name="drawer[start_time]"
+            type="text"
+            label={departure_label(@drawer.mode)}
+            value={@values["start_time"]}
+            disabled={departure_disabled?(@drawer, @custom?, @frequency?)}
+            errors={error_list(@drawer, :start_time)}
+            help="Use 24-hour time, such as 06:00. After midnight: 25:10 = 1:10 AM next day."
+          />
+          <p
+            :if={departure_disabled?(@drawer, @custom?, @frequency?)}
+            id="trip-start-reason"
+            class="mt-1 text-sm text-base-content/70"
+          >
+            {departure_reason(@drawer, @custom?, @frequency?)}
+          </p>
+        </div>
+
+        <div :if={@drawer.mode == :add} class="space-y-3">
+          <.input
+            id="trip-repeat"
+            name="drawer[repeat]"
+            type="checkbox"
+            label="Repeat departures"
+            checked={@values["repeat"] == "true"}
+          />
+          <div :if={@values["repeat"] == "true"} class="grid gap-4 sm:grid-cols-2">
+            <.input
+              id="trip-every"
+              name="drawer[every]"
+              type="number"
+              min="1"
+              step="1"
+              label="Every (minutes)"
+              value={@values["every"]}
+              errors={error_list(@drawer, :every)}
+            />
+            <.input
+              id="trip-until"
+              name="drawer[until]"
+              type="text"
+              label="Last departure by"
+              value={@values["until"]}
+              errors={error_list(@drawer, :until)}
+            />
+          </div>
+        </div>
+
+        <.drawer_preview drawer={@drawer} />
+
+        <div :if={@drawer.mode == :edit} class="space-y-3 border-t border-base-300 pt-4">
+          <h3 class="text-sm font-semibold">Trip details</h3>
+          <.input
+            id="trip-headsign"
+            name="drawer[trip_headsign]"
+            type="text"
+            label="Headsign (optional)"
+            value={@values["trip_headsign"]}
+            help={headsign_help(@drawer, @pattern)}
+            errors={error_list(@drawer, :trip_headsign)}
+          />
+          <.input
+            id="trip-number"
+            name="drawer[trip_short_name]"
+            type="text"
+            label="Trip number (optional)"
+            value={@values["trip_short_name"]}
+            errors={error_list(@drawer, :trip_short_name)}
+          />
+          <.input
+            id="trip-block"
+            name="drawer[block_id]"
+            type="text"
+            label="Block (optional)"
+            value={@values["block_id"]}
+            list="trip-block-list"
+            help="Trips with the same block use the same vehicle."
+            errors={error_list(@drawer, :block_id)}
+          />
+          <datalist id="trip-block-list">
+            <option :for={block <- @block_suggestions} value={block}></option>
+          </datalist>
+          <details id="trip-accessibility" class="rounded-box border border-base-300 p-3">
+            <summary class="min-h-11 cursor-pointer text-sm font-semibold">
+              Accessibility and trip ID
+            </summary>
+            <div class="mt-3 space-y-3">
+              <.input
+                id="trip-access"
+                name="drawer[wheelchair_accessible]"
+                type="select"
+                label="Wheelchair access"
+                value={@values["wheelchair_accessible"]}
+                options={accessibility_options("Accessible", "Not accessible")}
+                errors={error_list(@drawer, :wheelchair_accessible)}
+              />
+              <.input
+                id="trip-bikes"
+                name="drawer[bikes_allowed]"
+                type="select"
+                label="Bikes allowed"
+                value={@values["bikes_allowed"]}
+                options={accessibility_options("Allowed", "Not allowed")}
+                errors={error_list(@drawer, :bikes_allowed)}
+              />
+              <p class="text-sm text-base-content/70">
+                Trip ID <code id="trip-stable-id">{@drawer.trip_id}</code>
+                <br />This ID stays the same when you edit the trip.
+              </p>
+            </div>
+          </details>
+        </div>
+
+        <p class="text-sm text-base-content/70">Saving updates this published version in place.</p>
+
+        <div class="flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-4">
+          <button
+            :if={@drawer.mode == :edit}
+            id="trip-drawer-delete"
+            type="button"
+            phx-click="open_delete_trip"
+            phx-value-trip={@drawer.trip.id}
+            class="btn btn-ghost mr-auto min-h-11 text-error"
+          >
+            Delete trip
+          </button>
+          <button
+            id="trip-drawer-cancel"
+            type="button"
+            phx-click="close_drawer"
+            class="btn btn-ghost min-h-11"
+          >
+            Cancel
+          </button>
+          <.button
+            :if={can_submit?(@drawer, @pattern)}
+            id="trip-drawer-save"
+            type="submit"
+            variant="primary"
+            class="min-h-11"
+            phx-disconnected={JS.set_attribute({"disabled", ""})}
+            phx-connected={JS.remove_attribute("disabled")}
+          >
+            {@drawer.preview.label}
+          </.button>
+        </div>
+      </.form>
+    </.drawer>
+    """
+  end
+
+  defp drawer_route_line(drawer, nil), do: "Route #{drawer.route_label}"
+  defp drawer_route_line(drawer, pattern), do: "Route #{drawer.route_label} · #{pattern.name}"
+
+  defp drawer_notice(assigns) do
+    ~H"""
+    <div
+      :if={@drawer.problem}
+      id="trip-drawer-error"
+      role="alert"
+      class="rounded-box border border-error/40 bg-error/10 p-3 text-sm text-error"
+    >
+      <p>{error_message(@drawer.problem)}</p>
+      <button
+        :if={@drawer.problem == :stale}
+        id="trip-drawer-reload"
+        type="button"
+        phx-click="reload_drawer"
+        class="btn btn-sm btn-outline mt-2 min-h-11"
+      >
+        Reload
+      </button>
+    </div>
+    """
+  end
+
+  defp drawer_preview(assigns) do
+    ~H"""
+    <div
+      id="trip-preview"
+      aria-live="polite"
+      class="rounded-box border border-base-300 bg-base-200 p-3 text-sm"
+    >
+      <p :if={@drawer.preview.error} id="trip-preview-error">{@drawer.preview.error}</p>
+      <div :if={is_nil(@drawer.preview.error)}>
+        <p class="text-base-content/70">{@drawer.preview.meta}</p>
+        <p class="mt-1 font-mono text-lg font-semibold tabular-nums">{@drawer.preview.range}</p>
+        <p :if={@drawer.preview.total_minutes} class="mt-1">
+          First trip: {@drawer.preview.total_minutes} minutes from first to last stop.
+        </p>
+        <p :if={@drawer.preview.sentence} class="mt-1 font-semibold">{@drawer.preview.sentence}</p>
+        <p :if={@drawer.preview.hint} class="mt-1 text-xs text-base-content/70">
+          {@drawer.preview.hint}
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  # Fixed UI copy for every error atom a schedule mutation can return (CR-6).
+  # Raw atoms never reach the screen: an unknown atom falls back to the save
+  # failure sentence.
+  @doc "Returns the fixed sentence a schedule mutation error shows."
+  @spec error_message(atom() | nil) :: String.t()
+  def error_message(:stale) do
+    "This trip changed since you opened it. Reload it to see the current values."
+  end
+
+  def error_message(:busy), do: "Another change is being saved. Try again."
+
+  def error_message(:frequency_trip) do
+    "Frequency service can't be edited here. Its blocks, calendar and details can still change."
+  end
+
+  def error_message(:stops_differ) do
+    "This trip's stops differ from the pattern, so it can't use that timing. Keep its custom times."
+  end
+
+  def error_message(:timed_pattern_required) do
+    "Choose a timing to change this trip's departure or stop times."
+  end
+
+  def error_message(:not_found) do
+    "This trip or pattern no longer exists. Reload the schedule to see the current trips."
+  end
+
+  def error_message(:calendar_not_found) do
+    "That calendar is no longer available. Reload the schedule and try again."
+  end
+
+  def error_message(:trip_stop_times_mismatch) do
+    "This trip's stop times don't match its pattern. Reload the schedule and try again."
+  end
+
+  def error_message(:trip_id_conflict) do
+    "That trip ID is already in use. Add the trips again."
+  end
+
+  def error_message(:invalid_time) do
+    "Enter a departure as HH:MM, for example 06:00 or 25:10."
+  end
+
+  def error_message(:unauthorized) do
+    "You don't have permission to change this route's trips."
+  end
+
+  def error_message(:invalid_interval) do
+    "Enter a whole number of minutes greater than zero."
+  end
+
+  def error_message(:until_before_start) do
+    "The last departure must be at or after the first departure. Use 24:00 or higher after midnight."
+  end
+
+  def error_message(:too_many_trips) do
+    "Too many trips. Add 200 or fewer at a time by increasing the interval or shortening the time range."
+  end
+
+  def error_message(_other), do: save_failure_copy()
+
+  @doc "Returns the sentence a failed save shows while the drawer keeps its input."
+  @spec save_failure_copy() :: String.t()
+  def save_failure_copy,
+    do: "Trips couldn't be saved. Your entries are still here. Try saving again."
+
+  # --- drawer helpers --------------------------------------------------------
+
+  defp drawer_title(nil), do: "Add trips"
+  defp drawer_title(%{mode: :add}), do: "Add trips"
+  defp drawer_title(%{mode: :edit}), do: "Edit trip"
+  defp drawer_title(%{mode: :duplicate}), do: "Duplicate trip"
+
+  defp drawer_initial_focus_id(nil), do: nil
+  defp drawer_initial_focus_id(%{mode: :add}), do: "trip-pattern"
+  defp drawer_initial_focus_id(_drawer), do: "trip-timing"
+
+  defp drawer_pattern(nil, _patterns), do: nil
+
+  defp drawer_pattern(%{mode: :add} = drawer, patterns) do
+    Enum.find(patterns, &(&1.id == drawer.values["pattern_id"]))
+  end
+
+  defp drawer_pattern(%{trip: row} = drawer, patterns) do
+    Enum.find(patterns, &(&1.id == drawer.values["pattern_id"])) ||
+      Enum.find(patterns, &(&1.route_pattern_id == row.route_pattern_id))
+  end
+
+  defp pattern_options(patterns) do
+    Enum.map(patterns, &{&1.name, &1.id})
+  end
+
+  defp timing_select_options(%{mode: :edit} = drawer, pattern) do
+    timings = if(pattern, do: pattern.timings, else: [])
+
+    custom_option =
+      if drawer.custom?,
+        do: [{"Keep custom times", "custom"}],
+        else: []
+
+    # A custom trip whose stops differ cannot adopt a timing at all, so every
+    # "Use timing" choice is disabled with the reason in visible text below.
+    disabled? = drawer.custom? and drawer.stops_differ?
+
+    custom_option ++ Enum.map(timings, &timing_option(&1, drawer.custom?, disabled?))
+  end
+
+  defp timing_select_options(_drawer, pattern) do
+    timings = if(pattern, do: pattern.timings, else: [])
+    Enum.map(timings, &timing_option(&1, false, false))
+  end
+
+  defp timing_option(timing, custom?, disabled?) do
+    prefix = if custom?, do: "Use timing: ", else: ""
+    total = timing_total_minutes(timing)
+    label = "#{prefix}#{timing.name} · #{total} min total"
+
+    if disabled?,
+      do: [key: label, value: timing.id, disabled: "disabled"],
+      else: {label, timing.id}
+  end
+
+  defp timing_total_minutes(timing) do
+    timing
+    |> Map.get(:rows, [])
+    |> Enum.map(fn row ->
+      Map.get(row, :arrival_offset) || Map.get(row, :departure_offset) || 0
+    end)
+    |> Enum.max(fn -> 0 end)
+    |> div(60)
+  end
+
+  defp accessibility_options(positive, negative) do
+    [
+      {"No information", "0"},
+      {positive, "1"},
+      {negative, "2"}
+    ]
+  end
+
+  defp departure_label(:add), do: "First departure time"
+  defp departure_label(_mode), do: "Departure time"
+
+  defp departure_disabled?(_drawer, _custom?, true), do: true
+
+  defp departure_disabled?(%{mode: :edit} = drawer, true, _freq),
+    do: drawer.values["timed_pattern_id"] == "custom"
+
+  defp departure_disabled?(_drawer, _custom?, _freq), do: false
+
+  defp departure_reason(_drawer, _custom?, true) do
+    "Frequency service has no single departure to edit. Its windows are shown below."
+  end
+
+  defp departure_reason(_drawer, true, _freq) do
+    "Choose a timing to change this trip's departure or stop times."
+  end
+
+  defp departure_reason(_drawer, _custom?, _freq), do: nil
+
+  defp frequency_title(%{trip: row}) when is_map(row) do
+    case row.frequency_label do
+      nil -> "This trip runs on a frequency"
+      label -> "This trip runs #{String.downcase(label)}"
+    end
+  end
+
+  defp frequency_title(_drawer), do: "This trip runs on a frequency"
+
+  defp headsign_help(%{trip: row}, pattern) when is_map(row) do
+    reference = row.trip_headsign || (pattern && pattern.headsign)
+
+    case reference do
+      nil -> ""
+      headsign -> "Leave blank to use #{headsign}."
+    end
+  end
+
+  defp headsign_help(_drawer, _pattern), do: ""
+
+  defp can_submit?(%{mode: :add}, nil), do: false
+  defp can_submit?(%{mode: :add}, pattern), do: pattern.timings != []
+  defp can_submit?(%{mode: :edit}, _pattern), do: true
+  defp can_submit?(_drawer, pattern), do: pattern != nil and pattern.timings != []
+
+  defp error_list(%{errors: errors}, field) do
+    case Map.get(errors, field) do
+      nil -> []
+      message -> [message]
+    end
   end
 
   @doc """
@@ -425,6 +1170,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
               </th>
               <th scope="col" class="text-right">Trip no.</th>
               <th scope="col">Block</th>
+              <th scope="col" class={[actions_cell_class(), "bg-base-100"]}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -455,6 +1201,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                 </span>
                 <span
                   :if={row.start_cell.marker}
+                  id={"trip-#{row.trip_id}-marker"}
                   class="ml-0.5 font-mono text-xs text-base-content/70"
                 >
                   {row.start_cell.marker}
@@ -495,6 +1242,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                 {row.trip_short_name || row.trip_id}
               </td>
               <td class="whitespace-nowrap">{row.block_id || "—"}</td>
+              <td class={[actions_cell_class(), "bg-base-100 group-hover:bg-base-200"]}>
+                <.row_actions row={row} />
+              </td>
             </tr>
           </tbody>
         </table>

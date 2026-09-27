@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { bodyFitsViewport } from "./browser_helpers";
-import { mkdirSync } from "node:fs";
+import { bodyFitsViewport, readZipTextMember } from "./browser_helpers";
+import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -17,6 +17,9 @@ import { resolve } from "node:path";
  *   BROWSER_SCHEDULES_WIDE — a 72-occurrence pattern with six trips
  *   BROWSER_SCHEDULES_EMPTY — a route with no patterns
  *   BROWSER_SCHEDULES_NOCAL — a route in a published version with no calendars
+ *   BROWSER_SCHEDULES_MUTATE — the mutation route: a 62-occurrence pattern, a
+ *     linked series with an adjacent pair, a frequency window, a custom trip
+ *     whose stops differ, a compatible custom trip and a 25:10 departure
  */
 
 const EDITOR_USER = {
@@ -28,8 +31,21 @@ const READY_ROUTE = "BROWSER_SCHEDULES_READY";
 const WIDE_ROUTE = "BROWSER_SCHEDULES_WIDE";
 const EMPTY_ROUTE = "BROWSER_SCHEDULES_EMPTY";
 const NOCAL_ROUTE = "BROWSER_SCHEDULES_NOCAL";
+const MUTATE_ROUTE = "BROWSER_SCHEDULES_MUTATE";
 
+// The mutation route's second pattern: six occurrences with the timing offsets
+// the export journey asserts literally.
+const SECONDARY_PATTERN = "BROWSER-SCHED-PM2";
 const CALENDAR_ROUTE = "Every day service";
+
+const EXPORT_STOP_TIME_ROWS = [
+  ["BSS_1", "05:00:00", "05:00:00"],
+  ["BSS_2", "05:05:00", "05:06:00"],
+  ["BSS_3", "05:11:00", "05:12:00"],
+  ["BSS_4", "05:17:00", "05:18:00"],
+  ["BSS_5", "05:25:00", "05:26:00"],
+  ["BSS_6", "05:30:00", "05:31:00"],
+];
 
 const VIEWPORTS = [
   { label: "1440x1000", width: 1440, height: 1000 },
@@ -114,10 +130,11 @@ for (const viewport of VIEWPORTS) {
         "2 stops not shown",
       );
 
-      // No mutation control ships before the write path is wired.
-      await expect(page.locator("#schedules-add-trips")).toHaveCount(0);
+      // The write path is wired, so the mutation controls are present and the
+      // page is no longer read-only for an editor.
+      await expect(page.locator("#schedules-add-trips")).toBeVisible();
       await expect(page.locator("#schedules-bulk-toolbar")).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Add trips" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Add trips" })).toHaveCount(1);
 
       await capture(page, `step-006-${viewport.label}-default`);
     });
@@ -166,8 +183,8 @@ for (const viewport of VIEWPORTS) {
         page.locator("#section-BROWSER-SCHED-PW-table tbody tr"),
       ).toHaveCount(6);
 
-      // 72 stop columns + selection, Start, Timing, Trip no. and Block.
-      await expect(page.locator("#section-BROWSER-SCHED-PW-table thead th")).toHaveCount(77);
+      // 72 stop columns + selection, Start, Timing, Trip no., Block and Actions.
+      await expect(page.locator("#section-BROWSER-SCHED-PW-table thead th")).toHaveCount(78);
       expect(await bodyFitsViewport(page)).toBe(true);
 
       const container = page.locator("#section-BROWSER-SCHED-PW-table-container");
@@ -227,5 +244,275 @@ for (const viewport of VIEWPORTS) {
       await capture(page, `step-006-${viewport.label}-loading`);
       await page.unroute("**/live/websocket**");
     });
+
+    test("the 62-occurrence mutation table keeps its pinned columns", async ({ page }) => {
+      await logIn(page);
+      const versionId = await versionIdFor(page, "Browser E2E Version");
+
+      await page.goto(`${schedulesPath(versionId, MUTATE_ROUTE)}?stops=all`);
+
+      // 62 stop columns + selection, Start, Timing, Trip no., Block and Actions.
+      await expect(page.locator("#section-BROWSER-SCHED-PM1-table thead th")).toHaveCount(68);
+      await expect(page.locator("#section-BROWSER-SCHED-PM1-table tbody tr")).toHaveCount(5);
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      const container = page.locator("#section-BROWSER-SCHED-PM1-table-container");
+      const startCell = page.locator("#trip-SM_T1-start");
+      const selectionCell = page.locator("#trip-select-SM_T1");
+      const actionsCell = page.locator("#trip-SM_T1-edit");
+
+      const before = await container.boundingBox();
+      await container.evaluate((node) => {
+        node.scrollLeft = 2400;
+      });
+
+      const after = await container.boundingBox();
+      expect(after.x).toBe(before.x);
+      expect((await selectionCell.boundingBox()).x).toBeGreaterThanOrEqual(after.x);
+      expect((await startCell.boundingBox()).x).toBeGreaterThanOrEqual(after.x);
+      expect((await actionsCell.boundingBox()).x).toBeLessThan(after.x + after.width);
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await capture(page, `step-007-${viewport.label}-mutation-wide`);
+    });
   });
+}
+
+/**
+ * The editing journeys for the Schedules tab.
+ *
+ * They run once, in declaration order, against a freshly seeded database: each
+ * journey works on its own trips of BROWSER_SCHEDULES_MUTATE, so a mutation made
+ * by an earlier journey cannot change what a later one asserts. Workers stay at
+ * one, as the config requires.
+ */
+test.describe("Schedules editing journeys", () => {
+  test.use({ viewport: { width: 1440, height: 1000 } });
+
+  test("keyboard add series, edit, duplicate and focus return", async ({ page }) => {
+    test.setTimeout(90_000);
+
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await page.goto(schedulesPath(versionId, MUTATE_ROUTE));
+    await expect(page.locator("#trip-SM_T1-start")).toHaveText("06:00");
+
+    // The after-midnight departure keeps its visible day marker.
+    await expect(page.locator("#trip-SM_LATE-start")).toHaveText("25:10");
+    await expect(page.locator("#trip-SM_LATE-marker")).toHaveText("+1");
+
+    // Add a series with the keyboard only.
+    await page.locator("#schedules-add-trips").focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+
+    await page.selectOption("#trip-pattern", { label: "Mutate secondary" });
+    await page.fill("#trip-start", "06:00");
+    await page.locator("#trip-repeat").check();
+    await page.fill("#trip-every", "30");
+    await page.fill("#trip-until", "06:30");
+
+    await expect(page.locator("#trip-drawer-save")).toHaveText("Add 2 trips");
+    await expect(page.locator("#trip-preview")).toContainText("Adds 2 trips, 06:00 → 06:30 every 30 min.");
+
+    await page.locator("#trip-drawer-save").focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#trip-drawer").waitFor({ state: "hidden" });
+
+    await expect(page).toHaveURL(/pattern=/);
+
+    // Focus returns to the control that opened the drawer.
+    await expect(page.locator("#schedules-add-trips")).toBeFocused();
+
+    // The two created trips are on the second pattern at the previewed starts.
+    await expect(page.locator("#section-BROWSER-SCHED-PM2-table tbody tr")).toHaveCount(6);
+    expect(await mutationTripIdsAtDeparture(page, "06:00")).toHaveLength(1);
+    expect(await mutationTripIdsAtDeparture(page, "06:30")).toHaveLength(1);
+
+    // Edit the created 06:30 trip: change its headsign and block.
+    const [createdTrip] = await mutationTripIdsAtDeparture(page, "06:30");
+    await page.locator(`#trip-${createdTrip}-edit`).click();
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+    await page.fill("#trip-headsign", "Keyboard heading");
+    await page.fill("#trip-block", "SM-9");
+    await page.locator("#trip-drawer-save").click();
+    await page.locator("#trip-drawer").waitFor({ state: "hidden" });
+
+    await expect(page.locator(`#trip-${createdTrip}-start`)).toHaveText("06:30");
+    await expect(page.locator(`#trip-${createdTrip}-edit`)).toBeFocused();
+
+    // Duplicate the 06:30 trip: the default is the source start plus 30 minutes.
+    await page.locator(`#trip-${createdTrip}-menu`).click();
+    await page.locator(`#trip-${createdTrip}-duplicate`).click();
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+    await expect(page.locator("#trip-start")).toHaveValue("07:00");
+    await expect(page.locator("#trip-timing")).toContainText("Secondary");
+
+    const beforeDuplicate = await page
+      .locator("#section-BROWSER-SCHED-PM2-table tbody tr")
+      .count();
+
+    await page.locator("#trip-drawer-save").click();
+    await page.locator("#trip-drawer").waitFor({ state: "hidden" });
+
+    await expect(page.locator("#section-BROWSER-SCHED-PM2-table tbody tr")).toHaveCount(
+      beforeDuplicate + 1,
+    );
+
+    await capture(page, "step-007-added-1440x1000");
+  });
+
+  test("bulk delete totals across sections, names the count and calendar, and clears", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await page.goto(schedulesPath(versionId, MUTATE_ROUTE));
+    await expect(page.locator("#trip-SM_T1-start")).toBeVisible();
+
+    await page.locator("#trip-select-SM_CUSTOM_DIFF").check();
+    await page.locator("#trip-select-SM_LATE").check();
+
+    await expect(page.locator("#schedules-bulk-toolbar")).toContainText("2 trips selected");
+    await expect(page.locator("#schedules-delete-selected")).toHaveText("Delete 2 trips");
+
+    await page.locator("#schedules-delete-selected").click();
+    await expect(page.locator("#delete-dialog")).toBeVisible();
+    await expect(page.locator("#delete-dialog-title")).toHaveText(
+      "Delete 2 trips from Every day service?",
+    );
+    await expect(page.locator("#delete-dialog-body")).toContainText(
+      "This removes the trips and their stop times from this published version. You cannot undo this.",
+    );
+
+    // Cancelling returns focus to the toolbar control and deletes nothing.
+    await page.locator("#delete-dialog-cancel").click();
+    await expect(page.locator("#delete-dialog")).toBeHidden();
+    await expect(page.locator("#schedules-delete-selected")).toBeFocused();
+    await expect(page.locator("#trip-SM_LATE-start")).toBeVisible();
+
+    // Changing the view clears the selection, so the delete has nothing to act on.
+    await page.locator('label[for="direction-filter-option-1"]').click();
+    await expect(page.locator("#schedules-bulk-toolbar")).toHaveCount(0);
+    await page.locator('label[for="direction-filter-option-0"]').click();
+    await expect(page.locator("#trip-SM_LATE-start")).toBeVisible();
+
+    // The real bulk delete removes both and shows the vehicle marker.
+    await page.locator("#trip-select-SM_CUSTOM_DIFF").check();
+    await page.locator("#trip-select-SM_LATE").check();
+    await page.locator("#schedules-delete-selected").click();
+    await page.locator("#delete-dialog-confirm").click();
+    await expect(page.locator("#delete-dialog")).toBeHidden();
+
+    await expect(page.locator("#trip-SM_LATE-start")).toHaveCount(0);
+    await expect(page.locator("#trip-SM_CUSTOM_DIFF-start")).toHaveCount(0);
+    await expect(page.locator("#schedules-bulk-toolbar")).toHaveCount(0);
+
+    await capture(page, "step-007-deleted-1440x1000");
+  });
+
+  test("a stalled preview and a lost connection keep committing unavailable", async ({ page }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await page.goto(schedulesPath(versionId, MUTATE_ROUTE));
+    await expect(page.locator("#trip-SM_T1-start")).toBeVisible();
+
+    // A departure that is not HH:MM is refused with the fixed copy and focus.
+    await page.locator("#schedules-add-trips").click();
+    await page.locator("#trip-start").fill("25:9");
+    await page.locator("#trip-drawer-save").click();
+    await expect(page.locator("#trip-start-error")).toContainText(
+      "Enter a departure as HH:MM, for example 06:00 or 25:10.",
+    );
+    await expect(page.locator("#trip-start")).toBeFocused();
+    await capture(page, "step-007-add-error-1440x1000");
+
+    await page.locator("#trip-drawer-cancel").click();
+    await page.locator("#trip-drawer").waitFor({ state: "hidden" });
+
+    // The disconnected page disables Add and Save until the socket returns.
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await expect(page.locator("#schedules-disconnected")).toBeVisible();
+    await expect(page.locator("#schedules-add-trips")).toBeDisabled();
+
+    await page.evaluate(() => window.liveSocket.connect());
+    await expect(page.locator("#schedules-disconnected")).toBeHidden();
+    await expect(page.locator("#schedules-add-trips")).toBeEnabled();
+
+    await page.locator("#schedules-add-trips").click();
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await expect(page.locator("#trip-drawer-save")).toBeDisabled();
+    await expect(page.locator("#schedules-disconnected")).toBeVisible();
+    await capture(page, "step-007-disconnected-1440x1000");
+  });
+
+  test("the export after a mutation matches the fixture-authored stop times", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await page.goto(schedulesPath(versionId, MUTATE_ROUTE));
+    await expect(page.locator("#trip-SM_T1-start")).toHaveText("06:00");
+
+    await page.locator("#schedules-add-trips").click();
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+    await page.selectOption("#trip-pattern", { label: "Mutate secondary" });
+    await page.fill("#trip-start", "05:00");
+    await page.locator("#trip-drawer-save").click();
+    await page.locator("#trip-drawer").waitFor({ state: "hidden" });
+
+    const [createdTrip] = await mutationTripIdsAtDeparture(page, "05:00");
+    expect(createdTrip).toBeTruthy();
+
+    // Export the version through the real export workspace and download it.
+    await page.goto(`/gtfs/${versionId}/export`);
+    await page.locator("#gtfs-export-form").waitFor({ state: "visible" });
+    await page.locator("#export-type-full").check();
+    await page.locator("#start-export").click();
+
+    await expect
+      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
+        timeout: 60_000,
+      })
+      .toContain("/download");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#export-download-link").click();
+    const download = await downloadPromise;
+
+    const path = await download.path();
+    const buffer = readFileSync(path);
+    const stopTimes = readZipTextMember(buffer, "stop_times.txt");
+
+    const rows = stopTimes
+      .split("\n")
+      .slice(1)
+      .map((line) => line.split(","))
+      .filter((cells) => cells[0] === createdTrip)
+      .sort((a, b) => Number(a[4]) - Number(b[4]))
+      .map((cells) => [cells[3], cells[1], cells[2]]);
+
+    expect(rows).toEqual(EXPORT_STOP_TIME_ROWS);
+  });
+});
+
+/**
+ * The allocated trip ids (route-direction-service-HHMM) whose Start cell shows
+ * this departure in the rendered tables, so the seeded trips are never included.
+ */
+async function mutationTripIdsAtDeparture(page, departure) {
+  return page.evaluate(
+    ({ value, prefix }) =>
+      Array.from(document.querySelectorAll("tr[id^='trip-']"))
+        .map((row) => ({
+          id: row.id.replace(/^trip-/, ""),
+          start: row.querySelector("[id$='-start']")?.textContent?.trim(),
+        }))
+        .filter((row) => row.start === value && row.id.startsWith(prefix))
+        .map((row) => row.id),
+    { value: departure, prefix: "BROWSER_SCHEDULES_MUTATE-" },
+  );
 }

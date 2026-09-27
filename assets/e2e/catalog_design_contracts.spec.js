@@ -588,3 +588,97 @@ test.describe("Route pattern editor responsive contracts", () => {
     await expect(page.locator("#pattern-insert-after")).toBeAttached();
   });
 });
+
+/**
+ * The Schedules page contracts for the mutation surface.
+ *
+ * These extend the catalog contracts to the page step 7 wired; they add the
+ * Schedules page only and leave every existing expectation in this file alone.
+ */
+async function openSchedulesPage(page, routeId = "BROWSER_SCHEDULES_MUTATE") {
+  await logIn(page);
+  const versionId = await getVersionId(page);
+  await page.goto(`/gtfs/${versionId}/routes/${routeId}/schedules`);
+  await page.locator("#schedules-controls").waitFor({ state: "visible" });
+  return versionId;
+}
+
+test.describe("Route schedules contracts", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`route schedules fits the ${viewport.label} viewport without horizontal overflow`, async ({
+      page,
+    }) => {
+      await openSchedulesPage(page);
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+
+      expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+    });
+  }
+
+  test("row actions and the drawer controls meet 44px", async ({ page }) => {
+    await openSchedulesPage(page);
+
+    for (const selector of [
+      "#schedules-add-trips",
+      "#trip-SM_T1-edit",
+      "#trip-SM_T1-menu",
+      'label:has(#trip-select-SM_T1)',
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box, selector).not.toBeNull();
+      expect(box.height, selector).toBeGreaterThanOrEqual(44);
+    }
+
+    await page.locator("#schedules-add-trips").click();
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+
+    for (const selector of ["#trip-drawer-save", "#trip-drawer-cancel", "#trip-drawer-close"]) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box, selector).not.toBeNull();
+      expect(box.height, selector).toBeGreaterThanOrEqual(44);
+    }
+  });
+
+  test("the mutation surface uses stable ids and labelled controls", async ({ page }) => {
+    await openSchedulesPage(page);
+
+    await expect(page.locator("#schedules-controls")).toBeVisible();
+    await expect(page.locator("#schedules-sections")).toBeVisible();
+    await expect(page.locator("#section-BROWSER-SCHED-PM1-table")).toBeAttached();
+    await expect(page.locator("#section-BROWSER-SCHED-PM2-table")).toBeAttached();
+    await expect(page.locator("#planning-summary")).toBeAttached();
+
+    // Every Add, Edit and menu control is labelled for keyboard and assistive use.
+    await expect(page.locator("#schedules-add-trips")).toHaveText("Add trips");
+    await expect(page.locator("#trip-SM_T1-edit")).toHaveText("Edit");
+    await expect(page.locator("#trip-SM_T1-menu")).toHaveAttribute(
+      "aria-label",
+      "More actions for trip SM_T1",
+    );
+    await expect(page.locator("#trip-select-SM_T1")).toHaveAttribute(
+      "aria-label",
+      "Select trip SM_T1",
+    );
+
+    // The drawer keeps its form id, its first field and its primary action.
+    await page.locator("#schedules-add-trips").click();
+    await expect(page.locator("#trip-drawer-form")).toBeAttached();
+    await expect(page.locator("#trip-pattern")).toBeVisible();
+    await expect(page.locator("#trip-preview")).toBeAttached();
+    await expect(page.locator("#trip-drawer-save")).toHaveText("Add 1 trip");
+  });
+
+  test("selecting rows reveals the bulk toolbar with a labelled delete", async ({ page }) => {
+    await openSchedulesPage(page);
+
+    await page.locator("#trip-select-SM_T1").check();
+    await page.locator("#trip-select-SM_P2_1").check();
+
+    await expect(page.locator("#schedules-bulk-toolbar")).toContainText("2 trips selected");
+    await expect(page.locator("#schedules-delete-selected")).toHaveText("Delete 2 trips");
+    await expect(page.locator("#schedules-clear-selection")).toHaveText("Clear selection");
+  });
+});
