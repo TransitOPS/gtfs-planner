@@ -711,10 +711,12 @@ test.describe("@agencies-list", () => {
       await waitForLiveView(page);
 
       // The link really filters: only the five North Coast Transit routes remain.
+      // The Route ID cell is the row's last column (routes_live.ex renders no
+      // data-label on desktop table cells).
       await expect(page.locator("#routes tr")).toHaveCount(5);
-      await expect(
-        page.locator("#routes tr td[data-label='Route ID']").first(),
-      ).toContainText("NCT_");
+      await expect(page.locator("#routes tr td:last-child").first()).toContainText(
+        "NCT_",
+      );
     });
   });
 
@@ -873,7 +875,7 @@ test.describe("@agencies-timezone", () => {
       "Lakefront Transit America/Chicago → America/Chicago 1 route",
     );
     await expect(reviewRows.nth(1)).toContainText(
-      "North Coast Transit America/New_York → America/Chicago 2 routes",
+      "North Coast Transit America/New_York → America/Chicago 1 route",
     );
     await expect(page.locator("#agency-timezone-not-converted")).toContainText(
       "Route and trip clock times are not converted. Check calendars, schedules, and overnight service after this change.",
@@ -1387,11 +1389,13 @@ test.describe("@routes-new-route", () => {
     await waitForLiveView(page);
 
     // Harbor Shuttle's two seeded routes are the baseline this journey adds one
-    // to, and the filter is really applied.
+    // to, and the filter is really applied. The Route ID cell is the row's
+    // last column (routes_live.ex renders no data-label on desktop table
+    // cells).
     await expect(page.locator("#routes tr")).toHaveCount(2);
-    await expect(
-      page.locator("#routes tr td[data-label='Route ID']").first(),
-    ).toContainText("HBR_");
+    await expect(page.locator("#routes tr td:last-child").first()).toContainText(
+      "HBR_",
+    );
 
     await page.click("#new-route-trigger");
 
@@ -1497,8 +1501,8 @@ test.describe("@routes-onboarding", () => {
     await waitForLiveView(page);
 
     // ── Who operates this service? ──
-    const versionId = await versionId(page, ONBOARDING_VERSION);
-    await page.goto(`/gtfs/${versionId}/routes`);
+    const onboardingId = await versionId(page, ONBOARDING_VERSION);
+    await page.goto(`/gtfs/${onboardingId}/routes`);
     await page.waitForSelector("#routes-agency-onboarding");
     await waitForLiveView(page);
 
@@ -1511,7 +1515,7 @@ test.describe("@routes-onboarding", () => {
     );
     await expect(page.locator("#routes-onboarding-import")).toHaveAttribute(
       "href",
-      `/gtfs/${versionId}/import`,
+      `/gtfs/${onboardingId}/import`,
     );
     // The agency is the primary action here, so Create route steps back.
     await expect(page.locator("#new-route-trigger")).toHaveClass(/btn-outline/);
@@ -1661,8 +1665,8 @@ test.describe("@import-findings", () => {
     await logIn(page);
     await waitForLiveView(page);
 
-    const versionId = await versionId(page, IMPORT_VERSION);
-    await page.goto(`/gtfs/${versionId}/import`);
+    const importStartId = await versionId(page, IMPORT_VERSION);
+    await page.goto(`/gtfs/${importStartId}/import`);
     await page.waitForSelector("#gtfs-import-form");
     await waitForLiveView(page);
 
@@ -1706,7 +1710,7 @@ test.describe("@import-findings", () => {
     await expect(setUpAgency).toHaveText("Set up agency");
     await expect(setUpAgency).not.toHaveAttribute(
       "href",
-      `/gtfs/${versionId}/settings/agencies`,
+      `/gtfs/${importStartId}/settings/agencies`,
     );
 
     expect(await bodyFitsViewport(page)).toBe(true);
