@@ -724,7 +724,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   defp inventory_zone_ids(organization, version) do
-    organization
+    organization.id
     |> FareZones.inventory(version.id)
     |> Map.fetch!(:zones)
     |> Enum.map(& &1.zone_id)

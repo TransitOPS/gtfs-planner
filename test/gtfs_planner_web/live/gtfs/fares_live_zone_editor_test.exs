@@ -223,8 +223,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
              ]
 
       assert selected_option(view, "#fare-zone-color") == "ochre"
-      assert attribute(view, "#fare-zone-name", "value") == ""
-      assert attribute(view, "#fare-zone-id", "value") == ""
+      assert attribute(view, "#fare-zone-name", "value") == nil
+      assert attribute(view, "#fare-zone-id", "value") == nil
 
       # A create states that the zone starts empty; the edit summary belongs to
       # an edit.
@@ -244,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
 
       view |> element("#fare-zone-create") |> render_click()
 
-      assert attribute(view, "#fare-zone-name", "value") == ""
+      assert attribute(view, "#fare-zone-name", "value") == nil
       assert selected_option(view, "#fare-zone-color") == "ochre"
     end
 
@@ -554,7 +554,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
 
       {1, nil} =
         Repo.update_all(from(v in GtfsVersion, where: v.id == ^version.id),
-          set: [publication_status: "failed"]
+          set: [publication_status: "failed", published_at: nil]
         )
 
       submit_zone(view, %{"name" => "Central West", "zone_id" => "A", "color" => "ocean"})
@@ -656,7 +656,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
   # The drawer form is submitted through its own rendered values, so a field the
   # case does not name is the value the operator would have seen.
   defp submit_zone(view, params) do
-    view |> form("#fare-zone-form", %{"zone" => params}) |> render_submit()
+    form = form(view, "#fare-zone-form", %{"zone" => params})
+    # A browser fires the form's change event as the operator types, so the
+    # LiveView holds the typed values before the submit arrives.
+    render_change(form)
+    render_submit(form)
   end
 
   defp drawer_open?(view), do: attribute(view, "#fare-zone-drawer-overlay", "data-open") == "true"

@@ -84,6 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       )
 
     stop = fn attrs -> stop_fixture(organization.id, version.id, attrs) end
+    level = level_fixture(organization.id, version.id)
 
     platform_a = stop.(%{stop_id: "PLATFORM_A", stop_name: "Central Platform"})
     platform_b = stop.(%{stop_id: "PLATFORM_B", stop_name: "Eastbank Platform"})
@@ -97,21 +98,24 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       stop.(%{
         stop_id: "STATION_PLATFORM_A",
         stop_name: "Union Platform A",
-        parent_station: "STATION_1"
+        parent_station: "STATION_1",
+        level_id: level.level_id
       })
 
     station_platform_b =
       stop.(%{
         stop_id: "STATION_PLATFORM_B",
         stop_name: "Union Platform B",
-        parent_station: "STATION_1"
+        parent_station: "STATION_1",
+        level_id: level.level_id
       })
 
     station_platform_none =
       stop.(%{
         stop_id: "STATION_PLATFORM_NONE",
         stop_name: "Union Platform C",
-        parent_station: "STATION_1"
+        parent_station: "STATION_1",
+        level_id: level.level_id
       })
 
     # The third platform deliberately keeps no zone, so the station's entry must
@@ -123,7 +127,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
         stop_id: "STATION_ENTRANCE",
         stop_name: "Union Entrance",
         location_type: 2,
-        parent_station: "STATION_1"
+        parent_station: "STATION_1",
+        level_id: level.level_id
       })
 
     station_boarding =
@@ -131,7 +136,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
         stop_id: "STATION_BOARDING",
         stop_name: "Union Boarding Area",
         location_type: 4,
-        parent_station: "STATION_PLATFORM_A"
+        parent_station: "STATION_PLATFORM_A",
+        level_id: level.level_id
       })
 
     quiet_station =

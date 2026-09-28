@@ -302,7 +302,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       view |> element("#fare-zone-assign-selection") |> render_click()
 
-      assert text_of(view, "#fare-zone-assignment-siblings") ==
+      assert text_of(view, "#fare-zone-assignment-siblings p") ==
                "1 sibling platform is not selected. Each platform is assigned separately; station groups are never changed silently."
     end
   end
@@ -363,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       confirm_save(view)
 
-      assert text_of(view, "#fare-zone-saved") == "2 stops assigned to Eastbank."
+      assert text_of(view, "#fare-zone-saved p") == "2 stops assigned to Eastbank."
       assert zone_id_of(stop_ids["BAY_1"]) == "B"
       assert zone_id_of(stop_ids["BAY_2"]) == "B"
     end
@@ -425,7 +425,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       {1, nil} =
         Repo.update_all(from(v in GtfsVersion, where: v.id == ^version.id),
-          set: [publication_status: "failed"]
+          set: [publication_status: "failed", published_at: nil]
         )
 
       confirm_save(view)
@@ -459,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       choose_target(view, "B")
       confirm_save(view)
 
-      assert text_of(view, "#fare-zone-saved") == "1 stop assigned to Eastbank."
+      assert text_of(view, "#fare-zone-saved p") == "1 stop assigned to Eastbank."
 
       select_stop(view, stop_ids["WEST_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -468,7 +468,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       # The callout reports the save that just happened, and its Undo refers to
       # that save alone: the first assignment stays where it was.
-      assert text_of(view, "#fare-zone-saved") == "1 stop assigned to Eastbank."
+      assert text_of(view, "#fare-zone-saved p") == "1 stop assigned to Eastbank."
       assert zone_id_of(stop_ids["BAY_1"]) == "B"
 
       view |> element("#fare-zone-undo") |> render_click()
@@ -558,7 +558,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       {1, nil} =
         Repo.update_all(from(v in GtfsVersion, where: v.id == ^version.id),
-          set: [publication_status: "failed"]
+          set: [publication_status: "failed", published_at: nil]
         )
 
       view |> element("#fare-zone-undo") |> render_click()
@@ -679,10 +679,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       select_stop(view, stop.id)
 
-      # The bar offers no assign action without a zone: the button is disabled and
-      # the reason is stated beside the count.
-      assert has_element?(view, "#fare-zone-assign-unavailable", "Create a fare zone first.")
-      assert disabled?(view, "#fare-zone-assign-selection")
+      # The version has no zone at all, so the workspace shows its first-use
+      # state and the selection bar never mounts; the reason is still proved
+      # through the review the crafted event below reaches.
+      assert has_element?(view, "#fare-zone-first-use")
+      refute has_element?(view, "#fare-zone-assign-unavailable")
+      refute has_element?(view, "#fare-zone-assign-selection")
 
       # A stale or crafted assign event still reaches the review, which says there
       # is no target instead of previewing a write it cannot make. The target
@@ -779,18 +781,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
     if value == "", do: nil, else: value
   end
 
-  # The untrimmed text of each matched node. A byte-exact expectation (the leading
-  # space of a padded zone ID) has to read the nodes without the whitespace
-  # normalization `text_of/2` applies, or it can never match what was rendered.
+  # The text of each matched node with the template's own indentation trimmed.
+  # A byte-exact expectation (the leading space of a padded zone ID) has to read
+  # the nodes without the whitespace normalization `text_of/2` applies, but the
+  # newlines the HEEx template leaves around the value are not part of the value.
   defp raw_texts(view, selector) do
-    view |> nodes(selector) |> Enum.map(&LazyHTML.text/1)
+    view |> nodes(selector) |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
   end
 
   defp raw_text_of(view, selector), do: view |> raw_texts(selector) |> List.first()
-
-  defp disabled?(view, selector) do
-    view |> nodes(selector) |> LazyHTML.attribute("disabled") |> Enum.any?()
-  end
 
   defp nodes(view, selector) do
     view |> render() |> LazyHTML.from_fragment() |> LazyHTML.query(selector)
@@ -851,5 +850,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
   defp pad(index), do: String.pad_leading(Integer.to_string(index), 3, "0")
 
   defp decimal(nil), do: nil
+  defp decimal(value) when is_float(value), do: Decimal.from_float(value)
   defp decimal(value), do: Decimal.new(value)
 end

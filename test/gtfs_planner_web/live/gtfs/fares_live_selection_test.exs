@@ -166,7 +166,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       assert bar_count(view) == "150 stops selected"
       assert Enum.map(1..2, &row_href(view, "#fare-zone-row-#{&1}")) == base_hrefs
       refute render(view) =~ "selection="
-      refute render(view) =~ "selected="
+      # The drawer's own palette keeps an `<option selected>` in the page even
+      # when closed, so probe the query-string form the URL would carry.
+      refute render(view) =~ "?selected="
     end
   end
 
@@ -591,5 +593,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
   defp pad(index), do: String.pad_leading(Integer.to_string(index), 3, "0")
 
   defp decimal(nil), do: nil
+  defp decimal(value) when is_float(value), do: Decimal.from_float(value)
   defp decimal(value), do: Decimal.new(value)
 end

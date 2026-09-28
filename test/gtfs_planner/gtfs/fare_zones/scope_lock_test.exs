@@ -156,7 +156,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
           }
         ])
 
-      %{organization: organization, version: version, stop_id: stop_id}
+      %{organization: organization, version: version, stop: %{id: stop_id}}
     end)
   end
 

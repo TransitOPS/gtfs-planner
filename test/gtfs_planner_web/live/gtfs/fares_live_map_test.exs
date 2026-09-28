@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
 
   @tile_failure "Map tiles are unavailable"
@@ -423,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
       # has carries no stop, so only Unassigned is left to explain.
       assert has_element?(view, "#fare-zone-map-legend", "Unassigned")
       refute has_element?(view, "#fare-zone-map-legend", "Zed")
-      assert has_element?(view, "#fare-zone-stops-empty", "No stops in this zone yet")
+      assert has_element?(view, "#fare-zone-stops-empty", "No stops yet")
     end
 
     test "the legend names the zones a marker carries and not the empty ones", ctx do

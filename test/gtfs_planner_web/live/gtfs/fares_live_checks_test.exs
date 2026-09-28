@@ -435,7 +435,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
 
       # The zone literally named "unassigned" opens that zone, not the unassigned
       # stops filter (CR-7).
-      render_patch(view, "#{@zones_path}?zone=unassigned")
+      render_patch(view, "/gtfs/#{exact_version.id}#{@zones_path}?zone=unassigned")
 
       assert element_text(view, "#fare-zone-stage-subtitle") ==
                "0 stops · Zone ID unassigned"
@@ -543,7 +543,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       view
       |> render()
       |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#fares-checks-count")
+      |> LazyHTML.query("#fares-checks-count span:nth-child(2)")
       |> LazyHTML.attribute("class")
 
     class

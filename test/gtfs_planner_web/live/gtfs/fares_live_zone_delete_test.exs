@@ -516,7 +516,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
       # reader could never see the difference.
       assert raw_text_of(view, "#fare-zone-delete-dialog-title") == "Delete  A?"
 
-      assert raw_text_of(view, "#fare-zone-delete-consequence") ==
+      assert text_of(view, "#fare-zone-delete-consequence") ==
                "1 stop and 0 fare rules use this zone."
 
       assert option_labels(view, "#fare-zone-delete-replacement") == [

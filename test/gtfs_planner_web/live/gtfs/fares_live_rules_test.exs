@@ -272,11 +272,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
 
       panel_ids = LazyHTML.attribute(LazyHTML.query(doc, "#fare-rules-panel [id]"), "id")
       inner_pattern = ~r/\Afare-rule-[0-9a-fA-F-]{36}-(fare|journey|route|stopless|edit)\z/
+      # The panel's own fixed anchors are part of the contract, not rule rows.
+      static_ids =
+        ~w(fare-rules-tab fare-rules-intro fare-rules-empty fare-rule-list fare-rules-note)
 
       assert panel_ids != []
 
       assert Enum.all?(panel_ids, fn id ->
-               Regex.match?(@card_id_pattern, id) or Regex.match?(inner_pattern, id)
+               id in static_ids or Regex.match?(@card_id_pattern, id) or
+                 Regex.match?(inner_pattern, id)
              end)
     end
 

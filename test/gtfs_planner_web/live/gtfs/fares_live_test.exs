@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -90,7 +91,21 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       {:ok,
        Map.merge(
          %{
-           inventory: %{zones: [], unassigned_count: 0, boardable_count: 0},
+           inventory: %{
+             zones: [
+               %{
+                 zone_id: "A",
+                 name: "Central",
+                 color: "ocean",
+                 declared?: true,
+                 stop_count: 0,
+                 other_stop_count: 0,
+                 rule_count: 0
+               }
+             ],
+             unassigned_count: 0,
+             boardable_count: 0
+           },
            checks: %{
              stopless_referenced: [],
              unassigned_count: 0,
@@ -108,6 +123,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
          overrides
        )}
     end)
+  end
+
+  defp insert_zone(organization, version) do
+    {:ok, zone} =
+      FareZones.create_zone(organization.id, version.id, %{
+        "name" => "Central",
+        "zone_id" => "A",
+        "color" => "ocean"
+      })
+
+    zone
   end
 
   defp insert_rule(organization, version, fare_id, origin_id, destination_id) do
@@ -194,6 +220,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
         {:error, :unavailable}
       end)
 
+      insert_zone(organization, version)
+
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
 
@@ -220,6 +248,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       gtfs_version: version
     } do
       Application.delete_env(:gtfs_planner, @adapter_key)
+
+      insert_zone(organization, version)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")

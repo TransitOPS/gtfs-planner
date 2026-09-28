@@ -520,5 +520,6 @@ defmodule GtfsPlanner.Gtfs.FareZones.StopReadsTest do
   end
 
   defp decimal(nil), do: nil
+  defp decimal(value) when is_float(value), do: Decimal.from_float(value)
   defp decimal(value), do: Decimal.new(value)
 end

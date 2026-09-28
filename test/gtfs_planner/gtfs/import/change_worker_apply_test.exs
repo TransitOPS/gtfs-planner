@@ -212,7 +212,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
             :stop,
             :modify,
             "central",
-            %{stop_name: "Central Station", zone_id: nil},
+            %{stop_name: "Central Station"},
             [],
             "stop:central"
           )
@@ -220,6 +220,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
             current_fingerprint: ChangeDecisionSerializer.current_fingerprint(current_values)
         }
       ])
+
+    # The intake allowlist refuses `zone_id`, so the persisted decision is given
+    # the attribute directly: applying it must still leave the stored zone alone
+    # (AC-4).
+    {1, _} =
+      Repo.update_all(
+        from(d in ChangeDecision, where: d.change_run_id == ^run.id),
+        set: [uploaded_values: %{"stop_name" => "Central Station", "zone_id" => nil}]
+      )
 
     assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
 

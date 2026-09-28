@@ -619,7 +619,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     end
   end
 
-  defp parse!(filename, content) do
+  defp parse!(content, filename) do
     {:ok, parsed} = CsvParser.stream(filename, content)
     Enum.map(parsed.events, fn {:ok, _row_number, row} -> row end)
   end

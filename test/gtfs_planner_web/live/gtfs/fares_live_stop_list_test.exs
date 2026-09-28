@@ -390,10 +390,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
 
-      # 157 boardable stops: 150 in Eastbank, 2 in Central, 1 in Padded and 3
-      # with no zone. The station is not one of them, and the other version's
-      # stop of the same stop ID is not either.
-      assert has_element?(view, "#fare-zone-stop-head", "157 shown")
+      # 156 boardable stops: 150 in Eastbank, 2 in Central, 1 in Padded and 3
+      # with no zone. One further stop is a station, which is never listed.
+      assert has_element?(view, "#fare-zone-stop-head", "156 shown")
       refute has_element?(view, "#stops-#{stop_ids["CENTRAL_STATION"]}")
       refute has_element?(view, "#stops-#{other_harbor.id}")
       refute render(view) =~ "Other Version Harbor"
@@ -447,7 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       render_patch(view, empty_action_href(view))
 
       assert has_element?(view, "#fare-zone-row-all[aria-current='page']")
-      assert has_element?(view, "#fare-zone-stop-head", "157 shown")
+      assert has_element?(view, "#fare-zone-stop-head", "156 shown")
     end
 
     test "a filter with nothing unassigned names that", %{
@@ -464,7 +463,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
 
       assert has_element?(view, "#fare-zone-stop-head", "3 shown")
       assert has_element?(view, "#fare-zone-without-location", "1 without map location")
-      assert visible_stop_ids(view, stop_id_by_row_id) == ["GATE_50%", "GATE_500", "DEPOT"]
+      assert visible_stop_ids(view, stop_id_by_row_id) == ["DEPOT", "GATE_50%", "GATE_500"]
 
       unassigned_ids = Enum.map(["DEPOT", "GATE_50%", "GATE_500"], &stop_ids[&1])
 
@@ -497,6 +496,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       organization: organization
     } do
       empty_version = gtfs_version_fixture(organization.id)
+
+      # A declared zone keeps the workspace out of its first-use state, so the
+      # stop list's own no-stops copy is what renders.
+      insert_zone(organization, empty_version, "A", "Central", "ocean")
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{empty_version.id}/settings/fares")
@@ -550,13 +553,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
   end
 
   defp zone_chip_html(view, stop_id) do
-    [chip] =
-      view
-      |> render()
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#stops-#{stop_id} span[aria-hidden='true']")
-
-    LazyHTML.to_html(chip)
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#stops-#{stop_id} span[aria-hidden='true']")
+    |> LazyHTML.to_html()
   end
 
   defp insert_stops(organization, version, stops) do
@@ -612,5 +613,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
   defp pad(index), do: String.pad_leading(Integer.to_string(index), 3, "0")
 
   defp decimal(nil), do: nil
+  defp decimal(value) when is_float(value), do: Decimal.from_float(value)
   defp decimal(value), do: Decimal.new(value)
 end

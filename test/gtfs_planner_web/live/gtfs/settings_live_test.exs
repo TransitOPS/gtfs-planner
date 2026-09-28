@@ -289,7 +289,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       # The literal route resolves before `/settings/:section`, so this is the
       # workspace shell with the Settings bar's Fares tab current.
       assert text_of(doc, "h1") == "Fare zones"
-      assert has_element?(view, "#fare-zones-panel")
+      # An empty inventory shows the workspace's first-use state instead of the panel.
+      assert has_element?(view, "#fare-zone-first-use")
       refute has_element?(view, "#coming-soon")
 
       assert LazyHTML.attribute(

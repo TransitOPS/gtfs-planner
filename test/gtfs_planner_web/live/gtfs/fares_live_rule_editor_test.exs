@@ -442,9 +442,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
 
       assert option_labels(view, "#fare-rule-route") == [
                "All routes",
+               "Unknown route ROUTE_MISSING",
                "10 · Crosstown",
-               "Airport Express",
-               "Unknown route ROUTE_MISSING"
+               "Airport Express"
              ]
 
       assert selected_option(view, "#fare-rule-route") == "ROUTE_MISSING"
@@ -718,16 +718,26 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
   defp card_id(row_ids), do: "fare-rule-" <> Enum.min(row_ids)
 
   defp rules(organization, version, fare_id, route_id, origin_id, destination_id) do
+    conditions =
+      dynamic(
+        [r],
+        r.organization_id == ^organization.id and r.gtfs_version_id == ^version.id and
+          r.fare_id == ^fare_id and ^eq_or_nil(:route_id, route_id) and
+          ^eq_or_nil(:origin_id, origin_id) and ^eq_or_nil(:destination_id, destination_id)
+      )
+
     Repo.all(
       from(r in FareRule,
-        where:
-          r.organization_id == ^organization.id and r.gtfs_version_id == ^version.id and
-            r.fare_id == ^fare_id and r.route_id == ^route_id and r.origin_id == ^origin_id and
-            r.destination_id == ^destination_id,
+        where: ^conditions,
         select: %{id: r.id, contains_id: r.contains_id, route_id: r.route_id}
       )
     )
   end
+
+  # A nil lookup means "that column is unset", not "no filter": Ecto rejects
+  # `column == nil`, so the clause has to be built for each case.
+  defp eq_or_nil(field, nil), do: dynamic([r], is_nil(field(r, ^field)))
+  defp eq_or_nil(field, value), do: dynamic([r], field(r, ^field) == ^value)
 
   defp all_rule_ids(organization, version) do
     Repo.all(
@@ -754,7 +764,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       from(v in GtfsVersion,
         where: v.id == ^version.id and v.organization_id == ^organization.id
       ),
-      set: [publication_status: status]
+      set: [
+        publication_status: status,
+        published_at: if(status == "published", do: DateTime.utc_now(), else: nil)
+      ]
     )
   end
 

@@ -286,8 +286,9 @@ Stops & stations                    /gtfs/:version/stops
 
 - **Evolutions** (Planned): scheduled pathway closures tied to a calendar and time window, with a
   connectivity check. Its calendar picker is read-only.
+- **Fare zone** (Live on Details): a stop shows its own zone as "Fare zone", and a station shows the
+  distinct zones of its boardable children as "Platform fare zones". Both link to Settings › Fares › Zones.
 - *Proposed on Details:*
-  - "Fare zone: N", linking to Settings › Fares › Zones.
   - "Transfers here (N)", linking to Routes › Transfers filtered to this station.
 
 ### Flex
@@ -404,7 +405,8 @@ Settings
 | Pattern › Details / Timings | Review trips | Review drawer; trips link to Schedules |
 | Route › Schedules trip | Block ID | Operations › Blocks for that day type |
 | Station › Details | Transfers here (N) | Routes › Transfers, filtered to the station |
-| Station › Details | Fare zone: N | Settings › Fares › Zones |
+| Stop › Details | Fare zone | Settings › Fares › Zones |
+| Station › Details | Platform fare zones | Settings › Fares › Zones |
 | Station › Evolutions | Calendar picker | Calendars (read-only) |
 | Settings › Agencies | Route count | Routes list filtered by agency |
 | Operations › Blocks empty state | No garages yet | Settings › Garages |

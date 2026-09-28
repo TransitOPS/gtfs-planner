@@ -118,6 +118,20 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
              %{
                fare_id: "F",
                route_id: nil,
+               origin_id: "A",
+               destination_id: "B",
+               contains_id: "X"
+             },
+             %{
+               fare_id: "F",
+               route_id: nil,
+               origin_id: "A",
+               destination_id: "B",
+               contains_id: "Y"
+             },
+             %{
+               fare_id: "F",
+               route_id: nil,
                origin_id: "C",
                destination_id: "B",
                contains_id: nil
@@ -128,15 +142,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
                origin_id: "E",
                destination_id: "B",
                contains_id: nil
-             },
-             %{
-               fare_id: "F",
-               route_id: nil,
-               origin_id: "A",
-               destination_id: "B",
-               contains_id: "X"
-             },
-             %{fare_id: "F", route_id: nil, origin_id: "A", destination_id: "B", contains_id: "Y"}
+             }
            ]
 
     refute Repo.exists?(from(r in FareRule, where: r.id == ^edited.id))
@@ -542,7 +548,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     end
 
     staging =
-      organization
+      organization.id
       |> VersionsFixtures.gtfs_version_fixture()
       |> stage()
 
@@ -647,7 +653,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   defp group_for(organization, version, key) do
-    organization
+    organization.id
     |> FareZones.list_rule_groups(version.id)
     |> Enum.find(&(&1.key == key))
     |> case do
@@ -657,13 +663,13 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   defp projection(organization, version) do
-    organization
+    organization.id
     |> FareZones.list_rule_groups(version.id)
     |> Enum.map(&{&1.key, Enum.map(&1.rows, fn row -> Map.take(row, [:id, :contains_id]) end)})
   end
 
   defp stopless_zone_ids(organization, version) do
-    organization
+    organization.id
     |> FareZones.inventory(version.id)
     |> Map.fetch!(:zones)
     |> Enum.filter(&(&1.stop_count == 0))
