@@ -33,6 +33,26 @@ const CREATE_USER = {
 
 const DETAILS_ROUTE = "BROWSER_PATTERNS_READY";
 
+/**
+ * Shared route color field (spec 16, step 20).
+ *
+ * `GtfsPlannerWeb.Gtfs.RouteFormComponents.color_fields/1` renders Route color
+ * / Text color and the contrast readout that both the create drawer and Route
+ * › Details share, and `assets/js/route_details_editor.js` keeps the readout
+ * live while the operator types. Like the identity controls above, this step
+ * builds the component and its contract; steps 21 and 22 mount it, so the cases
+ * below are complete but skipped and name the step that owns each mount.
+ *
+ * The control ids this step publishes, which both mounting steps inherit:
+ *   #<prefix>-color-fields / #<prefix>-color-picker / #<prefix>-color
+ *   #<prefix>-text-mode-group / #<prefix>-text-mode-automatic
+ *   #<prefix>-text-mode-custom / #<prefix>-text-wrap / #<prefix>-text
+ *   #<prefix>-color-error / #<prefix>-text-error / #<prefix>-color-help
+ *   #<prefix>-contrast / #<prefix>-contrast-badge / #<prefix>-contrast-verdict
+ *   #<prefix>-contrast-verdict-text / #<prefix>-contrast-ratio
+ *   #<prefix>-contrast-advice / #<prefix>-use-automatic
+ */
+
 function pendingUntil(owner) {
   return {
     reason: `${owner} mounts RouteFormComponents.identity_fields/1; no production URL renders it before then`,
@@ -191,5 +211,136 @@ test.describe("Route identity controls", () => {
 
     // The draft is still on screen: a rejected save never clears the fields.
     await expect(page.locator("#new-route-form")).toBeVisible();
+  });
+});
+
+test.describe("Route color field", () => {
+  test("colors picker and hex stay in step in the create drawer without a round trip", async ({
+    page,
+  }) => {
+    test.skip(pendingUntil("step 21"));
+
+    await logIn(page);
+    await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await page.locator("#new-route-trigger").click();
+    await expect(
+      page.locator("#new-route-form #new-route-color-fields"),
+    ).toBeVisible();
+
+    // The picker is local: it carries no name, so the hex field is the one
+    // `route[route_color]` value that reaches the server (R7).
+    await expect(page.locator("#new-route-color-picker")).toHaveAttribute(
+      "name",
+      /^$/,
+    );
+    await expect(page.locator("#new-route-color")).toHaveAttribute(
+      "name",
+      "route[route_color]",
+    );
+
+    // Typing a hex updates the swatch and the readout without any request, so
+    // the preview is local feedback rather than a save.
+    let requests = 0;
+    page.on("request", () => (requests += 1));
+
+    await page.locator("#new-route-color").fill("5BC5F2");
+    await expect(page.locator("#new-route-color-picker")).toHaveValue(
+      "#5bc5f2",
+    );
+    await expect(page.locator("#new-route-contrast-ratio")).toHaveText(
+      /21\.0:1 contrast/,
+    );
+
+    // The Automatic chip resolves the text color server-side, so the custom
+    // field is not part of the layout until the operator asks for one.
+    await expect(page.locator("#new-route-text-mode-automatic")).toBeChecked();
+    await expect(page.locator("#new-route-text-wrap")).toBeHidden();
+
+    await page.locator("#new-route-text-mode-custom").check();
+    await expect(page.locator("#new-route-text-wrap")).toBeVisible();
+    await page.locator("#new-route-text").fill("FFFFFF");
+    await expect(page.locator("#new-route-contrast-verdict-text")).toHaveText(
+      "Hard to read",
+    );
+    await expect(page.locator("#new-route-contrast-ratio")).toHaveText(
+      "2.0:1 contrast, below 4.5:1",
+    );
+
+    expect(requests).toBe(0);
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test("colors low contrast stays saveable and the automatic fix is a focusable button", async ({
+    page,
+  }) => {
+    test.skip(pendingUntil("step 21"));
+
+    await logIn(page);
+    await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await page.locator("#new-route-trigger").click();
+
+    await page.locator("#new-route-color").fill("5BC5F2");
+    await page.locator("#new-route-text-mode-custom").check();
+    await page.locator("#new-route-text").fill("FFFFFF");
+
+    // The warning is advisory: nothing is disabled, so the save stays possible.
+    const advice = page.locator("#new-route-contrast-advice");
+    await expect(advice).toBeVisible();
+    await expect(advice).toContainText("exports keep what you enter");
+    await expect(page.locator("#new-route-text")).toBeEnabled();
+
+    // The fix is a real button, keyboard reachable, and it leaves focus on the
+    // chip it selected so the change is visible.
+    const fix = page.locator("#new-route-use-automatic");
+    await fix.focus();
+    await expect(fix).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#new-route-text-mode-automatic")).toBeChecked();
+    await expect(page.locator("#new-route-text-mode-automatic")).toBeFocused();
+    await expect(page.locator("#new-route-contrast-verdict-text")).toHaveText(
+      "Easy to read",
+    );
+  });
+
+  test("colors on route Details keep an imported custom text color across an unrelated edit", async ({
+    page,
+  }) => {
+    test.skip(pendingUntil("step 22"));
+
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await expect(
+      page.locator("#route-details-form #route-details-color-fields"),
+    ).toBeVisible();
+
+    // Whichever mode the saved colors imply, the hex fields hold the saved
+    // values and the readout describes them.
+    const text = page.locator("#route-details-text");
+    await expect(text).toHaveValue(/^[0-9A-Fa-f]{0,6}$/);
+
+    const checked = page.locator(
+      "#route-details-text-mode-group input[type='radio'][checked]",
+    );
+    await expect(checked).toHaveCount(1);
+    await expect(page.locator("#route-details-color-picker")).toHaveValue(
+      /^#[0-9a-f]{6}$/,
+    );
+
+    // Switching the mode and back leaves the saved value in the field, so an
+    // unrelated edit cannot rewrite a custom text color.
+    const saved = await text.inputValue();
+    await page.locator("#route-details-text-mode-custom").check();
+    await expect(text).toHaveValue(saved);
+    await page.locator("#route-details-text-mode-automatic").check();
+    await expect(text).toHaveValue(saved);
+
+    const ids = await page
+      .locator("[id]")
+      .evaluateAll((nodes) => nodes.map((n) => n.id));
+    expect(new Set(ids).size).toBe(ids.length);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
   });
 });

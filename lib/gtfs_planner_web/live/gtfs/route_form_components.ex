@@ -10,6 +10,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   render the same controls from the same route editor read, so the two
   surfaces cannot drift into different field grammars.
 
+  `color_fields/1` is the shared "Route color / Text color" pair: the picker
+  and hex fields, the Automatic/Custom mode chips, and the contrast readout
+  with its one-click automatic fix. It renders the whole readout server-side
+  from the same `RouteIdentity` arithmetic the app's badge uses, and
+  `assets/js/route_details_editor.js` keeps it live while the operator types,
+  so the two surfaces agree on what a draft will look like without either
+  surface asking the server what it already knows (R7, C-2, INV-6).
+
   The component is stateless. Every value comes from the caller's
   `to_form/2` changeset plus the read model's `mode_counts` and
   `agency_options`, and `prefix` namespaces the control ids so both forms can
@@ -30,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlannerWeb.Components.RouteIdentity
 
   # The reference offers the three modes this version uses most as one-click
   # chips and keeps every other accepted mode behind "Other mode…".
@@ -260,6 +269,185 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     """
   end
 
+  @doc """
+  Renders Route color, Text color and the contrast readout.
+
+  `form` carries `route_color`/`route_text_color` plus the identity fields the
+  preview badge needs. `text_mode` is the caller's draft transport mode
+  (`"automatic"` or `"custom"`, the transient metadata R1 lets
+  `Route.editor_changeset/3` pop before its cast); without it the mode is
+  derived from the colors the way the reference's `draftFrom` does, so an
+  unedited Details form shows a saved custom text color as Custom and never as
+  Automatic, and an unrelated save cannot change it.
+
+  Only hex values submit. The picker carries no name, the Automatic/Custom
+  radios submit the top-level transient `text_mode` rather than a `route[…]`
+  schema field, and the automatic hex is resolved server-side; nothing but a
+  resolved hex ever reaches `route_color` or `route_text_color`.
+  """
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
+
+  attr :text_mode, :string,
+    default: nil,
+    doc: "the draft's automatic|custom transport mode; derived from the colors when absent"
+
+  def color_fields(assigns) do
+    assigns = assign(assigns, :colors, color_preview(assigns.form, assigns.text_mode))
+    assigns = assign(assigns, :color_errors, field_errors(assigns.form[:route_color]))
+    assigns = assign(assigns, :text_errors, field_errors(assigns.form[:route_text_color]))
+    assigns = assign(assigns, :badge_route, badge_route(assigns.form))
+    assigns = assign(assigns, :warned?, assigns.colors.usable? and not assigns.colors.readable?)
+
+    ~H"""
+    <div
+      id={"#{@prefix}-color-fields"}
+      phx-hook="RouteDetailsEditor"
+      data-prefix={@prefix}
+      class="grid gap-3"
+    >
+      <div class="grid gap-x-6 gap-y-4 sm:grid-cols-[auto_minmax(0,1fr)]">
+        <div class="grid content-start gap-1.5">
+          <label for={"#{@prefix}-color"} class={label_class()}>
+            Route color <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <%!-- The picker is a local editing affordance and carries no name, so
+                the hex field is the one `route[route_color]` value that submits
+                (R7: the picker is local; the server revalidates what arrives). --%>
+          <div class="flex items-center gap-2">
+            <input
+              type="color"
+              id={"#{@prefix}-color-picker"}
+              value={"#" <> (@colors.background || "FFFFFF")}
+              aria-label="Pick route color"
+              title="Pick route color"
+              class="h-11 w-14 shrink-0 cursor-pointer rounded-control border border-control bg-white p-1"
+            />
+            <div class="relative w-[136px]">
+              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">
+                #
+              </span>
+              <input
+                type="text"
+                id={"#{@prefix}-color"}
+                name={@form[:route_color].name}
+                value={@form[:route_color].value}
+                phx-debounce="blur"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="FFFFFF"
+                aria-invalid={to_string(@color_errors != [])}
+                aria-describedby={
+                  described_by(@color_errors, "#{@prefix}-color-error", "#{@prefix}-color-help")
+                }
+                class={[control_class(), "pl-7 uppercase tabular-nums"]}
+              />
+            </div>
+          </div>
+        </div>
+        <fieldset id={"#{@prefix}-text-mode-group"} class="min-w-0">
+          <legend class={label_class()}>Text color</legend>
+          <div class="mt-1.5 flex flex-wrap items-center gap-2">
+            <label for={"#{@prefix}-text-mode-automatic"} class={chip_class()}>
+              <input
+                type="radio"
+                id={"#{@prefix}-text-mode-automatic"}
+                name="text_mode"
+                value="automatic"
+                checked={@colors.mode == "automatic"}
+                class="sr-only"
+              />Automatic
+            </label>
+            <label for={"#{@prefix}-text-mode-custom"} class={chip_class()}>
+              <input
+                type="radio"
+                id={"#{@prefix}-text-mode-custom"}
+                name="text_mode"
+                value="custom"
+                checked={@colors.mode == "custom"}
+                class="sr-only"
+              />Custom
+            </label>
+          </div>
+          <%!-- The automatic hex is resolved server-side, so the custom field
+                only appears when the operator asked for a custom one. It keeps
+                whatever it held when the mode is switched away, so switching
+                Automatic -> Custom is lossless and never rewrites a saved
+                custom color. --%>
+          <div
+            id={"#{@prefix}-text-wrap"}
+            class={text_wrap_class(@colors)}
+          >
+            <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">
+              #
+            </span>
+            <label for={"#{@prefix}-text"} class="sr-only">Custom text color</label>
+            <input
+              type="text"
+              id={"#{@prefix}-text"}
+              name={@form[:route_text_color].name}
+              value={@form[:route_text_color].value}
+              phx-debounce="blur"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="000000"
+              aria-invalid={to_string(@text_errors != [])}
+              aria-describedby={described_by(@text_errors, "#{@prefix}-text-error")}
+              class={[control_class(), "pl-7 uppercase tabular-nums"]}
+            />
+          </div>
+        </fieldset>
+      </div>
+      <.error_line id={"#{@prefix}-color-error"} messages={@color_errors} />
+      <.error_line id={"#{@prefix}-text-error"} messages={@text_errors} />
+      <p id={"#{@prefix}-color-help"} class={help_class()}>
+        Six hex digits from your brand guide, or pick one; blank means white. Automatic text is
+        black or white, whichever reads better.
+      </p>
+      <%!-- Every part of the readout is always rendered and only ever shown or
+            hidden, so a LiveView update that repaints this region cannot destroy
+            the fix action an operator is standing on. --%>
+      <div
+        id={"#{@prefix}-contrast"}
+        data-readable={to_string(@colors.usable? and not @warned?)}
+        class={contrast_box_class(@warned?)}
+      >
+        <span id={"#{@prefix}-contrast-badge"}>
+          <RouteIdentity.route_badge
+            route={@badge_route}
+            class="h-8 min-w-9 text-[15px] font-extrabold"
+          />
+        </span>
+        <span
+          id={"#{@prefix}-contrast-verdict"}
+          class={verdict_class(@colors)}
+        >
+          <span id={"#{@prefix}-contrast-icon-ok"} class={icon_class(@warned?)}>
+            <.icon name="hero-check-circle" class="size-4" />
+          </span>
+          <span id={"#{@prefix}-contrast-icon-low"} class={icon_class(not @warned?)}>
+            <.icon name="hero-exclamation-triangle" class="size-4" />
+          </span>
+          <span id={"#{@prefix}-contrast-verdict-text"}>{contrast_verdict(@colors)}</span>
+        </span>
+        <span id={"#{@prefix}-contrast-ratio"} class="tabular-nums">
+          {contrast_readout(@colors)}
+        </span>
+        <div id={"#{@prefix}-contrast-advice"} class={advice_class(@warned?)}>
+          <p>{fallback_note(@colors)}</p>
+          <button
+            type="button"
+            id={"#{@prefix}-use-automatic"}
+            class="mt-1 inline-flex min-h-11 items-center font-[650] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          >
+            Use automatic text color
+          </button>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
   # The chevron the reference draws with an inline `use` reference. It is
   # absolutely positioned over the select's own `h-11` box rather than over the
   # surrounding field, so it stays centred however tall the field grows.
@@ -339,4 +527,151 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     Route.route_type_options()
     |> Enum.reject(fn {_label, value} -> value in chip_modes end)
   end
+
+  # The preview's own arithmetic, in one place: the picker value, the checked
+  # mode chip, and what the contrast readout says. `RouteIdentity` is the same
+  # owner the app's badge uses, so the readout cannot describe a badge the
+  # application would not draw, and
+  # `assets/js/route_identity_preview.js` recomputes the same four values in the
+  # browser after every keystroke.
+  defp color_preview(form, text_mode) do
+    color = draft_color(form[:route_color].value)
+    text = draft_color(form[:route_text_color].value)
+
+    # R1 normalizes a new/changed blank route color to FFFFFF, so a blank
+    # draft previews as white. A nonblank color the server will reject has no
+    # preview at all: it is `nil` here, and the error line above is the truth.
+    background =
+      case color do
+        {:ok, hex} -> hex
+        :blank -> "FFFFFF"
+        :invalid -> nil
+      end
+
+    mode = text_mode || derived_text_mode(background, text)
+
+    requested =
+      cond do
+        mode != "automatic" ->
+          case text do
+            {:ok, hex} -> hex
+            :blank -> "000000"
+            :invalid -> nil
+          end
+
+        is_nil(background) ->
+          nil
+
+        true ->
+          RouteIdentity.automatic_text_color(background)
+      end
+
+    ratio =
+      if background && requested,
+        do: RouteIdentity.contrast_ratio(background, requested),
+        else: nil
+
+    %{
+      background: background,
+      mode: mode,
+      requested: requested,
+      ratio: ratio,
+      readable?: ratio != nil and ratio >= 4.5,
+      usable?: ratio != nil,
+      fallback: background && RouteIdentity.automatic_text_color(background)
+    }
+  end
+
+  # A draft color is blank, usable hex, or unusable, and the three are different
+  # things: blank normalizes to the R1 default, while unusable is an error the
+  # changeset rejects and no preview may stand in for.
+  defp draft_color(nil), do: :blank
+  defp draft_color(""), do: :blank
+
+  defp draft_color(value) when is_binary(value) do
+    if String.trim(value) == "" do
+      :blank
+    else
+      case RouteIdentity.normalize_hex(value) do
+        {:ok, hex} -> {:ok, hex}
+        :error -> :invalid
+      end
+    end
+  end
+
+  defp draft_color(_value), do: :invalid
+
+  # With no draft transport mode, the colors decide. Blank text is automatic
+  # because a blank value carries no operator intent and the app already resolves
+  # one automatically everywhere else (`RouteIdentity.resolve_foreground/2`);
+  # anything else is Custom unless it already is the automatic pick, which is
+  # the reference's own `draftFrom` rule and what keeps an imported custom text
+  # color Custom across an unrelated edit.
+  defp derived_text_mode(_background, :blank), do: "automatic"
+
+  defp derived_text_mode(background, {:ok, text}) do
+    if background && text == RouteIdentity.automatic_text_color(background),
+      do: "automatic",
+      else: "custom"
+  end
+
+  defp derived_text_mode(_background, :invalid), do: "custom"
+
+  # The preview badge is the application badge, given the form's own values:
+  # `route_badge/1` normalizes them and falls back to a neutral surface for a
+  # value the server will reject, which is exactly what the readout describes.
+  defp badge_route(form) do
+    %{
+      route_id: form[:route_id].value,
+      route_short_name: form[:route_short_name].value,
+      route_color: form[:route_color].value,
+      route_text_color: form[:route_text_color].value
+    }
+  end
+
+  defp contrast_box_class(true),
+    do:
+      "flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-warning-line bg-warning-bg px-3 py-2 text-[13px] text-warning-fg"
+
+  defp contrast_box_class(_readable),
+    do:
+      "flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-control bg-canvas px-3 py-2 text-[13px] text-default"
+
+  defp text_wrap_class(%{mode: "custom"}), do: "relative mt-2 w-[136px]"
+  defp text_wrap_class(_colors), do: "relative mt-2 w-[136px] hidden"
+
+  # A draft color with nothing to measure against states no verdict rather than
+  # claiming a ratio it cannot compute.
+  defp verdict_class(%{usable?: false}),
+    do: "inline-flex items-center gap-1.5 font-[650] hidden"
+
+  defp verdict_class(_colors), do: "inline-flex items-center gap-1.5 font-[650]"
+
+  defp icon_class(hide?), do: (hide? && "hidden") || nil
+
+  defp advice_class(warned?), do: (warned? && "basis-full") || "basis-full hidden"
+
+  defp contrast_verdict(%{usable?: false}), do: ""
+  defp contrast_verdict(%{readable?: true}), do: "Easy to read"
+  defp contrast_verdict(_colors), do: "Hard to read"
+
+  defp contrast_readout(%{usable?: false}), do: "–:1 contrast"
+
+  defp contrast_readout(%{ratio: ratio, readable?: true}),
+    do: "#{:erlang.float_to_binary(ratio, decimals: 1)}:1 contrast"
+
+  defp contrast_readout(%{ratio: ratio}),
+    do: "#{:erlang.float_to_binary(ratio, decimals: 1)}:1 contrast, below 4.5:1"
+
+  # "black"/"white" for the two colors the automatic pick can return, which is
+  # the whole set of fallbacks the readout can name.
+  defp fallback_note(%{fallback: nil}), do: ""
+
+  defp fallback_note(%{fallback: fallback}) do
+    "The app shows this badge with #{color_name(fallback)} text; exports keep what you enter."
+  end
+
+  defp color_name("000000"), do: "black"
+  defp color_name("FFFFFF"), do: "white"
+  defp color_name(hex), do: "##{hex}"
 end
