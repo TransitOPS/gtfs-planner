@@ -468,7 +468,9 @@ defmodule GtfsPlanner.Gtfs.Transfers.ConcurrencyTest do
 
   # One organization per case, built in `unboxed` so the two racing sessions can see
   # the rows on their own connections: the shared literal network, one extra route 12
-  # trip X serving CEN-A and HBR, the calendar its trips name, and an actor.
+  # trip X serving CEN-A and HBR, the calendar its trips name, and an actor who holds
+  # an active editor membership, because `Gtfs.create_calendar/2` authorizes the actor
+  # against that membership before it writes.
   defp seed_scope(suffix) do
     unboxed(fn ->
       unique = "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive])}"
@@ -479,6 +481,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.ConcurrencyTest do
       version = gtfs_version_fixture(organization.id)
       TransfersFixtures.transfer_network_fixture(organization.id, version.id)
       actor = user_fixture()
+      organization_membership_fixture(actor, organization)
 
       audit = %AuditContext{
         organization_id: organization.id,
