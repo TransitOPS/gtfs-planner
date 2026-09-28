@@ -357,6 +357,22 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyCreateLiveTest do
   describe "validation" do
     setup :editor_setup
 
+    test "a change event after the drawer closes leaves the page running", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+
+      render_hook(view, "validate_agency", %{"agency" => %{"agency_name" => "Late"}})
+
+      assert has_element?(view, @closed_drawer)
+      assert stored_agencies(organization, version) == []
+    end
+
     test "a scheme-less website marks its field, asks for focus and creates nothing", %{
       conn: conn,
       user: user,

@@ -228,7 +228,11 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # Validation on change goes through `FeedSettings.change_agency/2`, the same
   # changeset the save uses, so a change the save would refuse is visible beside
   # its field as the editor types it (R9, AC-12).
+  # A change event can arrive after the drawer closed; there is no draft to validate.
   @impl true
+  def handle_event("validate_agency", _params, %{assigns: %{agency_baseline: nil}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("validate_agency", %{"agency" => params}, socket) do
     changeset = FeedSettings.change_agency(socket.assigns.agency_baseline, params)
 
