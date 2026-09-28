@@ -458,4 +458,92 @@ test.describe("calendar combination", () => {
     await expect(page.locator("#calendar-selection-count")).toHaveCount(0);
     await expect(page.locator("#calendar-combine-form")).toHaveCount(0);
   });
+
+  // The two journeys below confirm a combination, so they run last: a real confirmation changes the
+  // seeded version the journeys above read.
+
+  test("combines a reviewed pair once and announces the move", async ({
+    page,
+  }) => {
+    await openCalendars(page);
+    await openReview(page, ["COMBINE_SAT", "COMBINE_SUN"]);
+
+    await expect(
+      page.locator(
+        "#calendar-combine-destination-option-COMBINE_SAT input[type=radio]",
+      ),
+    ).toBeChecked();
+
+    await page.locator("#calendar-combine-apply").click();
+
+    // The confirmed success closes the drawer and states exactly what moved, where it went and
+    // which source stays behind (AC-24).
+    await expect(page.locator("#calendar-combine-form")).toHaveCount(0);
+
+    const success = page.locator("#calendar-combine-success");
+    await expect(success).toHaveAttribute("data-combine-success", "combined");
+    await expect(success).toContainText("Combined into Saturday service.");
+    await expect(success).toContainText(
+      "1 trip moved from Sunday shuttle, which stays in the list with 0 trips.",
+    );
+
+    // The list is reloaded from the authoritative rows: the source keeps its identity with no
+    // trips, the destination holds the moved one, and both affected rows are tinted.
+    const rows = page.locator("#calendars-list tr");
+    await expect(
+      rows.filter({ hasText: "COMBINE_SUN" }).locator('td[data-label="Trips"]'),
+    ).toHaveText("0");
+    await expect(
+      rows.filter({ hasText: "COMBINE_SAT" }).locator('td[data-label="Trips"]'),
+    ).toHaveText("5");
+    await expect(
+      page.locator('#calendars-list tr[class*="bg-success/10"]'),
+    ).toHaveCount(2);
+    await expect(page.locator("#calendar-selection-count")).toHaveCount(0);
+
+    // Dismissing the summary takes the tint with it instead of leaving the rows marked.
+    await page.locator("#calendar-combine-success-dismiss").click();
+    await expect(success).toHaveCount(0);
+    await expect(
+      page.locator('#calendars-list tr[class*="bg-success/10"]'),
+    ).toHaveCount(0);
+  });
+
+  test("disables combination while the socket is down and reloads instead of resending", async ({
+    page,
+  }) => {
+    await openCalendars(page);
+    await openReview(page, ["COMBINE_WEEKDAY", "COMBINE_HOLIDAY"]);
+
+    // Nothing has been confirmed when the page's own socket drops, so the pre-rendered notice says
+    // exactly that and the confirmation is disabled until the connection returns (AC-23).
+    await page.evaluate(() => window.liveSocket.disconnect());
+
+    const notice = page.locator("#calendar-combine-connection");
+    await expect(notice).toBeVisible();
+    await expect(
+      notice.locator('[data-combine-connection="idle"]'),
+    ).toBeVisible();
+    await expect(
+      notice.locator('[data-combine-connection="idle"]'),
+    ).toContainText("Nothing has been sent, and your choices are kept.");
+    await expect(
+      notice.locator('[data-combine-connection="dispatched"]'),
+    ).toBeHidden();
+    await expect(page.locator("#calendar-combine-apply")).toBeDisabled();
+    await expect(page.locator("#calendar-combine-close")).toBeDisabled();
+
+    await page.evaluate(() => window.liveSocket.connect());
+
+    // Reconnecting reloads the authoritative list, hides the notice and leaves the enabled state to
+    // the server. The page never resends the confirmation on its own: the review is still the one
+    // the reviewer prepared, and its answer was not recorded anywhere.
+    await expect(notice).toBeHidden();
+    await expect(page.locator("#calendars-refreshing")).toHaveCount(0);
+    await expect(page.locator("#calendar-combine-close")).toBeEnabled();
+    await expect(page.locator("#calendar-combine-form")).toBeVisible();
+
+    await closeReview(page);
+    await clearSelection(page);
+  });
 });

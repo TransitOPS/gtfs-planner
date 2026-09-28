@@ -12,9 +12,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
   Covered here: exact-ID selection and its pruning rules, the deterministic most-trips default
   destination, the no-op review, the unavailable state when a retained range cannot be read, the
-  fact that opening or re-reviewing writes nothing, and the explicit conflict decisions - their
+  fact that opening or re-reviewing writes nothing, the explicit conflict decisions - their
   fieldsets, the refused submission, the consequences each choice produces and the seasonal
-  expansion warning. Submission recovery and the applied result are owned by a later step.
+  expansion warning - and this step's confirmation path: the pending state that exists before the
+  write, the refusal of a duplicate confirmation and of a close while it is in flight, the stale
+  review and its explicit refresh, an ordinary failure that keeps every choice, the reconnect that
+  never resends an old command, and the confirmed result that closes the drawer, reloads the list,
+  announces the move and keeps the source. The last two cases run against committed rows through
+  the ordinary route with no sandbox wiring at all, because the apply runs in its own process.
 
   The prepared focused command is deferred to branch review:
   `MIX_ENV=test MIX_TEST_PARTITION=_calendar17 mix test test/gtfs_planner_web/live/gtfs/calendar_combination_live_test.exs`.
@@ -23,6 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
@@ -33,9 +39,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Gtfs.Agency
-  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -47,7 +52,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
-  alias GtfsPlannerWeb.Gtfs.CalendarComponents
+
+  # The unboxed cases wait for a real lock rendezvous instead of sleeping, with a finite deadline.
+  @contention_timeout 15_000
+  @poll_interval 10
 
   setup do
     organization = organization_fixture()
@@ -312,6 +320,263 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     }
   end
 
+  # The list itself opens the review: the same two clicks a reviewer makes, and nothing injected.
+  defp open_review(view, service_ids) do
+    for service_id <- service_ids do
+      render_click(view, "toggle_calendar_selection", %{"service-id" => service_id})
+    end
+
+    render_click(view, "open_combine", %{})
+    assert has_element?(view, "#calendar-combine-form")
+  end
+
+  # The apply runs in its own task and the socket then handles its result and the authoritative
+  # reload it schedules, so the settled render is polled against a predicate inside a finite window
+  # instead of being read once.
+  defp settle(view, ready, attempts \\ 200) when is_function(ready, 1) do
+    _ = render_async(view)
+
+    Enum.reduce_while(1..attempts, render(view), fn _attempt, html ->
+      if ready.(html) do
+        {:halt, html}
+      else
+        Process.sleep(10)
+        {:cont, render(view)}
+      end
+    end)
+  end
+
+  # Rendered templates keep their source line breaks in text nodes, so a sentence is asserted
+  # against the collapsed text.
+  defp flat(html), do: String.replace(html, ~r/\s+/, " ")
+
+  # The tinted rows the confirmed summary explains, read from the list itself rather than from an
+  # internal assign. The rendered class is exact: the shared row class plus the highlight.
+  defp highlighted_rows(view) do
+    view
+    |> element("#calendars-list")
+    |> render()
+    |> String.split("hover:bg-base-200 bg-success/10")
+    |> length()
+    |> Kernel.-(1)
+  end
+
+  defp list_row_trips(view, service_id) do
+    row =
+      view
+      |> element("#calendars-list")
+      |> render()
+      |> String.split("<tr", trim: true)
+      |> Enum.find(&String.contains?(&1, service_id))
+
+    case row && Regex.run(~r/class="tabular-nums">(\d+)</, row) do
+      [_, count] -> String.to_integer(count)
+      _missing -> flunk("no loaded list row with trips for #{service_id}")
+    end
+  end
+
+  ## Committed scope helpers for the two unboxed cases
+
+  # Everything the ordinary route needs, written on a real committing connection: an active editor,
+  # a published version with a second version to switch to, one weekly destination with two trips
+  # and one dates-only source with a single trip. The source's two dates are the destination's own
+  # Saturdays, so the reviewed pair has no conflict and the destination's stored dates cannot change.
+  defp seed_committed_scope(suffix) do
+    unique = "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive])}"
+    organization = organization_fixture(%{alias: "combination-route-#{suffix}-#{unique}"})
+    version = gtfs_version_fixture(organization.id)
+    other_version = gtfs_version_fixture(organization.id)
+    route = route_fixture(organization.id, version.id, %{route_id: "LR_#{unique}"})
+    user = user_fixture(%{email: "combination-route-#{unique}@example.test"})
+    membership = organization_membership_fixture(user, organization)
+
+    agency_fixture(organization.id, version.id, %{agency_timezone: "Etc/UTC"})
+
+    today = postgres_local_today("Etc/UTC")
+
+    calendar_service_fixture(organization.id, version.id, %{
+      service_id: "DEST",
+      name: "Saturday service",
+      saturday: 1,
+      start_date: Date.add(today, -30),
+      end_date: Date.add(today, 60)
+    })
+
+    first_saturday = Date.add(today, rem(6 - Date.day_of_week(today), 7) + 7)
+
+    calendar_service_fixture(organization.id, version.id, %{
+      service_id: "SAT",
+      name: "Fall shuttle",
+      dates: [first_saturday, Date.add(first_saturday, 7)]
+    })
+
+    for trip_id <- ["DEST_T1", "DEST_T2"] do
+      trip_fixture(organization.id, version.id, route.route_id, %{
+        trip_id: trip_id,
+        service_id: "DEST"
+      })
+    end
+
+    trip_fixture(organization.id, version.id, route.route_id, %{
+      trip_id: "SAT_T1",
+      service_id: "SAT"
+    })
+
+    %{
+      organization: organization,
+      organization_id: organization.id,
+      version: version,
+      version_id: version.id,
+      other_version: other_version,
+      user: user,
+      actor_id: user.id,
+      membership_id: membership.id
+    }
+  end
+
+  # An unboxed case commits its scope, so it deletes exactly the rows it created, including the
+  # session token the route sign-in committed for its own actor.
+  defp cleanup_committed_scope(scope) do
+    organization_id = scope.organization_id
+
+    Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
+    Repo.delete_all(from(t in Transfer, where: t.organization_id == ^organization_id))
+    Repo.delete_all(from(st in StopTime, where: st.organization_id == ^organization_id))
+    Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
+    Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
+    Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id == ^organization_id))
+    Repo.delete_all(from(d in CalendarDate, where: d.organization_id == ^organization_id))
+    Repo.delete_all(from(c in Calendar, where: c.organization_id == ^organization_id))
+    Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
+    Repo.delete_all(from(a in Agency, where: a.organization_id == ^organization_id))
+    Repo.delete_all(from(t in UserToken, where: t.user_id == ^scope.actor_id))
+
+    Repo.delete_all(
+      from(m in UserOrgMembership,
+        where: m.organization_id == ^organization_id or m.user_id == ^scope.actor_id
+      )
+    )
+
+    Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+    Repo.delete_all(from(u in User, where: u.id == ^scope.actor_id))
+
+    Repo.delete_all(
+      from(o in GtfsPlanner.Organizations.Organization, where: o.id == ^organization_id)
+    )
+  end
+
+  defp authenticated_conn(scope) do
+    build_conn() |> log_in_user(scope.user, organization: scope.organization)
+  end
+
+  # The success banner is assigned before the socket runs the authoritative reload, so a settled
+  # render waits for the banner and for the reloading note to be gone.
+  defp reloaded?(html, banner) do
+    html =~ banner and not (html =~ "calendars-refreshing")
+  end
+
+  # A second committing connection holds the scoped version row the way a calendar write does, so
+  # the confirmation's own transaction genuinely has to queue behind it instead of the pending state
+  # depending on timing.
+  defp hold_version_row(scope) do
+    parent = self()
+    task = Task.async(fn -> unboxed(fn -> hold_version_transaction(scope, parent) end) end)
+
+    assert_receive {:version_held, task_pid, backend}, @contention_timeout
+    assert task_pid == task.pid
+    %{task: task, backend: backend}
+  end
+
+  defp hold_version_transaction(scope, parent) do
+    Repo.transaction(fn -> lock_version!(scope) |> announce_hold(parent) end)
+  end
+
+  defp lock_version!(scope) do
+    Repo.one(
+      from(v in GtfsVersion,
+        where: v.id == ^scope.version_id and v.organization_id == ^scope.organization_id,
+        lock: "FOR UPDATE"
+      )
+    )
+  end
+
+  defp announce_hold(version, parent) do
+    send(parent, {:version_held, self(), backend_pid()})
+
+    receive do
+      :release -> Repo.rollback(:released)
+    end
+
+    version
+  end
+
+  defp release_version_row(holder) do
+    send(holder.task.pid, :release)
+    assert {:error, :released} = Task.await(holder.task, @contention_timeout)
+  end
+
+  # The apply's own backend is the one the held transaction blocks. Waiting for it is the rendezvous
+  # that proves the domain really is waiting on the version row, and its identity is what lets the
+  # duplicate assertions prove no second transaction ever queued behind it.
+  defp await_blocked_backend(holder_backend) do
+    deadline = System.monotonic_time(:millisecond) + @contention_timeout
+    await_blocked_backend(holder_backend, deadline)
+  end
+
+  defp await_blocked_backend(holder_backend, deadline) do
+    case blockers_of(holder_backend) do
+      [blocked] ->
+        blocked
+
+      other ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@poll_interval)
+          await_blocked_backend(holder_backend, deadline)
+        else
+          flunk(
+            "expected exactly one confirmation to wait on the held row, saw #{inspect(other)}"
+          )
+        end
+    end
+  end
+
+  defp blockers_of(backend) do
+    %Postgrex.Result{rows: [[blockers]]} = Repo.query!("SELECT pg_blocking_pids($1)", [backend])
+    List.wrap(blockers)
+  end
+
+  defp backend_pid do
+    %Postgrex.Result{rows: [[backend]]} = Repo.query!("SELECT pg_backend_pid()")
+    backend
+  end
+
+  defp log_count(scope) do
+    Repo.aggregate(
+      from(l in ChangeLog, where: l.gtfs_version_id == ^scope.version_id),
+      :count
+    )
+  end
+
+  defp trip_service(scope, trip_id) do
+    Repo.one!(
+      from(t in Trip,
+        where: t.gtfs_version_id == ^scope.version_id and t.trip_id == ^trip_id,
+        select: t.service_id
+      )
+    )
+  end
+
+  defp source_trip_ids(scope) do
+    Repo.all(
+      from(t in Trip,
+        where: t.gtfs_version_id == ^scope.version_id and t.service_id == "SAT",
+        select: t.id
+      )
+    )
+  end
+
+  defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
+
   describe "selection and the initial review through the real route" do
     test "opens the reviewed combination from the list without writing anything", %{
       conn: conn,
@@ -499,7 +764,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     } do
       %{removal: removal} = conflict_scenario(organization, version)
       conn = editor(conn, user, organization)
-      expected = Calendar.strftime(removal, "%b %-d, %Y")
+      expected = Elixir.Calendar.strftime(removal, "%b %-d, %Y")
 
       {:ok, view, _html} = live(conn, list_path(version))
       loaded(view)
@@ -560,7 +825,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     } do
       %{removal: removal} = conflict_scenario(organization, version)
       conn = editor(conn, user, organization)
-      expected = Calendar.strftime(removal, "%b %-d, %Y")
+      expected = Elixir.Calendar.strftime(removal, "%b %-d, %Y")
       iso = Date.to_iso8601(removal)
       group = URI.encode_www_form(iso)
 
@@ -647,6 +912,315 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       # does not carry it.
       staying = render(element(view, "#calendar-combine-effects-SEASON_DEST"))
       refute staying =~ "don't combine"
+    end
+  end
+
+  describe "confirmation, recovery and the confirmed result" do
+    test "renders pending before the write, then closes the drawer and announces the move", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      combination_scenario(organization, version)
+      conn = editor(conn, user, organization)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      open_review(view, ["COMBINE_DEST", "COMBINE_SUN"])
+
+      assert has_element?(
+               view,
+               "#calendar-combine-destination-option-COMBINE_DEST input[checked]"
+             )
+
+      before = row_counts(version)
+
+      # The in-flight state belongs to the confirmation's own patch: it is rendered before the task
+      # starts and before any write exists to report, so the reviewer sees that the confirmation is
+      # already in the domain's hands (AC-23).
+      pending = render_submit(view, "combine_apply", %{})
+
+      assert pending =~ "Combining…"
+      assert pending =~ "Moving 1 trip into Saturday service…"
+      assert pending =~ ~r/id="calendar-combine-apply"[^>]*disabled/
+      assert pending =~ ~r/id="calendar-combine-close"[^>]*disabled/
+
+      settled = settle(view, &reloaded?(&1, "Combined into Saturday service."))
+
+      # Confirmed success closes the drawer, reloads the authoritative list and announces exactly
+      # what moved, where it went and which source stays behind (AC-24).
+      assert flat(settled) =~ "Combined into Saturday service."
+
+      assert flat(settled) =~
+               "1 trip moved from Sunday shuttle, which stays in the list with 0 trips."
+
+      assert has_element?(
+               view,
+               "#calendar-combine-success[role='status'][data-combine-success='combined']"
+             )
+
+      refute has_element?(view, "#calendar-combine-form")
+      refute has_element?(view, "#calendar-combine-open")
+      refute has_element?(view, "#calendar-selection-count")
+
+      # The reloaded rows carry the move: the destination holds the moved trip, the source keeps
+      # its identity with none, and both affected rows are tinted while the summary is on screen.
+      assert list_row_trips(view, "COMBINE_DEST") == 3
+      assert list_row_trips(view, "COMBINE_SUN") == 0
+      assert highlighted_rows(view) == 2
+      assert row_counts(version).logs == before.logs + 1
+
+      # Dismissing the summary takes its tint with it instead of leaving rows marked forever, and
+      # focus is handed to the list's own selection action (AC-24).
+      render_click(view, "dismiss_combine_success", %{})
+
+      assert_push_event(view, "calendar:combine-focus", %{
+        id: "calendar-select-all",
+        fallback_id: "calendar-search"
+      })
+
+      refute has_element?(view, "#calendar-combine-success")
+      assert highlighted_rows(view) == 0
+    end
+
+    test "a stale review keeps its inputs, requires a refresh and clears every answer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      %{removal: removal} = conflict_scenario(organization, version)
+      conn = editor(conn, user, organization)
+      iso = Date.to_iso8601(removal)
+      group = URI.encode_www_form(iso)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      open_review(view, ["CONFLICT_OFF", "CONFLICT_RUN"])
+
+      # The reviewer answers the one conflict before confirming.
+      render_change(view, "combine_change", %{
+        "combine" => %{"destination_id" => "CONFLICT_OFF", "decisions" => %{iso => "no_service"}}
+      })
+
+      assert has_element?(view, "#calendar-combine-decisions-#{group}-no_service[checked]")
+
+      # A second session adds a trip to a reviewed source, so the token the drawer still holds no
+      # longer describes the current inputs (AC-14).
+      trip_fixture(organization.id, version.id, "COMBINE_ROUTE", %{
+        trip_id: "CONFLICT_RUN_LATE",
+        service_id: "CONFLICT_RUN"
+      })
+
+      before = row_counts(version)
+
+      _pending = render_submit(view, "combine_apply", %{})
+      settled = settle(view, &(&1 =~ "changed after this review was prepared"))
+
+      assert settled =~ "changed after this review was prepared."
+      assert settled =~ "Another editor changed these calendars, so nothing was combined."
+      assert settled =~ "Refresh the review to see the current result, then combine again."
+      assert has_element?(view, "#calendar-combine-errors[role='alert']")
+
+      # The review, the destination and the answer all stay, and nothing was written.
+      assert has_element?(view, "#calendar-combine-form")
+      assert has_element?(view, "#calendar-combine-refresh")
+      refute has_element?(view, "#calendar-combine-apply")
+
+      assert has_element?(
+               view,
+               "#calendar-combine-destination-option-CONFLICT_OFF input[checked]"
+             )
+
+      assert has_element?(view, "#calendar-combine-decisions-#{group}-no_service[checked]")
+      assert row_counts(version) == before
+
+      # Refresh review re-reads the authoritative inputs: it keeps an available destination,
+      # includes the trip the second session added, and discards every answer, so an old
+      # confirmation can never be reused (AC-23).
+      refreshed = render_click(view, "combine_refresh", %{})
+
+      assert refreshed =~ "Review refreshed."
+      assert refreshed =~ "The review was rebuilt from the current calendars"
+
+      assert has_element?(
+               view,
+               "#calendar-combine-destination-option-CONFLICT_OFF input[checked]"
+             )
+
+      refute has_element?(view, "#calendar-combine-decisions-#{group}-no_service[checked]")
+      refute has_element?(view, "#calendar-combine-decisions-#{group}-run[checked]")
+      refute has_element?(view, "#calendar-combine-refresh")
+      assert has_element?(view, "#calendar-combine-apply")
+      refute has_element?(view, "#calendar-combine-apply[disabled]")
+      assert render(element(view, "#calendar-combine-result-moved")) =~ "3"
+    end
+
+    test "an ordinary failure keeps the review and every choice", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      combination_scenario(organization, version)
+      conn = editor(conn, user, organization)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      open_review(view, ["COMBINE_DEST", "COMBINE_SUN"])
+
+      before = row_counts(version)
+
+      # The actor's membership is revoked after the review was prepared. The apply re-resolves it
+      # after the version-lock wait and refuses, so the reviewer gets the domain's own reason and
+      # keeps everything they chose (AC-13, AC-23).
+      membership =
+        Repo.get_by!(UserOrgMembership,
+          user_id: user.id,
+          organization_id: organization.id
+        )
+
+      deactivate_membership_fixture(membership)
+
+      _pending = render_submit(view, "combine_apply", %{})
+      settled = settle(view, &(&1 =~ "Calendars weren’t combined."))
+
+      assert settled =~ "Calendars weren’t combined."
+      assert settled =~ "You no longer have permission to change these calendars."
+      assert settled =~ "Your choices are kept, so you can try again."
+      assert has_element?(view, "#calendar-combine-errors[role='alert']")
+
+      # The refusal is not a stale review: the same review is still on screen and can be
+      # confirmed again once the cause is gone, and nothing was written.
+      assert has_element?(view, "#calendar-combine-form")
+
+      assert has_element?(
+               view,
+               "#calendar-combine-destination-option-COMBINE_DEST input[checked]"
+             )
+
+      assert has_element?(view, "#calendar-combine-apply")
+      refute has_element?(view, "#calendar-combine-refresh")
+      assert row_counts(version) == before
+    end
+  end
+
+  # The confirmation's apply runs in its own process with the application's ordinary Repo
+  # ownership, so these cases deliberately leave the SQL sandbox: every row is committed on a real
+  # connection, the version row is held by a second committing connection while the confirmation is
+  # in flight, and the created scope is deleted again in `on_exit`. Nothing here wires the apply task
+  # to the test's connection - a missing production path would fail in these cases instead of being
+  # hidden by a sandbox allowance.
+  describe "the confirmation through the ordinary route without sandbox wiring" do
+    test "shows pending, refuses a duplicate confirmation and a close, and commits exactly once",
+         %{
+           conn: _conn
+         } do
+      Sandbox.mode(Repo, :manual)
+
+      scope = Sandbox.unboxed_run(Repo, fn -> seed_committed_scope("pending") end)
+      on_exit(fn -> Sandbox.unboxed_run(Repo, fn -> cleanup_committed_scope(scope) end) end)
+
+      Sandbox.unboxed_run(Repo, fn ->
+        {:ok, view, _html} = live(authenticated_conn(scope), list_path(scope.version))
+        loaded(view)
+
+        open_review(view, ["DEST", "SAT"])
+        assert has_element?(view, "#calendar-combine-destination-option-DEST input[checked]")
+
+        # The version row is held by another committed connection, so the confirmation's transaction
+        # has a real reason to wait and the pending window is the domain's, not a timing accident.
+        holder = hold_version_row(scope)
+
+        pending = render_submit(view, "combine_apply", %{})
+
+        assert pending =~ "Combining…"
+        assert pending =~ "Moving 1 trip into Saturday service…"
+        assert pending =~ ~r/id="calendar-combine-apply"[^>]*disabled/
+        assert pending =~ ~r/id="calendar-combine-close"[^>]*disabled/
+
+        apply_backend = await_blocked_backend(holder.backend)
+
+        # A second confirmation is refused before it starts any transaction, and the drawer refuses
+        # to close under it: exactly one confirmation is in the domain's hands.
+        duplicate = render_submit(view, "combine_apply", %{})
+        assert duplicate =~ "Combining…"
+
+        closed = render_click(view, "close_combine", %{})
+        assert closed =~ ~r/id="calendar-combine-form"/
+        assert blockers_of(holder.backend) == [apply_backend]
+
+        # A reconnect cannot resolve an unanswered confirmation: it reports the unconfirmed outcome
+        # and never resends the old command. The page's own authoritative reload queues behind the
+        # same held row, so the confirmation is still the only write waiting for it.
+        reconnected = render_click(view, "combine_reconnect", %{})
+        assert reconnected =~ "Connection restored."
+        assert reconnected =~ "unconfirmed"
+
+        assert apply_backend in blockers_of(holder.backend)
+
+        release_version_row(holder)
+
+        settled = settle(view, &reloaded?(&1, "Combined into Saturday service."))
+
+        assert flat(settled) =~ "Combined into Saturday service."
+
+        assert flat(settled) =~
+                 "1 trip moved from Fall shuttle, which stays in the list with 0 trips."
+
+        refute has_element?(view, "#calendar-combine-form")
+
+        # One confirmation, one committed scoped operation: one moved trip, one audit log, and no
+        # source trip left behind.
+        assert log_count(scope) == 1
+        assert trip_service(scope, "SAT_T1") == "DEST"
+        assert source_trip_ids(scope) == []
+      end)
+    end
+
+    test "a version change discards the review and ignores the late result", %{conn: _conn} do
+      Sandbox.mode(Repo, :manual)
+
+      scope = Sandbox.unboxed_run(Repo, fn -> seed_committed_scope("version-change") end)
+      on_exit(fn -> Sandbox.unboxed_run(Repo, fn -> cleanup_committed_scope(scope) end) end)
+
+      Sandbox.unboxed_run(Repo, fn ->
+        {:ok, view, _html} = live(authenticated_conn(scope), list_path(scope.version))
+        loaded(view)
+
+        open_review(view, ["DEST", "SAT"])
+
+        holder = hold_version_row(scope)
+
+        _pending = render_submit(view, "combine_apply", %{})
+        assert is_integer(await_blocked_backend(holder.backend))
+
+        # The reviewer leaves for another version while the confirmation is still unanswered. Its
+        # review is discarded with the version it belonged to, and its eventual result must not be
+        # presented as the new version's outcome (INV-3, AC-23).
+        render_patch(view, list_path(scope.other_version))
+
+        refute has_element?(view, "#calendar-combine-form")
+        refute has_element?(view, "#calendar-combine-success")
+        refute render(view) =~ "Combined into"
+
+        release_version_row(holder)
+        _late = render_async(view)
+
+        # The committed operation is scoped to the version that confirmed it: the source keeps its
+        # identity with no trips and the destination holds the moved trip.
+        assert trip_service(scope, "SAT_T1") == "DEST"
+        assert source_trip_ids(scope) == []
+        assert log_count(scope) == 1
+
+        # And the page the reviewer is looking at still knows nothing about it.
+        refute has_element?(view, "#calendar-combine-success")
+        refute render(view) =~ "Combined into"
+      end)
     end
   end
 

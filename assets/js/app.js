@@ -36,6 +36,7 @@ import TablistHook from "./tablist_hook"
 import UserMenuHook from "./user_menu_hook"
 import JournalPanelHook from "./journal_panel_hook"
 import CalendarDateChange from "./calendar_date_change"
+import CalendarCombination from "./calendar_combination"
 import CalendarEditor from "./calendar_editor"
 import RoutePatternEditorHook from "./route_pattern_editor"
 import TransferMapHook from "./transfer_map_hook"
@@ -46,7 +47,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CalendarDateChange, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, TransferMap: TransferMapHook},
+  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, TransferMap: TransferMapHook},
 })
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")

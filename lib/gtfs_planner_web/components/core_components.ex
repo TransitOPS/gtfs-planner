@@ -534,6 +534,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
     default: &Function.identity/1,
     doc: "the function for mapping each row before calling the :col and :action slots"
 
+  attr :row_class, :any,
+    default: nil,
+    doc: "an optional function returning extra classes for each row"
+
   attr :responsive, :string,
     values: ~w(stack scroll),
     default: "scroll",
@@ -632,7 +636,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </tr>
         </thead>
         <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-          <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="hover:bg-base-200">
+          <tr
+            :for={row <- @rows}
+            id={@row_id && @row_id.(row)}
+            class={["hover:bg-base-200", @row_class && @row_class.(row)]}
+          >
             <td
               :for={col <- @col}
               data-label={col[:label]}

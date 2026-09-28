@@ -102,6 +102,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      |> assign(:selection_version_id, nil)
      |> assign(:combine_open?, false)
      |> assign(:combine_error, nil)
+     |> assign(:combine_generation, 0)
+     |> assign(:combine_success, nil)
+     |> assign(:combine_highlight, MapSet.new())
+     |> assign(:combine_return_focus_id, nil)
+     |> assign(:combine_dispatched?, false)
      |> assign_filter_form()
      |> drop_combination()
      |> close_date_change()
@@ -131,6 +136,21 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   @impl true
   def handle_info(:load_calendars, socket), do: {:noreply, load_calendars(socket)}
+
+  # The reviewed apply runs in the LiveView's own async task: the socket renders its pending state
+  # before the task starts, keeps its audit/scope in the task's closure, and settles exactly once
+  # per dispatched confirmation.
+  @impl true
+  def handle_async({:combine_apply, generation}, result, socket) do
+    if generation == socket.assigns.combine_generation do
+      {:noreply, settle_combination(socket, result)}
+    else
+      # A result of a superseded review, or of a version the reviewer left, is presentation only:
+      # it never rewrites the drawer on screen, and it makes no claim about the transaction that
+      # produced it - a committed operation is never described as cancelled here.
+      {:noreply, socket}
+    end
+  end
 
   @impl true
   def handle_event("filters", params, socket) do
@@ -344,6 +364,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   @impl true
+  def handle_event("close_combine", _params, %{assigns: %{combine_pending?: true}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("close_combine", _params, socket), do: {:noreply, drop_combination(socket)}
 
   @impl true
@@ -358,12 +381,45 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   def handle_event("combine_change", _params, socket), do: {:noreply, socket}
 
-  # The submission stays available while a conflict is unanswered, so it is the reviewer's
-  # confirmation and not a disabled control: it either refuses with the missing choices or lets the
-  # apply path run a complete review (AC-22).
+  # A second confirmation while the first is in flight is refused: the reviewer's one reviewed
+  # token is already being applied, and a duplicate would either repeat a committed operation or
+  # race the same rows. The same clause refuses the older "combine_destination" field event.
   @impl true
+  def handle_event("combine_apply", _params, %{assigns: %{combine_pending?: true}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("combine_apply", _params, socket) do
     {:noreply, apply_combination(socket)}
+  end
+
+  @impl true
+  def handle_event("combine_refresh", _params, %{assigns: %{combine_pending?: true}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("combine_refresh", _params, socket) do
+    {:noreply, refresh_combination(socket)}
+  end
+
+  # The transport hook reports a reconnection. The socket never knows a disconnect happened, so
+  # this is the only place the page can resolve what a lost confirmation did: it re-reads the
+  # authoritative list and leaves the reviewer a fresh review instead of resending the old command.
+  @impl true
+  def handle_event("combine_reconnect", _params, socket) do
+    {:noreply, reconnect_combination(socket)}
+  end
+
+  @impl true
+  # Dismissing the summary removes the focused control, so focus is handed to the list's own
+  # selection action instead of being left on the document (AC-24).
+  def handle_event("dismiss_combine_success", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:combine_success, nil)
+     |> assign(:combine_highlight, MapSet.new())
+     |> push_event("calendar:combine-focus", %{
+       id: "calendar-select-all",
+       fallback_id: "calendar-search"
+     })}
   end
 
   @impl true
@@ -402,6 +458,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         |> assign_coverage()
         |> assign(:calendars_state, :ready)
         |> assign_rows()
+        |> note_hidden_combination_sources()
 
       {:error, :unavailable} ->
         unavailable(socket)
@@ -492,6 +549,31 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:invalid_calendars, [])
     |> assign(:long_history?, false)
   end
+
+  # The success summary names the retained sources the reviewer can still see. A source the current
+  # search or status filter hides is stated as hidden instead of being presented as if it were on
+  # screen, so the notice never describes a row the reviewer cannot find (AC-24). It is rewritten
+  # only for the summary on screen, and the reload that follows a confirmation is what supplies it.
+  defp note_hidden_combination_sources(
+         %{assigns: %{combine_success: %{retained_ids: ids} = success}} = socket
+       )
+       when is_list(ids) do
+    visible = MapSet.new(socket.assigns.calendars, & &1.service_id)
+
+    hidden_names =
+      ids
+      |> Enum.reject(&MapSet.member?(visible, &1))
+      |> Enum.map(fn service_id ->
+        case Enum.find(socket.assigns.all_calendars, &(&1.service_id == service_id)) do
+          nil -> service_id
+          row -> row.name || row.service_id
+        end
+      end)
+
+    assign(socket, :combine_success, %{success | hidden_names: hidden_names})
+  end
+
+  defp note_hidden_combination_sources(socket), do: socket
 
   defp assign_rows(socket) do
     all = socket.assigns.all_calendars
@@ -585,6 +667,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       |> assign(:selected_service_ids, MapSet.new())
       |> assign(:selection_version_id, version_id)
       |> drop_combination()
+      |> clear_combination_notices()
+      |> bump_combine_generation()
     end
   end
 
@@ -614,25 +698,33 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> Map.fetch!(:service_id)
   end
 
+  defp change_combination(
+         %{assigns: %{combine_pending?: true}} = socket,
+         _destination_id,
+         _decisions
+       ),
+       do: socket
+
   # One form event carries both the kept calendar and the answered conflicts. Changing the kept
-  # calendar discards every answer, because the conflicts themselves are recomputed against the new
-  # destination (AC-22); a new answer re-reviews against the current conflicts and the domain's own
-  # group keys, so a forged or outdated key is refused rather than expanded (INV-3).
+  # calendar discards every answer, because the conflicts themselves are recomputed (AC-22); a new
+  # answer re-reviews against the current conflicts and the domain's own group keys, so a forged or
+  # outdated key is refused rather than expanded (INV-3).
   defp change_combination(socket, destination_id, decisions) do
     rows = socket.assigns.combine_rows
-    same_destination? = destination_id == socket.assigns.combine_destination_id
+    unchanged? = destination_id == socket.assigns.combine_destination_id
+    answered_same? = decisions == socket.assigns.combine_decisions
 
     cond do
       not Enum.any?(rows, &(&1.service_id == destination_id)) -> socket
-      same_destination? and decisions == socket.assigns.combine_decisions -> socket
-      same_destination? -> review_combination(socket, rows, destination_id, decisions)
+      unchanged? and answered_same? -> socket
+      unchanged? -> review_combination(socket, rows, destination_id, decisions)
       true -> review_combination(socket, rows, destination_id, %{})
     end
   end
 
-  # Only the two domain decisions can enter the submitted map: an unknown value or a group the
-  # current review does not carry is dropped here and refused again by
-  # `Combination.expand_group_choices/2`, so no client-supplied key or date is trusted.
+  # Only the two domain decisions and the current review's own conflict groups can enter the
+  # submitted map: an unknown value or a group this review does not carry is dropped here and
+  # refused again by `Combination.expand_group_choices/2`.
   defp submitted_decisions(params) do
     case params["decisions"] do
       decisions when is_map(decisions) ->
@@ -675,8 +767,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             |> assign(:combine_form, combine_form(destination_id))
             |> assign(:combine_decisions, decisions)
             |> assign(:combine_decision_dates, decision_dates)
-            |> assign_combination_choice_error()
+            |> assign(:combine_refresh_required?, false)
+            |> assign_combination_choice_status()
             |> assign(:combine_return_focus_id, "calendar-combine-open")
+            |> bump_combine_generation()
 
           {:error, reason} ->
             socket
@@ -689,9 +783,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
-  # The drawer decides group keys; the domain expands them against the current review's own
-  # conflicts into exact ISO-8601 dates, and the review command receives only that expansion. An
-  # answer for a group the current review does not carry is refused instead of being guessed at.
+  # The drawer decides group keys, the domain expands them into the exact ISO-8601 dates of the
+  # review it is looking at, and `apply_calendar_change/3` receives only that expansion. An answer
+  # for a group that is no longer current is refused instead of being guessed at.
   defp expand_combination_decisions(_socket, _destination_id, decisions)
        when map_size(decisions) == 0,
        do: {:ok, %{}}
@@ -704,62 +798,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     else
       :error
     end
-  end
-
-  # The announced summary follows the current review: after a refused submit it names the groups
-  # that are still unanswered and it shrinks as the reviewer answers them. Before the first
-  # submission the drawer states the groups as facts without claiming an error, and a complete
-  # review clears the summary and marks nothing (AC-22).
-  defp assign_combination_choice_error(socket) do
-    if socket.assigns.combine_attempted? do
-      assign(socket, :combine_choice_error, combination_choice_error(socket))
-    else
-      assign(socket, :combine_choice_error, nil)
-    end
-  end
-
-  defp combination_choice_error(socket) do
-    case socket.assigns.combine_review do
-      %{conflicts: conflicts} ->
-        case CalendarComponents.unanswered_conflict_labels(
-               conflicts,
-               socket.assigns.combine_decisions
-             ) do
-          [] -> nil
-          groups -> "Choose what happens on #{labels_and(Enum.map(groups, & &1.label))}."
-        end
-
-      _closed ->
-        nil
-    end
-  end
-
-  defp labels_and([]), do: ""
-  defp labels_and([label]), do: label
-
-  defp labels_and(labels),
-    do: Enum.join(Enum.drop(labels, -1), ", ") <> " and " <> List.last(labels)
-
-  # The one submission path. A review whose conflicts are unanswered never reaches
-  # `apply_calendar_change/3` and never invents a token: the summary names the missing choices, the
-  # marked groups are visually marked, and focus moves to the first unresolved option through the
-  # page's existing scoped focus hook (AC-22). Handing a complete review to the write command is the
-  # apply path's own job, so nothing here calls it.
-  defp apply_combination(socket) do
-    case combination_choice_error(socket) do
-      nil -> socket
-      message -> require_combination_choices(socket, message)
-    end
-  end
-
-  defp require_combination_choices(socket, message) do
-    socket
-    |> assign(:combine_attempted?, true)
-    |> assign(:combine_choice_error, message)
-    |> push_event("focus_form_error", %{
-      form_id: "calendar-combine-form",
-      fallback_id: "calendar-combine-errors"
-    })
   end
 
   # The review's own result dates reach the destination's native rows through the same public
@@ -789,6 +827,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp stored_destination(_review, _rows, _destination_id), do: nil
 
+  # A closed drawer keeps only the list. The return-focus target survives the close patch so the
+  # dialog hook can hand focus back to the control that opened it, exactly as the date-change
+  # drawer does; it is replaced on the next review and cleared only by a version change.
   defp drop_combination(socket) do
     socket
     |> assign(:combine_open?, false)
@@ -801,8 +842,430 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:combine_decisions, %{})
     |> assign(:combine_decision_dates, %{})
     |> assign(:combine_attempted?, false)
-    |> assign(:combine_choice_error, nil)
+    |> assign(:combine_pending?, false)
+    |> assign(:combine_refresh_required?, false)
+    |> assign(:combine_status, nil)
+    |> assign(:combine_dispatched?, false)
+  end
+
+  defp clear_combination_notices(socket) do
+    socket
+    |> assign(:combine_success, nil)
+    |> assign(:combine_highlight, MapSet.new())
     |> assign(:combine_return_focus_id, nil)
+  end
+
+  # Every review owns a generation. A confirmation dispatched by an older generation is never
+  # presented as the outcome of the review on screen: a version change, a new review or a reselection
+  # supersedes it. Nothing here cancels or rolls back the transaction the task already ran.
+  defp bump_combine_generation(socket),
+    do: assign(socket, :combine_generation, socket.assigns.combine_generation + 1)
+
+  ## Combination submission and recovery
+
+  # The one confirmation path. Only a complete current review carries an applicable token, so a
+  # review whose conflicts are unanswered never reaches `apply_calendar_change/3` and never invents
+  # a fingerprint: it states the missing choices, marks the groups it still needs and moves focus to
+  # the first unresolved option (AC-22). A complete review renders pending, keeps the review and its
+  # audit context in the task's closure, and settles once on the async result.
+  defp apply_combination(socket) do
+    case socket.assigns.combine_review do
+      %{ready?: true, fingerprint: fingerprint} when is_binary(fingerprint) ->
+        dispatch_combination(socket, fingerprint)
+
+      %{conflicts: _conflicts} ->
+        require_combination_choices(socket)
+
+      _incomplete ->
+        socket
+    end
+  end
+
+  # The groups that are still unanswered and their labels have one owner: the component that marks
+  # them uses the same `CalendarComponents.unanswered_conflict_labels/2` the announcement does, so a
+  # summary can never name a group the drawer does not mark (AC-22).
+  defp require_combination_choices(socket) do
+    socket
+    |> assign(:combine_attempted?, true)
+    |> assign_combination_choice_status()
+    |> focus_combination_error()
+  end
+
+  # The announced refusal follows the current review: after a refused submit it names the groups the
+  # review is still missing an answer for, it shrinks as the reviewer answers them, and a complete
+  # review clears it (AC-22).
+  defp assign_combination_choice_status(%{assigns: %{combine_attempted?: true}} = socket) do
+    case missing_choice_labels(socket) do
+      [] ->
+        assign(socket, :combine_status, nil)
+
+      labels ->
+        assign(socket, :combine_status, %{
+          kind: :missing,
+          title: "Calendars not combined yet.",
+          message: "Choose what happens on #{labels_and(labels)}."
+        })
+    end
+  end
+
+  defp assign_combination_choice_status(socket), do: assign(socket, :combine_status, nil)
+
+  defp missing_choice_labels(%{assigns: %{combine_review: %{conflicts: conflicts}} = assigns}) do
+    conflicts
+    |> CalendarComponents.unanswered_conflict_labels(assigns.combine_decisions)
+    |> Enum.map(& &1.label)
+  end
+
+  defp missing_choice_labels(_socket), do: []
+
+  defp labels_and([]), do: ""
+  defp labels_and([label]), do: label
+
+  defp labels_and(labels),
+    do: Enum.join(Enum.drop(labels, -1), ", ") <> " and " <> List.last(labels)
+
+  # Every drawer state that has something to resolve hands focus back through the page's existing
+  # scoped focus hook: it lands on the form's first invalid control when the refusal is a missing
+  # choice, and on the announced status otherwise (AC-22, AC-23).
+  defp focus_combination_error(socket) do
+    push_event(socket, "focus_form_error", %{
+      form_id: "calendar-combine-form",
+      fallback_id: "calendar-combine-errors"
+    })
+  end
+
+  # The reviewed command is built from the review on screen and nothing else, and the audit/scope
+  # travel with it in the task's closure, so the async task needs no access to the socket. Pending is
+  # assigned before the task starts, which is what makes the drawer render its in-flight state before
+  # any write begins.
+  defp dispatch_combination(socket, fingerprint) do
+    command =
+      {:combine, socket.assigns.combine_destination_id,
+       socket.assigns.combine_review.retained_sources, socket.assigns.combine_decision_dates}
+
+    audit = audit_context(socket)
+    generation = socket.assigns.combine_generation
+
+    socket
+    |> assign(:combine_attempted?, false)
+    |> assign(:combine_status, %{
+      kind: :pending,
+      title: nil,
+      message: pending_combination_note(socket.assigns)
+    })
+    |> assign(:combine_pending?, true)
+    |> assign(:combine_dispatched?, true)
+    |> start_async({:combine_apply, generation}, fn ->
+      {:applied, Gtfs.apply_calendar_change(command, fingerprint, audit)}
+    end)
+  end
+
+  # Both the socket and the render assigns carry these keys, so the pending note reads the review
+  # it was dispatched from without depending on a socket.
+  defp pending_combination_note(assigns) do
+    case Enum.find(
+           assigns.combine_rows,
+           &(&1.service_id == assigns.combine_destination_id)
+         ) do
+      nil ->
+        "Combining the reviewed calendars…"
+
+      row ->
+        count = assigns.combine_review.moved_trip_count
+
+        "Moving #{count} #{if count == 1, do: "trip", else: "trips"} into #{row.name || row.service_id}…"
+    end
+  end
+
+  # The async task reports the domain's own return value, which is itself a tuple, so the result is
+  # wrapped once: every clause below then reads exactly one shape, and an unexpected one is reported
+  # as an unconfirmed outcome rather than as a success.
+  defp settle_combination(socket, {:ok, {:applied, {:ok, %{action: :unchanged}}}}),
+    do: combination_unchanged(socket)
+
+  defp settle_combination(socket, {:ok, {:applied, {:ok, result}}}),
+    do: combination_combined(socket, result)
+
+  defp settle_combination(socket, {:ok, {:applied, {:error, :stale_review}}}),
+    do: combination_stale(socket)
+
+  defp settle_combination(socket, {:ok, {:applied, {:error, :invalid_command}}}),
+    do: combination_outdated(socket)
+
+  defp settle_combination(socket, {:ok, {:applied, {:error, reason}}}),
+    do: combination_failed(socket, reason)
+
+  defp settle_combination(socket, {:exit, _reason}), do: combination_unconfirmed(socket)
+  defp settle_combination(socket, _unexpected), do: combination_unconfirmed(socket)
+
+  defp combination_combined(socket, result) do
+    review = socket.assigns.combine_review
+    rows = socket.assigns.combine_rows
+    retained = Enum.filter(rows, &(&1.service_id in (review.retained_sources || [])))
+
+    socket
+    |> assign(
+      :combine_success,
+      combination_success(result, socket.assigns.combine_destination_id, rows, retained, review)
+    )
+    |> assign(
+      :combine_highlight,
+      MapSet.new([socket.assigns.combine_destination_id | Enum.map(retained, & &1.service_id)])
+    )
+    |> drop_combination()
+    |> assign(:selected_service_ids, MapSet.new())
+    |> success_focus()
+    |> reload_calendars()
+  end
+
+  defp combination_success(result, destination_id, rows, retained, review) do
+    destination = Enum.find(rows, &(&1.service_id == destination_id))
+
+    %{
+      action: :combined,
+      destination_id: destination_id,
+      destination_name:
+        (destination && (destination.name || destination.service_id)) || destination_id,
+      moved_trip_count: result.moved_trip_count,
+      retained_count: length(retained),
+      retained_names: Enum.map_join(retained, " and ", &(&1.name || &1.service_id)),
+      retained_ids: Enum.map(retained, & &1.service_id),
+      cleared_trip_count: cleared_trip_count(review),
+      hidden_names: []
+    }
+  end
+
+  # A row the confirmed combination touched keeps its tint while the summary is on screen, and the
+  # opening control is gone once the selection is cleared, so the summary itself is where focus
+  # returns (AC-24).
+  defp success_focus(socket) do
+    socket
+    |> assign(:combine_return_focus_id, "calendar-combine-success")
+    |> push_event("calendar:combine-focus", %{id: "calendar-combine-success"})
+  end
+
+  defp cleared_trip_count(%{block_effects: %{cleared_trip_ids: ids}}) when is_list(ids),
+    do: length(ids)
+
+  defp cleared_trip_count(_review), do: 0
+
+  # The destination's own dates already matched and no source had a trip: the same public command
+  # reports `:unchanged` with no operation UUID, so the page states that nothing changed instead of
+  # claiming a move.
+  defp combination_unchanged(socket) do
+    destination = socket.assigns.combine_destination_id
+    row = Enum.find(socket.assigns.combine_rows, &(&1.service_id == destination))
+
+    socket
+    |> assign(:combine_success, %{
+      action: :unchanged,
+      destination_id: destination,
+      destination_name: (row && (row.name || row.service_id)) || destination,
+      moved_trip_count: 0,
+      retained_count: length(socket.assigns.combine_review.retained_sources || []),
+      retained_names: "",
+      retained_ids: [],
+      cleared_trip_count: 0,
+      hidden_names: []
+    })
+    |> drop_combination()
+    |> success_focus()
+    |> reload_calendars()
+  end
+
+  # A stale review writes nothing and cannot be reapplied: the reviewer's inputs and answers stay,
+  # the token is dropped, and the only action left is an explicit refresh (AC-23).
+  defp combination_stale(socket) do
+    socket
+    |> assign(:combine_pending?, false)
+    |> assign(:combine_dispatched?, false)
+    |> assign(:combine_refresh_required?, true)
+    |> assign(:combine_status, %{
+      kind: :stale,
+      title: "#{destination_label(socket)} changed after this review was prepared.",
+      message:
+        "Another editor changed these calendars, so nothing was combined. Refresh the review to see " <>
+          "the current result, then combine again."
+    })
+    |> focus_combination_error()
+  end
+
+  # The reviewed rows moved on, but the choice the reviewer gave no longer describes them: the
+  # domain refuses the command instead of a mismatch, because the current calendars no longer carry
+  # the conflict the choice names. Nothing was written, and the recovery is the same explicit
+  # refresh - a stale review is never resubmitted as if it were current (AC-23).
+  defp combination_outdated(socket) do
+    socket
+    |> assign(:combine_pending?, false)
+    |> assign(:combine_dispatched?, false)
+    |> assign(:combine_refresh_required?, true)
+    |> assign(:combine_status, %{
+      kind: :stale,
+      title: "#{destination_label(socket)} changed after this review was prepared.",
+      message:
+        "Nothing was combined. Your choice no longer matches the current calendars, so refresh the " <>
+          "review to see the current result and combine again."
+    })
+    |> focus_combination_error()
+  end
+
+  # An ordinary failure keeps every input and answer, so the reviewer can confirm again with the
+  # same review. The message is the domain's own refusal, never a rewritten one.
+  defp combination_failed(socket, reason) do
+    socket
+    |> assign(:combine_pending?, false)
+    |> assign(:combine_dispatched?, false)
+    |> assign(:combine_status, %{
+      kind: :failed,
+      title: "Calendars weren’t combined.",
+      message:
+        "#{combination_failure_message(reason)} Your choices are kept, so you can try again."
+    })
+    |> focus_combination_error()
+  end
+
+  defp combination_failure_message({:invalid_calendar, service_id, _reason}),
+    do: combine_error_message({:invalid_calendar, service_id, nil})
+
+  defp combination_failure_message(reason), do: combine_error_message(reason)
+
+  # No answer arrived for a confirmation that was already dispatched, so the outcome is unknown
+  # rather than rolled back: the page reloads the authoritative list and requires a fresh review
+  # instead of resending the old command.
+  defp combination_unconfirmed(socket) do
+    socket
+    |> assign(:combine_pending?, false)
+    |> assign(:combine_dispatched?, false)
+    |> assign(:combine_refresh_required?, true)
+    |> assign(:combine_status, %{
+      kind: :unconfirmed,
+      title: "Your confirmation has no answer yet.",
+      message:
+        "It may still have been applied, so this page will not claim it was rolled back. " <>
+          "Refresh the review after the list reloads, then combine again."
+    })
+    |> focus_combination_error()
+    |> reload_calendars()
+  end
+
+  defp destination_label(socket) do
+    case Enum.find(
+           socket.assigns.combine_rows,
+           &(&1.service_id == socket.assigns.combine_destination_id)
+         ) do
+      nil -> "A selected calendar"
+      row -> row.name || row.service_id
+    end
+  end
+
+  # The transport hook reports a reconnect. The socket cannot observe a disconnect, so a
+  # confirmation that was dispatched before the connection dropped is reported as unconfirmed and
+  # the authoritative list is re-read; the reviewer then gets a fresh review. Without a dispatched
+  # confirmation the reconnect only reloads the list.
+  defp reconnect_combination(socket) do
+    if socket.assigns.combine_dispatched? do
+      socket
+      |> assign(:combine_refresh_required?, true)
+      |> assign(:combine_status, %{
+        kind: :unconfirmed,
+        title: "Connection restored.",
+        message:
+          "Your confirmation was still unanswered when the connection dropped, so its outcome is " <>
+            "unconfirmed: it may have been applied. The list has been reloaded from the server; " <>
+            "refresh the review before confirming again."
+      })
+      |> reload_calendars()
+    else
+      reload_calendars(socket)
+    end
+  end
+
+  # Refresh review re-reads the authoritative inputs, keeps the reviewer's own selection where it
+  # still exists, recomputes the destination when the kept one is gone, and discards every answer: a
+  # refreshed review is a new review, so the old confirmation can never be reused (AC-23).
+  defp refresh_combination(socket) do
+    socket
+    |> load_calendars()
+    |> refresh_open_combination()
+  end
+
+  defp refresh_open_combination(socket) do
+    if socket.assigns.combine_open? do
+      rebuild_open_combination(socket)
+    else
+      socket
+    end
+  end
+
+  defp rebuild_open_combination(socket) do
+    rows = selected_calendar_rows(socket)
+    kept = socket.assigns.combine_destination_id
+
+    cond do
+      length(rows) < 2 ->
+        socket
+        |> drop_combination()
+        |> assign(:combine_error, "The selection no longer holds two calendars to combine.")
+
+      socket.assigns.invalid_calendars != [] ->
+        socket
+        |> drop_combination()
+        |> assign(:combine_error, combine_error_message(:unavailable))
+
+      true ->
+        refreshed =
+          socket
+          |> assign(:combine_attempted?, false)
+          |> review_combination(rows, kept_combination_destination(rows, kept), %{})
+
+        assign(
+          refreshed,
+          :combine_status,
+          refreshed_combination_status(refreshed.assigns.combine_review)
+        )
+    end
+  end
+
+  # A refresh keeps the reviewer's own destination while it is still part of the selection, and
+  # recomputes the default one when it is gone: a refreshed review always has a valid destination.
+  defp kept_combination_destination(rows, kept) do
+    if Enum.any?(rows, &(&1.service_id == kept)) do
+      kept
+    else
+      default_destination(rows)
+    end
+  end
+
+  # A refreshed review is a new review: it states that it was rebuilt, that every answer was
+  # cleared, and how many current dates still need one, so the reviewer is never left believing an
+  # old confirmation still applies (AC-23).
+  defp refreshed_combination_status(%{conflicts: []}) do
+    %{
+      kind: :refreshed,
+      title: "Review refreshed.",
+      message: "The review was rebuilt from the current calendars and every answer was cleared."
+    }
+  end
+
+  defp refreshed_combination_status(%{conflicts: [_conflict | _rest] = conflicts}) do
+    dates = length(conflicts)
+    verb = if dates == 1, do: "needs", else: "need"
+
+    %{
+      kind: :refreshed,
+      title: "Review refreshed.",
+      message:
+        "#{dates} #{if dates == 1, do: "date", else: "dates"} now #{verb} a choice. The review " <>
+          "was rebuilt from the current calendars and every answer was cleared."
+    }
+  end
+
+  defp refreshed_combination_status(_closed) do
+    %{
+      kind: :refreshed,
+      title: "Review refreshed.",
+      message: "The review was rebuilt from the current calendars and every answer was cleared."
+    }
   end
 
   defp combine_form(destination_id),
@@ -820,7 +1283,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     "This list changed in another session. Refresh it and select the calendars again."
   end
 
-  defp combine_error_message(_reason), do: write_error_message(:unavailable)
+  defp combine_error_message(:invalid_command) do
+    "These calendars changed, so this review no longer describes them. Refresh the review to see the current result."
+  end
+
+  defp combine_error_message(:busy) do
+    "Another editor is changing these calendars. Try again in a moment."
+  end
+
+  defp combine_error_message(:forbidden), do: write_error_message(:forbidden)
+  defp combine_error_message(:not_found), do: write_error_message(:not_found)
+
+  defp combine_error_message(_reason),
+    do: "The calendars could not be combined. Nothing was written; try again."
 
   defp matches?(_summary, ""), do: true
 
@@ -1340,13 +1815,43 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   # Opening the review writes nothing, so the drawer says what it is: a no-op offers only
-  # Close, and every other review states that nothing has changed until it is combined.
-  defp combination_footer_note(review) do
-    if CalendarComponents.combination_nothing?(review) do
-      "Nothing to combine."
-    else
-      "Nothing changes until you combine."
+  # Close, a pending confirmation states the move it is performing, a review that needs a
+  # refresh states that nothing was combined, and every other review says that nothing has
+  # changed until it is combined.
+  defp combination_footer_note(assigns) do
+    cond do
+      assigns.combine_pending? -> pending_combination_note(assigns)
+      assigns.combine_refresh_required? -> "Nothing was combined."
+      CalendarComponents.combination_nothing?(assigns.combine_review) -> "Nothing to combine."
+      true -> "Nothing changes until you combine."
     end
+  end
+
+  defp combine_submit_label(assigns) do
+    if assigns.combine_pending? do
+      "Combining…"
+    else
+      "Combine #{length(assigns.combine_rows)} calendars"
+    end
+  end
+
+  # The status banner takes the tone of the state it reports: a missing answer and a refusal are
+  # errors, a stale review and an unconfirmed confirmation are warnings the reviewer must resolve,
+  # and a refreshed review is information.
+  defp combine_status_kind(%{combine_status: %{kind: kind}}) do
+    case kind do
+      :missing -> "error"
+      :failed -> "error"
+      :stale -> "warning"
+      :unconfirmed -> "warning"
+      _status -> "info"
+    end
+  end
+
+  # A row the confirmed combination touched is tinted until the summary is dismissed: the
+  # destination that received the trips and each source that now holds none (AC-24).
+  defp combine_row_class({_id, row}, highlight) do
+    if MapSet.member?(highlight, row.service_id), do: "bg-success/10", else: nil
   end
 
   ## Date-change presentation
@@ -1448,6 +1953,38 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         <:subtitle>Set the days your trips run, including holidays and breaks.</:subtitle>
       </.header>
 
+      <%!--
+      The combination transport hook owns this page's connection lifecycle, and the notice it reveals
+      lives here rather than inside the drawer: the shared dialog hook closes a modal when the socket
+      drops, so an in-drawer notice could never be seen by the reviewer it is meant to warn. The
+      notice is pre-rendered by the server and only revealed by the hook (its own subtree is never
+      patched), and the hook never computes a date, decides a review or retries a confirmation. --%>
+      <div
+        id="calendar-combine-transport"
+        phx-hook="CalendarCombination"
+        data-combine-dispatched={to_string(@combine_dispatched?)}
+        class="mt-4"
+      >
+        <div
+          id="calendar-combine-connection"
+          phx-update="ignore"
+          role="status"
+          hidden
+          class="rounded-box border border-warning bg-warning/10 px-4 py-3"
+        >
+          <p class="font-medium">Connection lost. Reconnecting…</p>
+          <p class="mt-0.5 text-sm" data-combine-connection="idle">
+            Nothing has been sent, and your choices are kept. Combine is available again when the
+            connection returns.
+          </p>
+          <p class="mt-0.5 text-sm" data-combine-connection="dispatched" hidden>
+            Your confirmation was dispatched and this page has no answer for it, so its outcome is
+            unconfirmed — it may have been applied. Reconnecting reloads the authoritative list;
+            review the current calendars before confirming again.
+          </p>
+        </div>
+      </div>
+
       <div :if={@calendars_state in [:ready, :refreshing]} class="mt-4 flex flex-wrap gap-3">
         <button
           :if={not @calendars_empty?}
@@ -1508,6 +2045,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       </div>
 
       <div :if={@calendars_state in [:ready, :refreshing]} class="mt-6 space-y-4">
+        <CalendarComponents.combination_success
+          :if={@combine_success}
+          id="calendar-combine-success"
+          success={@combine_success}
+        />
+
         <CalendarComponents.coverage_invalid
           invalid={@invalid_calendars}
           version_id={@current_gtfs_version.id}
@@ -1777,7 +2320,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
           id="calendars-results"
           class="bg-base-100 border border-base-300 rounded-box"
         >
-          <.table id="calendars-list" rows={@streams.calendars} responsive="stack">
+          <.table
+            id="calendars-list"
+            rows={@streams.calendars}
+            responsive="stack"
+            row_class={&combine_row_class(&1, @combine_highlight)}
+          >
             <:col
               :let={{_id, summary}}
               label="Calendar"
@@ -2089,6 +2637,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       <.drawer
         id="calendar-combine-drawer"
         open={@combine_open?}
+        pending={@combine_pending?}
         on_close="close_combine"
         title="Combine calendars"
         return_focus_id={@combine_return_focus_id}
@@ -2116,19 +2665,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             {@combine_error}
           </p>
 
-          <%!-- The refused submission is announced as one summary and carried by the same focus
-          hook the rest of the page uses: the first unresolved option is the form's first invalid
-          control, so the hook lands on it and the group it belongs to states the same choice. --%>
           <.callout
-            :if={@combine_choice_error}
+            :if={@combine_status && @combine_status.kind != :pending}
             id="calendar-combine-errors"
             tabindex="-1"
             class="focus:outline-none"
-            kind="error"
-            title="Calendars not combined yet."
+            kind={combine_status_kind(assigns)}
+            title={@combine_status.title}
             role="alert"
           >
-            {@combine_choice_error}
+            {@combine_status.message}
           </.callout>
 
           <CalendarComponents.combination_controls
@@ -2175,13 +2721,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
           <div class="-mx-6 -mb-6 sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-base-300 bg-base-100 px-6 pt-3 pb-6">
             <p id="calendar-combine-footer-note" class="text-sm text-base-content/70">
-              {combination_footer_note(@combine_review)}
+              {combination_footer_note(assigns)}
             </p>
             <div class="flex flex-wrap items-center gap-3">
               <.button
                 id="calendar-combine-close"
                 type="button"
                 phx-click="close_combine"
+                disabled={@combine_pending?}
                 variant="secondary"
                 size="sm"
                 class="min-h-11"
@@ -2189,13 +2736,27 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 Close
               </.button>
               <.button
-                :if={not CalendarComponents.combination_nothing?(@combine_review)}
-                id="calendar-combine-apply"
-                type="submit"
+                :if={@combine_refresh_required?}
+                id="calendar-combine-refresh"
+                type="button"
+                phx-click="combine_refresh"
                 size="sm"
                 class="min-h-11 min-w-[196px]"
               >
-                Combine {length(@combine_rows)} calendars
+                Refresh review
+              </.button>
+              <.button
+                :if={
+                  not @combine_refresh_required? and
+                    not CalendarComponents.combination_nothing?(@combine_review)
+                }
+                id="calendar-combine-apply"
+                type="submit"
+                disabled={@combine_pending?}
+                size="sm"
+                class="min-h-11 min-w-[196px]"
+              >
+                {combine_submit_label(assigns)}
               </.button>
             </div>
           </div>

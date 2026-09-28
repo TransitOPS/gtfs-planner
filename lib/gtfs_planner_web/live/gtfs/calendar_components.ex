@@ -1350,6 +1350,85 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   @doc """
+  States what one confirmed combination did to the list the reviewer is looking at.
+
+  The counts come from the apply result and the review it was confirmed from: the destination that
+  received the trips, how many trips moved, the blocks whose trips were cleared, and the sources
+  that stay in the list with no trips. Sources the current filters hide are named as such instead of
+  being presented as if they were still on screen (AC-24).
+  """
+  attr :id, :string, required: true
+  attr :success, :map, required: true
+
+  def combination_success(assigns) do
+    retained = assigns.success.retained_count
+    hidden = length(assigns.success.hidden_names)
+
+    assigns =
+      assigns
+      |> assign(:retained_verb, if(retained == 1, do: "stays", else: "stay"))
+      |> assign(:retained_pronoun, if(retained == 1, do: "it", else: "them"))
+      |> assign(:retained_pages, if(retained == 1, do: "its page", else: "their pages"))
+      |> assign(:hidden_verb, if(hidden == 1, do: "is", else: "are"))
+      |> assign(:hidden_noun, if(hidden == 1, do: "calendar", else: "calendars"))
+      |> assign(
+        :block_phrase,
+        if(assigns.success.cleared_trip_count == 1, do: "its block", else: "their blocks")
+      )
+
+    ~H"""
+    <div
+      :if={@success.action == :combined}
+      id={@id}
+      role="status"
+      tabindex="-1"
+      data-combine-success="combined"
+      class="focus:outline-none rounded-box border border-success bg-success/10 px-4 py-3"
+    >
+      <div class="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <.icon name="hero-check-circle" class="mt-0.5 size-5 shrink-0 text-success" />
+        <p class="min-w-0 flex-1 basis-[320px] text-sm">
+          <strong class="font-semibold">Combined into {@success.destination_name}.</strong>
+          {moved_phrase(@success.moved_trip_count)} from {@success.retained_names}, which {@retained_verb} in the list with 0 trips. Delete {@retained_pronoun} from {@retained_pages} when you no longer need {@retained_pronoun}.
+          <span :if={@success.cleared_trip_count > 0}>
+            {plural(@success.cleared_trip_count, "trip")} left {@block_phrase}.
+          </span>
+          <span :if={@success.hidden_names != []}>
+            {@success.hidden_names} {@hidden_verb} outside the current filters, so clear them to see
+            the retained {@hidden_noun}.
+          </span>
+        </p>
+        <button
+          id={@id <> "-dismiss"}
+          type="button"
+          phx-click="dismiss_combine_success"
+          class="btn btn-ghost btn-sm min-h-11 min-w-11"
+          aria-label="Dismiss the combination summary"
+        >
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </div>
+    </div>
+
+    <p
+      :if={@success.action == :unchanged}
+      id={@id}
+      role="status"
+      tabindex="-1"
+      data-combine-success="unchanged"
+      class="focus:outline-none rounded-box border border-base-300 bg-base-100 px-4 py-3 text-sm"
+    >
+      Nothing changed: no trip moved and {@success.destination_name} already ran on the reviewed
+      dates.
+    </p>
+    """
+  end
+
+  defp moved_phrase(0), do: "No trips moved"
+  defp moved_phrase(1), do: "1 trip moved"
+  defp moved_phrase(count), do: "#{count} trips moved"
+
+  @doc """
   Names the conflict groups a reviewed combination is still missing a decision for.
 
   The LiveView shows these in its announced summary and uses their absence as the only signal
