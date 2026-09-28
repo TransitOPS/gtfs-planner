@@ -167,27 +167,22 @@ defmodule GtfsPlannerWeb.Gtfs.RouteAgencyOnboardingLiveTest do
 
       # The handoff reads the version's agencies back from the database, so the
       # drawer offers the agency it just created and nothing stale (FH-33).
-      doc = LazyHTML.from_fragment(render(view))
+      # The version now has exactly one agency, so the shared control is the
+      # read-only agency, not a select.
+      assert has_element?(view, "#new-route-agency-name", "North Coast Transit")
 
-      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option"), "value") == [
-               "north_coast_transit"
-             ]
+      assert has_element?(view, "#new-route-agency[value='north_coast_transit']")
 
-      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option[selected]"), "value") ==
-               ["north_coast_transit"]
-
-      # ... and the route that drawer creates carries that agency.
+      # ... and the route that drawer creates carries that agency, with the
+      # identifier the command allocates rather than one the drawer invented.
       view
-      |> form("#new-route-form",
-        route: %{route_id: "E2E-1", route_type: "3", route_short_name: "E1"}
-      )
+      |> form("#new-route-form", route: %{route_type: "3", route_short_name: "E1"})
       |> render_submit()
 
       assert [route] = scoped_routes(organization, version)
-      assert route.route_id == "E2E-1"
+      assert route.route_id == "E1"
       assert route.agency_id == "north_coast_transit"
-      assert has_element?(view, "#flash-info", "Route E2E-1 created.")
-      assert has_element?(view, "#routes a", "E2E-1")
+      assert_redirect(view, "/gtfs/#{version.id}/routes/E1?created=1")
     end
 
     test "an invalid submit marks the fields and creates nothing", %{
@@ -454,10 +449,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteAgencyOnboardingLiveTest do
 
       assert has_element?(view, "#new-route-drawer-overlay[data-open='true']")
 
-      doc = LazyHTML.from_fragment(render(view))
-
-      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option[selected]"), "value") ==
-               ["north_coast_transit"]
+      # The version now holds two agencies, so the drawer's shared control is
+      # the select, and it opens on the agency the editor just created.
+      assert has_element?(view, "#new-route-agency option[selected][value='north_coast_transit']")
+      assert has_element?(view, "#new-route-agency option", "Early Transit")
     end
 
     test "a version that gained disagreeing zones refuses and writes nothing", %{

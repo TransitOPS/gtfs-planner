@@ -662,6 +662,26 @@ defmodule GtfsPlanner.Gtfs.Routes do
   def delete_route(_route_id, _review_fingerprint, _acknowledged, _audit),
     do: {:error, :invalid_input}
 
+  @doc """
+  Reads the version-scoped options the create drawer presents (R3, R2).
+
+  `agencies` and `mode_counts` are the same scoped reads `route_editor/3` builds
+  for Details, so the create drawer and the Details workspace share one
+  definition of "the agencies this version has" and "the modes it uses". No
+  geometry query and no write runs here.
+  """
+  @spec route_creation_options(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
+          agencies: [agency_option()],
+          mode_counts: [mode_count()]
+        }
+  def route_creation_options(organization_id, gtfs_version_id)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) do
+    %{
+      agencies: agency_options(organization_id, gtfs_version_id),
+      mode_counts: mode_counts(organization_id, gtfs_version_id)
+    }
+  end
+
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
       %{
@@ -1016,30 +1036,61 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   defp allocate_route_id(attrs, audit) do
-    taken =
-      from(route in Route,
-        where:
-          route.organization_id == ^audit.organization_id and
-            route.gtfs_version_id == ^audit.gtfs_version_id,
-        select: route.route_id
-      )
-      |> Repo.all()
-
-    case infer_route_id(id_examples(attrs, audit), attrs, taken) do
+    case suggest_route_id(audit.organization_id, audit.gtfs_version_id, attrs) do
       {:ok, allocation} -> {:ok, allocation}
       {:error, :duplicate_route_id} -> {:error, {:route_id, "has already been taken"}}
     end
   end
 
+  @doc """
+  Previews the identifier `create_editor_route/3` would allocate (R3).
+
+  The same inference the create command runs under the version write lock, from
+  the same scoped reads, so the drawer's "here is the ID and here is why"
+  presentation previews the real allocation instead of reimplementing it
+  (INV-6: a preview never establishes persisted truth). The command still
+  allocates under the lock, so a concurrent creation can move the final suffix;
+  the saved `route_id` is the truth.
+
+  `attrs` carries the draft's `route_short_name`, `route_long_name`, `route_type`
+  and an optional manual `route_id` (string or atom keys). A manual duplicate is
+  `{:error, :duplicate_route_id}` and is never suffixed.
+  """
+  @spec suggest_route_id(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, id_inference()} | {:error, :duplicate_route_id}
+  def suggest_route_id(organization_id, gtfs_version_id, attrs)
+      when is_map(attrs) and is_binary(organization_id) and is_binary(gtfs_version_id) do
+    attrs = stringify_keys(attrs)
+
+    infer_route_id(
+      id_examples(attrs, organization_id, gtfs_version_id),
+      attrs,
+      taken_route_ids(organization_id, gtfs_version_id)
+    )
+  end
+
+  def suggest_route_id(_organization_id, _gtfs_version_id, _attrs),
+    do: {:error, :duplicate_route_id}
+
+  defp taken_route_ids(organization_id, gtfs_version_id) do
+    from(route in Route,
+      where:
+        route.organization_id == ^organization_id and
+          route.gtfs_version_id == ^gtfs_version_id,
+      select: route.route_id
+    )
+    |> Repo.all()
+  end
+
   # Same-mode example routes for identifier inference; a non-numeric submitted
   # mode has no examples and falls back to the number or name slug.
-  defp id_examples(attrs, audit) do
+  defp id_examples(attrs, organization_id, gtfs_version_id) do
     case normalize_value(:route_type, Map.get(attrs, "route_type") || Map.get(attrs, :route_type)) do
       route_type when is_integer(route_type) ->
         from(route in Route,
           where:
-            route.organization_id == ^audit.organization_id and
-              route.gtfs_version_id == ^audit.gtfs_version_id and
+            route.organization_id == ^organization_id and
+              route.gtfs_version_id == ^gtfs_version_id and
               route.route_type == ^route_type,
           select: %{route_id: route.route_id, route_short_name: route.route_short_name}
         )

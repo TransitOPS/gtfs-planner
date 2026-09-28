@@ -943,6 +943,33 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Reads the version-scoped agency options and mode counts the create drawer
+  presents (R3, R2).
+
+  See `GtfsPlanner.Gtfs.Routes.route_creation_options/2`: the same scoped reads
+  the route editor read model builds, so the drawer and Route > Details cannot
+  disagree about the version's agencies or modes.
+  """
+  @spec route_creation_options(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
+          agencies: [map()],
+          mode_counts: [map()]
+        }
+  def route_creation_options(organization_id, gtfs_version_id),
+    do: Routes.route_creation_options(organization_id, gtfs_version_id)
+
+  @doc """
+  Previews the route identifier the create command would allocate (R3).
+
+  See `GtfsPlanner.Gtfs.Routes.suggest_route_id/3` for the inference and its
+  duplicate result. The preview never establishes persisted truth: the command
+  re-allocates under the published-version write lock.
+  """
+  @spec suggest_route_id(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, map()} | {:error, :duplicate_route_id}
+  def suggest_route_id(organization_id, gtfs_version_id, attrs),
+    do: Routes.suggest_route_id(organization_id, gtfs_version_id, attrs)
+
+  @doc """
   Creates one editor route for a verified creation attempt with audit-backed
   replay protection (R3).
 

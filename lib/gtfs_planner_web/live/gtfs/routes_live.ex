@@ -21,12 +21,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
+  alias GtfsPlannerWeb.Gtfs.RouteFormComponents
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # The keys stay strings because LiveView params are string-keyed; an atom list
-  # would make `Map.take/2` return `%{}`.
-  @new_route_fields ~w(route_id route_type route_short_name route_long_name agency_id route_desc route_url route_color route_text_color)
+  # would make `Map.take/2` return `%{}`. This is the editor allowlist R1 owns,
+  # and it starts with the natural ID because the drawer is the one place that
+  # field is creation-legal. Tenant, version, UUID, active and derivation keys
+  # are still never read from the browser, and `strip_managed_route_id/2` drops
+  # the ID again whenever the drawer has not been overridden, so the command
+  # stays the only allocator.
+  @new_route_fields ~w(route_id route_short_name route_long_name route_type agency_id route_desc route_url route_color route_text_color)
   @new_route_param_keys @new_route_fields ++ Enum.map(@new_route_fields, &("_unused_" <> &1))
+
+  # A creation attempt is signed once, when the drawer opens, and travels with
+  # the form: browser field edits cannot mint a new one, and only the verified
+  # payload reaches the domain command (R3). The salt names this purpose, and
+  # the age is a bound on a drawer left open rather than a replay window: the
+  # attempt's own replay protection is the retained create log (INV-3).
+  @creation_attempt_salt "route_creation_attempt"
+  @creation_attempt_max_age 14_400
+
+  # Anything the operator typed or chose makes the drawer dirty, so closing it
+  # asks once instead of discarding a draft silently (the reference's
+  # "Discard this route?"). A preselected agency is not a draft.
+  @new_route_draft_fields ~w(route_short_name route_long_name route_desc route_url route_color route_text_color)
 
   # The agency setup form's id prefixes its field ids, so the drawer's timezone
   # field and the save failure the `FormErrorFocus` hook focuses agree.
@@ -54,6 +73,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:routes_state, :ready)
      |> assign(:new_route_form, nil)
      |> assign(:agency_options, [])
+     |> assign(:new_route_mode_counts, [])
+     |> assign(:new_route_attempt, nil)
+     |> assign(:new_route_id_mode, :auto)
+     |> assign(:new_route_id_suggestion, nil)
+     |> assign(:new_route_text_mode, "automatic")
+     |> assign(:new_route_dirty?, false)
+     |> assign(:new_route_pending?, false)
+     |> assign(:new_route_failure, nil)
+     |> assign(:new_route_confirm_discard?, false)
      |> assign(:new_route_agency_required?, false)
      |> assign(:agency_health, %{
        agency_count: 0,
@@ -375,32 +403,72 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   @impl true
   def handle_event("validate_new_route", %{"route" => params}, socket) do
-    if is_nil(socket.assigns.new_route_form) do
+    if is_nil(socket.assigns.new_route_form) or socket.assigns.new_route_pending? do
       {:noreply, socket}
     else
-      form =
-        socket
-        |> new_route_changeset(new_route_attrs(socket, params))
-        |> Map.put(:action, :validate)
-        |> to_form(as: :route)
-
-      {:noreply, assign(socket, :new_route_form, form)}
+      {:noreply, assign_new_route_draft(socket, params, :validate)}
     end
   end
 
   @impl true
   def handle_event("validate_new_route", _params, socket), do: {:noreply, socket}
 
+  # Cancel, the close button and, through the `OverlayDialog` hook's dismiss
+  # control, Escape and the backdrop all land here, so a changed draft is asked
+  # about exactly once.
   @impl true
   def handle_event("close_new_route", _params, socket) do
-    {:noreply, close_new_route(socket)}
+    {:noreply, request_new_route_close(socket)}
   end
 
   @impl true
-  def handle_event("save_new_route", %{"route" => params}, socket) do
+  def handle_event("cancel_discard_new_route", _params, socket) do
+    {:noreply, assign(socket, :new_route_confirm_discard?, false)}
+  end
+
+  @impl true
+  def handle_event("confirm_discard_new_route", _params, socket) do
+    {:noreply, close_new_route(socket)}
+  end
+
+  # "Change" hands the identifier to the editor; the generated value travels
+  # into the field so switching back and forth is lossless.
+  @impl true
+  def handle_event("use_manual_route_id", _params, socket) do
+    if is_nil(socket.assigns.new_route_form) or socket.assigns.new_route_id_mode == :manual do
+      {:noreply, socket}
+    else
+      # The form already carries the generated value, so the override field
+      # opens on it and switching back is lossless.
+      {:noreply,
+       socket
+       |> assign(:new_route_id_mode, :manual)
+       |> push_event("focus_scoped_target", %{id: "new-route-id-manual"})}
+    end
+  end
+
+  @impl true
+  def handle_event("use_generated_route_id", _params, socket) do
+    if is_nil(socket.assigns.new_route_form) or socket.assigns.new_route_id_mode == :auto do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:new_route_id_mode, :auto)
+       |> apply_generated_route_id()}
+    end
+  end
+
+  @impl true
+  def handle_event("save_new_route", %{"route" => params} = event, socket) do
     cond do
       is_nil(socket.assigns.new_route_form) ->
         # A replayed or late submit after the drawer closed must not insert.
+        {:noreply, socket}
+
+      # The reference disables the whole form while a save is in flight, so a
+      # double click is one create rather than two.
+      socket.assigns.new_route_pending? ->
         {:noreply, socket}
 
       not editor_access?(socket) ->
@@ -413,7 +481,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
          )}
 
       true ->
-        create_new_route(socket, params)
+        create_new_route(socket, params, event["text_mode"], event["_attempt"])
     end
   end
 
@@ -834,10 +902,35 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
       <.new_route_drawer
         form={@new_route_form}
+        attempt={@new_route_attempt}
         agency_options={@agency_options}
+        mode_counts={@new_route_mode_counts}
+        id_mode={@new_route_id_mode}
+        id_suggestion={@new_route_id_suggestion}
+        text_mode={@new_route_text_mode}
+        dirty?={@new_route_dirty?}
+        pending?={@new_route_pending?}
+        failure={@new_route_failure}
         agency_required?={@new_route_agency_required?}
-        gtfs_version_id={@current_gtfs_version.id}
+        version={@current_gtfs_version}
       />
+
+      <.confirm_dialog
+        :if={@new_route_confirm_discard?}
+        id="new-route-discard"
+        open={true}
+        title="Discard this route?"
+        confirm_label="Discard route"
+        pending_label="Discarding\u2026"
+        cancel_label="Keep editing"
+        on_confirm="confirm_discard_new_route"
+        on_cancel="cancel_discard_new_route"
+        described_by="new-route-discard-message"
+      >
+        <p id="new-route-discard-message">
+          You started this route. Nothing has been created yet, and your entries will be lost.
+        </p>
+      </.confirm_dialog>
 
       <.agency_setup_drawer
         form={@agency_setup_form}
@@ -1011,23 +1104,84 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   attr :form, :any, default: nil
+  attr :attempt, :string, default: nil
   attr :agency_options, :list, default: []
+  attr :mode_counts, :list, default: []
+  attr :id_mode, :atom, default: :auto
+  attr :id_suggestion, :any, default: nil
+  attr :text_mode, :string, default: nil
+  attr :dirty?, :boolean, default: false
+  attr :pending?, :boolean, default: false
+  attr :failure, :any, default: nil
   attr :agency_required?, :boolean, default: false
-  attr :gtfs_version_id, :string, required: true
+  attr :version, :any, required: true
 
+  # The create drawer is the reference's `create-drawer` composed from the
+  # shared controls step 18 and step 20 published: the header is the live
+  # preview, the body is the shared identity and color grammar, and the
+  # identifier block explains the value the command will allocate or takes the
+  # operator's override. This LiveView owns the state and the events; the
+  # controls stay stateless (INV-6).
   defp new_route_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:manual_id?, assigns.id_mode == :manual)
+      |> assign(:id_errors, new_route_id_errors(assigns.form))
+      |> assign(:preview, new_route_preview(assigns.form, assigns.agency_options))
+
     ~H"""
     <.drawer
       id="new-route-drawer"
       open={not is_nil(@form)}
+      pending={@pending?}
       on_close="close_new_route"
-      title="New route"
+      title="Create route"
       initial_focus={:first_field}
       return_focus_id="new-route-trigger"
-      class="max-w-[min(100vw,40rem)]"
+      class="max-w-[min(100vw,520px)]"
     >
+      <:header_actions>
+        <span
+          :if={@dirty?}
+          id="new-route-unsaved"
+          class="badge badge-warning badge-sm whitespace-nowrap"
+        >
+          Unsaved changes
+        </span>
+      </:header_actions>
+
       <div id="new-route-form-panel" phx-hook="FormErrorFocus">
-        <div :if={@agency_required?} class="mb-4">
+        <p id="new-route-drawer-scope" class="text-[13px] text-muted">
+          Adds a route to {@version.name}
+        </p>
+
+        <%!-- The header preview: the badge and name as riders will see them,
+               computed from this draft alone and never from a saved row. --%>
+        <div
+          id="new-route-preview"
+          class="mt-4 flex min-h-12 items-center gap-3 rounded-control bg-canvas px-3 py-2"
+        >
+          <RouteIdentity.route_badge
+            route={@preview.route}
+            class="h-8 min-w-9 text-[15px] font-extrabold"
+          />
+          <span class="min-w-0 flex-1">
+            <span
+              id="new-route-preview-name"
+              class={[
+                "block truncate text-[15px] font-[650]",
+                if(@preview.name == "", do: "text-muted", else: "text-strong")
+              ]}
+            >
+              {if(@preview.name == "", do: "Name appears here", else: @preview.name)}
+            </span>
+            <span id="new-route-preview-meta" class="block text-[13px] text-muted">
+              {@preview.meta}
+            </span>
+          </span>
+        </div>
+
+        <div :if={@agency_required?} class="mt-4">
           <.callout
             id="new-route-agency-required"
             kind="warning"
@@ -1038,7 +1192,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             again. Nothing was saved.
             <.link
               id="new-route-agency-settings"
-              navigate={agencies_path(@gtfs_version_id)}
+              navigate={agencies_path(@version.id)}
               class="mt-2 block font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
               Open Settings › Agencies
@@ -1046,147 +1200,284 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           </.callout>
         </div>
 
-        <.new_route_form :if={@form} form={@form} agency_options={@agency_options} />
+        <.form
+          :if={@form}
+          for={@form}
+          id="new-route-form"
+          novalidate
+          phx-change="validate_new_route"
+          phx-submit="save_new_route"
+          class="mt-5 grid gap-6"
+        >
+          <%!-- One signed attempt per drawer opening, minted by the server and
+                verified before the command runs: field edits never mint a new
+                one, and the domain never sees a browser-claimed actor (R3). --%>
+          <input type="hidden" name="_attempt" id="new-route-attempt" value={@attempt} />
+
+          <div :if={new_route_save_failed?(@form)}>
+            <.callout
+              id="new-route-form-error"
+              kind="error"
+              title="Route not created. Check the highlighted fields"
+              tabindex="-1"
+            >
+              Nothing was created. Correct the fields marked below, then create the route again.
+            </.callout>
+          </div>
+
+          <div :if={@failure} id="new-route-failure" tabindex="-1">
+            <.callout kind="error" title="Route not created">
+              {@failure.message}
+              <.link
+                :if={@failure.link}
+                id="new-route-failure-link"
+                navigate={@failure.link}
+                class="mt-2 block font-medium text-primary underline-offset-2 hover:underline"
+              >
+                Open the route this drawer already created
+              </.link>
+            </.callout>
+          </div>
+
+          <RouteFormComponents.identity_fields
+            form={@form}
+            prefix="new-route"
+            mode_counts={@mode_counts}
+            agency_options={@agency_options}
+          />
+
+          <RouteFormComponents.color_fields
+            form={@form}
+            prefix="new-route"
+            text_mode={@text_mode}
+          />
+
+          <%!-- Natural ID is creation-only (R1): the drawer either shows the
+                value the command will allocate, with the reason, or takes an
+                override the command rechecks under the version lock. --%>
+          <div id="new-route-identity-fields" class="grid gap-1.5 border-t border-subtle pt-5">
+            <div class="flex items-center justify-between gap-3">
+              <label
+                :if={@manual_id?}
+                for="new-route-id-manual"
+                class="text-[13px] font-[650] text-default"
+              >
+                Route ID
+              </label>
+              <p :if={not @manual_id?} class="text-[13px] font-[650] text-default">Route ID</p>
+              <button
+                :if={not @manual_id?}
+                type="button"
+                id="new-route-id-edit"
+                phx-click="use_manual_route_id"
+                class="inline-flex min-h-9 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+              >
+                <.icon name="hero-pencil-square" class="mr-1 size-3.5" /> Change
+              </button>
+              <button
+                :if={@manual_id?}
+                type="button"
+                id="new-route-id-auto"
+                phx-click="use_generated_route_id"
+                class="inline-flex min-h-9 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+              >
+                Use the generated ID
+              </button>
+            </div>
+
+            <div :if={not @manual_id?} id="new-route-id-generated">
+              <p
+                id="new-route-id-value"
+                class={[
+                  "flex min-h-11 items-center rounded-control bg-canvas px-3 font-mono text-sm",
+                  if(generated_route_id(@id_suggestion) == "",
+                    do: "text-muted",
+                    else: "text-strong"
+                  )
+                ]}
+              >
+                {generated_route_id(@id_suggestion)}
+              </p>
+              <p id="new-route-id-reason" class="mt-1.5 text-[13px] text-muted">
+                {generated_route_id_reason(@id_suggestion, @preview.mode)}
+              </p>
+            </div>
+
+            <div :if={@manual_id?} class="grid gap-1.5">
+              <input
+                type="text"
+                id="new-route-id-manual"
+                name="route[route_id]"
+                value={@form[:route_id].value}
+                phx-debounce="blur"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="255"
+                aria-invalid={to_string(@id_errors != [])}
+                aria-describedby={
+                  if(@id_errors == [],
+                    do: "new-route-id-help",
+                    else: "new-route-id-error new-route-id-help"
+                  )
+                }
+                class="h-11 max-w-[240px] w-full rounded-control border border-control bg-white px-3 font-mono text-sm text-strong placeholder:text-muted aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-fg"
+              />
+              <p id="new-route-id-help" class="mt-1.5 text-[13px] text-muted">
+                Unique in this version. Trips, transfers and fare rules refer to it, so it can't
+                change later.
+              </p>
+            </div>
+
+            <p
+              :if={@id_errors != []}
+              id="new-route-id-error"
+              class="mt-1.5 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
+            >
+              <.icon name="hero-exclamation-circle" class="mt-px size-3.5 shrink-0" />
+              {Enum.join(@id_errors, " ")}
+            </p>
+          </div>
+
+          <p class="rounded-control bg-canvas px-3 py-2.5 text-[13px] text-muted">
+            Add a description, web page and display order on the route's Details tab after you
+            create it.
+          </p>
+
+          <div class="flex flex-wrap items-center justify-end gap-3">
+            <.button
+              id="new-route-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_new_route"
+            >
+              Cancel
+            </.button>
+            <.button
+              type="submit"
+              id="new-route-submit"
+              class="min-h-11"
+              disabled={@pending?}
+              phx-disable-with="Creating…"
+            >
+              Create route
+            </.button>
+          </div>
+        </.form>
       </div>
     </.drawer>
     """
   end
 
-  attr :form, :any, required: true
-  attr :agency_options, :list, required: true
+  # The drawer's own live preview, computed from the draft form alone. The badge
+  # is the real `RouteIdentity.route_badge/1`, so a draft can never be shown
+  # wearing a treatment the list would not draw (INV-6, C-2).
+  # The drawer stays in the DOM while it is closed, so the `OverlayDialog` hook
+  # keeps its element and the form is simply absent: every draft-derived value
+  # is answered for that state too.
+  defp new_route_id_errors(nil), do: []
+  defp new_route_id_errors(form), do: RouteFormComponents.field_errors(form[:route_id])
 
-  defp new_route_form(assigns) do
-    assigns =
-      assign(
-        assigns,
-        :show_errors?,
-        assigns.form.source.action == :insert and not assigns.form.source.valid?
-      )
+  defp new_route_preview(nil, _agency_options), do: new_route_preview_values("", "", "", nil)
 
-    ~H"""
-    <.form
-      for={@form}
-      id="new-route-form"
-      novalidate
-      phx-change="validate_new_route"
-      phx-submit="save_new_route"
-      class="space-y-1"
-    >
-      <div :if={@show_errors?} class="mb-4">
-        <.callout
-          id="new-route-form-error"
-          kind="error"
-          title="Check the highlighted fields"
-          tabindex="-1"
-        >
-          Nothing was saved. Correct the fields marked below, then create the route again.
-        </.callout>
-      </div>
-
-      <div class="sm:max-w-[20rem]">
-        <.input
-          field={@form[:route_id]}
-          type="text"
-          label="Route ID"
-          phx-debounce="blur"
-          help="route_id — unique within this GTFS version, such as 32 or RED."
-        />
-      </div>
-
-      <div class="sm:max-w-[16rem]">
-        <.input
-          field={@form[:route_short_name]}
-          type="text"
-          label="Short name"
-          phx-debounce="blur"
-          help="route_short_name — the short label riders see, such as 32. Enter a short name, a long name, or both."
-        />
-      </div>
-
-      <.input
-        field={@form[:route_long_name]}
-        type="text"
-        label="Long name"
-        phx-debounce="blur"
-        help="route_long_name — the full name, such as Downtown – Airport."
-      />
-
-      <div class="sm:max-w-[20rem]">
-        <.input
-          field={@form[:route_type]}
-          type="select"
-          label="Mode"
-          prompt="Select a mode"
-          options={Route.route_type_options()}
-          help="route_type — the kind of vehicle that serves this route."
-        />
-      </div>
-
-      <div :if={@agency_options != []} class="sm:max-w-[24rem]">
-        <.input
-          field={@form[:agency_id]}
-          type="select"
-          label="Agency"
-          prompt={agency_prompt(@form, @agency_options)}
-          options={@agency_options}
-          help="agency_id — the agency that operates this route."
-        />
-      </div>
-
-      <.input
-        field={@form[:route_desc]}
-        type="textarea"
-        label="Description (optional)"
-        phx-debounce="blur"
-        help="route_desc — extra detail for riders, such as service hours or major stops."
-      />
-
-      <.input
-        field={@form[:route_url]}
-        type="url"
-        label="URL (optional)"
-        phx-debounce="blur"
-        help="route_url — a web page about this route, such as https://example.com/routes/32."
-      />
-
-      <div class="grid gap-x-4 sm:grid-cols-2">
-        <.input
-          field={@form[:route_color]}
-          type="text"
-          label="Route color (optional)"
-          phx-debounce="blur"
-          help="route_color — six hex digits without #, such as 0055A4. Blank uses FFFFFF."
-        />
-        <.input
-          field={@form[:route_text_color]}
-          type="text"
-          label="Text color (optional)"
-          phx-debounce="blur"
-          help="route_text_color — six hex digits without #. Blank uses 000000."
-        />
-      </div>
-
-      <div class="flex flex-wrap items-center justify-end gap-3 pt-3">
-        <.button
-          type="button"
-          variant="secondary"
-          class="min-h-11"
-          phx-click="close_new_route"
-        >
-          Cancel
-        </.button>
-        <.button
-          type="submit"
-          id="new-route-submit"
-          class="min-h-11"
-          phx-disable-with="Creating…"
-        >
-          Create route
-        </.button>
-      </div>
-    </.form>
-    """
+  defp new_route_preview(form, agency_options) do
+    new_route_preview_values(
+      trimmed_field(form[:route_short_name].value),
+      trimmed_field(form[:route_long_name].value),
+      trimmed_field(form[:route_type].value),
+      agency_name_for(agency_options, trimmed_field(form[:agency_id].value)),
+      trimmed_field(form[:route_id].value),
+      trimmed_field(form[:route_color].value),
+      trimmed_field(form[:route_text_color].value)
+    )
   end
+
+  defp new_route_preview_values(
+         short,
+         long,
+         mode,
+         agency,
+         route_id \\ "",
+         color \\ "",
+         text \\ ""
+       ) do
+    name =
+      cond do
+        long != "" -> long
+        short != "" -> short
+        true -> ""
+      end
+
+    mode_label = mode_label_for(mode)
+    meta = [mode_label, agency] |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(" · ")
+
+    %{
+      name: name,
+      mode: mode_label,
+      meta: if(meta == "", do: "Mode not chosen", else: meta),
+      # The badge is the real `RouteIdentity.route_badge/1` reading this draft's
+      # own colors, so the preview can never wear a treatment the saved row
+      # would not draw (INV-6, C-2).
+      route: %{
+        route_id: route_id,
+        route_short_name: short,
+        route_color: blank_to(color, "FFFFFF"),
+        route_text_color: blank_to(text, "000000")
+      }
+    }
+  end
+
+  defp blank_to(value, default), do: if(value == "", do: default, else: value)
+
+  defp trimmed_field(nil), do: ""
+  defp trimmed_field(value) when is_binary(value), do: String.trim(value)
+  defp trimmed_field(_value), do: ""
+
+  defp mode_label_for(""), do: "Mode not chosen"
+
+  defp mode_label_for(value) do
+    Enum.find_value(Route.route_type_options(), "Mode not chosen", fn {label, mode} ->
+      if to_string(mode) == value, do: label
+    end)
+  end
+
+  defp agency_name_for(_options, ""), do: nil
+
+  defp agency_name_for(options, agency_id) do
+    Enum.find_value(options, fn option ->
+      if option.agency_id == agency_id, do: option.agency_name
+    end)
+  end
+
+  # The generated value and the reason the reference states under it, phrased
+  # from the inference reason the domain returned rather than recomputed here.
+  defp generated_route_id(nil), do: ""
+
+  defp generated_route_id(%{route_id: route_id}) when is_binary(route_id) do
+    if String.trim(route_id) == "", do: "", else: String.trim(route_id)
+  end
+
+  defp generated_route_id(_suggestion), do: ""
+
+  defp generated_route_id_reason(nil, _mode_label),
+    do: "Generated from the route number when you type one."
+
+  defp generated_route_id_reason(%{route_id: ""}, _mode_label),
+    do: "Enter a route number or name first."
+
+  defp generated_route_id_reason(%{mode: :manual}, _mode_label), do: "Uses your own route ID."
+
+  defp generated_route_id_reason(%{reason: :inferred_prefix}, mode_label),
+    do: "Follows the pattern of this version's other #{String.downcase(mode_label)} routes."
+
+  defp generated_route_id_reason(%{reason: :number}, _mode_label),
+    do: "Made from the route number."
+
+  defp generated_route_id_reason(%{reason: :name_slug}, _mode_label),
+    do: "Made from the route name."
+
+  defp generated_route_id_reason(_suggestion, _mode_label),
+    do: "Made from the route name; this version has no naming pattern to follow."
 
   defp onboarding?(assigns), do: unconstrained_empty?(assigns) and no_agency?(assigns)
 
@@ -1371,47 +1662,139 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp agency_setup_save_failed?(_form), do: false
 
-  defp new_route_attrs(socket, params) do
-    # `Route.changeset/2` casts the scope columns, so this allow-list is the
-    # tenant boundary. `_unused_*` keys are kept for `used_input?/1` and ignored
-    # by `cast`.
-    params
-    |> Map.take(@new_route_param_keys)
-    |> Map.put("organization_id", socket.assigns.current_organization.id)
-    |> Map.put("gtfs_version_id", socket.assigns.current_gtfs_version.id)
+  defp new_route_attrs(_socket, params) do
+    # R1's allow-list is the browser boundary: tenant, version, UUID, active,
+    # derivation and any unlisted key never reach the command, which takes its
+    # scope from the verified attempt and the audit context. `_unused_*` keys
+    # are kept for `used_input?/1` and ignored by the changeset.
+    Map.take(params, @new_route_param_keys)
   end
 
-  # The New route drawer always lists the version's agencies as they are now. The
-  # first-agency handoff names the agency it just created instead of relying on a
-  # default derived from a read taken before the create, which is what FH-33
-  # rejects; every other entry derives the default from the fresh read.
+  # The New route drawer always reads the version's agencies and modes as they
+  # are now. The first-agency handoff names the agency it just created instead
+  # of relying on a default derived from a read taken before the create, which
+  # is what FH-33 rejects; every other entry derives the default from the fresh
+  # read. The identifier preview comes from the same scoped read the command
+  # uses, so the drawer never presents a second inference (INV-6).
   defp open_route_drawer(socket, agency_id \\ nil) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
+    options = Gtfs.route_creation_options(organization_id, gtfs_version_id)
 
-    agency_options = list_agency_options(organization_id, gtfs_version_id)
+    socket =
+      socket
+      |> assign(:agency_options, options.agencies)
+      |> assign(:new_route_mode_counts, options.mode_counts)
+      |> assign(:new_route_attempt, sign_creation_attempt(socket))
+      |> assign(:new_route_id_mode, :auto)
+      |> assign(:new_route_id_suggestion, nil)
+      |> assign(:new_route_text_mode, "automatic")
+      |> assign(:new_route_dirty?, false)
+      |> assign(:new_route_pending?, false)
+      |> assign(:new_route_failure, nil)
+      |> assign(:new_route_confirm_discard?, false)
+      |> assign(:new_route_agency_required?, false)
+      |> assign(:new_route_form, nil)
 
-    form =
-      %Route{}
-      |> Route.changeset(%{"agency_id" => agency_id || default_agency_id(socket, agency_options)})
-      |> to_form(as: :route)
-
-    socket
-    |> assign(:agency_options, agency_options)
-    |> assign(:new_route_agency_required?, false)
-    |> assign(:new_route_form, form)
+    attrs = %{"agency_id" => agency_id || default_agency_id(socket, options.agencies)}
+    assign_new_route_draft(socket, attrs, nil)
   end
 
-  defp list_agency_options(organization_id, gtfs_version_id) do
-    organization_id
-    |> Gtfs.list_agencies(gtfs_version_id)
-    |> Enum.map(&{"#{&1.agency_name} (#{&1.agency_id})", &1.agency_id})
+  # The draft's own changeset, in `:create` mode because this drawer is the one
+  # place the natural ID is entered: that is the only mode that casts
+  # `route_id`, so the shared controls and the override field can show and
+  # validate the effective identifier. What the *command* receives is still
+  # R1's allowlist, and the identifier is dropped again in automatic mode, so
+  # the draft's cast never widens the persisted-field boundary.
+  defp new_route_draft_changeset(socket, attrs) do
+    Route.editor_changeset(
+      %Route{
+        organization_id: socket.assigns.current_organization.id,
+        gtfs_version_id: socket.assigns.current_gtfs_version.id
+      },
+      draft_attrs(socket, attrs),
+      :create
+    )
+  end
+
+  defp draft_attrs(socket, attrs) do
+    effective = effective_route_id(socket, attrs)
+
+    if effective, do: Map.put(attrs, "route_id", effective), else: attrs
+  end
+
+  # In manual mode the operator's own text is the draft's, blank included; in
+  # automatic mode the value is whatever the command would allocate.
+  defp effective_route_id(socket, attrs) do
+    case socket.assigns.new_route_id_mode do
+      :manual -> to_string(attrs["route_id"] || "")
+      :auto -> socket.assigns.new_route_id_suggestion |> generated_route_id()
+    end
+  end
+
+  # One draft keystroke: keep the transient text mode, re-read the identifier
+  # preview from the domain's own inference, validate what the operator typed
+  # with that value in place, and re-evaluate dirtiness.
+  defp assign_new_route_draft(socket, params, action) do
+    attrs = new_route_attrs(socket, params)
+    text_mode = params["text_mode"] || socket.assigns.new_route_text_mode
+    socket = assign(socket, :new_route_id_suggestion, suggest_route_id(socket, attrs))
+
+    changeset =
+      socket
+      |> draft_attrs(attrs)
+      |> then(&new_route_draft_changeset(socket, &1))
+      |> then(&if action, do: Map.put(&1, :action, action), else: &1)
+
+    socket
+    |> assign(:new_route_form, to_form(changeset, as: :route))
+    |> assign(:new_route_text_mode, text_mode)
+    |> assign(:new_route_dirty?, new_route_dirty?(attrs, text_mode))
+  end
+
+  defp new_route_dirty?(attrs, text_mode) do
+    text_entered? =
+      Enum.any?(@new_route_draft_fields, fn field ->
+        String.trim(to_string(attrs[field] || "")) != ""
+      end)
+
+    text_entered? or present?(attrs["route_type"]) or present?(attrs["route_id"]) or
+      text_mode == "custom"
+  end
+
+  # The identifier preview is the automatic inference only: a manual override is
+  # never suffixed or renamed, so it is the command that decides whether it is
+  # free, and the drawer shows the command's own error when it is not.
+  defp suggest_route_id(socket, attrs) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.suggest_route_id(organization_id, gtfs_version_id, Map.delete(attrs, "route_id")) do
+      {:ok, allocation} -> allocation
+      {:error, :duplicate_route_id} -> nil
+    end
+  end
+
+  # Leaving manual mode drops the override and re-runs the preview, so the
+  # drawer shows the value the command will allocate again.
+  defp apply_generated_route_id(socket) do
+    form = socket.assigns.new_route_form
+    params = Map.delete(form.source.params || %{}, "route_id")
+    socket = assign(socket, :new_route_id_suggestion, suggest_route_id(socket, params))
+
+    changeset =
+      socket
+      |> draft_attrs(params)
+      |> then(&new_route_draft_changeset(socket, &1))
+      |> Map.put(:action, form.source.action)
+
+    assign(socket, :new_route_form, to_form(changeset, as: :route))
   end
 
   # The drawer opens with the agency already chosen when the version leaves no
   # real choice: its own only agency, or the agency the catalog is filtered to.
   defp default_agency_id(socket, agency_options) do
-    agency_ids = Enum.map(agency_options, &elem(&1, 1))
+    agency_ids = Enum.map(agency_options, & &1.agency_id)
     filtered_id = socket.assigns.filter_form.params["agency_id"]
 
     cond do
@@ -1421,100 +1804,183 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     end
   end
 
-  # "Choose agency" is only a choice when there is one to make (AC-23).
-  defp agency_prompt(form, agency_options) do
-    if length(agency_options) > 1 and form[:agency_id].value in [nil, ""] do
-      "Choose agency"
-    end
-  end
-
   defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 
-  defp new_route_changeset(socket, attrs) do
-    changeset = Route.changeset(%Route{}, attrs)
+  # A failed save is the only state that earns the view-level banner; validation
+  # on change marks its own fields and must not shout about a save never
+  # attempted.
+  defp new_route_save_failed?(%Phoenix.HTML.Form{
+         source: %Ecto.Changeset{action: action, errors: errors}
+       })
+       when action in [:insert, :update] and errors != [],
+       do: true
 
-    # Only the drawer's own blank choice is required here: with several agencies
-    # it offers no default, so nothing was chosen. The zero/one/many agency rule
-    # belongs to `GtfsPlanner.Gtfs.FeedSettings.lock_agency_for_reference!/3`,
-    # which `Gtfs.create_version_route/3` calls inside the insert's own
-    # transaction (R4, INV-1) — and there a blank choice resolves to the version's
-    # single agency, so this must not refuse that case.
-    if length(socket.assigns.agency_options) > 1 do
-      Changeset.validate_required(changeset, [:agency_id])
-    else
-      changeset
-    end
-  end
+  defp new_route_save_failed?(_form), do: false
+
+  defp request_new_route_close(%{assigns: %{new_route_dirty?: true}} = socket),
+    do: assign(socket, :new_route_confirm_discard?, true)
+
+  defp request_new_route_close(socket), do: close_new_route(socket)
 
   defp close_new_route(socket) do
     socket
     |> assign(:new_route_form, nil)
     |> assign(:agency_options, [])
+    |> assign(:new_route_mode_counts, [])
+    |> assign(:new_route_attempt, nil)
+    |> assign(:new_route_id_mode, :auto)
+    |> assign(:new_route_id_suggestion, nil)
+    |> assign(:new_route_text_mode, "automatic")
+    |> assign(:new_route_dirty?, false)
+    |> assign(:new_route_pending?, false)
+    |> assign(:new_route_failure, nil)
+    |> assign(:new_route_confirm_discard?, false)
     |> assign(:new_route_agency_required?, false)
   end
 
-  defp create_new_route(socket, params) do
-    attrs = new_route_attrs(socket, params)
+  # One signed attempt per drawer opening (R3). The payload is exactly what the
+  # command rechecks, and the signature is what makes the domain's actor
+  # trustworthy: a browser-claimed actor cannot reach the mutation, and a field
+  # edit cannot mint a fresh attempt.
+  defp sign_creation_attempt(socket) do
+    Phoenix.Token.sign(GtfsPlannerWeb.Endpoint, @creation_attempt_salt, %{
+      creation_attempt_id: Ecto.UUID.generate(),
+      actor_id: socket.assigns.current_user.id,
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id
+    })
+  end
 
-    with {:ok, _validated} <-
-           socket |> new_route_changeset(attrs) |> Changeset.apply_action(:insert),
-         {:ok, route} <-
-           Gtfs.create_version_route(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             attrs
-           ) do
-      # The patch re-enters `handle_params/3`, which reloads the catalog with
-      # the current query.
-      {:noreply,
-       socket
-       |> close_new_route()
-       |> put_flash(:info, "Route #{route.route_id} created.")
-       |> push_patch(
-         to:
-           ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{build_query_params(socket, socket.assigns.page)}"
-       )}
-    else
-      {:error, %Changeset{} = changeset} ->
-        show_new_route_error(socket, changeset)
+  # A missing, malformed, foreign or expired attempt leaves the draft on screen
+  # with no blind save, which is the recovery R3 asks for: check the route list
+  # and open a fresh drawer rather than retrying with another suffix.
+  defp verify_creation_attempt(nil), do: :error
 
-      # The version's agency set moved between opening the drawer and saving, so
-      # the context's own answer is the one that lands on the field. The refusal
-      # is rebuilt from what was submitted and carries an action, because Phoenix
-      # drops the errors of a changeset that has none.
-      {:error, :agency_not_found} ->
-        show_new_route_error(
-          socket,
-          socket
-          |> new_route_changeset(attrs)
-          |> Changeset.add_error(:agency_id, "is not an agency in this version")
-          |> Map.put(:action, :validate)
-        )
+  defp verify_creation_attempt(token) when is_binary(token) do
+    case Phoenix.Token.verify(
+           GtfsPlannerWeb.Endpoint,
+           @creation_attempt_salt,
+           token,
+           max_age: @creation_attempt_max_age
+         ) do
+      {:ok, attempt} -> attempt
+      {:error, _reason} -> :error
+    end
+  end
 
-      {:error, :agency_required} ->
-        # The editor clicked Create route at the bottom of a long drawer, so the
-        # refusal has to be brought into view rather than inserted above it.
+  defp verify_creation_attempt(_token), do: :error
+
+  # The drawer's one write path (R3): the verified attempt and the audit context
+  # reach `Gtfs.create_editor_route/3`, which reauthorizes, locks the published
+  # version, resolves the agency, allocates the identifier and writes the route
+  # audit in one serializable transaction. Nothing is written by this function.
+  defp create_new_route(socket, params, text_mode, token) do
+    case verify_creation_attempt(token) do
+      :error ->
         {:noreply,
          socket
-         |> assign(:new_route_agency_required?, true)
-         |> push_event("focus_scoped_target", %{id: "new-route-agency-required"})}
+         |> assign(:new_route_failure, %{
+           message:
+             "This create attempt is no longer valid, so nothing was created. Check the route list, then choose Create route to start a fresh one.",
+           link: nil,
+           reason: :invalid_attempt
+         })
+         |> push_event("focus_scoped_target", %{id: "new-route-failure"})}
+
+      attempt ->
+        # The transient text mode is transport metadata R1 lets the changeset
+        # pop; the identifier follows the drawer's own override state, so an
+        # untouched draft leaves the allocation to the command.
+        attrs =
+          socket
+          |> new_route_attrs(params)
+          |> Map.put("text_mode", text_mode)
+          |> strip_managed_route_id(socket.assigns.new_route_id_mode)
+
+        run_creation(socket, attrs, attempt)
+    end
+  end
+
+  defp strip_managed_route_id(attrs, :manual), do: attrs
+  defp strip_managed_route_id(attrs, :auto), do: Map.delete(attrs, "route_id")
+
+  @consumed_message "Nothing was created: this drawer already created a route that has since been deleted. Open a fresh Create route to create another."
+
+  @busy_message "Nothing was created and your entries are still here. Choose Create route to try again."
+
+  defp run_creation(socket, attrs, attempt) do
+    case Gtfs.create_editor_route(attrs, attempt, audit_context(socket)) do
+      {:ok, %{route: route}} ->
+        {:noreply, finish_new_route(socket, route)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         # The command rolled the changeset back, so it carries no action; the
+         # drawer marks it submitted to decide whether the view-level callout
+         # belongs above the fields.
+         |> assign(:new_route_form, changeset |> Map.put(:action, :insert) |> to_form(as: :route))
+         |> push_event("focus_form_error", %{
+           form_id: "new-route-form",
+           fallback_id: "new-route-form-error"
+         })}
+
+      # A committed create whose result was deleted, or one whose submitted
+      # values changed after success, never inserts a second route. The drawer
+      # keeps its draft and offers the result the command already holds.
+      {:error, :attempt_consumed} ->
+        {:noreply, creation_failure(socket, @consumed_message, nil)}
+
+      {:error, {:attempt_mismatch, %{route_id: route_id}}} ->
+        {:noreply,
+         creation_failure(
+           socket,
+           "Nothing was created: an earlier save from this drawer already created a route with different values.",
+           "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route_id}"
+         )}
 
       {:error, :not_found} ->
         {:noreply,
          socket
          |> close_new_route()
          |> put_flash(:error, "This version is no longer available.")}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> close_new_route()
+         |> put_flash(
+           :error,
+           "Route not created: you no longer have editor access to this organization."
+         )}
+
+      # Busy, failed audit and an unusable request are all "nothing was
+      # written, the draft is still here": the mutation and its audit commit
+      # together, so no partial create can be left behind.
+      {:error, reason} ->
+        {:noreply, creation_failure(socket, @busy_message, nil, reason)}
     end
   end
 
-  defp show_new_route_error(socket, changeset) do
-    {:noreply,
-     socket
-     |> assign(:new_route_form, to_form(changeset, as: :route))
-     |> push_event("focus_form_error", %{
-       form_id: "new-route-form",
-       fallback_id: "new-route-form-error"
-     })}
+  defp creation_failure(socket, message, link, reason \\ nil) do
+    socket
+    |> assign(:new_route_failure, %{message: message, link: link, reason: reason})
+    |> push_event("focus_scoped_target", %{id: "new-route-failure"})
+  end
+
+  # A created route opens its own Details, because the next step is the stops
+  # it serves (AC-7). The flash names the identifier the command actually
+  # allocated, which is the truth the drawer's preview could not promise while
+  # the allocation was still only a preview (INV-6).
+  defp finish_new_route(socket, route) do
+    socket
+    |> close_new_route()
+    |> put_flash(:info, "Route #{route.route_id} created. Next, add the stops it serves.")
+    |> push_navigate(to: new_route_details_path(socket, route))
+  end
+
+  defp new_route_details_path(socket, route) do
+    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route.route_id}?created=1"
   end
 
   # Mount-time access is not enough for a write: the membership may have lost
