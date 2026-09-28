@@ -1203,8 +1203,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       <td class="blocks-track" style={@track_style}>
         <%= for row <- @plotted do %>
           <%= if visible?(row.trip, @route_filter) do %>
+            <%!-- A negative gap_secs is an overlap, whose bars already carry the mark. --%>
             <.gap
-              :if={row.gap}
+              :if={row.gap && row.gap.gap_secs >= 0}
               gap={row.gap}
               from={row.previous}
               axis={@axis}

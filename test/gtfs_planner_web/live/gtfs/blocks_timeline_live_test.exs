@@ -414,13 +414,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert bar_attribute(view, "101_1", "class") =~ "blocks-bar-shift"
       refute bar_attribute(view, "101_0", "class") =~ "blocks-bar-shift"
 
-      # Both gaps are moves; only the 2-minute one is a short layover.
-      assert element_count(view, "[data-role='blocks-gap'][data-handoff='moves']") == 2
-
-      assert element_count(
-               view,
-               "[data-role='blocks-gap'][data-handoff='moves'] [data-role='gap-move-icon']"
-             ) == 2
+      # The overlap pair's negative gap is suppressed, so two gaps render: the
+      # 2-minute one (a short layover) and the 10-minute one. Every fixture stop
+      # shares the default coordinates, so both handoffs are `nearby-0`, not
+      # `moves`, and no move icon renders.
+      assert element_count(view, "[data-role='blocks-gap']") == 2
+      assert element_count(view, "[data-role='blocks-gap'][data-handoff='nearby-0']") == 2
+      refute has_element?(view, "[data-role='blocks-gap'] [data-role='gap-move-icon']")
 
       assert element_count(view, "[data-role='blocks-gap'][data-short='true']") == 1
       assert element_count(view, "[data-role='blocks-gap'][data-short='false']") == 1

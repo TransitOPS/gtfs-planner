@@ -164,6 +164,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
+  # `spec.md` names the payload `drawer`; the page's own controls send `key`.
+  # Mirrors the catch-all on `set_panel` / `set_view` / `set_scale`.
+  def handle_event("open_drawer", _params, socket), do: {:noreply, socket}
+
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, :open_drawer, nil)}
   end
