@@ -10,11 +10,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   The Users page keeps its own `/admin/users` layout and authorization, so the
   overview links to it rather than moving it.
 
-  The five unbuilt sections render the shared `GtfsPlannerWeb.ComingSoon` body,
+  The three unbuilt sections render the shared `GtfsPlannerWeb.ComingSoon` body,
   and the overview reads those titles and summaries from the same catalog, so the
   two surfaces cannot drift apart. A section slug is looked up in a fixed map:
   no request string becomes an atom, and an unknown slug flashes and returns to
-  the overview instead of rendering a page nobody described.
+  the overview instead of rendering a page nobody described. Feed details and
+  Agencies are built, so their literal routes are declared ahead of the section
+  route and the overview lists them as Available pages beside the placeholders.
 
   Access follows the other GTFS pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
@@ -37,21 +39,34 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  # The five placeholder sections, keyed by their literal URL slug. A request
+  # The three placeholder sections, keyed by their literal URL slug. A request
   # path only ever looks a slug up here, and the answer is one of these fixed
   # atoms or `:error`.
   @sections %{
-    "feed-details" => :feed_details,
-    "agencies" => :agencies,
     "fares" => :fares,
     "export-defaults" => :export_defaults,
     "feed-url" => :feed_url
   }
 
-  # The overview's fixed groups, in the sitemap's order. Placeholder entries take
-  # their title and summary from the shared catalog; the pages that already exist
-  # carry their own copy and keep their current destinations.
-  @version_sections ["feed-details", "agencies", "fares"]
+  # The overview's fixed groups, in the sitemap's order. Entries take their title
+  # and summary from the shared catalog while they are placeholders; the pages
+  # that already exist carry their own copy and keep their current destination.
+  @version_pages [
+    %{
+      key: :feed_details,
+      slug: "feed-details",
+      title: "Feed details",
+      summary: "Describe this version’s feed for data consumers."
+    },
+    %{
+      key: :agencies,
+      slug: "agencies",
+      title: "Agencies",
+      summary: "Manage the agencies that operate this version’s routes."
+    }
+  ]
+
+  @version_sections ["fares"]
   @all_version_sections ["export-defaults", "feed-url"]
 
   @all_version_pages [
@@ -228,7 +243,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       %{
         id: "settings-version",
         scope: scope_here(version),
-        entries: Enum.map(@version_sections, &placeholder_entry(&1, version.id))
+        entries:
+          Enum.map(@version_pages, &existing_page_entry(&1, version.id)) ++
+            Enum.map(@version_sections, &placeholder_entry(&1, version.id))
       },
       %{
         id: "settings-all-versions",

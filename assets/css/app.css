@@ -67,28 +67,39 @@
   --color-control-border: color-mix(in oklab, var(--color-base-content) 50%, var(--color-base-100));
 }
 
-/* Design-system tokens for the header and the Blocks page, under names that do
-   not collide with daisyUI (`primary`, `base-*`) or this theme's
-   `brand`/`control-border`. The classes these generate are used exclusively
-   inside `#app-header` and its two menus; the Blocks page reads the same values
-   inside its own `#blocks-page` scope instead. Every other page keeps the
-   daisyUI palette above. Values come from the design system's application
-   theme, as recorded in
-   `.specs/00-information-architecture/evidence/header-nav/header-tokens.css`. */
+/* Design-system tokens for the application shell and work surfaces, under names
+   that do not collide with daisyUI (`primary`, `base-*`) or this theme's
+   `brand`/`control-border`. The classes these generate are used by
+   `#app-header` and its two menus, and — since the routes-list redesign
+   (2026-09-28) — by page work surfaces that follow the same design system;
+   the Blocks page reads the same values inside its own `#blocks-page` scope.
+   Page content that has not yet moved over keeps the daisyUI palette above.
+   Values come from the design system's application theme, as recorded in
+   `.specs/00-information-architecture/evidence/header-nav/header-tokens.css`
+   and `tmp/redesign/_src/theme.css`. */
 @theme {
   --font-ds: "Figtree", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Gabarito", "Figtree", ui-sans-serif, system-ui, sans-serif;
 
   --color-strong: #0a1330;
+  --color-default: #27344b;
   --color-muted: #586479;
   --color-subtle: #b5c0cc;
   --color-control: #7a8698;
   --color-canvas: #f4f6f9;
   --color-action: #c81870;
+  --color-action-hover: #9f0f5c;
   --color-selection: #fef1f6;
   --color-focus: #96305f;
   --color-navy-100: #d6dae8; /* avatar */
+  --color-navy-300: #7a85ac; /* sort indicator, inverse surfaces */
+  --color-navy-800: #0a1330; /* toast */
+  --color-cyan-300: #7dd3cb; /* toast icon */
+  --color-error-bg: #fbe3e3;
+  --color-error-fg: #9b1c1c;
+  --color-error-line: #d33a3a;
 
+  --radius-badge: 4px;
   --radius-control: 6px;
   --radius-card: 8px;
   --shadow-float: 0 4px 18px #0a133017;
@@ -515,6 +526,39 @@ body {
   border-bottom-width: 0;
 }
 
+/* Page padding lives on the sub-header wrapper (mirroring the header and main
+   column), so slot content must not add its own. The diagram action strip is
+   the exception: it keeps its own padding and full-bleed border, so cancel the
+   wrapper's padding around it with negative margins at each breakpoint. */
+#sub-header-wrapper #diagram-action-strip {
+  margin-left: -1rem;
+  margin-right: -1rem;
+}
+@media (min-width: 640px) {
+  #sub-header-wrapper #diagram-action-strip {
+    margin-left: -1.5rem;
+    margin-right: -1.5rem;
+  }
+}
+@media (min-width: 1024px) {
+  #sub-header-wrapper #diagram-action-strip {
+    margin-left: -2rem;
+    margin-right: -2rem;
+  }
+}
+
+/* Immersive diagram modes lay out #sub-header-wrapper's children directly;
+   flatten the padding/column containers there so canvas sizing is unchanged,
+   and drop the negative margins (the flattened wrapper adds no padding). */
+#diagram-page[data-immersive="true"] #sub-header-wrapper > div,
+#diagram-page[data-immersive="true"] #sub-header-wrapper > div > div {
+  display: contents;
+}
+#diagram-page[data-immersive="true"] #sub-header-wrapper #diagram-action-strip {
+  margin-left: 0;
+  margin-right: 0;
+}
+
 /* ── Immersive editing modes (Add stop / Connect / Align) ──
    Entering an editing mode hides the global header and station sub-nav so the
    action strip + canvas fill the viewport. `display: none` (not an off-screen
@@ -620,6 +664,58 @@ body {
 }
 
 /* ── Responsive data-view contracts ── */
+
+/* Workbench: a white rounded-card surface that holds a table and its controls
+   (toolbar, result summary, pagination) as one unit. From the design system's
+   `.workbench` pattern. Header and footer rules stay inside the card; the last
+   row drops its divider so the border closes the surface. */
+.workbench > * + * {
+  border-top: 1px solid var(--color-subtle);
+}
+
+.workbench-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.875rem;
+}
+
+.workbench-table th,
+.workbench-table td {
+  height: 3rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-subtle);
+  font-weight: 400;
+}
+
+.workbench-table thead th {
+  background: var(--color-canvas);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.workbench-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.workbench-table tbody tr {
+  cursor: pointer;
+}
+
+.workbench-table tbody tr:hover {
+  background: color-mix(in oklab, var(--color-canvas) 70%, transparent);
+}
+
+.workbench-list li + li {
+  border-top: 1px solid var(--color-subtle);
+}
+
+.workbench-list a:active {
+  background: var(--color-canvas);
+}
 
 /* Stack mode: present each row as a labeled record on narrow screens.
    Headers stay in the DOM; CSS hides them visually and turns each cell

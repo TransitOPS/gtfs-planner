@@ -39,6 +39,20 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     (lighter + 0.05) / (darker + 0.05)
   end
 
+  # The normalized background and the foreground that reaches 4.5:1 against it,
+  # or `:error` when the feed's background is missing or unvalidated.
+  # `route_colors/1` and `route_badge/1` share this so a caller that paints its
+  # own surface and the badge itself can never disagree about a route's colours.
+  defp resolved_colors(route) do
+    case normalize_hex(Map.get(route, :route_color)) do
+      {:ok, norm_bg} ->
+        {:ok, norm_bg, resolve_foreground(norm_bg, Map.get(route, :route_text_color))}
+
+      :error ->
+        :error
+    end
+  end
+
   @doc """
   Returns a route's colours as a safe inline style and a fallback class.
 
@@ -50,12 +64,8 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   """
   @spec route_colors(map()) :: {String.t() | nil, String.t() | nil}
   def route_colors(route) do
-    bg = Map.get(route, :route_color)
-    fg = Map.get(route, :route_text_color)
-
-    case normalize_hex(bg) do
-      {:ok, norm_bg} ->
-        resolved_fg = resolve_foreground(norm_bg, fg)
+    case resolved_colors(route) do
+      {:ok, norm_bg, resolved_fg} ->
         {"background-color: ##{norm_bg}; color: ##{resolved_fg}", nil}
 
       :error ->
@@ -67,34 +77,41 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   attr :class, :any, default: nil
 
   def route_badge(assigns) do
-    {style, badge_class} = route_colors(assigns.route)
+    {style, badge_class} =
+      case resolved_colors(assigns.route) do
+        {:ok, norm_bg, resolved_fg} ->
+          # A near-white route color (FFD200 reads ~1.2:1 on white) needs an edge,
+          # or the badge disappears into the page. Anything below the 3:1 WCAG
+          # 1.4.11 floor for component graphics gets a subtle ring.
+          edge =
+            if contrast_ratio(norm_bg, "FFFFFF") < 3.0,
+              do: " ring-1 ring-inset ring-subtle",
+              else: ""
+
+          {"background-color: ##{norm_bg}; color: ##{resolved_fg}", "shrink-0" <> edge}
+
+        :error ->
+          # Unvalidated feed values never reach the style attribute; a bad or
+          # missing route_color falls back to a neutral surface, not to white.
+          {nil, "bg-canvas text-strong ring-1 ring-inset ring-subtle shrink-0"}
+      end
 
     label = badge_text(assigns.route)
 
     assigns =
       assigns
-      |> assign(:style, style)
+      |> assign(:style_attrs, if(style, do: [style: style], else: []))
       |> assign(:badge_class, badge_class)
       |> assign(:label, label)
 
     ~H"""
     <span
-      :if={@style}
       class={[
-        "inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium",
-        @class
-      ]}
-      style={@style}
-    >
-      {@label}
-    </span>
-    <span
-      :if={!@style}
-      class={[
-        "inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium",
+        "inline-flex items-center justify-center rounded-badge px-2 py-0.5 text-xs font-bold leading-none tabular-nums",
         @badge_class,
         @class
       ]}
+      {@style_attrs}
     >
       {@label}
     </span>

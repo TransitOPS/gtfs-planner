@@ -135,7 +135,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
 
   # The contract every area bar shares: ordinary links with the underline/focus
   # presentation, unique stable IDs, exactly one current link, and horizontal
-  # scrolling contained by the bar itself.
+  # scrolling contained by the bar itself. Page padding lives on the
+  # sub-header wrapper (mirroring the header and main column), so the bar
+  # itself carries no horizontal padding.
   defp assert_sub_nav_contract(html, nav_id) do
     doc = LazyHTML.from_fragment(html)
     links = LazyHTML.query(doc, "##{nav_id} a")
@@ -156,7 +158,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
 
     nav_class = LazyHTML.attribute(LazyHTML.query(doc, "##{nav_id}"), "class") |> List.first()
-    assert nav_class =~ "px-4 sm:px-6 lg:px-8"
+    refute nav_class =~ "px-4"
 
     scrollable =
       doc
@@ -168,7 +170,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   end
 
   describe "top_nav excludes account actions" do
-    test "task navigation omits the Account settings link" do
+    test "task navigation omits the Profile settings link" do
       html = render_nav(admin_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
@@ -274,13 +276,13 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.text(panel) =~ "editor@test.com"
     end
 
-    test "menu holds exactly one Account settings item" do
+    test "menu holds exactly one Profile settings item" do
       html = render_user_menu(editor_menu_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
       links = account_link(doc)
       assert Enum.count(links) == 1
-      assert LazyHTML.text(links) =~ "Account settings"
+      assert LazyHTML.text(links) =~ "Profile settings"
       assert LazyHTML.attribute(links, "role") == ["menuitem"]
     end
 
@@ -295,25 +297,25 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(logout, "data-method") == ["delete"]
     end
 
-    test "Account settings activates on /users/settings" do
+    test "Profile settings activates on /users/settings" do
       html = render_user_menu(editor_menu_assigns("/users/settings"))
       doc = LazyHTML.from_fragment(html)
 
       active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
       assert Enum.count(active) == 1
-      assert LazyHTML.text(active) =~ "Account settings"
+      assert LazyHTML.text(active) =~ "Profile settings"
     end
 
-    test "Account settings activates on nested /users/settings/confirm" do
+    test "Profile settings activates on nested /users/settings/confirm" do
       html = render_user_menu(editor_menu_assigns("/users/settings/confirm"))
       doc = LazyHTML.from_fragment(html)
 
       active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
       assert Enum.count(active) == 1
-      assert LazyHTML.text(active) =~ "Account settings"
+      assert LazyHTML.text(active) =~ "Profile settings"
     end
 
-    test "Account settings does NOT activate on /users" do
+    test "Profile settings does NOT activate on /users" do
       html = render_user_menu(editor_menu_assigns("/users"))
       doc = LazyHTML.from_fragment(html)
 
@@ -323,7 +325,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert Enum.empty?(LazyHTML.query(doc, ~s(a[aria-current="page"])))
     end
 
-    test "Account settings does NOT activate on lookalike /users/settings-backup" do
+    test "Profile settings does NOT activate on lookalike /users/settings-backup" do
       html = render_user_menu(editor_menu_assigns("/users/settings-backup"))
       doc = LazyHTML.from_fragment(html)
 
@@ -331,16 +333,16 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(link, "aria-current") == []
     end
 
-    test "Account settings ignores query strings on the settings family" do
+    test "Profile settings ignores query strings on the settings family" do
       html = render_user_menu(editor_menu_assigns("/users/settings?tab=email"))
       doc = LazyHTML.from_fragment(html)
 
       active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
       assert Enum.count(active) == 1
-      assert LazyHTML.text(active) =~ "Account settings"
+      assert LazyHTML.text(active) =~ "Profile settings"
     end
 
-    test "Account settings item has 44px minimum target" do
+    test "Profile settings item has 44px minimum target" do
       html = render_user_menu(editor_menu_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 

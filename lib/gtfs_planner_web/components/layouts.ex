@@ -118,7 +118,11 @@ defmodule GtfsPlannerWeb.Layouts do
 
     <%= if @sub_header != [] do %>
       <div id="sub-header-wrapper" class="bg-base-100 border-b border-base-300">
-        {render_slot(@sub_header)}
+        <div class="px-4 sm:px-6 lg:px-8">
+          <div class="mx-auto w-full max-w-7xl">
+            {render_slot(@sub_header)}
+          </div>
+        </div>
       </div>
     <% end %>
 

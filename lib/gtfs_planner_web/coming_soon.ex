@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the eleven catalog keys only. Any other key raises, so a
+  `feature/1` answers for the nine catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -120,34 +120,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
         %{name: "Generate along streets", text: "Generate a path between stops using streets."},
         %{name: "Edit points", text: "Adjust the points along a segment."},
         %{name: "Shared segments", text: "Review segments used by other patterns."}
-      ]
-    }
-  end
-
-  def feature(:feed_details) do
-    %{
-      title: "Feed details",
-      scope: :version,
-      summary: "Describe this version’s feed for data consumers.",
-      sections: [
-        %{name: "Publisher", text: "Name the feed publisher and website."},
-        %{name: "Languages", text: "Set the feed’s languages."},
-        %{name: "Service dates", text: "Describe the dates covered by the feed."},
-        %{name: "Feed version", text: "Identify the feed release."},
-        %{name: "Contact", text: "Provide contact details for feed questions."}
-      ]
-    }
-  end
-
-  def feature(:agencies) do
-    %{
-      title: "Agencies",
-      scope: :version,
-      summary: "Manage the agencies that operate this version’s routes.",
-      sections: [
-        %{name: "Agency list", text: "Review agencies and the routes they operate."},
-        %{name: "One timezone", text: "Keep agencies in the version on one timezone."},
-        %{name: "Removing an agency", text: "Move its routes before removing it."}
       ]
     }
   end

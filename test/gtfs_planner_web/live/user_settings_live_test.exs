@@ -38,9 +38,9 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       {:ok, view, html} = live(conn, ~p"/users/settings")
 
-      assert page_title(view) == "Account settings · Pathways Studio"
+      assert page_title(view) == "Profile settings · Pathways Studio"
 
-      assert has_element?(view, "#account-settings-title", "Account settings")
+      assert has_element?(view, "#account-settings-title", "Profile settings")
       assert has_element?(view, "#email-settings")
       assert has_element?(view, "#email-settings-title", "Change email")
       assert has_element?(view, "#password-settings")

@@ -55,18 +55,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Shared segments"
       ]
     },
-    feed_details: %{
-      title: "Feed details",
-      scope: :version,
-      summary: "Describe this version’s feed for data consumers.",
-      section_names: ["Publisher", "Languages", "Service dates", "Feed version", "Contact"]
-    },
-    agencies: %{
-      title: "Agencies",
-      scope: :version,
-      summary: "Manage the agencies that operate this version’s routes.",
-      section_names: ["Agency list", "One timezone", "Removing an agency"]
-    },
     fares: %{
       title: "Fares",
       scope: :version,
@@ -89,7 +77,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 11
+      assert length(@catalog) == 9
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)

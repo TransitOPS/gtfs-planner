@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   import Ecto.Query, only: [from: 2]
 
+  alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Import
 
   alias GtfsPlanner.Gtfs.Import.{
@@ -92,6 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      )
      |> assign(:diff_form, to_form(%{}, as: :diff_upload))
      |> assign(:import_result, nil)
+     |> assign(:import_agency_health, nil)
      |> assign(:import_target, nil)
      |> assign(:published_version, nil)
      |> assign(:version_name_touched, false)
@@ -574,6 +576,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           socket
           |> assign(:import_result, {:ok, published, result})
+          |> assign(:import_agency_health, import_agency_findings(organization_id, published))
           |> assign(:import_target, published)
           |> assign(:published_version, published)
           |> assign(:importing, false)
@@ -588,6 +591,37 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       socket
     end
   end
+
+  # The findings the success result shows for the version just published (R11).
+  # They are `FeedSettings.agency_health/2`'s own map for that version, read once
+  # after publication, so the copy describes the imported version and never the
+  # version the page was opened on (AC-27). This read takes no lock and changes
+  # no publication state (CR-6).
+  defp import_agency_findings(organization_id, published) do
+    FeedSettings.agency_health(organization_id, published.id)
+  end
+
+  # One finding per agency-health state the import can reach: a version with no
+  # agency, or a version whose agencies disagree on or do not name a valid zone.
+  # A clean feed renders no findings element at all.
+  defp findings?(%{agency_count: 0}), do: true
+  defp findings?(%{zone: {:unresolved, _reason}}), do: true
+  defp findings?(%{zone: {:ok, _zone}}), do: false
+
+  defp unresolved_zone?({:unresolved, _reason}), do: true
+  defp unresolved_zone?({:ok, _zone}), do: false
+
+  # The Agencies page names the same DisplayClock states with these same words
+  # (INV-4), so a finding and the page it links to read as one vocabulary.
+  defp zone_finding_title({:unresolved, :conflicting}), do: "Agencies use different timezones"
+  defp zone_finding_title({:unresolved, :invalid}), do: "The agency timezone isn’t recognized"
+  defp zone_finding_title({:unresolved, :missing}), do: "The agency timezone is missing"
+
+  defp unassigned_routes_sentence(1),
+    do: "1 route needs an operating agency before export."
+
+  defp unassigned_routes_sentence(count),
+    do: "#{count} routes need an operating agency before export."
 
   defp run_counts_to_result(nil), do: %{}
 
@@ -919,6 +953,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       View version
                     </.link>
                   </.callout>
+                  <.agency_findings
+                    :if={@import_agency_health}
+                    health={@import_agency_health}
+                    version_id={published.id}
+                  />
                 <% {:error, target, {:publication_failed, _reason}} -> %>
                   <.callout kind="error" title="Publication failed">
                     Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
@@ -1389,6 +1428,52 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     """
   end
 
+  # The import success result's agency findings (AC-27). They sit below the
+  # success callout and never replace or delay it, and only this element is
+  # conditional: a clean feed publishes with no findings element. Each link
+  # targets the published version's own Agencies page, so `/gtfs/<published
+  # id>/settings/agencies` and not the version in the URL.
+  attr :health, :map, required: true
+  attr :version_id, :string, required: true
+
+  defp agency_findings(assigns) do
+    ~H"""
+    <div :if={findings?(@health)} id="gtfs-import-agency-findings" class="mt-4 space-y-3">
+      <.callout
+        :if={@health.agency_count == 0}
+        kind="warning"
+        title="No agency in this feed"
+      >
+        <span :if={@health.unassigned_routes > 0}>
+          {unassigned_routes_sentence(@health.unassigned_routes)}
+        </span>
+        <.link
+          id="gtfs-import-set-up-agency"
+          navigate={~p"/gtfs/#{@version_id}/settings/agencies"}
+          class="mt-2 inline-block min-h-11 text-primary underline"
+        >
+          Set up agency
+        </.link>
+      </.callout>
+
+      <.callout
+        :if={@health.agency_count > 0 and unresolved_zone?(@health.zone)}
+        kind="warning"
+        title={zone_finding_title(@health.zone)}
+      >
+        Choose one timezone for this version.
+        <.link
+          id="gtfs-import-resolve-timezones"
+          navigate={~p"/gtfs/#{@version_id}/settings/agencies"}
+          class="mt-2 inline-block min-h-11 text-primary underline"
+        >
+          Resolve timezones
+        </.link>
+      </.callout>
+    </div>
+    """
+  end
+
   # Create exactly one staging target + pending run, subscribe to its stable
   # topic, consume the uploads into memory, and hand the run + lease token to a
   # supervised Runner that claims and executes the import. The route/current
@@ -1414,6 +1499,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             )
           )
           |> assign(:import_result, nil)
+          |> assign(:import_agency_health, nil)
 
         socket = push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"})
 
@@ -1436,6 +1522,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              |> assign(:import_target, target)
              |> assign(:importing, true)
              |> assign(:import_result, nil)
+             |> assign(:import_agency_health, nil)
              |> assign(:published_version, nil)
              |> assign(:import_progress, nil)}
 
