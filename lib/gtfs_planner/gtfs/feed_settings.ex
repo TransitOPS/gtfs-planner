@@ -53,6 +53,14 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   receiving agency, deletes its record-bound translations and deletes the agency, so no
   route can be left naming an agency that no longer exists.
 
+  A route insert resolves its agency under the same version row lock (R4, INV-1).
+  `lock_agency_for_reference!/3` share-locks the published version and then returns the
+  version's single agency for a blank choice, or the listed agency for a provided choice,
+  rolling back `:agency_required` or `:agency_not_found` instead. Every route write calls
+  it inside the insert's own transaction through `Gtfs.create_version_route/3`, so an
+  insert serializes against an agency deletion and can never commit against an agency
+  that no longer exists (AC-26).
+
   Outside import and test fixtures this module is the application's writer of `agencies`
   and `feed_info` rows and of the agency columns they own (INV-5).
   """
@@ -488,6 +496,34 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   end
 
   @doc """
+  Locks the published version row and resolves the agency a route insert references (R4,
+  INV-1, INV-2).
+
+  `organization_id` and `gtfs_version_id` are the scope the route is inserted into, and
+  `agency_id` is the choice the caller sent, or nil. Call this inside
+  `Repo.transaction/1`: the version row is share-locked before the agency set is read, so
+  the insert serializes against an agency deletion, creation or timezone change for the
+  same version (AC-26). The scope must be a published version of the organization, else
+  `:not_found`.
+
+  The rule is the one every route write uses:
+
+  - no agency in the version → `:agency_required`;
+  - one agency and a blank choice → that agency's ID;
+  - otherwise the choice must be one of the version's agency IDs, else `:agency_not_found`.
+
+  ## Returns
+
+  - the resolved `agency_id` string
+  - rolls back `:not_found`, `:agency_required` or `:agency_not_found`
+  """
+  @spec lock_agency_for_reference!(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) :: String.t()
+  def lock_agency_for_reference!(organization_id, gtfs_version_id, agency_id) do
+    share_version!(organization_id, gtfs_version_id)
+    reference_agency!(organization_id, gtfs_version_id, agency_id)
+  end
+
+  @doc """
   Creates or updates the version's feed info row (R8, R10, INV-2).
 
   `token` is the `updated_at` of the row the caller loaded, or nil when the form was
@@ -588,8 +624,14 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   # The version lock is the row `Calendars` locks, and it is taken before any feed-info
   # row so agency-set writes and calendar writes share one lock order (INV-2, R10).
   defp share_version!(%AuditContext{} = audit_context) do
-    audit_context.organization_id
-    |> published_version_for_share(audit_context.gtfs_version_id)
+    share_version!(audit_context.organization_id, audit_context.gtfs_version_id)
+  end
+
+  # The reference lock is the same row in the same mode, so a route insert takes the lock
+  # every agency-set write takes, and no other lock precedes it (INV-1, INV-2).
+  defp share_version!(organization_id, gtfs_version_id) do
+    organization_id
+    |> published_version_for_share(gtfs_version_id)
     |> case do
       %GtfsVersion{} = version -> version
       nil -> Repo.rollback(:not_found)
@@ -1230,6 +1272,51 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       {:error, _changeset} -> Repo.rollback(:stale_review)
     end
   end
+
+  # -- Route agency references -----------------------------------------------
+
+  # The version's agencies through the scoped read steps 9-13 use, so the reference rule
+  # sees the same agency set under the same lock as every other agency-set read (INV-1).
+  defp reference_agency!(organization_id, gtfs_version_id, agency_id) do
+    organization_id
+    |> Gtfs.list_agencies(gtfs_version_id)
+    |> resolve_reference_agency!(agency_id)
+  end
+
+  defp resolve_reference_agency!([], _agency_id), do: Repo.rollback(:agency_required)
+
+  # A blank choice means "the only agency", so a version with one agency resolves without
+  # asking the caller to know its ID (R4).
+  defp resolve_reference_agency!([%Agency{} = agency], agency_id) do
+    if blank_agency_reference?(agency_id) do
+      agency.agency_id
+    else
+      listed_agency_reference!([agency], agency_id)
+    end
+  end
+
+  defp resolve_reference_agency!([_ | _] = agencies, agency_id) do
+    listed_agency_reference!(agencies, agency_id)
+  end
+
+  # With two or more agencies only an exact match names one, so a blank, padded or unknown
+  # choice is refused instead of quietly becoming the first agency (R5, FH-20).
+  defp listed_agency_reference!(agencies, agency_id) do
+    case Enum.find(agencies, &(&1.agency_id == agency_id)) do
+      %Agency{agency_id: resolved} -> resolved
+      nil -> Repo.rollback(:agency_not_found)
+    end
+  end
+
+  # Blank is nil or a whitespace-only string, the classification the route counts' `btrim`
+  # and the editor changesets' trim use, so a padded reference is neither blank nor an exact
+  # match (R5).
+  defp blank_agency_reference?(nil), do: true
+
+  defp blank_agency_reference?(agency_id) when is_binary(agency_id),
+    do: String.trim(agency_id) == ""
+
+  defp blank_agency_reference?(_agency_id), do: false
 
   defp insert_or_rollback!(changeset) do
     case Repo.insert(changeset) do
