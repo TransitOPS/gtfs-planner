@@ -19,8 +19,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   and the rendered list disagreeing. Sorting and paging drop the selected rule;
   selecting a row keeps the rest of the params.
 
-  Filtering and the connection map arrive with their own steps, so this LiveView
-  owns the shell and the general rules list today.
+  Filtering and search are in the URL too: the search term, the stop, route and
+  type filters and the Needs attention checkbox each patch the list and drop the
+  page and the selected rule, and a filtered list that hides every rule shows its
+  own empty state rather than first use. The connection map arrives with its own
+  step.
 
   Version switching keeps the action and accepts only a published version of the
   current organization. A foreign, staging or absent version leaves both the
@@ -40,7 +43,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # direction is dropped rather than turned into an atom.
   @sort_keys %{"from" => :from, "to" => :to, "type" => :type, "min_time" => :min_time}
   @sort_dirs %{"asc" => :asc, "desc" => :desc}
-  @owned_params ~w(sort_by sort_dir page rule)
+  @owned_params ~w(q stop route type attention sort_by sort_dir page rule)
+
+  # A type filter is read only inside the current view's range; the in-seat range
+  # arrives with that view.
+  @general_types 0..3
+
+  @empty_filters %{q: nil, stop: nil, route: nil, type: nil, attention: false}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -59,6 +68,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:page_rows, %{})
      |> assign(:page_ids, nil)
      |> assign(:url_params, %{})
+     |> assign(:filters_open?, false)
+     |> assign_filters(@empty_filters)
      |> stream(:transfers, [])}
   end
 
@@ -100,6 +111,31 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       {:ok, rule} -> {:noreply, push_patch(socket, to: list_path(socket, rule: rule))}
       :error -> {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("filter", params, socket) do
+    filters = merge_filters(socket.assigns.filters, params)
+
+    {:noreply, push_patch(socket, to: list_path(socket, filters: filters, page: 1, rule: nil))}
+  end
+
+  @impl true
+  def handle_event("search", params, socket) do
+    filters = %{socket.assigns.filters | q: parse_string(Map.get(params, "q"))}
+
+    {:noreply, push_patch(socket, to: list_path(socket, filters: filters, page: 1, rule: nil))}
+  end
+
+  @impl true
+  def handle_event("toggle_filters", _params, socket) do
+    {:noreply, assign(socket, :filters_open?, not socket.assigns.filters_open?)}
+  end
+
+  @impl true
+  def handle_event("clear_filters", _params, socket) do
+    # The bare list is the unfiltered URL; a view param would be kept here.
+    {:noreply, push_patch(socket, to: transfers_target(socket.assigns.current_gtfs_version.id))}
   end
 
   @impl true
@@ -155,17 +191,28 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         <.workspace>
           <:list>
             <.load_failure :if={@catalog_state == :unavailable} />
-            <.rules_table
-              :if={rules?(@catalog_state, @catalog)}
-              rows={@streams.transfers}
-              selected_id={@selected_id}
-              sort_by={@sort_by}
-              sort_dir={@sort_dir}
-              page={@page}
-              per_page={@per_page}
-              total_count={@total_count}
-            />
             <.first_use :if={first_use?(@catalog_state, @catalog)} />
+            <div :if={rules?(@catalog_state, @catalog)}>
+              <.list_toolbar
+                search_form={@search_form}
+                filter_form={@filter_form}
+                filter_options={@catalog.filter_options}
+                filter_count={filter_count(@filters)}
+                filters_open?={@filters_open?}
+              />
+              <.rule_count total_count={@total_count} />
+              <.no_results :if={@total_count == 0} />
+              <.rules_table
+                :if={@total_count > 0}
+                rows={@streams.transfers}
+                selected_id={@selected_id}
+                sort_by={@sort_by}
+                sort_dir={@sort_dir}
+                page={@page}
+                per_page={@per_page}
+                total_count={@total_count}
+              />
+            </div>
           </:list>
           <:context>
             <.context_empty />
@@ -182,12 +229,23 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp load_catalog(socket, url_params) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
+    filters = parse_filters(url_params)
     sort_by = Map.get(@sort_keys, url_params["sort_by"]) || :from
     sort_dir = Map.get(@sort_dirs, url_params["sort_dir"]) || :asc
     page = parse_page(url_params["page"])
     rule = parse_rule(url_params["rule"])
 
-    opts = [sort_by: sort_by, sort_dir: sort_dir, page: page, rule: rule]
+    opts = [
+      search: filters.q,
+      stop: filters.stop,
+      route: filters.route,
+      type: filters.type,
+      attention: filters.attention,
+      sort_by: sort_by,
+      sort_dir: sort_dir,
+      page: page,
+      rule: rule
+    ]
 
     case Gtfs.load_transfer_catalog(organization_id, gtfs_version_id, opts) do
       {:ok, catalog} ->
@@ -196,6 +254,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
         socket =
           socket
+          |> assign_filters(filters)
           |> assign(:sort_by, sort_by)
           |> assign(:sort_dir, sort_dir)
           |> assign(:page, catalog.page)
@@ -216,6 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       {:error, :unavailable} ->
         {:noreply,
          socket
+         |> assign_filters(filters)
          |> assign(:sort_by, sort_by)
          |> assign(:sort_dir, sort_dir)
          |> assign(:catalog, nil)
@@ -286,16 +346,38 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   defp list_params(assigns, overrides) do
+    filters = Keyword.get(overrides, :filters, assigns.filters)
     sort_by = Keyword.get(overrides, :sort_by, assigns.sort_by)
     sort_dir = Keyword.get(overrides, :sort_dir, assigns.sort_dir)
     page = Keyword.get(overrides, :page, assigns.page)
     rule = Keyword.get(overrides, :rule, assigns.rule)
 
     []
+    |> filter_params(filters)
     |> sort_params(sort_by, sort_dir)
     |> page_params(page)
     |> rule_params(rule)
   end
+
+  # The filters the URL carries, in the page contract's order. `attention` is
+  # written as its own flag rather than the form's "true", so the parsed value and
+  # the canonical URL are comparable as strings.
+  defp filter_params(params, filters) do
+    params
+    |> put_param(:q, filters.q)
+    |> put_param(:stop, filters.stop)
+    |> put_param(:route, filters.route)
+    |> put_param(:type, filters.type)
+    |> put_param(:attention, attention_param(filters.attention))
+  end
+
+  # A false attention flag is an absent param, not the string "false": the flag is
+  # written only when the checkbox is on.
+  defp attention_param(true), do: 1
+  defp attention_param(_attention), do: nil
+
+  defp put_param(params, _key, nil), do: params
+  defp put_param(params, key, value), do: params ++ [{key, value}]
 
   # The default sort is omitted, so a plain list keeps a clean URL and only a
   # deliberate sort, page or selection names its param.
@@ -328,8 +410,78 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     end
   end
 
+  # The filters arrive as untrusted URL params or form values. A blank or absent
+  # value means "no filter"; a repeated param (a list) is not a value at all, so
+  # every parser has a catch-all and nothing reaches the catalog unvalidated.
+  defp parse_filters(url_params) do
+    %{
+      q: parse_string(Map.get(url_params, "q")),
+      stop: parse_string(Map.get(url_params, "stop")),
+      route: parse_string(Map.get(url_params, "route")),
+      type: parse_type(Map.get(url_params, "type")),
+      attention: Map.get(url_params, "attention") == "1"
+    }
+  end
+
+  # The filter form owns the three selects and the checkbox; the search term is
+  # the other form's, and survives a filter change.
+  defp merge_filters(filters, params) do
+    %{
+      filters
+      | stop: parse_string(Map.get(params, "stop")),
+        route: parse_string(Map.get(params, "route")),
+        type: parse_type(Map.get(params, "type")),
+        attention: parse_checkbox(Map.get(params, "attention"))
+    }
+  end
+
+  defp assign_filters(socket, filters) do
+    socket
+    |> assign(:filters, filters)
+    |> assign(:search_form, to_form(%{"q" => filters.q || ""}))
+    |> assign(:filter_form, to_form(filter_form_values(filters)))
+  end
+
+  defp filter_form_values(filters) do
+    %{
+      "stop" => filters.stop || "",
+      "route" => filters.route || "",
+      "type" => (filters.type && to_string(filters.type)) || "",
+      "attention" => to_string(filters.attention)
+    }
+  end
+
+  defp parse_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp parse_string(_value), do: nil
+
+  defp parse_type(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {type, ""} when type in @general_types -> type
+      _other -> nil
+    end
+  end
+
+  defp parse_type(_value), do: nil
+
+  # `<.input type="checkbox">` renders a hidden "false" beside the checked
+  # "true", so one form change arrives as both values for the one name; the box
+  # is on only when a "true" is among them.
+  defp parse_checkbox("true"), do: true
+  defp parse_checkbox(values) when is_list(values), do: "true" in values
+  defp parse_checkbox(_value), do: false
+
+  defp filter_count(filters) do
+    Enum.count([filters.stop, filters.route, filters.type], &(&1 != nil))
+  end
+
   # A version with general rules lists them, whether or not a filter hides them
-  # (the filtered-empty state arrives with filtering).
+  # (that case renders the filtered-empty state inside the same list).
   defp rules?(:ready, %{counts: %{general: general}}), do: general > 0
   defp rules?(_catalog_state, _catalog), do: false
 

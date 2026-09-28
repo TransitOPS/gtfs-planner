@@ -4,9 +4,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   The page shell is one bordered workspace split into the version's general
   rules on the left and the selected connection's context on the right. This
-  module renders the list pane's table of general rules, its load failure and
-  its first-use state, the context pane before a connection is chosen, and the
-  labels and reason text the rules display.
+  module renders the list pane's search and filter toolbar, its table of general
+  rules, its load failure, first-use and filtered-empty states, the context pane
+  before a connection is chosen, and the labels and reason text the rules
+  display.
 
   The states reuse the shared callout and empty state rather than the visual
   reference's own state boxes, so a failed load and an empty list read the same
@@ -85,14 +86,185 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   @doc """
+  Renders the list pane's toolbar: the connection search and the filter
+  disclosure.
+
+  The search names what it looks through and patches as the operator types, so a
+  term narrows the list without a submit. Beside it, the filters button discloses
+  the three selects — stop or station, route and type — which the catalog
+  supplies as the current view's own choices, plus the start of an id it has no
+  option for. The button counts the applies selects rather than every control, so
+  "Filters (2)" means two of the three narrow the list; the Needs attention
+  checkbox and Clear filters stay visible while the selects are collapsed, so a
+  filter is always removable.
+
+  The disclosure is a control the operator opens, as the reference has it: the
+  URL says which filters apply and the button says how many, so a filtered deep
+  link is legible before it is opened.
+
+  ## Examples
+
+      <.list_toolbar
+        search_form={@search_form}
+        filter_form={@filter_form}
+        filter_options={@catalog.filter_options}
+        filter_count={2}
+        filters_open?={@filters_open?}
+      />
+  """
+  attr :search_form, :any, required: true, doc: "the form behind the search field"
+  attr :filter_form, :any, required: true, doc: "the form behind the filters"
+
+  attr :filter_options, :map,
+    required: true,
+    doc: "the catalog's `filter_options` for the listed view"
+
+  attr :filter_count, :integer,
+    required: true,
+    doc: "how many of the three selects currently apply"
+
+  attr :filters_open?, :boolean, required: true, doc: "whether the filter disclosure is open"
+
+  def list_toolbar(assigns) do
+    ~H"""
+    <div class="border-b border-base-300 px-4 py-3">
+      <div class="flex items-end gap-2">
+        <div class="min-w-0 flex-1">
+          <.form for={@search_form} id="transfer-search-form" phx-change="search">
+            <.input
+              field={@search_form[:q]}
+              type="search"
+              label="Find a connection"
+              placeholder="Stop, station, route, trip, or ID"
+              phx-debounce="300"
+            />
+          </.form>
+        </div>
+        <.button
+          id="transfers-filters-toggle"
+          type="button"
+          variant="secondary"
+          phx-click="toggle_filters"
+          aria-expanded={to_string(@filters_open?)}
+          aria-controls="transfer-filter-fields"
+          class="min-h-11"
+        >
+          {filter_button_label(@filter_count)}
+        </.button>
+      </div>
+
+      <.form for={@filter_form} id="transfer-filter-form" phx-change="filter">
+        <div
+          id="transfer-filter-fields"
+          hidden={!@filters_open?}
+          class="mt-3 grid gap-3 sm:grid-cols-3"
+        >
+          <.input
+            field={@filter_form[:stop]}
+            type="select"
+            id="transfer-filter-stop"
+            label="Stop or station"
+            prompt="All locations"
+            options={stop_filter_options(@filter_options.stops)}
+          />
+          <.input
+            field={@filter_form[:route]}
+            type="select"
+            id="transfer-filter-route"
+            label="Route"
+            prompt="All routes"
+            options={route_filter_options(@filter_options.routes)}
+          />
+          <.input
+            field={@filter_form[:type]}
+            type="select"
+            id="transfer-filter-type"
+            label="Type"
+            prompt="All types"
+            options={type_filter_options(@filter_options.types)}
+          />
+        </div>
+
+        <div class="mt-3 flex flex-wrap items-center gap-4">
+          <.input
+            field={@filter_form[:attention]}
+            type="checkbox"
+            id="transfer-filter-attention"
+            label="Needs attention"
+          />
+          <.button
+            id="transfers-clear-filters"
+            type="button"
+            variant="quiet"
+            size="sm"
+            class="min-h-11"
+            phx-click="clear_filters"
+          >
+            Clear filters
+          </.button>
+        </div>
+      </.form>
+    </div>
+    """
+  end
+
+  defp filter_button_label(0), do: "Filters"
+  defp filter_button_label(count), do: "Filters (#{count})"
+
+  defp stop_filter_options(stops) do
+    Enum.map(stops, fn stop -> {stop.name || stop.stop_id, stop.stop_id} end)
+  end
+
+  defp route_filter_options(routes) do
+    Enum.map(routes, &{route_filter_label(&1), &1.route_id})
+  end
+
+  # "12 · Riverside", or whichever half the route has, or its bare id.
+  defp route_filter_label(%{route_id: route_id} = route) do
+    parts =
+      [Map.get(route, :route_short_name), Map.get(route, :route_long_name)]
+      |> Enum.map(&blank_to_nil/1)
+      |> Enum.reject(&is_nil/1)
+
+    case parts do
+      [] -> route_id
+      _parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp type_filter_options(types), do: Enum.map(types, &{type_label(&1), &1})
+
+  @doc """
+  Renders the list pane's count bar: how many rules the current list holds and
+  the one-direction reminder.
+
+  It sits between the toolbar and the rows and stays above the filtered-empty
+  state, so an emptied list reads "0 rules" instead of losing its count with its
+  rows.
+
+  ## Examples
+
+      <.rule_count total_count={0} />
+  """
+  attr :total_count, :integer, required: true
+
+  def rule_count(assigns) do
+    ~H"""
+    <div class="flex min-h-12 items-center justify-between gap-4 border-b border-base-300 px-4 py-2 text-sm text-base-content/70">
+      <span id="transfers-count" role="status">{@total_count} rules</span>
+      <span id="transfers-direction-hint">One direction per rule</span>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the list pane's table of general rules.
 
-  The count bar names how many rules the current list holds and the
-  one-direction reminder; each row names its two endpoints with the scope the
-  rule applies to as subtext, its type, and its minimum time right-aligned in
-  tabular figures; a rule that needs attention carries a text badge under its
-  From endpoint, so its state never depends on color alone. The footer names
-  what a row selection drives, and the pagination moves through 50-row pages.
+  Each row names its two endpoints with the scope the rule applies to as
+  subtext, its type, and its minimum time right-aligned in tabular figures; a
+  rule that needs attention carries a text badge under its From endpoint, so its
+  state never depends on color alone. The footer names what a row selection
+  drives, and the pagination moves through 50-row pages.
 
   The rows are the `:transfers` stream, whose items are `{dom_id, row}` pairs
   with the `transfers-<uuid>` DOM ids the page contract fixes. Selection lives in
@@ -122,11 +294,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   def rules_table(assigns) do
     ~H"""
     <div>
-      <div class="flex min-h-12 items-center justify-between gap-4 border-b border-base-300 px-4 py-2 text-sm text-base-content/70">
-        <span id="transfers-count" role="status">{@total_count} rules</span>
-        <span id="transfers-direction-hint">One direction per rule</span>
-      </div>
-
       <.table id="transfers" rows={@rows} responsive="stack">
         <:col
           :let={{_dom_id, row}}
@@ -332,14 +499,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp article(<<first::utf8, _rest::binary>>) when first in ~c"AEIOU", do: "an"
   defp article(_label), do: "a"
 
-  defp route_short_name(%{route_short_name: name}) when is_binary(name) do
-    case String.trim(name) do
+  defp route_short_name(route) when is_map(route),
+    do: blank_to_nil(Map.get(route, :route_short_name))
+
+  defp route_short_name(_route), do: nil
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
       "" -> nil
       trimmed -> trimmed
     end
   end
 
-  defp route_short_name(_route), do: nil
+  defp blank_to_nil(_value), do: nil
 
   defp column_sort_state(sort_by, sort_dir, column) when column == sort_by do
     case sort_dir do
@@ -353,10 +525,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   @doc """
   Renders the list pane's first-use state for a version without general rules.
 
-  It differs from the filtered-empty state a later step adds: nothing is hidden
-  by a filter here, so the copy explains what a rule is for rather than undoing a
-  query. The caller supplies the "Create transfer" action once the editor exists;
-  until then the state stands on its own with no control to offer.
+  It differs from `no_results/1`: nothing is hidden by a filter here, so the copy
+  explains what a rule is for rather than undoing a query. The caller supplies
+  the "Create transfer" action once the editor exists; until then the state
+  stands on its own with no control to offer.
 
   ## Examples
 
@@ -372,6 +544,40 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         Add a rule when riders need a specific connection, extra time, or a different transfer point. Journey planners can infer transfers without these rules.
         <:action :if={@action != []}>
           {render_slot(@action)}
+        </:action>
+      </.empty_state>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the list pane's filtered-empty state.
+
+  The version has general rules, but the search and filters hide all of them, so
+  the state offers the way back — the bare list — instead of asking for a first
+  rule. The toolbar above it stays visible, because the search term that emptied
+  the list is edited there.
+
+  ## Examples
+
+      <.no_results />
+  """
+  def no_results(assigns) do
+    ~H"""
+    <div id="transfers-no-results" class="p-4 sm:p-6">
+      <.empty_state title="No matching connections">
+        Try another stop, route, or search term.
+        <:action>
+          <.button
+            id="transfers-no-results-clear"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="min-h-11"
+            phx-click="clear_filters"
+          >
+            Clear filters
+          </.button>
         </:action>
       </.empty_state>
     </div>
