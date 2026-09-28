@@ -513,7 +513,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       {:ok, view, html} = live(conn, ~p"/")
 
       # Dashboard remains reachable with no session organization (optional mode).
-      assert html =~ "Pathways Studio"
+      refute html =~ "Pathways Studio"
       assert has_element?(view, "#dashboard-no-organization")
       assert has_element?(view, "#app-header #user-menu-panel a[href='/users/settings']")
     end
@@ -633,33 +633,58 @@ defmodule GtfsPlannerWeb.HeaderTest do
   end
 
   describe "Document titles" do
-    test "root title uses Pathways Studio suffix with page title", %{conn: conn} do
-      user = user_fixture()
-      conn = log_in_user(conn, user)
+    test "signed-out page title names both products", %{conn: conn} do
+      html = conn |> get(~p"/users/log_in") |> html_response(200)
 
-      {:ok, _view, html} = live(conn, ~p"/")
-
-      assert html =~ "· Pathways Studio</title>"
-      assert html =~ ~s(data-default="Pathways Studio")
-      assert html =~ ~s(data-suffix=" · Pathways Studio")
+      assert html =~ "· GTFS Planner · Pathways Studio</title>"
+      assert html =~ ~s(data-default="GTFS Planner")
+      assert html =~ ~s(data-suffix=" · GTFS Planner · Pathways Studio")
     end
 
-    test "settings title uses Pathways Studio shell", %{conn: conn} do
-      user = user_fixture()
-      conn = log_in_user(conn, user)
+    test "signed-in user without an organization gets the GTFS Planner suffix", %{conn: conn} do
+      conn = log_in_user(conn, user_fixture())
 
-      {:ok, _view, html} = live(conn, ~p"/users/settings")
+      html = conn |> get(~p"/") |> html_response(200)
 
-      assert html =~ "· Pathways Studio</title>"
-      assert html =~ ~s(data-default="Pathways Studio")
-      assert html =~ ~s(data-suffix=" · Pathways Studio")
+      assert html =~ "· GTFS Planner</title>"
+      assert html =~ ~s(data-suffix=" · GTFS Planner")
+      refute html =~ "Pathways Studio"
     end
 
-    test "auth page renders Pathways Studio brand", %{conn: conn} do
-      conn = get(conn, ~p"/users/log_in")
-      html = html_response(conn, 200)
+    test "settings title uses the GTFS Planner suffix without an organization", %{conn: conn} do
+      conn = log_in_user(conn, user_fixture())
 
-      assert html =~ "Pathways Studio"
+      html = conn |> get(~p"/users/settings") |> html_response(200)
+
+      assert html =~ "· GTFS Planner</title>"
+      assert html =~ ~s(data-suffix=" · GTFS Planner")
+    end
+
+    test "Planner and Pathways editors get their own product suffix", %{conn: conn} do
+      for {product, suffix} <- [
+            {:planner, " · GTFS Planner"},
+            {:pathways, " · Pathways Studio"}
+          ] do
+        organization = organization_fixture(%{product: product})
+        user = user_fixture()
+
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["pathways_studio_editor"]
+        })
+
+        version = gtfs_version_fixture(organization.id)
+
+        html =
+          conn
+          |> log_in_user(user, organization: organization)
+          |> get(~p"/gtfs/#{version.id}/routes")
+          |> html_response(200)
+
+        assert html =~ ~s(data-suffix="#{suffix}")
+        assert html =~ "#{suffix}</title>"
+      end
     end
   end
 end

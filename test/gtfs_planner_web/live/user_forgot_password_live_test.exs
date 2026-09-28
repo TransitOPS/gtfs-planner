@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/users/reset_password")
 
-      assert page_title(view) == "Reset password · Pathways Studio"
+      assert page_title(view) == "Reset password · GTFS Planner · Pathways Studio"
       assert has_element?(view, "h1", "Reset password")
 
       h1s =

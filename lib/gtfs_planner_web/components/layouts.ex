@@ -14,6 +14,17 @@ defmodule GtfsPlannerWeb.Layouts do
   # and other static content.
   embed_templates "layouts/*"
 
+  # Signed-out pages belong to both products; signed-in pages use the brand of
+  # the organization on the connection.
+  defp title_suffix(%{current_user: %{}} = assigns) do
+    brand = ProductSurfaces.brand(assigns[:current_organization])
+    " · " <> ProductSurfaces.name(brand)
+  end
+
+  defp title_suffix(_assigns) do
+    " · #{ProductSurfaces.name(:planner)} · #{ProductSurfaces.name(:pathways)}"
+  end
+
   @doc """
   Renders your app layout.
 

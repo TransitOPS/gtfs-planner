@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/", GtfsPlannerWeb do
-    pipe_through [:browser, :require_authenticated_user]
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
 
     delete "/users/log_out", UserSessionController, :delete
     get "/users/settings/confirm_email/:token", UserSettingsController, :confirm_email
@@ -93,7 +93,7 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/admin", GtfsPlannerWeb do
-    pipe_through [:browser, :require_authenticated_user]
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
 
     live_session :require_authenticated_user_and_org,
       on_mount: [
@@ -108,7 +108,7 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/admin/organizations", GtfsPlannerWeb do
-    pipe_through [:browser, :require_authenticated_user]
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
 
     live_session :administrator_only,
       on_mount: [
@@ -125,7 +125,7 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/gtfs/:version", GtfsPlannerWeb do
-    pipe_through [:browser, :require_authenticated_user]
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
 
     live_session :gtfs_routes,
       on_mount: [

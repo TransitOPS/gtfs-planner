@@ -15,7 +15,7 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/users/log_in")
 
-      assert page_title(view) == "Log in · Pathways Studio"
+      assert page_title(view) == "Log in · GTFS Planner · Pathways Studio"
       assert has_element?(view, "#login-title", "Log in")
       assert has_element?(view, ~s(#login-title[class~="text-[28px]"]))
 

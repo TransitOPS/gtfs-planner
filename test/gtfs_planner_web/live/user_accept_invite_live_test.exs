@@ -26,7 +26,7 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
 
-      assert page_title(view) == "Set password · Pathways Studio"
+      assert page_title(view) == "Set password · GTFS Planner · Pathways Studio"
 
       assert has_element?(view, ~s(#accept-invite-page[phx-hook="FormErrorFocus"]))
       refute has_element?(view, "#accept-invite-page[phx-update]")

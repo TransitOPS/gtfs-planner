@@ -204,6 +204,13 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       {:ok, view, _html} = live(conn, ~p"/admin/organizations")
 
       assert has_element?(view, "#organizations-empty")
+
+      assert has_element?(
+               view,
+               "#organizations-empty",
+               "Create the first organization to give its members access."
+             )
+
       refute has_element?(view, "tbody#organizations")
 
       assert has_element?(view, "#organizations-empty a[href='/admin/organizations/new']")

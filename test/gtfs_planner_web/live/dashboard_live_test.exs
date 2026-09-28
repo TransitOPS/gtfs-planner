@@ -170,8 +170,9 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       refute has_element?(view, "a[href^=\"/gtfs/\"]")
       refute has_element?(view, "a[href=\"/admin/users\"]")
       refute has_element?(view, "a[href=\"/admin/organizations\"]")
-      assert html =~ "Organization access is required"
+      assert html =~ "Organization access is required to use this application."
       assert html =~ "Contact an administrator"
+      refute html =~ "Pathways Studio"
     end
 
     test "stale or cross-tenant session organization renders unavailable without existence oracle",

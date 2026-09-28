@@ -107,7 +107,7 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     test "renders the exact title, H1, help copy, and pending contract", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/first")
 
-      assert page_title(view) == "Create administrator account · Pathways Studio"
+      assert page_title(view) == "Create administrator account · GTFS Planner · Pathways Studio"
       assert has_element?(view, "h1", "Create administrator account")
 
       h1s =
