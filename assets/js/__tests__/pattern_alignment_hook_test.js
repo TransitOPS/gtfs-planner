@@ -205,6 +205,25 @@ describe("pattern_alignment_hook drawing", () => {
     ]);
   });
 
+  it("escapes an imported stop name into marker html, never as markup", () => {
+    const evil = '<img src=x onerror="alert(1)">';
+    const fixture = model();
+    fixture.visits = [
+      { position: 1, stop_id: "X", name: evil, lat: 40.0, lon: -74.0, label: "1" },
+    ];
+    const evilCtx = mountTracked();
+    load(evilCtx.handlers, fixture);
+
+    const html = evilCtx.hook._stopMarkers.map(
+      (marker) => marker.options.icon.options.html,
+    );
+    expect(html).toHaveLength(1);
+    expect(html[0]).not.toContain("<img");
+    expect(html[0]).toContain("&lt;img");
+    // The pin label still renders; only the name is encoded.
+    expect(html[0]).toContain('class="pa-stop-pin"');
+  });
+
   it("toggles the stop name labels without touching the pins", () => {
     const { root } = ctx;
     const toggle = root.querySelector("[data-pa-toggle-labels]");
@@ -335,6 +354,19 @@ describe("pattern_alignment_hook save settle", () => {
     load(handlers, fixture);
 
     expect(hook.dirtyPositions()).toEqual([3]);
+    expect(save.disabled).toBe(false);
+  });
+
+  it("re-enables Save after a rebase settles an unchanged draft", () => {
+    const { hook, handlers } = mountTracked();
+    const save = saveButton();
+    load(handlers);
+    hook._commit(1, [[-74.0, 40.006]]);
+    save.disabled = true;
+
+    handlers["alignment:rebase"]({ bases: {} });
+
+    expect(hook.dirtyPositions()).toEqual([1]);
     expect(save.disabled).toBe(false);
   });
 });

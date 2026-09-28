@@ -15,7 +15,12 @@ defmodule GtfsPlanner.Gtfs.Alignments.Materializer do
 
   @type visit :: %{lat: float() | nil, lon: float() | nil}
   @type interior :: [[float()]]
-  @type point :: %{sequence: non_neg_integer(), lat: Decimal.t(), lon: Decimal.t(), dist: Decimal.t()}
+  @type point :: %{
+          sequence: non_neg_integer(),
+          lat: Decimal.t(),
+          lon: Decimal.t(),
+          dist: Decimal.t()
+        }
   @type blocker :: %{position: pos_integer(), reason: :no_coordinates | :zero_length}
 
   @doc """
@@ -89,7 +94,12 @@ defmodule GtfsPlanner.Gtfs.Alignments.Materializer do
             round_dist(Enum.at(dists, index))
           end)
 
-        {:ok, %{points: entries, visit_distances: visit_distances, digest: digest(entries, anchor_indices)}}
+        {:ok,
+         %{
+           points: entries,
+           visit_distances: visit_distances,
+           digest: digest(entries, anchor_indices)
+         }}
 
       blocked ->
         {:error, {:blocked, blocked}}
@@ -125,9 +135,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.Materializer do
             next_anchor = Enum.at(anchors, index + 1)
             section = Enum.at(interiors, index, [])
 
-            Enum.reduce(section, kept, fn point, acc ->
-              if dropped?(point, acc, next_anchor), do: acc, else: [point | acc]
-            end)
+            section
+            |> drop_run_duplicates(hd(kept))
+            |> drop_trailing_anchor(next_anchor)
+            |> Enum.reduce(kept, fn point, acc -> [point | acc] end)
           else
             kept
           end
@@ -139,11 +150,32 @@ defmodule GtfsPlanner.Gtfs.Alignments.Materializer do
     {points, Enum.reverse(anchor_indices)}
   end
 
-  defp dropped?({lat_d, lon_d, _lat_f, _lon_f} = _point, [prev | _], next_anchor) do
-    same_rounded?({lat_d, lon_d}, prev) or same_rounded?({lat_d, lon_d}, next_anchor)
+  # Consecutive duplicates carry no geometry: each interior survives only
+  # when it differs from the previously kept point (the section's anchor
+  # for the first interior). Anchors themselves are never dropped.
+  defp drop_run_duplicates(section, prev) do
+    {result, _} =
+      Enum.map_reduce(section, prev, fn point, kept_prev ->
+        if same_point?(point, kept_prev), do: {:drop, kept_prev}, else: {{:keep, point}, point}
+      end)
+
+    for {:keep, point} <- result, do: point
   end
 
-  defp same_rounded?({lat_a, lon_a}, {lat_b, lon_b, _, _}) do
+  # A trailing interior equal to the next anchor would duplicate the anchor
+  # that follows it. A repeat with further interiors after it is a genuine
+  # destination crossing (a loop out and back), so only the trailing one goes.
+  defp drop_trailing_anchor([], _next_anchor), do: []
+
+  defp drop_trailing_anchor(section, next_anchor) do
+    if same_point?(List.last(section), next_anchor) do
+      :lists.droplast(section)
+    else
+      section
+    end
+  end
+
+  defp same_point?({lat_a, lon_a, _, _}, {lat_b, lon_b, _, _}) do
     Decimal.eq?(lat_a, lat_b) and Decimal.eq?(lon_a, lon_b)
   end
 

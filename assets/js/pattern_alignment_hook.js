@@ -106,6 +106,18 @@ function pointsEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// Stop names arrive unsanitized from imported GTFS feeds and Leaflet
+// assigns divIcon html via innerHTML, so every interpolated name is
+// escaped here; JSON encoding alone is not HTML escaping.
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const PatternAlignment = {
   mounted() {
     const root = this.el;
@@ -218,6 +230,7 @@ const PatternAlignment = {
     // it here so a misshapen payload fails loudly in _draw, never as an
     // empty map.
     this.handleEvent("alignment:load", (payload) => {
+      if (this._destroyed || !this._map || !window.L) return;
       this._draw(payload.model);
       this._settleSave();
     });
@@ -417,6 +430,7 @@ const PatternAlignment = {
     // A fresh model starts a fresh editing session: drafts, history and
     // the handle selection belong to the previous geometry.
     this._drafts = new Map();
+    this._followPending = null;
     this._flagged = new Set();
     this._undo = [];
     this._redo = [];
@@ -535,7 +549,7 @@ const PatternAlignment = {
           iconAnchor: [MARKER_ICON_SIZE / 2, MARKER_ICON_SIZE / 2],
           html:
             `<span class="pa-stop-pin" style="border-color:${color}">${label}</span>` +
-            `<span class="pa-stop-name">${first.name}</span>`,
+            `<span class="pa-stop-name">${escapeHtml(first.name)}</span>`,
         }),
       }).addTo(this._map);
       this._stopMarkers.push(marker);
@@ -546,8 +560,32 @@ const PatternAlignment = {
     if (!this._map || !window.L) return;
     const L = window.L;
     const entry = this._sectionLayers.get(position);
-    if (!entry) return;
+    // Sections whose anchors lack coordinates draw no layer. Still take
+    // the selection and clear map-side state so the server-rendered
+    // panel never describes a stale section and the point list re-renders
+    // closed instead of no-op-ing on the previous section.
     this._selected = position;
+    this._selectedPoints = new Set();
+    if (!entry) {
+      for (const otherEntry of this._sectionLayers.values()) {
+        if (otherEntry.halo) {
+          this._map.removeLayer(otherEntry.halo);
+          otherEntry.halo = null;
+        }
+        if (otherEntry.line.options.weight !== SAVED_WEIGHT) {
+          otherEntry.line.setStyle({ weight: SAVED_WEIGHT });
+        }
+      }
+      if (this._mode === "edit") {
+        this._mode = "pan";
+        if (this._map.boxZoom) this._map.boxZoom.enable();
+        this.pushDraftState();
+      }
+      this._rebuildHandles();
+      this._refreshEditChrome();
+      this._renderPointList();
+      return;
+    }
 
     for (const [other, otherEntry] of this._sectionLayers) {
       const selected = other === position;
@@ -571,7 +609,6 @@ const PatternAlignment = {
 
     // Handles follow the selection: editing a section that cannot be
     // edited falls back to Pan so no stale handles linger.
-    this._selectedPoints = new Set();
     if (this._mode === "edit" && !this._editableSection(position)) {
       this._mode = "pan";
       if (this._map.boxZoom) this._map.boxZoom.enable();
@@ -1247,11 +1284,13 @@ const PatternAlignment = {
     // `#alignment-workspace` in this task; the hook root is the coherent
     // scope for the same intent.)
     if (!this.el.contains(document.activeElement)) return;
-    // Marker keydown owns handle-originated keys (it stopPropagation, but
-    // the guard keeps the single-point Delete below from also firing when
-    // a focused handle bubbles here).
-    if (event.target?.closest?.(".alignment-handle")) return;
     const key = event.key;
+    // Undo/redo and Escape work wherever focus sits inside the hook,
+    // including on a map handle: arrow-moves, midpoint insert and Delete
+    // leave focus on the handle, and keyboard operators must be able to
+    // undo or bail out without tabbing away first. The per-handle
+    // listener owns only arrows/Space/Enter/Delete, so these keys still
+    // bubble here.
     if ((event.ctrlKey || event.metaKey) && (key === "z" || key === "Z")) {
       if (this._mode !== "edit") return;
       event.preventDefault();
@@ -1262,6 +1301,16 @@ const PatternAlignment = {
       }
       return;
     }
+    if (key === "Escape") {
+      if (this._mode !== "edit") return;
+      event.preventDefault();
+      this._setMode("pan");
+      return;
+    }
+    // Marker keydown owns handle-originated keys (it stopPropagation, but
+    // the guard keeps the single-point Delete below from also firing when
+    // a focused handle bubbles here).
+    if (event.target?.closest?.(".alignment-handle")) return;
     if (key === "Shift") {
       // Holding Shift pre-disables panning so a Shift-drag never pans the
       // map, regardless of listener order on the container.
@@ -1269,12 +1318,6 @@ const PatternAlignment = {
       if (this._mode === "edit" && this._map?.dragging) {
         this._map.dragging.disable();
       }
-      return;
-    }
-    if (key === "Escape") {
-      if (this._mode !== "edit") return;
-      event.preventDefault();
-      this._setMode("pan");
       return;
     }
     if (key === "Delete" || key === "Backspace") {
@@ -1566,10 +1609,20 @@ const PatternAlignment = {
       run.end === interior.length - 1
         ? [anchors.to.lon, anchors.to.lat]
         : [...interior[run.end + 1]];
+    // Snapshot the effective interior the run indexes into: a routed
+    // result that arrives after a concurrent edit must bail instead of
+    // splicing over the newer geometry.
+    this._followPending = {
+      position,
+      start: run.start,
+      end: run.end,
+      interior: interior.map((point) => [...point]),
+    };
     this.pushEvent("alignment_follow_streets", {
       position,
       start_index: run.start,
       end_index: run.end,
+      interior_length: interior.length,
       from,
       to,
     });
@@ -1577,7 +1630,10 @@ const PatternAlignment = {
 
   // Replaces exactly the echoed run with the routed interior points.
   // Misshapen payloads, unknown sections and out-of-range bounds push
-  // nothing and change nothing; an empty routed leg is a no-op.
+  // nothing and change nothing; an empty routed leg is a no-op. A result
+  // whose run no longer matches the pushed snapshot (a concurrent edit
+  // moved the interior mid-flight) bails with a notice instead of
+  // splicing over the newer geometry.
   _applyFollowResult(payload) {
     if (this._destroyed || !this._map) return;
     if (!this._model || !this._model.editable) return;
@@ -1598,6 +1654,24 @@ const PatternAlignment = {
       return;
     }
     if (!Array.isArray(points)) return;
+    const pending = this._followPending;
+    if (
+      !pending ||
+      pending.position !== position ||
+      pending.start !== start ||
+      pending.end !== end
+    ) {
+      return;
+    }
+    const interior = this._effectiveInterior(position);
+    if (!pointsEqual(interior, pending.interior)) {
+      this._followPending = null;
+      this._notify(
+        "This section changed while the street path was routing. Select the points and try again.",
+      );
+      return;
+    }
+    this._followPending = null;
     const routed = points.filter(
       (point) =>
         Array.isArray(point) &&
@@ -1605,7 +1679,6 @@ const PatternAlignment = {
         point.every((coord) => typeof coord === "number" && Number.isFinite(coord)),
     );
     if (routed.length === 0) return;
-    const interior = this._effectiveInterior(position);
     if (end >= interior.length) return;
     const next = [
       ...interior.slice(0, start),

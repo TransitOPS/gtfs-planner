@@ -97,6 +97,34 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializerTest do
     end
   end
 
+  describe "build/2 destination crossing" do
+    test "keeps a nonconsecutive repeat of the next anchor with full distances" do
+      visits = [%{lat: 0.0, lon: 0.0}, %{lat: 0.0, lon: 0.001}]
+
+      # The first interior crosses the destination and the path loops back:
+      # dropping it would silently shorten the exported shape.
+      sections = [[[0.001, 0.0], [0.001, 0.001]]]
+
+      assert {:ok, result} = Materializer.build(visits, sections)
+
+      assert Enum.map(result.points, &[Decimal.to_float(&1.lon), Decimal.to_float(&1.lat)]) == [
+               [0.0, 0.0],
+               [0.001, 0.0],
+               [0.001, 0.001],
+               [0.001, 0.0]
+             ]
+
+      assert Enum.map(result.points, & &1.dist) == [
+               Decimal.new("0.00"),
+               Decimal.new("111.20"),
+               Decimal.new("222.39"),
+               Decimal.new("333.59")
+             ]
+
+      assert result.visit_distances == [Decimal.new("0.00"), Decimal.new("333.59")]
+    end
+  end
+
   describe "build/2 digest" do
     test "is stable and separates identical point lists by anchor indices" do
       a = %{lat: 0.0, lon: 0.0}
@@ -108,6 +136,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializerTest do
       assert {:ok, anchored} = Materializer.build([a, b, c], [[], []])
 
       assert first.digest == second.digest
+
       assert Enum.map(first.points, &{&1.lat, &1.lon}) ==
                Enum.map(anchored.points, &{&1.lat, &1.lon})
 

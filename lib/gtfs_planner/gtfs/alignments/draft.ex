@@ -53,8 +53,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.Draft do
     max_points = AlignmentSegment.max_points()
 
     result =
-      Enum.reduce_while(params, {:ok, [], MapSet.new(), 0}, fn entry,
-                                                              {:ok, acc, seen, total} ->
+      Enum.reduce_while(params, {:ok, [], MapSet.new(), 0}, fn entry, {:ok, acc, seen, total} ->
         case normalize_entry(entry, sections, seen, max_points) do
           {:ok, op, count} ->
             {:cont, {:ok, [op | acc], MapSet.put(seen, op.position), total + count}}
@@ -155,8 +154,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.Draft do
     end
   end
 
-  # Blocked sections accept no draft ops; the stops must be fixed first.
-  defp check_op_kind(_op, %{kind: :blocked}), do: {:error, {:invalid_draft, :blocked_section}}
+  # Sections without coordinates accept no draft ops; the stops must be
+  # fixed first. Blocked zero-length sections stay drawable: the editor
+  # offers "Draw manually" on them (R5's remedy), so a manual set passes
+  # here like any drawable section.
+  defp check_op_kind(_op, %{kind: :blocked, blocked_reason: :no_coordinates}),
+    do: {:error, {:invalid_draft, :blocked_section}}
+
   defp check_op_kind(:set, _section), do: :ok
   defp check_op_kind(:delete, %{kind: :missing}), do: {:error, {:invalid_draft, :invalid_op}}
   defp check_op_kind(:delete, _section), do: :ok
@@ -165,7 +169,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.Draft do
 
   # Non-set ops carry no geometry; any sent points are ignored.
   defp parse_points(_entry, op, _max_points) when op != :set, do: {:ok, []}
-  defp parse_points(%{"points" => points}, :set, max_points), do: normalize_points(points, max_points)
+
+  defp parse_points(%{"points" => points}, :set, max_points),
+    do: normalize_points(points, max_points)
+
   defp parse_points(_entry, :set, _max_points), do: {:error, {:invalid_draft, :malformed}}
 
   defp normalize_points(points, max_points) when is_list(points) do

@@ -491,8 +491,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   replace dialog when the section already has saved points. `"retry"`
   regenerates the notice's failed positions. No position generates every
   missing section. `"confirmed"` runs the replace dialog's stored
-  positions. Viewers, an in-flight generation and an empty target leave
-  the socket unchanged; nothing is written (CR-9).
+  positions. Viewers, an in-flight generation, an open save review and an
+  empty target leave the socket unchanged; nothing is written (CR-9).
+  The save-review guard keeps a routed suggestion from landing as a draft
+  while the user is confirming an older geometry.
   """
   def generate(socket, params) when is_map(params) do
     cond do
@@ -500,6 +502,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
         socket
 
       not is_nil(socket.assigns[:alignment_generation]) ->
+        socket
+
+      not is_nil(socket.assigns[:alignment_pending]) ->
         socket
 
       is_nil(socket.assigns[:alignment]) ->
@@ -794,7 +799,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       true ->
         case follow_request(socket, params) do
           {:ok, request} -> start_follow(socket, request)
-          :invalid -> socket
+          :invalid -> reject_follow(socket, params)
         end
     end
   end
@@ -845,13 +850,34 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          {:ok, end_index} <- follow_index(params, "end_index"),
          true <- start_index <= end_index,
          %{points: points} <- follow_section(socket, position),
-         true <- end_index < length(points),
+         true <- end_index < follow_bound(params, points),
          {:ok, from} <- follow_endpoint(params, "from"),
          {:ok, to} <- follow_endpoint(params, "to") do
       {:ok,
        %{position: position, start_index: start_index, end_index: end_index, from: from, to: to}}
     else
       _ -> :invalid
+    end
+  end
+
+  # A rejected run names its section through the routing notice instead of
+  # failing silent with the button left enabled; a forged position with no
+  # section pushes nothing.
+  defp reject_follow(socket, params) do
+    case follow_position(socket, params) do
+      {:position, position} -> fail_follow(socket, %{position => :invalid_response})
+      :invalid -> socket
+    end
+  end
+
+  # The hook indexes its run against the effective (draft) interior, which a
+  # committed-but-unsaved draft can make longer than the saved points the
+  # server holds; bound the run against the pushed draft length when it is
+  # a valid count, falling back to the saved length otherwise.
+  defp follow_bound(params, points) do
+    case params["interior_length"] || params[:interior_length] do
+      length when is_integer(length) and length >= 0 -> length
+      _ -> length(points)
     end
   end
 
@@ -890,15 +916,29 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # even spawns).
   defp follow_endpoint(params, key) do
     case params[key] || params[String.to_atom(key)] do
-      [lon, lat]
-      when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and
-             lat >= -90 and lat <= 90 and lon == lon and lat == lat ->
-        {:ok, [lon * 1.0, lat * 1.0]}
-
-      _ ->
-        :invalid
+      [lon, lat] -> follow_coords(lon, lat)
+      _ -> :invalid
     end
   end
+
+  defp follow_coords(lon, lat)
+       when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and
+              lat >= -90 and lat <= 90 do
+    if finite_coord?(lon) and finite_coord?(lat) do
+      {:ok, [lon * 1.0, lat * 1.0]}
+    else
+      :invalid
+    end
+  end
+
+  defp follow_coords(_lon, _lat), do: :invalid
+
+  # JSON numbers cannot encode NaN or infinities, but a forged hook
+  # payload reaches this clause all the same; the product test below is
+  # the deliberate fail-safe, stated without a self-comparison.
+  defp finite_coord?(coord) when is_float(coord), do: coord * 0 == 0
+  defp finite_coord?(coord) when is_integer(coord), do: true
+  defp finite_coord?(_coord), do: false
 
   defp start_follow(socket, request) do
     %{from: from, to: to} = request
@@ -1237,6 +1277,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   Blockers open the blocked dialog with no writes; stale bases open the
   conflict dialog; stale identities show the stale-stops notice. A save
   already in review is ignored so a double submit never queues two saves.
+  A save requested while street-path generation is in flight is likewise
+  ignored: the review would snapshot pre-generation geometry and the
+  arriving suggestion would land as a draft behind it, so the user
+  finishes or cancels generation first and then saves once.
   """
   def save_requested(socket, params) when is_map(params) do
     cond do
@@ -1244,6 +1288,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
         push_save_settled(socket)
 
       not is_nil(socket.assigns[:alignment_pending]) ->
+        push_save_settled(socket)
+
+      not is_nil(socket.assigns[:alignment_generation]) ->
         push_save_settled(socket)
 
       true ->

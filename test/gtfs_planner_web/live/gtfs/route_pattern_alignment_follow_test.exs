@@ -278,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentFollowTest do
       refute render(view) =~ @test_key
     end
 
-    test "latitude 95.0 in from is rejected with no push and no routing call",
+    test "latitude 95.0 in from is rejected with a notice, no push and no routing call",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "FOLX")
       follow_pattern = drawn_pattern(organization, version, route, "P-FOL-BADCOORD", "F2")
@@ -290,11 +290,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentFollowTest do
       render_click(view, "alignment_follow_streets", follow_params(%{"from" => [-74.006, 95.0]}))
 
       refute_push_event(view, "alignment:follow_result", %{}, 300)
-      refute has_element?(view, "#alignment-generate-notice")
+      assert has_element?(view, "#alignment-generate-notice")
       assert segments_count(organization, version) == 1
     end
 
-    test "out-of-range indexes push nothing",
+    test "out-of-range indexes show the rejection notice and push nothing",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "FOLR")
       follow_pattern = drawn_pattern(organization, version, route, "P-FOL-BADRANGE", "F3")
@@ -305,9 +305,52 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentFollowTest do
       {:ok, view, _html} = live(conn, pattern_path(version, route, follow_pattern))
 
       render_click(view, "alignment_follow_streets", follow_params(%{"end_index" => 9}))
+
+      refute_push_event(view, "alignment:follow_result", %{}, 300)
+      assert has_element?(view, "#alignment-generate-notice")
+      assert segments_count(organization, version) == 1
+    end
+
+    test "an unknown position pushes nothing and shows no notice",
+         %{conn: conn, organization: organization, version: version} do
+      route = route(organization, version, "FOLR2")
+      follow_pattern = drawn_pattern(organization, version, route, "P-FOL-BADRANGE2", "F3B")
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, follow_pattern))
+
       render_click(view, "alignment_follow_streets", follow_params(%{"position" => "7"}))
 
       refute_push_event(view, "alignment:follow_result", %{}, 300)
+      refute has_element?(view, "#alignment-generate-notice")
+      assert segments_count(organization, version) == 1
+    end
+
+    test "a run past the saved length routes against the pushed draft length",
+         %{conn: conn, organization: organization, version: version} do
+      route = route(organization, version, "FOLD")
+      follow_pattern = drawn_pattern(organization, version, route, "P-FOL-DRAFT", "F6")
+
+      leg = [[-74.006, 40.7128], [-74.005, 40.7138], [-74.004, 40.7148]]
+      stub_json(200, routing_response([leg]))
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, follow_pattern))
+
+      # Five saved points, but the hook's unsaved Add-midpoint draft holds
+      # six: the last draft point is a legal run end.
+      render_click(
+        view,
+        "alignment_follow_streets",
+        follow_params(%{"end_index" => 5, "interior_length" => 6})
+      )
+
+      assert_push_event(
+        view,
+        "alignment:follow_result",
+        %{position: 1, start_index: 1, end_index: 5, points: [[-74.005, 40.7138]]},
+        5_000
+      )
+
+      refute has_element?(view, "#alignment-generate-notice")
       assert segments_count(organization, version) == 1
     end
 

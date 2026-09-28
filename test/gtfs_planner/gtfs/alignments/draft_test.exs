@@ -13,8 +13,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.DraftTest do
       kind: kind,
       blocked_reason: Keyword.get(opts, :blocked_reason),
       points: [],
-      revision:
-        Keyword.get(opts, :revision, %{segment_id: "seg-#{position}", lock_version: 1})
+      revision: Keyword.get(opts, :revision, %{segment_id: "seg-#{position}", lock_version: 1})
     }
   end
 
@@ -106,8 +105,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.DraftTest do
 
   test "more than 50,000 points across sections is too many" do
     sections = Enum.map(1..11, fn pos -> section(pos, :shared) end)
-    draft = Enum.map(1..10, fn pos -> entry(pos, "set", %{"points" => points(5_000)}) end) ++
-      [entry(11, "set", %{"points" => [[0.0, 0.0]]})]
+
+    draft =
+      Enum.map(1..10, fn pos -> entry(pos, "set", %{"points" => points(5_000)}) end) ++
+        [entry(11, "set", %{"points" => [[0.0, 0.0]]})]
 
     assert Draft.normalize(draft, resolved(sections)) ==
              {:error, {:invalid_draft, :too_many_points}}
@@ -126,6 +127,15 @@ defmodule GtfsPlanner.Gtfs.Alignments.DraftTest do
 
     assert Draft.normalize(draft, resolved(sections)) ==
              {:error, {:invalid_draft, :blocked_section}}
+  end
+
+  test "setting a blocked zero-length section draws the manual remedy" do
+    sections = [section(1, :blocked, blocked_reason: :zero_length)]
+    draft = [entry(1, "set", %{"points" => [[1.0, 2.0]]})]
+
+    assert {:ok, [op]} = Draft.normalize(draft, resolved(sections))
+    assert op.op == :set
+    assert op.points == [[1.0, 2.0]]
   end
 
   test "deleting a missing section and sharing a shared section are invalid ops" do

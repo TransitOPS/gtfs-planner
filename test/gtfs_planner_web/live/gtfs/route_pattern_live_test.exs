@@ -781,9 +781,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert has_element?(view, "#alignment-footer")
       refute has_element?(view, "#coming-soon")
 
-      # Slice A renders no generation control anywhere in the task.
-      refute render(view) =~ "Generate"
-
       # Alignment has its own branch and never falls through to timings.
       refute has_element?(view, "#timing-select")
       refute has_element?(view, "#timing-rows")

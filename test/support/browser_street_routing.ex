@@ -21,7 +21,9 @@ defmodule GtfsPlanner.BrowserStreetRouting do
   @midpoint_lon_offset 0.0005
 
   @impl GtfsPlanner.StreetRouting.Behaviour
-  def route(waypoints, _opts \\ []) when is_list(waypoints) do
+  def route(waypoints, opts \\ [])
+
+  def route(waypoints, _opts) when is_list(waypoints) do
     if valid_waypoints?(waypoints) do
       if Enum.any?(waypoints, fn {lat, _lon} -> lat == @unroutable_latitude end) do
         {:error, :no_route}

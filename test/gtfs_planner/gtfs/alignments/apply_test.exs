@@ -346,7 +346,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
 
     # The shape-owning pattern on the other route is re-materialized.
     assert shape_points(organization, version, "P2") != before_holder_shapes
-    assert length(shape_points(organization, version, "P2")) > 0
+    assert shape_points(organization, version, "P2") != []
     assert trip_row(organization, version, "H1").shape_id == "P2"
     assert trip_row(organization, version, "H1").updated_at != holder_trip.updated_at
     assert holder_trip.id != nil

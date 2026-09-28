@@ -607,6 +607,9 @@ test.describe("generation journeys", () => {
     await expect(page.locator("#alignment-save-dialog")).toContainText(
       "Who should use this path?",
     );
+    await expect(page.locator("#alignment-save-dialog")).toContainText(
+      "Other patterns",
+    );
     await expect(
       page.locator("#alignment-save-scope-1-local"),
     ).toBeChecked();

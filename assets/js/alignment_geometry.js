@@ -74,6 +74,7 @@ export function simplifyInterior(
     [...selected].filter((i) => i >= 0 && i < interior.length),
   );
   const result = [...interior];
+  const runs = [];
   let runStart = null;
 
   const flushRun = (start, end) => {
@@ -90,9 +91,15 @@ export function simplifyInterior(
     if (i < interior.length && valid.has(i)) {
       if (runStart === null) runStart = i;
     } else if (runStart !== null) {
-      flushRun(runStart, i - 1);
+      runs.push([runStart, i - 1]);
       runStart = null;
     }
+  }
+
+  // Splicing a run shifts every later index, so apply runs right to
+  // left: earlier runs then still address their original positions.
+  for (let r = runs.length - 1; r >= 0; r--) {
+    flushRun(runs[r][0], runs[r][1]);
   }
 
   return result;

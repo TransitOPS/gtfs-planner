@@ -94,6 +94,25 @@ describe("simplifyInterior", () => {
     // collapses to nothing between its fixed neighbours.
     expect(result).toEqual([interior[0], interior[1], interior[4]]);
   });
+
+  it("with disjoint runs {0,1} and {3,4} keeps every unselected point", () => {
+    const interior = [1, 2, 3, 4, 5, 6].map((x) => [x / 1000, 0]);
+
+    const result = simplifyInterior(
+      [0, 0],
+      interior,
+      [0.007, 0],
+      5,
+      new Set([0, 1, 3, 4]),
+    );
+
+    // Both selected runs collapse between their fixed neighbours while the
+    // unselected points at indexes 2 and 5 survive exactly.
+    expect(result).toEqual([
+      [0.003, 0],
+      [0.006, 0],
+    ]);
+  });
 });
 
 describe("nearestEdgeIndex", () => {

@@ -1353,8 +1353,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   # Erlang floats can be NaN/inf only through exotic ports, but a forged
   # hook payload is just JSON numbers: reject the non-finite ones here so
-  # they never reach the adapter.
-  defp finite_number?(value) when is_float(value), do: value == value
+  # they never reach the adapter. NaN and infinities are the only floats
+  # whose product with zero is not zero, which states the guard without a
+  # self-comparison.
+  defp finite_number?(value) when is_float(value), do: value * 0 == 0
   defp finite_number?(value) when is_integer(value), do: true
   defp finite_number?(_value), do: false
 

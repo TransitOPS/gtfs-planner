@@ -158,6 +158,7 @@ describe("pattern_alignment_follow", () => {
       position: 1,
       start_index: 1,
       end_index: 3,
+      interior_length: 5,
       from: P1,
       to: P5,
     });
@@ -190,6 +191,7 @@ describe("pattern_alignment_follow", () => {
       position: 1,
       start_index: 0,
       end_index: 1,
+      interior_length: 5,
       from: [-74.0, 40.0],
       to: P3,
     });
@@ -218,6 +220,41 @@ describe("pattern_alignment_follow", () => {
     expect(button.getAttribute("title")).toBe(
       "Select neighbouring points to follow streets",
     );
+  });
+
+  it("bails with a notice when the section changed mid-flight", () => {
+    const ctx = mountTracked();
+    const hook = openList(ctx);
+
+    select(hook, [1, 2, 3]);
+    followButton().click();
+    expect(followPushes(ctx.pushed)).toHaveLength(1);
+
+    // A concurrent edit (here an added midpoint) shifts the interior
+    // after the push: the routed result must not splice over it.
+    hook._commit(1, [[-74.0, 40.002], P1, P2, P3, P4, P5]);
+    ctx.handlers["alignment:follow_result"]({
+      position: 1,
+      start_index: 1,
+      end_index: 3,
+      points: [[-73.9995, 40.01]],
+    });
+
+    expect(hook._effectiveInterior(1)).toEqual([
+      [-74.0, 40.002],
+      P1,
+      P2,
+      P3,
+      P4,
+      P5,
+    ]);
+    expect(ctx.pushed).toContainEqual({
+      event: "alignment_action_notice",
+      payload: {
+        message:
+          "This section changed while the street path was routing. Select the points and try again.",
+      },
+    });
   });
 
   it("ignores a misshapen follow result and changes nothing", () => {

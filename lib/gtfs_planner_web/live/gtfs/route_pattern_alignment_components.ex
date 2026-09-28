@@ -77,6 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:missing_count, missing_count(assigns.alignment))
       |> assign(:save_enabled, save_enabled?(assigns))
       |> assign(:generating?, not is_nil(assigns[:generation]))
+      |> assign(:save_pending?, not is_nil(assigns[:pending]))
       |> assign(:generate_overlay?, generate_overlay?(assigns.alignment, assigns[:editable?]))
 
     # The first-alignment overlay is a nudge, not a gate: once a draft
@@ -135,7 +136,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
             id="alignment-save"
             type="button"
             disabled={!@save_enabled}
-            title={save_button_title(@alignment, @editable?, @offline?, @applying?, @dirty_positions)}
+            title={
+              save_button_title(
+                @alignment,
+                @editable?,
+                @offline?,
+                @applying?,
+                @dirty_positions,
+                @generating?
+              )
+            }
             data-commit="alignment"
             phx-click={
               JS.dispatch("alignment:action", to: "#alignment-map-root", detail: %{action: "save"})
@@ -379,8 +389,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
                   id="alignment-generate-all"
                   phx-click="alignment_generate_paths"
                   data-commit="alignment"
-                  disabled={@offline?}
-                  title={if(@offline?, do: "Reconnect before generating", else: nil)}
+                  disabled={@offline? or @save_pending?}
+                  title={generate_all_title(@offline?, @save_pending?)}
                   class="btn btn-primary mt-4 min-h-11 w-full"
                 >
                   Generate street paths
@@ -445,8 +455,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
               id="alignment-generate-missing"
               phx-click="alignment_generate_paths"
               data-commit="alignment"
-              disabled={@offline? or @generating?}
-              title={generate_button_title(@offline?, @generating?)}
+              disabled={@offline? or @generating? or @save_pending?}
+              title={generate_button_title(@offline?, @generating?, @save_pending?)}
               class="btn btn-outline mt-3 min-h-11 w-full"
             >
               Generate street paths
@@ -472,6 +482,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
             editable?={@editable?}
             offline?={@offline?}
             generating?={@generating?}
+            save_pending?={@save_pending?}
             dirty?={@selected.position in @dirty_positions}
             flagged?={@selected.position in @flagged_positions}
           />
@@ -569,6 +580,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   attr :offline?, :boolean, default: false, doc: "disables Generate until reconnected"
   attr :generating?, :boolean, default: false, doc: "disables Generate while routing"
+
+  attr :save_pending?, :boolean,
+    default: false,
+    doc: "disables Generate while a save review is open"
+
   attr :dirty?, :boolean, default: false
   attr :flagged?, :boolean, default: false
 
@@ -611,8 +627,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           phx-click="alignment_generate_paths"
           phx-value-position={@section.position}
           data-commit="alignment"
-          disabled={@offline? or @generating?}
-          title={generate_button_title(@offline?, @generating?)}
+          disabled={@offline? or @generating? or @save_pending?}
+          title={generate_button_title(@offline?, @generating?, @save_pending?)}
           class="btn btn-outline min-h-11 w-full"
         >
           Generate street path
@@ -949,22 +965,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           >
             Maximum path deviation
           </label>
-          <select
-            id="alignment-simplify-tolerance"
-            name="tolerance_m"
-            phx-change="alignment_simplify_tolerance"
-            class="select select-bordered mt-1 min-h-11 w-full"
-          >
-            <option value="5" selected={@dialog && @dialog.tolerance == 5}>
-              5 metres · preserve detail
-            </option>
-            <option value="10" selected={@dialog == nil or @dialog.tolerance == 10}>
-              10 metres · balanced
-            </option>
-            <option value="25" selected={@dialog && @dialog.tolerance == 25}>
-              25 metres · fewer points
-            </option>
-          </select>
+          <form id="alignment-simplify-tolerance-form" phx-change="alignment_simplify_tolerance">
+            <select
+              id="alignment-simplify-tolerance"
+              name="tolerance_m"
+              class="select select-bordered mt-1 min-h-11 w-full"
+            >
+              <option value="5" selected={@dialog && @dialog.tolerance == 5}>
+                5 metres · preserve detail
+              </option>
+              <option value="10" selected={@dialog == nil or @dialog.tolerance == 10}>
+                10 metres · balanced
+              </option>
+              <option value="25" selected={@dialog && @dialog.tolerance == 25}>
+                25 metres · fewer points
+              </option>
+            </select>
+          </form>
         </div>
         <p class="mt-3 text-sm text-base-content/70">
           Applies to the selected points, or to this section when none are
@@ -1444,9 +1461,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   defp generate_draw_position(%{failures: [%{position: position} | _]}), do: position
   defp generate_draw_position(_notice), do: nil
 
-  defp generate_button_title(true, _generating?), do: "Reconnect before generating"
-  defp generate_button_title(_offline?, true), do: "Generation is already running"
-  defp generate_button_title(_offline?, _generating?), do: nil
+  defp generate_button_title(true, _generating?, _save_pending?),
+    do: "Reconnect before generating"
+
+  defp generate_button_title(_offline?, true, _save_pending?),
+    do: "Generation is already running"
+
+  defp generate_button_title(_offline?, _generating?, true),
+    do: "Finish or cancel the open save before generating"
+
+  defp generate_button_title(_offline?, _generating?, _save_pending?), do: nil
+
+  defp generate_all_title(true, _save_pending?), do: "Reconnect before generating"
+
+  defp generate_all_title(_offline?, true),
+    do: "Finish or cancel the open save before generating"
+
+  defp generate_all_title(_offline?, _save_pending?), do: nil
 
   # Draw is the primary action on sections without saved geometry:
   # missing sections, and blocked zero-length connectors whose anchors
@@ -1465,7 +1496,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   defp more_actions?(_section, _editable?), do: false
 
   defp use_shared?(%{kind: :override, shared_points: shared})
-       when is_list(shared) and length(shared) > 0,
+       when is_list(shared) and shared != [],
        do: true
 
   defp use_shared?(_section), do: false
@@ -1640,22 +1671,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   # dirty sections, so a clean draft has nothing to review.
   defp save_enabled?(assigns) do
     assigns.editable? and not assigns.offline? and assigns[:applying?] != true and
-      dirty_positions(assigns.state) != []
+      is_nil(assigns[:generation]) and dirty_positions(assigns.state) != []
   end
 
-  defp save_button_title(_alignment, false, _offline?, _applying?, _dirty?),
+  defp save_button_title(_alignment, false, _offline?, _applying?, _dirty?, _generating?),
     do: "Only editors can save alignment."
 
-  defp save_button_title(_alignment, true, true, _applying?, _dirty?),
+  defp save_button_title(_alignment, true, true, _applying?, _dirty?, _generating?),
     do: "Reconnect before saving."
 
-  defp save_button_title(_alignment, true, _offline?, true, _dirty?),
+  defp save_button_title(_alignment, true, _offline?, true, _dirty?, _generating?),
     do: "Saving your alignment…"
 
-  defp save_button_title(_alignment, true, _offline?, _applying?, []),
+  defp save_button_title(_alignment, true, _offline?, _applying?, _dirty?, true),
+    do: "Finish or cancel generation before saving."
+
+  defp save_button_title(_alignment, true, _offline?, _applying?, [], _generating?),
     do: "Edit a path to enable saving."
 
-  defp save_button_title(alignment, true, _offline?, _applying?, _dirty?),
+  defp save_button_title(alignment, true, _offline?, _applying?, _dirty?, _generating?),
     do: save_title(alignment, true)
 
   defp save_notice_message({:error, message}) when is_binary(message), do: message
