@@ -179,9 +179,11 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogListingTest do
 
       by_parent = transfer(ctx, %{from_stop_id: "CEN-A", to_stop_id: "HBR", transfer_type: 0})
 
+      # The route and trip rows name HBR, not MKT: MKT carries the DOCK-9 platform
+      # code above, so any row naming it would match "dock-9" too.
       by_route =
         transfer(ctx, %{
-          from_stop_id: "MKT",
+          from_stop_id: "HBR",
           to_stop_id: "HBR",
           from_route_id: "12",
           transfer_type: 0
@@ -189,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogListingTest do
 
       by_trip =
         transfer(ctx, %{
-          from_stop_id: "MKT",
+          from_stop_id: "HBR",
           to_stop_id: "HBR",
           from_trip_id: "24-0840",
           transfer_type: 0
@@ -226,7 +228,10 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogListingTest do
         })
 
       assert ids(load(ctx, search: "museum", stop: "MUS")) == [museum.id]
-      assert ids(load(ctx, search: "museum", stop: "HBR")) == []
+
+      # NOC is route24's to-stop only, so an empty result needs the search and the
+      # stop filter together.
+      assert ids(load(ctx, search: "museum", stop: "NOC")) == []
       assert ids(load(ctx, search: "riverside", type: 1)) == [market.id]
       assert ids(load(ctx, search: "riverside", route: "24")) == []
       assert ids(load(ctx, stop: "MKT", route: "24")) == [route24.id]
