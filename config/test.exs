@@ -50,6 +50,22 @@ geocoding_module =
 
 config :gtfs_planner, :geocoding_service, geocoding_module
 
+# Alignment street generation routes through the server-side Geoapify adapter in
+# ordinary ExUnit runs. Browser journeys drive generation in a real browser, where
+# no Req.Test stub exists, so they use the deterministic fake instead.
+street_routing_module =
+  if System.get_env("BROWSER_E2E") == "true" do
+    GtfsPlanner.BrowserStreetRouting
+  else
+    GtfsPlanner.StreetRouting.Geoapify
+  end
+
+config :gtfs_planner, :street_routing_service, street_routing_module
+
+# Route Req HTTP calls in the street routing adapter through Req.Test so
+# tests can stub upstream routing responses.
+config :gtfs_planner, :street_routing_req_plug, {Req.Test, GtfsPlanner.StreetRouting.Geoapify}
+
 # Route Req HTTP calls in the map tiles controller through Req.Test so
 # tests can stub upstream tile responses.
 config :gtfs_planner, :map_tiles_req_plug, {Req.Test, GtfsPlannerWeb.MapTilesController}
