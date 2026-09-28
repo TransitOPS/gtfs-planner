@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     FareZones,
     Route,
     RoutePatterns,
+    Routes,
     Schedules,
     Stop,
     Transfers
@@ -84,6 +85,15 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     case run(fn -> Gtfs.get_route_by_route_id(organization_id, gtfs_version_id, route_id) end) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, %Route{} = route} -> {:ok, route}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_route_editor(organization_id, gtfs_version_id, route_id) do
+    case run(fn -> Routes.route_editor(organization_id, gtfs_version_id, route_id) end) do
+      {:ok, {:ok, workspace}} -> {:ok, workspace}
+      {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end
   end

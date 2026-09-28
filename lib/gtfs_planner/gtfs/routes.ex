@@ -1,6 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Routes do
   @moduledoc """
-  Trusted edit sources and pure merge comparison for route detail editing.
+  Trusted edit sources, the route editor workspace read and pure merge
+  comparison for route detail editing.
+
+  `route_editor/3` loads the whole route workspace in one call: the scoped
+  published route and its trusted source, scoped agency options, scoped route
+  mode counts, scoped warning candidates and the route's last audit entry. An
+  imported route without audit reports unknown attribution (`last_saved` is
+  `nil`). No geometry query runs here, so the S-3 map enrichment stays a
+  separate read.
 
   `source/1` projects a persisted route into the R2 source shape: server-owned
   identity (organization, version, route UUID, natural ID, revision) plus the
@@ -21,7 +29,13 @@ defmodule GtfsPlanner.Gtfs.Routes do
   rejected instead of silently rebasing an old edit.
   """
 
+  import Ecto.Query
+
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Repo
 
   @edit_fields [
     :route_short_name,
@@ -62,6 +76,33 @@ defmodule GtfsPlanner.Gtfs.Routes do
           conflicting: [atom()],
           write: %{optional(atom()) => term()},
           merged: %{optional(atom()) => term()} | nil
+        }
+
+  @type agency_option :: %{
+          agency_id: String.t() | nil,
+          agency_name: String.t() | nil,
+          agency_url: String.t() | nil
+        }
+  @type mode_count :: %{route_type: integer() | nil, count: non_neg_integer()}
+  @type warning_candidate :: %{
+          id: Ecto.UUID.t(),
+          route_id: String.t(),
+          route_short_name: String.t() | nil,
+          route_color: String.t() | nil
+        }
+  @type last_save :: %{
+          action: String.t(),
+          actor_id: Ecto.UUID.t(),
+          actor_email: String.t(),
+          saved_at: DateTime.t()
+        }
+  @type editor_workspace :: %{
+          route: Route.t(),
+          source: source(),
+          agencies: [agency_option()],
+          mode_counts: [mode_count()],
+          warning_candidates: [warning_candidate()],
+          last_saved: last_save() | nil
         }
 
   @doc """
@@ -121,6 +162,98 @@ defmodule GtfsPlanner.Gtfs.Routes do
          {:ok, choices} <- validate_choices(choices) do
       resolve(base_side, side(draft), current_side, choices)
     end
+  end
+
+  @doc """
+  Loads the route editor workspace for one published route (R2).
+
+  The read is scoped by organization, version and natural ID through the
+  published scoped lookup: a foreign scope, an unpublished version or an
+  unknown natural ID is `{:error, :not_found}` with no workspace data. A lost
+  database connection is `{:error, :unavailable}`; no other failure is
+  classified that way.
+
+  `agencies` carry the scoped ID, name and home URL. `mode_counts` count scoped
+  routes per numeric mode, descending frequency then ascending mode.
+  `warning_candidates` are the scoped routes projected to UUID, natural ID,
+  short name and color only. `last_saved` projects the route's most recent
+  audit entry (action, actor and time); `nil` is the unknown/imported
+  attribution for a route with no audit. Geometry never runs here.
+  """
+  @spec route_editor(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, editor_workspace()} | {:error, :not_found | :unavailable}
+  def route_editor(organization_id, gtfs_version_id, route_id) do
+    with {:ok, route} <- RoutePatterns.published_route(organization_id, gtfs_version_id, route_id) do
+      {:ok,
+       %{
+         route: route,
+         source: source(route),
+         agencies: agency_options(organization_id, gtfs_version_id),
+         mode_counts: mode_counts(organization_id, gtfs_version_id),
+         warning_candidates: warning_candidates(organization_id, gtfs_version_id),
+         last_saved: last_saved(route)
+       }}
+    end
+  rescue
+    DBConnection.ConnectionError -> {:error, :unavailable}
+  end
+
+  defp agency_options(organization_id, gtfs_version_id) do
+    Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
+      %{
+        agency_id: agency.agency_id,
+        agency_name: agency.agency_name,
+        agency_url: agency.agency_url
+      }
+    end)
+  end
+
+  defp mode_counts(organization_id, gtfs_version_id) do
+    from(route in Route,
+      where:
+        route.organization_id == ^organization_id and
+          route.gtfs_version_id == ^gtfs_version_id,
+      group_by: route.route_type,
+      select: %{route_type: route.route_type, count: count(route.id)},
+      order_by: [desc: count(route.id), asc: route.route_type]
+    )
+    |> Repo.all()
+  end
+
+  defp warning_candidates(organization_id, gtfs_version_id) do
+    from(route in Route,
+      where:
+        route.organization_id == ^organization_id and
+          route.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: route.route_id],
+      select: %{
+        id: route.id,
+        route_id: route.route_id,
+        route_short_name: route.route_short_name,
+        route_color: route.route_color
+      }
+    )
+    |> Repo.all()
+  end
+
+  # The route's most recent audit entry, bound to the route UUID so a deleted
+  # and recreated natural ID never inherits the old attribution.
+  defp last_saved(%Route{} = route) do
+    from(log in ChangeLog,
+      where:
+        log.organization_id == ^route.organization_id and
+          log.gtfs_version_id == ^route.gtfs_version_id and
+          log.entity_type == "route" and log.entity_id == ^route.id,
+      order_by: [desc: log.inserted_at, desc: log.id],
+      limit: 1,
+      select: %{
+        action: log.action,
+        actor_id: log.actor_id,
+        actor_email: log.actor_email,
+        saved_at: log.inserted_at
+      }
+    )
+    |> Repo.one()
   end
 
   # --- comparison internals -----------------------------------------------
