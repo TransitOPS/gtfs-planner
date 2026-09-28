@@ -202,7 +202,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
     end
   end
 
-  defp natural_before?(a, b), do: natural_key(a.block_id) <= natural_key(b.block_id)
+  defp natural_before?(a, b), do: natural_key(a.block_id) < natural_key(b.block_id)
 
   defp sort_value(block, :block), do: natural_key(block.block_id)
   defp sort_value(block, :trips), do: block.trip_count

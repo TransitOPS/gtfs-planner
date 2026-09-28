@@ -52,7 +52,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  @drawers %{"service_dates" => :service_dates, "checks" => :checks, "peak" => :peak}
+  @drawers %{
+    "service_dates" => :service_dates,
+    "checks" => :checks,
+    "peak" => :peak,
+    "problems" => :checks
+  }
 
   # The settings save keeps the reader's value when the save is refused, so the
   # sentence names the value rather than a generic failure.
@@ -118,7 +123,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      socket
      |> assign(:state, state)
      |> ensure_day_loaded()
-     |> resolve_drawers()}
+     |> resolve_drawers()
+     |> assign_page_rows_if_loaded()}
   end
 
   @impl true
@@ -262,8 +268,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # One search event serves both pickers: the assignment form's and the block
   # drawer's merge form. The change event belongs to the form, so the handler
   # keeps the checked radio as well as the narrowed search (the form is
-  # re-rendered on every event). At most one of the two forms is on the page, so
-  # the payload decides which one the search belongs to.
+  # re-rendered on every event). The two forms can both be on the page, so the
+  # payload key decides which one the search belongs to.
   def handle_event("search_destination", params, socket) do
     cond do
       socket.assigns.block_action && Map.has_key?(params, "block_action") ->
@@ -465,7 +471,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("open_block", _params, socket), do: {:noreply, socket}
 
   def handle_event("retry", _params, socket) do
-    {:noreply, socket |> load_day() |> resolve_drawers()}
+    {:noreply, socket |> load_day() |> resolve_drawers() |> assign_page_rows_if_loaded()}
   end
 
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
@@ -614,7 +620,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         assign(socket, :load_state, :loading)
 
       socket.assigns.loaded_day_key == {:key, socket.assigns.state.day} ->
-        assign_page_rows(socket)
+        socket
 
       true ->
         load_day(socket)
@@ -638,7 +644,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:timeline_key, nil)
         |> assign(:pool_key, nil)
         |> assign_derived(day)
-        |> assign_page_rows()
 
       {:error, {:unknown_day_type, day_types}} ->
         socket
@@ -750,6 +755,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # Both streamed pages are re-derived together, so the timeline, the List view
   # and the pool stay in step on a day, filter, page or selection change.
   defp assign_page_rows(socket), do: socket |> assign_timeline() |> assign_pool()
+
+  # The page is streamed once each cycle, after the drawer resolution has had its
+  # chance to move it (`trip=`, `gap=` and `block=` override the requested page).
+  # Streaming in `load_day/1` as well would queue the first page and then the
+  # overriding one, and a stream reset never discards inserts already queued in
+  # the same render, so both pages would render (AC-29).
+  defp assign_page_rows_if_loaded(%{assigns: %{day: nil}} = socket), do: socket
+  defp assign_page_rows_if_loaded(socket), do: assign_page_rows(socket)
 
   # --- the cross-page selection (step 26) --------------------------------------
 
@@ -1067,16 +1080,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # The trip's calendar label: the day type with the fewest services containing
-  # the trip's service names the calendar exactly when that day type holds one
-  # service. The day load carries no per-service name, so this derives the label
-  # from the same day types every other surface prints.
-  defp calendar_label([]), do: "—"
-
-  defp calendar_label(day_types) do
-    day_types
-    |> Enum.min_by(&length(&1.service_ids))
-    |> Map.fetch!(:label)
+  # The trip's calendar label: a day type whose only service is this trip's
+  # calendar names that calendar; when no such day type exists the row names the
+  # service id rather than a joined day-type label. The day load carries no
+  # per-service name, so this derives the label from the same day types every
+  # other surface prints.
+  defp calendar_label(day_types, trip) do
+    case Enum.find(day_types, &(&1.service_ids == [trip.service_id])) do
+      %{label: label} -> label
+      nil -> trip.service_id
+    end
   end
 
   # --- reviewed block commands (step 25) --------------------------------------
@@ -1123,6 +1136,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       end
 
     socket
+    |> assign_page_rows_if_loaded()
     |> assign(assign: nil, review: nil, review_stale?: false)
     |> put_flash(:info, success_message(command, result))
     # A successful command also clears step 26's selection, because those trips
@@ -1488,6 +1502,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
            |> assign(:open_drawer, nil)
            |> load_day()
            |> resolve_drawers()
+           |> assign_page_rows_if_loaded()
            |> put_flash(:info, "Minimum layover saved.")}
 
         # The context's changeset carries the field error: the drawer shows it
@@ -1798,7 +1813,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                       trip={trip}
                       routes={@routes}
                       version_id={@state.version_id}
-                      calendar_label={calendar_label(day_types)}
+                      calendar_label={calendar_label(day_types, trip)}
                       day_types={day_types}
                       findings={Map.get(@findings_by_trip, trip.id, [])}
                       in_seat={Map.get(@in_seat, trip.id, [])}

@@ -958,7 +958,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   defp frequency_title(_drawer), do: "This trip runs on a frequency"
 
   defp headsign_help(%{trip: row}, pattern) when is_map(row) do
-    reference = row.trip_headsign || (pattern && pattern.headsign)
+    # A pattern the payload carries is an entry map (`Schedules.pattern_entries/2`)
+    # with no `:headsign` field, so a blank trip headsign must not index it.
+    reference = row.trip_headsign || (pattern && Map.get(pattern, :headsign))
 
     case reference do
       nil -> ""
