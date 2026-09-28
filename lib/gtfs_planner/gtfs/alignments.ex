@@ -19,8 +19,11 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
 
@@ -35,6 +38,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         }
 
   @type section :: %{
+          optional(:shared_points) => [[float()]] | nil,
+          optional(:shared_users) => non_neg_integer() | nil,
           position: pos_integer(),
           from_occurrence_id: Ecto.UUID.t(),
           to_occurrence_id: Ecto.UUID.t(),
@@ -233,6 +238,319 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       }
     end)
     |> Enum.sort_by(fn user -> {user.route_id, user.route_pattern_id} end)
+  end
+
+  @type imported_shape :: %{
+          shape_id: String.t(),
+          trip_count: non_neg_integer(),
+          points: [[float() | nil]],
+          length_m: float(),
+          visit_distances: [float() | nil] | nil
+        }
+
+  @type editor_model :: %{
+          pattern: RoutePattern.t(),
+          route_pattern_id: String.t(),
+          route_id: String.t(),
+          route_color: String.t(),
+          visits: [visit()],
+          sections: [section()],
+          status: status(),
+          digest: String.t() | nil,
+          imported_shapes: [imported_shape()],
+          export_summary: %{
+            shape_id: String.t() | nil,
+            linked_trip_count: non_neg_integer(),
+            visit_count: non_neg_integer()
+          }
+        }
+
+  @fallback_route_color "#334155"
+
+  @doc """
+  Loads the alignment editor read model for one pattern in its published route scope.
+
+  Scopes through `RoutePatterns.published_route/3` and a scoped pattern query by
+  natural `route_pattern_id`, without 01's stop-time fingerprint. Sections carry
+  `shared_points` on overrides whose stop pair also has a shared path and
+  `shared_users` (the distinct pattern count from `pair_users/4`) on shared
+  sections. Consumed by `RoutePatternLive.handle_params/3` (step 20).
+  """
+  @spec editor(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+          {:ok, editor_model()} | {:error, :not_found}
+  def editor(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+    with {:ok, route} <-
+           RoutePatterns.published_route(organization_id, gtfs_version_id, route_id),
+         %RoutePattern{} = pattern <-
+           scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+      resolved = resolve(pattern)
+      sections = enrich_sections(organization_id, gtfs_version_id, resolved.sections)
+
+      imported =
+        imported_shapes(organization_id, gtfs_version_id, pattern, length(resolved.visits))
+
+      linked_count = linked_trip_count(organization_id, gtfs_version_id, pattern)
+
+      {:ok,
+       %{
+         pattern: pattern,
+         route_pattern_id: pattern.route_pattern_id,
+         route_id: pattern.route_id,
+         route_color: route_color(route.route_color),
+         visits: resolved.visits,
+         sections: sections,
+         status: resolved.status,
+         digest: resolved.digest,
+         imported_shapes: imported,
+         export_summary: %{
+           shape_id: pattern.shape_id,
+           linked_trip_count: linked_count,
+           visit_count: length(resolved.visits)
+         }
+       }}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Returns the JSON-ready hook model for an `editor/4` result.
+
+  Converts Decimals to floats and atoms to strings, keeps `[lon, lat]` axis
+  order (INV-1), and takes `editable:` and `suggestions:` from opts.
+  """
+  @spec hook_model(editor_model(), keyword()) :: map()
+  def hook_model(%{} = model, opts \\ []) do
+    %{
+      pattern_id: model.pattern.id,
+      route_pattern_id: model.route_pattern_id,
+      route_id: model.route_id,
+      route_color: model.route_color,
+      editable: Keyword.get(opts, :editable, false),
+      export: to_string(model.status.export),
+      visits: Enum.map(model.visits, &hook_visit/1),
+      sections: Enum.map(model.sections, &hook_section/1),
+      imported_shapes: Enum.map(model.imported_shapes, &hook_shape/1),
+      export_summary: %{
+        shape_id: model.export_summary.shape_id,
+        linked_trip_count: model.export_summary.linked_trip_count,
+        visit_count: model.export_summary.visit_count
+      },
+      suggestions: Keyword.get(opts, :suggestions, [])
+    }
+  end
+
+  defp hook_visit(visit) do
+    %{
+      occurrence_id: visit.occurrence_id,
+      position: visit.position,
+      stop_id: visit.stop_id,
+      name: visit.name,
+      lat: visit.lat,
+      lon: visit.lon,
+      label: visit.label
+    }
+  end
+
+  defp hook_section(section) do
+    %{
+      position: section.position,
+      from_occurrence_id: section.from_occurrence_id,
+      to_occurrence_id: section.to_occurrence_id,
+      from_stop_id: section.from_stop_id,
+      to_stop_id: section.to_stop_id,
+      kind: to_string(section.kind),
+      blocked_reason: hook_atom(section.blocked_reason),
+      points: section.points,
+      shared_points: section.shared_points,
+      shared_users: section.shared_users,
+      revision: %{
+        segment_id: section.revision.segment_id,
+        lock_version: section.revision.lock_version
+      }
+    }
+  end
+
+  defp hook_shape(shape) do
+    %{
+      shape_id: shape.shape_id,
+      trip_count: shape.trip_count,
+      points: Enum.map(shape.points, &Enum.map(&1, fn value -> hook_float(value) end)),
+      length_m: shape.length_m,
+      visit_distances: hook_float_list(shape.visit_distances)
+    }
+  end
+
+  defp hook_atom(nil), do: nil
+  defp hook_atom(atom) when is_atom(atom), do: to_string(atom)
+
+  defp hook_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
+  defp hook_float(value), do: value
+
+  defp hook_float_list(nil), do: nil
+  defp hook_float_list(list), do: Enum.map(list, &hook_float/1)
+
+  defp scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+    from(p in RoutePattern,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and p.route_id == ^route_id and
+          p.route_pattern_id == ^route_pattern_id
+    )
+    |> Repo.one()
+  end
+
+  defp enrich_sections(organization_id, gtfs_version_id, sections) do
+    pairs =
+      sections
+      |> Enum.flat_map(fn
+        %{kind: :override, from_stop_id: from, to_stop_id: to} -> [{from, to}]
+        %{kind: :shared, from_stop_id: from, to_stop_id: to} -> [{from, to}]
+        _ -> []
+      end)
+      |> Enum.uniq()
+
+    shared_by_pair = load_shared_pairs(organization_id, gtfs_version_id, pairs)
+
+    users_by_pair =
+      Map.new(pairs, fn {from, to} = pair ->
+        {pair, length(pair_users(organization_id, gtfs_version_id, from, to))}
+      end)
+
+    Enum.map(sections, fn section ->
+      section = Map.put_new(section, :shared_points, nil)
+      section = Map.put_new(section, :shared_users, nil)
+
+      case section.kind do
+        :override ->
+          %{section | shared_points: Map.get(shared_by_pair, {section.from_stop_id, section.to_stop_id})}
+
+        :shared ->
+          %{section | shared_users: Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, 0)}
+
+        _ ->
+          section
+      end
+    end)
+  end
+
+  defp load_shared_pairs(_organization_id, _gtfs_version_id, []), do: %{}
+
+  defp load_shared_pairs(organization_id, gtfs_version_id, pairs) do
+    froms = pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    tos = pairs |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    wanted = MapSet.new(pairs)
+
+    from(seg in AlignmentSegment,
+      where:
+        seg.organization_id == ^organization_id and
+          seg.gtfs_version_id == ^gtfs_version_id and is_nil(seg.from_occurrence_id) and
+          seg.from_stop_id in ^froms and seg.to_stop_id in ^tos
+    )
+    |> Repo.all()
+    |> Enum.filter(fn seg -> MapSet.member?(wanted, {seg.from_stop_id, seg.to_stop_id}) end)
+    |> Map.new(fn seg -> {{seg.from_stop_id, seg.to_stop_id}, seg.points || []} end)
+  end
+
+  defp linked_trip_count(organization_id, gtfs_version_id, pattern) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and
+          t.gtfs_version_id == ^gtfs_version_id and t.route_id == ^pattern.route_id and
+          t.route_pattern_id == ^pattern.route_pattern_id and
+          t.pattern_derivation_state == "linked",
+      select: count(t.id)
+    )
+    |> Repo.one()
+  end
+
+  defp imported_shapes(organization_id, gtfs_version_id, pattern, visit_count) do
+    linked =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and
+            t.gtfs_version_id == ^gtfs_version_id and t.route_id == ^pattern.route_id and
+            t.route_pattern_id == ^pattern.route_pattern_id and
+            t.pattern_derivation_state == "linked" and not is_nil(t.shape_id) and
+            t.shape_id != "",
+        order_by: [asc: t.shape_id, asc: t.trip_id]
+      )
+      |> Repo.all()
+
+    linked
+    |> Enum.group_by(& &1.shape_id)
+    |> Enum.sort_by(fn {shape_id, _} -> shape_id end)
+    |> Enum.map(fn {shape_id, trips} ->
+      build_imported_shape(organization_id, gtfs_version_id, shape_id, trips, visit_count)
+    end)
+  end
+
+  defp build_imported_shape(organization_id, gtfs_version_id, shape_id, trips, visit_count) do
+    rows =
+      from(s in Shape,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and s.shape_id == ^shape_id,
+        order_by: [asc: s.shape_pt_sequence]
+      )
+      |> Repo.all()
+
+    points =
+      Enum.map(rows, fn row ->
+        [decimal_to_float(row.shape_pt_lon), decimal_to_float(row.shape_pt_lat), row.shape_dist_traveled]
+      end)
+
+    lon_lat = Enum.map(points, fn [lon, lat, _] -> [lon, lat] end)
+
+    representative = hd(trips)
+
+    stop_times =
+      from(st in StopTime,
+        where:
+          st.organization_id == ^organization_id and
+            st.gtfs_version_id == ^gtfs_version_id and st.trip_id == ^representative.trip_id,
+        order_by: [asc: st.stop_sequence]
+      )
+      |> Repo.all()
+
+    visit_distances =
+      if length(stop_times) == visit_count do
+        Enum.map(stop_times, & &1.shape_dist_traveled)
+      else
+        nil
+      end
+
+    %{
+      shape_id: shape_id,
+      trip_count: length(trips),
+      points: points,
+      length_m: Materializer.length_m(lon_lat),
+      visit_distances: visit_distances
+    }
+  end
+
+  defp route_color(color) when is_binary(color) do
+    if Regex.match?(~r/\A[0-9a-fA-F]{6}\z/, color) and relative_luminance(color) <= 0.85 do
+      "#" <> color
+    else
+      @fallback_route_color
+    end
+  end
+
+  defp route_color(_), do: @fallback_route_color
+
+  defp relative_luminance(<<r::binary-2, g::binary-2, b::binary-2>>) do
+    0.2126 * linear_channel(r) + 0.7152 * linear_channel(g) + 0.0722 * linear_channel(b)
+  end
+
+  defp linear_channel(hex) do
+    channel = String.to_integer(hex, 16) / 255
+
+    if channel <= 0.03928 do
+      channel / 12.92
+    else
+      :math.pow((channel + 0.055) / 1.055, 2.4)
+    end
   end
 
   defp load_visits(%RoutePattern{} = pattern) do

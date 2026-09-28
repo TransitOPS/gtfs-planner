@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
@@ -951,6 +952,10 @@ defmodule GtfsPlanner.Gtfs do
   def get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id \\ nil),
     do:
       RoutePatterns.get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id)
+
+  @doc "Loads the alignment editor read model for one pattern in its published route scope."
+  def alignment_editor(organization_id, gtfs_version_id, route_id, route_pattern_id),
+    do: Alignments.editor(organization_id, gtfs_version_id, route_id, route_pattern_id)
 
   @doc "Creates a pattern, its ordered occurrences, an unassigned Timing A and one audit row."
   def create_pattern(route_id, attrs, %AuditContext{} = audit_context),

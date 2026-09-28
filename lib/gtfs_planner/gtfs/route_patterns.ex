@@ -1731,7 +1731,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       else: take_unused(count - 1, MapSet.put(used, candidate), candidate + 1, [candidate | acc])
   end
 
-  defp published_route(organization_id, version_id, route_id) do
+  @doc false
+  def published_route(organization_id, version_id, route_id) do
     query =
       from route in Route,
         join: version in GtfsVersion,
