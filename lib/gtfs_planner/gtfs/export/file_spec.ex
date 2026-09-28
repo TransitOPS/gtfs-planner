@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
         {"stop_desc", :stop_desc},
         {"stop_lat", :stop_lat},
         {"stop_lon", :stop_lon},
+        {"zone_id", :zone_id},
         {"location_type", :location_type},
         {"parent_station", :parent_station},
         {"wheelchair_boarding", :wheelchair_boarding},
@@ -346,6 +347,9 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
   ## Export Types
   - `:full` - All GTFS files
   - `:pathways` - Only stops, levels, and pathways
+
+  Only the full export carries `stops.zone_id`: the pathways profile drops the
+  column from its `stops.txt` so that export keeps exactly its existing columns.
   """
   def get_specs(:full) do
     [
@@ -372,7 +376,7 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
 
   def get_specs(:pathways) do
     [
-      stops_spec(),
+      Map.update!(stops_spec(), :fields, &List.keydelete(&1, "zone_id", 0)),
       levels_spec(),
       pathways_spec()
     ]

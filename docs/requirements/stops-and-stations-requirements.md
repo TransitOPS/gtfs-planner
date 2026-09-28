@@ -427,29 +427,35 @@ As a schedule editor, I want to request that two nearby stops be merged, so that
 
 ### 4.6 Fare Zones
 
+Fare zones are managed in Settings › Fares, not in this section. The workspace lists the version's
+zones beside a map and a stop list, and stop details shows a stop's zone read-only.
+
 **AC-STOP-023: View zone list**
-- Given I navigate to the Stop Zones sub-section
-- When the page loads
-- Then I see a list of all defined fare zones with their names
+- Given I open Settings › Fares › Zones
+- When the workspace loads
+- Then I see every zone in the version with its name, its ID and its stop count
+- And a zone with no stops is marked "Empty zone"
+- And I can filter the stop list to one zone or to unassigned stops
+- And stop details shows the stop's zone read-only, linking to its filter in that list
 
 **AC-STOP-024: Create fare zone**
-- Given I am in the Stop Zones sub-section
-- When I click "Add Zone" and enter a zone name
-- Then a new zone record is created
-- And it appears in the zone list and zone dropdown
+- Given I am in Settings › Fares › Zones
+- When I create a zone with a name, an ID and a map color
+- Then the zone is created in the version
+- And it appears in the zone list and is ready to assign to stops
 
-**AC-STOP-025: Assign stop to zone**
-- Given I am editing a stop
-- When I select a zone from the Zone dropdown
-- And I save the stop
-- Then the stop is associated with that zone
-- And the zone_id is included in GTFS export
+**AC-STOP-025: Assign stops to a zone**
+- Given I am in Settings › Fares › Zones
+- When I select stops in the list or on the map
+- And I assign the selected stops to a zone and review the change
+- Then the stops belong to that zone when I save
+- And their zone IDs are included in GTFS export
 
-**AC-STOP-026: Unassign stop from zone**
-- Given I am editing a stop assigned to a zone
-- When I select "No zone selected" from the Zone dropdown
-- And I save the stop
-- Then the stop's zone assignment is removed
+**AC-STOP-026: Unassign stops from a zone**
+- Given I am in Settings › Fares › Zones with stops in a zone
+- When I select those stops and remove their zone assignment
+- And I review the change
+- Then the stops carry no zone when I save
 
 ### 4.7 Stop Usage and Deletion
 

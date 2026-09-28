@@ -306,6 +306,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          platform_code: empty_to_nil(row_map["platform_code"]),
          stop_lat: stop_lat,
          stop_lon: stop_lon,
+         zone_id: empty_to_nil(row_map["zone_id"]),
          location_type: location_type || 0,
          wheelchair_boarding: wheelchair_boarding,
          level_id: empty_to_nil(row_map["level_id"]),

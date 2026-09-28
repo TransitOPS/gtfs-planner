@@ -1,8 +1,8 @@
 defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   @moduledoc """
   Operational read contract for the route and stop/station catalog and detail views,
-  for the editable calendar list and detail reads, and for the version's transfer
-  catalog.
+  for the editable calendar list and detail reads, for the version's transfer
+  catalog, and for the Fare zones workspace.
 
   Catalog reads must distinguish ready values, missing records, partial enrichment,
   and a database connection that is temporarily unavailable. Only a lost database
@@ -32,7 +32,17 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   in-band answer `{:ok, :none}` rather than an error.
   """
 
-  alias GtfsPlanner.Gtfs.{Blocking, Calendars, Route, RoutePattern, Schedules, Stop, Transfers}
+  alias GtfsPlanner.Gtfs.{
+    Blocking,
+    Calendars,
+    FareZones,
+    Route,
+    RoutePattern,
+    Schedules,
+    Stop,
+    Transfers
+  }
+
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
 
   @type unavailable :: {:error, :unavailable}
@@ -52,6 +62,11 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
         }
   @type stop_region(value) :: {:ok, value} | unavailable()
   @type calendar_page :: [Calendars.summary()]
+  @type fare_workspace :: %{
+          inventory: FareZones.inventory(),
+          checks: FareZones.checks(),
+          stops: FareZones.stop_page()
+        }
 
   @callback load_route_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, route_page()} | unavailable()
@@ -91,6 +106,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               pathways: stop_region(list()),
               editing_status: stop_region(struct() | nil)
             }
+  @callback load_fare_workspace(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+              {:ok, fare_workspace()} | unavailable()
   @callback load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, Transfers.catalog()} | unavailable()
 end

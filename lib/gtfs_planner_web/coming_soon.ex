@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the eight catalog keys only. Any other key raises, so a
+  `feature/1` answers for the seven catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -100,18 +100,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
         %{name: "Generate along streets", text: "Generate a path between stops using streets."},
         %{name: "Edit points", text: "Adjust the points along a segment."},
         %{name: "Shared segments", text: "Review segments used by other patterns."}
-      ]
-    }
-  end
-
-  def feature(:fares) do
-    %{
-      title: "Fares",
-      scope: :version,
-      summary: "Set up fare zones and the fare rules that use them.",
-      sections: [
-        %{name: "Zones", text: "Group stops into fare zones."},
-        %{name: "Fare rules", text: "Set fares by origin, destination and zones crossed."}
       ]
     }
   end
