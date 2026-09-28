@@ -134,16 +134,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       last_stop =
         stop_fixture(context.organization.id, context.version.id, %{stop_name: "Riverside Term"})
 
-      trip(context, %{
-        trip_id: "6101",
-        block_id: "101",
-        trip_headsign: "Downtown",
-        route_pattern_id: "pattern-1",
-        first_stop: first_stop.stop_id,
-        last_stop: last_stop.stop_id,
-        first: "06:00:00",
-        last: "06:45:00"
-      })
+      _trip =
+        trip(context, %{
+          trip_id: "6101",
+          block_id: "101",
+          trip_headsign: "Downtown",
+          first_stop: first_stop.stop_id,
+          last_stop: last_stop.stop_id,
+          first: "06:00:00",
+          last: "06:45:00"
+        })
+        # `:route_pattern_id` is derived, not cast by `Trip.changeset/2`, so the
+        # fixture writes it the way the materializer does.
+        |> trip_pattern_metadata_fixture(%{route_pattern_id: "pattern-1"})
 
       conn = editor_conn(context)
       base = blocks_path(version.id)
@@ -229,6 +232,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       refute has_element?(followed, "#blocks-trip-elsewhere")
     end
 
+    test "the Calendar row names the trip's own calendar when no day type holds it alone",
+         %{version: version} = context do
+      # Both calendars run the same weekdays, so the day type holds two services
+      # and its label names no single calendar; the row names the trip's own
+      # service rather than the joined day-type label (AC-25).
+      calendar(context, "WK", "Weekday")
+      calendar(context, "SCHOOL", "School days")
+
+      trip(context, %{trip_id: "wk_1", block_id: "101"})
+
+      conn = editor_conn(context)
+
+      {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?trip=wk_1")
+
+      calendar_row =
+        view
+        |> doc()
+        |> LazyHTML.query("#trip-drawer dl > div")
+        |> Enum.find(&(LazyHTML.text(LazyHTML.query(&1, "dt")) |> String.trim() == "Calendar"))
+
+      assert LazyHTML.text(LazyHTML.query(calendar_row, "dd")) |> String.trim() == "WK"
+    end
+
     test "the transfer records list every record naming the trip, with its state text",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
@@ -249,7 +275,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
         to_trip_id: "y",
         transfer_type: 5,
         from_stop_id: record.from_stop_id,
-        to_stop_id: record.to_stop_id
+        # A distinct key: `nulls_distinct: false` on the transfers key index
+        # refuses a second row sharing every key column, and a stopless type-5
+        # record is the row the migration permits.
+        to_stop_id: nil
       })
 
       conn = editor_conn(context)

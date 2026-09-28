@@ -108,7 +108,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
     block_trips(context, "2", [{"08:00:00", "09:00:00"}, {"08:30:00", "09:30:00"}])
     block_trips(context, "3", [{"08:00:00", "09:00:00"}, {"08:15:00", "09:15:00"}])
     block_trips(context, "4", [{"08:00:00", "09:00:00"}, {"09:02:00", "10:00:00"}])
-    block_trips(context, "5", [{"08:00:00", "09:00:00"}, {"09:10:00", "10:00:00"}])
+
+    # Block 5's handoff is the empty move the status sort must separate from the
+    # other blocks: every other fixture stop shares the default coordinates, so
+    # its second trip starts at a stop more than the 200 m proximity bound away
+    # and R5 makes the gap a `{:moves, _}` (a `repositions` notice).
+    far =
+      stop_fixture(context.organization.id, context.version.id, %{
+        stop_lat: Decimal.new("41.0000"),
+        stop_lon: Decimal.new("-73.0000")
+      })
+
+    trip(context, %{trip_id: "5_0", block_id: "5", first: "08:00:00", last: "09:00:00"})
+
+    trip(context, %{
+      trip_id: "5_1",
+      block_id: "5",
+      first: "09:10:00",
+      last: "10:00:00",
+      first_stop: far.stop_id
+    })
 
     Enum.each(6..230, fn index ->
       block_trips(context, Integer.to_string(index), [{"08:00:00", "09:00:00"}])
@@ -199,13 +218,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert has_element?(view, "th[aria-sort='descending']", "Trips")
       assert has_element?(view, "th[aria-sort='descending']", "↓")
 
-      # The same key reverses, and the day type's other blocks keep the natural
-      # block order the sort breaks ties with.
+      # The same key reverses: ascending puts the fewest-trips block first, so the
+      # one-trip blocks lead the page and the busiest block is not on it.
       view |> element("button[phx-value-key='trips']") |> render_click()
 
       assert_patch(view, blocks_path(version.id) <> "?sort=trips")
       assert has_element?(view, "th[aria-sort='ascending']", "↑")
-      assert row_blocks(view) |> hd() == "1"
+      assert row_blocks(view) |> hd() == "6"
     end
 
     test "status puts the error blocks first with natural ties",
@@ -295,6 +314,33 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
 
       assert_patch(view, base)
       assert row_blocks(view) == ["101"]
+    end
+
+    test "the List view hides Select this page when the filter matches no block",
+         %{version: version} = context do
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "R2",
+        route_short_name: "2"
+      })
+
+      calendar(context, "WK", "Weekday")
+      block_trips(context, "101", [{"08:00:00", "09:00:00"}])
+      trip(context, %{trip_id: "only2", route: "R2", first: "08:00:00", last: "09:00:00"})
+
+      conn = editor_conn(context)
+      base = blocks_path(version.id)
+
+      {:ok, view, _html} = live(conn, base <> "?view=list&route=R2")
+
+      assert has_element?(view, "#blocks-filtered-empty", "No blocks match these filters")
+      refute has_element?(view, "#blocks-select-page")
+
+      # The same page without the filter keeps the control: the empty state, not
+      # the whole day type's block count, decides it.
+      view |> element("#blocks-clear-filters") |> render_click()
+
+      assert_patch(view, base <> "?view=list")
+      assert has_element?(view, "#blocks-select-page")
     end
   end
 

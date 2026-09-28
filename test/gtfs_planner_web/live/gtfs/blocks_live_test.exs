@@ -57,7 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLiveTest do
       assert Enum.count(LazyHTML.query(doc, "h1")) == 1
       assert LazyHTML.text(LazyHTML.query(doc, "h1")) |> String.trim() == "Blocks"
 
-      assert LazyHTML.text(LazyHTML.query(doc, "#blocks-page p")) |> String.trim() ==
+      assert LazyHTML.text(LazyHTML.query(doc, "#blocks-page header p")) |> String.trim() ==
                @subtitle
 
       assert Enum.count(LazyHTML.query(doc, "#operations-sub-nav a")) == 3

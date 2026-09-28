@@ -289,6 +289,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
         route_short_name: "2"
       })
 
+      # R2 must name a trip of this day type for the filter to survive the load:
+      # `normalize_route/2` falls back to all routes when the day holds none of
+      # the route (EV-19's “an unknown route falls back to all routes”), so a
+      # blocked R2 trip keeps the route while the pool holds none of it.
+      trip(context, %{
+        trip_id: "r2_blocked",
+        route: "R2",
+        block_id: "201",
+        first: "07:00:00",
+        last: "07:30:00"
+      })
+
       trip(context, %{trip_id: "r1_pool", first: "08:00:00", last: "09:00:00"})
 
       conn = editor_conn(context)

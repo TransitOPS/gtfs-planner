@@ -318,7 +318,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.BlockCalendarChangeTest do
       context.organization.id,
       context.version.id,
       context.route_id,
-      attrs
+      Map.put_new(Map.new(attrs), :service_id, @weekday)
     )
   end
 

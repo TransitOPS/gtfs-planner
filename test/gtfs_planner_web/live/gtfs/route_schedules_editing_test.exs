@@ -32,6 +32,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
   @saturday "EDT_SAT"
   @nodates "EDT_NODATES"
 
+  @weekend %{
+    monday: 0,
+    tuesday: 0,
+    wednesday: 0,
+    thursday: 0,
+    friday: 0,
+    saturday: 1,
+    sunday: 0
+  }
+
   setup context do
     organization = organization_fixture(%{alias: "editing-#{System.unique_integer([:positive])}"})
 
@@ -1230,7 +1240,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       })
 
     _weekday = weekly_calendar(context, @weekday, "Weekday")
-    _saturday = weekly_calendar(context, @saturday, "Saturday")
+    _saturday = weekly_calendar(context, @saturday, "Saturday", @weekend)
 
     Enum.each(1..3, fn index ->
       stop_fixture(organization_id, version.id, %{
@@ -1358,8 +1368,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
     }
   end
 
-  defp weekly_calendar(context, service_id, name) do
-    calendar_fixture(context.organization.id, context.version.id, %{service_id: service_id})
+  defp weekly_calendar(context, service_id, name, attrs \\ %{}) do
+    calendar_fixture(
+      context.organization.id,
+      context.version.id,
+      Map.merge(%{service_id: service_id}, Map.new(attrs))
+    )
 
     calendar_attribute_fixture(context.organization.id, context.version.id, %{
       service_id: service_id,

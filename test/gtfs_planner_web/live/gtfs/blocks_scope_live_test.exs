@@ -498,6 +498,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert has_element?(view, "#checks-drawer-notices", "Time missing")
     end
 
+    test "the Problems figure in the count strip opens the checks drawer",
+         %{version: version} = context do
+      seed_overlapping_day(context)
+      conn = editor_conn(context)
+
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      assert strip_value(view, "problems") == "1"
+
+      view |> element("#blocks-summary-counts-item-problems") |> render_click()
+
+      # The shared drawer component puts `data-open` on its overlay dialog, so
+      # the open state is asserted there and the checks panel beside it.
+      assert has_element?(view, "#checks-drawer")
+      assert has_element?(view, "#checks-drawer-overlay[data-open='true']")
+
+      assert has_element?(
+               view,
+               "#checks-drawer-problems [data-role='blocks-finding'][data-code='overlap']"
+             )
+    end
+
     test "the peak drawer shows the definition and one row per 15-minute bin",
          %{version: version} = context do
       seed_overlapping_day(context)
