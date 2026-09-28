@@ -89,6 +89,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -593,6 +594,53 @@ defmodule GtfsPlanner.Gtfs.Routes do
       if(previous.digest != category.digest, do: [:contents_changed], else: [])
     ])
   end
+
+  @doc """
+  Applies the reviewed route deletion cascade (R5, AC-13–15/31).
+
+  Takes the reviewed `review_fingerprint` and its fresh acknowledgement. The
+  whole cascade runs in one SERIALIZABLE transaction: published version
+  `FOR UPDATE`, route, sorted patterns and sorted trips, then every attempt
+  recomputes the R5 review and compares its fingerprint exactly. A stale
+  fingerprint returns `{:error, {:stale_review, fresh_review}}` with the fresh
+  categories and no effects; a malformed cross-route timing reference blocks
+  the transaction atomically; a failed audit rolls everything back. A stale
+  acknowledgement never automatically approves a new review, so `false` is
+  refused before any read.
+
+  The scoped set-based deletion removes exactly the reviewed rows — trips with
+  their stop times and frequencies, owned patterns with their descendants,
+  transfer/fare-rule/attribution/route-network/translation targets — and
+  retains imported shapes, shared records and unrelated rows. Every removed
+  row count is checked against the recomputed review before the exact reviewed
+  route UUID is deleted last. One operation id joins the checked `deleted`
+  summary and the existing trip/pattern audit semantics with the route's own
+  `deleted` log.
+  """
+  @spec delete_route(String.t(), String.t(), boolean(), AuditContext.t()) ::
+          {:ok, %{deleted: map(), operation_id: Ecto.UUID.t()}}
+          | {:error,
+             :not_found
+             | :forbidden
+             | :busy
+             | :invalid_input
+             | :not_acknowledged
+             | :malformed_cross_route_timing
+             | :failed_audit
+             | {:stale_review, deletion_review()}}
+  def delete_route(route_id, review_fingerprint, acknowledged, %AuditContext{} = audit)
+      when is_binary(route_id) and is_binary(review_fingerprint) and is_boolean(acknowledged) do
+    if acknowledged do
+      run_command_transaction(fn ->
+        delete_route_transaction(route_id, review_fingerprint, audit)
+      end)
+    else
+      {:error, :not_acknowledged}
+    end
+  end
+
+  def delete_route(_route_id, _review_fingerprint, _acknowledged, _audit),
+    do: {:error, :invalid_input}
 
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
@@ -1982,5 +2030,178 @@ defmodule GtfsPlanner.Gtfs.Routes do
     if trip_timing_crossing or timing_rows_crossing,
       do: Repo.rollback(:malformed_cross_route_timing),
       else: :ok
+  end
+
+  # --- reviewed cascade internals --------------------------------------------
+
+  # The R5 apply order: authorize, lock published version, route, sorted
+  # patterns and sorted trips, recompute the review on the locked rows and
+  # compare its fingerprint exactly, then remove the reviewed sets and audit
+  # with one shared operation id. The exact reviewed UUID is deleted last.
+  defp delete_route_transaction(route_id, fingerprint, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit, true)
+    route = RoutePatterns.lock_published_route!(audit, route_id)
+
+    patterns = RoutePatterns.lock_route_patterns!(route)
+    trips = Schedules.lock_route_trips!(route)
+
+    review = build_deletion_review(route, audit)
+
+    if review.fingerprint != fingerprint do
+      Repo.rollback({:stale_review, review})
+    end
+
+    operation_id = Ecto.UUID.generate()
+    trip_ids = Enum.map(trips, & &1.trip_id)
+    attribution_ids = scoped_attribution_ids(route, trip_ids)
+
+    trip_counts = Schedules.cascade_delete_route_trips!(trips, operation_id, audit)
+    pattern_counts = RoutePatterns.cascade_delete_patterns!(patterns, operation_id, audit)
+
+    deleted =
+      relationship_deletions!(route, trip_ids, attribution_ids)
+      |> Map.merge(%{
+        "route" => 1,
+        "patterns" => pattern_counts.patterns,
+        "pattern_stops" => pattern_counts.pattern_stops,
+        "timed_patterns" => pattern_counts.timed_patterns,
+        "timed_pattern_stops" => pattern_counts.timed_pattern_stops,
+        "trips" => trip_counts.trips,
+        "stop_times" => trip_counts.stop_times,
+        "frequencies" => trip_counts.frequencies
+      })
+
+    :ok = check_deleted_counts!(deleted, review)
+    _route_row = Repo.delete!(route)
+    audit_deleted_route!(route, review, deleted, operation_id, audit)
+
+    %{deleted: deleted, operation_id: operation_id}
+  end
+
+  # Explicit route or removed-trip targets only (R5): transfers match either
+  # route endpoint or either removed-trip endpoint and include stopless 4/5,
+  # stop-only/unrelated transfers survive; fare rules, attributions and network
+  # links match explicit route/removed-trip targets; translations match the
+  # removed route/trip/stop-time/attribution record identities. The predicates
+  # mirror the review categories exactly and the counts are checked against
+  # the recomputed review before anything commits.
+  defp relationship_deletions!(route, trip_ids, attribution_ids) do
+    org_id = route.organization_id
+    version_id = route.gtfs_version_id
+    route_id = route.route_id
+
+    {transfers, nil} =
+      Repo.delete_all(
+        from(tr in Transfer,
+          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
+          where:
+            tr.from_route_id == ^route_id or tr.to_route_id == ^route_id or
+              tr.from_trip_id in ^trip_ids or tr.to_trip_id in ^trip_ids
+        )
+      )
+
+    {fare_rules, nil} =
+      Repo.delete_all(
+        from(fr in FareRule,
+          where: fr.organization_id == ^org_id and fr.gtfs_version_id == ^version_id,
+          where: fr.route_id == ^route_id
+        )
+      )
+
+    {translations, nil} =
+      Repo.delete_all(
+        from(tr in Translation,
+          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
+          where:
+            (tr.table_name == "routes" and tr.record_id == ^route_id) or
+              (tr.table_name == "trips" and tr.record_id in ^trip_ids) or
+              (tr.table_name == "stop_times" and tr.record_id in ^trip_ids) or
+              (tr.table_name == "attributions" and tr.record_id in ^attribution_ids)
+        )
+      )
+
+    {attributions, nil} =
+      Repo.delete_all(
+        from(a in Attribution,
+          where: a.organization_id == ^org_id and a.gtfs_version_id == ^version_id,
+          where: a.route_id == ^route_id or a.trip_id in ^trip_ids
+        )
+      )
+
+    {route_networks, nil} =
+      Repo.delete_all(
+        from(rn in RouteNetwork,
+          where: rn.organization_id == ^org_id and rn.gtfs_version_id == ^version_id,
+          where: rn.route_id == ^route_id
+        )
+      )
+
+    %{
+      "transfers" => transfers,
+      "fare_rules" => fare_rules,
+      "translations" => translations,
+      "attributions" => attributions,
+      "route_networks" => route_networks
+    }
+  end
+
+  defp scoped_attribution_ids(route, trip_ids) do
+    Repo.all(
+      from(a in Attribution,
+        where:
+          a.organization_id == ^route.organization_id and
+            a.gtfs_version_id == ^route.gtfs_version_id,
+        where: a.route_id == ^route.route_id or a.trip_id in ^trip_ids,
+        where: not is_nil(a.attribution_id),
+        select: a.attribution_id
+      )
+    )
+  end
+
+  # The checked summary (R5): every removed row count must equal the recomputed
+  # review's category count before the cascade can commit. Under the
+  # serializable snapshot any drift surfaces as a retryable conflict first; a
+  # residual mismatch refuses the whole deletion instead of committing a
+  # partial or over-broad cascade.
+  defp check_deleted_counts!(deleted, review) do
+    reviewed = Map.new(review.categories, &{&1.key, &1.count})
+
+    case Enum.find(deleted, fn {key, count} -> Map.get(reviewed, key) != count end) do
+      nil -> :ok
+      _mismatch -> Repo.rollback({:stale_review, review})
+    end
+  end
+
+  # The route's own deleted log carries the shared operation id, the before
+  # snapshot and the checked summary so the whole cascade can be reconstructed
+  # from one entry alongside the existing per-trip and per-pattern logs.
+  defp audit_deleted_route!(route, review, deleted, operation_id, audit) do
+    # The checked summary: the removed counts that were verified against the
+    # recomputed review, plus the affected block IDs that leave their block
+    # naturally (R5 counts them but removes no block rows).
+    affected_counts = Map.put(deleted, "blocks", length(category_identities(review, "blocks")))
+
+    affected_identities =
+      Map.new(["route", "trips", "patterns", "blocks"], fn key ->
+        {key, category_identities(review, key)}
+      end)
+
+    case Gtfs.record_change_in_transaction(audit, :route, route, "deleted", %{
+           before: Gtfs.route_audit_snapshot(route),
+           operation_id: operation_id,
+           affected_counts: affected_counts,
+           affected_identities: affected_identities
+         }) do
+      {:ok, log} -> log
+      {:error, _changeset} -> Repo.rollback(:failed_audit)
+    end
+  end
+
+  defp category_identities(review, key) do
+    case Enum.find(review.categories, &(&1.key == key)) do
+      nil -> []
+      category -> category.identities
+    end
   end
 end

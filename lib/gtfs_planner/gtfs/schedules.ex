@@ -382,6 +382,58 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          trip.pattern_derivation_state != "linked"
        )}
     end)
+
+  @doc """
+  Locks every trip of one locked route `FOR UPDATE` in stable UUID order.
+
+  Call only inside `Repo.transaction/1`, after the version and route locks.
+  This is the R5 route-cascade trip lock: the whole sorted set is taken in one
+  ordered statement so opposing schedule/lifecycle writers deadlock-free.
+  """
+  @spec lock_route_trips!(Route.t()) :: [Trip.t()]
+  def lock_route_trips!(%Route{} = route) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^route.organization_id and
+          t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id,
+      order_by: [asc: t.id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Removes one route's trips and trip-owned rows for the reviewed route cascade
+  (R5), auditing each removed trip with the existing bulk-delete semantics
+  under one shared operation id.
+
+  Call only inside the reviewed route-deletion transaction, after the route
+  and its sorted trips are locked and the deletion review has been recomputed
+  and accepted. `trips` are the locked scoped trips in UUID order; every trip
+  is removed regardless of calendar or derivation state, including custom,
+  pending and unpatterned trips. Stop times and frequencies are removed by the
+  removed natural `trip_id`s; transfers are left to the caller's broader route
+  cascade. Returns the removed row counts keyed like the review categories so
+  the caller can check them against the review.
+  """
+  @spec cascade_delete_route_trips!([Trip.t()], Ecto.UUID.t(), AuditContext.t()) :: map()
+  def cascade_delete_route_trips!(trips, operation_id, %AuditContext{} = audit_context)
+      when is_list(trips) and is_binary(operation_id) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    snapshots = Enum.map(trips, &{&1, deleted_trip_snapshot(&1)})
+    natural_ids = Enum.map(trips, & &1.trip_id)
+    trip_uuids = Enum.map(trips, & &1.id)
+
+    stop_times = delete_children!(:stop_times, organization_id, version_id, natural_ids)
+    frequencies = delete_children!(:frequencies, organization_id, version_id, natural_ids)
+    count = delete_trip_rows!(organization_id, version_id, trip_uuids)
+
+    Enum.each(snapshots, fn {trip, before} ->
+      audit_trip!(audit_context, trip, "deleted", before, nil, operation_id, trip_uuids)
+    end)
+
+    %{trips: count, stop_times: stop_times, frequencies: frequencies}
   end
 
   @doc """
@@ -1724,27 +1776,29 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp delete_children!(:stop_times, organization_id, version_id, trip_ids) do
-    Repo.delete_all(
-      from(st in StopTime,
-        where:
-          st.organization_id == ^organization_id and st.gtfs_version_id == ^version_id and
-            st.trip_id in ^trip_ids
+    {count, nil} =
+      Repo.delete_all(
+        from(st in StopTime,
+          where:
+            st.organization_id == ^organization_id and st.gtfs_version_id == ^version_id and
+              st.trip_id in ^trip_ids
+        )
       )
-    )
 
-    :ok
+    count
   end
 
   defp delete_children!(:frequencies, organization_id, version_id, trip_ids) do
-    Repo.delete_all(
-      from(f in Frequency,
-        where:
-          f.organization_id == ^organization_id and f.gtfs_version_id == ^version_id and
-            f.trip_id in ^trip_ids
+    {count, nil} =
+      Repo.delete_all(
+        from(f in Frequency,
+          where:
+            f.organization_id == ^organization_id and f.gtfs_version_id == ^version_id and
+              f.trip_id in ^trip_ids
+        )
       )
-    )
 
-    :ok
+    count
   end
 
   # One builder for the counted read and the deletion, so the count a caller sees
