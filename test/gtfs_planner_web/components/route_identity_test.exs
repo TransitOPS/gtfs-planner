@@ -89,6 +89,28 @@ defmodule GtfsPlannerWeb.Components.RouteIdentityTest do
     end
   end
 
+  describe "automatic_text_color/1" do
+    test "picks black on a light background and white on a dark one" do
+      assert "000000" = RouteIdentity.automatic_text_color("FFFFFF")
+      assert "000000" = RouteIdentity.automatic_text_color("FFFF00")
+      assert "FFFFFF" = RouteIdentity.automatic_text_color("1A1A1A")
+      assert "000000" = RouteIdentity.automatic_text_color("FFD200")
+    end
+
+    test "accepts raw browser input as the preview sends it" do
+      assert "000000" = RouteIdentity.automatic_text_color("#ffff00")
+      assert "000000" = RouteIdentity.automatic_text_color("  #FFFFFF  ")
+    end
+
+    test "rejects an unusable background rather than guessing" do
+      assert :error = RouteIdentity.automatic_text_color(nil)
+      assert :error = RouteIdentity.automatic_text_color("")
+      assert :error = RouteIdentity.automatic_text_color("#FFF")
+      assert :error = RouteIdentity.automatic_text_color("ZZZZZZ")
+      assert :error = RouteIdentity.automatic_text_color(123_456)
+    end
+  end
+
   describe "route_badge/1" do
     test "renders valid background and foreground with inline style" do
       assigns = %{}

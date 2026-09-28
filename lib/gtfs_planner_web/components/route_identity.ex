@@ -54,6 +54,28 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   end
 
   @doc """
+  The black/white text color the badge shows on a route color: black unless
+  white gives more contrast, the same WCAG pick `Route`'s changeset applies for
+  `text_mode: "automatic"` and `assets/js/route_identity_preview.js` mirrors in
+  the browser.
+
+  Accepts raw or normalized six-digit hex. Returns `:error` for anything else,
+  so no caller can build a style from an unvalidated value.
+  """
+  @spec automatic_text_color(term()) :: String.t() | :error
+  def automatic_text_color(background) do
+    case normalize_hex(background) do
+      {:ok, norm_bg} ->
+        if contrast_ratio(norm_bg, "000000") >= contrast_ratio(norm_bg, "FFFFFF"),
+          do: "000000",
+          else: "FFFFFF"
+
+      :error ->
+        :error
+    end
+  end
+
+  @doc """
   Returns a route's colours as a safe inline style and a fallback class.
 
   The style carries the normalized background and the foreground that reaches
@@ -142,18 +164,12 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
         if contrast_ratio(norm_bg, norm_fg) >= 4.5 do
           norm_fg
         else
-          higher_contrast_choice(norm_bg)
+          automatic_text_color(norm_bg)
         end
 
       :error ->
-        higher_contrast_choice(norm_bg)
+        automatic_text_color(norm_bg)
     end
-  end
-
-  defp higher_contrast_choice(norm_bg) do
-    black_ratio = contrast_ratio(norm_bg, "000000")
-    white_ratio = contrast_ratio(norm_bg, "FFFFFF")
-    if black_ratio >= white_ratio, do: "000000", else: "FFFFFF"
   end
 
   defp badge_text(route) do
