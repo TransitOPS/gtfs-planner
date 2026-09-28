@@ -21,6 +21,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ScaleTest do
   `:erts_debug.size(day) * :erlang.system_info(:wordsize)` bytes are printed on one `EV-9:` line
   for the evidence artifact, and no time budget is asserted: the measurement is the recorded
   input for the virtualization decision, not a threshold a slower or faster machine must meet.
+  That line is printed *before* the query-count comparison, so the recorded measurement is in
+  the output on the run where a count regresses and the comparison fails.
 
   The fixture and the load fill a whole test-database transaction, so the module carries
   `@moduletag :blocking_scale`, which `test/test_helper.exs` excludes from the default suite,
@@ -57,8 +59,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.ScaleTest do
   @small_trip_count @small_blocks * @trips_per_block + @small_pool_trips
 
   # One block's trips run 06:00-08:30 twenty minutes apart for ten minutes each, so consecutive
-  # trips of a block leave a ten-minute layover (above the default five-minute minimum) and
-  # overlap nothing; pool trips spread from 04:00 a minute apart.
+  # trips of a block leave a ten-minute layover (above the default five-minute minimum) and no
+  # two trips of a block overlap. The pool trips are not overlap-free: they spread from 04:00 a
+  # minute apart for fifteen minutes each, so about fifteen of them are in flight together. The
+  # pool is read one trip at a time and its trips are never compared with each other, so that
+  # overlap is deliberate and cannot add a finding.
   @block_first_secs 21_600
   @trip_spacing_secs 1_200
   @trip_duration_secs 600
@@ -97,10 +102,17 @@ defmodule GtfsPlanner.Gtfs.Blocking.ScaleTest do
       assert small_day.counts.blocks == @small_blocks
       assert small_day.counts.unassigned == @small_pool_trips
 
-      assert large_queries > 0
-      assert large_queries == small_queries
-
+      # Printed before the comparison below: a count regression is exactly the run whose
+      # recorded measurement the evidence artifact needs, and an assertion failure would
+      # otherwise hide the line.
       assert_observation(large_day, large_queries, small_queries, large_elapsed_us)
+
+      assert large_queries > 0
+
+      assert large_queries == small_queries,
+             "the #{@trip_count}-trip day of version #{large_version.id} ran #{large_queries} " <>
+               "queries and the #{@small_trip_count}-trip day of version #{small_version.id} " <>
+               "ran #{small_queries}: the count must not grow with the trip count"
     end
   end
 
@@ -329,10 +341,16 @@ defmodule GtfsPlanner.Gtfs.Blocking.ScaleTest do
   # The lane database's statistics for these tables describe an empty table, so the planner
   # otherwise picks a sequential scan per outer row for `trip_rows/3`'s two `DISTINCT ON`
   # endpoint queries: 30.4 s and 31.5 s each at this scale against 88 ms and 75 ms with real
-  # statistics, and a whole load of over a minute against 817 ms observed here. ANALYZE reads
-  # the rows this transaction has already written, which is the statistics a committed import
-  # would have from autovacuum. It is the only statement here that outlives the rollback, and
-  # it leaves no row behind.
+  # statistics, and a whole load of over a minute against the observed 740-828 ms. PostgreSQL
+  # allows `ANALYZE` inside a transaction block, and it reads the rows this transaction has
+  # already written - the statistics a committed import would have from autovacuum - so each
+  # fixture run analyzes for its own plans instead of depending on an earlier run. The statistic
+  # that decides those plans rolls back with the fixture: `pg_statistic` rows are ordinary catalog
+  # rows (measured: after a rolled-back probe this lane's `trips.block_id` statistics read exactly
+  # as they had before it). The one-row `pg_class.reltuples` update `ANALYZE` also makes is an
+  # in-place update outside that rollback (measured: it read the probe's 3,000 rows both before
+  # and after the probe's rollback), which is a plan hint for an empty table, not a row of the
+  # fixture: no fixture table keeps a row.
   defp analyze_bulk_tables! do
     Repo.query!("ANALYZE trips")
     Repo.query!("ANALYZE stop_times")
@@ -354,35 +372,34 @@ defmodule GtfsPlanner.Gtfs.Blocking.ScaleTest do
   defp stop_id(index), do: "S#{index}"
 
   # Ecto emits `[:gtfs_planner, :repo, :query]` in the process that issued the query, so the
-  # handler counts only this test's own queries and the load's own transaction.
+  # handler cannot decide by process which queries this test owns: a day load that later runs
+  # part of its work in a `Task` would query from a child process. The tally therefore lives in
+  # an Agent, which any process can update, instead of this test's mailbox. The filter that
+  # remains is `metadata.repo`: only events from this application's repo count, and everything
+  # else is the test's own window, which holds the two loads and nothing else (`async: false`,
+  # and the fixture is built before the handler is attached).
   defp count_queries(fun) do
-    test_pid = self()
+    counter =
+      start_supervised!({Agent, fn -> 0 end}, id: {:scale_query_counter, make_ref()})
+
     handler_id = "blocking-scale-#{System.unique_integer([:positive])}"
 
     :telemetry.attach(
       handler_id,
       [:gtfs_planner, :repo, :query],
-      fn _event, _measurements, _metadata, pid ->
-        if self() == pid, do: send(pid, {:scale_query, handler_id})
+      fn _event, _measurements, metadata, counter ->
+        if metadata.repo == Repo, do: Agent.update(counter, &(&1 + 1))
       end,
-      test_pid
+      counter
     )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     try do
       {elapsed_us, result} = :timer.tc(fun)
-      {result, elapsed_us, drain_queries(handler_id, 0)}
+      {result, elapsed_us, Agent.get(counter, & &1)}
     after
       :telemetry.detach(handler_id)
-    end
-  end
-
-  defp drain_queries(handler_id, count) do
-    receive do
-      {:scale_query, ^handler_id} -> drain_queries(handler_id, count + 1)
-    after
-      0 -> count
     end
   end
 
