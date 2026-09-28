@@ -63,6 +63,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
+  alias GtfsPlanner.Gtfs.Routes
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
@@ -904,6 +905,30 @@ defmodule GtfsPlanner.Gtfs do
       end
     end)
   end
+
+  @doc """
+  Creates one editor route for a verified creation attempt with audit-backed
+  replay protection (R3).
+
+  See `GtfsPlanner.Gtfs.Routes.create_editor_route/3` for the attempt contract
+  and error surface. The public facade signature is the seam-`S-2` contract:
+  the insert stays inside `Routes.create_editor_route/3` until package 13's
+  `Gtfs.create_version_route/3` lands.
+  """
+  @spec create_editor_route(map(), map(), AuditContext.t()) :: {:ok, map()} | {:error, term()}
+  def create_editor_route(attrs, attempt, %AuditContext{} = audit_context),
+    do: Routes.create_editor_route(attrs, attempt, audit_context)
+
+  @doc """
+  Reports a creation attempt's committed result without inserting (R3).
+
+  See `GtfsPlanner.Gtfs.Routes.reconcile_creation/2` for the attempt contract
+  and error surface.
+  """
+  @spec reconcile_creation(map(), AuditContext.t()) ::
+          {:ok, Route.t()} | {:error, :not_started | :attempt_consumed | :forbidden | :not_found}
+  def reconcile_creation(attempt, %AuditContext{} = audit_context),
+    do: Routes.reconcile_creation(attempt, audit_context)
 
   @doc """
   Returns a list of distinct route types for an organization and GTFS version.
@@ -6666,12 +6691,14 @@ defmodule GtfsPlanner.Gtfs do
   # Routes, like calendars and trips, diff two explicit before/after snapshots.
   # The log carries the shared operation id, creation-attempt provenance and
   # affected identity/count metadata so create replay and reviewed deletion can
-  # be reconstructed from the retained entry.
-  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+  # be reconstructed from the retained entry. A created route log whose caller
+  # omits the explicit after value stores the entity snapshot (R3: the create
+  # log keeps before/after alongside the attempt metadata).
+  defp build_changed_fields(entity_type, action, snapshot, attrs)
        when entity_type in [:route, "route"] and action in ["created", "updated", "deleted"] do
     %{
       "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+      "after" => normalize_value(route_after_snapshot(action, attrs, snapshot))
     }
     |> put_route_operation(attrs)
   end
@@ -6759,6 +6786,12 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
+
+  defp route_after_snapshot("created", attrs, snapshot),
+    do: Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
+
+  defp route_after_snapshot(_action, attrs, _snapshot),
+    do: Map.get(attrs, :after, Map.get(attrs, "after"))
 
   # A bulk calendar operation records its shared operation UUID and scope alongside the
   # per-calendar before/after snapshots, so one log per changed calendar can be

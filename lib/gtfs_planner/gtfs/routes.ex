@@ -30,17 +30,32 @@ defmodule GtfsPlanner.Gtfs.Routes do
 
   `infer_route_id/3` is the pure R3 creation-ID precursor: it proposes a
   candidate identifier with its reason and generated/manual mode against a
-  caller-supplied taken-ID snapshot. Final database allocation under the
-  version write lock belongs to `create_editor_route/3` (step 7).
+  caller-supplied taken-ID snapshot. `create_editor_route/3` performs the final
+  database allocation under the published-version write lock.
+
+  `create_editor_route/3` is the R3 creation command with audit-backed replay
+  protection. It runs one serializable transaction that reauthorizes the actor,
+  locks the published version, resolves the submitted agency (seam `S-1`),
+  allocates the scoped identifier, inserts the route through the shared `Route`
+  editor changeset (seam `S-2`) and writes the route audit in the same
+  transaction. `reconcile_creation/2` reports an attempt's committed result
+  without ever inserting.
   """
 
+  import Ecto.Changeset, only: [add_error: 3]
   import Ecto.Query
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   @edit_fields [
     :route_short_name,
@@ -64,6 +79,23 @@ defmodule GtfsPlanner.Gtfs.Routes do
   @confirm_key :confirm_merge
   @choice_values ["mine", "theirs"]
   @known_keys @edit_fields ++ @identity_keys ++ [@confirm_key]
+
+  @digest_fields [
+    "route_id",
+    "text_mode",
+    "route_short_name",
+    "route_long_name",
+    "route_type",
+    "agency_id",
+    "route_desc",
+    "route_url",
+    "route_color",
+    "route_text_color",
+    "route_sort_order",
+    "continuous_pickup",
+    "continuous_drop_off",
+    "network_id"
+  ]
 
   @type source :: %{
           organization_id: Ecto.UUID.t(),
@@ -116,6 +148,15 @@ defmodule GtfsPlanner.Gtfs.Routes do
           reason: :manual | :inferred_prefix | :number | :name_slug | :slug_fallback,
           mode: :generated | :manual
         }
+
+  @type creation_attempt :: %{
+          required(:creation_attempt_id) => Ecto.UUID.t(),
+          required(:actor_id) => Ecto.UUID.t(),
+          required(:organization_id) => Ecto.UUID.t(),
+          required(:gtfs_version_id) => Ecto.UUID.t()
+        }
+  @type create_result :: %{route: Route.t(), replayed?: boolean()}
+  @type result_link :: %{route_uuid: Ecto.UUID.t(), route_id: String.t()}
 
   @doc """
   Projects a persisted route into the trusted edit source (R2).
@@ -246,6 +287,85 @@ defmodule GtfsPlanner.Gtfs.Routes do
         end
     end
   end
+
+  @doc """
+  Creates one editor route for a verified creation attempt (R3).
+
+  `attempt` is trusted verified attempt data minted when the creation drawer
+  opened: the creation-attempt nonce UUID plus its actor, organization and
+  version binding (atom or string keys). The binding is rechecked against
+  `audit`, and the actor is reauthorized inside the transaction, so an
+  arbitrary claimed actor can never reach the mutation.
+
+  One serializable transaction takes the published-version write lock first,
+  re-resolves the submitted agency (seam `S-1`), allocates the scoped route
+  identifier, inserts the route through the shared `Route` editor changeset
+  (seam `S-2`) and writes the route audit together with the mutation. A prior
+  create log for the same attempt and canonical request digest replays the
+  original route by exact UUID with no new writes (`replayed?: true`). A
+  changed digest is `{:error, {:attempt_mismatch, link}}` and a deleted prior
+  result is `{:error, :attempt_consumed}`; neither ever inserts a suffixed
+  copy. Scoped validation failures are error changesets (manual duplicate and
+  agency assignment fail inline), foreign or unpublished scope is `:not_found`,
+  a denied actor is `:forbidden`, and exhausted transient retries are `:busy`.
+  """
+  @spec create_editor_route(map(), creation_attempt() | map(), AuditContext.t()) ::
+          {:ok, create_result()}
+          | {:error,
+             :not_found
+             | :forbidden
+             | :attempt_consumed
+             | :busy
+             | :failed_audit
+             | :invalid_input
+             | {:attempt_mismatch, result_link()}
+             | Ecto.Changeset.t()}
+  def create_editor_route(attrs, attempt, %AuditContext{} = audit)
+      when is_map(attrs) and is_map(attempt) do
+    with {:ok, attempt_id} <- verify_creation_attempt(attempt, audit) do
+      digest = request_digest(attrs)
+
+      run_creation_transaction(fn ->
+        :ok = authorize_editor!(audit)
+        _version = lock_published_version!(audit)
+
+        case find_creation_log(audit, attempt_id) do
+          nil -> insert_created_route(attrs, audit, attempt_id, digest)
+          log -> committed_creation(log, digest, audit)
+        end
+      end)
+    end
+  end
+
+  def create_editor_route(_attrs, _attempt, _audit), do: {:error, :invalid_input}
+
+  @doc """
+  Reports a creation attempt's committed result without inserting (R3).
+
+  Reconciliation is audit-backed: a retained create log for the scoped actor's
+  attempt resolves its route by exact UUID. A missing log is `:not_started`
+  (mutation and audit are atomic, so no committed create exists), a deleted
+  result is `:attempt_consumed`, a now-forbidden actor is `:forbidden` with no
+  route details, and a malformed or foreign attempt is `:not_found`.
+  """
+  @spec reconcile_creation(map(), AuditContext.t()) ::
+          {:ok, Route.t()}
+          | {:error, :not_started | :attempt_consumed | :forbidden | :not_found}
+  def reconcile_creation(attempt, %AuditContext{} = audit) when is_map(attempt) do
+    with {:ok, attempt_id} <- verify_creation_attempt(attempt, audit) do
+      Repo.transaction(fn ->
+        :ok = authorize_editor!(audit)
+        _version = lock_published_version!(audit, false)
+
+        case find_creation_log(audit, attempt_id) do
+          nil -> Repo.rollback(:not_started)
+          log -> committed_creation(log, nil, audit)
+        end
+      end)
+    end
+  end
+
+  def reconcile_creation(_attempt, _audit), do: {:error, :not_found}
 
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
@@ -389,6 +509,357 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   defp trimmed(_value), do: nil
+
+  # --- creation and replay internals ---------------------------------------
+
+  # The domain receives trusted verified attempt data from the LiveView
+  # boundary; the binding is still rechecked here so a claimed actor or foreign
+  # scope can never reach the mutation. An actor binding mismatch is
+  # `:forbidden`; malformed or foreign scope is `:not_found` (AC-1).
+  defp verify_creation_attempt(attempt, audit) do
+    attempt_id = attempt_field(attempt, :creation_attempt_id)
+    actor_id = attempt_field(attempt, :actor_id)
+    organization_id = attempt_field(attempt, :organization_id)
+    gtfs_version_id = attempt_field(attempt, :gtfs_version_id)
+
+    cond do
+      not Enum.all?([attempt_id, actor_id, organization_id, gtfs_version_id], &uuid?/1) ->
+        {:error, :not_found}
+
+      actor_id != audit.actor_id ->
+        {:error, :forbidden}
+
+      organization_id != audit.organization_id or gtfs_version_id != audit.gtfs_version_id ->
+        {:error, :not_found}
+
+      true ->
+        {:ok, attempt_id}
+    end
+  end
+
+  defp attempt_field(attempt, key) do
+    Map.get(attempt, key) || Map.get(attempt, Atom.to_string(key))
+  end
+
+  # Active organization editors only (AC-1); the rule matches the established
+  # Calendars editor gate and is rechecked inside every create transaction so
+  # denied mutations write nothing.
+  defp authorize_editor!(%AuditContext{} = audit) do
+    with true <- uuid?(audit.actor_id),
+         true <- uuid?(audit.organization_id),
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(audit.actor_id, audit.organization_id),
+         true <- is_nil(membership.deactivated_at),
+         true <- editor_role?(membership.roles) do
+      :ok
+    else
+      _other -> Repo.rollback(:forbidden)
+    end
+  end
+
+  defp editor_role?(roles) when is_list(roles), do: "pathways_studio_editor" in roles
+  defp editor_role?(_roles), do: false
+
+  # Published scope only (AC-1). The create command locks the version row FOR
+  # UPDATE before any read or write so allocation and agency resolution see
+  # committed state; reconcile reads without the lock.
+  defp lock_published_version!(audit, lock \\ true) do
+    if uuid?(audit.organization_id) and uuid?(audit.gtfs_version_id) do
+      query =
+        from(version in GtfsVersion,
+          where:
+            version.id == ^audit.gtfs_version_id and
+              version.organization_id == ^audit.organization_id and
+              version.publication_status == "published"
+        )
+
+      query = if lock, do: from(version in query, lock: "FOR UPDATE"), else: query
+
+      case Repo.one(query) do
+        %GtfsVersion{} = version -> version
+        nil -> Repo.rollback(:not_found)
+      end
+    else
+      Repo.rollback(:not_found)
+    end
+  end
+
+  # The retained route-created log is the attempt record: scoped by actor and
+  # attempt id, with the canonical request digest and result UUID retained.
+  defp find_creation_log(audit, attempt_id) do
+    from(log in ChangeLog,
+      where:
+        log.organization_id == ^audit.organization_id and
+          log.gtfs_version_id == ^audit.gtfs_version_id and
+          log.entity_type == "route" and log.action == "created" and
+          log.actor_id == ^audit.actor_id and
+          fragment("?->>'creation_attempt_id' = ?", log.changed_fields, ^attempt_id),
+      order_by: [desc: log.inserted_at, desc: log.id],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp load_created_route(audit, route_uuid) do
+    if uuid?(route_uuid) do
+      from(route in Route,
+        where:
+          route.id == ^route_uuid and route.organization_id == ^audit.organization_id and
+            route.gtfs_version_id == ^audit.gtfs_version_id
+      )
+      |> Repo.one()
+    end
+  end
+
+  # One committed create log reconciles both callers: create replays the
+  # original route when the request digest matches and refuses a changed
+  # submission; reconcile returns the route for the attempt. A deleted result
+  # is `:attempt_consumed`, and reconciliation alone never inserts.
+  defp committed_creation(log, digest, audit) do
+    case load_created_route(audit, log.entity_id) do
+      nil ->
+        Repo.rollback(:attempt_consumed)
+
+      route ->
+        cond do
+          is_nil(digest) ->
+            route
+
+          Map.get(log.changed_fields || %{}, "request_digest") == digest ->
+            %{route: route, replayed?: true}
+
+          true ->
+            Repo.rollback({:attempt_mismatch, %{route_uuid: route.id, route_id: route.route_id}})
+        end
+    end
+  end
+
+  defp insert_created_route(attrs, audit, attempt_id, digest) do
+    cast_attrs = stringify_keys(attrs)
+    agency = resolve_agency(cast_attrs, audit)
+    allocation = allocate_route_id(cast_attrs, audit)
+
+    changeset =
+      %Route{organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id}
+      |> Route.editor_changeset(creation_attrs(cast_attrs, agency, allocation), :create)
+      |> put_resolution_errors(agency, allocation)
+
+    if changeset.valid? do
+      insert_created!(changeset, allocation, audit, attempt_id, digest)
+    else
+      Repo.rollback(changeset)
+    end
+  end
+
+  defp creation_attrs(cast_attrs, agency, allocation) do
+    cast_attrs
+    |> put_resolution(agency)
+    |> put_resolution(allocation)
+  end
+
+  defp put_resolution(attrs, {:ok, values}) when is_map(values) do
+    Map.merge(attrs, Map.new(values, fn {key, value} -> {to_string(key), value} end))
+  end
+
+  defp put_resolution(attrs, {:error, _reason}), do: attrs
+
+  defp put_resolution_errors(changeset, agency, allocation) do
+    Enum.reduce([agency, allocation], changeset, fn
+      {:error, {field, message}}, acc -> add_error(acc, field, message)
+      _outcome, acc -> acc
+    end)
+  end
+
+  defp insert_created!(changeset, {:ok, %{mode: mode}}, audit, attempt_id, digest) do
+    case Repo.insert(changeset) do
+      {:ok, route} ->
+        audit_created!(route, audit, attempt_id, digest)
+        %{route: route, replayed?: false}
+
+      {:error, %Ecto.Changeset{} = failed} ->
+        if mode == :generated and Keyword.has_key?(failed.errors, :route_id) do
+          # An explicitly identified generated-ID collision reruns the closure
+          # so allocation re-suffixes against fresh committed rows; a manual
+          # override is never renamed.
+          Repo.rollback(:generated_collision)
+        else
+          Repo.rollback(failed)
+        end
+    end
+  end
+
+  # Seam S-1: a submitted agency is re-resolved inside the transaction with
+  # Gtfs.get_agency_by_agency_id/3 under the version write lock. One scoped
+  # agency resolves automatically (read-only assignment) and multiple agencies
+  # require a selected scoped agency (AC-5).
+  defp resolve_agency(attrs, audit) do
+    submitted = trimmed(Map.get(attrs, "agency_id") || Map.get(attrs, :agency_id))
+    count = Gtfs.count_agencies(audit.organization_id, audit.gtfs_version_id)
+
+    cond do
+      is_binary(submitted) ->
+        case Gtfs.get_agency_by_agency_id(
+               audit.organization_id,
+               audit.gtfs_version_id,
+               submitted
+             ) do
+          %Agency{} = agency -> {:ok, %{agency_id: agency.agency_id}}
+          nil -> {:error, {:agency_id, "is not available in this version"}}
+        end
+
+      count == 1 ->
+        case Gtfs.list_agencies(audit.organization_id, audit.gtfs_version_id) do
+          [agency | _rest] -> {:ok, %{agency_id: agency.agency_id}}
+        end
+
+      count >= 2 ->
+        {:error, {:agency_id, "must be selected when the version has multiple agencies"}}
+
+      true ->
+        {:ok, %{}}
+    end
+  end
+
+  defp allocate_route_id(attrs, audit) do
+    taken =
+      from(route in Route,
+        where:
+          route.organization_id == ^audit.organization_id and
+            route.gtfs_version_id == ^audit.gtfs_version_id,
+        select: route.route_id
+      )
+      |> Repo.all()
+
+    case infer_route_id(id_examples(attrs, audit), attrs, taken) do
+      {:ok, allocation} -> {:ok, allocation}
+      {:error, :duplicate_route_id} -> {:error, {:route_id, "has already been taken"}}
+    end
+  end
+
+  # Same-mode example routes for identifier inference; a non-numeric submitted
+  # mode has no examples and falls back to the number or name slug.
+  defp id_examples(attrs, audit) do
+    case normalize_value(:route_type, Map.get(attrs, "route_type") || Map.get(attrs, :route_type)) do
+      route_type when is_integer(route_type) ->
+        from(route in Route,
+          where:
+            route.organization_id == ^audit.organization_id and
+              route.gtfs_version_id == ^audit.gtfs_version_id and
+              route.route_type == ^route_type,
+          select: %{route_id: route.route_id, route_short_name: route.route_short_name}
+        )
+        |> Repo.all()
+
+      _other ->
+        []
+    end
+  end
+
+  defp audit_created!(route, audit, attempt_id, digest) do
+    case Gtfs.record_change_in_transaction(audit, :route, route, "created", %{
+           before: nil,
+           creation_attempt_id: attempt_id,
+           request_digest: digest
+         }) do
+      {:ok, log} -> log
+      {:error, _changeset} -> Repo.rollback(:failed_audit)
+    end
+  end
+
+  # Canonical submitted-value digest over the creation request fields (R1:
+  # transient text_mode is included). Keys are canonical names, values are
+  # trimmed and blanks dropped, so an identical resubmission replays while any
+  # changed submitted value mismatches.
+  defp request_digest(attrs) do
+    canonical =
+      attrs
+      |> stringify_keys()
+      |> Map.take(@digest_fields)
+      |> Enum.flat_map(fn {key, value} ->
+        case canonical_value(value) do
+          nil -> []
+          canonical -> [{key, canonical}]
+        end
+      end)
+      |> Enum.sort()
+
+    "sha256:" <>
+      Base.encode16(:crypto.hash(:sha256, :erlang.term_to_binary(canonical)), case: :lower)
+  end
+
+  defp canonical_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp canonical_value(value) when is_number(value) or is_boolean(value) or is_atom(value),
+    do: to_string(value)
+
+  defp canonical_value(value), do: inspect(value)
+
+  defp stringify_keys(attrs) do
+    Map.new(attrs, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      {key, value} -> {key, value}
+    end)
+  end
+
+  # R3's bounded retry convention (the route-pattern/schedule rule): rerun the
+  # whole serializable closure on a transient serialization failure (40001),
+  # deadlock (40P01) or an explicitly identified generated-ID collision, at
+  # most three attempts. Manual overrides and every other failure return
+  # unchanged; exhausted retries are `:busy`.
+  defp run_creation_transaction(transaction, attempts \\ 3) do
+    case run_apply_transaction(transaction) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:retryable_conflict, _error} ->
+        retry_creation_transaction(transaction, attempts)
+
+      {:error, :generated_collision} ->
+        retry_creation_transaction(transaction, attempts)
+
+      {:error, reason} ->
+        if retryable_conflict?(reason),
+          do: retry_creation_transaction(transaction, attempts),
+          else: {:error, reason}
+    end
+  end
+
+  defp retry_creation_transaction(transaction, attempts) when attempts > 1,
+    do: run_creation_transaction(transaction, attempts - 1)
+
+  defp retry_creation_transaction(_transaction, _attempts), do: {:error, :busy}
+
+  defp run_apply_transaction(transaction) do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransaction.Repo
+    ).run(transaction)
+  rescue
+    error in Postgrex.Error ->
+      if retryable_conflict?(error),
+        do: {:retryable_conflict, error},
+        else: reraise(error, __STACKTRACE__)
+  end
+
+  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
+       when code in [
+              :serialization_failure,
+              "40001",
+              :deadlock_detected,
+              "40P01"
+            ],
+       do: true
+
+  defp retryable_conflict?(_reason), do: false
+
+  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+  defp uuid?(_value), do: false
 
   # --- comparison internals -----------------------------------------------
 
