@@ -826,6 +826,40 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end
   end
 
+  @type trip_shape_attrs :: %{shape_id: String.t() | nil, visit_distances: [Decimal.t() | nil]}
+
+  @doc """
+  Returns the shape attributes a new trip on this pattern carries (R15).
+
+  A pattern with `shape_id` contributes that ID and its per-visit
+  `route_pattern_stops.shape_dist_traveled` distances in position order, so
+  linked trips match visits by position. A pattern without `shape_id`
+  contributes nil with an all-nil vector of the same length. Called by
+  `Schedules.create_trips/3` and `Schedules.duplicate_trip/4` after their
+  route and pattern locks (CR-1); the read filters by the pattern's
+  organization and version (INV-2). Future trip writers consume this
+  function rather than reading the visit rows directly.
+  """
+  @spec trip_shape_attrs(RoutePattern.t()) :: trip_shape_attrs()
+  def trip_shape_attrs(%RoutePattern{} = pattern) do
+    distances =
+      from(o in RoutePatternStop,
+        where:
+          o.route_pattern_id == ^pattern.id and
+            o.organization_id == ^pattern.organization_id and
+            o.gtfs_version_id == ^pattern.gtfs_version_id,
+        order_by: [asc: o.position, asc: o.id],
+        select: o.shape_dist_traveled
+      )
+      |> Repo.all()
+
+    if is_nil(pattern.shape_id) do
+      %{shape_id: nil, visit_distances: Enum.map(distances, fn _ -> nil end)}
+    else
+      %{shape_id: pattern.shape_id, visit_distances: distances}
+    end
+  end
+
   @doc """
   Clears derived distances for one drawn pattern, in the caller's transaction.
 
