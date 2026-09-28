@@ -42,6 +42,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     retry_review apply_stop_review save_timing apply_timing_review
     refresh_timing_review retry_timing_review confirm_timing_dialog
     confirm_delete_timing copy_pattern confirm_delete_pattern
+    alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
   )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
@@ -136,6 +137,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_simplify_dialog, nil)
      |> assign(:alignment_notice, nil)
      |> assign(:alignment_pending, nil)
+     |> assign(:alignment_save_notice, nil)
+     |> assign(:alignment_forced_local, [])
      |> assign(:alignment_editable, false)
      |> assign(:details_params, @creation_defaults)
      |> assign(:details_baseline, nil)
@@ -183,6 +186,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:blocked_dialog, nil)
     |> assign(:impact_dialog, nil)
     |> assign(:status_message, nil)
+    |> assign(:alignment_pending, nil)
+    |> assign(:alignment_save_notice, nil)
+    |> assign(:alignment_forced_local, [])
   end
 
   @impl true
@@ -637,6 +643,46 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_action_notice", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.action_notice(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_save_requested", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.save_requested(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_save_choice", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.save_choice(socket, params)}
+  end
+
+  @impl true
+  def handle_event("confirm_alignment_save", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_save(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_cancel_save", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.cancel_save(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_conflict_load_latest", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.conflict_load_latest(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_conflict_keep_local", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.conflict_keep_local(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_reload", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.reload(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_review_again", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.review_again(socket, params)}
   end
 
   @impl true
@@ -1221,6 +1267,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         dialog_open={@alignment_dialog == :help}
                         editable?={@alignment_editable}
                         offline?={@offline?}
+                        applying?={@applying?}
+                        pending={@alignment_pending}
+                        save_notice={@alignment_save_notice}
                         version_name={@current_gtfs_version.name}
                         organization_name={@current_organization.name}
                         delete_dialog={@alignment_delete_dialog}

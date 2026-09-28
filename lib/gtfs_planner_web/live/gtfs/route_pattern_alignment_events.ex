@@ -98,13 +98,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def retry_tiles(socket, _params),
     do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
-  @doc "Closes the help, discard, delete and simplify dialogs."
+  @doc "Closes the help, discard, delete, simplify and save dialogs."
   def close_dialogs(socket) do
     socket
     |> Component.assign(:alignment_dialog, nil)
     |> Component.assign(:alignment_discard_dialog, nil)
     |> Component.assign(:alignment_delete_dialog, nil)
     |> Component.assign(:alignment_simplify_dialog, nil)
+    |> Component.assign(:alignment_pending, nil)
   end
 
   @doc "Opens or closes the alignment help dialog."
@@ -366,6 +367,423 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   def action_notice(socket, _params), do: socket
 
+  @doc """
+  Reviews the hook's dirty sections for saving (step 28).
+
+  The hook owns draft geometry (CR-5); it pushes only dirty sections with
+  their visit identity, op, points and load-time base. With no choices,
+  confirmations or blockers the review applies immediately; otherwise the
+  scope dialog opens with "Only this pattern" checked by default.
+  Blockers open the blocked dialog with no writes; stale bases open the
+  conflict dialog; stale identities show the stale-stops notice. A save
+  already in review is ignored so a double submit never queues two saves.
+  """
+  def save_requested(socket, params) when is_map(params) do
+    cond do
+      is_nil(socket.assigns[:alignment]) or is_nil(socket.assigns[:pattern]) ->
+        push_save_settled(socket)
+
+      not is_nil(socket.assigns[:alignment_pending]) ->
+        push_save_settled(socket)
+
+      true ->
+        draft = save_sections(params)
+        audit = save_audit_context(socket)
+        pattern = socket.assigns.pattern
+
+        case Gtfs.review_alignment_save(pattern.id, draft, audit) do
+          {:ok, review} ->
+            handle_save_review(socket, draft, review)
+
+          {:error, :stale_stops} ->
+            save_notice(socket, :stale_stops)
+
+          {:error, {:conflict, current}} ->
+            open_conflict(socket, draft, current)
+
+          {:error, {:invalid_draft, _reason}} ->
+            save_notice(socket, :save_error)
+
+          {:error, :not_found} ->
+            save_notice(socket, {:error, "This pattern is no longer available."})
+        end
+    end
+  end
+
+  def save_requested(socket, _params), do: push_save_settled(socket)
+
+  @doc """
+  Records a scope choice from the save dialog form (step 28).
+
+  Read-only like `draft_state`: the dialog re-renders from the stored
+  scopes, and confirming applies them. Unknown positions and values are
+  ignored, so a stale form never corrupts the pending review.
+  """
+  def save_choice(socket, params) when is_map(params) do
+    case socket.assigns[:alignment_pending] do
+      %{kind: :save, review: review} = pending ->
+        scopes = merge_save_scopes(pending.scopes, params, review)
+        Component.assign(socket, :alignment_pending, %{pending | scopes: scopes})
+
+      _ ->
+        socket
+    end
+  end
+
+  def save_choice(socket, _params), do: socket
+
+  @doc """
+  Applies the pending save review with the dialog's scope choices (step 28).
+
+  Positions without an explicit choice fall back to the stored default
+  ("Only this pattern" for scope choices, shared for shared deletions);
+  keep-local positions recorded by `conflict_keep_local/2` fill any
+  remaining gap as local without overriding an explicit shared choice.
+  Confirming a review that names replaced shapes carries
+  `confirm_replacements: true` (INV-5: the dialog named each shape and
+  trip count before this click).
+  """
+  def confirm_save(socket, _params) do
+    case socket.assigns[:alignment_pending] do
+      %{kind: :save, draft: draft, fingerprint: fingerprint, review: review} = pending ->
+        forced = socket.assigns[:alignment_forced_local] || []
+        scopes = fill_save_scopes(pending.scopes, review, forced)
+
+        choices = %{
+          "scopes" => scopes,
+          "confirm_replacements" => review.requires_confirmation? == true
+        }
+
+        apply_save(socket, draft, choices, fingerprint)
+
+      _ ->
+        push_save_settled(socket)
+    end
+  end
+
+  @doc """
+  Cancels the save review: the dialog closes and the hook draft is kept.
+  """
+  def cancel_save(socket, _params) do
+    socket
+    |> Component.assign(:alignment_pending, nil)
+    |> push_save_settled()
+  end
+
+  @doc """
+  Discards the conflicted draft and loads the latest saved model (step 28).
+  """
+  def conflict_load_latest(socket, _params) do
+    socket
+    |> Component.assign(:alignment_pending, nil)
+    |> Component.assign(:alignment_forced_local, [])
+    |> Component.assign(:alignment_save_notice, nil)
+    |> Component.assign(
+      :status_message,
+      "Latest shared path loaded. Your draft was discarded."
+    )
+    |> reload_alignment_model()
+  end
+
+  @doc """
+  Keeps the conflicted draft as a local draft (step 28).
+
+  Pushes `alignment:rebase` with the latest base revisions so the hook's
+  points survive against the newer shared path, and records the
+  conflicted positions so the next review auto-selects local scope and
+  applies as an override without reopening the scope dialog.
+  """
+  def conflict_keep_local(socket, _params) do
+    case socket.assigns[:alignment_pending] do
+      %{kind: :conflict, current: current} = pending ->
+        positions = Enum.map(current, & &1.position)
+        forced = Enum.uniq((socket.assigns[:alignment_forced_local] || []) ++ positions)
+
+        socket
+        |> Component.assign(:alignment_pending, nil)
+        |> Component.assign(:alignment_forced_local, forced)
+        |> Component.assign(
+          :status_message,
+          "Draft kept for this pattern. Review and save when ready."
+        )
+        |> Phoenix.LiveView.push_event("alignment:rebase", %{
+          bases: rebase_bases(pending.draft, current)
+        })
+
+      _ ->
+        push_save_settled(socket)
+    end
+  end
+
+  @doc "Reloads the alignment model after stops changed (step 28)."
+  def reload(socket, _params) do
+    socket
+    |> Component.assign(:alignment_pending, nil)
+    |> Component.assign(:alignment_forced_local, [])
+    |> Component.assign(:alignment_save_notice, nil)
+    |> Component.assign(
+      :status_message,
+      "Latest stops loaded. Review the new sections before saving."
+    )
+    |> reload_alignment_model()
+  end
+
+  @doc """
+  Clears a stale review so the next Save re-reviews (step 28). The hook
+  draft is untouched.
+  """
+  def review_again(socket, _params) do
+    socket
+    |> Component.assign(:alignment_pending, nil)
+    |> Component.assign(:alignment_save_notice, nil)
+    |> push_save_settled()
+  end
+
+  defp save_sections(%{"sections" => sections}) when is_list(sections), do: sections
+  defp save_sections(%{sections: sections}) when is_list(sections), do: sections
+  defp save_sections(_params), do: []
+
+  defp save_audit_context(socket) do
+    %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: nil,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
+  # Applies immediately only when every choice is already decided: no
+  # blockers, no replaced shapes awaiting confirmation (INV-5), no shared
+  # deletion another pattern still uses, and every scope choice covered by
+  # a keep-local position. Anything else opens the scope dialog with
+  # "Only this pattern" checked by default.
+  defp handle_save_review(socket, draft, review) do
+    blockers =
+      review.blockers ++ Enum.flat_map(review.sections, & &1.shared_blockers)
+
+    if blockers != [] do
+      open_blocked(socket, draft, review, blockers)
+    else
+      forced = socket.assigns[:alignment_forced_local] || []
+      scope_positions = for s <- review.sections, s.action == :choose_scope, do: s.position
+
+      delete_positions =
+        for s <- review.sections, s.action == :delete_shared and s.affected != [], do: s.position
+
+      open? =
+        review.requires_confirmation? or scope_positions -- forced != [] or delete_positions != []
+
+      if open? do
+        scopes =
+          Map.new(scope_positions, &{to_string(&1), "local"})
+          |> Map.merge(Map.new(delete_positions, &{to_string(&1), "shared"}))
+
+        socket
+        |> Component.assign(:alignment_pending, %{
+          kind: :save,
+          draft: draft,
+          fingerprint: review.fingerprint,
+          review: review,
+          scopes: scopes
+        })
+        |> push_save_settled()
+      else
+        choices = %{
+          "scopes" => Map.new(scope_positions, &{to_string(&1), "local"}),
+          "confirm_replacements" => false
+        }
+
+        apply_save(socket, draft, choices, review.fingerprint)
+      end
+    end
+  end
+
+  defp open_blocked(socket, draft, review, blockers) do
+    socket
+    |> Component.assign(:alignment_pending, %{
+      kind: :blocked,
+      draft: draft,
+      fingerprint: nil,
+      review: review,
+      scopes: %{},
+      blockers: blockers
+    })
+    |> push_save_settled()
+  end
+
+  defp open_conflict(socket, draft, current) do
+    socket
+    |> Component.assign(:alignment_pending, %{kind: :conflict, draft: draft, current: current})
+    |> push_save_settled()
+  end
+
+  defp save_notice(socket, notice) do
+    socket
+    |> Component.assign(:alignment_pending, nil)
+    |> Component.assign(:alignment_save_notice, notice)
+    |> push_save_settled()
+  end
+
+  # Merges the dialog form's scope radios into the stored defaults.
+  # Only positions the review asks about with a valid value are kept.
+  defp merge_save_scopes(stored, params, review) do
+    raw =
+      case params do
+        %{"scopes" => scopes} when is_map(scopes) -> scopes
+        %{scopes: scopes} when is_map(scopes) -> scopes
+        _ -> %{}
+      end
+
+    askable =
+      review.sections
+      |> Enum.filter(&(&1.action == :choose_scope))
+      |> Map.new(&{to_string(&1.position), true})
+
+    Enum.reduce(raw, stored, fn {position, value}, acc ->
+      key = to_string(position)
+
+      if Map.has_key?(askable, key) and value in ["local", "shared"] do
+        Map.put(acc, key, value)
+      else
+        acc
+      end
+    end)
+  end
+
+  # Fills choices the form never sent: stored defaults first, then
+  # keep-local positions as local, without overriding an explicit
+  # shared choice.
+  defp fill_save_scopes(stored, review, forced) do
+    Enum.reduce(review.sections, stored, fn section, acc ->
+      key = to_string(section.position)
+
+      cond do
+        section.action == :choose_scope and not Map.has_key?(acc, key) ->
+          Map.put(acc, key, "local")
+
+        section.action == :delete_shared and section.affected != [] and
+            not Map.has_key?(acc, key) ->
+          Map.put(acc, key, "shared")
+
+        section.action == :choose_scope and section.position in forced and
+            Map.get(acc, key) not in ["local", "shared"] ->
+          Map.put(acc, key, "local")
+
+        true ->
+          acc
+      end
+    end)
+  end
+
+  defp apply_save(socket, draft, choices, fingerprint) do
+    socket = Component.assign(socket, :applying?, true)
+    audit = save_audit_context(socket)
+    pattern = socket.assigns.pattern
+
+    case Gtfs.apply_alignment_save(pattern.id, draft, choices, fingerprint, audit) do
+      {:ok, result} -> handle_save_result(socket, result)
+      {:error, {:conflict, current}} -> handle_apply_conflict(socket, draft, current)
+      {:error, :stale_review} -> save_notice(assign_applying(socket, false), :stale_review)
+      {:error, {:blocked, blockers}} -> handle_apply_blocked(socket, draft, blockers)
+      {:error, :busy} -> save_notice(assign_applying(socket, false), :busy)
+      {:error, _reason} -> save_notice(assign_applying(socket, false), :save_error)
+    end
+  end
+
+  defp assign_applying(socket, value), do: Component.assign(socket, :applying?, value)
+
+  defp handle_save_result(socket, result) do
+    trips = Map.get(result, :trips_updated, 0)
+
+    socket
+    |> assign_applying(false)
+    |> Component.assign(:alignment_pending, nil)
+    |> Component.assign(:alignment_forced_local, [])
+    |> Component.assign(:alignment_save_notice, nil)
+    |> Component.assign(:status_message, "Alignment saved. #{trips} #{trip_noun(trips)} updated.")
+    |> reload_alignment_model()
+  end
+
+  defp handle_apply_conflict(socket, draft, current) do
+    socket
+    |> assign_applying(false)
+    |> open_conflict(draft, current)
+  end
+
+  defp handle_apply_blocked(socket, draft, blockers) do
+    review =
+      case socket.assigns[:alignment_pending] do
+        %{review: review} -> review
+        _ -> nil
+      end
+
+    socket
+    |> assign_applying(false)
+    |> open_blocked(draft, review, blockers)
+  end
+
+  defp trip_noun(1), do: "trip"
+  defp trip_noun(_), do: "trips"
+
+  # Latest base revisions for the drafted positions, so the hook keeps
+  # its points against the newer shared path after "Keep as local draft".
+  defp rebase_bases(draft, current) do
+    revisions = Map.new(current, &{&1.position, &1.revision})
+
+    draft
+    |> Enum.map(fn entry -> entry_position(entry) end)
+    |> Enum.uniq()
+    |> Enum.map(fn position ->
+      revision = Map.get(revisions, position, %{segment_id: nil, lock_version: nil})
+
+      %{
+        position: position,
+        segment_id: revision.segment_id,
+        lock_version: revision.lock_version
+      }
+    end)
+  end
+
+  defp entry_position(%{"position" => position}) when is_integer(position), do: position
+  defp entry_position(%{position: position}) when is_integer(position), do: position
+  defp entry_position(_entry), do: nil
+
+  # Reloads the read model and pushes it to the hook (CR-5): the hook
+  # redraws without drafts, and the server badges clear when the hook
+  # confirms the clean state, like the discard handshake (step 27).
+  defp reload_alignment_model(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    pattern = socket.assigns.pattern
+
+    case Gtfs.alignment_editor(
+           organization_id,
+           version_id,
+           socket.assigns.route_id,
+           pattern.route_pattern_id
+         ) do
+      {:ok, alignment} ->
+        editable? = editor_access?(socket)
+        model = Alignments.hook_model(alignment, editable: editable?, suggestions: [])
+
+        socket
+        |> Component.assign(:alignment, alignment)
+        |> Component.assign(:alignment_state, fresh_state(socket.assigns.alignment_state))
+        |> Component.assign(:alignment_editable, editable?)
+        |> Component.assign(:alignment_notice, notice_for(alignment, editable?))
+        |> Phoenix.LiveView.push_event("alignment:load", %{model: model})
+
+      {:error, :not_found} ->
+        socket
+    end
+  end
+
+  # Releases the hook's in-flight save guard on every path that does not
+  # end in alignment:load or alignment:rebase.
+  defp push_save_settled(socket),
+    do: Phoenix.LiveView.push_event(socket, "alignment:save_settled", %{})
+
   defp points_noun(1), do: "point"
   defp points_noun(_), do: "points"
 
@@ -424,7 +842,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_dialog, nil)
          |> Component.assign(:alignment_discard_dialog, nil)
          |> Component.assign(:alignment_delete_dialog, nil)
-         |> Component.assign(:alignment_simplify_dialog, nil)}
+         |> Component.assign(:alignment_simplify_dialog, nil)
+         |> Component.assign(:alignment_pending, nil)
+         |> Component.assign(:alignment_save_notice, nil)
+         |> Component.assign(:alignment_forced_local, [])}
 
       {:error, :not_found} ->
         {:error, :not_found}

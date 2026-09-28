@@ -34,6 +34,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: "%{position, tolerance} when the simplify dialog is open"
 
+  attr :pending, :map,
+    default: nil,
+    doc: "save review pending a dialog choice (%{kind} :save | :blocked | :conflict)"
+
+  attr :save_notice, :any,
+    default: nil,
+    doc: ":stale_stops, :stale_review, :busy, :save_error or {:error, message}"
+
+  attr :applying?, :boolean,
+    default: false,
+    doc: "disables Save while a save apply round-trips"
+
   def alignment_task(assigns) do
     assigns =
       assigns
@@ -45,6 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:footer_status, footer_status(assigns.alignment))
       |> assign(:save_title, save_title(assigns.alignment, assigns.editable?))
       |> assign(:saved_count, saved_count(assigns.alignment))
+      |> assign(:save_enabled, save_enabled?(assigns))
 
     assigns =
       assign(
@@ -76,10 +89,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           >
             <.icon name="hero-question-mark-circle-solid" class="h-5 w-5" /> How to edit
           </button>
-          <%!-- Save enables with the draft/save flow in a later step; until then it
-            stays disabled with a per-state reason so no dead event ever fires.
-            It carries data-commit so the RoutePatternEditor hook disables it
-            while offline (step 27 guard wiring). --%>
+          <%!-- Save dispatches to the hook, which pushes alignment_save_requested
+            with its dirty sections for review (step 28). It stays disabled with
+            a per-state reason so no dead event ever fires. --%>
           <button
             :if={@dirty_positions != []}
             id="alignment-discard"
@@ -92,9 +104,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           <button
             id="alignment-save"
             type="button"
-            disabled
-            title={@save_title}
+            disabled={!@save_enabled}
+            title={save_button_title(@alignment, @editable?, @offline?, @applying?, @dirty_positions)}
             data-commit="alignment"
+            phx-click={
+              JS.dispatch("alignment:action", to: "#alignment-map-root", detail: %{action: "save"})
+            }
             class="btn btn-primary min-h-11"
           >
             Save alignment
@@ -146,6 +161,74 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         title="Imported path · original shape retained"
       >
         This pattern already has a shape. Review it before converting it into editable sections.
+      </.callout>
+
+      <.callout
+        :if={@save_notice == :stale_stops}
+        id="alignment-save-notice"
+        kind="warning"
+        title="Stops changed since you opened this alignment"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>Your previous saved path is retained until you review the new stop order.</p>
+          <button
+            type="button"
+            id="alignment-save-reload"
+            phx-click="alignment_reload"
+            class="btn btn-outline min-h-11 shrink-0"
+          >
+            Reload
+          </button>
+        </div>
+      </.callout>
+
+      <.callout
+        :if={@save_notice == :stale_review}
+        id="alignment-save-notice"
+        kind="warning"
+        title="The patterns this save affects changed. Review again."
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>Your draft is still here. Review the latest paths before saving.</p>
+          <button
+            type="button"
+            id="alignment-review-again"
+            phx-click="alignment_review_again"
+            class="btn btn-outline min-h-11 shrink-0"
+          >
+            Review again
+          </button>
+        </div>
+      </.callout>
+
+      <.callout
+        :if={@save_notice in [:busy, :save_error]}
+        id="alignment-save-notice"
+        kind="error"
+        title="Your changes weren't saved. Try again."
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>Your draft is still here.</p>
+          <button
+            type="button"
+            id="alignment-save-retry"
+            phx-click={
+              JS.dispatch("alignment:action", to: "#alignment-map-root", detail: %{action: "save"})
+            }
+            class="btn btn-outline min-h-11 shrink-0"
+          >
+            Try again
+          </button>
+        </div>
+      </.callout>
+
+      <.callout
+        :if={match?({:error, _}, @save_notice)}
+        id="alignment-save-notice"
+        kind="error"
+        title="Your changes weren't saved."
+      >
+        {save_notice_message(@save_notice)}
       </.callout>
 
       <div class="mt-4 flex flex-col gap-4 lg:grid lg:grid-cols-[316px_minmax(0,1fr)]">
@@ -217,6 +300,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       <.discard_dialog dialog={@discard_dialog} />
       <.delete_dialog dialog={@delete_dialog} />
       <.simplify_dialog dialog={@simplify_dialog} />
+      <.save_dialog
+        pending={@pending}
+        visits_by_position={@visits_by_position}
+        applying?={@applying?}
+        version_name={@version_name}
+        organization_name={@organization_name}
+      />
+      <.blocked_dialog pending={@pending} />
+      <.conflict_dialog pending={@pending} visits_by_position={@visits_by_position} />
     </div>
     """
   end
@@ -504,6 +596,248 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     """
   end
 
+  attr :pending, :map, default: nil, doc: "save review pending a scope choice"
+  attr :visits_by_position, :map, required: true
+  attr :applying?, :boolean, default: false
+  attr :version_name, :string, default: nil
+  attr :organization_name, :string, default: nil
+
+  # Step 28 scope dialog: per changed section the scope radios default to
+  # "Only this pattern"; shared deletions list the patterns left missing;
+  # replaced imports name each shape and trip count (INV-5). The radios
+  # report through the form's phx-change into the pending scopes, so the
+  # Save path confirm applies exactly the chosen outcome.
+  def save_dialog(assigns) do
+    assigns = assign(assigns, :review, save_review(assigns.pending))
+
+    ~H"""
+    <.confirm_dialog
+      id="alignment-save-dialog"
+      open={@review != nil}
+      title={save_dialog_title(@review)}
+      confirm_label="Save path"
+      pending_label="Saving…"
+      pending={@applying?}
+      confirm_variant="primary"
+      on_confirm="confirm_alignment_save"
+      on_cancel="alignment_cancel_save"
+      described_by="alignment-save-dialog-body"
+      return_focus_id="alignment-save"
+      size="lg"
+    >
+      <div :if={@review}>
+        <form id="alignment-save-form" phx-change="alignment_save_choice">
+          <div :for={section <- save_scope_sections(@review)} class="mt-4">
+            <.save_scope_fieldset
+              section={section}
+              pending={@pending}
+              visits_by_position={@visits_by_position}
+            />
+          </div>
+          <div
+            :for={section <- save_delete_sections(@review)}
+            class="mt-4 rounded-lg border border-base-300 p-3"
+          >
+            <p class="text-sm font-semibold">
+              {section_name(section, @visits_by_position)} will have no path in {length(
+                section.affected
+              )} {if(length(section.affected) == 1, do: "pattern", else: "patterns")}:
+            </p>
+            <ul class="mt-2 list-disc pl-5 text-sm">
+              <li :for={user <- section.affected}>
+                {user.route_label} · {user.pattern_label}
+              </li>
+            </ul>
+          </div>
+          <div :if={@review.replaced_shapes != []} class="mt-4 rounded-lg border border-base-300 p-3">
+            <p class="text-sm font-semibold">Replace imported shapes</p>
+            <ul class="mt-2 list-disc pl-5 text-sm">
+              <li :for={entry <- @review.replaced_shapes}>
+                Shape {entry.shape_id} ({entry.trip_count} {if(entry.trip_count == 1,
+                  do: "trip",
+                  else: "trips"
+                )})
+              </li>
+            </ul>
+            <p class="mt-2 text-sm text-base-content/70">
+              Shapes no trip still uses are removed. Their points are kept in change history.
+            </p>
+          </div>
+        </form>
+        <p
+          :if={@version_name && @organization_name}
+          class="mt-4 text-sm text-base-content/70"
+        >
+          Changes apply within {@version_name}, {@organization_name}.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  attr :section, :map, required: true
+  attr :pending, :map, required: true
+  attr :visits_by_position, :map, required: true
+
+  def save_scope_fieldset(assigns) do
+    assigns =
+      assigns
+      |> assign(:names, section_names(assigns.section, assigns.visits_by_position))
+      |> assign(:checked, save_scope_value(assigns.pending, assigns.section.position))
+      |> assign(:rematerialize_by_pattern, rematerialize_by_pattern(assigns.section))
+
+    ~H"""
+    <fieldset class="rounded-lg border border-base-300 p-3">
+      <legend class="px-1 text-sm font-semibold">
+        {@names.from} → {@names.to} has a shared path. Choose where to apply your edit.
+      </legend>
+      <label
+        for={"alignment-save-scope-#{@section.position}-local"}
+        class="mt-2 flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-base-300 p-3 has-checked:border-primary"
+      >
+        <input
+          type="radio"
+          id={"alignment-save-scope-#{@section.position}-local"}
+          name={"scopes[#{@section.position}]"}
+          value="local"
+          checked={@checked == "local"}
+          class="radio mt-1"
+        />
+        <span>
+          <strong>Only this pattern</strong>
+          <small class="block text-base-content/70">
+            Create a custom path for this pattern. Other patterns keep the shared path.
+          </small>
+        </span>
+      </label>
+      <label
+        for={"alignment-save-scope-#{@section.position}-shared"}
+        class="mt-2 flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-base-300 p-3 has-checked:border-primary"
+      >
+        <input
+          type="radio"
+          id={"alignment-save-scope-#{@section.position}-shared"}
+          name={"scopes[#{@section.position}]"}
+          value="shared"
+          checked={@checked == "shared"}
+          class="radio mt-1"
+        />
+        <span>
+          <strong>All {length(@section.affected) + 1} patterns using the shared path</strong>
+          <span class="mt-1 block text-sm">
+            <span :for={user <- @section.affected} class="block">
+              {user.route_label} · {user.pattern_label} — {affected_export_note(
+                user,
+                @rematerialize_by_pattern
+              )}
+            </span>
+            <span :for={user <- @section.custom_unchanged} class="block text-base-content/70">
+              {user.pattern_label} has a custom path and will not change.
+            </span>
+          </span>
+        </span>
+      </label>
+    </fieldset>
+    """
+  end
+
+  attr :pending, :map, default: nil, doc: "blocked review with %{blockers}"
+
+  # Step 28 blocked dialog: names each pattern and trip whose stop-time
+  # count no longer matches. Nothing was written.
+  def blocked_dialog(assigns) do
+    assigns = assign(assigns, :blockers, blocked_blockers(assigns.pending))
+
+    ~H"""
+    <.confirm_dialog
+      id="alignment-blocked-dialog"
+      open={@blockers != []}
+      title="This path can't be saved yet"
+      confirm_label="Close"
+      pending_label="Closing…"
+      on_confirm="alignment_cancel_save"
+      on_cancel="alignment_cancel_save"
+      cancel_label="Close"
+      single_action={true}
+      described_by="alignment-blocked-dialog-body"
+      return_focus_id="alignment-save"
+    >
+      <div :if={@blockers != []}>
+        <p :for={blocker <- @blockers} class="mt-2 text-sm first:mt-0">
+          Trip {blocker.trip_id} in {blocker.pattern_label} has {blocker.stop_time_count} stop times, but the pattern has {blocker.visit_count} visits. Fix the
+          trip's stop times, then save again. Nothing was saved.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  attr :pending, :map, default: nil, doc: "conflict with %{draft, current}"
+  attr :visits_by_position, :map, required: true
+
+  # Step 28 conflict dialog: the latest saved sections beside the draft.
+  # "Load latest" discards the draft; "Keep as local draft" rebases the
+  # hook and records the positions so the next save stays local.
+  def conflict_dialog(assigns) do
+    assigns = assign(assigns, :current, conflict_current(assigns.pending))
+
+    ~H"""
+    <.confirm_dialog
+      id="alignment-conflict-dialog"
+      open={@current != []}
+      title="Review the newer shared path"
+      confirm_label="Keep as local draft"
+      pending_label="Keeping…"
+      confirm_variant="primary"
+      on_confirm="alignment_conflict_keep_local"
+      on_cancel="alignment_close_dialog"
+      described_by="alignment-conflict-dialog-body"
+      return_focus_id="alignment-save"
+      size="lg"
+    >
+      <div :if={@current != []}>
+        <p>
+          A newer shared path was saved while you were editing. Review both
+          versions before applying your draft.
+        </p>
+        <div :for={section <- @current} class="mt-3 grid grid-cols-1 gap-3">
+          <div class="rounded-lg border border-base-300 p-3">
+            <p class="font-semibold">Latest shared path</p>
+            <p class="mt-1 text-sm text-base-content/70">
+              {conflict_section_name(section, @visits_by_position)} · {length(section.points || [])} points ·
+              used by {section_usage(section)} {if(section_usage(section) == 1,
+                do: "pattern",
+                else: "patterns"
+              )}
+            </p>
+          </div>
+          <div class="rounded-lg border border-base-300 p-3">
+            <p class="font-semibold">Your draft</p>
+            <p class="mt-1 text-sm text-base-content/70">
+              {conflict_section_name(section, @visits_by_position)} · {conflict_draft_points(
+                @pending,
+                section.position
+              )} points ·
+              unsaved
+            </p>
+          </div>
+        </div>
+        <p class="mt-4 text-sm text-base-content/70">
+          Keep your draft as a path for this pattern, or discard it and load the latest shared path.
+        </p>
+        <button
+          type="button"
+          id="alignment-conflict-load-latest"
+          phx-click="alignment_conflict_load_latest"
+          class="btn btn-outline mt-3 min-h-11"
+        >
+          Load latest
+        </button>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
   attr :dialog, :any, default: nil, doc: "non-nil when the discard dialog is open"
 
   def discard_dialog(assigns) do
@@ -748,6 +1082,120 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   defp saved_count(alignment) do
     Enum.count(alignment.sections, &(&1.kind in [:override, :shared]))
   end
+
+  # Save enables for editors with a dirty draft; the hook pushes only
+  # dirty sections, so a clean draft has nothing to review.
+  defp save_enabled?(assigns) do
+    assigns.editable? and not assigns.offline? and assigns[:applying?] != true and
+      dirty_positions(assigns.state) != []
+  end
+
+  defp save_button_title(_alignment, false, _offline?, _applying?, _dirty?),
+    do: "Only editors can save alignment."
+
+  defp save_button_title(_alignment, true, true, _applying?, _dirty?),
+    do: "Reconnect before saving."
+
+  defp save_button_title(_alignment, true, _offline?, true, _dirty?),
+    do: "Saving your alignment…"
+
+  defp save_button_title(_alignment, true, _offline?, _applying?, []),
+    do: "Edit a path to enable saving."
+
+  defp save_button_title(alignment, true, _offline?, _applying?, _dirty?),
+    do: save_title(alignment, true)
+
+  defp save_notice_message({:error, message}) when is_binary(message), do: message
+  defp save_notice_message(_notice), do: "Your draft is still here. Try saving again."
+
+  # The save dialog shows the pending review; any other pending kind
+  # leaves it closed.
+  defp save_review(%{kind: :save, review: review}), do: review
+  defp save_review(_pending), do: nil
+
+  defp save_dialog_title(nil), do: "Who should use this path?"
+
+  defp save_dialog_title(review) do
+    if length(save_scope_sections(review)) + length(save_delete_sections(review)) == 1 do
+      "Who should use this path?"
+    else
+      "Who should use these paths?"
+    end
+  end
+
+  defp save_scope_sections(nil), do: []
+
+  defp save_scope_sections(review) do
+    Enum.filter(review.sections, &(&1.action == :choose_scope))
+  end
+
+  defp save_delete_sections(nil), do: []
+
+  defp save_delete_sections(review) do
+    Enum.filter(review.sections, &(&1.action == :delete_shared and &1.affected != []))
+  end
+
+  defp section_name(section, visits_by_position) do
+    names = section_names(section, visits_by_position)
+    "#{names.from} → #{names.to}"
+  end
+
+  defp save_scope_value(%{scopes: scopes}, position),
+    do: Map.get(scopes, to_string(position), "local")
+
+  defp save_scope_value(_pending, _position), do: "local"
+
+  defp rematerialize_by_pattern(section) do
+    Map.new(section.shared_rematerialize, &{&1.route_pattern_id, &1})
+  end
+
+  # What a shared save does to each affected pattern's export, from the
+  # review's rematerialization plan: shape-owning complete patterns move
+  # to the new path, other shape owners keep theirs, and the rest keep
+  # their imported shapes until their own save.
+  defp affected_export_note(user, rematerialize_by_pattern) do
+    case Map.get(rematerialize_by_pattern, user.route_pattern_id) do
+      %{trips: trips} ->
+        "updates its exported shape (#{trips} #{if(trips == 1, do: "trip", else: "trips")})"
+
+      nil when user.owns_shape? ->
+        "keeps its current shape"
+
+      nil ->
+        "keeps its imported shape"
+    end
+  end
+
+  defp blocked_blockers(%{kind: :blocked, blockers: blockers}), do: blockers
+  defp blocked_blockers(_pending), do: []
+
+  defp conflict_current(%{kind: :conflict, current: current}) when is_list(current),
+    do: current
+
+  defp conflict_current(_pending), do: []
+
+  defp conflict_section_name(section, visits_by_position) do
+    section_name(section, visits_by_position)
+  end
+
+  defp section_usage(%{shared_users: users}) when is_integer(users), do: users
+  defp section_usage(_section), do: 1
+
+  defp conflict_draft_points(%{draft: draft}, position) when is_list(draft) do
+    draft
+    |> Enum.find(&(draft_position(&1) == position))
+    |> draft_point_count()
+  end
+
+  defp conflict_draft_points(_pending, _position), do: 0
+
+  defp draft_position(%{"position" => position}) when is_integer(position), do: position
+  defp draft_position(%{position: position}) when is_integer(position), do: position
+  defp draft_position(_entry), do: nil
+
+  defp draft_point_count(%{"points" => points}) when is_list(points), do: length(points)
+  defp draft_point_count(%{points: points}) when is_list(points), do: length(points)
+  defp draft_point_count(_entry), do: 0
 
   defp section_guidance(%{kind: :missing}),
     do: "This section has no saved path. Draw where the bus travels."

@@ -98,6 +98,10 @@ const PatternAlignment = {
     this._destroyed = false;
     this._errorReported = false;
     this._selected = 1;
+    // Step 28 save flow: one save push in flight at most. Set when Save
+    // is requested, cleared by alignment:load, alignment:rebase and
+    // alignment:save_settled so a double click never queues two saves.
+    this._savePending = false;
     this._hideLabels = false;
     this._sectionLayers = new Map();
     this._stopMarkers = [];
@@ -189,6 +193,7 @@ const PatternAlignment = {
       if (action === "draw") this._drawManual(event?.detail);
       if (action === "clear") this._clearInterior(event?.detail);
       if (action === "use_shared") this._useShared(event?.detail);
+      if (action === "save") this._requestSave();
     };
     root.addEventListener("alignment:action", this._onAction);
     map.on("mousedown", (event) => this._maybeStartBox(event));
@@ -196,7 +201,10 @@ const PatternAlignment = {
     // The server pushes `%{model: ...}` (see the LiveView map test); unwrap
     // it here so a misshapen payload fails loudly in _draw, never as an
     // empty map.
-    this.handleEvent("alignment:load", (payload) => this._draw(payload.model));
+    this.handleEvent("alignment:load", (payload) => {
+      this._settleSave();
+      this._draw(payload.model);
+    });
     this.handleEvent("alignment:select", ({ position }) =>
       this._select(position, true),
     );
@@ -207,6 +215,15 @@ const PatternAlignment = {
     this.handleEvent("alignment:simplify", (payload) =>
       this._simplifySection(payload),
     );
+    // Step 28 save flow: the server answers a save push with a fresh
+    // model (alignment:load), rebased bases (alignment:rebase) or a
+    // dialog/notice settle (alignment:save_settled). Each one releases
+    // the in-flight save guard so Save never double-submits.
+    this.handleEvent("alignment:rebase", (payload) => {
+      this._rebase(payload ? payload.bases : null);
+      this._settleSave();
+    });
+    this.handleEvent("alignment:save_settled", () => this._settleSave());
 
     this.pushEvent("alignment_hook_ready", {});
   },
@@ -1450,6 +1467,68 @@ const PatternAlignment = {
       this._commit(position, simplified);
     }
     this.pushEvent("alignment_simplify_result", { removed, position });
+  },
+
+  // --- Save (step 28) ----------------------------------------------------
+
+  // Pushes every dirty section to the server for review: the position,
+  // the visit identity the server re-checks (stale stops otherwise), the
+  // op, the interior points ([lon, lat], INV-1) and the load-time base
+  // revision (stale bases conflict, R7). Non-set ops carry no geometry;
+  // their points are ignored server-side. Guards double submission while
+  // a save is in flight; the server settles with alignment:load,
+  // alignment:rebase or alignment:save_settled.
+  _requestSave() {
+    if (this._destroyed || this._savePending) return;
+    if (!this._model || !this._model.editable) return;
+    const sections = [...this._drafts.entries()]
+      .filter(([, draft]) => draft.dirty)
+      .map(([position, draft]) => {
+        const section = this._savedSection(position);
+        const revision = draft.revision || {};
+        return {
+          position,
+          from_occurrence_id: section ? section.from_occurrence_id : null,
+          to_stop_id: section ? section.to_stop_id : null,
+          op: draft.op,
+          points: [...draft.points],
+          base: {
+            segment_id: revision.segment_id ?? null,
+            lock_version: revision.lock_version ?? null,
+          },
+        };
+      })
+      .sort((a, b) => a.position - b.position);
+    this._savePending = true;
+    this._setSaveDisabled(true);
+    this.pushEvent("alignment_save_requested", { sections });
+  },
+
+  // Applies the server's latest base revisions to the dirty drafts after
+  // "Keep as local draft": the points stay, so the next save reviews
+  // the same edit against the newer shared path.
+  _rebase(bases) {
+    for (const base of bases || []) {
+      if (!base || !Number.isInteger(base.position)) continue;
+      const draft = this._drafts.get(base.position);
+      if (draft) {
+        draft.revision = {
+          segment_id: base.segment_id ?? null,
+          lock_version: base.lock_version ?? null,
+        };
+      }
+    }
+    this.pushDraftState();
+  },
+
+  _settleSave() {
+    this._savePending = false;
+    this._setSaveDisabled(false);
+  },
+
+  _setSaveDisabled(disabled) {
+    const save = document.getElementById("alignment-save");
+    if (save) save.disabled = disabled;
   },
 
   // --- Draft state ---------------------------------------------------------

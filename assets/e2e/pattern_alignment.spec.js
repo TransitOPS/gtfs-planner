@@ -748,3 +748,154 @@ test.describe("alignment map", () => {
     expect(problems.filter((p) => !p.includes("500"))).toEqual([]);
   });
 });
+
+test.describe("save dialogs", () => {
+  test("shows the scope dialog and the conflict dialog at desktop and phone widths", async ({
+    page,
+    context,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    // Section 1 of BROWSER-ALIGN-A is shared with BROWSER-ALIGN-B (and the
+    // loop copy), so clearing its interior points and saving opens the
+    // scope dialog with "Only this pattern" checked by default.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+
+    await page.locator("#alignment-section-1").click();
+    await page.locator("#alignment-detail summary").click();
+    await expect(page.locator("#alignment-clear")).toBeVisible();
+    await page.locator("#alignment-clear").click();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-save")).toBeEnabled();
+    await page.locator("#alignment-save").click();
+    // The dialog chrome (title, footer buttons) always renders; pin the
+    // open state and the review body so the assertion cannot pass on a
+    // closed dialog.
+    await expect(page.locator("#alignment-save-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-save-dialog")).toContainText(
+      "Who should use this path?",
+    );
+    await expect(
+      page.locator("#alignment-save-scope-1-local"),
+    ).toBeChecked();
+    await expect(page.locator("#alignment-save-dialog")).toContainText(
+      "BROWSER-ALIGN-B",
+    );
+    // The confirm panel plays a 150 ms entry fade; capture only once it
+    // settles at full opacity, never mid-animation.
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector(
+          "#alignment-save-dialog > div > div",
+        );
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      { timeout: 5000 },
+    );
+    await captureViewport(page, "scope-dialog-1440");
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await captureFullPage(page, "scope-dialog-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // Keep the draft but close the dialog: a second editor saves the same
+    // shared section first, so this tab's next save conflicts.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator("#alignment-save-dialog-cancel").click();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+    );
+
+    const second = await context.newPage();
+    second.on("pageerror", (error) =>
+      problems.push(`second pageerror: ${error.message}`),
+    );
+    second.on("console", (message) => {
+      if (message.type() === "error")
+        problems.push(`second console: ${message.text()}`);
+    });
+    await stubTiles(second);
+    await logIn(second);
+    await second.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/BROWSER-ALIGN-B?task=alignment`,
+    );
+    await second.waitForSelector("#alignment-task", { timeout: 15000 });
+    await second.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(second);
+    await second.locator("#alignment-section-1").click();
+    await second.locator("#alignment-detail summary").click();
+    await expect(second.locator("#alignment-clear")).toBeVisible();
+    await second.locator("#alignment-clear").click();
+    await expect(second.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+    await second.locator("#alignment-save").click();
+    await expect(second.locator("#alignment-save-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(second.locator("#alignment-save-dialog")).toContainText(
+      "Who should use this path?",
+    );
+    await second.locator("#alignment-save-scope-1-shared").check();
+    await second.locator("#alignment-save-dialog-confirm").click();
+    await expect(second.locator("#status")).toContainText(
+      "Alignment saved.",
+      { timeout: 15000 },
+    );
+    await second.close();
+
+    await page.locator("#alignment-save").click();
+    await expect(page.locator("#alignment-conflict-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-conflict-dialog")).toContainText(
+      "Review the newer shared path",
+    );
+    await expect(page.locator("#alignment-conflict-dialog")).toContainText(
+      "A newer shared path was saved",
+    );
+    await expect(page.locator("#alignment-conflict-dialog")).toContainText(
+      "Keep as local draft",
+    );
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector(
+          "#alignment-conflict-dialog > div > div",
+        );
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      { timeout: 5000 },
+    );
+    await captureViewport(page, "conflict-dialog-1440");
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await captureFullPage(page, "conflict-dialog-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
