@@ -3478,3 +3478,20 @@ body:has(#home-page) {
 #home-page {
   margin-top: -2rem;
 }
+
+/* Route workspace scoping (spec 16, steps 21–22). The reference's route
+   surfaces use the TransitOps display and text faces; the rest of the
+   application, including the shared header's own header rules, keeps Inter. The
+   rule names the two real route surfaces by their stable ids rather than
+   restyling a shared component, so neither the create drawer nor the Details
+   workspace can restyle another page. */
+#route-details-workspace,
+#new-route-form {
+  font-family: var(--font-ds);
+}
+
+/* The reserved map column keeps a zero min-width of its own, so a long form
+   field cannot squeeze it at the 1280px boundary once step 30 fills it. */
+#route-details-map-region {
+  min-width: 0;
+}

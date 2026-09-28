@@ -10,6 +10,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   render the same controls from the same route editor read, so the two
   surfaces cannot drift into different field grammars.
 
+  `rider_fields/1` and `additional_details/1` are the Details-side remainder of
+  the reference's field order: rider information (description, web page) and the
+  collapsed Additional details disclosure (display order, boarding defaults, fare
+  network and the read-only route ID, with its values repeated in the summary so
+  the closed disclosure still states them). The create drawer does not render
+  them, so they are mounted by `RouteDetailLive` alone.
+
   `color_fields/1` is the shared "Route color / Text color" pair: the picker
   and hex fields, the Automatic/Custom mode chips, and the contrast readout
   with its one-click automatic fix. It renders the whole readout server-side
@@ -447,6 +454,261 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     </div>
     """
   end
+
+  @doc """
+  Renders Description and Web page — the Details "Rider information" section.
+
+  Both controls are optional, so both are labelled as such and neither carries a
+  browser `required`; R1 rejects only a blank *pair* of names, and the URL rule
+  (`http(s)` with a nonempty host) is the server changeset's.
+  """
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
+
+  def rider_fields(assigns) do
+    assigns = assign(assigns, :desc_errors, field_errors(assigns.form[:route_desc]))
+    assigns = assign(assigns, :url_errors, field_errors(assigns.form[:route_url]))
+
+    ~H"""
+    <div id={"#{@prefix}-rider"} class="grid gap-6">
+      <div class="grid gap-1.5">
+        <label for={"#{@prefix}-desc"} class={label_class()}>
+          Description <span class="font-normal text-muted">(optional)</span>
+        </label>
+        <textarea
+          id={"#{@prefix}-desc"}
+          name={@form[:route_desc].name}
+          rows="3"
+          spellcheck="false"
+          aria-invalid={to_string(@desc_errors != [])}
+          aria-describedby={
+            described_by(@desc_errors, "#{@prefix}-desc-error", "#{@prefix}-desc-help")
+          }
+          class="min-h-[88px] w-full resize-y rounded-control border border-control bg-white px-3 py-2.5 text-sm text-strong placeholder:text-muted aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-fg disabled:bg-canvas disabled:text-muted"
+        >{@form[:route_desc].value}</textarea>
+        <.error_line id={"#{@prefix}-desc-error"} messages={@desc_errors} />
+        <p id={"#{@prefix}-desc-help"} class={help_class()}>
+          Where and when it runs, in a sentence. Don't repeat the route name.
+        </p>
+      </div>
+
+      <div class="grid gap-1.5">
+        <label for={"#{@prefix}-url"} class={label_class()}>
+          Web page <span class="font-normal text-muted">(optional)</span>
+        </label>
+        <input
+          type="url"
+          id={"#{@prefix}-url"}
+          name={@form[:route_url].name}
+          value={@form[:route_url].value}
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="https://"
+          aria-invalid={to_string(@url_errors != [])}
+          aria-describedby={described_by(@url_errors, "#{@prefix}-url-error", "#{@prefix}-url-help")}
+          class={control_class()}
+        />
+        <.error_line id={"#{@prefix}-url-error"} messages={@url_errors} />
+        <p id={"#{@prefix}-url-help"} class={help_class()}>
+          A page riders can open for this route. It must start with http:// or https://.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  # The four GTFS continuous-boarding values, labelled the way the reference
+  # labels them; R1 accepts exactly 0..3 and the changeset rejects anything else.
+  defp boarding_options do
+    [
+      {"Not allowed", 1},
+      {"Anywhere along the route", 0},
+      {"Arrange with the driver", 3},
+      {"Call the agency first", 2}
+    ]
+  end
+
+  @doc """
+  Renders the collapsible "Additional details" section.
+
+  The summary stays readable while the disclosure is closed by repeating the
+  saved display order, boarding defaults, fare network and read-only route ID as
+  one line; a value the route does not have is named as not set rather than
+  dropped, so the summary never silently loses a field. The route ID is reading
+  material, not a control: R1 makes the natural ID creation-only, so this section
+  states it and cannot change it.
+  """
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
+  attr :route_id, :string, required: true, doc: "the saved natural ID, rendered read-only"
+  attr :open?, :boolean, default: false
+
+  def additional_details(assigns) do
+    assigns = assign(assigns, :summary, additional_summary(assigns.form, assigns.route_id))
+    assigns = assign(assigns, :sort_errors, field_errors(assigns.form[:route_sort_order]))
+    assigns = assign(assigns, :pickup_errors, field_errors(assigns.form[:continuous_pickup]))
+    assigns = assign(assigns, :drop_errors, field_errors(assigns.form[:continuous_drop_off]))
+    assigns = assign(assigns, :network_errors, field_errors(assigns.form[:network_id]))
+
+    assigns =
+      assigns
+      |> assign(:pickup_value, option_value(assigns.form[:continuous_pickup].value))
+      |> assign(:drop_value, option_value(assigns.form[:continuous_drop_off].value))
+
+    ~H"""
+    <details
+      id={"#{@prefix}-additional"}
+      open={@open?}
+      class="group rounded-card border border-subtle"
+    >
+      <summary class="flex min-h-14 cursor-pointer list-none items-center gap-3 px-4 [&::-webkit-details-marker]:hidden">
+        <.icon
+          name="hero-chevron-right"
+          class="size-4 shrink-0 text-muted transition-transform group-open:rotate-90"
+        />
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-[650] text-strong">Additional details</span>
+          <span id={"#{@prefix}-additional-summary"} class="block truncate text-[13px] text-muted">
+            {@summary}
+          </span>
+        </span>
+      </summary>
+
+      <div class="grid gap-6 border-t border-subtle px-4 pb-5 pt-4">
+        <div class="grid gap-1.5">
+          <label for={"#{@prefix}-sort"} class={label_class()}>
+            Display order <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <input
+            type="text"
+            inputmode="numeric"
+            id={"#{@prefix}-sort"}
+            name={@form[:route_sort_order].name}
+            value={@form[:route_sort_order].value}
+            autocomplete="off"
+            aria-invalid={to_string(@sort_errors != [])}
+            aria-describedby={
+              described_by(@sort_errors, "#{@prefix}-sort-error", "#{@prefix}-sort-help")
+            }
+            class={[control_class(), "max-w-[140px] tabular-nums"]}
+          />
+          <.error_line id={"#{@prefix}-sort-error"} messages={@sort_errors} />
+          <p id={"#{@prefix}-sort-help"} class={help_class()}>
+            Trip planners list routes with lower numbers first. Blank sorts after numbered routes.
+          </p>
+        </div>
+
+        <fieldset id={"#{@prefix}-boarding-group"} class="min-w-0">
+          <legend class={label_class()}>Boarding between stops</legend>
+          <p class="mt-0.5 text-[13px] text-muted">
+            The default for every trip on this route. A pattern can set different rules for
+            particular stops.
+          </p>
+          <div class="mt-3 grid gap-3 sm:grid-cols-2">
+            <div class="grid gap-1.5">
+              <label for={"#{@prefix}-pickup"} class={label_class()}>Pickup</label>
+              <div class="relative">
+                <select
+                  id={"#{@prefix}-pickup"}
+                  name={@form[:continuous_pickup].name}
+                  aria-invalid={to_string(@pickup_errors != [])}
+                  aria-describedby={described_by(@pickup_errors, "#{@prefix}-pickup-error")}
+                  class={select_class()}
+                >
+                  {Phoenix.HTML.Form.options_for_select(boarding_options(), @pickup_value)}
+                </select>
+                <.chevron />
+              </div>
+              <.error_line id={"#{@prefix}-pickup-error"} messages={@pickup_errors} />
+            </div>
+            <div class="grid gap-1.5">
+              <label for={"#{@prefix}-dropoff"} class={label_class()}>Drop-off</label>
+              <div class="relative">
+                <select
+                  id={"#{@prefix}-dropoff"}
+                  name={@form[:continuous_drop_off].name}
+                  aria-invalid={to_string(@drop_errors != [])}
+                  aria-describedby={described_by(@drop_errors, "#{@prefix}-dropoff-error")}
+                  class={select_class()}
+                >
+                  {Phoenix.HTML.Form.options_for_select(boarding_options(), @drop_value)}
+                </select>
+                <.chevron />
+              </div>
+              <.error_line id={"#{@prefix}-dropoff-error"} messages={@drop_errors} />
+            </div>
+          </div>
+        </fieldset>
+
+        <div class="grid gap-1.5">
+          <label for={"#{@prefix}-network"} class={label_class()}>
+            Fare network <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <input
+            type="text"
+            id={"#{@prefix}-network"}
+            name={@form[:network_id].name}
+            value={@form[:network_id].value}
+            autocomplete="off"
+            spellcheck="false"
+            aria-invalid={to_string(@network_errors != [])}
+            aria-describedby={
+              described_by(@network_errors, "#{@prefix}-network-error", "#{@prefix}-network-help")
+            }
+            class={[control_class(), "max-w-[240px] font-mono"]}
+          />
+          <.error_line id={"#{@prefix}-network-error"} messages={@network_errors} />
+          <p id={"#{@prefix}-network-help"} class={help_class()}>
+            Only if your fares group routes into networks. Leave blank otherwise.
+          </p>
+        </div>
+
+        <div class="grid gap-1">
+          <p class={label_class()}>Route ID</p>
+          <p id={"#{@prefix}-route-id"} class="font-mono text-sm text-strong">{@route_id}</p>
+          <p class={help_class()}>
+            Trips, transfers and fare rules refer to this ID, so it can't be changed here.
+          </p>
+        </div>
+      </div>
+    </details>
+    """
+  end
+
+  # The closed disclosure still states every value it holds: the display order,
+  # the two boarding defaults, the fare network when the route has one, and the
+  # read-only route ID. A value the route does not have is named as not set.
+  defp additional_summary(form, route_id) do
+    boarding = boarding_option_label(form[:continuous_pickup].value)
+
+    [
+      "Display order #{form[:route_sort_order].value || "not set"}",
+      "Boarding between stops: #{boarding}",
+      if(blank_value?(form[:network_id].value),
+        do: nil,
+        else: "Network #{form[:network_id].value}"
+      ),
+      "Route ID #{route_id}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp boarding_option_label(value) do
+    value = option_value(value)
+
+    Enum.find_value(boarding_options(), "—", fn {label, option} ->
+      option_value(option) == value && label
+    end)
+  end
+
+  # Select options compare as strings; a saved integer and a submitted string are
+  # the same choice.
+  defp option_value(value) when is_integer(value), do: to_string(value)
+  defp option_value(value) when is_binary(value), do: value
+  defp option_value(_value), do: ""
+
+  defp blank_value?(value), do: is_nil(value) or String.trim(to_string(value)) == ""
 
   # The chevron the reference draws with an inline `use` reference. It is
   # absolutely positioned over the select's own `h-11` box rather than over the
