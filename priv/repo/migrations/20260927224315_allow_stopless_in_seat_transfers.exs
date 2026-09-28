@@ -38,8 +38,11 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfers do
   @sample_limit 20
 
   def up do
-    remove_exact_duplicates()
+    lock_transfers_table!()
+
+    removed_duplicates = remove_exact_duplicates()
     refuse_unrepairable_rows()
+    log_removed_duplicates(removed_duplicates)
 
     drop index(:transfers, [], name: @index)
     create unique_index(:transfers, @key_columns, name: @index, nulls_distinct: false)
@@ -54,6 +57,8 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfers do
   end
 
   def down do
+    lock_transfers_table!()
+
     case stopless_transfer_count() do
       0 ->
         drop constraint(:transfers, @stops_check)
@@ -71,6 +76,13 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfers do
         raise "Cannot roll back allow_stopless_in_seat_transfers: #{count} transfers have no " <>
                 "from_stop_id or to_stop_id. Keep this migration and fix forward."
     end
+  end
+
+  # The lock is issued through the repo rather than execute/1: the runner queues
+  # every command for the flush after the operation returns, so a queued LOCK
+  # would arrive with the DDL and leave the checks below unguarded.
+  defp lock_transfers_table! do
+    repo().query!("LOCK TABLE #{qualified_table()} IN ACCESS EXCLUSIVE MODE")
   end
 
   defp remove_exact_duplicates do
@@ -94,6 +106,12 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfers do
         []
       )
 
+    removed
+  end
+
+  # Emitted only after refuse_unrepairable_rows/0 has passed, so a refused or
+  # aborted run logs no removal lines for the deletions its rollback discards.
+  defp log_removed_duplicates(removed) do
     Enum.each(removed, fn [id, organization_id, gtfs_version_id] ->
       Logger.warning(
         "Removed duplicate transfer id=#{id} organization_id=#{organization_id} " <>

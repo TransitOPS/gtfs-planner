@@ -49,7 +49,7 @@ defmodule GtfsPlanner.GtfsValidatorCli do
     report = report_path |> File.read!() |> Jason.decode!()
 
     assert is_map(report["summary"]), "report.json has no summary object for #{zip_path}"
-    assert is_list(notices(report)), "report.json has no notices list for #{zip_path}"
+    assert is_list(report["notices"]), "report.json has no notices list for #{zip_path}"
 
     report
   end
