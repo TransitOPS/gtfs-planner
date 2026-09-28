@@ -170,42 +170,35 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   defp fetch_draft_value(params, wire, key) do
     raw = Map.get(params, wire, Map.get(params, key, :missing))
-
-    case {key, raw} do
-      {:dirty_positions, positions} when is_list(positions) ->
-        if Enum.all?(positions, &(is_integer(&1) and &1 >= 1)) do
-          {:ok, Enum.sort(positions)}
-        else
-          :error
-        end
-
-      {:selected, position} when is_integer(position) and position >= 1 ->
-        {:ok, position}
-
-      {:mode, mode} when mode in ["pan", "edit"] ->
-        {:ok, mode}
-
-      {count_key, count}
-      when count_key in [:selected_point_count, :point_count] and is_integer(count) and
-             count >= 0 ->
-        {:ok, count}
-
-      {flag_key, value}
-      when flag_key in [:can_undo, :can_redo] and is_boolean(value) ->
-        {:ok, value}
-
-      {positions_key, positions}
-      when positions_key in [:flagged_positions, :review_positions] and is_list(positions) ->
-        if Enum.all?(positions, &(is_integer(&1) and &1 >= 1)) do
-          {:ok, positions}
-        else
-          :error
-        end
-
-      _ ->
-        :error
-    end
+    validate_draft_value(key, raw)
   end
+
+  defp validate_draft_value(:dirty_positions, positions) when is_list(positions) do
+    if valid_draft_positions?(positions), do: {:ok, Enum.sort(positions)}, else: :error
+  end
+
+  defp validate_draft_value(:selected, position) when is_integer(position) and position >= 1,
+    do: {:ok, position}
+
+  defp validate_draft_value(:mode, mode) when mode in ["pan", "edit"], do: {:ok, mode}
+
+  defp validate_draft_value(key, count)
+       when key in [:selected_point_count, :point_count] and is_integer(count) and count >= 0,
+       do: {:ok, count}
+
+  defp validate_draft_value(key, value)
+       when key in [:can_undo, :can_redo] and is_boolean(value),
+       do: {:ok, value}
+
+  defp validate_draft_value(key, positions)
+       when key in [:flagged_positions, :review_positions] and is_list(positions) do
+    if valid_draft_positions?(positions), do: {:ok, positions}, else: :error
+  end
+
+  defp validate_draft_value(_key, _raw), do: :error
+
+  defp valid_draft_positions?(positions),
+    do: Enum.all?(positions, &(is_integer(&1) and &1 >= 1))
 
   @simplify_tolerances [5, 10, 25]
   @default_tolerance 10
@@ -498,16 +491,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   """
   def generate(socket, params) when is_map(params) do
     cond do
-      not editable?(socket) ->
-        socket
-
-      not is_nil(socket.assigns[:alignment_generation]) ->
-        socket
-
-      not is_nil(socket.assigns[:alignment_pending]) ->
-        socket
-
-      is_nil(socket.assigns[:alignment]) ->
+      generation_blocked?(socket) ->
         socket
 
       Map.has_key?(params, "confirmed") or Map.has_key?(params, :confirmed) ->
@@ -522,6 +506,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   end
 
   def generate(socket, _params), do: socket
+
+  defp generation_blocked?(socket) do
+    not editable?(socket) or not is_nil(socket.assigns[:alignment_generation]) or
+      not is_nil(socket.assigns[:alignment_pending]) or is_nil(socket.assigns[:alignment])
+  end
 
   @doc """
   Starts the async street-routing request for the given positions (step 32).
@@ -1034,24 +1023,29 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
       {total, count} =
         Enum.reduce(selected, {0, 0}, fn route_pattern_id, {total, count} ->
-          case Map.get(summary, route_pattern_id) do
-            %{missing: missing} when missing > 0 -> {total + missing, count + 1}
-            _ -> {total, count}
-          end
+          count_bulk_missing(summary, route_pattern_id, total, count)
         end)
 
       if total == 0 and count == 0 do
         socket
       else
-        dialog =
-          if total > @bulk_section_limit,
-            do: %{too_many: true, total: total},
-            else: %{total: total, pattern_count: count, pattern_ids: selected}
-
-        Component.assign(socket, :bulk_dialog, dialog)
+        Component.assign(socket, :bulk_dialog, bulk_dialog(total, count, selected))
       end
     else
       socket
+    end
+  end
+
+  defp bulk_dialog(total, _count, _selected) when total > @bulk_section_limit,
+    do: %{too_many: true, total: total}
+
+  defp bulk_dialog(total, count, selected),
+    do: %{total: total, pattern_count: count, pattern_ids: selected}
+
+  defp count_bulk_missing(summary, route_pattern_id, total, count) do
+    case Map.get(summary, route_pattern_id) do
+      %{missing: missing} when missing > 0 -> {total + missing, count + 1}
+      _ -> {total, count}
     end
   end
 
@@ -1272,41 +1266,39 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   finishes or cancels generation first and then saves once.
   """
   def save_requested(socket, params) when is_map(params) do
-    cond do
-      is_nil(socket.assigns[:alignment]) or is_nil(socket.assigns[:pattern]) ->
-        push_save_settled(socket)
+    if save_blocked?(socket) do
+      push_save_settled(socket)
+    else
+      draft = save_sections(params)
+      audit = save_audit_context(socket)
+      pattern = socket.assigns.pattern
 
-      not is_nil(socket.assigns[:alignment_pending]) ->
-        push_save_settled(socket)
-
-      not is_nil(socket.assigns[:alignment_generation]) ->
-        push_save_settled(socket)
-
-      true ->
-        draft = save_sections(params)
-        audit = save_audit_context(socket)
-        pattern = socket.assigns.pattern
-
-        case Gtfs.review_alignment_save(pattern.id, draft, audit) do
-          {:ok, review} ->
-            handle_save_review(socket, draft, review)
-
-          {:error, :stale_stops} ->
-            save_notice(socket, :stale_stops)
-
-          {:error, {:conflict, current}} ->
-            open_conflict(socket, draft, current)
-
-          {:error, {:invalid_draft, _reason}} ->
-            save_notice(socket, :save_error)
-
-          {:error, :not_found} ->
-            save_notice(socket, {:error, "This pattern is no longer available."})
-        end
+      handle_save_request(socket, draft, Gtfs.review_alignment_save(pattern.id, draft, audit))
     end
   end
 
   def save_requested(socket, _params), do: push_save_settled(socket)
+
+  defp save_blocked?(socket) do
+    is_nil(socket.assigns[:alignment]) or is_nil(socket.assigns[:pattern]) or
+      not is_nil(socket.assigns[:alignment_pending]) or
+      not is_nil(socket.assigns[:alignment_generation])
+  end
+
+  defp handle_save_request(socket, draft, {:ok, review}),
+    do: handle_save_review(socket, draft, review)
+
+  defp handle_save_request(socket, _draft, {:error, :stale_stops}),
+    do: save_notice(socket, :stale_stops)
+
+  defp handle_save_request(socket, draft, {:error, {:conflict, current}}),
+    do: open_conflict(socket, draft, current)
+
+  defp handle_save_request(socket, _draft, {:error, {:invalid_draft, _reason}}),
+    do: save_notice(socket, :save_error)
+
+  defp handle_save_request(socket, _draft, {:error, :not_found}),
+    do: save_notice(socket, {:error, "This pattern is no longer available."})
 
   @doc """
   Records a scope choice from the save dialog form (step 28).
@@ -1552,25 +1544,34 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # shared choice.
   defp fill_save_scopes(stored, review, forced) do
     Enum.reduce(review.sections, stored, fn section, acc ->
-      key = to_string(section.position)
-
-      cond do
-        section.action == :choose_scope and not Map.has_key?(acc, key) ->
-          Map.put(acc, key, "local")
-
-        section.action == :delete_shared and section.affected != [] and
-            not Map.has_key?(acc, key) ->
-          Map.put(acc, key, "shared")
-
-        section.action == :choose_scope and section.position in forced and
-            Map.get(acc, key) not in ["local", "shared"] ->
-          Map.put(acc, key, "local")
-
-        true ->
-          acc
-      end
+      fill_save_scope(section, acc, forced)
     end)
   end
+
+  defp fill_save_scope(section, acc, forced) do
+    key = to_string(section.position)
+
+    cond do
+      needs_local_default?(section, acc, key) ->
+        Map.put(acc, key, "local")
+
+      needs_shared_default?(section, acc, key) ->
+        Map.put(acc, key, "shared")
+
+      section.action == :choose_scope and section.position in forced and
+          Map.get(acc, key) not in ["local", "shared"] ->
+        Map.put(acc, key, "local")
+
+      true ->
+        acc
+    end
+  end
+
+  defp needs_local_default?(section, acc, key),
+    do: section.action == :choose_scope and not Map.has_key?(acc, key)
+
+  defp needs_shared_default?(section, acc, key),
+    do: section.action == :delete_shared and section.affected != [] and not Map.has_key?(acc, key)
 
   defp apply_save(socket, draft, choices, fingerprint) do
     socket = Component.assign(socket, :applying?, true)

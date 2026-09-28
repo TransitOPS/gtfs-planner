@@ -175,20 +175,19 @@ defmodule GtfsPlanner.Gtfs.Alignments.Draft do
 
   defp parse_points(_entry, :set, _max_points), do: {:error, {:invalid_draft, :malformed}}
 
-  defp normalize_points(points, max_points) when is_list(points) do
-    if length(points) > max_points do
-      {:error, {:invalid_draft, :too_many_points}}
-    else
-      Enum.reduce_while(points, {:ok, []}, fn pair, {:ok, acc} ->
-        case normalize_pair(pair) do
-          {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-          {:error, _} = error -> {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
-        error -> error
+  defp normalize_points(points, max_points) when is_list(points) and length(points) > max_points,
+    do: {:error, {:invalid_draft, :too_many_points}}
+
+  defp normalize_points(points, _max_points) when is_list(points) do
+    Enum.reduce_while(points, {:ok, []}, fn pair, {:ok, acc} ->
+      case normalize_pair(pair) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, _} = error -> {:halt, error}
       end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      error -> error
     end
   end
 
@@ -201,12 +200,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.Draft do
     lon_f = lon * 1.0
     lat_f = lat * 1.0
 
-    cond do
-      lon_f < -180 or lon_f > 180 or lat_f < -90 or lat_f > 90 ->
-        {:error, {:invalid_draft, :out_of_range}}
-
-      true ->
-        {:ok, [lon_f, lat_f]}
+    if lon_f < -180 or lon_f > 180 or lat_f < -90 or lat_f > 90 do
+      {:error, {:invalid_draft, :out_of_range}}
+    else
+      {:ok, [lon_f, lat_f]}
     end
   end
 

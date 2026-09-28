@@ -34,11 +34,13 @@ defmodule GtfsPlanner.StreetRouting do
              :no_route | :unavailable | :rate_limited | :api_key_missing | :invalid_response}
   @impl Behaviour
   def route(waypoints, opts \\ []) do
-    Application.get_env(
-      :gtfs_planner,
-      :street_routing_service,
-      GtfsPlanner.StreetRouting.Geoapify
-    )
-    |> apply(:route, [waypoints, opts])
+    service =
+      Application.get_env(
+        :gtfs_planner,
+        :street_routing_service,
+        GtfsPlanner.StreetRouting.Geoapify
+      )
+
+    service.route(waypoints, opts)
   end
 end

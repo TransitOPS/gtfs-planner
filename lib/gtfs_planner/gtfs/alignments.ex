@@ -27,9 +27,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
@@ -171,15 +171,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
     occurrence_ids = Enum.map(visit_rows, & &1.occurrence_id)
 
-    overrides_by_key =
-      from(seg in AlignmentSegment,
-        where:
-          seg.organization_id == ^organization_id and
-            seg.gtfs_version_id == ^gtfs_version_id and
-            seg.from_occurrence_id in ^occurrence_ids
-      )
-      |> Repo.all()
-      |> Map.new(fn seg -> {{seg.from_occurrence_id, seg.to_stop_id}, seg} end)
+    overrides_by_key = route_overrides_by_key(organization_id, gtfs_version_id, occurrence_ids)
 
     pairs =
       visits_by_pattern
@@ -189,34 +181,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
     {froms, tos} = pairs |> MapSet.to_list() |> Enum.unzip()
 
-    shared_by_pair =
-      from(seg in AlignmentSegment,
-        where:
-          seg.organization_id == ^organization_id and
-            seg.gtfs_version_id == ^gtfs_version_id and
-            is_nil(seg.from_occurrence_id) and seg.from_stop_id in ^froms and
-            seg.to_stop_id in ^tos
-      )
-      |> Repo.all()
-      |> Enum.filter(fn seg -> MapSet.member?(pairs, {seg.from_stop_id, seg.to_stop_id}) end)
-      |> Map.new(fn seg -> {{seg.from_stop_id, seg.to_stop_id}, seg} end)
+    shared_by_pair = route_shared_by_pair(organization_id, gtfs_version_id, pairs, froms, tos)
 
-    imported_by_pattern =
-      from(t in Trip,
-        where:
-          t.organization_id == ^organization_id and
-            t.gtfs_version_id == ^gtfs_version_id and t.route_id == ^route_id and
-            t.pattern_derivation_state == "linked",
-        select: {t.route_pattern_id, t.shape_id}
-      )
-      |> Repo.all()
-      |> Enum.group_by(
-        fn {route_pattern_id, _shape} -> route_pattern_id end,
-        fn {_route_pattern_id, shape} -> shape end
-      )
-      |> Map.new(fn {route_pattern_id, shapes} ->
-        {route_pattern_id, Enum.any?(shapes, &present?/1)}
-      end)
+    imported_by_pattern = route_imported_by_pattern(organization_id, gtfs_version_id, route_id)
 
     Map.new(patterns, fn pattern ->
       visits = Map.get(visits_by_pattern, pattern.id, [])
@@ -237,6 +204,48 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end)
   end
 
+  defp route_overrides_by_key(organization_id, gtfs_version_id, occurrence_ids) do
+    from(seg in AlignmentSegment,
+      where:
+        seg.organization_id == ^organization_id and
+          seg.gtfs_version_id == ^gtfs_version_id and
+          seg.from_occurrence_id in ^occurrence_ids
+    )
+    |> Repo.all()
+    |> Map.new(fn seg -> {{seg.from_occurrence_id, seg.to_stop_id}, seg} end)
+  end
+
+  defp route_shared_by_pair(organization_id, gtfs_version_id, pairs, froms, tos) do
+    from(seg in AlignmentSegment,
+      where:
+        seg.organization_id == ^organization_id and
+          seg.gtfs_version_id == ^gtfs_version_id and
+          is_nil(seg.from_occurrence_id) and seg.from_stop_id in ^froms and
+          seg.to_stop_id in ^tos
+    )
+    |> Repo.all()
+    |> Enum.filter(fn seg -> MapSet.member?(pairs, {seg.from_stop_id, seg.to_stop_id}) end)
+    |> Map.new(fn seg -> {{seg.from_stop_id, seg.to_stop_id}, seg} end)
+  end
+
+  defp route_imported_by_pattern(organization_id, gtfs_version_id, route_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and
+          t.gtfs_version_id == ^gtfs_version_id and t.route_id == ^route_id and
+          t.pattern_derivation_state == "linked",
+      select: {t.route_pattern_id, t.shape_id}
+    )
+    |> Repo.all()
+    |> Enum.group_by(
+      fn {route_pattern_id, _shape} -> route_pattern_id end,
+      fn {_route_pattern_id, shape} -> shape end
+    )
+    |> Map.new(fn {route_pattern_id, shapes} ->
+      {route_pattern_id, Enum.any?(shapes, &present?/1)}
+    end)
+  end
+
   @doc """
   Lists every pattern in the version that visits `from_stop_id` immediately
   followed by `to_stop_id`.
@@ -249,76 +258,12 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   """
   @spec pair_users(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) :: [pair_user()]
   def pair_users(organization_id, gtfs_version_id, from_stop_id, to_stop_id) do
-    stops_with_next =
-      from(rs in RoutePatternStop,
-        where:
-          rs.organization_id == ^organization_id and
-            rs.gtfs_version_id == ^gtfs_version_id,
-        select: %{
-          id: rs.id,
-          route_pattern_id: rs.route_pattern_id,
-          position: rs.position,
-          stop_id: rs.stop_id,
-          next_stop_id:
-            type(
-              fragment(
-                "LEAD(?) OVER (PARTITION BY ? ORDER BY ?)",
-                rs.stop_id,
-                rs.route_pattern_id,
-                rs.position
-              ),
-              :string
-            )
-        }
-      )
+    stops_with_next = pair_stops_with_next(organization_id, gtfs_version_id)
 
     rows =
-      from(q in subquery(stops_with_next),
-        join: rp in RoutePattern,
-        on:
-          rp.id == q.route_pattern_id and
-            rp.organization_id == ^organization_id and
-            rp.gtfs_version_id == ^gtfs_version_id,
-        left_join: r in Route,
-        on:
-          r.organization_id == ^organization_id and
-            r.gtfs_version_id == ^gtfs_version_id and
-            r.route_id == rp.route_id,
-        left_join: seg in AlignmentSegment,
-        on:
-          seg.organization_id == ^organization_id and
-            seg.gtfs_version_id == ^gtfs_version_id and
-            seg.from_occurrence_id == q.id and
-            seg.from_stop_id == ^from_stop_id and
-            seg.to_stop_id == ^to_stop_id,
-        where: q.stop_id == ^from_stop_id and q.next_stop_id == ^to_stop_id,
-        order_by: [asc: rp.route_id, asc: rp.route_pattern_id, asc: q.position],
-        select: %{
-          pattern_id: rp.id,
-          route_pattern_id: rp.route_pattern_id,
-          route_id: rp.route_id,
-          route_short_name: r.route_short_name,
-          pattern_name: rp.route_pattern_name,
-          shape_id: rp.shape_id,
-          position: q.position,
-          segment_id: seg.id
-        }
-      )
-      |> Repo.all()
+      pair_user_rows(stops_with_next, organization_id, gtfs_version_id, from_stop_id, to_stop_id)
 
-    trip_counts =
-      from(t in Trip,
-        where:
-          t.organization_id == ^organization_id and
-            t.gtfs_version_id == ^gtfs_version_id and
-            t.pattern_derivation_state == "linked",
-        group_by: [t.route_id, t.route_pattern_id],
-        select: {t.route_id, t.route_pattern_id, count(t.id)}
-      )
-      |> Repo.all()
-      |> Map.new(fn {route_id, route_pattern_id, count} ->
-        {{route_id, route_pattern_id}, count}
-      end)
+    trip_counts = pair_trip_counts(organization_id, gtfs_version_id)
 
     rows
     |> Enum.group_by(fn row -> row.pattern_id end)
@@ -340,6 +285,87 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       }
     end)
     |> Enum.sort_by(fn user -> {user.route_id, user.route_pattern_id} end)
+  end
+
+  defp pair_stops_with_next(organization_id, gtfs_version_id) do
+    from(rs in RoutePatternStop,
+      where:
+        rs.organization_id == ^organization_id and
+          rs.gtfs_version_id == ^gtfs_version_id,
+      select: %{
+        id: rs.id,
+        route_pattern_id: rs.route_pattern_id,
+        position: rs.position,
+        stop_id: rs.stop_id,
+        next_stop_id:
+          type(
+            fragment(
+              "LEAD(?) OVER (PARTITION BY ? ORDER BY ?)",
+              rs.stop_id,
+              rs.route_pattern_id,
+              rs.position
+            ),
+            :string
+          )
+      }
+    )
+  end
+
+  defp pair_user_rows(stops_with_next, organization_id, gtfs_version_id, from_stop_id, to_stop_id) do
+    base = pair_user_base_query(stops_with_next, organization_id, gtfs_version_id)
+
+    from([q, rp, r] in base,
+      left_join: seg in AlignmentSegment,
+      on:
+        seg.organization_id == ^organization_id and
+          seg.gtfs_version_id == ^gtfs_version_id and
+          seg.from_occurrence_id == q.id and
+          seg.from_stop_id == ^from_stop_id and
+          seg.to_stop_id == ^to_stop_id,
+      where: q.stop_id == ^from_stop_id and q.next_stop_id == ^to_stop_id,
+      order_by: [asc: rp.route_id, asc: rp.route_pattern_id, asc: q.position],
+      select: %{
+        pattern_id: rp.id,
+        route_pattern_id: rp.route_pattern_id,
+        route_id: rp.route_id,
+        route_short_name: r.route_short_name,
+        pattern_name: rp.route_pattern_name,
+        shape_id: rp.shape_id,
+        position: q.position,
+        segment_id: seg.id
+      }
+    )
+    |> Repo.all()
+  end
+
+  defp pair_user_base_query(stops_with_next, organization_id, gtfs_version_id) do
+    from(q in subquery(stops_with_next),
+      join: rp in RoutePattern,
+      on:
+        rp.id == q.route_pattern_id and
+          rp.organization_id == ^organization_id and
+          rp.gtfs_version_id == ^gtfs_version_id,
+      left_join: r in Route,
+      on:
+        r.organization_id == ^organization_id and
+          r.gtfs_version_id == ^gtfs_version_id and
+          r.route_id == rp.route_id
+    )
+  end
+
+  defp pair_trip_counts(organization_id, gtfs_version_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and
+          t.gtfs_version_id == ^gtfs_version_id and
+          t.pattern_derivation_state == "linked",
+      group_by: [t.route_id, t.route_pattern_id],
+      select: {t.route_id, t.route_pattern_id, count(t.id)}
+    )
+    |> Repo.all()
+    |> Map.new(fn {route_id, route_pattern_id, count} ->
+      {{route_id, route_pattern_id}, count}
+    end)
   end
 
   @type blocker :: %{
@@ -410,31 +436,58 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     else
       distinct_shapes = linked |> Enum.map(& &1.shape_id) |> Enum.uniq()
 
-      case distinct_shapes do
-        [shape_id] when is_binary(shape_id) and shape_id != "" ->
-          if Map.get(outside_counts, shape_id, 0) == 0 do
-            %{
-              shape_id: shape_id,
-              mode: :adopt,
-              replaced: [
-                %{
-                  shape_id: shape_id,
-                  trip_count: length(linked),
-                  action: :adopted,
-                  points: Map.get(shape_points, shape_id, [])
-                }
-              ],
-              previous: previous,
-              blockers: blockers
-            }
-          else
-            allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers)
-          end
-
-        _ ->
-          allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers)
-      end
+      shape_plan_from_imports(
+        distinct_shapes,
+        pattern,
+        linked,
+        outside_counts,
+        shape_points,
+        previous,
+        blockers
+      )
     end
+  end
+
+  defp shape_plan_from_imports(
+         [shape_id],
+         pattern,
+         linked,
+         outside_counts,
+         shape_points,
+         previous,
+         blockers
+       )
+       when is_binary(shape_id) and shape_id != "" do
+    if Map.get(outside_counts, shape_id, 0) == 0 do
+      %{
+        shape_id: shape_id,
+        mode: :adopt,
+        replaced: [
+          %{
+            shape_id: shape_id,
+            trip_count: length(linked),
+            action: :adopted,
+            points: Map.get(shape_points, shape_id, [])
+          }
+        ],
+        previous: previous,
+        blockers: blockers
+      }
+    else
+      allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers)
+    end
+  end
+
+  defp shape_plan_from_imports(
+         _shapes,
+         pattern,
+         linked,
+         outside_counts,
+         shape_points,
+         previous,
+         blockers
+       ) do
+    allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers)
   end
 
   defp allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers) do
@@ -863,16 +916,16 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   defp delete_replaced_shapes!(pattern, replaced) do
     replaced
-    |> Enum.filter(&(&1.action == :deleted))
-    |> Enum.filter(fn %{shape_id: shape_id} ->
-      not Repo.exists?(
-        from(t in Trip,
-          where:
-            t.organization_id == ^pattern.organization_id and
-              t.gtfs_version_id == ^pattern.gtfs_version_id and
-              t.shape_id == ^shape_id
+    |> Enum.filter(fn %{action: action, shape_id: shape_id} ->
+      action == :deleted and
+        not Repo.exists?(
+          from(t in Trip,
+            where:
+              t.organization_id == ^pattern.organization_id and
+                t.gtfs_version_id == ^pattern.gtfs_version_id and
+                t.shape_id == ^shape_id
+          )
         )
-      )
     end)
     |> Enum.map(fn %{shape_id: shape_id} ->
       Repo.delete_all(
@@ -1039,35 +1092,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
     source
     |> copy_source_overrides(Enum.map(source_occurrences, & &1.id))
-    |> Enum.each(fn segment ->
-      with %RoutePatternStop{position: position} <-
-             Enum.find(source_occurrences, &(&1.id == segment.from_occurrence_id)),
-           %RoutePatternStop{} = copied_occurrence <- Map.get(copied_by_position, position) do
-        %AlignmentSegment{
-          organization_id: copy.organization_id,
-          gtfs_version_id: copy.gtfs_version_id,
-          from_stop_id: segment.from_stop_id,
-          to_stop_id: segment.to_stop_id,
-          from_occurrence_id: copied_occurrence.id
-        }
-        |> AlignmentSegment.changeset(%{points: segment.points || []})
-        |> Repo.insert()
-        |> case do
-          {:ok, inserted} ->
-            audit!(audit_context, :alignment_segment, inserted, "created", %{
-              before: nil,
-              after: apply_segment_after(inserted)
-            })
-
-          {:error, changeset} ->
-            Repo.rollback(changeset)
-        end
-      else
-        # A source row without a position-matched copy visit carries no
-        # section on the copy; shared geometry still resolves by stop pair.
-        _ -> :ok
-      end
-    end)
+    |> Enum.each(
+      &copy_pattern_segment!(&1, source_occurrences, copied_by_position, copy, audit_context)
+    )
 
     if present?(source.shape_id) do
       resolved = resolve(copy)
@@ -1079,6 +1106,36 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end
 
     :ok
+  end
+
+  defp copy_pattern_segment!(segment, source_occurrences, copied_by_position, copy, audit_context) do
+    with %RoutePatternStop{position: position} <-
+           Enum.find(source_occurrences, &(&1.id == segment.from_occurrence_id)),
+         %RoutePatternStop{} = copied_occurrence <- Map.get(copied_by_position, position) do
+      %AlignmentSegment{
+        organization_id: copy.organization_id,
+        gtfs_version_id: copy.gtfs_version_id,
+        from_stop_id: segment.from_stop_id,
+        to_stop_id: segment.to_stop_id,
+        from_occurrence_id: copied_occurrence.id
+      }
+      |> AlignmentSegment.changeset(%{points: segment.points || []})
+      |> Repo.insert()
+      |> case do
+        {:ok, inserted} ->
+          audit!(audit_context, :alignment_segment, inserted, "created", %{
+            before: nil,
+            after: apply_segment_after(inserted)
+          })
+
+        {:error, changeset} ->
+          Repo.rollback(changeset)
+      end
+    else
+      # A source row without a position-matched copy visit carries no
+      # section on the copy; shared geometry still resolves by stop pair.
+      _ -> :ok
+    end
   end
 
   defp copy_source_overrides(_source, []), do: []
@@ -1295,23 +1352,27 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       end)
 
     if Enum.all?(waypoints, fn {lat, lon} -> is_number(lat) and is_number(lon) end) do
-      case StreetRouting.route(waypoints) do
-        {:ok, legs} when length(legs) == last - first + 1 ->
-          suggestions =
-            legs
-            |> Enum.with_index(first)
-            |> Map.new(fn {leg, position} -> {position, leg_interior(leg)} end)
-
-          {:ok, suggestions}
-
-        {:ok, _legs} ->
-          {:failed, Map.new(first..last, &{&1, :invalid_response})}
-
-        {:error, reason} ->
-          {:failed, Map.new(first..last, &{&1, reason})}
-      end
+      route_valid_run(first, last, waypoints)
     else
       {:failed, Map.new(first..last, &{&1, :no_coordinates})}
+    end
+  end
+
+  defp route_valid_run(first, last, waypoints) do
+    case StreetRouting.route(waypoints) do
+      {:ok, legs} when length(legs) == last - first + 1 ->
+        suggestions =
+          legs
+          |> Enum.with_index(first)
+          |> Map.new(fn {leg, position} -> {position, leg_interior(leg)} end)
+
+        {:ok, suggestions}
+
+      {:ok, _legs} ->
+        {:failed, Map.new(first..last, &{&1, :invalid_response})}
+
+      {:error, reason} ->
+        {:failed, Map.new(first..last, &{&1, reason})}
     end
   end
 
@@ -1385,120 +1446,129 @@ defmodule GtfsPlanner.Gtfs.Alignments do
           | {:error, :not_found | :too_many_sections}
   def suggest_missing(organization_id, gtfs_version_id, route_id, pattern_ids)
       when is_list(pattern_ids) do
-    with {:ok, _route} <-
-           RoutePatterns.published_route(organization_id, gtfs_version_id, route_id) do
-      wanted =
-        pattern_ids
-        |> Enum.filter(&is_binary/1)
-        |> Enum.uniq()
-        |> Enum.sort()
+    case RoutePatterns.published_route(organization_id, gtfs_version_id, route_id) do
+      {:ok, _route} ->
+        suggest_missing_for_route(organization_id, gtfs_version_id, route_id, pattern_ids)
 
-      missing_by_pattern =
-        Map.new(wanted, fn route_pattern_id ->
-          case scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
-            %RoutePattern{} = pattern ->
-              resolved = resolve(pattern)
-
-              positions =
-                resolved.sections
-                |> Enum.filter(&(&1.kind == :missing))
-                |> Enum.map(& &1.position)
-                |> Enum.sort()
-
-              visits_by_position = Map.new(resolved.visits, &{&1.position, &1})
-
-              {route_pattern_id, {positions, visits_by_position}}
-
-            nil ->
-              {route_pattern_id, {[], %{}}}
-          end
-        end)
-
-      total = Enum.sum(for {_id, {positions, _}} <- missing_by_pattern, do: length(positions))
-
-      if total > @bulk_section_limit do
-        {:error, :too_many_sections}
-      else
-        runs =
-          Enum.flat_map(missing_by_pattern, fn {route_pattern_id, {positions, visits}} ->
-            Enum.map(contiguous_runs(positions), fn run ->
-              {route_pattern_id, run, visits}
-            end)
-          end)
-
-        routed =
-          Task.async_stream(
-            runs,
-            fn {route_pattern_id, run, visits} ->
-              {route_pattern_id, run, route_run(run, visits)}
-            end,
-            max_concurrency: 2,
-            timeout: 20_000,
-            on_timeout: :kill_task
-          )
-          |> Enum.reduce(%{}, fn
-            {:ok, {route_pattern_id, _run, {:ok, suggestions}}}, acc ->
-              Map.update(
-                acc,
-                route_pattern_id,
-                %{suggestions: suggestions, failed: %{}},
-                fn entry ->
-                  %{entry | suggestions: Map.merge(entry.suggestions, suggestions)}
-                end
-              )
-
-            {:ok, {route_pattern_id, _run, {:failed, failed}}}, acc ->
-              Map.update(acc, route_pattern_id, %{suggestions: %{}, failed: failed}, fn entry ->
-                %{entry | failed: Map.merge(entry.failed, failed)}
-              end)
-
-            {:exit, _reason}, acc ->
-              acc
-          end)
-
-        # A killed or exited run leaves its positions unaccounted: mark
-        # them `:unavailable` so the total still balances and no success
-        # is silently lost. Re-derive from the routed positions per run
-        # instead: collect routed positions per pattern from `routed`.
-        routed_positions =
-          Map.new(routed, fn {route_pattern_id, entry} ->
-            {route_pattern_id, MapSet.new(Map.keys(entry.suggestions) ++ Map.keys(entry.failed))}
-          end)
-
-        patterns =
-          Map.new(missing_by_pattern, fn {route_pattern_id, {positions, _visits}} ->
-            entry = Map.get(routed, route_pattern_id, %{suggestions: %{}, failed: %{}})
-            seen = Map.get(routed_positions, route_pattern_id, MapSet.new())
-
-            failed =
-              Enum.reduce(positions, entry.failed, fn position, failed ->
-                if MapSet.member?(seen, position),
-                  do: failed,
-                  else: Map.put(failed, position, :unavailable)
-              end)
-
-            suggestions = Map.take(entry.suggestions, positions)
-            failed = Map.take(failed, positions)
-
-            {route_pattern_id,
-             %{
-               suggestions: suggestions,
-               failed: failed,
-               generated: map_size(suggestions),
-               total: length(positions)
-             }}
-          end)
-
-        generated = Enum.sum(for {_id, entry} <- patterns, do: entry.generated)
-
-        {:ok, %{patterns: patterns, generated: generated, total: total}}
-      end
-    else
-      _ -> {:error, :not_found}
+      _ ->
+        {:error, :not_found}
     end
   end
 
   def suggest_missing(_, _, _, _), do: {:error, :not_found}
+
+  defp suggest_missing_for_route(organization_id, gtfs_version_id, route_id, pattern_ids) do
+    wanted =
+      pattern_ids
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    missing_by_pattern =
+      Map.new(wanted, fn route_pattern_id ->
+        missing_pattern_data(organization_id, gtfs_version_id, route_id, route_pattern_id)
+      end)
+
+    total = Enum.sum(for {_id, {positions, _}} <- missing_by_pattern, do: length(positions))
+
+    if total > @bulk_section_limit do
+      {:error, :too_many_sections}
+    else
+      route_missing_patterns(missing_by_pattern, total)
+    end
+  end
+
+  defp route_missing_patterns(missing_by_pattern, total) do
+    runs =
+      Enum.flat_map(missing_by_pattern, fn {route_pattern_id, {positions, visits}} ->
+        Enum.map(contiguous_runs(positions), fn run ->
+          {route_pattern_id, run, visits}
+        end)
+      end)
+
+    routed =
+      Task.async_stream(
+        runs,
+        fn {route_pattern_id, run, visits} ->
+          {route_pattern_id, run, route_run(run, visits)}
+        end,
+        max_concurrency: 2,
+        timeout: 20_000,
+        on_timeout: :kill_task
+      )
+      |> Enum.reduce(%{}, &merge_routed_run/2)
+
+    # A killed or exited run leaves its positions unaccounted: mark
+    # them `:unavailable` so the total still balances and no success
+    # is silently lost. Re-derive from the routed positions per run
+    # instead: collect routed positions per pattern from `routed`.
+    routed_positions =
+      Map.new(routed, fn {route_pattern_id, entry} ->
+        {route_pattern_id, MapSet.new(Map.keys(entry.suggestions) ++ Map.keys(entry.failed))}
+      end)
+
+    patterns =
+      Map.new(missing_by_pattern, fn {route_pattern_id, {positions, _visits}} ->
+        entry = Map.get(routed, route_pattern_id, %{suggestions: %{}, failed: %{}})
+        seen = Map.get(routed_positions, route_pattern_id, MapSet.new())
+
+        failed =
+          Enum.reduce(positions, entry.failed, &mark_unavailable(&1, &2, seen))
+
+        suggestions = Map.take(entry.suggestions, positions)
+        failed = Map.take(failed, positions)
+
+        {route_pattern_id,
+         %{
+           suggestions: suggestions,
+           failed: failed,
+           generated: map_size(suggestions),
+           total: length(positions)
+         }}
+      end)
+
+    generated = Enum.sum(for {_id, entry} <- patterns, do: entry.generated)
+
+    {:ok, %{patterns: patterns, generated: generated, total: total}}
+  end
+
+  defp mark_unavailable(position, failed, seen) do
+    if MapSet.member?(seen, position),
+      do: failed,
+      else: Map.put(failed, position, :unavailable)
+  end
+
+  defp missing_pattern_data(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+    case scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+      %RoutePattern{} = pattern ->
+        resolved = resolve(pattern)
+
+        positions =
+          resolved.sections
+          |> Enum.filter(&(&1.kind == :missing))
+          |> Enum.map(& &1.position)
+          |> Enum.sort()
+
+        {route_pattern_id, {positions, Map.new(resolved.visits, &{&1.position, &1})}}
+
+      nil ->
+        {route_pattern_id, {[], %{}}}
+    end
+  end
+
+  defp merge_routed_run({:ok, {route_pattern_id, _run, {:ok, suggestions}}}, acc) do
+    Map.update(acc, route_pattern_id, %{suggestions: suggestions, failed: %{}}, fn entry ->
+      %{entry | suggestions: Map.merge(entry.suggestions, suggestions)}
+    end)
+  end
+
+  defp merge_routed_run({:ok, {route_pattern_id, _run, {:failed, failed}}}, acc) do
+    Map.update(acc, route_pattern_id, %{suggestions: %{}, failed: failed}, fn entry ->
+      %{entry | failed: Map.merge(entry.failed, failed)}
+    end)
+  end
+
+  defp merge_routed_run({:exit, _reason}, acc), do: acc
 
   @doc """
   Returns the JSON-ready hook model for an `editor/4` result.
@@ -1869,15 +1939,16 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         blocker_by_position =
           Map.new(blockers, fn %{position: pos, reason: reason} -> {pos, reason} end)
 
-        sections =
-          Enum.map(initial, fn section ->
-            case Map.get(blocker_by_position, section.position) do
-              nil -> section
-              reason -> %{section | kind: :blocked, blocked_reason: reason}
-            end
-          end)
+        sections = Enum.map(initial, &block_section(&1, blocker_by_position))
 
         {sections, nil}
+    end
+  end
+
+  defp block_section(section, blocker_by_position) do
+    case Map.get(blocker_by_position, section.position) do
+      nil -> section
+      reason -> %{section | kind: :blocked, blocked_reason: reason}
     end
   end
 
@@ -1891,45 +1962,46 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     visits
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.with_index(1)
-    |> Enum.map(fn {[from, to], position} ->
-      base = %{
-        position: position,
-        from_occurrence_id: from.occurrence_id,
-        to_occurrence_id: to.occurrence_id,
-        from_stop_id: from.stop_id,
-        to_stop_id: to.stop_id
-      }
+    |> Enum.map(&initial_section(&1, overrides_by_key, shared_by_pair))
+  end
 
-      case Map.get(overrides_by_key, {from.occurrence_id, to.stop_id}) do
-        %AlignmentSegment{from_stop_id: stored_from} = segment
-        when stored_from == from.stop_id ->
-          Map.merge(base, %{
-            kind: :override,
-            blocked_reason: nil,
-            points: segment.points || [],
-            revision: %{segment_id: segment.id, lock_version: segment.lock_version}
-          })
+  defp initial_section({[from, to], position}, overrides_by_key, shared_by_pair) do
+    base = %{
+      position: position,
+      from_occurrence_id: from.occurrence_id,
+      to_occurrence_id: to.occurrence_id,
+      from_stop_id: from.stop_id,
+      to_stop_id: to.stop_id
+    }
 
-        _ ->
-          case Map.get(shared_by_pair, {from.stop_id, to.stop_id}) do
-            %AlignmentSegment{} = segment ->
-              Map.merge(base, %{
-                kind: :shared,
-                blocked_reason: nil,
-                points: segment.points || [],
-                revision: %{segment_id: segment.id, lock_version: segment.lock_version}
-              })
+    case Map.get(overrides_by_key, {from.occurrence_id, to.stop_id}) do
+      %AlignmentSegment{from_stop_id: stored_from} = segment
+      when stored_from == from.stop_id ->
+        section_with_segment(base, segment, :override)
 
-            nil ->
-              Map.merge(base, %{
-                kind: :missing,
-                blocked_reason: nil,
-                points: [],
-                revision: %{segment_id: nil, lock_version: nil}
-              })
-          end
-      end
-    end)
+      _ ->
+        case Map.get(shared_by_pair, {from.stop_id, to.stop_id}) do
+          %AlignmentSegment{} = segment ->
+            section_with_segment(base, segment, :shared)
+
+          nil ->
+            Map.merge(base, %{
+              kind: :missing,
+              blocked_reason: nil,
+              points: [],
+              revision: %{segment_id: nil, lock_version: nil}
+            })
+        end
+    end
+  end
+
+  defp section_with_segment(base, segment, kind) do
+    Map.merge(base, %{
+      kind: kind,
+      blocked_reason: nil,
+      points: segment.points || [],
+      revision: %{segment_id: segment.id, lock_version: segment.lock_version}
+    })
   end
 
   defp build_status(%RoutePattern{} = pattern, sections, digest) do
@@ -2068,23 +2140,26 @@ defmodule GtfsPlanner.Gtfs.Alignments do
            ),
          %RoutePattern{} = pattern <- scoped_review_pattern(pattern_id, audit_context) do
       resolved = resolve(pattern)
-
-      case Draft.normalize(draft_params, resolved) do
-        {:error, reason} ->
-          {:error, reason}
-
-        # The ops carry the validated points step 12 writes, and the
-        # resolved sections carry the stop-pair identity; the review shape
-        # itself stays the step-10 contract.
-        {:ok, ops} ->
-          case build_review(pattern, resolved, ops, audit_context) do
-            {:ok, review} -> {:ok, review, ops, resolved}
-            {:error, _} = error -> error
-          end
-      end
+      normalize_review_draft(pattern, resolved, draft_params, audit_context)
     else
       nil -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_review_draft(pattern, resolved, draft_params, audit_context) do
+    case Draft.normalize(draft_params, resolved) do
+      {:error, reason} ->
+        {:error, reason}
+
+      # The ops carry the validated points step 12 writes, and the
+      # resolved sections carry the stop-pair identity; the review shape
+      # itself stays the step-10 contract.
+      {:ok, ops} ->
+        case build_review(pattern, resolved, ops, audit_context) do
+          {:ok, review} -> {:ok, review, ops, resolved}
+          {:error, _} = error -> error
+        end
     end
   end
 
@@ -2134,11 +2209,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
         review_sections =
           Enum.map(ops, fn op ->
-            section = Map.fetch!(sections_by_position, op.position)
-
             build_review_section(
               op,
-              section,
+              Map.fetch!(sections_by_position, op.position),
               visits_by_position,
               users_by_pair,
               pattern,
@@ -2151,14 +2224,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         plan = if complete?, do: shape_plan(pattern, length(resolved.visits)), else: nil
         blockers = if plan, do: plan.blockers, else: []
 
-        replaced =
-          if plan do
-            Enum.map(plan.replaced, fn entry ->
-              %{shape_id: entry.shape_id, trip_count: entry.trip_count, action: entry.action}
-            end)
-          else
-            []
-          end
+        replaced = review_replaced_shapes(plan)
 
         {:ok,
          %{
@@ -2178,6 +2244,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
            blockers: blockers
          }}
     end
+  end
+
+  defp review_replaced_shapes(nil), do: []
+
+  defp review_replaced_shapes(plan) do
+    Enum.map(plan.replaced, fn entry ->
+      %{shape_id: entry.shape_id, trip_count: entry.trip_count, action: entry.action}
+    end)
   end
 
   defp check_review_bases(ops, sections_by_position) do
@@ -2367,17 +2441,19 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp substitute_review_shared(sections, changed, op) do
-    Enum.map(sections, fn section ->
-      if section.from_stop_id == changed.from_stop_id and section.to_stop_id == changed.to_stop_id and
-           section.kind in [:shared, :missing] do
-        case op.op do
-          :set -> %{section | kind: :shared, blocked_reason: nil, points: op.points}
-          :delete -> %{section | kind: :missing, blocked_reason: nil, points: []}
-        end
-      else
-        section
+    Enum.map(sections, &substitute_review_section(&1, changed, op))
+  end
+
+  defp substitute_review_section(section, changed, op) do
+    if section.from_stop_id == changed.from_stop_id and section.to_stop_id == changed.to_stop_id and
+         section.kind in [:shared, :missing] do
+      case op.op do
+        :set -> %{section | kind: :shared, blocked_reason: nil, points: op.points}
+        :delete -> %{section | kind: :missing, blocked_reason: nil, points: []}
       end
-    end)
+    else
+      section
+    end
   end
 
   # Applies the drafted ops to the resolved sections in memory to decide
@@ -2386,31 +2462,27 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   # or to missing; a `:delete` on shared is missing.
   defp apply_review_ops(sections, ops, fallbacks) do
     ops_by_position = Map.new(ops, &{&1.position, &1})
-
-    Enum.map(sections, fn section ->
-      case Map.get(ops_by_position, section.position) do
-        nil ->
-          section
-
-        %{op: :set} = op ->
-          if section.kind == :override do
-            %{section | kind: :override, blocked_reason: nil, points: op.points}
-          else
-            %{section | kind: :shared, blocked_reason: nil, points: op.points}
-          end
-
-        %{op: op} when op in [:delete, :use_shared] ->
-          if section.kind == :override do
-            case Map.get(fallbacks, {section.from_stop_id, section.to_stop_id}) do
-              nil -> %{section | kind: :missing, blocked_reason: nil, points: []}
-              points -> %{section | kind: :shared, blocked_reason: nil, points: points}
-            end
-          else
-            %{section | kind: :missing, blocked_reason: nil, points: []}
-          end
-      end
-    end)
+    Enum.map(sections, &apply_review_op(&1, Map.get(ops_by_position, &1.position), fallbacks))
   end
+
+  defp apply_review_op(section, nil, _fallbacks), do: section
+
+  defp apply_review_op(%{kind: :override} = section, %{op: :set} = op, _fallbacks),
+    do: %{section | kind: :override, blocked_reason: nil, points: op.points}
+
+  defp apply_review_op(section, %{op: :set} = op, _fallbacks),
+    do: %{section | kind: :shared, blocked_reason: nil, points: op.points}
+
+  defp apply_review_op(%{kind: :override} = section, %{op: op}, fallbacks)
+       when op in [:delete, :use_shared] do
+    case Map.get(fallbacks, {section.from_stop_id, section.to_stop_id}) do
+      nil -> %{section | kind: :missing, blocked_reason: nil, points: []}
+      points -> %{section | kind: :shared, blocked_reason: nil, points: points}
+    end
+  end
+
+  defp apply_review_op(section, %{op: op}, _fallbacks) when op in [:delete, :use_shared],
+    do: %{section | kind: :missing, blocked_reason: nil, points: []}
 
   defp review_fingerprint(pattern, resolved, ops, sections_by_position, review_sections, plan) do
     plan_part =
@@ -2568,47 +2640,71 @@ defmodule GtfsPlanner.Gtfs.Alignments do
           {:apply_raised, error, __STACKTRACE__}
       end
 
-    case result do
-      {:ok, applied} ->
-        {:ok, applied}
+    handle_apply_result(
+      result,
+      pattern_id,
+      draft_params,
+      choices,
+      fingerprint,
+      audit_context,
+      attempts
+    )
+  end
 
-      {:error, @apply_retry_marker} ->
-        if attempts > 1 do
-          apply_with_retries(
-            pattern_id,
-            draft_params,
-            choices,
-            fingerprint,
-            audit_context,
-            attempts - 1
-          )
-        else
-          {:error, :busy}
-        end
+  defp handle_apply_result(
+         {:ok, applied},
+         _pattern_id,
+         _draft,
+         _choices,
+         _fingerprint,
+         _audit,
+         _attempts
+       ),
+       do: {:ok, applied}
 
-      {:error, _} = error ->
-        error
+  defp handle_apply_result(
+         {:error, @apply_retry_marker},
+         pattern_id,
+         draft,
+         choices,
+         fingerprint,
+         audit,
+         attempts
+       ),
+       do: retry_apply(pattern_id, draft, choices, fingerprint, audit, attempts)
 
-      {:apply_raised, error, stacktrace} ->
-        cond do
-          apply_retryable?(error) and attempts > 1 ->
-            apply_with_retries(
-              pattern_id,
-              draft_params,
-              choices,
-              fingerprint,
-              audit_context,
-              attempts - 1
-            )
+  defp handle_apply_result(
+         {:error, _} = error,
+         _pattern_id,
+         _draft,
+         _choices,
+         _fingerprint,
+         _audit,
+         _attempts
+       ),
+       do: error
 
-          apply_retryable?(error) ->
-            {:error, :busy}
-
-          true ->
-            reraise(error, stacktrace)
-        end
+  defp handle_apply_result(
+         {:apply_raised, error, stacktrace},
+         pattern_id,
+         draft,
+         choices,
+         fingerprint,
+         audit,
+         attempts
+       ) do
+    if apply_retryable?(error) do
+      retry_apply(pattern_id, draft, choices, fingerprint, audit, attempts)
+    else
+      reraise(error, stacktrace)
     end
   end
+
+  defp retry_apply(pattern_id, draft, choices, fingerprint, audit, attempts) when attempts > 1,
+    do: apply_with_retries(pattern_id, draft, choices, fingerprint, audit, attempts - 1)
+
+  defp retry_apply(_pattern_id, _draft, _choices, _fingerprint, _audit, _attempts),
+    do: {:error, :busy}
 
   # A SERIALIZABLE race surfaces as 40001/40P01, as a unique violation on
   # one of the four apply indexes, or as a stale optimistic lock on the

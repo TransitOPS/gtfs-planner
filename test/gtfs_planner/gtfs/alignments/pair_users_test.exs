@@ -5,8 +5,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.PairUsersTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Repo
 
   defp insert_override(organization, version, occurrence, from_id, to_id) do

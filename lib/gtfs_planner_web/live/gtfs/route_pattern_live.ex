@@ -3154,19 +3154,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         do: dirty?,
         else: details_dirty?(socket, socket.assigns.details_params)
 
-    dirty? =
-      dirty? or socket.assigns.stops_dirty? or
-        alignment_dirty?(socket) or
-        map_size(socket.assigns[:alignment_suggestions] || %{}) > 0 or
-        (socket.assigns.live_action == :new and socket.assigns.staged_occurrences != []) or
-        map_size(socket.assigns.timing_edits) > 0 or
-        map_size(socket.assigns.timing_headsign_edits) > 0
+    dirty? = dirty? or other_changes_dirty?(socket)
 
     if socket.assigns.dirty? == dirty? do
       socket
     else
       push_event(assign(socket, :dirty?, dirty?), "route_pattern_dirty", %{dirty: dirty?})
     end
+  end
+
+  defp other_changes_dirty?(socket) do
+    socket.assigns.stops_dirty? or alignment_dirty?(socket) or
+      map_size(socket.assigns[:alignment_suggestions] || %{}) > 0 or
+      (socket.assigns.live_action == :new and socket.assigns.staged_occurrences != []) or
+      map_size(socket.assigns.timing_edits) > 0 or
+      map_size(socket.assigns.timing_headsign_edits) > 0
   end
 
   # An alignment draft is dirty while the hook reports dirty positions.

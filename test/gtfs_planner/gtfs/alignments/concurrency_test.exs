@@ -18,8 +18,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction

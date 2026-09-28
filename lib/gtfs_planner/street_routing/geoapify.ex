@@ -36,22 +36,28 @@ defmodule GtfsPlanner.StreetRouting.Geoapify do
 
   defp do_route(waypoints) when is_list(waypoints) do
     if valid_waypoints?(waypoints) do
-      with {:ok, key} <- api_key() do
-        waypoints
-        |> chunk_waypoints()
-        |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, acc} ->
-          case request_chunk(chunk, key) do
-            {:ok, legs} -> {:cont, {:ok, acc ++ legs}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
-      end
+      route_valid_waypoints(waypoints)
     else
       {:error, :invalid_response}
     end
   end
 
   defp do_route(_waypoints), do: {:error, :invalid_response}
+
+  defp route_valid_waypoints(waypoints) do
+    with {:ok, key} <- api_key() do
+      waypoints
+      |> chunk_waypoints()
+      |> Enum.reduce_while({:ok, []}, &append_route_chunk(&1, &2, key))
+    end
+  end
+
+  defp append_route_chunk(chunk, {:ok, acc}, key) do
+    case request_chunk(chunk, key) do
+      {:ok, legs} -> {:cont, {:ok, acc ++ legs}}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
 
   defp valid_waypoints?(waypoints) do
     length(waypoints) >= 2 and Enum.all?(waypoints, &valid_waypoint?/1)

@@ -5,8 +5,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.ResolveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Repo
 
   defp stop_with_coords(organization, version, stop_id, lat_s, lon_s) do

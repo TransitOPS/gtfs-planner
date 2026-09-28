@@ -85,19 +85,20 @@ defmodule GtfsPlanner.Gtfs.AlignmentSegment do
           _ -> raw
         end
 
-      cond do
-        not is_list(points) ->
-          add_error(changeset, :points, "must be a list of [lon, lat] pairs")
+      validate_point_list(changeset, points)
+    end
+  end
 
-        length(points) > @max_points ->
-          add_error(changeset, :points, "must have at most #{@max_points} points")
+  defp validate_point_list(changeset, points) when not is_list(points),
+    do: add_error(changeset, :points, "must be a list of [lon, lat] pairs")
 
-        true ->
-          case normalize_points(points) do
-            {:ok, normalized} -> put_change(changeset, :points, normalized)
-            {:error, message} -> add_error(changeset, :points, message)
-          end
-      end
+  defp validate_point_list(changeset, points) when length(points) > @max_points,
+    do: add_error(changeset, :points, "must have at most #{@max_points} points")
+
+  defp validate_point_list(changeset, points) do
+    case normalize_points(points) do
+      {:ok, normalized} -> put_change(changeset, :points, normalized)
+      {:error, message} -> add_error(changeset, :points, message)
     end
   end
 

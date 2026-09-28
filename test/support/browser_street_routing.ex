@@ -25,28 +25,32 @@ defmodule GtfsPlanner.BrowserStreetRouting do
 
   def route(waypoints, _opts) when is_list(waypoints) do
     if valid_waypoints?(waypoints) do
-      if Enum.any?(waypoints, fn {lat, _lon} -> lat == @unroutable_latitude end) do
-        {:error, :no_route}
-      else
-        legs =
-          waypoints
-          |> Enum.chunk_every(2, 1, :discard)
-          |> Enum.map(fn [{lat1, lon1}, {lat2, lon2}] ->
-            [
-              [lon1, lat1],
-              [(lon1 + lon2) / 2 + @midpoint_lon_offset, (lat1 + lat2) / 2],
-              [lon2, lat2]
-            ]
-          end)
-
-        {:ok, legs}
-      end
+      route_valid_waypoints(waypoints)
     else
       {:error, :invalid_response}
     end
   end
 
   def route(_waypoints, _opts), do: {:error, :invalid_response}
+
+  defp route_valid_waypoints(waypoints) do
+    if Enum.any?(waypoints, fn {lat, _lon} -> lat == @unroutable_latitude end) do
+      {:error, :no_route}
+    else
+      legs =
+        waypoints
+        |> Enum.chunk_every(2, 1, :discard)
+        |> Enum.map(fn [{lat1, lon1}, {lat2, lon2}] ->
+          [
+            [lon1, lat1],
+            [(lon1 + lon2) / 2 + @midpoint_lon_offset, (lat1 + lat2) / 2],
+            [lon2, lat2]
+          ]
+        end)
+
+      {:ok, legs}
+    end
+  end
 
   defp valid_waypoints?(waypoints) do
     length(waypoints) >= 2 and

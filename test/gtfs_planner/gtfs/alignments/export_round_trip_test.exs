@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Export

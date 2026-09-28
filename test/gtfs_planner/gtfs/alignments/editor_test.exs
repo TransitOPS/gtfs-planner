@@ -6,9 +6,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.EditorTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
