@@ -107,7 +107,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       assert attribute(doc(view), "#transfer-check-#{scoped.id}", "checked") != nil
       assert attribute(doc(view), "#transfer-check-#{plain.id}", "checked") != nil
       assert text_of(doc(view), "#transfers-count") == "2 selected · this version"
-      assert has_element?(view, "#transfers-select-all", "Select all shown")
+      assert has_element?(view, "#transfers-select-all")
+      assert text_of(doc(view), "label:has(#transfers-select-all)") == "Select all shown"
       assert attribute(doc(view), "#transfers-select-all", "checked") == nil
       assert has_element?(view, "#transfers-delete-selected", "Delete selected")
       refute has_element?(view, "#transfers-direction-hint")
@@ -457,7 +458,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      assert text_of(doc(view), "#transfers-count") == "50 rules"
+      # The count bar names the version's whole list, not the page's slice of it:
+      # "Select all shown" and the pagination beside it carry the page's extent.
+      assert text_of(doc(view), "#transfers-count") == "51 rules"
 
       first = hd(row_ids(doc(view))) |> String.replace_prefix("transfers-", "")
 
@@ -468,7 +471,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?page=2")
       refute has_element?(view, "#transfers-delete-selected")
-      assert text_of(doc(view), "#transfers-count") == "1 rule"
+      # The checked rules are gone, so the count bar is back to the whole list.
+      assert text_of(doc(view), "#transfers-count") == "51 rules"
       assert length(rules) == 51
     end
 

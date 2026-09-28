@@ -157,7 +157,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
     end
 
     test "the in-seat view offers no create control and no editor", ctx do
-      in_seat!(ctx, %{from_stop_id: "CEN", to_stop_id: "CEN", transfer_type: 4})
+      in_seat!(ctx, %{
+        from_stop_id: "CEN",
+        to_stop_id: "CEN",
+        from_trip_id: "12-0815",
+        to_trip_id: "24-0840",
+        transfer_type: 4
+      })
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
 
@@ -178,20 +184,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
       view |> element("#transfers-first-use-create") |> render_click()
 
-      # The widget pushes this event as the operator types, then asks the page for
-      # the options to show.
-      render_hook(element(view, "#transfer_from_stop_id_text_input"), "change", %{
-        "text" => "central"
-      })
+      # The widget's own hook opens the dropdown on a text change, then the widget
+      # asks the page for the options to show.
+      render_hook(element(view, "#transfer-from-stop"), "change", %{"text" => "central"})
 
       render_hook(view, "live_select_change", %{"text" => "central", "id" => "transfer-from-stop"})
 
-      # CEN-E is an entrance: a rule cannot name it, so the search never offers it
-      # (R2).
+      # `Gtfs.search_transfer_stops/3` answers in name then ID order, so the two
+      # platforms precede the station they belong to. CEN-E is an entrance: a rule
+      # cannot name it, so the search never offers it (R2).
       assert option_labels(doc(view), "#transfer-from-stop li") == [
-               "Central Station",
                "Central · Bay A",
-               "Central · Bay C"
+               "Central · Bay C",
+               "Central Station"
              ]
 
       refute render(view) =~ "Central · Main entrance"
@@ -303,7 +308,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       assert text_of(document, "#transfer-draft-preview") =~ "Route 6"
       refute text_of(document, "#transfer-draft-preview") =~ "Trip 12-0815"
-      assert has_element?(view, "#transfer-from-trip option[value=''][selected]")
+      # A nil selector value leaves `options_for_select/2` with nothing to mark, so
+      # the empty option carries no `selected` attribute; it is still the select's
+      # value because it comes first. The route that replaced the cleared trip is
+      # the draft's own value.
+      assert has_element?(view, "#transfer-from-trip option[value='']")
       assert has_element?(view, "#transfer-from-route option[value='6'][selected]")
 
       # A changed stop clears that side's route and trip.
@@ -335,8 +344,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       assert text_of(document, "#transfer-draft-preview") =~ "All arriving routes"
       assert text_of(document, "#transfer-draft-preview") =~ "All departing routes"
       refute text_of(document, "#transfer-draft-preview") =~ "Trip 12-0815"
-      assert has_element?(view, "#transfer-from-route option[value=''][selected]")
-      assert has_element?(view, "#transfer-to-route option[value=''][selected]")
+      assert has_element?(view, "#transfer-from-route option[value='']")
+      assert has_element?(view, "#transfer-to-route option[value='']")
       refute has_element?(view, "#transfer-from-trip")
     end
   end
@@ -416,7 +425,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       # The draft is still open with what was entered.
       assert has_element?(view, "#transfer-editor")
       assert has_element?(view, "#transfer-from-route option[value='12'][selected]")
-      assert has_element?(view, "#transfer-to-route option[value=''][selected]")
+      assert has_element?(view, "#transfer-to-route option[value='']")
       assert has_element?(view, "#transfer-dirty")
     end
 
@@ -451,16 +460,22 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       assert text_of(document, "#transfer-to-stop-hint") == "Platform C · Central Station"
 
       # A trip whose route is right but which never stops at the chosen stop is
-      # refused on the trip itself.
-      trip_draft = %{
+      # refused on the trip itself. A scope change drops every selector answered for
+      # the previous scope, so the scope moves first and the route and trip after it,
+      # as the browser drives it.
+      entered = %{
         "from_stop_id" => "MKT",
         "to_stop_id" => "HBR",
-        "from_route_id" => "6",
-        "from_trip_id" => "6-0815",
         "transfer_type" => "0"
       }
 
-      change_draft(view, ["scope"], :custom, trip_draft)
+      change_draft(view, ["scope"], :custom, entered)
+
+      routed = Map.put(entered, "from_route_id", "6")
+      change_draft(view, ["transfer", "from_route_id"], :custom, routed)
+
+      trip_draft = Map.put(routed, "from_trip_id", "6-0815")
+      change_draft(view, ["transfer", "from_trip_id"], :custom, trip_draft)
       save_draft(view, :custom, trip_draft)
 
       assert text_of(doc(view), "#transfer-from-trip-error") == "This trip doesn't stop here"
@@ -552,17 +567,32 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
     end
 
     test "a duplicate of an in-seat record points at the in-seat view", ctx do
-      in_seat!(ctx, %{from_stop_id: "CEN", to_stop_id: "CEN", transfer_type: 4})
+      # A type 4/5 row always holds both trips, and the six-column key is what the
+      # unique index compares, so the record and the draft name the same stops and
+      # the same two trips.
+      in_seat!(ctx, %{
+        from_stop_id: "CEN",
+        to_stop_id: "CEN",
+        from_trip_id: "12-0815",
+        to_trip_id: "24-0840",
+        transfer_type: 4
+      })
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
       view |> element("#transfers-create") |> render_click()
 
-      save_draft(view, :stops, %{
+      state = %{
         "from_stop_id" => "CEN",
         "to_stop_id" => "CEN",
         "transfer_type" => "2",
         "min_transfer_time" => "180"
-      })
+      }
+
+      change_draft(view, ["scope"], :custom, state)
+
+      draft = Map.put(state, "from_trip_id", "12-0815") |> Map.put("to_trip_id", "24-0840")
+      change_draft(view, ["transfer", "from_trip_id"], :custom, draft)
+      save_draft(view, :custom, draft)
 
       document = doc(view)
 

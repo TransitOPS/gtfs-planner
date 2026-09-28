@@ -79,8 +79,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert inspector =~ "Central · Bay C"
       assert inspector =~ "Route 24"
 
-      assert inspector =~
-               "Allow at least 3m between arrival and departure, including walking and a buffer."
+      # The template renders the sentence across two source lines, so the inspector's
+      # text holds the line break between the two halves; each half is asserted where
+      # it is written.
+      assert inspector =~ "Allow at least 3m"
+      assert inspector =~ "between arrival and departure, including walking and a buffer."
 
       refute has_element?(view, "#transfer-inspector-empty")
     end

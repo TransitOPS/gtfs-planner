@@ -50,7 +50,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
   describe "the toolbar" do
     test "the disclosure starts closed and the toggle reveals the filter fields", ctx do
-      rule!(ctx, %{from_stop_id: "CEN-A", to_stop_id: "HBR", transfer_type: 0})
+      rule!(ctx, %{
+        from_stop_id: "CEN-A",
+        to_stop_id: "HBR",
+        from_route_id: "12",
+        transfer_type: 0
+      })
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
@@ -281,9 +286,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       })
       |> render_change()
 
+      # The page's own patch carries the params in the order
+      # `sort_verified_routes_query_params` gives them in the test env, so this
+      # expectation is written in that canonical order.
       assert_patched(
         view,
-        ~p"/gtfs/#{ctx.version.id}/transfers?stop=CEN&route=24&type=2&attention=1"
+        ~p"/gtfs/#{ctx.version.id}/transfers?attention=1&route=24&stop=CEN&type=2"
       )
 
       assert row_ids(doc(view)) == ["transfers-#{matching.id}"]
@@ -291,7 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       # The same URL renders the same rows and the same form values, so the list
       # and the URL cannot disagree about the filter.
-      url = ~p"/gtfs/#{ctx.version.id}/transfers?stop=CEN&route=24&type=2&attention=1"
+      url = ~p"/gtfs/#{ctx.version.id}/transfers?attention=1&route=24&stop=CEN&type=2"
       {:ok, same, _html} = live(ctx.conn, url)
 
       assert row_ids(doc(same)) == ["transfers-#{matching.id}"]
@@ -305,7 +313,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       assert_patched(
         same,
-        ~p"/gtfs/#{ctx.version.id}/transfers?q=harbor&stop=CEN&route=24&type=2&attention=1"
+        ~p"/gtfs/#{ctx.version.id}/transfers?attention=1&q=harbor&route=24&stop=CEN&type=2"
       )
 
       assert row_ids(doc(same)) == ["transfers-#{matching.id}"]
@@ -353,7 +361,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       refute has_element?(view, "#transfer-filter-type option[value='4']")
       refute has_element?(view, "#transfer-filter-attention[checked]")
-      assert has_element?(view, "#transfer-filter-type option[value=''][selected]", "All types")
+      # A nil filter value leaves `options_for_select/2` with nothing to mark, so
+      # the empty option carries no `selected` attribute; it is still the select's
+      # value because it comes first.
+      assert has_element?(view, "#transfer-filter-type option[value='']", "All types")
       assert text_of(doc(view), "#transfers-filters-toggle") == "Filters"
     end
 

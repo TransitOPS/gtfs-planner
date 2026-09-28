@@ -35,10 +35,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
   alias GtfsPlanner.Accounts
 
-  # Every event the in-seat view may reach: the chips, the list's own reads and
-  # the URL patches they make. A write event here would mean this view can reach
-  # a mutation, which R1 forbids.
-  @read_only_events ~w(switch_view sort select_rule toggle_filters clear_filters search filter paginate)
+  # Every event the in-seat view may reach: the chips, the list's own reads, the
+  # URL patches they make, and the two commands the always-rendered discard
+  # dialog's own buttons send (they only close the dialog). A write event here
+  # would mean this view can reach a mutation, which R1 forbids.
+  @read_only_events ~w(switch_view sort select_rule toggle_filters clear_filters search filter paginate keep_editing discard_changes)
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -431,7 +432,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       document = doc(view)
 
       assert text_of(document, "#transfer-inspector > p") == "In-seat record"
-      assert text_of(document, "#transfer-inspector > h2") == "Stay on board"
+      assert text_of(document, "#transfer-inspector h2") == "Stay on board"
 
       inspector = text_of(document, "#transfer-inspector")
 
@@ -461,8 +462,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
       view |> element("#transfer-select-#{alight.id}") |> render_click()
 
-      assert_patched(view, transfers_path(ctx.version, view: "in_seat", rule: alight.id))
-      assert text_of(doc(view), "#transfer-inspector > h2") == "Alight & reboard"
+      assert_patched(view, transfers_path(ctx.version, rule: alight.id, view: "in_seat"))
+      assert text_of(doc(view), "#transfer-inspector h2") == "Alight & reboard"
 
       assert text_of(doc(view), "#transfer-inspector") =~
                "Riders must get off and board again for the next trip."
@@ -559,11 +560,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
     |> doc()
     |> LazyHTML.query("#transfers-page [phx-click]")
     |> Enum.flat_map(&LazyHTML.attribute(&1, "phx-click"))
+    # A `phx-click` holding a JS command list is a client-side command, not a server
+    # event, so no write can reach the server through it.
+    |> Enum.reject(&String.starts_with?(&1, "["))
     |> Enum.uniq()
   end
 
+  # `config/test.exs` sorts verified-route query params
+  # (`sort_verified_routes_query_params: true`), so the expected path carries them
+  # sorted by key, exactly as the page's own `~p` patch renders them.
   defp transfers_path(version, params \\ []) do
-    query = if params == [], do: "", else: "?" <> URI.encode_query(params)
+    query = if params == [], do: "", else: "?" <> URI.encode_query(Enum.sort(params))
     "/gtfs/#{version.id}/transfers#{query}"
   end
 

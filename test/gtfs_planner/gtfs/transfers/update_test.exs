@@ -21,7 +21,12 @@ defmodule GtfsPlanner.Gtfs.Transfers.UpdateTest do
   The focused command is deferred to branch review:
   `MIX_TEST_PARTITION=_xfer15 mix test test/gtfs_planner/gtfs/transfers/update_test.exs`.
   """
-  use GtfsPlanner.DataCase, async: true
+  # The audit case below installs a constraint trigger on `change_logs`, and creating a
+  # trigger takes SHARE ROW EXCLUSIVE on that table. An async module would hold that lock
+  # for the life of its sandbox transaction and stall every concurrently running test that
+  # writes a change log, so the module runs in the synchronous group like the identical
+  # cases in create_test.exs and delete_test.exs.
+  use GtfsPlanner.DataCase, async: false
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures

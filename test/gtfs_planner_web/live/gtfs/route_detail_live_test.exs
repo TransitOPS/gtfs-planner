@@ -403,7 +403,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       call_count = :atomics.new(1, [])
 
       stub(CatalogReadAdapterMock, :fetch_route, fn org, ver, route_id ->
-        if :atomics.add_get(call_count, 1, 1) <= 1 do
+        # `live/2` runs `handle_params/3` once for the static render and once for
+        # the connected one, as the retry case above records.
+        if :atomics.add_get(call_count, 1, 1) <= 2 do
           {:error, :unavailable}
         else
           CatalogReadAdapter.Repo.fetch_route(org, ver, route_id)

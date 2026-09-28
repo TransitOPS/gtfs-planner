@@ -308,7 +308,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
       view |> element("#transfers-create") |> render_click()
-      change_draft(view, "scope", :routes, %{"from_stop_id" => "MKT", "from_route_id" => "12"})
+
+      # A scope change drops every selector answered for the previous scope, so the
+      # route is chosen after the scope is set.
+      change_draft(view, "scope", :routes, %{"from_stop_id" => "MKT"})
+
+      change_draft(view, "from_route_id", :routes, %{
+        "from_stop_id" => "MKT",
+        "from_route_id" => "12"
+      })
 
       assert has_element?(view, "#transfer-from-route option[value='12'][selected]")
 

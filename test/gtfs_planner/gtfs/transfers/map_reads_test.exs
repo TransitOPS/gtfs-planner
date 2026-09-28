@@ -254,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.MapReadsTest do
                })
 
       assert length(stops) == 200
-      assert Enum.map(stops, & &1.stop_name) == Enum.map(1..200, &box_name/1)
+      assert Enum.map(stops, & &1.name) == Enum.map(1..200, &box_name/1)
       assert Enum.all?(stops, &(&1.lat == 41.0 and &1.lon == -74.0))
     end
   end
