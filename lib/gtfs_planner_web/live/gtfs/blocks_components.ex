@@ -3,8 +3,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   Function components for Operations › Blocks.
 
   The page's day-type scope, whole-day summary, the paged timeline, the List
-  view, the unassigned pool, the Service dates, Checks and Peak drawers, the
-  “not plotted” list and the page states live here so
+  view, the unassigned pool, the Service dates, Checks, Peak and Minimum layover
+  drawers, the “not plotted” list and the page states live here so
   `GtfsPlannerWeb.Gtfs.BlocksLive` stays a small state owner. Every component
   takes the pieces of the loaded day it prints, never the whole day, so
   `render/1` in the LiveView never reaches into the server-only day assign
@@ -26,17 +26,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   @doc """
   Renders the day-type scope: the day-type select, the route filter, “Problems
-  only”, the Service dates button and the Checks button.
+  only”, the Service dates link and the Minimum layover button.
 
   The day select posts through its own form (`select_day`) so a day change is
   never mistaken for a route filter; the route and status controls post through
   the `filter` form. The scope describes the whole day type, so neither control
-  changes the whole-day counts.
+  changes the whole-day counts. The Minimum layover button prints the stored
+  value the day load read, so a save shows the new one on the next render.
   """
   attr :day_types, :list, required: true
   attr :day_type, :map, required: true
   attr :routes, :map, required: true
   attr :state, :map, required: true
+  attr :min_layover_minutes, :integer, required: true
 
   def scope_header(assigns) do
     assigns = assign(assigns, :route_options, route_options(assigns.routes))
@@ -75,7 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </label>
       </form>
 
-      <div class="ml-auto">
+      <div class="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
         <button
           id="blocks-service-dates"
           type="button"
@@ -84,6 +86,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           class="link link-primary min-h-11"
         >
           Service dates
+        </button>
+        <button
+          id="blocks-min-layover"
+          type="button"
+          phx-click="open_drawer"
+          phx-value-key="layover"
+          class="btn btn-sm min-h-11"
+        >
+          Minimum layover · {@min_layover_minutes} min
         </button>
       </div>
     </div>
@@ -444,6 +455,69 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         )}. Trips without
         usable timing are also left out, and this is not a fleet requirement.
       </p>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the Minimum layover drawer (AC-28, D5): the one value every short
+  layover warning on this version is measured against.
+
+  The field is the context's own changeset, so the label, the sentence the value
+  applies to and the field error all sit together and the error text is the
+  context's (the page never re-derives the 0–120 rule). The form validates as the
+  reader types — the fixed event list names no separate validation event, so its
+  `phx-change` is the drawer's own `open_drawer` event, which re-derives this
+  drawer's state from the payload (CR-8) — and the submit saves through
+  `Gtfs.update_blocking_settings/3`. Closing the drawer returns focus to the
+  header button that opened it.
+  """
+  attr :open, :boolean, required: true
+  attr :form, :any, required: true
+  attr :error, :string, default: nil
+
+  def layover_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="layover-drawer"
+      open={@open}
+      title="Minimum layover"
+      initial_focus={:first_field}
+      initial_focus_id="layover-minutes"
+      return_focus_id="blocks-min-layover"
+    >
+      <.form
+        for={@form}
+        id="layover-form"
+        novalidate
+        phx-change="open_drawer"
+        phx-debounce="200"
+        phx-submit="save_layover"
+        class="space-y-2"
+      >
+        <.input
+          id="layover-minutes"
+          field={@form[:min_layover_minutes]}
+          type="number"
+          min={0}
+          max={120}
+          step={1}
+          label="Minimum layover (minutes)"
+          help="Flag connections shorter than this value. It applies to every day type in this version."
+          class="input input-lg w-full max-w-40 block"
+        />
+
+        <p :if={@error} id="layover-error" role="alert" class="text-sm text-error">{@error}</p>
+
+        <div class="flex flex-wrap items-center gap-3 pt-2">
+          <button type="submit" id="layover-submit" class="btn btn-primary min-h-11">
+            Save minimum
+          </button>
+          <button type="button" id="layover-cancel" phx-click="close_drawer" class="btn min-h-11">
+            Cancel
+          </button>
+        </div>
+      </.form>
     </.drawer>
     """
   end

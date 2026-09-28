@@ -4,9 +4,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   Blocks shows which trips one vehicle works in sequence for a day type, and it
   is the only place a block is edited. This page owns the day-type scope, the
-  whole-day count strip, the Service dates, Checks and Peak drawers and every
-  page state; the timeline, the List view, the unassigned pool and the trip, gap
-  and block drawers render inside the same page.
+  whole-day count strip, the Service dates, Checks, Peak and Minimum layover
+  drawers and every page state; the timeline, the List view, the unassigned pool
+  and the trip, gap and block drawers render inside the same page.
 
   The page mounts through the ordinary `:gtfs_routes` session, which decides
   whether a request reaches it; the editor guard is declared here because a
@@ -53,6 +53,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @drawers %{"service_dates" => :service_dates, "checks" => :checks, "peak" => :peak}
+
+  # The settings save keeps the reader's value when the save is refused, so the
+  # sentence names the value rather than a generic failure.
+  @layover_save_failed "The minimum could not be saved. Your value is retained. Try again."
 
   @sort_keys %{
     "block" => :block,
@@ -102,6 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:assign, nil)
      |> assign(:review, nil)
      |> assign(:review_stale?, false)
+     |> assign(:layover, %{params: %{}, error: nil})
      |> assign_empty_derived()}
   end
 
@@ -349,6 +354,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, assign(socket, review: nil, review_stale?: false)}
   end
 
+  # The Minimum layover drawer's field sends its change event through the same
+  # fixed event name as its opener (CR-8): the value the reader typed is kept and
+  # re-validated, so the field error appears before a save rather than only after
+  # one (AC-28). The opener itself sends only a key and starts from the stored
+  # value, so re-opening the drawer never shows a previous refusal.
+  def handle_event("open_drawer", %{"layover" => values} = params, socket) when is_map(values) do
+    {:noreply, put_layover(socket, layover_params(params), nil)}
+  end
+
   def handle_event("open_drawer", %{"key" => key}, socket) do
     case key do
       "unassigned" ->
@@ -357,6 +371,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         else
           {:noreply, socket}
         end
+
+      "layover" ->
+        {:noreply, socket |> put_layover(%{}, nil) |> assign(:open_drawer, :layover)}
 
       key ->
         case Map.fetch(@drawers, key) do
@@ -386,6 +403,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       patch(socket, %{trip: nil, gap: nil, block: nil}, clear_command: true)
     else
       {:noreply, socket}
+    end
+  end
+
+  # The one write in the Minimum layover drawer (AC-28). The drawer only exists
+  # on a loaded day type and only its own field is read, so a submit from another
+  # page state or without a value is not a save. `save_layover/2` then re-reads
+  # the role first, like `run_command/3` (AC-31), lets the context validate the
+  # value rather than re-deriving that here, and reloads the day so the layover
+  # warnings and the Problems count use the new minimum (AC-5). A field error
+  # keeps the drawer and the reader's value; a version that is no longer
+  # published keeps both with the drawer's own sentence.
+  def handle_event("save_layover", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_layover", params, socket) do
+    case layover_params(params) do
+      %{"min_layover_minutes" => _value} = attrs -> save_layover(socket, attrs)
+      # The field is the whole form, so a submit that carries no value at all (a
+      # crafted event, or a payload of another shape) is not a save.
+      _no_value -> {:noreply, socket}
     end
   end
 
@@ -1386,6 +1423,74 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     )
   end
 
+  # --- the minimum-layover drawer (step 28) ----------------------------------
+
+  # The drawer's transient state: the value the reader typed (or `%{}` for the
+  # stored one) and a drawer-level sentence for a save the changeset cannot
+  # explain. The form itself is the context's own changeset, so the page never
+  # re-derives `Blocking`'s validation (AC-9).
+  defp put_layover(socket, params, error),
+    do: assign(socket, :layover, %{params: params, error: error})
+
+  # Only the one stored value is read from the drawer's form. A crafted payload
+  # cannot name an organization or a version (those come from the socket, CR-4),
+  # and anything but a map is ignored rather than passed to the context.
+  defp layover_params(%{"layover" => values}) when is_map(values),
+    do: Map.take(values, ["min_layover_minutes"])
+
+  defp layover_params(_params), do: %{}
+
+  # The form the drawer renders: the stored minimum with the reader's own value
+  # on top, so an out-of-range value keeps both the input and the context's field
+  # error (AC-28). The `:validate` action is what makes an Ecto changeset render
+  # its own field errors — without it `Phoenix.HTML.FormData.Ecto.Changeset`
+  # drops every error — and the value the reader sent stays in the field.
+  defp layover_form(assigns) do
+    to_form(
+      Blocking.change_settings(
+        %{min_layover_minutes: assigns.min_layover_minutes},
+        assigns.layover.params
+      ),
+      as: :layover,
+      action: :validate
+    )
+  end
+
+  # The save itself: one scoped write through the context's own upsert, which
+  # decides whether the version is publishable and whether the value is a whole
+  # number from 0 to 120 (AC-9). Only its result decides what the page shows.
+  defp save_layover(socket, attrs) do
+    if editor_access?(socket) do
+      case Gtfs.update_blocking_settings(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             attrs
+           ) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_layover(%{}, nil)
+           |> assign(:open_drawer, nil)
+           |> load_day()
+           |> resolve_drawers()
+           |> put_flash(:info, "Minimum layover saved.")}
+
+        # The context's changeset carries the field error: the drawer shows it
+        # under the input and the value the reader typed stays in the field.
+        {:error, %Ecto.Changeset{}} ->
+          {:noreply, put_layover(socket, attrs, nil)}
+
+        {:error, _reason} ->
+          {:noreply, put_layover(socket, attrs, @layover_save_failed)}
+      end
+    else
+      {:noreply,
+       socket
+       |> put_layover(attrs, nil)
+       |> put_flash(:error, @permission_message)}
+    end
+  end
+
   # --- editor authority ------------------------------------------------------
 
   # The role is re-read from the membership on every mutating event, so a role
@@ -1478,6 +1583,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       trip_labels: trip_labels(day),
       findings_by_trip: findings_by_trip(day.findings),
       destination_blocks: Enum.map(day.blocks, &destination_option/1),
+      min_layover_minutes: day.settings.min_layover_minutes,
       untimed_trips: Enum.filter(day.unplottable, & &1.block_id)
     )
   end
@@ -1503,6 +1609,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       trip_labels: %{},
       findings_by_trip: %{},
       destination_blocks: [],
+      min_layover_minutes: nil,
       untimed_trips: [],
       selected_trips: [],
       pool_page_ids: MapSet.new(),
@@ -1538,6 +1645,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       assigns
       |> assign(:assign_form, assign_form(assigns.assign))
       |> assign(:block_action_form, block_action_form(assigns.block_action))
+      |> assign(:layover_form, layover_form(assigns))
       |> assign(:destination_options, options)
       |> assign(:destination_total, total)
       |> assign(:merge_options, merge_options)
@@ -1612,6 +1720,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   day_type={@day_type}
                   routes={@routes}
                   state={@state}
+                  min_layover_minutes={@min_layover_minutes}
                 />
 
                 <.callout
@@ -1661,6 +1770,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   peak={@peak}
                   bins={@bins}
                   axis={@axis}
+                />
+                <BlocksComponents.layover_drawer
+                  open={@open_drawer == :layover}
+                  form={@layover_form}
+                  error={@layover.error}
                 />
 
                 <%= case @trip_view do %>
