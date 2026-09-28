@@ -98,6 +98,14 @@ const AGENCY_DELETE_VERSION = "Browser Agency Delete Version";
 // action cannot be used (AC-19).
 const SINGLE_AGENCY_VERSION = "Browser E2E Version";
 
+// The New route drawer block's own evidence folder (EV-27).
+const NEW_ROUTE_CAPTURE_DIR =
+  process.env.ROUTES_NEW_ROUTE_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/routes-new-route",
+  );
+
 // The delete block's own evidence folder (EV-25).
 const DELETE_CAPTURE_DIR =
   process.env.AGENCIES_DELETE_CAPTURE_DIR ||
@@ -1286,5 +1294,115 @@ test.describe("@agencies-delete", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, DELETE_CAPTURE_DIR, "delete-disabled-1280");
+  });
+});
+
+// The New route drawer's required, preselected Agency field and the route it
+// creates through the version-locked context call (EV-27; step 20).
+//
+// Declared last on purpose: it adds one route to the same seeded "Browser
+// Agencies Version" the `@agencies-list` block reads its route counts from, and
+// the suite runs one worker with no retries, so the declared order is the
+// seeding order (CR-10). The route ID carries a timestamp so a repeat run
+// against a database that was not reset cannot collide with this one.
+//
+// Captures land in this block's own evidence folder as
+// `new-route-drawer-{1280,375}.png` and `new-route-created-1280.png`.
+test.describe("@routes-new-route", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("creates a route from the agency-filtered list with the agency preselected", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const agenciesId = await versionId(page, AGENCIES_VERSION);
+    await page.goto(`/gtfs/${agenciesId}/routes?agency_id=HBR`);
+    await page.waitForSelector("#routes");
+    await waitForLiveView(page);
+
+    // Harbor Shuttle's two seeded routes are the baseline this journey adds one
+    // to, and the filter is really applied.
+    await expect(page.locator("#routes tr")).toHaveCount(2);
+    await expect(
+      page.locator("#routes tr td[data-label='Route ID']").first(),
+    ).toContainText("HBR_");
+
+    await page.click("#new-route-trigger");
+
+    const overlay = page.locator("#new-route-drawer-overlay");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+
+    // `ds-drawer-slide-in` (assets/css/app.css) moves the panel 100% of its
+    // width over 300ms with a forwards fill, so a capture taken while it runs
+    // shows a drawer still hanging off the right edge. Settle the panel's own
+    // animations first, the way `admin_design_contracts.spec.js` does.
+    await page
+      .locator("#new-route-drawer")
+      .evaluate((el) =>
+        Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
+      );
+
+    // The Agency field is present, plainly labelled, and already set to the
+    // agency the list is filtered to, with no blank choice left (AC-23).
+    await expect(page.locator("#route_agency_id")).toHaveValue("HBR");
+    await expect(page.locator("#route_agency_id")).toBeVisible();
+    await expect(page.locator("#new-route-form-panel")).not.toContainText(
+      "Agency (optional)",
+    );
+    await expect(page.locator('#route_agency_id option[value=""]')).toHaveCount(0);
+    await expect(page.locator("#route_agency_id-help")).toContainText(
+      "agency_id — the agency that operates this route.",
+    );
+
+    const routeId = `E2E-${Date.now()}`;
+
+    await page.fill("#route_route_id", routeId);
+    await page.fill("#route_route_long_name", "Filtered preselect journey");
+    await page.selectOption("#route_route_type", { label: "Bus" });
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, NEW_ROUTE_CAPTURE_DIR, "new-route-drawer-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#route_agency_id")).toBeVisible();
+    await expect(page.locator("#new-route-submit")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, NEW_ROUTE_CAPTURE_DIR, "new-route-drawer-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await watchPendingState(page, "#new-route-submit");
+    await page.click("#new-route-submit");
+
+    const pendingStates = await readPendingStates(page);
+
+    expect(
+      pendingStates.some((state) => state.disabled && state.text === "Creating…"),
+    ).toBe(true);
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText(
+      `Route ${routeId} created.`,
+    );
+
+    // The filtered catalog reloads with the new route, so the created row is the
+    // one this journey asked for.
+    await expect(page.locator("#routes tr")).toHaveCount(3);
+    await expect(page.locator("#routes")).toContainText(routeId);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, NEW_ROUTE_CAPTURE_DIR, "new-route-created-1280");
+
+    // Read the stored route back through the Agencies page's own count: the
+    // route carries the agency the drawer preselected (R4).
+    await page.goto(`/gtfs/${agenciesId}/settings/agencies`);
+    await page.waitForSelector("#agencies");
+    await waitForLiveView(page);
+
+    await expect(
+      page.getByRole("link", { name: "View 3 routes for Harbor Shuttle" }),
+    ).toBeVisible();
   });
 });

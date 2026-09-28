@@ -102,17 +102,91 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
         LazyHTML.query(LazyHTML.from_fragment(html), "#new-route-form-panel label span.label")
 
       assert "Agency" in Enum.map(labels, &LazyHTML.text/1)
+
+      doc = LazyHTML.from_fragment(html)
+
+      # Several agencies and no filter: the blank option is the prompt, and
+      # nothing is selected until the editor chooses (AC-23).
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option"), "value") == [
+               "",
+               "A1",
+               "A2"
+             ]
+
+      assert has_element?(view, "#route_agency_id option", "Choose agency")
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option"), "selected") == []
     end
 
-    test "agency select is omitted when the version has no agencies", %{
+    test "one agency preselects the Agency field and drops the optional label", %{
       conn: conn,
+      organization: organization,
       version: version
     } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "NCT",
+        agency_name: "North Coast Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
 
-      refute has_element?(view, "#route_agency_id")
+      doc = LazyHTML.from_fragment(render(view))
+
+      labels =
+        doc
+        |> LazyHTML.query("#new-route-form-panel label span.label")
+        |> Enum.map(&LazyHTML.text/1)
+
+      assert "Agency" in labels
+      refute "Agency (optional)" in labels
+
+      # The only agency is the only choice, so the field is already set and
+      # there is no blank option to fall back to (AC-23).
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option"), "value") == [
+               "NCT"
+             ]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option[selected]"), "value") ==
+               ["NCT"]
+
+      assert has_element?(
+               view,
+               "#route_agency_id-help",
+               "agency_id — the agency that operates this route."
+             )
+    end
+
+    test "the list's agency filter preselects the Agency field", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "NCT",
+        agency_name: "North Coast Transit"
+      })
+
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "HBR",
+        agency_name: "Harbor Shuttle"
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?agency_id=HBR")
+
+      open_drawer(view)
+
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option"), "value") == [
+               "HBR",
+               "NCT"
+             ]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#route_agency_id option[selected]"), "value") ==
+               ["HBR"]
+
+      refute has_element?(view, "#route_agency_id option", "Choose agency")
     end
 
     test "trigger is secondary beside the first-use import action", %{
@@ -200,6 +274,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       organization: organization,
       version: version
     } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "NCT",
+        agency_name: "North Coast Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -225,6 +304,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       assert route.route_id == "NEW1"
       assert route.organization_id == organization.id
       assert route.gtfs_version_id == version.id
+      # The version's only agency is preselected in the drawer and resolved
+      # under the version lock on insert (AC-23, R4).
+      assert route.agency_id == "NCT"
       assert route.route_short_name == "N1"
       assert route.route_long_name == nil
       assert route.route_desc == nil
@@ -242,7 +324,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       refute has_element?(view, "#routes-first-use-empty")
     end
 
-    test "creating keeps the active search", %{conn: conn, version: version} do
+    test "creating keeps the active search", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "NCT",
+        agency_name: "North Coast Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?search=NEW")
 
       open_drawer(view)
@@ -264,7 +355,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       organization: organization,
       version: version
     } do
-      route_fixture(organization.id, version.id, %{route_id: "DUP1"})
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "NCT",
+        agency_name: "North Coast Transit"
+      })
+
+      route_fixture(organization.id, version.id, %{route_id: "DUP1", agency_id: "NCT"})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
@@ -345,6 +441,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       other_organization = organization_fixture()
       other_version = gtfs_version_fixture(other_organization.id)
 
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -373,6 +474,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
         )
 
       assert route.active == true
+      assert route.agency_id == "A1"
       assert route.route_sort_order == nil
       assert route.network_id == nil
       assert route.continuous_pickup == 1
@@ -532,6 +634,84 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       assert scoped_route_count(organization, version) == 0
       assert has_element?(view, "#new-route-drawer-overlay[data-open='false']")
       assert has_element?(view, "#flash-error", "no longer have editor access")
+    end
+
+    test "a crafted unknown agency is refused on the field and saves nothing", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      open_drawer(view)
+
+      # The drawer no longer keeps its own copy of the version's agency IDs, so
+      # validating a name the version does not have reports nothing; the refusal
+      # has to come from the insert's own resolution (R4, INV-1).
+      params = %{
+        "route" => %{
+          "route_id" => "AG3",
+          "route_type" => "3",
+          "route_short_name" => "A",
+          "agency_id" => "UNKNOWN"
+        }
+      }
+
+      render_change(view, "validate_new_route", params)
+      refute has_element?(view, "#route_agency_id-error")
+
+      render_submit(view, "save_new_route", params)
+
+      assert has_element?(view, "#route_agency_id-error", "is not an agency in this version")
+      assert has_element?(view, "#new-route-drawer-overlay[data-open='true']")
+      assert scoped_route_count(organization, version) == 0
+    end
+
+    test "with no agencies the save asks for one and inserts nothing", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      open_drawer(view)
+
+      refute has_element?(view, "#route_agency_id")
+
+      view
+      |> form("#new-route-form",
+        route: %{route_id: "NONE1", route_type: "3", route_short_name: "N"}
+      )
+      |> render_submit()
+
+      assert has_element?(view, "#new-route-agency-required")
+
+      assert has_element?(
+               view,
+               "#new-route-agency-required",
+               "Add the agency that operates this route in Settings › Agencies"
+             )
+
+      assert has_element?(view, "#new-route-agency-required", "Nothing was saved.")
+
+      assert has_element?(
+               view,
+               "#new-route-agency-settings[href='/gtfs/#{version.id}/settings/agencies']"
+             )
+
+      # The refusal is brought into view: the editor clicked Create route at the
+      # bottom of the drawer, and the callout renders above the form.
+      assert_push_event(view, "focus_scoped_target", %{id: "new-route-agency-required"})
+
+      # The drawer stays open so the editor can finish the draft after setting
+      # the agency up.
+      assert has_element?(view, "#new-route-drawer-overlay[data-open='true']")
+      assert scoped_route_count(organization, version) == 0
     end
   end
 end

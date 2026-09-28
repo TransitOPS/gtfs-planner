@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:routes_state, :ready)
      |> assign(:new_route_form, nil)
      |> assign(:agency_options, [])
+     |> assign(:new_route_agency_required?, false)
      |> stream(:routes, [])
      |> stream(:routes_mobile, [])}
   end
@@ -282,15 +283,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    agency_options =
-      organization_id
-      |> Gtfs.list_agencies(gtfs_version_id)
-      |> Enum.map(&{"#{&1.agency_name} (#{&1.agency_id})", &1.agency_id})
+    agency_options = list_agency_options(organization_id, gtfs_version_id)
+
+    form =
+      %Route{}
+      |> Route.changeset(%{"agency_id" => default_agency_id(socket, agency_options)})
+      |> to_form(as: :route)
 
     {:noreply,
      socket
      |> assign(:agency_options, agency_options)
-     |> assign(:new_route_form, to_form(Route.changeset(%Route{}, %{}), as: :route))}
+     |> assign(:new_route_agency_required?, false)
+     |> assign(:new_route_form, form)}
   end
 
   @impl true
@@ -694,7 +698,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         </div>
       </section>
 
-      <.new_route_drawer form={@new_route_form} agency_options={@agency_options} />
+      <.new_route_drawer
+        form={@new_route_form}
+        agency_options={@agency_options}
+        agency_required?={@new_route_agency_required?}
+        gtfs_version_id={@current_gtfs_version.id}
+      />
     </Layouts.app>
     """
   end
@@ -829,6 +838,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   attr :form, :any, default: nil
   attr :agency_options, :list, default: []
+  attr :agency_required?, :boolean, default: false
+  attr :gtfs_version_id, :string, required: true
 
   defp new_route_drawer(assigns) do
     ~H"""
@@ -842,6 +853,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       class="max-w-[min(100vw,40rem)]"
     >
       <div id="new-route-form-panel" phx-hook="FormErrorFocus">
+        <div :if={@agency_required?} class="mb-4">
+          <.callout
+            id="new-route-agency-required"
+            kind="warning"
+            title="This version has no agency"
+            tabindex="-1"
+          >
+            Add the agency that operates this route in Settings › Agencies, then create the route
+            again. Nothing was saved.
+            <.link
+              id="new-route-agency-settings"
+              navigate={agencies_path(@gtfs_version_id)}
+              class="mt-2 block font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            >
+              Open Settings › Agencies
+            </.link>
+          </.callout>
+        </div>
+
         <.new_route_form :if={@form} form={@form} agency_options={@agency_options} />
       </div>
     </.drawer>
@@ -922,10 +952,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         <.input
           field={@form[:agency_id]}
           type="select"
-          label={if(length(@agency_options) > 1, do: "Agency", else: "Agency (optional)")}
-          prompt="None"
+          label="Agency"
+          prompt={agency_prompt(@form, @agency_options)}
           options={@agency_options}
-          help="agency_id — required when this version has more than one agency."
+          help="agency_id — the agency that operates this route."
         />
       </div>
 
@@ -999,17 +1029,44 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     |> Map.put("gtfs_version_id", socket.assigns.current_gtfs_version.id)
   end
 
+  defp list_agency_options(organization_id, gtfs_version_id) do
+    organization_id
+    |> Gtfs.list_agencies(gtfs_version_id)
+    |> Enum.map(&{"#{&1.agency_name} (#{&1.agency_id})", &1.agency_id})
+  end
+
+  # The drawer opens with the agency already chosen when the version leaves no
+  # real choice: its own only agency, or the agency the catalog is filtered to.
+  defp default_agency_id(socket, agency_options) do
+    agency_ids = Enum.map(agency_options, &elem(&1, 1))
+    filtered_id = socket.assigns.filter_form.params["agency_id"]
+
+    cond do
+      match?([_], agency_ids) -> hd(agency_ids)
+      filtered_id in agency_ids -> filtered_id
+      true -> nil
+    end
+  end
+
+  # "Choose agency" is only a choice when there is one to make (AC-23).
+  defp agency_prompt(form, agency_options) do
+    if length(agency_options) > 1 and form[:agency_id].value in [nil, ""] do
+      "Choose agency"
+    end
+  end
+
+  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
+
   defp new_route_changeset(socket, attrs) do
-    agency_ids = Enum.map(socket.assigns.agency_options, &elem(&1, 1))
+    changeset = Route.changeset(%Route{}, attrs)
 
-    changeset =
-      %Route{}
-      |> Route.changeset(attrs)
-      |> Changeset.validate_inclusion(:agency_id, agency_ids,
-        message: "is not an agency in this version"
-      )
-
-    if length(agency_ids) > 1 do
+    # Only the drawer's own blank choice is required here: with several agencies
+    # it offers no default, so nothing was chosen. The zero/one/many agency rule
+    # belongs to `GtfsPlanner.Gtfs.FeedSettings.lock_agency_for_reference!/3`,
+    # which `Gtfs.create_version_route/3` calls inside the insert's own
+    # transaction (R4, INV-1) — and there a blank choice resolves to the version's
+    # single agency, so this must not refuse that case.
+    if length(socket.assigns.agency_options) > 1 do
       Changeset.validate_required(changeset, [:agency_id])
     else
       changeset
@@ -1020,6 +1077,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     socket
     |> assign(:new_route_form, nil)
     |> assign(:agency_options, [])
+    |> assign(:new_route_agency_required?, false)
   end
 
   defp create_new_route(socket, params) do
@@ -1027,7 +1085,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     with {:ok, _validated} <-
            socket |> new_route_changeset(attrs) |> Changeset.apply_action(:insert),
-         {:ok, route} <- Gtfs.create_route(attrs) do
+         {:ok, route} <-
+           Gtfs.create_version_route(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             attrs
+           ) do
       # The patch re-enters `handle_params/3`, which reloads the catalog with
       # the current query.
       {:noreply,
@@ -1039,15 +1102,46 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
            ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{build_query_params(socket, socket.assigns.page)}"
        )}
     else
-      {:error, changeset} ->
+      {:error, %Changeset{} = changeset} ->
+        show_new_route_error(socket, changeset)
+
+      # The version's agency set moved between opening the drawer and saving, so
+      # the context's own answer is the one that lands on the field. The refusal
+      # is rebuilt from what was submitted and carries an action, because Phoenix
+      # drops the errors of a changeset that has none.
+      {:error, :agency_not_found} ->
+        show_new_route_error(
+          socket,
+          socket
+          |> new_route_changeset(attrs)
+          |> Changeset.add_error(:agency_id, "is not an agency in this version")
+          |> Map.put(:action, :validate)
+        )
+
+      {:error, :agency_required} ->
+        # The editor clicked Create route at the bottom of a long drawer, so the
+        # refusal has to be brought into view rather than inserted above it.
         {:noreply,
          socket
-         |> assign(:new_route_form, to_form(changeset, as: :route))
-         |> push_event("focus_form_error", %{
-           form_id: "new-route-form",
-           fallback_id: "new-route-form-error"
-         })}
+         |> assign(:new_route_agency_required?, true)
+         |> push_event("focus_scoped_target", %{id: "new-route-agency-required"})}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> close_new_route()
+         |> put_flash(:error, "This version is no longer available.")}
     end
+  end
+
+  defp show_new_route_error(socket, changeset) do
+    {:noreply,
+     socket
+     |> assign(:new_route_form, to_form(changeset, as: :route))
+     |> push_event("focus_form_error", %{
+       form_id: "new-route-form",
+       fallback_id: "new-route-form-error"
+     })}
   end
 
   # Mount-time access is not enough for a write: the membership may have lost
