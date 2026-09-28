@@ -26,6 +26,13 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   backfill back with it, so a refused create leaves the version's agencies, routes and
   fare attributes exactly as they were.
 
+  Updating an agency (`update_agency/4`) is one transaction that authorizes the actor,
+  share-locks the published version row, loads the scoped row `FOR UPDATE`, compares the
+  `updated_at` token the editor loaded and then writes only the editable fields through
+  `Agency.editor_changeset/2`. A token that does not match the row read under the
+  lock returns `:stale` with no write, so a save that started before another editor's save
+  loses instead of overwriting it (R8).
+
   Outside import and test fixtures this module is the application's writer of `agencies`
   and `feed_info` rows and of the agency columns they own (INV-5).
   """
@@ -205,6 +212,48 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       audit_context
       |> agencies_in_scope()
       |> create_agency_locked!(attrs, audit_context)
+    end)
+  end
+
+  @doc """
+  Updates one of the version's agencies, refusing a save based on a stale row (R8, R9,
+  R10, INV-2).
+
+  `id` is the agency's row UUID; a foreign, unknown or malformed id returns `:not_found`.
+  `token` is the `updated_at` the editor loaded with the form. One transaction authorizes
+  the actor, share-locks the published version row, loads the scoped row `FOR UPDATE` and
+  compares timestamps:
+
+  - a token equal to the row's `updated_at` updates the row through
+    `Agency.editor_changeset/2`;
+  - a different token returns `:stale` with no write.
+
+  The submitted attrs never carry `agency_id`, `agency_timezone` or a scope field into the
+  write: `editor_changeset/2` casts only the editable fields, and the two identifier
+  columns are dropped before the changeset is built.
+
+  ## Returns
+
+  - `{:ok, agency}` on an update
+  - `{:error, changeset}` for attrs the editor changeset refuses
+  - `{:error, :forbidden}` for a deactivated or non-editor member
+  - `{:error, :not_found}` for a scope that is not a published version of the actor's
+    organization, or an agency id outside it
+  - `{:error, :stale}` when the token does not match the stored row, so nothing is saved
+  """
+  @spec update_agency(AuditContext.t(), String.t(), map(), DateTime.t()) ::
+          {:ok, Agency.t()}
+          | {:error, Ecto.Changeset.t() | :forbidden | :not_found | :stale}
+  def update_agency(%AuditContext{} = audit_context, id, attrs, token) when is_map(attrs) do
+    attrs = attrs |> stringify_keys() |> Map.drop(["agency_timezone", "agency_id"])
+
+    Repo.transaction(fn ->
+      authorize_editor!(audit_context)
+      share_version!(audit_context)
+
+      audit_context
+      |> lock_scoped_agency!(id)
+      |> update_agency_locked!(attrs, token)
     end)
   end
 
@@ -600,6 +649,39 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
     |> where([f], f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id)
     |> where([f], is_nil(f.agency_id) or fragment("btrim(?) = ''", f.agency_id))
     |> Repo.update_all(set: [agency_id: agency_id])
+  end
+
+  # -- Agency updates --------------------------------------------------------
+
+  # The agency row is locked only after the version row, the order `share_version!/1`
+  # established (INV-2). A malformed id never reaches the query, and the scope filters
+  # mean another organization's or another version's row is the same as no row.
+  defp lock_scoped_agency!(%AuditContext{} = audit_context, agency_row_id) do
+    case Ecto.UUID.cast(agency_row_id) do
+      {:ok, agency_id} ->
+        from(a in Agency,
+          where:
+            a.id == ^agency_id and a.organization_id == ^audit_context.organization_id and
+              a.gtfs_version_id == ^audit_context.gtfs_version_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+
+      :error ->
+        nil
+    end
+  end
+
+  defp update_agency_locked!(nil, _attrs, _token), do: Repo.rollback(:not_found)
+
+  defp update_agency_locked!(%Agency{} = agency, attrs, %DateTime{} = token) do
+    if DateTime.compare(agency.updated_at, token) == :eq do
+      agency
+      |> Agency.editor_changeset(attrs)
+      |> update_or_rollback!()
+    else
+      Repo.rollback(:stale)
+    end
   end
 
   defp insert_or_rollback!(changeset) do
