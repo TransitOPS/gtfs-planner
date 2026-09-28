@@ -83,6 +83,29 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponentsTest do
     |> to_form(as: :route, action: :insert)
   end
 
+  defp colors(form, opts \\ []) do
+    assigns =
+      Keyword.merge([form: form, prefix: "new-route"], opts)
+
+    render_component(&RouteFormComponents.color_fields/1, assigns)
+  end
+
+  # The form a rejected save leaves behind when the submitted colors are not
+  # hex, which is the failure the shared color field has to announce.
+  defp rejected_color_form do
+    new_route()
+    |> Route.editor_changeset(
+      %{
+        "route_id" => "B15",
+        "route_short_name" => "15",
+        "route_type" => 3,
+        "route_color" => "6A1B9"
+      },
+      :create
+    )
+    |> to_form(as: :route, action: :insert)
+  end
+
   defp identity(form, opts \\ []) do
     assigns =
       Keyword.merge(
@@ -296,6 +319,196 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponentsTest do
       assert ids(details, "input[type='radio'][checked]") == ["route-details-mode-2"]
       assert text(details, "#route-details-mode-other") =~ "Other mode…"
       assert text(details, "label[for='route-details-agency']") == "Agency"
+    end
+  end
+
+  describe "color_fields/1 submitted values" do
+    test "only the hex fields submit a color and the picker stays local" do
+      d = doc(colors(create_form(%{"route_color" => "5BC5F2"})))
+
+      # R7: the picker is a local editing affordance, so the one
+      # `route[route_color]` value that reaches the server is the hex field.
+      assert attrs(d, "#new-route-color-picker", "type") == ["color"]
+      assert attrs(d, "#new-route-color-picker", "name") == []
+      assert attrs(d, "#new-route-color-picker", "value") == ["#5BC5F2"]
+      assert attrs(d, "#new-route-color", "name") == ["route[route_color]"]
+      assert attrs(d, "#new-route-color", "value") == ["5BC5F2"]
+      assert attrs(d, "#new-route-color", "phx-debounce") == ["blur"]
+
+      # `text_mode` is transient transport metadata (R1), so it is not a
+      # `route[...]` schema field the changeset would have to strip later.
+      assert attrs(d, "input[name='text_mode']", "name") == ["text_mode", "text_mode"]
+      assert attrs(d, "input[name='text_mode']", "value") == ["automatic", "custom"]
+      assert attrs(d, "#new-route-text", "name") == ["route[route_text_color]"]
+    end
+
+    test "an imported custom text color stays custom and keeps its own value" do
+      # Black on 0F4C81 is not the automatic pick (white is, at 8.4:1), so
+      # R1/AC-3 preserve the imported custom value as Custom and an unrelated
+      # edit cannot silently convert it to the automatic one.
+      d =
+        doc(colors(details_form(%{"route_color" => "0F4C81", "route_text_color" => "000000"})))
+
+      assert ids(d, "input[type='radio'][checked]") == ["new-route-text-mode-custom"]
+      assert attrs(d, "#new-route-text", "value") == ["000000"]
+      assert ids(d, "#new-route-text-wrap.hidden") == []
+    end
+
+    test "a text color that already is the automatic pick renders as automatic" do
+      d =
+        doc(colors(details_form(%{"route_color" => "0F4C81", "route_text_color" => "FFFFFF"})))
+
+      assert ids(d, "input[type='radio'][checked]") == ["new-route-text-mode-automatic"]
+      assert ids(d, "#new-route-text-wrap.hidden") == ["new-route-text-wrap"]
+    end
+
+    test "a blank draft previews the R1 defaults: white fill, black text" do
+      d = doc(colors(create_form()))
+
+      assert attrs(d, "#new-route-color-picker", "value") == ["#FFFFFF"]
+      assert ids(d, "input[type='radio'][checked]") == ["new-route-text-mode-automatic"]
+      assert text(d, "#new-route-contrast-ratio") == "21.0:1 contrast"
+      assert text(d, "#new-route-contrast-verdict-text") == "Easy to read"
+    end
+
+    test "an explicit draft mode wins over the derived one in both directions" do
+      # Black text on 0F4C81 derives as Custom; the draft says Automatic.
+      automatic =
+        doc(
+          colors(
+            details_form(%{"route_color" => "0F4C81", "route_text_color" => "000000"}),
+            text_mode: "automatic"
+          )
+        )
+
+      assert ids(automatic, "input[type='radio'][checked]") == ["new-route-text-mode-automatic"]
+      assert ids(automatic, "#new-route-text-wrap.hidden") == ["new-route-text-wrap"]
+
+      # White text on 0F4C81 derives as Automatic; the draft says Custom, which
+      # is the mode the create drawer opens with.
+      custom =
+        doc(
+          colors(
+            details_form(%{"route_color" => "0F4C81", "route_text_color" => "FFFFFF"}),
+            text_mode: "custom"
+          )
+        )
+
+      assert ids(custom, "input[type='radio'][checked]") == ["new-route-text-mode-custom"]
+      assert ids(custom, "#new-route-text-wrap.hidden") == []
+
+      # Switching away from Custom never rewrites the operator's own hex, so
+      # switching back is lossless.
+      assert attrs(custom, "#new-route-text", "value") == ["FFFFFF"]
+    end
+  end
+
+  describe "color_fields/1 contrast readout" do
+    test "a custom text color below 4.5:1 is advisory, saveable and offers the fix" do
+      # The reference's create-contrast fixture: 5BC5F2 with white text.
+      d =
+        doc(
+          colors(
+            create_form(%{"route_color" => "5BC5F2", "route_text_color" => "FFFFFF"}),
+            text_mode: "custom"
+          )
+        )
+
+      assert text(d, "#new-route-contrast") =~ "Hard to read"
+      assert text(d, "#new-route-contrast-ratio") == "2.0:1 contrast, below 4.5:1"
+
+      assert text(d, "#new-route-contrast-advice") =~
+               "The app shows this badge with black text; exports keep what you enter."
+
+      # Warnings never block a save: nothing is disabled or readonly.
+      assert attrs(d, "#new-route-color", "disabled") == []
+      assert attrs(d, "#new-route-text", "disabled") == []
+      assert attrs(d, "#new-route-text", "readonly") == []
+      assert ids(d, "button:disabled") == []
+
+      changeset =
+        Route.editor_changeset(
+          %Route{route_color: "5BC5F2", route_text_color: "FFFFFF"},
+          %{"route_color" => "5BC5F2", "route_text_color" => "FFFFFF", "text_mode" => "custom"},
+          :edit
+        )
+
+      refute Enum.any?(changeset.errors, fn {field, _} ->
+               field in [:route_color, :route_text_color]
+             end)
+    end
+
+    test "the automatic fix is a real focusable button that is always rendered" do
+      hard =
+        doc(
+          colors(
+            create_form(%{"route_color" => "5BC5F2", "route_text_color" => "FFFFFF"}),
+            text_mode: "custom"
+          )
+        )
+
+      easy = doc(colors(create_form(%{"route_color" => "5BC5F2"})))
+      fix = "new-route-use-automatic"
+
+      # Present in both states so a LiveView update cannot remove the control an
+      # operator is standing on; only its container is shown or hidden.
+      assert ids(hard, "##{fix}") == [fix]
+      assert ids(easy, "##{fix}") == [fix]
+      assert text(hard, "##{fix}") == "Use automatic text color"
+      assert ids(hard, "#new-route-contrast-advice.hidden") == []
+      assert ids(easy, "#new-route-contrast-advice.hidden") == ["new-route-contrast-advice"]
+      assert attrs(hard, "##{fix}", "type") == ["button"]
+      assert attrs(hard, "##{fix}", "tabindex") == []
+    end
+
+    test "an unreadable draft states no verdict instead of claiming a ratio" do
+      d = doc(colors(create_form(%{"route_color" => "6A1B9"}), text_mode: "custom"))
+
+      assert text(d, "#new-route-contrast-ratio") == "–:1 contrast"
+      assert ids(d, "#new-route-contrast-verdict.hidden") == ["new-route-contrast-verdict"]
+      assert ids(d, "#new-route-contrast-advice.hidden") == ["new-route-contrast-advice"]
+
+      # An unvalidated value never reaches an inline style (RouteIdentity).
+      assert attrs(d, "#new-route-contrast-badge span", "style") == []
+    end
+
+    test "the preview badge is the application badge for the draft colors" do
+      d = doc(colors(create_form(%{"route_short_name" => "33", "route_color" => "6A1B9A"})))
+
+      assert text(d, "#new-route-contrast-badge") == "33"
+
+      assert attrs(d, "#new-route-contrast-badge span", "style") == [
+               "background-color: #6A1B9A; color: #FFFFFF"
+             ]
+    end
+  end
+
+  describe "color_fields/1 shared use and errors" do
+    test "a rejected color is announced from the field that carries it" do
+      d = doc(colors(rejected_color_form()))
+
+      assert attrs(d, "#new-route-color", "aria-invalid") == ["true"]
+
+      assert attrs(d, "#new-route-color", "aria-describedby") == [
+               "new-route-color-error new-route-color-help"
+             ]
+
+      assert text(d, "#new-route-color-error") =~ "must be a valid 6-character hex color code"
+      assert attrs(d, "#new-route-text", "aria-invalid") == ["false"]
+    end
+
+    test "the create drawer and Details forms can both render it without id collisions" do
+      create = doc(colors(create_form(%{"route_color" => "5BC5F2"}), prefix: "new-route"))
+      details = doc(colors(details_form(%{"route_color" => "0F4C81"}), prefix: "route-details"))
+
+      assert ids(create) == Enum.uniq(ids(create))
+      assert ids(details) == Enum.uniq(ids(details))
+      assert Enum.filter(ids(create), &(&1 in ids(details))) == []
+
+      assert ids(details, "#route-details-color-picker") == ["route-details-color-picker"]
+      assert attrs(details, "#route-details-color-picker", "value") == ["#0F4C81"]
+      assert text(details, "label[for='route-details-color']") =~ "Route color"
+      assert text(details, "#route-details-color-help") =~ "blank means white"
     end
   end
 end
