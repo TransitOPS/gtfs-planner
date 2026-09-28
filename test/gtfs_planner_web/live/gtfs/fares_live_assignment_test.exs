@@ -597,7 +597,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       assert selected_target(view) == " A"
       assert {" A ·  A", " A"} in target_options(view)
-      assert text_of(view, "#fare-zone-assignment-row-1") =~ "Z →  A"
+
+      # `text_of/2` collapses whitespace, which would hide the padded ID's leading
+      # space, so the row's own nodes are read without normalizing them.
+      assert raw_texts(view, "#fare-zone-assignment-row-1 span") == ["Last Stop", "Z →  A"]
 
       assert has_element?(view, "#fare-zone-row-4", "Z")
 
@@ -606,7 +609,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       assert zone_id_of(last.id) == " A"
       assert zone_id_of(padded.id) == " A"
-      assert text_of(view, "#fare-zone-saved") == "1 stop assigned to  A."
+      assert raw_text_of(view, "#fare-zone-saved p") == "1 stop assigned to  A."
 
       # Z left the inventory with its last stop, and Undo still restores it.
       refute has_element?(view, "#fare-zone-row-4")
@@ -676,12 +679,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       select_stop(view, stop.id)
 
+      # The bar offers no assign action without a zone: the button is disabled and
+      # the reason is stated beside the count.
       assert has_element?(view, "#fare-zone-assign-unavailable", "Create a fare zone first.")
+      assert disabled?(view, "#fare-zone-assign-selection")
 
-      view |> element("#fare-zone-assign-selection") |> render_click()
+      # A stale or crafted assign event still reaches the review, which says there
+      # is no target instead of previewing a write it cannot make. The target
+      # select is part of an assign review, so it renders - with no zone in it.
+      render_click(view, "open_assignment", %{"mode" => "assign"})
 
       assert dialog_open?(view)
-      refute has_element?(view, "#fare-zone-assignment-target-form")
+      assert target_options(view) == []
       assert confirm_disabled?(view)
       assert text_of(view, "#fare-zone-assignment-reason") == "Create a fare zone first."
     end
@@ -768,6 +777,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       |> String.trim()
 
     if value == "", do: nil, else: value
+  end
+
+  # The untrimmed text of each matched node. A byte-exact expectation (the leading
+  # space of a padded zone ID) has to read the nodes without the whitespace
+  # normalization `text_of/2` applies, or it can never match what was rendered.
+  defp raw_texts(view, selector) do
+    view |> nodes(selector) |> Enum.map(&LazyHTML.text/1)
+  end
+
+  defp raw_text_of(view, selector), do: view |> raw_texts(selector) |> List.first()
+
+  defp disabled?(view, selector) do
+    view |> nodes(selector) |> LazyHTML.attribute("disabled") |> Enum.any?()
   end
 
   defp nodes(view, selector) do

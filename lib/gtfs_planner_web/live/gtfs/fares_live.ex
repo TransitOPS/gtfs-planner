@@ -54,6 +54,22 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   be saved until they cancel it, refresh it or succeed. A successful save hands the
   applied changes to `@undo`, which is the only state Undo runs from and which the
   next save replaces, a tab change clears and a version switch cannot carry.
+
+  The zone drawer is the page's create and edit surface for zone metadata. It
+  opens from the header's `Create zone` action, from the first-use state's
+  `Create first zone`, or from the stage header's `Edit zone` while a zone filter
+  is selected, and it always sends the zone's exact stored ID as the edit key, so
+  the domain can keep an imported `" A"` byte-for-byte through a name-only edit.
+  The form is `FareZones.change_zone/2`'s changeset, so it validates what the
+  write will do; the write is `create_zone/3` or `update_zone/4`, and a duplicate
+  ID, a zone another editor removed and a pair that is no longer a published
+  version of the organization each leave the drawer open with its input and a
+  visible reason (AC-12, AC-13, AC-14, AC-15, AC-26). A successful save clears
+  `@undo`, reports what it did, and moves the filter to the zone it wrote.
+
+  When the inventory carries no zone at all, the workspace is replaced by the
+  first-use state (AC-22). A filter that matches no stop is not that state: an
+  empty filter renders the list's own empty message.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -61,16 +77,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
       assignment_dialog: 1,
+      first_use_empty: 1,
       load_error: 1,
       loading: 1,
       saved_callout: 1,
       selection_bar: 1,
       stage_header: 1,
       stop_list: 1,
+      zone_drawer: 1,
       zone_inventory: 1
     ]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Versions
 
@@ -85,6 +104,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @save_failed_message "Changes couldn’t be saved. Your edits are still here."
 
   @undo_stale_message "Undo wasn’t applied because some stops changed after the save."
+
+  # AC-13 and AC-15's drawer outcomes, named once so one outcome is never
+  # described two ways.
+  @zone_missing_message "This zone no longer exists. Another change removed it."
+
+  @zone_created_message "Zone created. Select stops from All stops to get started."
+
+  @zone_updated_message "Zone updated."
+
+  # The color a new zone starts with, the reference's own default.
+  @new_zone_color "ochre"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -103,6 +133,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:matching_ids, MapSet.new())
      |> assign(:assignment, nil)
      |> assign(:undo, nil)
+     |> assign(:workspace_action, nil)
+     |> assign(:zone_drawer_open, false)
+     |> assign(:zone_drawer_zone_id, nil)
+     |> assign(:zone_drawer_entry, nil)
+     |> assign(:zone_form, new_zone_form())
+     |> assign(:zone_error, nil)
+     |> assign(:zone_return_focus_id, nil)
+     |> assign(:zone_notice, nil)
      |> stream(:stops, [])}
   end
 
@@ -117,6 +155,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       |> assign(:q, q)
       |> assign(:page, page)
       |> assign(:undo, undo_after_patch(socket, action))
+      |> assign(:zone_notice, notice_after_patch(socket, action))
+      |> assign(:workspace_action, action)
 
     if connected?(socket) do
       {:noreply, load_workspace(socket)}
@@ -251,6 +291,38 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     {:noreply, undo_assignment(socket)}
   end
 
+  # Opening the drawer is a read of the inventory the page already holds: create
+  # starts from an empty form, and edit starts from the entry the panel shows,
+  # whose exact stored `zone_id` bytes are the form's own ID value and the key
+  # every later call carries. An ID no longer in the inventory changes nothing.
+  @impl true
+  def handle_event("open_zone_drawer", params, socket) when is_map(params) do
+    {:noreply, open_zone_drawer(socket, params)}
+  end
+
+  def handle_event("open_zone_drawer", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("close_zone_drawer", _params, socket) do
+    {:noreply, close_zone_drawer(socket)}
+  end
+
+  # Validation is the domain's own form changeset, so the drawer rejects exactly
+  # what the write would reject and an unchanged field is not a change at all.
+  @impl true
+  def handle_event("validate_zone", %{"zone" => params}, socket) do
+    {:noreply, validate_zone(socket, params)}
+  end
+
+  def handle_event("validate_zone", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_zone", %{"zone" => params}, socket) do
+    {:noreply, save_zone(socket, params)}
+  end
+
+  def handle_event("save_zone", _params, socket), do: {:noreply, socket}
+
   # Copy of GaragesLive's version handlers, pointed at the current tab so a
   # version switch keeps the operator on the workspace view they were reading.
   @impl true
@@ -297,6 +369,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       <.header>
         Fare zones
         <:subtitle>Group stops into zones, then define when a fare applies.</:subtitle>
+        <:actions :if={@live_action == :zones}>
+          <.button
+            id="fare-zone-create"
+            variant="primary"
+            class="min-h-11"
+            phx-click="open_zone_drawer"
+            phx-value-opener_id="fare-zone-create"
+            disabled={@load_state != :ready}
+          >
+            Create zone
+          </.button>
+        </:actions>
       </.header>
 
       <.fares_tabs
@@ -307,11 +391,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
       <.loading :if={@load_state == :loading} />
 
+      <p :if={@zone_notice} id="fare-zone-notice" role="status" class="mt-2 text-sm text-success">
+        {@zone_notice}
+      </p>
+
       <.load_error :if={@load_state == :unavailable} />
 
       <%= if @load_state == :ready do %>
+        <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
+
         <div
-          :if={@live_action == :zones}
+          :if={@live_action == :zones and @inventory.zones != []}
           id="fare-zones-panel"
           class="mt-2 overflow-clip rounded-box border border-base-300 bg-base-100 md:grid md:grid-cols-[240px_minmax(0,1fr)]"
         >
@@ -325,7 +415,21 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
             <.stage_header
               title={stage_title(@filter, @inventory)}
               subtitle={stage_subtitle(@filter, @inventory)}
-            />
+            >
+              <:actions :if={stage_zone_id(@filter, @inventory)}>
+                <.button
+                  id="fare-zone-edit"
+                  variant="secondary"
+                  size="sm"
+                  class="min-h-11"
+                  phx-click="open_zone_drawer"
+                  phx-value-zone_id={stage_zone_id(@filter, @inventory)}
+                  phx-value-opener_id="fare-zone-edit"
+                >
+                  Edit zone
+                </.button>
+              </:actions>
+            </.stage_header>
 
             <.saved_callout :if={@undo} undo={@undo} />
 
@@ -355,6 +459,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         :if={@assignment}
         assignment={@assignment}
         zones={inventory_zones(assigns)}
+      />
+
+      <.zone_drawer
+        open={@zone_drawer_open}
+        entity={@zone_drawer_entry}
+        form={@zone_form}
+        error={@zone_error}
+        return_focus_id={@zone_return_focus_id}
       />
     </Layouts.app>
     """
@@ -516,8 +628,174 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # the previous save goes with it; a filter, search or page patch inside the Zones
   # tab keeps the same action and keeps Undo in reach (AC-25). A version switch
   # navigates and remounts the LiveView, so its own state is already empty.
+  #
+  # The comparison is against the action the last handled URL belonged to, not
+  # against `socket.assigns.live_action`: LiveView assigns the incoming action
+  # before it calls this function, so that comparison would always be true and no
+  # tab change would ever end Undo.
   defp undo_after_patch(socket, action) do
-    if action == socket.assigns.live_action, do: socket.assigns.undo, else: nil
+    if action == socket.assigns.workspace_action, do: socket.assigns.undo, else: nil
+  end
+
+  # What a zone save reported belongs to the same workspace a patch inside the
+  # Zones tab keeps, so it survives a filter, search or page patch and goes with
+  # the tab when the operator leaves it.
+  defp notice_after_patch(socket, action) do
+    if action == socket.assigns.workspace_action, do: socket.assigns.zone_notice, else: nil
+  end
+
+  # The create form with the reference's default color already selected, so a
+  # new zone does not silently start on the palette's first entry.
+  defp new_zone_form do
+    to_form(FareZones.change_zone(nil, %{"color" => @new_zone_color}), as: :zone)
+  end
+
+  # A create opens an empty form; an edit opens the entry the panel shows, whose
+  # exact stored ID bytes drive the changeset's byte-for-byte decision and whose
+  # counts become the drawer's summary. An edit whose ID is no longer in the
+  # inventory is ignored: the click raced the change that removed the zone.
+  defp open_zone_drawer(socket, %{"zone_id" => zone_id} = params) when is_binary(zone_id) do
+    case zone_entry(socket, zone_id) do
+      nil ->
+        socket
+
+      entry ->
+        socket
+        |> assign(:zone_drawer_open, true)
+        |> assign(:zone_drawer_zone_id, entry.zone_id)
+        |> assign(:zone_drawer_entry, entry)
+        |> assign(:zone_form, to_form(FareZones.change_zone(zone_struct(entry), %{}), as: :zone))
+        |> assign(:zone_error, nil)
+        |> assign(:zone_return_focus_id, params["opener_id"])
+    end
+  end
+
+  defp open_zone_drawer(socket, params) do
+    socket
+    |> assign(:zone_drawer_open, true)
+    |> assign(:zone_drawer_zone_id, nil)
+    |> assign(:zone_drawer_entry, nil)
+    |> assign(:zone_form, new_zone_form())
+    |> assign(:zone_error, nil)
+    |> assign(:zone_return_focus_id, params["opener_id"])
+  end
+
+  defp close_zone_drawer(socket) do
+    socket
+    |> assign(:zone_drawer_open, false)
+    |> assign(:zone_drawer_zone_id, nil)
+    |> assign(:zone_drawer_entry, nil)
+    |> assign(:zone_form, new_zone_form())
+    |> assign(:zone_error, nil)
+  end
+
+  # The closed drawer's form is inert but still in the page, so a save and a
+  # validate both do nothing while it is closed: no leftover field value can
+  # create a zone the operator is not looking at.
+  defp validate_zone(%{assigns: %{zone_drawer_open: false}} = socket, _params), do: socket
+
+  defp validate_zone(socket, params) do
+    changeset =
+      socket
+      |> zone_changeset(params)
+      |> Map.put(:action, :validate)
+
+    assign(socket, :zone_form, to_form(changeset, as: :zone))
+  end
+
+  # The domain's own form changeset for the drawer: nil creates, an entry edits.
+  defp zone_changeset(socket, params) do
+    case socket.assigns.zone_drawer_entry do
+      nil -> FareZones.change_zone(nil, params)
+      entry -> FareZones.change_zone(zone_struct(entry), params)
+    end
+  end
+
+  # `change_zone/2` reads the stored identity and metadata off the struct, so the
+  # form makes the same byte-for-byte decision the write will - without a second
+  # read, from the entry the page already loaded (CR-1).
+  defp zone_struct(%{zone_id: zone_id, name: name, color: color}) do
+    %FareZone{zone_id: zone_id, name: name, color: color}
+  end
+
+  defp save_zone(%{assigns: %{zone_drawer_open: false}} = socket, _params), do: socket
+
+  defp save_zone(socket, params) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case socket.assigns.zone_drawer_zone_id do
+      nil ->
+        case FareZones.create_zone(organization_id, gtfs_version_id, params) do
+          {:ok, zone} -> zone_saved(socket, zone, @zone_created_message)
+          {:error, %Ecto.Changeset{} = changeset} -> zone_form_error(socket, changeset)
+          {:error, :not_found} -> assign(socket, :zone_error, @save_failed_message)
+        end
+
+      current_zone_id ->
+        case FareZones.update_zone(organization_id, gtfs_version_id, current_zone_id, params) do
+          {:ok, zone} -> zone_saved(socket, zone, @zone_updated_message)
+          {:error, %Ecto.Changeset{} = changeset} -> zone_form_error(socket, changeset)
+          {:error, :not_found} -> zone_edit_not_found(socket, current_zone_id)
+        end
+    end
+  end
+
+  # An edit's `:not_found` is one of two things, and each has its own copy: the
+  # zone left the inventory between opening the drawer and saving, or the pair is
+  # no longer a published version of the organization. Reading the workspace
+  # again is what tells them apart, and it also puts the inventory the operator
+  # now faces on screen while the drawer stays open with its input.
+  defp zone_edit_not_found(socket, current_zone_id) do
+    socket = load_workspace(socket)
+
+    if zone_entry(socket, current_zone_id) do
+      assign(socket, :zone_error, @save_failed_message)
+    else
+      assign(socket, :zone_error, @zone_missing_message)
+    end
+  end
+
+  # A rejected field keeps its message and the operator's input: `to_form/2` reads
+  # the changeset's params, so the typed name and color survive beside the error.
+  # The hook moves focus to the first invalid field when there is one.
+  defp zone_form_error(socket, changeset) do
+    socket
+    |> assign(:zone_form, to_form(Map.put(changeset, :action, :validate), as: :zone))
+    |> push_event("focus_form_error", %{
+      form_id: "fare-zone-form",
+      fallback_id: "fare-zone-drawer-error"
+    })
+  end
+
+  # A write happened, so the drawer closes, Undo of the previous assignment save
+  # is no longer what the page is about, and the workspace the save changed is read
+  # again. The saved zone becomes the filter the way clicking its row does - so a
+  # create shows the new zone's own list - except when an edit kept the ID, where
+  # the URL already names exactly that zone.
+  defp zone_saved(socket, zone, message) do
+    socket =
+      socket
+      |> close_zone_drawer()
+      |> assign(:undo, nil)
+      |> assign(:zone_notice, message)
+
+    case socket.assigns.filter do
+      {:zone, zone_id} when zone_id == zone.zone_id -> load_workspace(socket)
+      _filter -> push_patch(socket, to: zone_filter_url(socket, zone.zone_id))
+    end
+  end
+
+  # A zone filter is its own URL state, so the saved zone is patched as a whole
+  # query and encoded by `URI.encode_query/1` rather than appended to the filter
+  # that was current (CR-7).
+  defp zone_filter_url(socket, zone_id) do
+    zones_path(socket.assigns.current_gtfs_version.id) <> "?" <> URI.encode_query(zone: zone_id)
+  end
+
+  # The inventory entry of a zone filter's exact ID, byte-for-byte.
+  defp zone_entry(socket, zone_id) do
+    Enum.find(inventory_zones(socket.assigns), &(&1.zone_id == zone_id))
   end
 
   defp open_assignment(socket, mode) do
@@ -720,6 +998,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   end
 
   defp resolve_zone_filter(socket, _inventory), do: socket
+
+  # The exact stored ID of the zone the current filter names, which the stage
+  # header's `Edit zone` action carries as the drawer's edit key (INV-3).
+  defp stage_zone_id({:zone, zone_id}, inventory) do
+    case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
+      nil -> nil
+      zone -> zone.zone_id
+    end
+  end
+
+  defp stage_zone_id(_filter, _inventory), do: nil
 
   # The stage names the stops the filter shows. A zone filter is named by the
   # zone's display name, or by its exact ID when the inventory has no record.

@@ -87,14 +87,22 @@ async function routeBlankTiles(page) {
 }
 
 async function faresVersionId(page) {
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  if (!versionId) throw new Error(`${VERSION_NAME} is missing its version ID`);
+  return versionId;
+}
+
+// Resolves any seeded version by its exact name through the version panel, so a
+// journey reads the fixture it names instead of whichever version is the default.
+async function versionIdByName(page, name) {
   const option = page
     .locator("#gtfs-version-panel [data-version-option]")
-    .filter({ hasText: VERSION_NAME });
+    .filter({ hasText: name });
 
   await expect(option).toHaveCount(1);
 
   const versionId = await option.getAttribute("data-version-id");
-  if (!versionId) throw new Error(`${VERSION_NAME} is missing its version ID`);
+  if (!versionId) throw new Error(`${name} is missing its version ID`);
   return versionId;
 }
 
@@ -633,4 +641,189 @@ test("assignment review", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-row-2-count")).toHaveText("12");
 
   await captureReference(page, testInfo, "?dialog=assignment", "ref-assignment");
+});
+
+// ── zone drawer ───────────────────────────────────────────────────────────
+
+// The create/edit zone drawer and the first-use state. The first-use state needs
+// a version whose inventory carries no zone at all, which the seeded "Browser E2E
+// Version" is: it carries the diagram journey's stops and no fare-zone row. The
+// drawer's own journeys run on the version this file owns, and the case leaves one
+// created zone behind, named so a re-run without `prepare:browser` is obvious.
+test("zone drawer", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  // ── first use ──
+  const emptyVersionId = await versionIdByName(page, "Browser E2E Version");
+
+  await page.goto(`/gtfs/${emptyVersionId}/settings/fares`);
+  await waitForLiveView(page);
+
+  const firstUse = page.locator("#fare-zone-first-use");
+
+  await expect(firstUse).toBeVisible();
+  await expect(firstUse).toContainText("Start with your first fare zone");
+  await expect(firstUse).toContainText(
+    "A zone groups stops that share a fare area. Give it a name, then select its stops on the map or in a list.",
+  );
+  await expect(firstUse).toContainText(
+    "Already have a feed? Stop zone IDs from an imported feed appear here.",
+  );
+  await expect(page.locator("#fare-zones-panel")).toHaveCount(0);
+  await expect(page.locator("#fare-zone-create")).toBeVisible();
+
+  await capture(page, testInfo, "zone-first-use-1440", { fullPage: false });
+
+  // The state's CTA opens the same drawer. Nothing is written on this version, so
+  // the diagram journey's fixture stays untouched.
+  await page.locator("#fare-zone-first-use-create").click();
+  await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Create a fare zone");
+  await page.locator("#fare-zone-drawer-close").click();
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "false");
+
+  // ── create drawer ──
+  const versionId = await faresVersionId(page);
+
+  await page.goto(`/gtfs/${versionId}/settings/fares`);
+  await waitForLiveView(page);
+  await expect(page.locator("#fare-zone-create")).toBeEnabled();
+
+  const drawer = page.locator("#fare-zone-drawer");
+
+  await page.locator("#fare-zone-create").click();
+  await expect(drawer).toBeVisible();
+  await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Create a fare zone");
+  await expect(page.locator("#fare-zone-drawer-intro")).toHaveText(
+    "Start with a name people recognize. You can assign stops next.",
+  );
+  await expect(drawer).toContainText("Zone name");
+  await expect(drawer).toContainText("Zone ID");
+  await expect(drawer).toContainText(
+    "Unique in this version. Use letters, numbers, hyphens or underscores.",
+  );
+  await expect(drawer).toContainText("Map color");
+  await expect(drawer).toContainText("Markers also show the zone ID, so color is never the only cue.");
+  await expect(page.locator("#fare-zone-name")).toHaveValue("");
+  await expect(page.locator("#fare-zone-id")).toHaveValue("");
+  await expect(page.locator("#fare-zone-color")).toHaveValue("ochre");
+  await expect(page.locator("#fare-zone-color option")).toHaveText([
+    "Ocean blue",
+    "Teal",
+    "Plum",
+    "Ochre",
+    "Green",
+  ]);
+  await expect(page.locator("#fare-zone-drawer-note")).toContainText(
+    "Your new zone starts empty. It remains available while you build its stop membership.",
+  );
+  await expect(page.locator("#fare-zone-drawer-summary")).toHaveCount(0);
+
+  await capture(page, testInfo, "zone-drawer-1440", { fullPage: false });
+
+  // At 320 px the panel fills the viewport and the page does not overflow.
+  await page.setViewportSize(NARROW);
+  await expect(drawer).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  const panel = await page.locator("#fare-zone-drawer").boundingBox();
+
+  expect(Math.round(panel.width)).toBeLessThanOrEqual(NARROW.width);
+  expect(Math.round(panel.x)).toBeGreaterThanOrEqual(0);
+
+  await capture(page, testInfo, "zone-drawer-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // ── a duplicate ID is rejected beside its field ──
+  await page.fill("#fare-zone-name", "Waterfront");
+  await page.selectOption("#fare-zone-color", "teal");
+  await page.fill("#fare-zone-id", "A");
+  await page.locator('#fare-zone-form button[type="submit"]').click();
+
+  await expect(page.locator("#fare-zone-id")).toHaveAttribute("aria-invalid", "true");
+  await expect(drawer).toContainText("That zone ID is already in use. Choose another.");
+  await expect(page.locator("#fare-zone-name")).toHaveValue("Waterfront");
+  await expect(page.locator("#fare-zone-color")).toHaveValue("teal");
+  await expect(drawer).toBeVisible();
+
+  // Nothing was written: the inventory still holds its four zones and no zone
+  // adopted the typed name.
+  await expect(page.locator("#fare-zone-inventory-count")).toHaveText("4");
+  await expect(page.locator("#fare-zone-inventory")).not.toContainText("Waterfront");
+
+  await capture(page, testInfo, "zone-drawer-error-1440", { fullPage: false });
+
+  // ── create ──
+  await page.fill("#fare-zone-id", "W");
+  await page.locator('#fare-zone-form button[type="submit"]').click();
+
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "false");
+  await expect(page).toHaveURL(new RegExp(`[?&]zone=W$`));
+  await expect(page.locator("#fare-zone-notice")).toHaveText(
+    "Zone created. Select stops from All stops to get started.",
+  );
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Waterfront");
+  await expect(page.locator("#fare-zone-stops-empty")).toContainText("No stops in this zone yet");
+  await expect(page.locator("#fare-zone-inventory-count")).toHaveText("5");
+  await expect(page.locator("#fare-zone-row-5")).toContainText("Waterfront");
+
+  await capture(page, testInfo, "zone-drawer-created-1440", { fullPage: false });
+
+  // ── rename ──
+  await page.locator("#fare-zone-edit").click();
+  await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Edit Waterfront");
+  await expect(page.locator("#fare-zone-id")).toHaveValue("W");
+  await expect(page.locator("#fare-zone-drawer-summary")).toContainText(
+    "0 stops · 0 related fare rules.",
+  );
+  await page.fill("#fare-zone-id", "WW");
+  await page.locator('#fare-zone-form button[type="submit"]').click();
+
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "false");
+  await expect(page).toHaveURL(new RegExp(`[?&]zone=WW$`));
+  await expect(page.locator("#fare-zone-notice")).toHaveText("Zone updated.");
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Waterfront");
+
+  await capture(page, testInfo, "zone-drawer-renamed-1440", { fullPage: false });
+
+  // ── the edit summary names what a rename rewrites ──
+  // Central carries 11 boardable stops, a station member and four rule references,
+  // so its drawer states all three before anything is typed.
+  await page.locator("#fare-zone-row-1").click();
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Central");
+  await page.locator("#fare-zone-edit").click();
+
+  await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Edit Central");
+  await expect(page.locator("#fare-zone-id")).toHaveValue("A");
+  await expect(page.locator("#fare-zone-drawer-summary")).toContainText(
+    "11 stops · 4 related fare rules.",
+  );
+  await expect(page.locator("#fare-zone-drawer-summary-updates")).toHaveText(
+    "Changing this ID updates these references together.",
+  );
+  await expect(page.locator("#fare-zone-drawer-summary-others")).toHaveText(
+    "Also updates 1 station or entrance with this zone ID.",
+  );
+
+  await capture(page, testInfo, "zone-drawer-edit-1440", { fullPage: false });
+
+  await page.locator("#fare-zone-drawer-close").click();
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "false");
+
+  // Eastbank has no station member, so the station line is absent and the summary
+  // counts its twelve stops and two rule references.
+  await page.locator("#fare-zone-row-2").click();
+  await page.locator("#fare-zone-edit").click();
+
+  await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Edit Eastbank");
+  await expect(page.locator("#fare-zone-drawer-summary")).toContainText(
+    "12 stops · 2 related fare rules.",
+  );
+  await expect(page.locator("#fare-zone-drawer-summary-others")).toHaveCount(0);
+
+  await page.locator("#fare-zone-drawer-close").click();
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "false");
+
+  await captureReference(page, testInfo, "?dialog=zone", "ref-zone");
 });

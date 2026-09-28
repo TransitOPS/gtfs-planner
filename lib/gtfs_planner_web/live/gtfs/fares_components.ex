@@ -29,6 +29,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   selection stays readable and clearable while a long list scrolls. Its actions
   open the assignment review, which is where a selection becomes a write.
 
+  The zone drawer creates and edits zone metadata. It reuses the shared
+  `drawer/1` with `<.input>` fields, validates on change so a field error appears
+  beside the field it belongs to, and puts the `FormErrorFocus` hook on its
+  content so a failed submit moves focus to the first invalid field. Nothing
+  about a failed submit, a duplicate ID or a zone another editor removed closes
+  the drawer or discards what the operator typed: it stays open with the reason.
+  An edit also states what the zone already carries, because changing its ID
+  rewrites exactly the stop and fare-rule references the counts name.
+
   Reviewed bulk assignment is the dialog and the callout that follows it. The
   dialog states what a save will change before anything is written and lists the
   reviewed rows; it never closes itself, so a stale review, a target zone another
@@ -614,6 +623,44 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   end
 
   @doc """
+  Renders the Zones tab's first-use state, which replaces the workspace while
+  the version's inventory carries no zone at all.
+
+  The distinction matters: a filter that matches no stop is an empty list, not a
+  first use, so only an inventory with no declared record, no stop zone ID and
+  no fare-rule reference renders this. Its single action opens the create
+  drawer, and the import line tells an operator whose feed already carried zone
+  IDs where they would appear.
+
+  ## Examples
+
+      <.first_use_empty />
+  """
+  def first_use_empty(assigns) do
+    ~H"""
+    <div id="fare-zone-first-use" class="mt-2">
+      <.empty_state title="Start with your first fare zone">
+        <p>
+          A zone groups stops that share a fare area. Give it a name, then select its stops on the map or in a list.
+        </p>
+        <p class="mt-3">Already have a feed? Stop zone IDs from an imported feed appear here.</p>
+        <:action>
+          <.button
+            id="fare-zone-first-use-create"
+            variant="primary"
+            class="min-h-11"
+            phx-click="open_zone_drawer"
+            phx-value-opener_id="fare-zone-first-use-create"
+          >
+            Create first zone
+          </.button>
+        </:action>
+      </.empty_state>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the assignment review: the AC-9 report of what a save would change.
 
   The dialog is where a selection becomes a write, and it states the whole
@@ -825,6 +872,167 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       </.callout>
     </div>
     """
+  end
+
+  @doc """
+  Renders the zone create/edit drawer.
+
+  `entity` is the inventory entry the panel already shows, or nil to create.
+  The entry is the form's own state: its exact stored `zone_id` bytes prefill the
+  ID field and drive the domain's byte-for-byte decision, so an imported `" A"`
+  survives a name-only edit untouched, and the counts it carries become the edit
+  summary. A create instead states that the new zone starts empty.
+
+  The form validates on change and on submit. A field error renders beside its
+  field, the `FormErrorFocus` hook takes focus to the first invalid one, and
+  `error` carries the outcomes that belong to no field - a zone another editor
+  removed, or a version that is no longer a published version of the
+  organization - so the drawer stays open and says what happened instead of
+  discarding the operator's work.
+
+  ## Examples
+
+      <.zone_drawer open={@zone_drawer_open} entity={@zone_drawer_entry} form={@zone_form} />
+  """
+  attr :open, :boolean, default: false
+  attr :entity, :map, default: nil, doc: "the inventory entry being edited, or nil to create"
+  attr :form, :any, required: true, doc: "`FareZones.change_zone/2`'s form"
+  attr :error, :string, default: nil, doc: "a drawer-level reason the save did not happen"
+  attr :return_focus_id, :string, default: nil
+
+  def zone_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:editing?, not is_nil(assigns.entity))
+      |> assign(
+        :title,
+        if(assigns.entity, do: "Edit #{assigns.entity.name}", else: "Create a fare zone")
+      )
+
+    ~H"""
+    <.drawer
+      id="fare-zone-drawer"
+      open={@open}
+      on_close="close_zone_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+    >
+      <div id="fare-zone-drawer-content" phx-hook="FormErrorFocus">
+        <p id="fare-zone-drawer-intro" class="mb-4 text-sm text-base-content/70">
+          {if @editing?,
+            do: "Update the label your team sees, or change the ID carried in your feed.",
+            else: "Start with a name people recognize. You can assign stops next."}
+        </p>
+
+        <div :if={@error} class="mb-4">
+          <.callout
+            id="fare-zone-drawer-error"
+            kind="error"
+            title={@error}
+            role="alert"
+            tabindex="-1"
+            phx-mounted={JS.focus()}
+          />
+        </div>
+
+        <.form
+          for={@form}
+          id="fare-zone-form"
+          as={:zone}
+          novalidate
+          phx-change="validate_zone"
+          phx-submit="save_zone"
+          class="space-y-1"
+        >
+          <.input
+            id="fare-zone-name"
+            field={@form[:name]}
+            type="text"
+            label="Zone name"
+            placeholder="e.g. Central"
+            phx-debounce="300"
+          />
+
+          <.input
+            id="fare-zone-id"
+            field={@form[:zone_id]}
+            type="text"
+            label="Zone ID"
+            placeholder="e.g. A"
+            help="Unique in this version. Use letters, numbers, hyphens or underscores."
+            phx-debounce="300"
+          />
+
+          <.input
+            id="fare-zone-color"
+            field={@form[:color]}
+            type="select"
+            label="Map color"
+            options={palette_options()}
+            help="Markers also show the zone ID, so color is never the only cue."
+          />
+
+          <%!-- An edit names what changing the ID rewrites, because that is the
+          difference between this drawer and renaming a display label. A
+          drawer-level failure hides it: the inventory was just read again, so
+          counts captured when the drawer opened could contradict the reason the
+          save cannot happen. A field error keeps it - the save is still the
+          operator's to retry. --%>
+          <.callout
+            :if={@editing? and is_nil(@error)}
+            id="fare-zone-drawer-summary"
+            kind="info"
+            title={edit_summary_title(@entity)}
+          >
+            <p id="fare-zone-drawer-summary-updates">
+              Changing this ID updates these references together.
+            </p>
+            <p :if={@entity.other_stop_count > 0} id="fare-zone-drawer-summary-others">
+              {station_line(@entity.other_stop_count)}
+            </p>
+          </.callout>
+
+          <.callout
+            :if={!@editing?}
+            id="fare-zone-drawer-note"
+            kind="info"
+            title="Your new zone starts empty. It remains available while you build its stop membership."
+          />
+
+          <div class="flex flex-wrap items-center gap-3 pt-3">
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+              {if @editing?, do: "Save zone", else: "Create zone"}
+            </.button>
+            <.button type="button" variant="quiet" class="min-h-11" phx-click="close_zone_drawer">
+              Cancel
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # The edit summary's headline: the reference's counts plus the sentence the
+  # card fixes, the counts kept as the callout's own title.
+  defp edit_summary_title(%{stop_count: stop_count, rule_count: rule_count}) do
+    "#{stops_copy(stop_count)} · #{rules_copy(rule_count)}."
+  end
+
+  defp rules_copy(1), do: "1 related fare rule"
+  defp rules_copy(count), do: "#{count} related fare rules"
+
+  # The station/entrance disclosure, written for the count it carries: the rest of
+  # the workspace counts one of something in the singular too.
+  defp station_line(1), do: "Also updates 1 station or entrance with this zone ID."
+
+  defp station_line(count),
+    do: "Also updates #{count} stations or entrances with this zone ID."
+
+  # The palette's own labels, keyed by the palette key `FareZone` stores.
+  defp palette_options do
+    Enum.map(FareZone.palette(), fn {key, label, _hex} -> {label, key} end)
   end
 
   # The select's options: every zone of the version's inventory, labeled by the
