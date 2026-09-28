@@ -10,6 +10,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Repo
+
+  import Ecto.Query
 
   @adapter_key :gtfs_catalog_read_adapter
 
@@ -194,6 +198,179 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       assert has_element?(view, "a.font-mono.link-primary", "MONO1")
+    end
+  end
+
+  describe "RoutesLive workbench redesign" do
+    setup :shared_setup
+
+    test "search and filters form one toolbar inside the workbench card", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route = route_fixture(organization.id, version.id, %{route_id: "TB1"})
+
+      stub_catalog(fn _opts -> {:ok, route_page([route], 1, 1, [route.route_type], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      # The two server forms stay addressable, but the markup groups them.
+      assert has_element?(view, "section#routes-workbench")
+      assert has_element?(view, "#routes-toolbar form#route-search-form")
+      assert has_element?(view, "#routes-toolbar form#route-filter-form")
+      assert has_element?(view, "#route-filter-form select#active")
+    end
+
+    test "summary shows the route count and one chip per active constraint", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      r1 = route_fixture(organization.id, version.id, %{route_id: "CNT1", route_type: 3})
+      r2 = route_fixture(organization.id, version.id, %{route_id: "CNT2", route_type: 0})
+
+      stub_catalog(fn opts ->
+        rows = if Keyword.get(opts, :route_type) == 3, do: [r1], else: [r1, r2]
+        total = if Keyword.get(opts, :route_type) == 3, do: 1, else: 2
+
+        {:ok,
+         route_page(
+           rows,
+           total,
+           1,
+           [3, 0],
+           []
+         )}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "#routes-summary #routes-count", "2 routes")
+
+      view
+      |> form("#route-filter-form", %{"route_type" => "3"})
+      |> render_change()
+
+      assert_patched(view, "/gtfs/#{version.id}/routes?route_type=3")
+
+      assert has_element?(view, "#routes-count", "1 route")
+      assert has_element?(view, "#routes-chip-route_type", "Bus")
+      refute has_element?(view, "#routes-chip-search")
+    end
+
+    test "a chip dismisses only its own constraint", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route = route_fixture(organization.id, version.id, %{route_id: "CHP1", route_type: 3})
+
+      stub_catalog(fn _opts -> {:ok, route_page([route], 1, 1, [3], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      view
+      |> form("#route-filter-form", %{"route_type" => "3", "active" => "true"})
+      |> render_change()
+
+      assert_patched(view, "/gtfs/#{version.id}/routes?active=true&route_type=3")
+
+      view |> element("#routes-chip-route_type") |> render_click()
+
+      # The status filter survives; the mode chip is gone.
+      assert_patched(view, "/gtfs/#{version.id}/routes?active=true")
+      refute has_element?(view, "#routes-chip-route_type")
+      assert has_element?(view, "#routes-chip-active", "Active")
+    end
+
+    test "mobile list mirrors the table under its own container", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route =
+        route_fixture(organization.id, version.id, %{route_id: "MOB1", route_short_name: "M"})
+
+      stub_catalog(fn _opts -> {:ok, route_page([route], 1, 1, [route.route_type], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "ul#routes-list[phx-update='stream']")
+      assert has_element?(view, "#routes-list li a[href='/gtfs/#{version.id}/routes/MOB1']")
+    end
+
+    test "name cell falls back from long name to short name to route ID", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      # route_long_name is present, route_short_name is not: the cell shows the
+      # long name.
+      no_short =
+        route_fixture(organization.id, version.id, %{
+          route_id: "NOSHORT",
+          route_short_name: nil,
+          route_long_name: "Harbour – Airport"
+        })
+
+      stub_catalog(fn _opts -> {:ok, route_page([no_short], 1, 1, [], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "#routes-container", "Harbour – Airport")
+
+      # Neither name is present: the changeset rejects it, so insert past it to
+      # cover the last step of the fallback chain, which ends at the route ID.
+      {:ok, _route} =
+        Repo.insert(%Route{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          route_id: "NEITHER",
+          route_type: 3,
+          route_color: "0000FF",
+          route_text_color: "FFFFFF"
+        })
+
+      neither = Repo.one!(from r in Route, where: r.route_id == "NEITHER")
+
+      stub_catalog(fn _opts -> {:ok, route_page([neither], 1, 1, [], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "#routes-container", "NEITHER")
+    end
+
+    test "inactive routes are marked without a colored status word", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route = route_fixture(organization.id, version.id, %{route_id: "INA1", active: false})
+
+      stub_catalog(fn _opts -> {:ok, route_page([route], 1, 1, [route.route_type], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "#routes-container", "Inactive")
     end
   end
 

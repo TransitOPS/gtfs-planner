@@ -40,7 +40,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:routes_state, :ready)
      |> assign(:new_route_form, nil)
      |> assign(:agency_options, [])
-     |> stream(:routes, [])}
+     |> stream(:routes, [])
+     |> stream(:routes_mobile, [])}
   end
 
   @impl true
@@ -100,6 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           |> assign(:routes_empty?, routes == [])
           |> assign(:routes_state, :ready)
           |> stream(:routes, routes, reset: true)
+          |> stream(:routes_mobile, routes, reset: true)
 
         if canonical_page != page do
           query_params = build_query_params(socket, canonical_page)
@@ -117,7 +119,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
          socket
          |> assign(:routes_empty?, true)
          |> assign(:routes_state, :unavailable)
-         |> stream(:routes, [], reset: true)}
+         |> stream(:routes, [], reset: true)
+         |> stream(:routes_mobile, [], reset: true)}
     end
   end
 
@@ -232,11 +235,38 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
          |> assign(:available_agencies, agencies)
          |> assign(:routes_empty?, routes == [])
          |> assign(:routes_state, :ready)
-         |> stream(:routes, routes, reset: true)}
+         |> stream(:routes, routes, reset: true)
+         |> stream(:routes_mobile, routes, reset: true)}
 
       {:error, :unavailable} ->
         {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("remove_filter", %{"key" => key}, socket) do
+    # A chip dismisses one constraint and keeps the rest, so the patch carries
+    # every other active filter along with it.
+    params = socket.assigns.filter_form.params
+
+    query_params =
+      if key in ~w(route_type agency_id active) do
+        # The form params carry blank strings for unselected selects; drop them
+        # so dismissing one chip does not re-add the others as empty query params.
+        params
+        |> Map.put(key, "")
+        |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+        |> Map.new()
+        |> maybe_put("search", socket.assigns.search)
+        |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
+      else
+        build_query_params(socket, socket.assigns.page)
+      end
+
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+     )}
   end
 
   @impl true
@@ -363,69 +393,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             variant={if(first_use_empty?(assigns), do: "secondary", else: "primary")}
             class="min-h-11"
           >
-            Create route
+            <.icon name="hero-plus" class="size-4" /> Create route
           </.button>
         </:actions>
       </.header>
 
-      <div class="mt-6 rounded-card border border-subtle bg-white px-5 py-4">
-        <.form
-          for={@filter_form}
-          id="route-filter-form"
-          phx-change="filter"
-          class="flex flex-wrap gap-4 items-end"
-        >
-          <div class="flex-1 min-w-[200px]">
-            <.input
-              field={@filter_form[:route_type]}
-              type="select"
-              label="Mode"
-              prompt="All modes"
-              options={
-                Enum.map(@available_route_types || [], fn type ->
-                  {Route.route_type_label(type), type}
-                end)
-              }
-            />
-          </div>
-          <div class="flex-1 min-w-[200px]">
-            <.input
-              field={@filter_form[:agency_id]}
-              type="select"
-              label="Agency"
-              prompt="All agencies"
-              options={Enum.map(@available_agencies || [], fn agency -> {agency, agency} end)}
-            />
-          </div>
-          <div class="flex-1 min-w-[200px]">
-            <.input
-              field={@filter_form[:active]}
-              type="select"
-              label="Status"
-              options={[{"All statuses", ""}, {"Active", "true"}, {"Inactive", "false"}]}
-            />
-          </div>
-        </.form>
-
-        <div class="mt-4 max-w-md">
-          <.form for={@search_form} id="route-search-form" phx-change="search">
-            <.input
-              field={@search_form[:search]}
-              type="search"
-              placeholder="Search names and IDs"
-              phx-debounce="300"
-              label="Search"
-            />
-            <p class="mt-1 text-[13px] text-muted">Search names and IDs</p>
-          </.form>
-        </div>
-      </div>
-
-      <div
-        :if={@routes_state == :unavailable}
-        id="routes-unavailable"
-        class="mt-6"
-      >
+      <%!-- Catalog read failed ({:error, :unavailable}): the card is replaced by
+             the error block so a partially-rendered table never appears. --%>
+      <div :if={@routes_state == :unavailable} id="routes-unavailable" class="mt-6">
         <.callout kind="error" title="Route catalog unavailable">
           The route catalog is temporarily unavailable. Please try again.
           <.button
@@ -440,108 +415,416 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         </.callout>
       </div>
 
-      <div
-        :if={@routes_state == :ready and @routes_empty? and has_active_constraints?(assigns)}
-        id="routes-constrained-empty"
-        class="mt-6"
+      <section
+        :if={@routes_state != :unavailable}
+        id="routes-workbench"
+        aria-label="Route catalog"
+        class="mt-6 overflow-clip rounded-card border border-subtle bg-white"
       >
-        <.empty_state title="No routes match your filters" class="border-subtle bg-white">
-          Try adjusting your search or filter criteria.
-          <:action>
-            <.button
-              id="routes-clear-filters"
-              phx-click="clear_filters"
-              variant="secondary"
-              size="sm"
-            >
-              {if @search != "" and no_filter_active?(assigns),
-                do: "Clear search",
-                else: "Clear filters"}
-            </.button>
-          </:action>
-        </.empty_state>
-      </div>
+        <%!-- Search and filters form one toolbar: search is used on almost every
+               visit, so it takes the width; the three selects less often. The two
+               server forms keep the IDs the tests reach for. --%>
+        <div
+          id="routes-toolbar"
+          role="search"
+          class="flex flex-wrap items-end gap-3 border-b border-subtle px-4 py-4 md:px-5"
+        >
+          <div class="min-w-0 flex-1 basis-[190px] md:basis-[280px]">
+            <.form for={@search_form} id="route-search-form" phx-change="search">
+              <.input
+                field={@search_form[:search]}
+                type="search"
+                label="Search routes"
+                placeholder="Search names and IDs"
+                phx-debounce="300"
+                class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong placeholder:text-muted"
+              />
+            </.form>
+          </div>
 
-      <div :if={first_use_empty?(assigns)} id="routes-first-use-empty" class="mt-6">
-        <.empty_state title="No routes yet" class="border-subtle bg-white">
-          Routes appear here after you import a GTFS feed or create a route.
-          <:action>
-            <.link
-              navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
-              class="btn btn-primary btn-sm"
-            >
-              Import feed
-            </.link>
-          </:action>
-        </.empty_state>
-      </div>
+          <span
+            :if={active_filter_count(assigns) > 0}
+            class="inline-flex min-h-11 items-center rounded-badge bg-selection px-2 text-[13px] font-bold tabular-nums text-action md:hidden"
+            aria-hidden="true"
+          >
+            {active_filter_count(assigns)}
+          </span>
 
-      <div :if={@routes_state == :ready and not @routes_empty?} class="mt-6">
-        <div class="overflow-hidden rounded-card border border-subtle bg-white">
-          <.table id="routes" rows={@streams.routes} responsive="stack">
-            <:col
-              :let={{_id, route}}
-              label="Route ID"
-              sort_key="route_id"
-              sort_event="sort"
-              sort={column_sort_state(@sort_by, @sort_dir, :route_id)}
+          <.form
+            for={@filter_form}
+            id="route-filter-form"
+            phx-change="filter"
+            class="flex w-full flex-wrap items-end gap-3 max-md:order-last md:w-auto"
+          >
+            <div class="min-w-0 flex-1 basis-[140px] md:w-[168px] md:flex-none">
+              <.input
+                field={@filter_form[:route_type]}
+                type="select"
+                label="Mode"
+                prompt="All modes"
+                options={
+                  Enum.map(@available_route_types || [], fn type ->
+                    {Route.route_type_label(type), type}
+                  end)
+                }
+                class="h-11 w-full appearance-none rounded-control border border-control bg-white pl-3 pr-9 text-sm text-strong"
+              />
+            </div>
+            <div class="min-w-0 flex-1 basis-[140px] md:w-[168px] md:flex-none">
+              <.input
+                field={@filter_form[:active]}
+                type="select"
+                label="Status"
+                options={[{"All statuses", ""}, {"Active", "true"}, {"Inactive", "false"}]}
+                class="h-11 w-full appearance-none rounded-control border border-control bg-white pl-3 pr-9 text-sm text-strong"
+              />
+            </div>
+            <div class="min-w-0 flex-1 basis-[140px] md:w-[168px] md:flex-none">
+              <.input
+                field={@filter_form[:agency_id]}
+                type="select"
+                label="Agency"
+                prompt="All agencies"
+                options={Enum.map(@available_agencies || [], fn agency -> {agency, agency} end)}
+                class="h-11 w-full appearance-none rounded-control border border-control bg-white pl-3 pr-9 text-sm text-strong"
+              />
+            </div>
+          </.form>
+        </div>
+
+        <%!-- Result count and active constraints; each constraint can be removed
+               on its own. --%>
+        <div
+          id="routes-summary"
+          class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
+        >
+          <p id="routes-count" role="status" class="font-[650] tabular-nums text-strong">
+            {route_count_text(@routes_state, @total_count)}
+          </p>
+
+          <div id="routes-chips" class="flex flex-wrap items-center gap-2">
+            <.constraint_chip
+              :for={filter <- active_filters(assigns)}
+              id={"routes-chip-#{filter.key}"}
+              key={filter.key}
+              label={filter.label}
+            />
+          </div>
+
+          <button
+            :if={has_active_constraints?(assigns) and not @routes_empty?}
+            id="routes-clear-filters"
+            type="button"
+            phx-click="clear_filters"
+            class="ml-auto inline-flex min-h-11 items-center font-[650] text-action hover:underline"
+          >
+            {if only_search_active?(assigns), do: "Clear search", else: "Clear filters"}
+          </button>
+        </div>
+
+        <div id="routes-results">
+          <%!-- Desktop and tablet: semantic table. --%>
+          <div
+            :if={not @routes_empty?}
+            id="routes-container"
+            class="max-md:hidden overflow-x-auto"
+          >
+            <table class="workbench-table ds-stack-table">
+              <thead>
+                <tr>
+                  <.sort_header
+                    label="Route"
+                    sort_key="route_short_name"
+                    sort_by={@sort_by}
+                    sort_dir={@sort_dir}
+                    class="w-[104px] py-0 pl-5 pr-2"
+                  />
+                  <.sort_header
+                    label="Name"
+                    sort_key="route_long_name"
+                    sort_by={@sort_by}
+                    sort_dir={@sort_dir}
+                    class="px-4 py-0"
+                  />
+                  <.sort_header
+                    label="Mode"
+                    sort_key="route_type"
+                    sort_by={@sort_by}
+                    sort_dir={@sort_dir}
+                    class="w-[176px] px-4 py-0"
+                  />
+                  <.sort_header
+                    label="Route ID"
+                    sort_key="route_id"
+                    sort_by={@sort_by}
+                    sort_dir={@sort_dir}
+                    class="w-[200px] py-0 pl-4 pr-5"
+                  />
+                </tr>
+              </thead>
+              <tbody id="routes" phx-update="stream">
+                <tr
+                  :for={{id, route} <- @streams.routes}
+                  id={id}
+                  class="cursor-pointer hover:bg-canvas/70"
+                >
+                  <td class="py-2 pl-5 pr-2">
+                    <RouteIdentity.route_badge
+                      route={route}
+                      class="min-h-[26px] min-w-[30px] text-[13px]"
+                    />
+                  </td>
+                  <td class="px-4 py-2">
+                    <div class="flex items-center gap-2">
+                      <span class="text-strong">{route_display_name(route)}</span>
+                      <span
+                        :if={not route.active}
+                        class="inline-flex items-center rounded-badge bg-canvas px-1.5 text-[13px] font-[650] text-muted"
+                      >
+                        Inactive
+                      </span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-2 text-default">
+                    {Route.route_type_label(route.route_type)}
+                  </td>
+                  <td class="py-2 pl-4 pr-5">
+                    <.link
+                      navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
+                      class="link link-primary font-mono font-semibold tabular-nums"
+                    >
+                      {route.route_id}
+                    </.link>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <%!-- Phones: one list item per route, whole item is the link. --%>
+          <ul
+            :if={not @routes_empty?}
+            id="routes-list"
+            phx-update="stream"
+            class="workbench-list md:hidden"
+          >
+            <li
+              :for={{id, route} <- @streams.routes_mobile}
+              id={id}
+              class="border-b border-subtle last:border-b-0"
             >
               <.link
                 navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
-                class="link link-primary font-semibold font-mono tabular-nums"
+                class="flex min-h-11 items-center gap-3 px-4 py-3 hover:bg-canvas"
               >
-                {route.route_id}
+                <RouteIdentity.route_badge
+                  route={route}
+                  class="min-h-[26px] min-w-[30px] text-[13px]"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm font-[650] text-strong">
+                    {route_display_name(route)}
+                  </span>
+                  <span class="block truncate text-[13px] text-muted">
+                    {Route.route_type_label(route.route_type)}
+                    <span :if={not route.active}> · Inactive</span>
+                  </span>
+                </span>
+                <.icon name="hero-chevron-right" class="size-5 shrink-0 text-subtle" />
               </.link>
-            </:col>
-            <:col
-              :let={{_id, route}}
-              label="Short Name"
-              sort_key="route_short_name"
-              sort_event="sort"
-              sort={column_sort_state(@sort_by, @sort_dir, :route_short_name)}
+            </li>
+          </ul>
+
+          <%!-- Search or filters exclude every route. --%>
+          <div
+            :if={@routes_empty? and has_active_constraints?(assigns)}
+            id="routes-constrained-empty"
+            class="px-5 py-12 text-center"
+          >
+            <h2 class="font-sans text-base font-bold tracking-normal text-strong">
+              No routes match {constraint_summary(assigns)}
+            </h2>
+            <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
+              Check the spelling, or clear the search to see every route.
+            </p>
+            <button
+              id="routes-clear-filters"
+              type="button"
+              phx-click="clear_filters"
+              class="mt-5 inline-flex min-h-11 items-center justify-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
             >
-              {route.route_short_name || "—"}
-            </:col>
-            <:col
-              :let={{_id, route}}
-              label="Long Name"
-              sort_key="route_long_name"
-              sort_event="sort"
-              sort={column_sort_state(@sort_by, @sort_dir, :route_long_name)}
-            >
-              {route.route_long_name || "—"}
-            </:col>
-            <:col
-              :let={{_id, route}}
-              label="Type"
-              sort_key="route_type"
-              sort_event="sort"
-              sort={column_sort_state(@sort_by, @sort_dir, :route_type)}
-            >
-              {Route.route_type_label(route.route_type)}
-            </:col>
-            <:col :let={{_id, route}} label="Badge">
-              <RouteIdentity.route_badge
-                route={route}
-                class="min-h-[26px] min-w-[30px] text-[13px] font-bold tabular-nums"
-              />
-            </:col>
-          </.table>
-          <div class="border-t border-subtle px-5">
-            <.pagination
-              :if={@total_count > 0}
-              page={@page}
-              per_page={@per_page}
-              total={@total_count}
-              entity="routes"
-            />
+              {if only_search_active?(assigns), do: "Clear search", else: "Clear filters"}
+            </button>
+          </div>
+
+          <%!-- No routes in this version at all: the catalog is empty, not
+                 filtered, so the next step is to import a feed. --%>
+          <div :if={first_use_empty?(assigns)} id="routes-first-use-empty" class="px-5 py-14 sm:px-10">
+            <div class="mx-auto max-w-[520px] text-center">
+              <h2 class="text-[24px]">No routes in this version yet</h2>
+              <p class="mt-2 text-sm text-muted">
+                Routes appear here after you import a GTFS feed or create a route.
+              </p>
+              <div class="mt-6 flex flex-wrap justify-center gap-3">
+                <.link
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
+                  class="btn btn-primary min-h-11 border-none bg-action text-white hover:bg-action-hover"
+                >
+                  <.icon name="hero-arrow-up-tray" class="size-4" /> Import feed
+                </.link>
+                <.button
+                  id="first-use-create"
+                  type="button"
+                  phx-click="open_new_route"
+                  variant="secondary"
+                  class="min-h-11"
+                >
+                  Create route
+                </.button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+
+        <div
+          :if={not @routes_empty? and @total_count > 0}
+          class="border-t border-subtle px-4 md:px-5"
+        >
+          <.pagination page={@page} per_page={@per_page} total={@total_count} entity="routes" />
+        </div>
+      </section>
 
       <.new_route_drawer form={@new_route_form} agency_options={@agency_options} />
     </Layouts.app>
     """
+  end
+
+  # ── Workbench pieces ────────────────────────────────────────────────────────
+  #
+  # The redesign (tmp/redesign/routes.html) folds search, filters, results and
+  # pagination into one "workbench" card, following the design system's
+  # `.workbench` pattern. The markup lives in `render/1` so every part of the
+  # card reads the same assigns; only these two markup helpers are separate.
+
+  # A chip dismisses one constraint. It is labeled with the value the operator
+  # chose, not the raw query param, and its `aria-label` spells out the action.
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :key, :string, required: true, doc: "the query param this chip dismisses"
+
+  defp constraint_chip(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      phx-click="remove_filter"
+      phx-value-key={@key}
+      class="inline-flex min-h-11 items-center gap-1.5 rounded-badge border border-subtle bg-white pl-2.5 pr-2 text-[13px] font-[650] text-strong hover:bg-canvas"
+      aria-label={"Remove filter #{@label}"}
+    >
+      {@label}
+      <.icon name="hero-x-mark" class="size-3.5 text-muted" />
+    </button>
+    """
+  end
+
+  # The table's own sort header, so the desktop table can carry the workbench
+  # styling (sticky canvas header, 44px targets) without the shared `<.table>`
+  # component's daisyUI chrome.
+  attr :label, :string, required: true
+  attr :sort_key, :string, required: true
+  attr :sort_by, :atom, required: true
+  attr :sort_dir, :atom, required: true
+  attr :class, :string, default: ""
+
+  defp sort_header(assigns) do
+    state =
+      column_sort_state(
+        assigns.sort_by,
+        assigns.sort_dir,
+        String.to_existing_atom(assigns.sort_key)
+      )
+
+    assigns =
+      assigns
+      |> assign(:state, state)
+      |> assign(:aria_sort, aria_sort_value(state))
+      |> assign(:indicator, sort_indicator(state))
+
+    ~H"""
+    <th
+      scope="col"
+      aria-sort={@aria_sort}
+      class={[
+        "sticky top-0 z-10 border-b border-subtle bg-canvas text-[13px] font-[650] text-default",
+        @class
+      ]}
+    >
+      <button
+        type="button"
+        phx-click="sort"
+        phx-value-key={@sort_key}
+        class="inline-flex min-h-11 items-center gap-1.5 hover:text-strong hover:underline"
+      >
+        {@label}<span aria-hidden="true">{@indicator}</span>
+      </button>
+    </th>
+    """
+  end
+
+  # A route's display name follows the GTFS preference order; the fallback chain
+  # ends at route_id, which is always present, so a cell is never blank.
+  defp route_display_name(route) do
+    route.route_long_name || route.route_short_name || route.route_id
+  end
+
+  defp route_count_text(:ready, count), do: "#{count} #{pluralize(count, "route")}"
+  defp route_count_text(:unavailable, _count), do: "Routes could not load"
+
+  defp pluralize(1, singular), do: singular
+  defp pluralize(_count, singular), do: "#{singular}s"
+
+  # The summary row repeats each active constraint as a removable chip, so it
+  # needs the value, not the param. Status reads as a word; mode maps through the
+  # same label helper the rest of the page uses.
+  defp active_filters(assigns) do
+    params = assigns.filter_form.params
+
+    # One tuple per constraint: its query key, whether it is set, and the label
+    # the chip shows — the chosen value, not the raw param.
+    filters = [
+      {"search", assigns.search != "", "\"" <> assigns.search <> "\""},
+      {"route_type", present?(params["route_type"]),
+       Route.route_type_label(parse_route_type(params["route_type"]))},
+      {"active", params["active"] in ~w(true false), status_label(params["active"])},
+      {"agency_id", present?(params["agency_id"]), params["agency_id"]}
+    ]
+
+    for {key, true, label} <- filters, do: %{key: key, label: label}
+  end
+
+  defp present?(nil), do: false
+  defp present?(""), do: false
+  defp present?(_value), do: true
+
+  defp status_label("true"), do: "Active"
+  defp status_label("false"), do: "Inactive"
+  defp status_label(_other), do: nil
+
+  defp active_filter_count(assigns), do: length(active_filters(assigns))
+
+  defp only_search_active?(assigns) do
+    assigns.search != "" and no_filter_active?(assigns)
+  end
+
+  # The no-match heading names the constraints that excluded everything, which
+  # is what the operator needs to loosen.
+  defp constraint_summary(assigns) do
+    case active_filters(assigns) do
+      [] -> "your filters"
+      [single] -> single.label
+      many -> Enum.map_join(many, ", ", & &1.label)
+    end
   end
 
   attr :form, :any, default: nil
@@ -872,4 +1155,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   defp column_sort_state(_sort_by, _sort_dir, _column), do: "none"
+
+  defp aria_sort_value("asc"), do: "ascending"
+  defp aria_sort_value("desc"), do: "descending"
+  defp aria_sort_value(_other), do: "none"
+
+  # ▲ / ▼ read as direction at a glance; an unsorted column gets the neutral
+  # double arrow because a single arrow would imply a sort that isn't there.
+  defp sort_indicator("asc"), do: "▲"
+  defp sort_indicator("desc"), do: "▼"
+  defp sort_indicator(_other), do: "↕"
 end
