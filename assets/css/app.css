@@ -396,9 +396,12 @@ body {
 #blocks-page .blocks-sort:hover { color: var(--color-strong); }
 
 /* The axis: one tick every two hours, positioned by percentage of the same span
-   the bars use, so the two align at any width. */
+   the bars use, so the two align at any width. The cell is part of the sticky
+   header row, so it keeps the `position: sticky; top: 0` of
+   `#blocks-timeline thead th` and the labels stay over the rows as they scroll.
+   A sticky cell is a positioned ancestor too, so it also anchors the absolute
+   ticks. */
 #blocks-timeline .blocks-axis {
-  position: relative;
   padding: 0;
 }
 
