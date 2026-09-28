@@ -134,6 +134,44 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
     end
   end
 
+  describe "stop_row_to_attrs/3" do
+    test "keeps a zone_id byte-for-byte, including a leading space", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "stop_id" => "S1",
+        "stop_name" => "Stop 1",
+        "stop_lat" => "40.7",
+        "stop_lon" => "-74.0",
+        "zone_id" => " A"
+      }
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+      assert attrs.zone_id == " A"
+    end
+
+    test "stores an empty zone_id as nil", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"stop_id" => "S1", "zone_id" => ""}
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+      assert attrs.zone_id == nil
+    end
+
+    test "stores a missing zone_id key as nil", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"stop_id" => "S1"}
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+      assert attrs.zone_id == nil
+    end
+  end
+
   describe "stop_time_row_to_attrs/3" do
     test "converts valid stop_time row to attrs", %{
       organization_id: org_id,

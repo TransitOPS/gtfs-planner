@@ -91,6 +91,27 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert Enum.any?(stops, &(&1.stop_id == "S2"))
     end
 
+    test "stores each stops.txt zone_id verbatim", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      stops_content = """
+      stop_id,stop_name,stop_lat,stop_lon,zone_id
+      S1,Stop 1,40.7,-74.0, A
+      S2,Stop 2,40.7,-74.1,
+      """
+
+      files = [%{filename: "stops.txt", content: stops_content}]
+
+      assert {:ok, _result} = Import.import_files(organization.id, gtfs_version.id, files)
+
+      stops = Gtfs.list_stops(organization.id, gtfs_version.id)
+      zone_by_stop_id = Map.new(stops, &{&1.stop_id, &1.zone_id})
+
+      assert zone_by_stop_id["S1"] == " A"
+      assert zone_by_stop_id["S2"] == nil
+    end
+
     test "imports levels, stops, and pathways successfully", %{
       organization: organization,
       gtfs_version: gtfs_version
