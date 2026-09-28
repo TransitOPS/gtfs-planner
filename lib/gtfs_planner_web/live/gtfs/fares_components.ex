@@ -1019,6 +1019,155 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   end
 
   @doc """
+  Renders the Checks tab: the workspace's issue rows, its all-clear line and the
+  conditional source check.
+
+  Every row is derived from `FareZones.checks/2`, so the tab reports what the
+  version's own data says rather than its own reading: one "Needs repair" row per
+  zone fare rules use that has no boardable stops, one "Review" row while
+  boardable stops have no zone, one "Note" row per declared zone with nothing in
+  it, and the "Source check" row only while fare rules reference zones at all.
+  The reference's "fare rules checked" row is deliberately not reproduced: under
+  the derived inventory it can never report a failure. With no needs-repair and no
+  review row, the all-clear line states what the version is clean of.
+
+  Each row that asks for an action carries one link, and its patch target is built
+  by `URI.encode_query/1`, so a zone ID keeps its exact bytes and
+  `filter=unassigned` stays a separate key from `zone`. Row DOM IDs are the row's
+  index, never a zone ID.
+
+  ## Examples
+
+      <.checks_tab checks={@checks} patch_base={zones_path(@current_gtfs_version.id)} />
+  """
+  attr :checks, :map, required: true, doc: "`FareZones.checks/2`"
+  attr :patch_base, :string, required: true, doc: "the Zones path, without a query"
+
+  def checks_tab(assigns) do
+    assigns =
+      assigns
+      |> assign(:stopless, assigns.checks.stopless_referenced)
+      |> assign(:unassigned, assigns.checks.unassigned_count)
+      |> assign(:empty_declared, assigns.checks.empty_declared)
+      |> assign(
+        :clean?,
+        assigns.checks.stopless_referenced == [] and assigns.checks.unassigned_count == 0
+      )
+
+    ~H"""
+    <div id="fare-checks-tab" class="max-w-[900px]">
+      <h2 id="fare-checks-heading" class="text-xl font-semibold">Check your fare-zone setup</h2>
+      <p id="fare-checks-subtitle" class="mt-1 text-sm text-base-content/70">
+        Review membership and references before publishing this version.
+      </p>
+
+      <div class="mt-4 border-t border-base-300">
+        <.check_row
+          :if={@clean?}
+          id="fare-check-clean"
+          status={:pass}
+          label="Ready"
+          title="Every zone used by a fare rule has stops, and every stop has a zone."
+        />
+
+        <.check_row
+          :for={{zone, index} <- Enum.with_index(@stopless)}
+          id={"fare-check-stopless-#{index}"}
+          status={:error}
+          label="Needs repair"
+          title={stopless_zone_copy(zone)}
+          body="Exported fares for this zone won't match any stop. Assign stops to this zone or edit the rules that use it."
+          link={zones_patch(@patch_base, zone: zone.zone_id)}
+          link_label={"Show #{zone.name}"}
+        />
+
+        <.check_row
+          :if={@unassigned > 0}
+          id="fare-check-unassigned"
+          status={:warning}
+          label="Review"
+          title={unassigned_stops_copy(@unassigned)}
+          body="Unassigned stops can be intentional, but zone-based fares may not apply to journeys using them."
+          link={zones_patch(@patch_base, filter: "unassigned")}
+          link_label="Review unassigned stops"
+        />
+
+        <.check_row
+          :if={@empty_declared != []}
+          id="fare-check-empty"
+          status={:neutral}
+          label="Note"
+          title={empty_zones_copy(length(@empty_declared))}
+          body="Empty zones stay in this workspace. Standard GTFS carries zone IDs on stops; a zone with no stops has no standalone export record."
+        />
+
+        <.check_row
+          :if={@checks.rules_reference_zones?}
+          id="fare-check-source"
+          status={:neutral}
+          label="Source check"
+          title="Verify assignments against your source feed"
+          body="If this version was imported before stop zone IDs were preserved, its stops may be missing their zones. Compare it with your original feed before publishing. Fare rules alone cannot tell you which stops belonged to a zone."
+        >
+          <details id="fare-check-source-detail" class="mt-2">
+            <%!-- A native `<details>` needs its own marker to read as a
+            disclosure, so the summary keeps the default list-item display and
+            gets its 44 px target from padding rather than `min-h-11`, which
+            would need a flex display and suppress the marker. --%>
+            <summary class="cursor-pointer py-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
+              What must be checked?
+            </summary>
+            <p class="mt-1 text-sm text-base-content/70">
+              Check that each stop has the same zone as in your source feed. Re-importing the original feed creates a new version that keeps its stop zones.
+            </p>
+          </details>
+        </.check_row>
+      </div>
+    </div>
+    """
+  end
+
+  # One check row: the badge on the left, the row's own words and at most one
+  # action on the right. The badge's word is passed in rather than derived from a
+  # status, because the row's vocabulary is what the tab says; `:neutral` is
+  # `status_badge/1`'s neutral treatment, for a row that reports rather than
+  # fails. The row stacks below `sm` so a 320 px viewport reads it top to bottom.
+  attr :id, :string, required: true
+  attr :status, :any, required: true
+  attr :label, :string, required: true
+  attr :title, :string, required: true
+  attr :body, :string, default: nil
+  attr :link, :string, default: nil, doc: "the patch target; nil renders no action"
+  attr :link_label, :string, default: nil
+  slot :inner_block
+
+  defp check_row(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class="flex flex-col gap-2 border-b border-base-300 py-5 sm:flex-row sm:items-start sm:gap-4"
+    >
+      <div class="sm:w-32 sm:shrink-0">
+        <.status_badge status={@status} label={@label} />
+      </div>
+      <div class="min-w-0">
+        <h3 class="text-base font-semibold">{@title}</h3>
+        <p :if={@body} class="mt-1 text-sm text-base-content/70">{@body}</p>
+        <.link
+          :if={@link}
+          id={"#{@id}-link"}
+          patch={@link}
+          class="mt-2 inline-flex min-h-11 items-center text-left font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+        >
+          {@link_label}
+        </.link>
+        {render_slot(@inner_block)}
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the rule drawer: the fare, journey, route and through-zone fields, the
   plain-language summary and the destructive exit.
 
@@ -2176,6 +2325,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
         rule_route_text(%{route: route, route_id: route.route_id})
     end
   end
+
+  # The Checks tab's own words. The count carries its own phrase, so "1 empty
+  # zone" never reads "1 empty zones", and a referenced zone is named by the
+  # inventory's own bytes with its exact ID beside it - an undeclared zone reads
+  # "C (C)" rather than being special cased.
+  defp stopless_zone_copy(%{zone_id: zone_id, name: name}) do
+    "Fare rules use #{name} (#{zone_id}), which has no stops"
+  end
+
+  defp unassigned_stops_copy(1), do: "1 stop has no fare zone"
+  defp unassigned_stops_copy(count), do: "#{count} stops have no fare zone"
+
+  defp empty_zones_copy(1), do: "1 empty zone"
+  defp empty_zones_copy(count), do: "#{count} empty zones"
 
   defp rule_summary_visits([], _zone_lookup), do: ""
 

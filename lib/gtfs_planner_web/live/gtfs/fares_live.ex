@@ -117,6 +117,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   when that rule is gone. A completed save or removal closes the drawer, reloads
   the workspace - rules, inventory and checks - and reports "Fare rule saved."
   or "Fare rule removed."
+
+  The Checks tab renders `FareZones.checks/2` as the setup's issue rows: one
+  "Needs repair" row per zone fare rules use that has no boardable stops, one
+  "Review" row while boardable stops have no zone, one "Note" row per empty
+  declared zone, and the "Source check" row only while fare rules reference zones
+  at all. With no needs-repair and no review row, the tab states that both hold.
+  Every row that needs an action links into the Zones tab - the stopless zone's
+  own filter, and `?filter=unassigned` for the unassigned stops - and each of
+  those URLs is built by `URI.encode_query/1`, so a zone ID keeps its exact bytes
+  and the unassigned filter stays a separate key from a zone (AC-32, CR-7).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -124,6 +134,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
       assignment_dialog: 1,
+      checks_tab: 1,
       delete_zone_dialog: 1,
       first_use_empty: 1,
       load_error: 1,
@@ -735,7 +746,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
             zones={@inventory.zones}
           />
         </div>
-        <div :if={@live_action == :checks} id="fare-checks-panel" class="mt-2"></div>
+        <div :if={@live_action == :checks} id="fare-checks-panel" class="mt-2">
+          <.checks_tab checks={@checks} patch_base={zones_path(@current_gtfs_version.id)} />
+        </div>
       <% end %>
 
       <.assignment_dialog

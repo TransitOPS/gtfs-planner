@@ -1242,3 +1242,104 @@ test("rule drawer", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?dialog=rule", "ref-rule");
 });
+
+// ── checks ────────────────────────────────────────────────────────────────
+
+// The Checks tab's issue rows and its all-clear line. The seeded "Browser Fare
+// Zones Version" reports one needs-repair row (a fare rule uses C, which has no
+// stops and no record), four of its 27 boardable stops without a zone, the
+// declared-but-empty D Airport, and the conditional source check, so the tab
+// badge reads 2. The scale version has five zones full of stops, nothing
+// unassigned and no rule referencing a zone, which is the all-clear state.
+test("checks", async ({ page }, testInfo) => {
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFares(page, "checks");
+
+  await expect(page.locator("#fares-tab-checks")).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#fare-checks-heading")).toHaveText("Check your fare-zone setup");
+  await expect(page.locator("#fare-checks-subtitle")).toHaveText(
+    "Review membership and references before publishing this version.",
+  );
+  await expect(page.locator("#fare-check-clean")).toHaveCount(0);
+
+  const stopless = page.locator("#fare-check-stopless-0");
+
+  await expect(stopless).toContainText("Needs repair");
+  await expect(stopless).toContainText("Fare rules use C (C), which has no stops");
+  await expect(stopless).toContainText(
+    "Exported fares for this zone won't match any stop. Assign stops to this zone or edit the rules that use it.",
+  );
+  await expect(page.locator("#fare-check-stopless-0-link")).toHaveText("Show C");
+  await expect(page.locator("#fare-check-stopless-0-link")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?zone=C`,
+  );
+  await expect(page.locator("#fare-check-stopless-1")).toHaveCount(0);
+
+  await expect(page.locator("#fare-check-unassigned")).toContainText("Review");
+  await expect(page.locator("#fare-check-unassigned")).toContainText("4 stops have no fare zone");
+  await expect(page.locator("#fare-check-unassigned-link")).toHaveText("Review unassigned stops");
+  await expect(page.locator("#fare-check-unassigned-link")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?filter=unassigned`,
+  );
+
+  await expect(page.locator("#fare-check-empty")).toContainText("Note");
+  await expect(page.locator("#fare-check-empty")).toContainText("1 empty zone");
+  await expect(page.locator("#fare-check-empty-link")).toHaveCount(0);
+
+  await expect(page.locator("#fare-check-source")).toContainText("Source check");
+  await expect(page.locator("#fare-check-source")).toContainText(
+    "Verify assignments against your source feed",
+  );
+  await expect(page.locator("#fare-check-source-detail summary")).toHaveText(
+    "What must be checked?",
+  );
+
+  // Two kinds count: the stopless referenced zone and the unassigned-stops row.
+  await expect(page.locator("#fares-checks-count")).toHaveText("2");
+
+  await capture(page, testInfo, "checks-1440", { fullPage: false });
+
+  // The disclosure is a native `<details>`, so it opens without script and stays
+  // keyboard-operable.
+  await page.locator("#fare-check-source-detail summary").click();
+  await expect(page.locator("#fare-check-source-detail")).toHaveAttribute("open", "");
+  await expect(page.locator("#fare-check-source-detail")).toContainText(
+    "Check that each stop has the same zone as in your source feed.",
+  );
+
+  await capture(page, testInfo, "checks-source-1440", { fullPage: false });
+
+  await page.setViewportSize(NARROW);
+
+  await expect(page.locator("#fare-checks-heading")).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  await capture(page, testInfo, "checks-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // ── all clear ──
+  const cleanVersionId = await versionIdByName(page, "Browser Fare Zones Scale Version");
+
+  await page.goto(`/gtfs/${cleanVersionId}/settings/fares/checks`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#fare-check-clean h3")).toHaveText(
+    "Every zone used by a fare rule has stops, and every stop has a zone.",
+  );
+  await expect(page.locator("#fare-check-clean")).toContainText("Ready");
+  await expect(page.locator("#fare-check-stopless-0")).toHaveCount(0);
+  await expect(page.locator("#fare-check-unassigned")).toHaveCount(0);
+  await expect(page.locator("#fare-check-empty")).toHaveCount(0);
+  await expect(page.locator("#fare-check-source")).toHaveCount(0);
+  await expect(page.locator("#fares-checks-count")).toHaveText("0");
+
+  await capture(page, testInfo, "checks-clean-1440", { fullPage: false });
+
+  await captureReference(page, testInfo, "?tab=checks", "ref-checks");
+  await captureReference(page, testInfo, "?state=import&tab=checks", "ref-checks-repair");
+});
