@@ -199,6 +199,35 @@ defmodule GtfsPlanner.Gtfs.LanguageCodes do
 
   @names Map.new(@languages)
   @codes Enum.map(@languages, &elem(&1, 0))
+  @mul_name "Multilingual"
+
+  @doc """
+  Returns the display label for a stored language code.
+
+  A known code reads as its select option labels it (`"English (en)"`), and
+  `"mul"` reads `"Multilingual (mul)"` even though only the feed language
+  offers it. Any other non-blank code is returned as stored, so an imported
+  value outside the list stays readable (R12). Blank and nil return nil.
+  """
+  @spec label(String.t() | nil) :: String.t() | nil
+  def label(code) when is_binary(code) do
+    case String.trim(code) do
+      "" ->
+        nil
+
+      "mul" ->
+        labelled_name(@mul_name, "mul")
+
+      trimmed ->
+        if Map.has_key?(@names, trimmed) do
+          labelled_name(Map.fetch!(@names, trimmed), trimmed)
+        else
+          trimmed
+        end
+    end
+  end
+
+  def label(_code), do: nil
 
   @spec valid?(String.t() | nil, keyword()) :: boolean()
   def valid?(code, opts) do
@@ -232,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.LanguageCodes do
 
     entries =
       if include_mul? do
-        entries ++ [{"Multilingual (mul)", "mul"}]
+        entries ++ [{labelled_name(@mul_name, "mul"), "mul"}]
       else
         entries
       end
@@ -249,6 +278,10 @@ defmodule GtfsPlanner.Gtfs.LanguageCodes do
     {"All languages", entries}
   end
 
-  defp labelled({code, name}), do: {"#{name} (#{code})", code}
+  # One format for a select label and a read-only label, so the two cannot
+  # drift apart: "English (en)".
+  defp labelled({code, name}), do: {labelled_name(name, code), code}
   defp labelled(code) when is_binary(code), do: labelled({code, Map.fetch!(@names, code)})
+
+  defp labelled_name(name, code), do: "#{name} (#{code})"
 end

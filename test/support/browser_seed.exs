@@ -24,6 +24,7 @@ alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Organizations
@@ -2512,6 +2513,45 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: version #{schedules_version.name} with no calendars " <>
         "(#{schedules_version.id})"
+    )
+
+    # ── Feed details page (settings_agencies_feed.spec.js; EV-4, EV-5) ──
+    #
+    # Two published versions give the Feed details page its two states: one with a
+    # stored `feed_info` row, and one without. They are created last, so the
+    # version that was the organization's latest default before this block is
+    # re-stamped afterwards and the selection the other journeys start from does
+    # not move.
+    {:ok, feed_details_default_before} = Versions.get_latest_gtfs_version(org.id)
+
+    {:ok, feed_details_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Feed Details Version"})
+
+    # Inserted directly: this supplies scenario data, not an audited editor save.
+    Repo.insert!(%FeedInfo{
+      organization_id: org.id,
+      gtfs_version_id: feed_details_version.id,
+      feed_publisher_name: "Browser Regional Partnership",
+      feed_publisher_url: "https://example.test/data",
+      feed_lang: "en",
+      default_lang: "en",
+      feed_start_date: ~D[2026-09-01],
+      feed_end_date: ~D[2026-12-31],
+      feed_version: "2026-autumn",
+      feed_contact_email: "data@example.test",
+      feed_contact_url: "https://example.test/data/contact"
+    })
+
+    {:ok, feed_empty_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Feed Empty Version"})
+
+    feed_details_default_before
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: feed details version #{feed_details_version.id} with feed info, " <>
+        "empty version #{feed_empty_version.id}, default kept as #{feed_details_default_before.name}"
     )
 
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")

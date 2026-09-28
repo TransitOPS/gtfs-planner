@@ -170,6 +170,7 @@ defmodule GtfsPlannerWeb.Router do
       # declared ahead of the section route so they are never read as slugs, and
       # there is no redirect from the Blocks paths they used before.
       live "/settings", Gtfs.SettingsLive, :index
+      live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
       live "/settings/:section", Gtfs.SettingsLive, :section

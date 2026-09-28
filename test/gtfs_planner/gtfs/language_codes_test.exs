@@ -91,4 +91,23 @@ defmodule GtfsPlanner.Gtfs.LanguageCodesTest do
       assert LanguageCodes.valid?("en", include_mul: nil) == true
     end
   end
+
+  describe "label/1" do
+    test "labels a listed code the way its select option reads" do
+      assert LanguageCodes.label("en") == "English (en)"
+      assert LanguageCodes.label("mi") == "Māori (mi)"
+    end
+
+    test "labels mul even though only the feed language offers it" do
+      assert LanguageCodes.label("mul") == "Multilingual (mul)"
+    end
+
+    test "returns a code outside the list as stored, and nil for a blank one" do
+      assert LanguageCodes.label("en-US") == "en-US"
+      assert LanguageCodes.label("  en  ") == "English (en)"
+      assert LanguageCodes.label("") == nil
+      assert LanguageCodes.label("   ") == nil
+      assert LanguageCodes.label(nil) == nil
+    end
+  end
 end
