@@ -1,7 +1,147 @@
 defmodule GtfsPlanner.Gtfs.StopTest do
-  use ExUnit.Case, async: true
+  use GtfsPlanner.DataCase, async: true
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
+
+  import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
+
+  describe "input write coordination" do
+    setup do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      %{organization: organization, version: version}
+    end
+
+    test "invalid input keeps its changeset error without opening a writer transaction", %{
+      organization: org,
+      version: version
+    } do
+      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.create_stop(%{})
+      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.import_create_stop(%{})
+
+      assert {:error, %Ecto.Changeset{valid?: false}} =
+               Gtfs.update_stop(
+                 %Stop{organization_id: org.id, gtfs_version_id: version.id},
+                 %{stop_id: nil}
+               )
+
+      assert {:error, %Ecto.Changeset{valid?: false}} =
+               Gtfs.import_update_stop(
+                 %Stop{organization_id: org.id, gtfs_version_id: version.id},
+                 %{}
+               )
+    end
+
+    test "a foreign or unknown scope is refused without writing the stop", %{
+      organization: org,
+      version: version
+    } do
+      other = organization_fixture()
+      stop = stop_fixture(org.id, version.id, %{stop_id: "SCOPED_STOP", stop_name: "Scoped Stop"})
+      foreign = %{stop | organization_id: other.id}
+
+      assert {:error, :not_found} =
+               Gtfs.create_stop(%{
+                 organization_id: other.id,
+                 gtfs_version_id: version.id,
+                 stop_id: "FOREIGN_STOP"
+               })
+
+      assert {:error, :not_found} =
+               Gtfs.import_create_stop(%{
+                 organization_id: org.id,
+                 gtfs_version_id: Ecto.UUID.generate(),
+                 stop_id: "UNKNOWN_STOP"
+               })
+
+      assert {:error, :not_found} = Gtfs.update_stop(foreign, %{stop_name: "Foreign"})
+      assert {:error, :not_found} = Gtfs.import_update_stop(foreign, %{stop_name: "Foreign"})
+      assert {:error, :not_found} = Gtfs.delete_stop(foreign)
+
+      # The refused writers rolled their transactions back, so the owned stop is untouched and
+      # no row landed under the foreign scope.
+      assert Repo.get!(Stop, stop.id).stop_name == "Scoped Stop"
+      refute Repo.exists?(from(s in Stop, where: s.organization_id == ^other.id))
+    end
+
+    test "the import stop writers keep accepting a staging scope", %{
+      organization: org,
+      version: version
+    } do
+      assert {:ok, staging} =
+               Versions.create_staging_gtfs_version(org.id, %{name: "Staging stop writes"})
+
+      assert {:ok, %Stop{stop_id: "STAGING_STOP"}} =
+               Gtfs.import_create_stop(%{
+                 organization_id: org.id,
+                 gtfs_version_id: staging.id,
+                 stop_id: "STAGING_STOP",
+                 parent_station: "ABSENT_PARENT",
+                 level_id: nil
+               })
+
+      staging_stop = stop_fixture(org.id, staging.id, %{stop_id: "IMPORT_UPDATED"})
+
+      assert {:ok, %Stop{stop_name: "Drifted"}} =
+               Gtfs.import_update_stop(staging_stop, %{stop_name: "Drifted"})
+
+      # The helper is a scoped row lock, not an authorization check: the scope is still a plain
+      # staging version afterwards, exactly as before the lock was added.
+      assert %GtfsVersion{publication_status: "staging", published_at: nil} =
+               Repo.get!(GtfsVersion, staging.id)
+
+      assert %GtfsVersion{publication_status: "published"} = Repo.get!(GtfsVersion, version.id)
+    end
+
+    test "the stop audit entry point still records the pre-change snapshot after a cascade", %{
+      organization: org,
+      version: version
+    } do
+      actor = user_fixture()
+
+      audit = %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDIT_STATION",
+          stop_name: "Old Station",
+          location_type: 1
+        })
+
+      assert {:ok, %Stop{} = renamed} =
+               Gtfs.update_stop_with_cascade(station, %{stop_id: "AUDIT_STATION_RENAMED"})
+
+      assert renamed.stop_id == "AUDIT_STATION_RENAMED"
+
+      # The journal still records one "updated" entry for the stop against its pre-change
+      # snapshot, unchanged by the added version lock.
+      assert :ok =
+               Gtfs.record_change(audit, :stop, station, "updated", %{stop_name: "New Name"})
+
+      assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", station.id)
+      assert log.action == "updated"
+      assert log.snapshot["stop_name"] == "Old Station"
+
+      assert log.changed_fields["stop_name"] == %{
+               "from" => "Old Station",
+               "to" => "New Name"
+             }
+
+      # The cascade's version share lock did not outlive its transaction.
+      assert {:ok, :acquired} = acquire_exclusive_version(org.id, version.id)
+    end
+  end
 
   describe "slugify/1" do
     test "slugifies a normal name" do
@@ -209,5 +349,20 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       organization_id: Ecto.UUID.generate(),
       gtfs_version_id: Ecto.UUID.generate()
     }
+  end
+
+  defp acquire_exclusive_version(organization_id, version_id) do
+    Repo.transaction(fn ->
+      Repo.query!("SET LOCAL lock_timeout = '5s'")
+
+      Repo.one(
+        from(v in GtfsVersion,
+          where: v.id == ^version_id and v.organization_id == ^organization_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+      :acquired
+    end)
   end
 end

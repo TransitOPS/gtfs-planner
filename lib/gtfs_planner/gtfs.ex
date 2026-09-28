@@ -3014,7 +3014,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_stop(attrs \\ %{}) do
     %Stop{}
     |> Stop.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
     |> broadcast([:stops, :created])
   end
 
@@ -3024,7 +3024,7 @@ defmodule GtfsPlanner.Gtfs do
   def import_create_stop(attrs \\ %{}) do
     %Stop{}
     |> Stop.import_changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
     |> broadcast([:stops, :created])
   end
 
@@ -3042,7 +3042,7 @@ defmodule GtfsPlanner.Gtfs do
   def update_stop(%Stop{} = stop, attrs) do
     stop
     |> Stop.changeset(attrs)
-    |> Repo.update()
+    |> update_with_input_write_lock()
     |> broadcast([:stops, :updated])
   end
 
@@ -3061,6 +3061,7 @@ defmodule GtfsPlanner.Gtfs do
 
       multi =
         Ecto.Multi.new()
+        |> lock_input_write_multi(stop.organization_id, stop.gtfs_version_id)
         |> Ecto.Multi.run(:update_stop, fn _repo, _changes ->
           stop
           |> Stop.changeset(attrs)
@@ -3096,7 +3097,7 @@ defmodule GtfsPlanner.Gtfs do
   def import_update_stop(%Stop{} = stop, attrs) do
     stop
     |> Stop.import_changeset(attrs)
-    |> Repo.update()
+    |> update_with_input_write_lock()
     |> broadcast([:stops, :updated])
   end
 
@@ -3112,7 +3113,7 @@ defmodule GtfsPlanner.Gtfs do
       {:error, %Ecto.Changeset{}}
   """
   def delete_stop(%Stop{} = stop) do
-    Repo.delete(stop)
+    delete_with_input_write_lock(stop)
     |> broadcast([:stops, :deleted])
   end
 
@@ -3142,6 +3143,7 @@ defmodule GtfsPlanner.Gtfs do
 
       stop ->
         Ecto.Multi.new()
+        |> lock_input_write_multi(organization_id, gtfs_version_id)
         |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
         |> Ecto.Multi.delete(:stop, stop)
         |> Repo.transaction()
@@ -5902,15 +5904,59 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp insert_after_version_lock(changeset) do
-    Versions.lock_for_input_write!(
-      Ecto.Changeset.get_field(changeset, :organization_id),
-      Ecto.Changeset.get_field(changeset, :gtfs_version_id)
-    )
+    lock_changeset_version!(changeset)
 
     case Repo.insert(changeset) do
       {:ok, row} -> row
       {:error, changeset} -> Repo.rollback(changeset)
     end
+  end
+
+  # Stop and parent rows are reviewed inputs too: the combination projection reads endpoint and
+  # parent coordinates with a parent-coordinate fallback and the fingerprint carries parent rows
+  # including their absence. Each stop update therefore takes the same scoped version share lock
+  # before its row mutation; invalid input keeps its changeset error without a transaction.
+  defp update_with_input_write_lock(changeset) do
+    if changeset.valid? do
+      Repo.transaction(fn -> update_after_version_lock(changeset) end)
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp update_after_version_lock(changeset) do
+    lock_changeset_version!(changeset)
+
+    case Repo.update(changeset) do
+      {:ok, row} -> row
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp delete_with_input_write_lock(row) do
+    Repo.transaction(fn ->
+      Versions.lock_for_input_write!(row.organization_id, row.gtfs_version_id)
+
+      case Repo.delete(row) do
+        {:ok, deleted} -> deleted
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  # The stop cascade and the child-deletion transaction lock the version as their first step,
+  # before the `FOR UPDATE` on the referenced rows and before any stop_id rewrite.
+  defp lock_input_write_multi(multi, organization_id, gtfs_version_id) do
+    Ecto.Multi.run(multi, :lock_version, fn _repo, _changes ->
+      {:ok, Versions.lock_for_input_write!(organization_id, gtfs_version_id)}
+    end)
+  end
+
+  defp lock_changeset_version!(changeset) do
+    Versions.lock_for_input_write!(
+      Ecto.Changeset.get_field(changeset, :organization_id),
+      Ecto.Changeset.get_field(changeset, :gtfs_version_id)
+    )
   end
 
   # -- Snapshot helpers --

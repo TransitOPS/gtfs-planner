@@ -31,12 +31,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
@@ -369,6 +372,203 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end
   end
 
+  describe "stop writers" do
+    test "a parent coordinate update and a previously absent parent insert wait behind the lock",
+         %{supervisor: supervisor} do
+      scope = seed_scope("stop-parent")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      parent =
+        unboxed(fn ->
+          stop_fixture(scope.organization.id, scope.version.id, %{
+            stop_id: "PARENT_GEOMETRY",
+            location_type: 1,
+            stop_lat: Decimal.new("40.0"),
+            stop_lon: Decimal.new("-74.0")
+          })
+        end)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {update_writer, update_backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.update_stop(parent, %{stop_lat: "41.5", stop_lon: "-73.5"})
+        end)
+
+      {insert_writer, insert_backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.create_stop(
+            stop_attrs(scope, "PARENT_ADDED", %{
+              location_type: 1,
+              stop_lat: "42.0",
+              stop_lon: "-71.0"
+            })
+          )
+        end)
+
+      send(update_writer.pid, :go)
+      send(insert_writer.pid, :go)
+
+      assert_blocked_by(update_backend, holder_backend)
+      assert_blocked_by(insert_backend, holder_backend)
+
+      # While the version is exclusively owned, neither the projected coordinate nor the parent
+      # row that was previously absent is visible.
+      assert coordinates?(stop_coordinates(scope, "PARENT_GEOMETRY"), "40.0", "-74.0")
+      assert stop_ids(scope) == ["PARENT_GEOMETRY"]
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %Stop{stop_lat: updated_lat}} = Task.await(update_writer, @collect_timeout)
+      assert Decimal.equal?(updated_lat, Decimal.new("41.5"))
+      assert {:ok, %Stop{stop_id: "PARENT_ADDED"}} = Task.await(insert_writer, @collect_timeout)
+
+      assert coordinates?(stop_coordinates(scope, "PARENT_GEOMETRY"), "41.5", "-73.5")
+      assert stop_ids(scope) == ["PARENT_ADDED", "PARENT_GEOMETRY"]
+    end
+
+    test "a stop naming an absent parent waits before its phantom becomes visible",
+         %{supervisor: supervisor} do
+      scope = seed_scope("stop-phantom")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {writer, backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.create_stop(
+            stop_attrs(scope, "PHANTOM_CHILD", %{
+              parent_station: "ABSENT_PARENT",
+              level_id: "L_ABSENT"
+            })
+          )
+        end)
+
+      send(writer.pid, :go)
+      assert_blocked_by(backend, holder_backend)
+
+      # Neither the referencing stop nor its parent row exists yet, so the parent-coordinate
+      # fallback the projection loads cannot change while the version is owned.
+      assert stop_ids(scope) == []
+      assert stops_named(scope, "ABSENT_PARENT") == []
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %Stop{stop_id: "PHANTOM_CHILD", parent_station: "ABSENT_PARENT"}} =
+               Task.await(writer, @collect_timeout)
+
+      # The referencing stop now exists; the parent row stays absent, exactly the absence the
+      # review fingerprint records.
+      assert stop_ids(scope) == ["PHANTOM_CHILD"]
+      assert stops_named(scope, "ABSENT_PARENT") == []
+    end
+
+    test "a stop delete waits behind the lock, removes the row, and releases the version",
+         %{supervisor: supervisor} do
+      scope = seed_scope("stop-delete")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      stop =
+        unboxed(fn ->
+          stop_fixture(scope.organization.id, scope.version.id, %{stop_id: "STOP_TO_DELETE"})
+        end)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {writer, backend} =
+        start_writer(supervisor, fn -> Gtfs.delete_stop(stop) end)
+
+      send(writer.pid, :go)
+      assert_blocked_by(backend, holder_backend)
+      assert stop_ids(scope) == ["STOP_TO_DELETE"]
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %Stop{stop_id: "STOP_TO_DELETE"}} = Task.await(writer, @collect_timeout)
+      assert stop_ids(scope) == []
+
+      # The delete committed and released its share lock, so an exclusive version owner can now
+      # take the row.
+      assert {:ok, %GtfsVersion{}} = exclusive_lock_version(scope)
+    end
+
+    test "a stop-ID cascade waits behind the lock and then rewrites every reference",
+         %{supervisor: supervisor} do
+      scope = seed_scope("stop-cascade")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      {station, stop_time, transfer} =
+        unboxed(fn ->
+          station =
+            stop_fixture(scope.organization.id, scope.version.id, %{
+              stop_id: "CASCADE_STATION",
+              location_type: 1
+            })
+
+          stop_fixture(scope.organization.id, scope.version.id, %{
+            stop_id: "CASCADE_CHILD",
+            parent_station: "CASCADE_STATION",
+            level_id: "L1"
+          })
+
+          stop_time =
+            stop_time_fixture(
+              scope.organization.id,
+              scope.version.id,
+              "trip_cascade",
+              "CASCADE_STATION"
+            )
+
+          transfer =
+            transfer_fixture(scope.organization.id, scope.version.id, %{
+              from_stop_id: "CASCADE_STATION",
+              to_stop_id: "CASCADE_CHILD"
+            })
+
+          {station, stop_time, transfer}
+        end)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {writer, backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.update_stop_with_cascade(station, %{stop_id: "CASCADE_STATION_RENAMED"})
+        end)
+
+      send(writer.pid, :go)
+      assert_blocked_by(backend, holder_backend)
+
+      # No stop row, stop time, transfer or parent reference is rewritten while the version is
+      # exclusively owned.
+      assert stop_ids(scope) == ["CASCADE_CHILD", "CASCADE_STATION"]
+      assert child_parent_stations(scope) == ["CASCADE_STATION"]
+      assert stop_time_stop_ids(scope) == ["CASCADE_STATION"]
+      assert transfer_stop_ids(scope) == [{"CASCADE_STATION", "CASCADE_CHILD"}]
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %Stop{stop_id: "CASCADE_STATION_RENAMED"}} =
+               Task.await(writer, @collect_timeout)
+
+      # The linked rows keep pointing at the renamed stop through stop_id itself, so their
+      # identities and their existing stop-time rows survive the cascade.
+      assert stop_ids(scope) == ["CASCADE_CHILD", "CASCADE_STATION_RENAMED"]
+      assert child_parent_stations(scope) == ["CASCADE_STATION_RENAMED"]
+      assert stop_time_stop_ids(scope) == ["CASCADE_STATION_RENAMED"]
+      assert transfer_stop_ids(scope) == [{"CASCADE_STATION_RENAMED", "CASCADE_CHILD"}]
+
+      assert unboxed(fn -> Repo.get!(StopTime, stop_time.id).stop_id end) ==
+               "CASCADE_STATION_RENAMED"
+
+      assert unboxed(fn -> Repo.get!(Transfer, transfer.id).from_stop_id end) ==
+               "CASCADE_STATION_RENAMED"
+    end
+  end
+
   # Releases the writer into real contention for the version row while an independent
   # session owns it exclusively, and verifies the writer really waits on that session.
   defp hold_exclusive_version(scope, supervisor) do
@@ -555,14 +755,113 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end)
   end
 
+  # -- Stop writer fixtures and lock probes ----------------------------------
+
+  defp stop_attrs(scope, stop_id, overrides) do
+    Map.merge(
+      %{
+        organization_id: scope.organization.id,
+        gtfs_version_id: scope.version.id,
+        stop_id: stop_id,
+        stop_name: "Stop #{stop_id}",
+        location_type: 0,
+        wheelchair_boarding: 0
+      },
+      Map.new(overrides)
+    )
+  end
+
+  defp stop_ids(scope) do
+    unboxed(fn ->
+      from(s in Stop,
+        where:
+          s.organization_id == ^scope.organization.id and
+            s.gtfs_version_id == ^scope.version.id,
+        order_by: s.stop_id,
+        select: s.stop_id
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp stops_named(scope, stop_id) do
+    unboxed(fn ->
+      from(s in Stop,
+        where:
+          s.organization_id == ^scope.organization.id and
+            s.gtfs_version_id == ^scope.version.id and s.stop_id == ^stop_id,
+        select: s.id
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp stop_coordinates(scope, stop_id) do
+    unboxed(fn ->
+      from(s in Stop,
+        where:
+          s.organization_id == ^scope.organization.id and
+            s.gtfs_version_id == ^scope.version.id and s.stop_id == ^stop_id,
+        select: {s.stop_lat, s.stop_lon}
+      )
+      |> Repo.one()
+    end)
+  end
+
+  defp coordinates?(coordinates, lat, lon) do
+    {actual_lat, actual_lon} = coordinates
+    Decimal.equal?(actual_lat, Decimal.new(lat)) and Decimal.equal?(actual_lon, Decimal.new(lon))
+  end
+
+  defp child_parent_stations(scope) do
+    unboxed(fn ->
+      from(s in Stop,
+        where:
+          s.organization_id == ^scope.organization.id and
+            s.gtfs_version_id == ^scope.version.id and not is_nil(s.parent_station),
+        order_by: s.stop_id,
+        select: s.parent_station
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp stop_time_stop_ids(scope) do
+    unboxed(fn ->
+      from(st in StopTime,
+        where:
+          st.organization_id == ^scope.organization.id and
+            st.gtfs_version_id == ^scope.version.id,
+        order_by: st.stop_sequence,
+        select: st.stop_id
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp transfer_stop_ids(scope) do
+    unboxed(fn ->
+      from(t in Transfer,
+        where:
+          t.organization_id == ^scope.organization.id and t.gtfs_version_id == ^scope.version.id,
+        select: {t.from_stop_id, t.to_stop_id}
+      )
+      |> Repo.all()
+    end)
+  end
+
   defp cleanup(organization_ids) do
     unboxed(fn ->
+      Repo.delete_all(from(t in Transfer, where: t.organization_id in ^organization_ids))
+      Repo.delete_all(from(p in Pathway, where: p.organization_id in ^organization_ids))
+      Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(t in Trip, where: t.organization_id in ^organization_ids))
       Repo.delete_all(from(s in StopTime, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
+      refute Repo.exists?(from(s in Stop, where: s.organization_id in ^organization_ids))
       refute Repo.exists?(from(t in Trip, where: t.organization_id in ^organization_ids))
       refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))
