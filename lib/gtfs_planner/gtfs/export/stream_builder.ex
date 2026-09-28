@@ -4,6 +4,11 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
 
   All streams use batch processing with `max_rows: 1000` to avoid
   memory exhaustion when processing large datasets.
+
+  Export selection follows the R6 inactive-service policy: a route is inactive
+  only when its `active` column is explicitly false. Inactive routes, the trips
+  naming them, and whole relationship rows referencing either are excluded via
+  scoped `NOT EXISTS` matches. NULL, dangling and shared rows stay eligible.
   """
 
   import Ecto.Query
@@ -19,11 +24,150 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
       |> Enum.each(fn stop -> ... end)
   """
   def stream_records(repo, schema, organization_id, gtfs_version_id) do
-    schema
+    from(s in schema, as: :row)
     |> where([s], s.organization_id == ^organization_id)
     |> where([s], s.gtfs_version_id == ^gtfs_version_id)
+    |> exclude_inactive_service(schema, organization_id, gtfs_version_id)
     |> order_by_for_schema(schema)
     |> repo.stream(max_rows: 1000)
+  end
+
+  # R6 export selection: exclude whole rows in the inactive route closure. The
+  # closure is an explicitly `active = false` route and the trips naming it;
+  # relationship rows referencing either are removed whole. Each exclusion is a
+  # scoped NOT EXISTS so NULL and dangling references stay eligible, and every
+  # other schema keeps the current selection.
+
+  # The row itself is an explicitly inactive route.
+  defp exclude_inactive_service(query, GtfsPlanner.Gtfs.Route, organization_id, gtfs_version_id) do
+    where(
+      query,
+      [row],
+      not exists(
+        from(r in GtfsPlanner.Gtfs.Route,
+          where: r.organization_id == ^organization_id,
+          where: r.gtfs_version_id == ^gtfs_version_id,
+          where: r.id == parent_as(:row).id,
+          where: r.active == false
+        )
+      )
+    )
+  end
+
+  # The row names an explicitly inactive route through its route_id.
+  defp exclude_inactive_service(query, schema, organization_id, gtfs_version_id)
+       when schema in [
+              GtfsPlanner.Gtfs.Trip,
+              GtfsPlanner.Gtfs.RoutePattern,
+              GtfsPlanner.Gtfs.FareRule
+            ] do
+    exclude_named_inactive_routes(query, organization_id, gtfs_version_id)
+  end
+
+  # The row names an explicitly inactive route or one of its trips.
+  defp exclude_inactive_service(
+         query,
+         GtfsPlanner.Gtfs.Attribution,
+         organization_id,
+         gtfs_version_id
+       ) do
+    query
+    |> exclude_named_inactive_routes(organization_id, gtfs_version_id)
+    |> exclude_named_inactive_trips(organization_id, gtfs_version_id)
+  end
+
+  # The row belongs to a trip naming an explicitly inactive route.
+  defp exclude_inactive_service(query, schema, organization_id, gtfs_version_id)
+       when schema in [GtfsPlanner.Gtfs.StopTime, GtfsPlanner.Gtfs.Frequency] do
+    exclude_named_inactive_trips(query, organization_id, gtfs_version_id)
+  end
+
+  # Either route or trip endpoint references the inactive route closure.
+  defp exclude_inactive_service(
+         query,
+         GtfsPlanner.Gtfs.Transfer,
+         organization_id,
+         gtfs_version_id
+       ) do
+    query
+    |> exclude_inactive_route_endpoints(organization_id, gtfs_version_id)
+    |> exclude_inactive_trip_endpoints(organization_id, gtfs_version_id)
+  end
+
+  defp exclude_inactive_service(query, _schema, _organization_id, _gtfs_version_id), do: query
+
+  defp exclude_named_inactive_routes(query, organization_id, gtfs_version_id) do
+    where(
+      query,
+      [row],
+      not exists(
+        from(r in GtfsPlanner.Gtfs.Route,
+          where: r.organization_id == ^organization_id,
+          where: r.gtfs_version_id == ^gtfs_version_id,
+          where: r.route_id == parent_as(:row).route_id,
+          where: r.active == false
+        )
+      )
+    )
+  end
+
+  defp exclude_named_inactive_trips(query, organization_id, gtfs_version_id) do
+    where(
+      query,
+      [row],
+      not exists(
+        from(t in GtfsPlanner.Gtfs.Trip,
+          join: r in GtfsPlanner.Gtfs.Route,
+          on:
+            r.organization_id == t.organization_id and
+              r.gtfs_version_id == t.gtfs_version_id and
+              r.route_id == t.route_id,
+          where: t.organization_id == ^organization_id,
+          where: t.gtfs_version_id == ^gtfs_version_id,
+          where: t.trip_id == parent_as(:row).trip_id,
+          where: r.active == false
+        )
+      )
+    )
+  end
+
+  defp exclude_inactive_route_endpoints(query, organization_id, gtfs_version_id) do
+    where(
+      query,
+      [row],
+      not exists(
+        from(r in GtfsPlanner.Gtfs.Route,
+          where: r.organization_id == ^organization_id,
+          where: r.gtfs_version_id == ^gtfs_version_id,
+          where:
+            r.route_id == parent_as(:row).from_route_id or
+              r.route_id == parent_as(:row).to_route_id,
+          where: r.active == false
+        )
+      )
+    )
+  end
+
+  defp exclude_inactive_trip_endpoints(query, organization_id, gtfs_version_id) do
+    where(
+      query,
+      [row],
+      not exists(
+        from(t in GtfsPlanner.Gtfs.Trip,
+          join: r in GtfsPlanner.Gtfs.Route,
+          on:
+            r.organization_id == t.organization_id and
+              r.gtfs_version_id == t.gtfs_version_id and
+              r.route_id == t.route_id,
+          where: t.organization_id == ^organization_id,
+          where: t.gtfs_version_id == ^gtfs_version_id,
+          where:
+            t.trip_id == parent_as(:row).from_trip_id or
+              t.trip_id == parent_as(:row).to_trip_id,
+          where: r.active == false
+        )
+      )
+    )
   end
 
   @doc """
