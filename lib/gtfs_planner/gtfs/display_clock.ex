@@ -51,6 +51,55 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   end
 
   @doc """
+  Reports whether `name` is an exact zone name in PostgreSQL's timezone catalog.
+
+  The comparison is exact, so callers trim their own input first:
+  `"America/New_York"` is a zone, `" America/New_York "` is not. Validation
+  through this function accepts exactly the zones `resolve_zone/2` resolves.
+  """
+  @spec valid_zone?(String.t()) :: boolean()
+  def valid_zone?(name) do
+    %Postgrex.Result{rows: [[valid?]]} =
+      SQL.query!(
+        Repo,
+        "SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)",
+        [name]
+      )
+
+    valid?
+  end
+
+  @doc """
+  Lists the zone names the display clock accepts, sorted ascending.
+
+  Excludes the `posix/…` and `right/…` alias trees and PostgreSQL's `localtime`
+  pseudo-zone, which are catalog artifacts rather than agency zones. The result
+  is safe to offer directly as timezone choices.
+  """
+  @spec zone_names() :: [String.t()]
+  def zone_names do
+    %Postgrex.Result{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT name
+        FROM pg_timezone_names
+        WHERE name !~ '^(posix|right)/' AND name <> 'localtime'
+        ORDER BY name
+        """,
+        []
+      )
+
+    rows
+    |> Enum.map(fn [name] -> name end)
+    # `ORDER BY` follows the server's collation, which for some names differs
+    # from byte order (`en_US.UTF-8` reorders 124 of 598 names on PostgreSQL
+    # 18.1). Sorting here keeps one order for every caller, independent of the
+    # server's locale.
+    |> Enum.sort()
+  end
+
+  @doc """
   Converts stored UTC timestamps to the resolved zone's local wall-clock values.
 
   Runs one PostgreSQL conversion for the whole collection and returns naive local
@@ -136,14 +185,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   end
 
   defp validated_zone(candidate) do
-    %Postgrex.Result{rows: [[valid?]]} =
-      SQL.query!(
-        Repo,
-        "SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)",
-        [candidate]
-      )
-
-    if valid? do
+    if valid_zone?(candidate) do
       %{timezone: candidate, fallback?: false, fallback_reason: nil}
     else
       fallback(:invalid)

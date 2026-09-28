@@ -46,10 +46,10 @@ const TASKS = [
   ["nav-gtfs", "GTFS", "export"],
 ];
 
-// The five allowlisted placeholder sections: tab id, page title, URL slug.
+// The three allowlisted placeholder sections: tab id, page title, URL slug. Feed
+// details and Agencies left this list when their pages were built; the journey
+// asserts each of them separately below.
 const SETTINGS_SECTIONS = [
-  ["settings-tab-feed_details", "Feed details", "feed-details"],
-  ["settings-tab-agencies", "Agencies", "agencies"],
   ["settings-tab-fares", "Fares", "fares"],
   ["settings-tab-export_defaults", "Export defaults", "export-defaults"],
   ["settings-tab-feed_url", "Published feed URL", "feed-url"],
@@ -309,7 +309,31 @@ for (const { width, height, label } of VIEWPORTS) {
       await capture(page, testInfo, `settings-${label}`);
       await expectNoPageOverflow(page);
 
-      // ── The five allowlisted sections render their shared body ──
+      // ── Feed details is a built page, not a placeholder ──
+      await page.locator("#settings-tab-feed_details").click();
+      await page.waitForURL(new RegExp(`/settings/feed-details$`));
+      await waitForLiveView(page);
+
+      await expect(page.locator("h1")).toHaveText("Feed details");
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+      await expect(
+        page.locator("#settings-nav a[aria-current='page']"),
+      ).toHaveText("Feed details");
+      await expectNoPageOverflow(page);
+
+      // ── Agencies is a built page, not a placeholder ──
+      await page.locator("#settings-tab-agencies").click();
+      await page.waitForURL(new RegExp(`/settings/agencies$`));
+      await waitForLiveView(page);
+
+      await expect(page.locator("h1")).toHaveText("Agencies");
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+      await expect(
+        page.locator("#settings-nav a[aria-current='page']"),
+      ).toHaveText("Agencies");
+      await expectNoPageOverflow(page);
+
+      // ── The three remaining allowlisted sections render their shared body ──
       for (const [tab, title, slug] of SETTINGS_SECTIONS) {
         await page.locator(`#${tab}`).click();
         await page.waitForURL(new RegExp(`/settings/${slug}$`));

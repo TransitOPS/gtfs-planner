@@ -43,6 +43,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FeedInfo
+  alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
@@ -788,6 +789,61 @@ defmodule GtfsPlanner.Gtfs do
     %Route{}
     |> Route.changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc """
+  Creates a route in a GTFS version, resolving its agency under the version row lock (R4,
+  INV-1).
+
+  `organization_id` and `gtfs_version_id` scope the insert and are never taken from
+  `attrs`; `attrs` carry the route fields and may name an `agency_id`, as a string or atom
+  key. One transaction share-locks the published version row and resolves the agency
+  through `GtfsPlanner.Gtfs.FeedSettings.lock_agency_for_reference!/3`, so the insert
+  serializes against an agency deletion, creation or timezone change for the same version
+  (INV-2, AC-26) and a route can never commit against an agency that no longer exists.
+
+  ## Returns
+
+  - `{:ok, %Route{}}` with the resolved `agency_id`
+  - `{:error, %Ecto.Changeset{}}` for attrs the route changeset refuses
+  - `{:error, :not_found}` when the scope is not a published version of the organization
+  - `{:error, :agency_required}` when the version has no agency
+  - `{:error, :agency_not_found}` when the choice is not one of the version's agencies
+
+  ## Examples
+
+      iex> create_version_route(org_id, version_id, %{route_id: "R1", route_type: 3, route_short_name: "1"})
+      {:ok, %Route{}}
+  """
+  @spec create_version_route(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, Route.t()}
+          | {:error, Ecto.Changeset.t() | :not_found | :agency_required | :agency_not_found}
+  def create_version_route(organization_id, gtfs_version_id, attrs) when is_map(attrs) do
+    # String keys, so the scope and the resolved agency override any key form the caller
+    # sent and the changeset reads one shape.
+    attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+
+    Repo.transaction(fn ->
+      agency_id =
+        FeedSettings.lock_agency_for_reference!(
+          organization_id,
+          gtfs_version_id,
+          attrs["agency_id"]
+        )
+
+      attrs
+      |> Map.merge(%{
+        "organization_id" => organization_id,
+        "gtfs_version_id" => gtfs_version_id,
+        "agency_id" => agency_id
+      })
+      |> then(&Route.changeset(%Route{}, &1))
+      |> Repo.insert()
+      |> case do
+        {:ok, route} -> route
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   @doc """

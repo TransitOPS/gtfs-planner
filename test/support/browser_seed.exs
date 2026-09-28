@@ -24,6 +24,8 @@ alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.FareAttribute
+alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Gtfs.Stop
@@ -2735,7 +2737,212 @@ case Accounts.register_first_admin(%{
       "Browser seed: transfers version #{transfers_version.name} (#{transfers_version.id}) with 8 general rules and 2 in-seat rows"
     )
 
+    # ── Feed details page (settings_agencies_feed.spec.js; EV-4, EV-5) ──
+    #
+    # Two published versions give the Feed details page its two states: one with a
+    # stored `feed_info` row, and one without. They are created last, so the
+    # version that was the organization's latest default before this block is
+    # re-stamped afterwards and the selection the other journeys start from does
+    # not move.
+    {:ok, feed_details_default_before} = Versions.get_latest_gtfs_version(org.id)
+
+    {:ok, feed_details_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Feed Details Version"})
+
+    # Inserted directly: this supplies scenario data, not an audited editor save.
+    Repo.insert!(%FeedInfo{
+      organization_id: org.id,
+      gtfs_version_id: feed_details_version.id,
+      feed_publisher_name: "Browser Regional Partnership",
+      feed_publisher_url: "https://example.test/data",
+      feed_lang: "en",
+      default_lang: "en",
+      feed_start_date: ~D[2026-09-01],
+      feed_end_date: ~D[2026-12-31],
+      feed_version: "2026-autumn",
+      feed_contact_email: "data@example.test",
+      feed_contact_url: "https://example.test/data/contact"
+    })
+
+    {:ok, feed_empty_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Feed Empty Version"})
+
+    feed_details_default_before
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: feed details version #{feed_details_version.id} with feed info, " <>
+        "empty version #{feed_empty_version.id}, default kept as #{feed_details_default_before.name}"
+    )
+
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
+
+    # ── Agencies list page (settings_agencies_feed.spec.js; EV-16, EV-17) ──
+    #
+    # Two published versions give the Agencies list page its states: one with
+    # three agencies that share a timezone (5, 2 and 0 routes, so the count links,
+    # the name sort and the count sort all differ), and one whose two agencies use
+    # different timezones (the band, the warning callout and the "Needs review"
+    # rows). Both are created last, and the version that was the organization's
+    # latest default before them is re-stamped afterwards so the selection the
+    # other journeys start from does not move.
+    {:ok, agencies_default_before} = Versions.get_latest_gtfs_version(org.id)
+
+    {:ok, agencies_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Agencies Version"})
+
+    for {agency_id, name, host, route_count} <- [
+          {"NCT", "North Coast Transit", "northcoast.example", 5},
+          {"HBR", "Harbor Shuttle", "harbor.example", 2},
+          {"RCT", "Riverside Community Transport", "riverside.example", 0}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: agencies_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: "America/New_York"
+        })
+
+      for index <- 1..route_count//1 do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: agencies_version.id,
+            agency_id: agency_id,
+            route_id: "#{agency_id}_#{index}",
+            route_short_name: "#{index}",
+            route_long_name: "#{name} route #{index}",
+            route_type: 3
+          })
+      end
+    end
+
+    {:ok, mixed_timezone_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Mixed Timezone Version"})
+
+    for {agency_id, name, host, timezone} <- [
+          {"NCT", "North Coast Transit", "northcoast.example", "America/New_York"},
+          {"LFT", "Lakefront Transit", "lakefront.example", "America/Chicago"}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: mixed_timezone_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: timezone
+        })
+
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: mixed_timezone_version.id,
+          agency_id: agency_id,
+          route_id: "MIX_#{agency_id}",
+          route_short_name: agency_id,
+          route_long_name: "#{name} mixed-timezone route",
+          route_type: 3
+        })
+    end
+
+    # The empty agency list and the first-agency drawer need a version that has
+    # neither agencies nor routes, so nothing is backfilled and the create form
+    # is the one with the schedule timezone field (settings_agencies_feed.spec.js;
+    # EV-20, EV-21).
+    {:ok, no_agency_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser No Agency Version"})
+
+    # The delete flow needs one version where an agency with routes, the agency
+    # that receives them and an agency a fare attribute still names all exist at
+    # once (settings_agencies_feed.spec.js; EV-25). "Browser Alpha" holds the two
+    # routes that move, "Browser Beta" receives them, and "Browser Gamma" has no
+    # routes but is named by F-BROWSER, which the deletion has to refuse. The fare
+    # attribute has no editor in this package, so it is inserted directly: that
+    # supplies the reference the review reads, not an audited editor save.
+    {:ok, agency_delete_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Agency Delete Version"})
+
+    for {agency_id, name, host, route_count} <- [
+          {"ALPHA", "Browser Alpha", "alpha.example", 2},
+          {"BETA", "Browser Beta", "beta.example", 1},
+          {"GAMMA", "Browser Gamma", "gamma.example", 0}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: agency_delete_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: "America/New_York"
+        })
+
+      for index <- 1..route_count//1 do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: agency_delete_version.id,
+            agency_id: agency_id,
+            route_id: "#{agency_id}_#{index}",
+            route_short_name: "#{index}",
+            route_long_name: "#{name} route #{index}",
+            route_type: 3
+          })
+      end
+    end
+
+    Repo.insert!(%FareAttribute{
+      organization_id: org.id,
+      gtfs_version_id: agency_delete_version.id,
+      fare_id: "F-BROWSER",
+      price: Decimal.new("2.50"),
+      currency_type: "USD",
+      payment_method: 0,
+      agency_id: "GAMMA"
+    })
+
+    # The Routes onboarding needs a version with neither agencies nor routes, so
+    # the page renders the first-agency state, and a version with two routes that
+    # carry no agency, so it renders the assign-routes callout
+    # (settings_agencies_feed.spec.js; EV-29). The routes are created directly:
+    # this supplies the unassigned state the callout describes, not an editor save.
+    {:ok, onboarding_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Onboarding Version"})
+
+    {:ok, unassigned_routes_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Unassigned Routes Version"})
+
+    for index <- 1..2//1 do
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: unassigned_routes_version.id,
+          route_id: "UNASSIGNED_#{index}",
+          route_short_name: "#{index}",
+          route_long_name: "Unassigned browser route #{index}",
+          route_type: 3
+        })
+    end
+
+    agencies_default_before
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: agencies version #{agencies_version.id} (NCT 5, HBR 2, RCT 0 routes, " <>
+        "America/New_York), mixed timezone version #{mixed_timezone_version.id} " <>
+        "(America/New_York and America/Chicago), no-agency version #{no_agency_version.id} " <>
+        "(no agencies, no routes), agency delete version #{agency_delete_version.id} " <>
+        "(ALPHA 2 routes, BETA 1 route, GAMMA 0 routes with fare F-BROWSER), " <>
+        "onboarding version #{onboarding_version.id} (no agencies, no routes), " <>
+        "unassigned routes version #{unassigned_routes_version.id} (2 routes with no agency), " <>
+        "default kept as #{agencies_default_before.name}"
+    )
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
