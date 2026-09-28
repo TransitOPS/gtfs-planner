@@ -1380,6 +1380,51 @@ dialog[role="alertdialog"][open] > div > div {
   outline-offset: 2px;
 }
 
+/* Point-editing handles (spec 12, step 24). The divIcon root holds the 44 px
+   hit area; the inner dot is the visible circle: white fill, amber border,
+   theme-primary fill once selected. The UA outline is suppressed only on
+   :focus-visible, where the double ring replaces it. */
+#alignment-map-root .alignment-handle {
+  background: none;
+  border: none;
+}
+
+#alignment-map-root .alignment-handle-dot {
+  display: block;
+  width: 26px;
+  height: 26px;
+  margin: 9px;
+  border-radius: 9999px;
+  background-color: #fff;
+  border: 3px solid #8a5a0e;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+#alignment-map-root .alignment-handle-dot.is-selected {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+#alignment-map-root .alignment-handle:focus-visible {
+  outline: none;
+}
+
+#alignment-map-root .alignment-handle:focus-visible .alignment-handle-dot {
+  box-shadow:
+    0 0 0 3px #fff,
+    0 0 0 6px var(--color-primary);
+}
+
+/* Shift-drag box-select overlay, drawn in the stage frame. */
+#alignment-map-root .pa-select-box {
+  position: absolute;
+  z-index: 600;
+  border: 2px dashed var(--color-primary);
+  background-color: rgb(255 255 255 / 0.12);
+  background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  pointer-events: none;
+}
+
 /* Visit markers. Leaflet centers the fixed 30 px icon on the stop; the name
    overflows symmetrically below the pin and hides under the label toggle. */
 #alignment-map-root .pa-div-icon {

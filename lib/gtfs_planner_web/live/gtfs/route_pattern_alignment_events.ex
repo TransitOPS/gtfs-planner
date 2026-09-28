@@ -101,6 +101,82 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   @doc "Opens or closes the alignment help dialog."
   def set_dialog(socket, dialog), do: Component.assign(socket, :alignment_dialog, dialog)
 
+  @draft_state_fields %{
+    "dirty_positions" => :dirty_positions,
+    "selected" => :selected,
+    "mode" => :mode,
+    "selected_point_count" => :selected_point_count,
+    "point_count" => :point_count,
+    "can_undo" => :can_undo,
+    "can_redo" => :can_redo,
+    "flagged_positions" => :flagged_positions,
+    "review_positions" => :review_positions
+  }
+
+  @doc """
+  Stores the hook-owned draft state (step 24).
+
+  The hook owns draft geometry, selection and undo (CR-5); the LiveView
+  keeps only this state mirror for later badge wiring (step 27 owns the
+  badges). Unknown fields are dropped and invalid values are ignored, so a
+  stale or foreign payload never corrupts the state shape. Read-only like
+  selection: no database write, outside `@editor_write_events`.
+  """
+  def draft_state(socket, params) when is_map(params) do
+    current = socket.assigns.alignment_state
+
+    patch =
+      Enum.reduce(@draft_state_fields, %{}, fn {wire, key}, acc ->
+        case fetch_draft_value(params, wire, key) do
+          {:ok, value} -> Map.put(acc, key, value)
+          :error -> acc
+        end
+      end)
+
+    Component.assign(socket, :alignment_state, Map.merge(current, patch))
+  end
+
+  def draft_state(socket, _params), do: socket
+
+  defp fetch_draft_value(params, wire, key) do
+    raw = Map.get(params, wire, Map.get(params, key, :missing))
+
+    case {key, raw} do
+      {:dirty_positions, positions} when is_list(positions) ->
+        if Enum.all?(positions, &(is_integer(&1) and &1 >= 1)) do
+          {:ok, Enum.sort(positions)}
+        else
+          :error
+        end
+
+      {:selected, position} when is_integer(position) and position >= 1 ->
+        {:ok, position}
+
+      {:mode, mode} when mode in ["pan", "edit"] ->
+        {:ok, mode}
+
+      {count_key, count}
+      when count_key in [:selected_point_count, :point_count] and is_integer(count) and
+             count >= 0 ->
+        {:ok, count}
+
+      {flag_key, value}
+      when flag_key in [:can_undo, :can_redo] and is_boolean(value) ->
+        {:ok, value}
+
+      {positions_key, positions}
+      when positions_key in [:flagged_positions, :review_positions] and is_list(positions) ->
+        if Enum.all?(positions, &(is_integer(&1) and &1 >= 1)) do
+          {:ok, positions}
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
   defp alignment_route?(assigns) do
     assigns.task == :alignment and assigns.load_state == :ready and
       assigns.live_action == :show and not is_nil(assigns.pattern)

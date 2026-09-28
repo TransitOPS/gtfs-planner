@@ -566,6 +566,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_draft_state", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.draft_state(socket, params)}
+  end
+
+  @impl true
   def handle_event("alignment_close_help", _params, socket) do
     {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, nil)}
   end

@@ -155,5 +155,44 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentMapTest do
       assert_push_event(view, "alignment:select", %{position: 2})
       assert has_element?(view, "#alignment-detail", "Map Bravo")
     end
+
+    test "draft_state stores the hook-owned edit state; invalid values are ignored",
+         %{conn: conn, organization: organization, version: version} do
+      {route, pattern} = saved_pair(organization, version)
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern))
+
+      render_hook(view, "alignment_draft_state", %{
+        "dirty_positions" => [1],
+        "selected" => 1,
+        "mode" => "edit",
+        "selected_point_count" => 2,
+        "point_count" => 3,
+        "can_undo" => true,
+        "can_redo" => false,
+        "flagged_positions" => [],
+        "review_positions" => [],
+        "points" => [["x", "y"]]
+      })
+
+      state = :sys.get_state(view.pid).socket.assigns.alignment_state
+      assert state.dirty_positions == [1]
+      assert state.mode == "edit"
+      assert state.selected_point_count == 2
+      assert state.point_count == 3
+      assert state.can_undo == true
+      refute Map.has_key?(state, :points)
+
+      render_hook(view, "alignment_draft_state", %{
+        "dirty_positions" => ["nope"],
+        "mode" => "fly",
+        "selected" => -2
+      })
+
+      unchanged = :sys.get_state(view.pid).socket.assigns.alignment_state
+      assert unchanged.dirty_positions == [1]
+      assert unchanged.mode == "edit"
+      assert unchanged.selected == 1
+    end
   end
 end

@@ -145,6 +145,220 @@ test.describe("alignment shell", () => {
   });
 });
 
+test.describe("point editing", () => {
+  test("edits points with handles and box selection at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator("#alignment-map-root .pa-stop-pin").first(),
+    ).toBeVisible({ timeout: 15000 });
+
+    // Section 1 is selected by default and saved: enter Edit points.
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle"),
+    ).toHaveCount(1);
+    await expect(
+      page.locator(
+        '#alignment-map-root [data-pa-edit][aria-pressed="true"]',
+      ),
+    ).toHaveCount(1);
+    await expect(page.locator("#alignment-map-root")).toContainText(
+      "Click the line to add a point",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "editing-1440");
+
+    // Insert a second point by clicking the drawn edge between stop 1
+    // and the handle. The fitted zoom varies with layout timing (the
+    // whole pattern shares a few hundred pixels), so steer the section
+    // into view with real drags, spread it with trusted double-click
+    // zooms on the handle, and only click once the edge midpoint reads
+    // as bare stage. Coordinates are re-read after every gesture.
+    async function editGeometry() {
+      return page.evaluate(() => {
+        const icons = [
+          ...document.querySelectorAll("#alignment-map-root .pa-div-icon"),
+        ];
+        const icon = icons.find(
+          (el) =>
+            el.querySelector(".pa-stop-pin")?.textContent.trim() === "1",
+        );
+        const handle = document.querySelector(
+          "#alignment-map-root .alignment-handle",
+        );
+        const stage = document.querySelector(
+          "#alignment-map-root [data-pa-stage]",
+        );
+        const center = (rect) => ({
+          x: (rect.left + rect.right) / 2,
+          y: (rect.top + rect.bottom) / 2,
+        });
+        // The divIcon root is fixed 30x30 centered on the stop anchor,
+        // so its center is the exact anchor screen position.
+        const anchor = center(icon.getBoundingClientRect());
+        const handleAt = center(handle.getBoundingClientRect());
+        const stageRect = stage.getBoundingClientRect();
+        const stageAt = center(stageRect);
+        const mid = {
+          x: (anchor.x + handleAt.x) / 2,
+          y: (anchor.y + handleAt.y) / 2,
+        };
+        const under = document.elementFromPoint(mid.x, mid.y);
+        return {
+          anchor,
+          handle: handleAt,
+          stage: stageAt,
+          mid,
+          gap: Math.hypot(anchor.x - handleAt.x, anchor.y - handleAt.y),
+          handleVisible:
+            handleAt.x > stageRect.left + 60 &&
+            handleAt.x < stageRect.right - 60 &&
+            handleAt.y > stageRect.top + 60 &&
+            handleAt.y < stageRect.bottom - 60,
+          midInStage: Boolean(
+            under?.closest?.("[data-pa-stage]") &&
+              !under?.closest?.(".alignment-handle") &&
+              !under?.closest?.(".pa-div-icon"),
+          ),
+        };
+      });
+    }
+
+    // Drag content toward the stage center: press the stage center (always
+    // a valid on-screen map point) and release toward the mirrored
+    // offset of whatever must come into view.
+    async function steerToward(point) {
+      const g = await editGeometry();
+      const dx = Math.max(-300, Math.min(300, g.stage.x - point.x));
+      const dy = Math.max(-300, Math.min(300, g.stage.y - point.y));
+      await page.mouse.move(g.stage.x, g.stage.y);
+      await page.mouse.down();
+      await page.mouse.move(g.stage.x + dx, g.stage.y + dy, { steps: 10 });
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+    }
+
+    for (let i = 0; i < 6; i++) {
+      const g = await editGeometry();
+      if (g.handleVisible) break;
+      await steerToward(g.handle);
+    }
+
+    let g = await editGeometry();
+    expect(g.handleVisible).toBe(true);
+
+    // Zoom a level centered on the handle per double-click until the edge
+    // clears both icons. The click pair toggles selection twice (net
+    // unchanged) and the icon keeps its DOM across repaints.
+    for (let i = 0; i < 4 && g.gap < 140; i++) {
+      await page
+        .locator("#alignment-map-root .alignment-handle")
+        .first()
+        .dblclick();
+      await page.waitForTimeout(600);
+      g = await editGeometry();
+    }
+
+    for (let i = 0; i < 6 && !g.midInStage; i++) {
+      await steerToward(g.mid);
+      g = await editGeometry();
+    }
+
+    expect(g.gap).toBeGreaterThan(100);
+    expect(g.midInStage).toBe(true);
+    await page.mouse.click(g.mid.x, g.mid.y);
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle"),
+    ).toHaveCount(2);
+
+    // Shift-drag a box across both handles. The insert lands beside the
+    // click point, so both handles sit near the stage center already;
+    // steer once more if either drifted out of view.
+    for (let i = 0; i < 3; i++) {
+      const rects = await page
+        .locator("#alignment-map-root .alignment-handle")
+        .evaluateAll((els) =>
+          els.map((el) => {
+            const r = el.getBoundingClientRect();
+            return {
+              x: (r.left + r.right) / 2,
+              y: (r.top + r.bottom) / 2,
+            };
+          }),
+        );
+      const inView = rects.every(
+        (p) => p.x > 0 && p.x < 1440 && p.y > 0 && p.y < 1000,
+      );
+      if (inView) break;
+      const g2 = await editGeometry();
+      await steerToward(g2.handle);
+    }
+    const box = await page
+      .locator("#alignment-map-root .alignment-handle")
+      .evaluateAll((els) => {
+        const rects = els.map((el) => el.getBoundingClientRect());
+        const xs = rects.flatMap((r) => [r.left, r.right]);
+        const ys = rects.flatMap((r) => [r.top, r.bottom]);
+        return {
+          x1: Math.min(...xs) - 10,
+          y1: Math.min(...ys) - 10,
+          x2: Math.max(...xs) + 10,
+          y2: Math.max(...ys) + 10,
+        };
+      });
+    await page.keyboard.down("Shift");
+    await page.mouse.move(box.x1, box.y1);
+    await page.mouse.down();
+    await page.mouse.move(box.x2, box.y2, { steps: 5 });
+    await page.mouse.up();
+    await page.keyboard.up("Shift");
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle-dot.is-selected"),
+    ).toHaveCount(2);
+    await captureViewport(page, "multiselect-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    const editNarrow = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(editNarrow).toBeEnabled({ timeout: 15000 });
+    await editNarrow.click();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle"),
+    ).toHaveCount(1);
+    await captureFullPage(page, "editing-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
+
 test.describe("alignment map", () => {
   test("shows section lines on the Leaflet map at desktop and phone widths", async ({
     page,
