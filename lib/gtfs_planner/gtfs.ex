@@ -5928,7 +5928,9 @@ defmodule GtfsPlanner.Gtfs do
     if changeset.valid? do
       Repo.transaction(fn -> insert_after_version_lock(changeset) end)
     else
-      {:error, changeset}
+      # Repo rejects an invalid changeset without a query and sets its action, which forms
+      # need to render field errors.
+      Repo.insert(changeset)
     end
   end
 
@@ -5949,7 +5951,9 @@ defmodule GtfsPlanner.Gtfs do
     if changeset.valid? do
       Repo.transaction(fn -> update_after_version_lock(changeset) end)
     else
-      {:error, changeset}
+      # Repo rejects an invalid changeset without a query and sets its action, which forms
+      # need to render field errors.
+      Repo.update(changeset)
     end
   end
 
