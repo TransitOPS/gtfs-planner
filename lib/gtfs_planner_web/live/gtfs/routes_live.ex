@@ -4,10 +4,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
+
+  import GtfsPlannerWeb.Gtfs.FeedSettingsComponents,
+    only: [agency_form_fields: 1, unsaved_guard: 1]
+
   alias Ecto.Changeset
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -17,6 +25,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   # would make `Map.take/2` return `%{}`.
   @new_route_fields ~w(route_id route_type route_short_name route_long_name agency_id route_desc route_url route_color route_text_color)
   @new_route_param_keys @new_route_fields ++ Enum.map(@new_route_fields, &("_unused_" <> &1))
+
+  # The agency setup form's id prefixes its field ids, so the drawer's timezone
+  # field and the save failure the `FormErrorFocus` hook focuses agree.
+  @agency_setup_form_id "routes-agency-form"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -40,6 +52,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:routes_state, :ready)
      |> assign(:new_route_form, nil)
      |> assign(:agency_options, [])
+     |> assign(:new_route_agency_required?, false)
+     |> assign(:agency_health, %{
+       agency_count: 0,
+       unassigned_routes: 0,
+       zone: {:unresolved, :missing}
+     })
+     |> assign(:agency_setup_form, nil)
+     |> assign(:agency_setup_baseline, nil)
+     |> assign(:agency_setup_origin, nil)
+     |> assign(:agency_setup_opener_id, nil)
+     |> assign(:agency_setup_dirty?, false)
+     |> assign(:agency_setup_confirm_discard?, false)
+     |> assign(:agency_setup_zone_names, [])
      |> stream(:routes, [])
      |> stream(:routes_mobile, [])}
   end
@@ -77,6 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     socket =
       socket
+      |> assign(:agency_health, FeedSettings.agency_health(organization_id, gtfs_version_id))
       |> assign(:filter_form, to_form(filter_form_data))
       |> assign(:search_form, to_form(%{"search" => search}))
       |> assign(:search, search)
@@ -218,6 +244,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       per_page: socket.assigns.per_page
     ]
 
+    socket =
+      assign(socket, :agency_health, FeedSettings.agency_health(organization_id, gtfs_version_id))
+
     case Gtfs.load_route_catalog(organization_id, gtfs_version_id, opts) do
       {:ok,
        %{
@@ -279,18 +308,64 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   @impl true
   def handle_event("open_new_route", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    if socket.assigns.agency_health.agency_count == 0 do
+      # A version with no agency cannot reach route creation, so the header's
+      # Create route opens the agency setup instead of an empty route drawer
+      # (AC-24). The route drawer opens from that drawer's own save.
+      {:noreply, open_agency_setup(socket, :first_route, "new-route-trigger")}
+    else
+      {:noreply, open_route_drawer(socket)}
+    end
+  end
 
-    agency_options =
-      organization_id
-      |> Gtfs.list_agencies(gtfs_version_id)
-      |> Enum.map(&{"#{&1.agency_name} (#{&1.agency_id})", &1.agency_id})
+  @impl true
+  def handle_event("open_agency_setup", params, socket) do
+    origin = parse_agency_setup_origin(params["origin"])
 
-    {:noreply,
-     socket
-     |> assign(:agency_options, agency_options)
-     |> assign(:new_route_form, to_form(Route.changeset(%Route{}, %{}), as: :route))}
+    {:noreply, open_agency_setup(socket, origin, params["opener_id"])}
+  end
+
+  @impl true
+  def handle_event("validate_agency_setup", %{"agency" => params}, socket) do
+    if is_nil(socket.assigns.agency_setup_form) do
+      {:noreply, socket}
+    else
+      changeset = FeedSettings.change_agency(socket.assigns.agency_setup_baseline, params)
+
+      {:noreply, assign_agency_setup_draft(socket, changeset, :validate)}
+    end
+  end
+
+  def handle_event("validate_agency_setup", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_agency_setup", %{"agency" => params}, socket) do
+    if is_nil(socket.assigns.agency_setup_form) do
+      # A replayed or late submit after the drawer closed must not insert.
+      {:noreply, socket}
+    else
+      create_agency_setup(socket, params)
+    end
+  end
+
+  def handle_event("save_agency_setup", _params, socket), do: {:noreply, socket}
+
+  # Every route out of the agency drawer — Cancel, the close button and, through
+  # the `OverlayDialog` hook's dismiss control, Escape and the backdrop — lands
+  # on this event, so a changed draft is asked about exactly once (AC-6).
+  @impl true
+  def handle_event("close_agency_setup", _params, socket) do
+    {:noreply, request_agency_setup_close(socket)}
+  end
+
+  @impl true
+  def handle_event("cancel_discard_agency_setup", _params, socket) do
+    {:noreply, assign(socket, :agency_setup_confirm_discard?, false)}
+  end
+
+  @impl true
+  def handle_event("confirm_discard_agency_setup", _params, socket) do
+    {:noreply, close_agency_setup(socket)}
   end
 
   @impl true
@@ -390,7 +465,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             id="new-route-trigger"
             type="button"
             phx-click="open_new_route"
-            variant={if(first_use_empty?(assigns), do: "secondary", else: "primary")}
+            variant={
+              if(first_use_empty?(assigns) or onboarding?(assigns), do: "secondary", else: "primary")
+            }
             class="min-h-11"
           >
             <.icon name="hero-plus" class="size-4" /> Create route
@@ -412,6 +489,26 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           >
             Retry
           </.button>
+        </.callout>
+      </div>
+
+      <div :if={no_agency_routes?(assigns)} id="routes-no-agency" class="mt-6">
+        <.callout kind="warning" title="These routes have no agency">
+          Set up the agency that operates them. Creating it assigns it to all {@agency_health.unassigned_routes} routes.
+          <div class="mt-3">
+            <.button
+              id="routes-set-up-agency"
+              type="button"
+              variant="secondary"
+              size="sm"
+              class="min-h-11"
+              phx-click="open_agency_setup"
+              phx-value-origin="assign_routes"
+              phx-value-opener_id="routes-set-up-agency"
+            >
+              Set up agency
+            </.button>
+          </div>
         </.callout>
       </div>
 
@@ -657,6 +754,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             </button>
           </div>
 
+          <%!-- No agency yet and no routes: the next step is the agency, not a
+                 route, so this replaces the first-use empty state. --%>
+          <div :if={onboarding?(assigns)} id="routes-agency-onboarding" class="px-5 py-14 sm:px-10">
+            <div class="mx-auto max-w-[520px] text-center">
+              <p class="text-[13px] font-[650] text-muted">Before your first route</p>
+              <h2 class="mt-2 text-[24px]">Who operates this service?</h2>
+              <p class="mt-2 text-sm text-muted">
+                Journey planners need an agency name, website, and timezone. Set those once, then
+                create your first route.
+              </p>
+              <div class="mt-6 flex flex-wrap justify-center gap-3">
+                <.button
+                  id="routes-set-up-agency"
+                  type="button"
+                  class="min-h-11"
+                  phx-click="open_agency_setup"
+                  phx-value-origin="first_route"
+                  phx-value-opener_id="routes-set-up-agency"
+                >
+                  Set up agency
+                </.button>
+              </div>
+              <p class="mt-3 text-sm">
+                <.link
+                  id="routes-onboarding-import"
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
+                  class="text-action hover:underline"
+                >
+                  Import an existing GTFS feed instead
+                </.link>
+              </p>
+            </div>
+          </div>
+
           <%!-- No routes in this version at all: the catalog is empty, not
                  filtered, so the next step is to import a feed. --%>
           <div :if={first_use_empty?(assigns)} id="routes-first-use-empty" class="px-5 py-14 sm:px-10">
@@ -694,7 +825,37 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         </div>
       </section>
 
-      <.new_route_drawer form={@new_route_form} agency_options={@agency_options} />
+      <.new_route_drawer
+        form={@new_route_form}
+        agency_options={@agency_options}
+        agency_required?={@new_route_agency_required?}
+        gtfs_version_id={@current_gtfs_version.id}
+      />
+
+      <.agency_setup_drawer
+        form={@agency_setup_form}
+        opener_id={@agency_setup_opener_id}
+        dirty?={@agency_setup_dirty?}
+        zone_names={@agency_setup_zone_names}
+        version={@current_gtfs_version}
+        organization={@current_organization}
+      />
+
+      <.confirm_dialog
+        :if={@agency_setup_confirm_discard?}
+        id="routes-agency-discard"
+        open={true}
+        title="Discard unsaved changes?"
+        confirm_label="Discard changes"
+        pending_label="Discarding…"
+        cancel_label="Keep editing"
+        on_confirm="confirm_discard_agency_setup"
+        on_cancel="cancel_discard_agency_setup"
+        confirm_variant="danger"
+        described_by="routes-agency-discard-body"
+      >
+        <p>Your entries will be lost. No agency is created.</p>
+      </.confirm_dialog>
     </Layouts.app>
     """
   end
@@ -827,8 +988,98 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     end
   end
 
+  # The version's first agency decides its schedule timezone, so this drawer is
+  # the create form `AgencyLive` uses with its timezone field: one form for the
+  # first agency wherever it is set up (step 17's `agency_form_fields/1`).
+  attr :form, :any, default: nil
+  attr :opener_id, :string, default: nil
+  attr :dirty?, :boolean, default: false
+  attr :zone_names, :list, default: []
+  attr :version, :any, required: true
+  attr :organization, :any, required: true
+
+  defp agency_setup_drawer(assigns) do
+    assigns = assign(assigns, :form_id, @agency_setup_form_id)
+
+    ~H"""
+    <.drawer
+      id="routes-agency-drawer"
+      open={not is_nil(@form)}
+      on_close="close_agency_setup"
+      title="Set up your agency"
+      initial_focus={:first_field}
+      return_focus_id={@opener_id}
+    >
+      <:header_actions>
+        <span
+          :if={@dirty?}
+          id="routes-agency-unsaved"
+          class="badge badge-warning badge-sm whitespace-nowrap"
+        >
+          Unsaved changes
+        </span>
+      </:header_actions>
+
+      <div :if={@form} id="routes-agency-form-panel" phx-hook="FormErrorFocus">
+        <.unsaved_guard id="routes-agency-unsaved-guard" dirty={@dirty?} />
+
+        <p id="routes-agency-drawer-scope" class="text-xs text-base-content/70">
+          {@version.name} · {@organization.name}
+        </p>
+
+        <p class="mt-2 text-sm text-base-content/70">
+          Use the public name riders recognize. Optional fields are marked.
+        </p>
+
+        <.form
+          for={@form}
+          id={@form_id}
+          novalidate
+          phx-change="validate_agency_setup"
+          phx-submit="save_agency_setup"
+          class="mt-4"
+        >
+          <.callout
+            :if={agency_setup_save_failed?(@form)}
+            id="routes-agency-form-error"
+            kind="error"
+            title="Nothing was created. Check the highlighted fields."
+            tabindex="-1"
+            class="mb-4"
+          />
+
+          <.agency_form_fields form={@form} first_agency?={true} zone_names={@zone_names} />
+
+          <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+            <.button
+              id="routes-agency-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_agency_setup"
+            >
+              Cancel
+            </.button>
+
+            <.button
+              id="routes-agency-save"
+              type="submit"
+              class="min-h-11"
+              phx-disable-with="Creating…"
+            >
+              Create agency
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
   attr :form, :any, default: nil
   attr :agency_options, :list, default: []
+  attr :agency_required?, :boolean, default: false
+  attr :gtfs_version_id, :string, required: true
 
   defp new_route_drawer(assigns) do
     ~H"""
@@ -842,6 +1093,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       class="max-w-[min(100vw,40rem)]"
     >
       <div id="new-route-form-panel" phx-hook="FormErrorFocus">
+        <div :if={@agency_required?} class="mb-4">
+          <.callout
+            id="new-route-agency-required"
+            kind="warning"
+            title="This version has no agency"
+            tabindex="-1"
+          >
+            Add the agency that operates this route in Settings › Agencies, then create the route
+            again. Nothing was saved.
+            <.link
+              id="new-route-agency-settings"
+              navigate={agencies_path(@gtfs_version_id)}
+              class="mt-2 block font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            >
+              Open Settings › Agencies
+            </.link>
+          </.callout>
+        </div>
+
         <.new_route_form :if={@form} form={@form} agency_options={@agency_options} />
       </div>
     </.drawer>
@@ -922,10 +1192,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         <.input
           field={@form[:agency_id]}
           type="select"
-          label={if(length(@agency_options) > 1, do: "Agency", else: "Agency (optional)")}
-          prompt="None"
+          label="Agency"
+          prompt={agency_prompt(@form, @agency_options)}
           options={@agency_options}
-          help="agency_id — required when this version has more than one agency."
+          help="agency_id — the agency that operates this route."
         />
       </div>
 
@@ -984,10 +1254,188 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     """
   end
 
-  defp first_use_empty?(assigns) do
+  defp onboarding?(assigns), do: unconstrained_empty?(assigns) and no_agency?(assigns)
+
+  defp first_use_empty?(assigns), do: unconstrained_empty?(assigns) and not no_agency?(assigns)
+
+  defp unconstrained_empty?(assigns) do
     assigns.routes_state == :ready and assigns.routes_empty? and
       not has_active_constraints?(assigns)
   end
+
+  # A version whose routes carry no agency shows the callout beside the catalog
+  # (AC-25); a catalog the filters emptied keeps its own state instead.
+  defp no_agency_routes?(assigns) do
+    assigns.routes_state == :ready and not assigns.routes_empty? and no_agency?(assigns)
+  end
+
+  defp no_agency?(assigns), do: assigns.agency_health.agency_count == 0
+
+  # The first agency the version gets is set up here, whether the editor arrived
+  # from the onboarding, the header's Create route or the missing-agency callout.
+  # `origin` decides what a saved agency opens next: the New route drawer, or the
+  # catalog reloaded with the routes the create just assigned (AC-24, AC-25).
+  defp open_agency_setup(socket, origin, opener_id) do
+    baseline = %Agency{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id
+    }
+
+    socket
+    |> assign(:agency_setup_origin, origin)
+    |> assign(:agency_setup_opener_id, opener_id)
+    |> assign(:agency_setup_baseline, baseline)
+    |> assign(:agency_setup_confirm_discard?, false)
+    # This is always the version's first agency, so its form carries the schedule
+    # timezone field and the datalist that field suggests from (R2, INV-4).
+    |> assign(:agency_setup_zone_names, DisplayClock.zone_names())
+    |> assign_agency_setup_draft(FeedSettings.change_agency(baseline, %{}))
+  end
+
+  # `action: :validate` marks a keystroke, so `used_input?/1` shows an error
+  # beside the field the editor has touched and the save-failure callout stays
+  # for saves only, the way the Agencies page's create drawer does it.
+  defp assign_agency_setup_draft(socket, changeset, action \\ nil) do
+    changeset = if action, do: Map.put(changeset, :action, action), else: changeset
+
+    socket
+    |> assign(:agency_setup_form, to_form(changeset, as: :agency, id: @agency_setup_form_id))
+    |> assign(:agency_setup_dirty?, changeset.changes != %{})
+  end
+
+  defp request_agency_setup_close(%{assigns: %{agency_setup_dirty?: true}} = socket),
+    do: assign(socket, :agency_setup_confirm_discard?, true)
+
+  defp request_agency_setup_close(socket), do: close_agency_setup(socket)
+
+  defp close_agency_setup(socket) do
+    socket
+    |> assign(:agency_setup_form, nil)
+    |> assign(:agency_setup_baseline, nil)
+    |> assign(:agency_setup_origin, nil)
+    |> assign(:agency_setup_opener_id, nil)
+    |> assign(:agency_setup_dirty?, false)
+    |> assign(:agency_setup_confirm_discard?, false)
+    |> assign(:agency_setup_zone_names, [])
+  end
+
+  # The one write path of the steps 21 drawer: the context authorizes the actor,
+  # locks the published version, resolves the zone, chooses the ID and runs the
+  # backfill in one transaction (R1, R2, R6, R10, INV-2, INV-5).
+  defp create_agency_setup(socket, params) do
+    case FeedSettings.create_agency(audit_context(socket), params) do
+      {:ok, agency} ->
+        {:noreply, finish_agency_setup(socket, agency)}
+
+      {:error, %Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign_agency_setup_draft(changeset)
+         |> push_event("focus_form_error", %{
+           form_id: @agency_setup_form_id,
+           fallback_id: "routes-agency-form-error"
+         })}
+
+      # Another editor gave the version agencies with disagreeing zones while this
+      # drawer was open, so no single zone can carry this one and nothing was
+      # written. The version's own flow resolves that; this drawer cannot.
+      {:error, :timezone_unresolved} ->
+        {:noreply,
+         socket
+         |> close_agency_setup()
+         |> reload_agency_health()
+         |> put_flash(
+           :error,
+           "This version's agencies no longer share one timezone. Resolve the timezone in Settings › Agencies, then set up this agency."
+         )}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> close_agency_setup()
+         |> put_flash(:error, "You no longer have editor access to this organization.")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> close_agency_setup()
+         |> put_flash(:error, "This version is no longer available.")}
+    end
+  end
+
+  defp finish_agency_setup(socket, agency) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    origin = socket.assigns.agency_setup_origin
+
+    socket =
+      socket
+      |> close_agency_setup()
+      |> reload_agency_health()
+
+    case origin do
+      :assign_routes ->
+        assigned = assigned_route_count(organization_id, gtfs_version_id, agency.id)
+
+        socket
+        |> put_flash(:info, "#{agency.agency_name} created. #{assigned} routes now use it.")
+        |> push_patch(
+          to:
+            ~p"/gtfs/#{gtfs_version_id}/routes?#{build_query_params(socket, socket.assigns.page)}"
+        )
+
+      # The version's first agency: the editor's next step is the route it
+      # operates, and the drawer opens already set to it (AC-24).
+      _first_route ->
+        socket
+        |> put_flash(:info, "#{agency.agency_name} created.")
+        |> open_route_drawer(agency.agency_id)
+    end
+  end
+
+  defp reload_agency_health(socket) do
+    assign(
+      socket,
+      :agency_health,
+      FeedSettings.agency_health(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id
+      )
+    )
+  end
+
+  # "N routes now use it" is read back after the write, so the flash counts the
+  # routes the create actually claimed rather than a count from page load (R6).
+  defp assigned_route_count(organization_id, gtfs_version_id, agency_id) do
+    organization_id
+    |> FeedSettings.list_agencies(gtfs_version_id)
+    |> Enum.find_value(0, fn
+      %{agency: %{id: ^agency_id}, route_count: count} -> count
+      _row -> nil
+    end)
+  end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
+  defp parse_agency_setup_origin("assign_routes"), do: :assign_routes
+  defp parse_agency_setup_origin(_origin), do: :first_route
+
+  # A failed save is the only state that earns the view-level banner; validation
+  # on change marks its own fields and must not shout about a save never attempted.
+  defp agency_setup_save_failed?(%Phoenix.HTML.Form{
+         source: %Ecto.Changeset{action: action, errors: errors}
+       })
+       when action in [:insert, :update] and errors != [],
+       do: true
+
+  defp agency_setup_save_failed?(_form), do: false
 
   defp new_route_attrs(socket, params) do
     # `Route.changeset/2` casts the scope columns, so this allow-list is the
@@ -999,17 +1447,65 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     |> Map.put("gtfs_version_id", socket.assigns.current_gtfs_version.id)
   end
 
-  defp new_route_changeset(socket, attrs) do
-    agency_ids = Enum.map(socket.assigns.agency_options, &elem(&1, 1))
+  # The New route drawer always lists the version's agencies as they are now. The
+  # first-agency handoff names the agency it just created instead of relying on a
+  # default derived from a read taken before the create, which is what FH-33
+  # rejects; every other entry derives the default from the fresh read.
+  defp open_route_drawer(socket, agency_id \\ nil) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    changeset =
+    agency_options = list_agency_options(organization_id, gtfs_version_id)
+
+    form =
       %Route{}
-      |> Route.changeset(attrs)
-      |> Changeset.validate_inclusion(:agency_id, agency_ids,
-        message: "is not an agency in this version"
-      )
+      |> Route.changeset(%{"agency_id" => agency_id || default_agency_id(socket, agency_options)})
+      |> to_form(as: :route)
 
-    if length(agency_ids) > 1 do
+    socket
+    |> assign(:agency_options, agency_options)
+    |> assign(:new_route_agency_required?, false)
+    |> assign(:new_route_form, form)
+  end
+
+  defp list_agency_options(organization_id, gtfs_version_id) do
+    organization_id
+    |> Gtfs.list_agencies(gtfs_version_id)
+    |> Enum.map(&{"#{&1.agency_name} (#{&1.agency_id})", &1.agency_id})
+  end
+
+  # The drawer opens with the agency already chosen when the version leaves no
+  # real choice: its own only agency, or the agency the catalog is filtered to.
+  defp default_agency_id(socket, agency_options) do
+    agency_ids = Enum.map(agency_options, &elem(&1, 1))
+    filtered_id = socket.assigns.filter_form.params["agency_id"]
+
+    cond do
+      match?([_], agency_ids) -> hd(agency_ids)
+      filtered_id in agency_ids -> filtered_id
+      true -> nil
+    end
+  end
+
+  # "Choose agency" is only a choice when there is one to make (AC-23).
+  defp agency_prompt(form, agency_options) do
+    if length(agency_options) > 1 and form[:agency_id].value in [nil, ""] do
+      "Choose agency"
+    end
+  end
+
+  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
+
+  defp new_route_changeset(socket, attrs) do
+    changeset = Route.changeset(%Route{}, attrs)
+
+    # Only the drawer's own blank choice is required here: with several agencies
+    # it offers no default, so nothing was chosen. The zero/one/many agency rule
+    # belongs to `GtfsPlanner.Gtfs.FeedSettings.lock_agency_for_reference!/3`,
+    # which `Gtfs.create_version_route/3` calls inside the insert's own
+    # transaction (R4, INV-1) — and there a blank choice resolves to the version's
+    # single agency, so this must not refuse that case.
+    if length(socket.assigns.agency_options) > 1 do
       Changeset.validate_required(changeset, [:agency_id])
     else
       changeset
@@ -1020,6 +1516,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     socket
     |> assign(:new_route_form, nil)
     |> assign(:agency_options, [])
+    |> assign(:new_route_agency_required?, false)
   end
 
   defp create_new_route(socket, params) do
@@ -1027,7 +1524,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     with {:ok, _validated} <-
            socket |> new_route_changeset(attrs) |> Changeset.apply_action(:insert),
-         {:ok, route} <- Gtfs.create_route(attrs) do
+         {:ok, route} <-
+           Gtfs.create_version_route(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             attrs
+           ) do
       # The patch re-enters `handle_params/3`, which reloads the catalog with
       # the current query.
       {:noreply,
@@ -1039,15 +1541,46 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
            ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{build_query_params(socket, socket.assigns.page)}"
        )}
     else
-      {:error, changeset} ->
+      {:error, %Changeset{} = changeset} ->
+        show_new_route_error(socket, changeset)
+
+      # The version's agency set moved between opening the drawer and saving, so
+      # the context's own answer is the one that lands on the field. The refusal
+      # is rebuilt from what was submitted and carries an action, because Phoenix
+      # drops the errors of a changeset that has none.
+      {:error, :agency_not_found} ->
+        show_new_route_error(
+          socket,
+          socket
+          |> new_route_changeset(attrs)
+          |> Changeset.add_error(:agency_id, "is not an agency in this version")
+          |> Map.put(:action, :validate)
+        )
+
+      {:error, :agency_required} ->
+        # The editor clicked Create route at the bottom of a long drawer, so the
+        # refusal has to be brought into view rather than inserted above it.
         {:noreply,
          socket
-         |> assign(:new_route_form, to_form(changeset, as: :route))
-         |> push_event("focus_form_error", %{
-           form_id: "new-route-form",
-           fallback_id: "new-route-form-error"
-         })}
+         |> assign(:new_route_agency_required?, true)
+         |> push_event("focus_scoped_target", %{id: "new-route-agency-required"})}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> close_new_route()
+         |> put_flash(:error, "This version is no longer available.")}
     end
+  end
+
+  defp show_new_route_error(socket, changeset) do
+    {:noreply,
+     socket
+     |> assign(:new_route_form, to_form(changeset, as: :route))
+     |> push_event("focus_form_error", %{
+       form_id: "new-route-form",
+       fallback_id: "new-route-form-error"
+     })}
   end
 
   # Mount-time access is not enough for a write: the membership may have lost

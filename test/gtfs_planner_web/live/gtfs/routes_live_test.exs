@@ -483,12 +483,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
+      # The version has an agency, so the empty state is about routes: a version
+      # with no agency shows the onboarding instead (step 21, AC-24).
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       stub_catalog(fn _opts -> {:ok, route_page([], 0, 1, [], [])} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       assert has_element?(view, "#routes-first-use-empty")
       assert has_element?(view, "#routes-first-use-empty a", "Import feed")
+      refute has_element?(view, "#routes-agency-onboarding")
     end
 
     test "constrained empty with Clear search when search active and no filters", %{

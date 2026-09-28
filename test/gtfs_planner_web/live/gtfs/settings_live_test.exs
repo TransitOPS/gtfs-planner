@@ -10,11 +10,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ComingSoon
 
-  # The five allowlisted placeholder sections, their catalog key and the scope
+  # The three allowlisted placeholder sections, their catalog key and the scope
   # the catalog declares for them.
   @placeholder_sections [
-    %{slug: "feed-details", key: :feed_details, scope: :version},
-    %{slug: "agencies", key: :agencies, scope: :version},
     %{slug: "fares", key: :fares, scope: :version},
     %{slug: "export-defaults", key: :export_defaults, scope: :all_versions},
     %{slug: "feed-url", key: :feed_url, scope: :all_versions}
@@ -118,7 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :feed_details,
         "Feed details",
         section_path(version.id, "feed-details"),
-        "Coming soon"
+        "Available"
       )
 
       assert_entry(
@@ -126,8 +124,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :agencies,
         "Agencies",
         section_path(version.id, "agencies"),
-        "Coming soon"
+        "Available"
       )
+
+      assert text_of(doc, "#settings-entry-agencies p") ==
+               "Manage the agencies that operate this version’s routes."
+
+      refute text_of(doc, "#settings-entry-agencies") =~ "Coming soon"
 
       assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"), "Coming soon")
 
