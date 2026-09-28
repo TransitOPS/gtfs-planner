@@ -13,7 +13,9 @@ defmodule GtfsPlanner.Gtfs do
     :calendar,
     "calendar",
     :trip,
-    "trip"
+    "trip",
+    :transfer,
+    "transfer"
   ]
 
   import Ecto.Query, warn: false
@@ -5285,7 +5287,14 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar", "trip"],
+      when type in [
+             "route_pattern",
+             "timed_pattern",
+             "route_pattern_build",
+             "calendar",
+             "trip",
+             "transfer"
+           ],
       do: {:error, :audit_only_entity}
 
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
@@ -5302,7 +5311,14 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   def rollback_target_snapshot(%ChangeLog{entity_type: type})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar", "trip"],
+      when type in [
+             "route_pattern",
+             "timed_pattern",
+             "route_pattern_build",
+             "calendar",
+             "trip",
+             "transfer"
+           ],
       do: {:error, :audit_only_entity}
 
   def rollback_target_snapshot(%ChangeLog{action: action})
@@ -5413,6 +5429,11 @@ defmodule GtfsPlanner.Gtfs do
   # entity itself never yields a snapshot.
   defp build_snapshot(type, %Trip{}) when type in [:trip, "trip"], do: nil
 
+  # A transfer's audit identity is the row UUID plus its GTFS external ID; the
+  # complete before/after snapshots are passed explicitly by Transfers, so the
+  # entity itself never yields a snapshot.
+  defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
+
   defp build_snapshot(_, _), do: nil
 
   defp snapshot_stop(stop) do
@@ -5499,6 +5520,10 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for(type, %Trip{} = trip, _attrs) when type in [:trip, "trip"],
     do: trip.trip_id
 
+  defp entity_external_id_for(type, %Transfer{} = transfer, _attrs)
+       when type in [:transfer, "transfer"],
+       do: Transfer.audit_external_id(transfer)
+
   defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
 
   defp entity_external_id_for(:route_pattern_build, nil, attrs),
@@ -5538,6 +5563,14 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  # A transfer write carries the explicit before/after snapshots and its operation
+  # scope; no transfer column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs) when type in [:transfer, "transfer"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(before after operation_id affected_transfer_ids)
+    end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -5564,6 +5597,19 @@ defmodule GtfsPlanner.Gtfs do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_trip_operation(attrs)
+  end
+
+  # Transfers, like trips, diff two explicit snapshots supplied by the caller. The log
+  # carries no transfer-column diff, and a bulk delete records its shared operation
+  # UUID and affected transfer UUIDs alongside the snapshot.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:transfer, "transfer"] and
+              action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+    |> put_transfer_operation(attrs)
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
@@ -5627,6 +5673,17 @@ defmodule GtfsPlanner.Gtfs do
   # trip can be reconstructed into the whole command.
   defp put_trip_operation(changed, attrs) do
     Enum.reduce([:operation_id, :affected_trip_ids], changed, fn key, acc ->
+      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
+        nil -> acc
+        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
+      end
+    end)
+  end
+
+  # A bulk transfer delete records its shared operation UUID and every affected
+  # transfer UUID alongside each row's before/after snapshot.
+  defp put_transfer_operation(changed, attrs) do
+    Enum.reduce([:operation_id, :affected_transfer_ids], changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
