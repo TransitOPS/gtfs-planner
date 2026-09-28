@@ -4,9 +4,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   It renders the route's Patterns list, the creation flow and the pattern
   Stops/Timings/Alignment/Details tasks from the scoped
-  `GtfsPlanner.Gtfs.RoutePatterns` reads. Alignment is still an unbuilt
-  destination, so its task renders the shared `GtfsPlannerWeb.ComingSoon` body
-  instead of a map editor. Every identifier used for a write comes from a loaded
+  `GtfsPlanner.Gtfs.RoutePatterns` reads. The Alignment task renders the
+  server-side workspace from `Gtfs.alignment_editor/4` (sections, statuses
+  and export state); map drawing and saving arrive in later steps. Every identifier used for a write comes from a loaded
   server record: the route and pattern are resolved from the URL inside the
   loaded organization/version scope, and a pattern or timing from another scope
   resolves to `not_found`. Access uses the existing editor guard, and a lost
@@ -19,8 +19,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.ComingSoon, only: [coming_soon: 1]
-
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -28,7 +26,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.ComingSoon
+  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -116,6 +115,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:pattern_delete_dialog, nil)
      |> assign(:offline?, false)
      |> assign(:applying?, false)
+     |> assign(:alignment, nil)
+     |> assign(
+       :alignment_state,
+       %{
+         dirty_positions: [],
+         selected: 1,
+         mode: "pan",
+         selected_point_count: 0,
+         point_count: 0,
+         can_undo: false,
+         can_redo: false,
+         flagged_positions: [],
+         review_positions: []
+       }
+     )
+     |> assign(:alignment_dialog, nil)
+     |> assign(:alignment_notice, nil)
+     |> assign(:alignment_pending, nil)
+     |> assign(:alignment_editable, false)
      |> assign(:details_params, @creation_defaults)
      |> assign(:details_baseline, nil)
      |> assign(:details_form, details_form(@creation_defaults, []))
@@ -176,15 +194,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:pattern_id, pattern_id)
       |> assign(:task, resolve_task(action, params["task"]))
 
-    cond do
-      not connected?(socket) ->
-        {:noreply, assign(socket, :load_state, :loading)}
+    socket =
+      cond do
+        not connected?(socket) ->
+          assign(socket, :load_state, :loading)
 
-      reload_needed?(socket, pattern_id, timing_id) ->
-        {:noreply, load_screen(socket, timing_id)}
+        reload_needed?(socket, pattern_id, timing_id) ->
+          load_screen(socket, timing_id)
 
-      true ->
-        {:noreply, socket}
+        true ->
+          socket
+      end
+
+    case RoutePatternAlignmentEvents.ensure_loaded(socket) do
+      {:ok, socket} -> {:noreply, socket}
+      {:error, :not_found} -> {:noreply, not_found(socket)}
     end
   end
 
@@ -509,6 +533,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:task, resolved)
      |> assign(:error_message, nil)
      |> push_patch(to: task_path(socket, resolved))}
+  end
+
+  @impl true
+  def handle_event("alignment_select_section", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.select_section(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_help", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, :help)}
+  end
+
+  @impl true
+  def handle_event("alignment_close_help", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, nil)}
   end
 
   @impl true
@@ -1085,13 +1124,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       busy?={@applying? or @offline?}
                     />
                   <% @task == :alignment -> %>
-                    <div class="mt-4">
-                      <.coming_soon
-                        feature={ComingSoon.feature(:alignment)}
-                        scope_label={"This version: #{@current_gtfs_version.name}"}
-                        heading_level={3}
+                    <%= if @alignment do %>
+                      <RoutePatternAlignmentComponents.alignment_task
+                        alignment={@alignment}
+                        state={@alignment_state}
+                        notice={@alignment_notice}
+                        dialog_open={@alignment_dialog == :help}
+                        editable?={@alignment_editable}
+                        offline?={@offline?}
+                        version_name={@current_gtfs_version.name}
+                        organization_name={@current_organization.name}
                       />
-                    </div>
+                    <% else %>
+                      <.skeleton
+                        id="alignment-loading"
+                        label="Loading alignment"
+                        rows={3}
+                        aria-busy="true"
+                      />
+                    <% end %>
                   <% true -> %>
                     <RoutePatternComponents.timings_task
                       timings={@timings}

@@ -415,10 +415,10 @@ for (const { width, height, label } of VIEWPORTS) {
       await waitForLiveView(page);
       await page.locator("#pattern-task-alignment").click();
       await expect(page).toHaveURL(/task=alignment/);
-      await expect(page.locator("#coming-soon")).toBeVisible();
+      await expect(page.locator("#alignment-task")).toBeVisible();
+      await expect(page.locator("#alignment-title")).toHaveText("Alignment");
 
       await expect(page.locator("h1")).toHaveCount(1);
-      await expect(page.locator("#coming-soon-title")).toHaveText("Alignment");
       await expect(
         page.locator("#main-navigation #nav-routes"),
       ).toHaveAttribute("aria-current", "page");
