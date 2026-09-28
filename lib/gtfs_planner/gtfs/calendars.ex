@@ -991,14 +991,14 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     |> Enum.map(
       &summary(&1, organization_id, version_id, calendars, attributes, exceptions, usage, today)
     )
-    |> Enum.sort_by(fn summary -> {sort_name(summary), summary.service_id} end)
+    |> Enum.sort_by(fn summary -> {display_sort_key(summary), summary.service_id} end)
     |> sort_summaries(opts)
   end
 
   defp sort_summaries(summaries, opts) do
     case {Keyword.get(opts, :sort_by, :name), Keyword.get(opts, :sort_dir, :asc)} do
       {:period, direction} -> sort_by_period(summaries, direction)
-      {_name, :desc} -> Enum.sort_by(summaries, &{sort_name(&1), &1.service_id}, :desc)
+      {_name, :desc} -> Enum.sort_by(summaries, &{display_sort_key(&1), &1.service_id}, :desc)
       {_name, _ascending} -> summaries
     end
   end
@@ -1011,7 +1011,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     sorted =
       Enum.sort_by(
         dated,
-        &{Date.to_erl(&1.first_active_date), sort_name(&1), &1.service_id},
+        &{Date.to_erl(&1.first_active_date), display_sort_key(&1), &1.service_id},
         direction
       )
 
@@ -1147,14 +1147,23 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     in_period? or today in active_dates
   end
 
-  defp sort_name(%{name: name, service_id: service_id}) when is_binary(name) do
+  @doc """
+  Returns the display-name ordering key the list uses: the trimmed, case-insensitive
+  name, falling back to the service ID when the name is blank.
+
+  The list sorts by this key and then by the exact service ID, so a caller that has to
+  reproduce the same order - a default destination chosen by most trips, for instance -
+  uses this function instead of restating the rule.
+  """
+  @spec display_sort_key(map()) :: String.t()
+  def display_sort_key(%{name: name, service_id: service_id}) when is_binary(name) do
     case String.trim(name) do
       "" -> String.downcase(service_id)
       trimmed -> String.downcase(trimmed)
     end
   end
 
-  defp sort_name(%{service_id: service_id}), do: String.downcase(service_id)
+  def display_sort_key(%{service_id: service_id}), do: String.downcase(service_id)
 
   # The source-list filter limits the returned rows only. The global horizon and
   # gaps are computed over the whole version first, so a filtered view never

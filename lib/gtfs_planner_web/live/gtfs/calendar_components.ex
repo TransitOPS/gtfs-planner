@@ -14,7 +14,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   use GtfsPlannerWeb, :html
 
+  alias GtfsPlanner.Gtfs.Blocking.Checks
+
   @tick_label_target 12
+  @seasonal_threshold 14
   @year_only_months 36
 
   @symbols %{service: "●", removed: "×", added: "+", none: "–"}
@@ -1048,6 +1051,913 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp range_label(date, date), do: format_date(date)
 
   defp range_label(first, last), do: "#{format_date(first)} – #{format_date(last)}"
+
+  ## Combination review
+
+  @week_days [
+    {"Mon", :monday},
+    {"Tue", :tuesday},
+    {"Wed", :wednesday},
+    {"Thu", :thursday},
+    {"Fri", :friday},
+    {"Sat", :saturday},
+    {"Sun", :sunday}
+  ]
+
+  @doc """
+  Names one calendar's regular weekdays the way the Calendars list does.
+
+  A calendar with no weekly row is specific dates; the list and the combination review
+  therefore state the same weekly pattern from one function instead of two phrasings.
+  """
+  def regular_days(%{calendar: nil}), do: "Specific dates"
+
+  def regular_days(%{calendar: calendar}) do
+    days = for {label, field} <- @week_days, Map.fetch!(calendar, field) == 1, do: label
+
+    case days do
+      ["Mon", "Tue", "Wed", "Thu", "Fri"] -> "Mon–Fri"
+      ["Sat", "Sun"] -> "Sat–Sun"
+      ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] -> "Every day"
+      [] -> "No weekly days"
+      other -> Enum.join(other, ", ")
+    end
+  end
+
+  @doc """
+  Reports whether a reviewed combination changes nothing at all.
+
+  Every moving calendar contributes no trips and the destination's own effective dates are
+  unchanged, so the only useful action is to delete the empty source instead. The check reads
+  the review's own facts - the moved counts and the destination's gained and lost dates - and
+  never re-derives dates, and an incomplete review is never reported as a no-op.
+  """
+  def combination_nothing?(%{ready?: true, effects: effects}) when is_list(effects) do
+    destination = Enum.find(effects, &(not &1.moving?))
+    moving = Enum.filter(effects, & &1.moving?)
+
+    destination != nil and Enum.all?(moving, &(&1.trip_count == 0)) and
+      destination.gained_dates == [] and destination.lost_dates == []
+  end
+
+  def combination_nothing?(_review), do: false
+
+  @doc """
+  Renders the destination choice for a reviewed combination.
+
+  Every selected calendar is an option with its exact identity, regular days and coverage
+  caption, and the destination states the trips it would keep. The radio values are the exact
+  service IDs the review command receives, and the destination starts on the selection's
+  most-used calendar, so opening the drawer never depends on click order (AC-20).
+  """
+  attr :id, :string, required: true
+  attr :form, :any, required: true
+  attr :rows, :list, required: true
+  attr :destination_id, :string, required: true
+  attr :review, :map, required: true
+  attr :version_id, :any, required: true
+
+  def combination_controls(assigns) do
+    assigns =
+      assigns
+      |> assign(:field, assigns.form[:destination_id])
+      |> assign(:candidates, Enum.sort_by(assigns.rows, &display_order/1))
+
+    ~H"""
+    <fieldset id={@id} class="min-w-0">
+      <legend class="text-base font-semibold">Keep one calendar</legend>
+      <p class="mt-1 text-sm text-base-content/70">
+        Trips move into it, and it keeps its name and service ID. The others stay in the list
+        with 0 trips, so anything that refers to them keeps working.
+      </p>
+      <div class="mt-3 grid gap-2">
+        <label
+          :for={row <- @candidates}
+          id={"#{@id}-option-#{URI.encode_www_form(row.service_id)}"}
+          class={[
+            "flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-box border px-3 py-2",
+            row.service_id == @destination_id && "border-secondary bg-secondary/5"
+          ]}
+        >
+          <input
+            type="radio"
+            class="radio radio-sm accent-secondary"
+            name={@field.name}
+            value={row.service_id}
+            checked={row.service_id == @destination_id}
+            aria-label={"Keep #{row.name || row.service_id}"}
+          />
+          <span class="min-w-0 flex-1">
+            <span class="block font-semibold">{row.name || row.service_id}</span>
+            <span class="block text-sm text-base-content/70">
+              <code class="font-mono">{row.service_id}</code>
+              {" · "}{regular_days(row)}
+              <span :if={coverage_caption(row)}>{" · "}{coverage_caption(row)}</span>
+            </span>
+          </span>
+          <span class="shrink-0 text-sm">
+            {destination_trips_label(row, assigns)}
+          </span>
+        </label>
+      </div>
+    </fieldset>
+    """
+  end
+
+  @doc """
+  Renders the reviewed result: the headline, the three reviewed totals and what would be stored.
+
+  The headline states the strongest fact the review supports: a no-op points at the source that
+  should be deleted, an undecided review states how many dates still need a choice, a review
+  whose moves change upcoming dates names them per calendar, and a review whose moves do not
+  change any upcoming date says so. The totals and the stored form come from the review's own
+  projected dates and the destination's native projection, never from a client total (INV-3).
+  """
+  attr :id, :string, required: true
+  attr :review, :map, required: true
+  attr :rows, :list, required: true
+  attr :destination_id, :string, required: true
+  attr :stored, :map, default: nil
+  attr :today, :any, default: nil
+  attr :version_id, :any, required: true
+
+  def combination_result(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :destination,
+        Enum.find(assigns.rows, &(&1.service_id == assigns.destination_id))
+      )
+
+    assigns =
+      assigns
+      |> assign(:upcoming, upcoming_destination_label(assigns))
+      |> assign(:headline, result_headline(assigns))
+
+    ~H"""
+    <section id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
+      <h3 id={@id <> "-heading"} class="text-base font-semibold">Result</h3>
+      <div class="mt-2">
+        <.callout kind={@headline.kind} title={@headline.title}>
+          {@headline.text}
+          <.link
+            :if={@headline.link}
+            id={@id <> "-source-link"}
+            navigate={
+              "/gtfs/#{@version_id}/calendars/show?service_id=" <>
+                URI.encode_www_form(@headline.link.service_id)
+            }
+            class="link link-primary font-semibold"
+          >
+            Open {@headline.link.name}
+          </.link>
+        </.callout>
+      </div>
+
+      <dl
+        id={@id <> "-totals"}
+        class="mt-3 grid divide-y divide-base-300 rounded-box border border-base-300 sm:grid-cols-3 sm:divide-x sm:divide-y-0"
+      >
+        <div class="min-w-0 px-3 py-2">
+          <dt class="text-sm text-base-content/70">Trips moving</dt>
+          <dd id={@id <> "-moved"} class="text-xl font-semibold tabular-nums">
+            {@review.moved_trip_count}
+          </dd>
+        </div>
+        <div class="min-w-0 px-3 py-2">
+          <dt class="truncate text-sm text-base-content/70">
+            Upcoming dates, {@destination && (@destination.name || @destination.service_id)}
+          </dt>
+          <dd id={@id <> "-upcoming"} class="text-xl font-semibold tabular-nums">
+            {@upcoming}
+          </dd>
+        </div>
+        <div class="min-w-0 px-3 py-2">
+          <dt class="text-sm text-base-content/70">Left with 0 trips</dt>
+          <dd id={@id <> "-sources"} class="text-xl font-semibold tabular-nums">
+            {plural(length(@review.retained_sources), "calendar")}
+          </dd>
+        </div>
+      </dl>
+
+      <p :if={stored_label(@stored)} id={@id <> "-stored"} class="mt-3 text-sm">
+        Stored as {stored_label(@stored)}.
+      </p>
+      <p
+        :if={@stored && dates_only_note(assigns)}
+        id={@id <> "-dates-only"}
+        class="mt-1 text-sm text-base-content/70"
+      >
+        {dates_only_note(assigns)}
+      </p>
+      <p :if={@stored} id={@id <> "-no-new-dates"} class="mt-1 text-sm text-success">
+        No new service dates: every date comes from a selected calendar.
+      </p>
+    </section>
+    """
+  end
+
+  @doc """
+  States the conflict dates a review still needs a decision for.
+
+  Each conflict is a date one selected calendar deliberately stops on while another runs it, and
+  the domain groups only civil-adjacent dates whose running and removing calendars are identical.
+  The label names the exact dates, the calendars on each side and the missing choice; a decided
+  review renders no unresolved group. The review owns the grouping and the IDs, so nothing here
+  re-derives which calendars run on a date.
+  """
+  attr :id, :string, required: true
+  attr :review, :map, required: true
+  attr :rows, :list, required: true
+  attr :today, :any, default: nil
+
+  def combination_conflict_labels(assigns) do
+    assigns =
+      assigns
+      |> assign(:groups, conflict_groups(assigns.review, assigns.rows))
+      |> assign(:date_count, length(assigns.review.conflicts))
+
+    ~H"""
+    <section :if={@groups != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
+      <h3 id={@id <> "-heading"} class="text-base font-semibold">
+        Choose what happens on {plural(@date_count, "date")}
+      </h3>
+      <p class="mt-1 text-sm text-base-content/70">
+        One calendar has these dates off while another runs them. A combined calendar can't do
+        both, so every trip follows your choice.
+      </p>
+      <ul class="mt-3 grid gap-2">
+        <li
+          :for={group <- @groups}
+          id={@id <> "-" <> group.key}
+          class="min-w-0 rounded-box border border-warning bg-warning/10 px-4 py-3"
+        >
+          <p class="font-medium">{group.label}</p>
+          <p class="mt-0.5 text-sm">
+            {group.removing_names} {if length(group.removing_ids) == 1,
+              do: "has no service",
+              else: "have no service"}. {group.running_names} {if length(group.running_ids) == 1,
+              do: "runs",
+              else: "run"}.
+          </p>
+          <p class="mt-1 text-sm font-medium text-warning">
+            Needs your choice: the combined calendar either runs the date for every trip or has
+            no service.
+          </p>
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc """
+  States the dates each selected calendar's trips run on after the reviewed combination.
+
+  Every line uses the review's own gained and lost dates: upcoming changes name the weekday
+  pattern and the exact span, past-only changes say so, and a calendar whose trips do not move
+  says that nothing changes. A calendar with no trips and an undecided review state the fact
+  instead of an empty list that would read as "nothing changes" (AC-8).
+  """
+  attr :id, :string, required: true
+  attr :review, :map, required: true
+  attr :rows, :list, required: true
+  attr :destination_id, :string, required: true
+
+  def combination_effects(assigns) do
+    assigns =
+      assigns
+      |> assign(:entries, effect_entries(assigns))
+      |> assign(:undecided?, Enum.any?(assigns.review.effects, &is_nil(&1.gained_dates)))
+
+    ~H"""
+    <section id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
+      <h3 id={@id <> "-heading"} class="text-base font-semibold">
+        When trips run after combining
+      </h3>
+      <p :if={@undecided?} class="mt-1 text-sm text-base-content/70">
+        The dates below the undecided ones depend on your choice.
+      </p>
+      <ul class="mt-3 divide-y divide-base-300 rounded-box border border-base-300">
+        <li
+          :for={entry <- @entries}
+          id={@id <> "-" <> URI.encode_www_form(entry.service_id)}
+          class="flex gap-3 px-4 py-3"
+        >
+          <.icon name={entry.icon} class={["size-5 shrink-0", entry.icon_class]} />
+          <div class="min-w-0">
+            <p class="text-sm">
+              <strong>{entry.name}</strong>
+              <span class="text-base-content/70">{" · "}{entry.role}</span>
+            </p>
+            <p class="mt-0.5 text-sm">{entry.line}</p>
+          </div>
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc """
+  States the real block, transfer and retained-source consequences of the reviewed combination.
+
+  Every item comes from the review's own projection: the cleared trip IDs and the findings the
+  concrete Blocking producer returned before and after the move, the in-seat records it re-read,
+  the retained source IDs and the loaded route usage. New and pre-existing findings are separated
+  by the producer's own finding key, and a no-op review renders no consequences at all.
+  """
+  attr :id, :string, required: true
+  attr :review, :map, required: true
+  attr :rows, :list, required: true
+  attr :destination_id, :string, required: true
+  attr :version_id, :any, required: true
+
+  def combination_impacts(assigns) do
+    # A no-op has nothing else to check: the headline already names the source to delete, so the
+    # section stays out of the drawer instead of restating the same guidance.
+    assigns =
+      if combination_nothing?(assigns.review) do
+        assign(assigns, :items, [])
+      else
+        assign(assigns, :items, impact_items(assigns))
+      end
+
+    ~H"""
+    <section :if={@items != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
+      <h3 id={@id <> "-heading"} class="text-base font-semibold">Also check</h3>
+      <ul class="mt-3 grid gap-3 text-sm">
+        <li :for={item <- @items} id={@id <> "-" <> item.key} class="flex gap-2.5">
+          <.icon name={item.icon} class={["size-5 shrink-0", item.icon_class]} />
+          <span>
+            {item.text}
+            <.link
+              :if={item.link}
+              navigate={
+                "/gtfs/#{@version_id}/calendars/show?service_id=" <>
+                  URI.encode_www_form(item.link.service_id)
+              }
+              class="link link-primary font-semibold"
+            >
+              Open {item.link.name}
+            </.link>
+          </span>
+        </li>
+      </ul>
+      <p class="mt-5 border-t border-base-300 pt-4 text-sm text-base-content/70">
+        Blocks groups calendars into day types without combining them, so combining is not needed
+        only to view calendars together.
+      </p>
+    </section>
+    """
+  end
+
+  defp display_order(row), do: {String.downcase(row.name || row.service_id), row.service_id}
+
+  defp destination_trips_label(row, assigns) do
+    if row.service_id == assigns.destination_id do
+      moved = assigns.review.moved_trip_count
+
+      if moved > 0 do
+        "Keeps #{row.trip_count} + #{moved} trips"
+      else
+        "Keeps #{plural(row.trip_count, "trip")}"
+      end
+    else
+      if row.trip_count > 0, do: "#{row.trip_count} trips move", else: "No trips"
+    end
+  end
+
+  defp result_headline(assigns) do
+    review = assigns.review
+    destination = assigns.destination
+    destination_name = destination && (destination.name || destination.service_id)
+
+    cond do
+      combination_nothing?(review) ->
+        %{
+          kind: "info",
+          title: "Nothing changes.",
+          text: nothing_text(assigns, destination_name),
+          link: nothing_link(assigns)
+        }
+
+      changed_effects(review) != [] ->
+        %{
+          kind: "warning",
+          title: "Some trips will run on different dates.",
+          text: changed_text(assigns) <> pending_text(review),
+          link: nil
+        }
+
+      review.ready? == false ->
+        %{
+          kind: "warning",
+          title: "Almost ready.",
+          text: pending_sentence(review),
+          link: nil
+        }
+
+      true ->
+        %{
+          kind: "success",
+          title: moved_headline(review.moved_trip_count),
+          text: "The kept calendar, #{destination_name}, keeps its dates.",
+          link: nil
+        }
+    end
+  end
+
+  defp moved_headline(1), do: "1 trip moves, and no trip changes its upcoming dates."
+  defp moved_headline(count), do: "#{count} trips move, and no trip changes its upcoming dates."
+
+  defp nothing_text(assigns, destination_name) do
+    sources = source_names(assigns.review, assigns.rows)
+
+    "#{sources} #{if length(assigns.review.retained_sources) == 1, do: "has", else: "have"} no trips, and #{destination_name} already runs on all of #{if length(assigns.review.retained_sources) == 1, do: "its", else: "their"} dates. To tidy the list, delete #{if length(assigns.review.retained_sources) == 1, do: "it", else: "them"} from #{if length(assigns.review.retained_sources) == 1, do: "its page", else: "their pages"} instead. "
+  end
+
+  defp nothing_link(assigns) do
+    case assigns.review.retained_sources do
+      [service_id | _rest] ->
+        %{service_id: service_id, name: row_name(assigns.rows, service_id)}
+
+      [] ->
+        nil
+    end
+  end
+
+  defp changed_effects(review) do
+    Enum.filter(review.effects, fn effect ->
+      effect.moving? and is_list(effect.upcoming_gained_dates) and
+        is_list(effect.upcoming_lost_dates) and
+        (effect.upcoming_gained_dates != [] or effect.upcoming_lost_dates != [])
+    end)
+  end
+
+  defp changed_text(assigns) do
+    assigns.review
+    |> changed_effects()
+    |> Enum.map_join("; ", fn effect ->
+      gains =
+        if effect.upcoming_gained_dates != [] do
+          "gain #{plural(length(effect.upcoming_gained_dates), "upcoming date")}"
+        end
+
+      losses =
+        if effect.upcoming_lost_dates != [] do
+          "lose #{plural(length(effect.upcoming_lost_dates), "upcoming date")}"
+        end
+
+      joined = [gains, losses] |> Enum.reject(&is_nil/1) |> Enum.join(" and ")
+
+      "#{plural(effect.trip_count, "trip")} from #{row_name(assigns.rows, effect.service_id)} #{joined}"
+    end)
+    |> Kernel.<>(".")
+  end
+
+  defp pending_text(%{conflicts: []}), do: ""
+
+  defp pending_text(review),
+    do: " #{pending_sentence(review)}"
+
+  defp pending_sentence(review) do
+    count = length(review.conflicts)
+
+    "#{plural(count, "date")} #{if count == 1, do: "needs", else: "need"} your choice."
+  end
+
+  defp upcoming_destination_label(assigns) do
+    destination = assigns.destination
+
+    if destination == nil do
+      "—"
+    else
+      today = assigns.today
+
+      before =
+        Enum.count(destination.active_dates, &(is_nil(today) or Date.compare(&1, today) != :lt))
+
+      case Enum.find(assigns.review.effects, &(&1.service_id == destination.service_id)) do
+        %{gained_dates: nil} ->
+          "#{before} → after your choice"
+
+        %{upcoming_gained_dates: gained, upcoming_lost_dates: lost} ->
+          "#{before} → #{before + length(gained) - length(lost)}"
+
+        nil ->
+          "#{before}"
+      end
+    end
+  end
+
+  defp stored_label(nil), do: nil
+
+  defp stored_label(%{calendar: nil, exceptions: exceptions}) do
+    plural(length(exceptions), "specific date")
+  end
+
+  defp stored_label(%{calendar: calendar, exceptions: exceptions}) do
+    removed = Enum.count(exceptions, &(&1.exception_type == 2))
+    added = Enum.count(exceptions, &(&1.exception_type == 1))
+
+    "#{regular_days(%{calendar: calendar})}, #{format_date(calendar.start_date)} – " <>
+      "#{format_date(calendar.end_date)}, with #{count_label(removed, "day off", "days off")} and " <>
+      "#{count_label(added, "added date", "added dates")}"
+  end
+
+  # A stored count states zero as well: "with 0 added dates" is a fact about the result, while
+  # an omitted count would read as if the number were not known.
+  defp count_label(1, one, _many), do: "1 #{one}"
+  defp count_label(count, one, many), do: "#{count} #{many || one <> "s"}"
+
+  defp dates_only_note(assigns) do
+    stored = assigns.stored
+    destination = assigns.destination
+
+    with %{calendar: nil} <- stored,
+         %{} = destination,
+         %{} = weekly <- weekly_alternative(assigns.rows, destination.service_id) do
+      count = length(stored.exceptions)
+
+      "#{destination.name || destination.service_id} stores dates one by one, so the result is " <>
+        "stored as #{plural(count, "specific date")}. Keeping #{weekly.name || weekly.service_id} " <>
+        "stores a weekly schedule instead."
+    else
+      _other -> nil
+    end
+  end
+
+  defp weekly_alternative(rows, destination_id) do
+    rows
+    |> Enum.reject(&(&1.service_id == destination_id))
+    |> Enum.filter(&(&1.calendar != nil))
+    |> Enum.max_by(& &1.trip_count, fn -> nil end)
+  end
+
+  defp conflict_groups(review, rows) do
+    review.conflicts
+    |> Enum.group_by(& &1.group_key)
+    |> Enum.sort_by(fn {key, _entries} -> key end)
+    |> Enum.map(fn {key, entries} -> conflict_group(key, entries, rows) end)
+  end
+
+  defp conflict_group(key, entries, rows) do
+    dates = entries |> Enum.map(& &1.date) |> Enum.sort(Date)
+    first = hd(entries)
+
+    %{
+      key: URI.encode_www_form(key),
+      label: conflict_label(dates),
+      removing_ids: first.removing_ids,
+      running_ids: first.running_ids,
+      removing_names: service_id_names(first.removing_ids, rows),
+      running_names: service_id_names(first.running_ids, rows)
+    }
+  end
+
+  defp conflict_label([date]), do: format_date(date)
+
+  defp conflict_label([first | _rest] = dates) do
+    "#{format_date(first)} – #{format_date(List.last(dates))} · #{plural(length(dates), "date")}"
+  end
+
+  # The conflict carries exact service IDs; the loaded rows supply their display names.
+  defp service_id_names(service_ids, rows),
+    do: Enum.map_join(service_ids, ", ", &row_name(rows, &1))
+
+  defp effect_entries(assigns) do
+    destination_id = assigns.destination_id
+
+    assigns.review.effects
+    |> Enum.sort_by(fn effect ->
+      {if(effect.service_id == destination_id, do: 0, else: 1),
+       display_order_effect(effect, assigns.rows)}
+    end)
+    |> Enum.map(&effect_entry(&1, assigns))
+  end
+
+  defp display_order_effect(effect, rows) do
+    case Enum.find(rows, &(&1.service_id == effect.service_id)) do
+      nil -> {String.downcase(effect.service_id), effect.service_id}
+      row -> display_order(row)
+    end
+  end
+
+  defp effect_entry(effect, assigns) do
+    {icon, icon_class, line} = effect_line(effect)
+
+    %{
+      service_id: effect.service_id,
+      name: row_name(assigns.rows, effect.service_id),
+      role: effect_role(effect),
+      icon: icon,
+      icon_class: icon_class,
+      line: line
+    }
+  end
+
+  defp effect_role(%{moving?: true, trip_count: 0}), do: "no trips"
+  defp effect_role(%{moving?: true, trip_count: 1}), do: "1 trip moves"
+  defp effect_role(%{moving?: true, trip_count: count}), do: "#{plural(count, "trip")} move"
+  defp effect_role(%{trip_count: count}), do: "#{plural(count, "trip")} stay"
+
+  defp effect_line(%{trip_count: 0}) do
+    {"hero-minus-circle", "text-base-content/50", "No trips, so nothing changes for riders."}
+  end
+
+  defp effect_line(%{gained_dates: nil}) do
+    {"hero-question-mark-circle", "text-warning",
+     "The dates these trips run depend on your choice."}
+  end
+
+  defp effect_line(effect) do
+    upcoming_gained = effect.upcoming_gained_dates
+    upcoming_lost = effect.upcoming_lost_dates
+
+    cond do
+      upcoming_gained != [] or upcoming_lost != [] ->
+        {"hero-exclamation-triangle", "text-warning", upcoming_line(effect)}
+
+      effect.past_gained_dates != [] or effect.past_lost_dates != [] ->
+        past = length(effect.past_gained_dates) + length(effect.past_lost_dates)
+
+        {"hero-information-circle", "text-base-content/50",
+         "Only past dates change (#{plural(past, "date")} before today). Upcoming service stays the same."}
+
+      true ->
+        {"hero-check-circle", "text-success", "No change to the dates they run."}
+    end
+  end
+
+  defp upcoming_line(effect) do
+    bits =
+      [
+        if(effect.upcoming_gained_dates != [],
+          do: "Also run on #{describe_dates(effect.upcoming_gained_dates)}",
+          else: nil
+        ),
+        if(effect.upcoming_lost_dates != [],
+          do: "Stop running on #{describe_dates(effect.upcoming_lost_dates)}",
+          else: nil
+        )
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    seasonal =
+      if effect.moving? and length(effect.upcoming_gained_dates) > @seasonal_threshold do
+        " If these trips should keep their own dates, don't combine."
+      else
+        ""
+      end
+
+    Enum.join(bits, ". ") <> "." <> seasonal
+  end
+
+  # A short list is named exactly; a longer one states its count, its weekday pattern and its
+  # span, which is what the reference's consequence line does without re-evaluating any date.
+  defp describe_dates(dates) do
+    case dates do
+      [date] ->
+        format_date(date)
+
+      [first, second] ->
+        "#{format_date(first)} and #{format_date(second)}"
+
+      [first, second, third] ->
+        "#{format_date(first)}, #{format_date(second)} and #{format_date(third)}"
+
+      [first | _rest] = all ->
+        pattern = weekday_pattern(all)
+
+        "#{plural(length(all), "date")}#{if pattern, do: " (#{pattern})", else: ""}, " <>
+          "#{format_date(first)} – #{format_date(List.last(all))}"
+    end
+  end
+
+  defp weekday_pattern(dates) do
+    case dates |> Enum.map(&Date.day_of_week/1) |> Enum.uniq() |> Enum.sort() do
+      [6] -> "Saturdays"
+      [7] -> "Sundays"
+      [6, 7] -> "weekends"
+      [1, 2, 3, 4, 5] -> "weekdays"
+      [5, 6] -> "Fridays and Saturdays"
+      _other -> nil
+    end
+  end
+
+  defp impact_items(assigns) do
+    effects = assigns.review.block_effects
+
+    case effects do
+      nil -> retained_items(assigns)
+      %{} -> block_items(assigns, effects) ++ retained_items(assigns)
+    end
+  end
+
+  defp block_items(_assigns, effects) do
+    cleared_block_item(effects) ++ new_finding_items(effects) ++ transfer_items(effects)
+  end
+
+  defp cleared_block_item(%{cleared_trip_ids: []}), do: []
+
+  defp cleared_block_item(effects) do
+    blocks =
+      effects.before_findings
+      |> Enum.filter(fn finding ->
+        finding.block_id != nil and
+          Enum.any?(finding.trip_ids, &(&1 in effects.cleared_trip_ids))
+      end)
+      |> Enum.map(& &1.block_id)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    count = length(effects.cleared_trip_ids)
+
+    [
+      %{
+        key: "cleared-blocks",
+        icon: "hero-exclamation-triangle",
+        icon_class: "text-warning",
+        text:
+          "#{plural(count, "moved trip")} #{if count == 1, do: "leaves", else: "leave"} " <>
+            "#{block_label(blocks)} and #{if count == 1, do: "goes", else: "go"} to the unassigned pool on Blocks.",
+        link: nil
+      }
+    ]
+  end
+
+  defp block_label([]), do: "its block"
+  defp block_label([block_id]), do: "block #{block_id}"
+  defp block_label(block_ids), do: "blocks #{Enum.join(block_ids, ", ")}"
+
+  defp new_finding_items(effects) do
+    before_keys = MapSet.new(effects.before_findings, &Checks.finding_key/1)
+
+    new_findings =
+      Enum.reject(effects.after_findings, &MapSet.member?(before_keys, Checks.finding_key(&1)))
+
+    new_findings
+    |> Enum.group_by(& &1.code)
+    |> Enum.sort_by(fn {code, _findings} -> code end)
+    |> Enum.map(fn {code, findings} -> finding_item(code, findings) end)
+  end
+
+  defp finding_item(code, findings) do
+    blocks =
+      findings |> Enum.map(& &1.block_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> Enum.sort()
+
+    %{
+      key: "finding-#{code}",
+      icon: "hero-exclamation-triangle",
+      icon_class: "text-warning",
+      text:
+        "#{plural(length(findings), "new #{finding_label(code)} warning")}" <>
+          if(blocks == [], do: " on the new dates.", else: " on #{block_label(blocks)}."),
+      link: nil
+    }
+  end
+
+  defp finding_label(:overlap), do: "block overlap"
+  defp finding_label(:short_layover), do: "short layover"
+  defp finding_label(:in_seat_stale), do: "in-seat transfer"
+  defp finding_label(:in_seat_unconfirmed), do: "in-seat confirmation"
+  defp finding_label(:repositions), do: "repositioning"
+  defp finding_label(:frequency_trip), do: "frequency trip"
+  defp finding_label(:unplottable), do: "unplottable trip"
+  defp finding_label(code), do: "#{code}" |> String.replace("_", " ")
+
+  defp transfer_items(%{transfers: []}), do: []
+
+  defp transfer_items(effects) do
+    {changed, unchanged} = Enum.split_with(effects.transfers, &(&1.before != &1.after))
+
+    changed_items =
+      Enum.map(changed, fn transfer ->
+        %{
+          key: "transfer-#{transfer.id}",
+          icon: "hero-exclamation-triangle",
+          icon_class: "text-warning",
+          text:
+            "In-seat transfer #{transfer.id} #{in_seat_label(transfer.before)} before the move " <>
+              "and #{in_seat_label(transfer.after)} after it.",
+          link: nil
+        }
+      end)
+
+    unchanged_items =
+      case unchanged do
+        [] ->
+          []
+
+        transfers ->
+          [
+            %{
+              key: "transfers-unchanged",
+              icon: "hero-check-circle",
+              icon_class: "text-success",
+              text: unchanged_transfer_text(length(transfers)),
+              link: nil
+            }
+          ]
+      end
+
+    changed_items ++ unchanged_items
+  end
+
+  defp unchanged_transfer_text(1) do
+    "1 in-seat transfer names these trips. It stays; Blocks reports any that no longer match."
+  end
+
+  defp unchanged_transfer_text(count) do
+    "#{count} in-seat transfers name these trips. They stay; Blocks reports any that no longer match."
+  end
+
+  defp in_seat_label(:matches), do: "matches today"
+
+  defp in_seat_label({:stale, reason}),
+    do: "no longer matches (#{in_seat_reason(reason)})"
+
+  defp in_seat_label({:unconfirmed, reason}),
+    do: "needs confirmation (#{in_seat_reason(reason)})"
+
+  defp in_seat_reason(:trip_missing), do: "a trip is missing"
+  defp in_seat_reason(:no_shared_date), do: "no shared date"
+  defp in_seat_reason(:no_block), do: "no block"
+  defp in_seat_reason(:stops_changed), do: "the recorded stops changed"
+  defp in_seat_reason(:next_service_day), do: "the next service day"
+  defp in_seat_reason(:untimed), do: "no times"
+  defp in_seat_reason(:coupling), do: "the coupling time"
+
+  defp in_seat_reason({:not_next, failures}) do
+    "not the next trip on #{plural(length(failures), "day type")}"
+  end
+
+  defp in_seat_reason(reason), do: "#{reason}"
+
+  defp retained_items(assigns) do
+    sources = Enum.map(assigns.review.retained_sources, &source_item(&1, assigns))
+    routes = route_item(assigns)
+    sources ++ routes
+  end
+
+  defp source_item(service_id, assigns) do
+    name = row_name(assigns.rows, service_id)
+
+    %{
+      key: "retained-#{URI.encode_www_form(service_id)}",
+      icon: "hero-information-circle",
+      icon_class: "text-base-content/50",
+      text:
+        "#{name} stays in the list with 0 trips and its own service ID. Delete it from its " <>
+          "page once nothing uses it. ",
+      link: %{service_id: service_id, name: name}
+    }
+  end
+
+  defp route_item(assigns) do
+    routes =
+      assigns.rows
+      |> Enum.filter(&(&1.service_id != assigns.destination_id))
+      |> Enum.flat_map(& &1.routes)
+      |> Enum.map(& &1.route_id)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    case routes do
+      [] ->
+        []
+
+      route_ids ->
+        [
+          %{
+            key: "routes",
+            icon: "hero-information-circle",
+            icon_class: "text-base-content/50",
+            text:
+              "Schedules for #{if length(route_ids) == 1, do: "route", else: "routes"} " <>
+                "#{Enum.join(route_ids, ", ")} list the moved trips under " <>
+                "#{row_name(assigns.rows, assigns.destination_id)}.",
+            link: nil
+          }
+        ]
+    end
+  end
+
+  defp source_names(review, rows) do
+    review.retained_sources
+    |> Enum.map(&row_name(rows, &1))
+    |> join_names()
+  end
+
+  defp join_names([]), do: ""
+  defp join_names([name]), do: name
+  defp join_names(names), do: Enum.join(names, ", ")
+
+  defp row_name(rows, service_id) do
+    case Enum.find(rows, &(&1.service_id == service_id)) do
+      nil -> service_id
+      row -> row.name || row.service_id
+    end
+  end
 
   ## Warning helpers
 

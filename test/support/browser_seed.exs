@@ -2643,6 +2643,264 @@ case Accounts.register_first_admin(%{
         "(today #{details_today})"
     )
 
+    # ── Calendar combination scenario ──
+    #
+    # One dedicated published version carries every selectable shape the combine review
+    # needs, so no journey has to mutate the list versions above: a Saturday destination
+    # with the most trips, two moving sources that share a block but never a date (so the
+    # reviewed projection really clears it), a specific-dates source, a no-op pair with an
+    # identical empty copy, and a weekday calendar that deliberately removes a date the
+    # other weekday calendar runs (one conflict). Dates are relative to the version's
+    # agency-local today, and the block and transfer rows give the review real findings.
+    {:ok, combine_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Calendar Combine"})
+
+    combine_today = Gtfs.DisplayClock.today(org.id, combine_version.id).date
+
+    # The next three Mondays are the specific-dates source's dates, which is what keeps them
+    # disjoint from the Sunday source.
+    game_day = fn today, index ->
+      next_monday = Date.add(today, rem(8 - Date.day_of_week(today), 7) + 7)
+      Date.add(next_monday, (index - 1) * 7)
+    end
+
+    {:ok, _combine_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: combine_version.id,
+        route_id: "COMBINE_ROUTE",
+        route_short_name: "CB",
+        route_long_name: "Combine scenario route",
+        route_type: 3
+      })
+
+    combine_stops =
+      for index <- 1..2 do
+        {:ok, stop} =
+          Gtfs.create_stop(%{
+            stop_id: "COMBINE_S#{index}",
+            stop_name: "Combine Stop #{index}",
+            location_type: 0,
+            organization_id: org.id,
+            gtfs_version_id: combine_version.id
+          })
+
+        stop
+      end
+
+    weekly_combine_calendars = [
+      %{
+        service_id: "COMBINE_SAT",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 0,
+        start_date: Date.add(combine_today, -60),
+        end_date: Date.add(combine_today, 90)
+      },
+      %{
+        service_id: "COMBINE_FALL",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 1,
+        start_date: Date.add(combine_today, -60),
+        end_date: Date.add(combine_today, 30)
+      },
+      %{
+        service_id: "COMBINE_SUN",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 0,
+        sunday: 1,
+        start_date: Date.add(combine_today, -10),
+        end_date: Date.add(combine_today, 40)
+      },
+      %{
+        service_id: "COMBINE_WEEKDAY",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: Date.add(combine_today, -30),
+        end_date: Date.add(combine_today, 60)
+      },
+      %{
+        service_id: "COMBINE_WEEKDAY_COPY",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: Date.add(combine_today, -30),
+        end_date: Date.add(combine_today, 60)
+      },
+      %{
+        service_id: "COMBINE_HOLIDAY",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: Date.add(combine_today, -30),
+        end_date: Date.add(combine_today, 60)
+      }
+    ]
+
+    weekly_combine_calendars
+    |> Enum.map(
+      &Map.merge(&1, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: combine_version.id,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      })
+    )
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.Calendar, &1))
+
+    [
+      {"COMBINE_SAT", "Saturday service"},
+      {"COMBINE_FALL", "Fall shuttle"},
+      {"COMBINE_SUN", "Sunday shuttle"},
+      {"COMBINE_GAMEDAY", "Game day shuttle"},
+      {"COMBINE_WEEKDAY", "Weekday service"},
+      {"COMBINE_WEEKDAY_COPY", "Weekday service copy"},
+      {"COMBINE_HOLIDAY", "Holiday weekdays"}
+    ]
+    |> Enum.map(fn {service_id, description} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: combine_version.id,
+        service_id: service_id,
+        service_description: description,
+        service_schedule_typicality: 0,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
+
+    # The specific-dates source stores exactly its own dates, and Holiday weekdays removes one
+    # regular Monday–Friday date, which is the one deliberate conflict the review has to label.
+    holiday_removal =
+      Enum.find(
+        Date.range(Date.add(combine_today, 7), Date.add(combine_today, 21)),
+        &(Date.day_of_week(&1) == 3)
+      )
+
+    [
+      {"COMBINE_GAMEDAY", game_day.(combine_today, 1), 1},
+      {"COMBINE_GAMEDAY", game_day.(combine_today, 2), 1},
+      {"COMBINE_GAMEDAY", game_day.(combine_today, 3), 1},
+      {"COMBINE_HOLIDAY", holiday_removal, 2}
+    ]
+    |> Enum.map(fn {service_id, date, exception_type} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: combine_version.id,
+        service_id: service_id,
+        date: date,
+        exception_type: exception_type,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarDate, &1))
+
+    # Every block and transfer consequence below comes from real trips with real stop times:
+    # the destination and the fall shuttle share block "CB700" and therefore keep it, the
+    # Sunday shuttle and the specific-dates trips share block "CB701" without ever sharing a
+    # date and are therefore cleared together once they all run on the destination's dates,
+    # and the type-4 record between the first two is a real in-seat transfer whose state the
+    # move changes.
+    [first_stop, _second_stop] = combine_stops
+
+    combine_trips = [
+      {"COMBINE_SAT", "COMBINE_TRIP_SAT_1", "CB700", :reverse, {~T[08:00:00], ~T[09:00:00]}},
+      {"COMBINE_SAT", "COMBINE_TRIP_SAT_2", nil, :forward, {~T[10:00:00], ~T[11:00:00]}},
+      {"COMBINE_SAT", "COMBINE_TRIP_SAT_3", nil, :forward, {~T[12:00:00], ~T[13:00:00]}},
+      {"COMBINE_SAT", "COMBINE_TRIP_SAT_4", nil, :forward, {~T[14:00:00], ~T[15:00:00]}},
+      {"COMBINE_FALL", "COMBINE_TRIP_FALL_1", "CB700", :forward, {~T[09:10:00], ~T[10:00:00]}},
+      {"COMBINE_FALL", "COMBINE_TRIP_FALL_2", "CB700", :forward, {~T[16:00:00], ~T[17:00:00]}},
+      {"COMBINE_SUN", "COMBINE_TRIP_SUN_1", "CB701", :forward, {~T[11:00:00], ~T[12:00:00]}},
+      {"COMBINE_GAMEDAY", "COMBINE_TRIP_GAME_1", "CB701", :forward, {~T[18:00:00], ~T[19:00:00]}},
+      {"COMBINE_GAMEDAY", "COMBINE_TRIP_GAME_2", "CB701", :forward, {~T[20:00:00], ~T[21:00:00]}},
+      {"COMBINE_WEEKDAY", "COMBINE_TRIP_WEEKDAY_1", nil, :forward, {~T[06:00:00], ~T[07:00:00]}},
+      {"COMBINE_WEEKDAY", "COMBINE_TRIP_WEEKDAY_2", nil, :forward, {~T[07:30:00], ~T[08:30:00]}}
+    ]
+
+    Enum.each(combine_trips, fn {service_id, trip_id, block_id, direction, {arrival, departure}} ->
+      attrs =
+        %{
+          service_id: service_id,
+          trip_id: trip_id,
+          trip_headsign: "Combine scenario"
+        }
+        |> Map.put(:block_id, block_id)
+
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(org.id, combine_version.id, "COMBINE_ROUTE", attrs)
+
+      stop_order = if direction == :reverse, do: Enum.reverse(combine_stops), else: combine_stops
+
+      for {stop, index} <- Enum.with_index(stop_order, 1) do
+        {arrival_time, departure_time} =
+          if index == 1,
+            do: {"#{arrival}", "#{arrival}"},
+            else: {"#{departure}", "#{departure}"}
+
+        GtfsPlanner.GtfsFixtures.stop_time_fixture(
+          org.id,
+          combine_version.id,
+          trip.trip_id,
+          stop.stop_id,
+          %{
+            arrival_time: arrival_time,
+            departure_time: departure_time,
+            stop_sequence: index
+          }
+        )
+      end
+    end)
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, combine_version.id, %{
+      from_trip_id: "COMBINE_TRIP_SAT_1",
+      to_trip_id: "COMBINE_TRIP_FALL_1",
+      from_stop_id: first_stop.stop_id,
+      to_stop_id: first_stop.stop_id,
+      transfer_type: 4
+    })
+
+    IO.puts(
+      "Browser seed: calendar combination version #{combine_version.id} " <>
+        "(today #{combine_today}, conflict #{holiday_removal})"
+    )
+
+    # Branding once more leaves the Browser E2E Version the current one, so the version panel
+    # and every existing list assertion stay as they were.
+    diagram_version
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
     # ── Route schedules read view (Schedules tab) ──
     #
     # Three isolated routes on the shared Browser E2E Version cover the Schedules

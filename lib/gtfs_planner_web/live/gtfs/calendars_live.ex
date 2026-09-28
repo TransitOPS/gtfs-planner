@@ -34,6 +34,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.Calendars.Combination
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarCoverage
@@ -61,15 +63,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   @range_options [
     %{value: "whole", label: "Whole feed"},
     %{value: "near", label: "Next 3 months"}
-  ]
-  @week_days [
-    {"Mon", :monday},
-    {"Tue", :tuesday},
-    {"Wed", :wednesday},
-    {"Thu", :thursday},
-    {"Fri", :friday},
-    {"Sat", :saturday},
-    {"Sun", :sunday}
   ]
 
   @impl true
@@ -104,7 +97,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      |> assign(:date_change_modes, @date_change_modes)
      |> assign(:date_change_mode, "single")
      |> assign(:date_change_return_focus, "calendar-date-change")
+     |> assign(:selected_service_ids, MapSet.new())
+     |> assign(:selection_version_id, nil)
+     |> assign(:combine_open?, false)
+     |> assign(:combine_error, nil)
      |> assign_filter_form()
+     |> drop_combination()
      |> close_date_change()
      |> stream_configure(:calendars, dom_id: &"calendar-#{URI.encode_www_form(&1.service_id)}")
      |> stream(:calendars, [])}
@@ -114,6 +112,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   def handle_params(params, _uri, socket) do
     socket =
       socket
+      |> clear_selection_for_version()
       |> assign(:search, params["search"] || "")
       |> assign(:status, allowlisted(params["status"], @status_keys, "all"))
       |> assign(:range, allowlisted(params["range"], @range_keys, "whole"))
@@ -298,6 +297,66 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     {:noreply, assign(socket, :date_change_review, nil)}
   end
 
+  ## Selection and calendar combination
+
+  @impl true
+  def handle_event("toggle_calendar_selection", %{"service-id" => service_id}, socket)
+      when is_binary(service_id) do
+    {:noreply, toggle_calendar_selection(socket, service_id)}
+  end
+
+  def handle_event("toggle_calendar_selection", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select_all_calendars", _params, socket) do
+    ids = selectable_calendars(socket) |> Enum.map(& &1.service_id) |> MapSet.new()
+
+    # The control is the header checkbox of the list: checking it selects every matching
+    # selectable row, and unchecking it - which is what it reads as once every row is
+    # already selected - clears the selection.
+    selected =
+      if MapSet.size(ids) > 0 and not MapSet.equal?(ids, socket.assigns.selected_service_ids) do
+        ids
+      else
+        MapSet.new()
+      end
+
+    {:noreply,
+     socket
+     |> assign(:selected_service_ids, selected)
+     |> drop_combination()
+     |> restream_calendars(socket.assigns.calendars)}
+  end
+
+  @impl true
+  def handle_event("clear_calendar_selection", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_service_ids, MapSet.new())
+     |> drop_combination()
+     |> restream_calendars(socket.assigns.calendars)}
+  end
+
+  @impl true
+  def handle_event("open_combine", _params, socket) do
+    {:noreply, open_combine(socket)}
+  end
+
+  @impl true
+  def handle_event("close_combine", _params, socket), do: {:noreply, drop_combination(socket)}
+
+  @impl true
+  def handle_event(
+        "combine_destination",
+        %{"combine" => %{"destination_id" => destination_id}},
+        socket
+      )
+      when is_binary(destination_id) do
+    {:noreply, change_combine_destination(socket, destination_id)}
+  end
+
+  def handle_event("combine_destination", _params, socket), do: {:noreply, socket}
+
   ## Data loading
 
   defp load_calendars(socket) do
@@ -372,7 +431,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       before: outside.before,
       after: outside.after,
       today: today,
-      regular_days: regular_days(row)
+      regular_days: CalendarComponents.regular_days(row)
     }
   end
 
@@ -434,7 +493,201 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       reset: true,
       dom_id: &"calendar-#{URI.encode_www_form(&1.service_id)}"
     )
+    |> prune_selection()
   end
+
+  ## Selection
+
+  # Selection is a set of exact service IDs, so a read that still returns the same
+  # identities keeps it: sorting and the timeline range leave the matching rows alone and
+  # the selection stays. A filter or a refresh changes which rows match, and the selection
+  # is then the intersection with the rows the list can currently offer (AC-20). An
+  # identity whose retained range cannot be read is never selectable (AC-5); its ID cannot
+  # enter the set through a row, and a forged event is rejected here too.
+  defp prune_selection(socket) do
+    selectable = MapSet.new(selectable_calendars(socket), & &1.service_id)
+    selected = MapSet.intersection(socket.assigns.selected_service_ids, selectable)
+
+    if MapSet.equal?(selected, socket.assigns.selected_service_ids) do
+      socket
+    else
+      socket
+      |> assign(:selected_service_ids, selected)
+      |> drop_combination()
+    end
+  end
+
+  defp selectable_calendars(socket),
+    do: Enum.filter(socket.assigns.calendars, &is_nil(&1.coverage_error))
+
+  defp selected_calendar_rows(socket) do
+    selected = socket.assigns.selected_service_ids
+
+    socket.assigns.calendars
+    |> Enum.filter(&MapSet.member?(selected, &1.service_id))
+    |> Enum.reject(& &1.coverage_error)
+  end
+
+  defp toggle_calendar_selection(socket, service_id) do
+    case Enum.find(selectable_calendars(socket), &(&1.service_id == service_id)) do
+      nil ->
+        socket
+
+      row ->
+        socket
+        |> assign(
+          :selected_service_ids,
+          toggle(socket.assigns.selected_service_ids, service_id)
+        )
+        |> drop_combination()
+        |> stream_insert(:calendars, row)
+    end
+  end
+
+  # A streamed row is only re-sent by a stream operation, so a control that lives inside a
+  # row states its new state by inserting the rows whose checkbox changed. The insert keeps
+  # the row's DOM id, so LiveView patches the existing element instead of replacing it and
+  # the checkbox keeps focus.
+  defp restream_calendars(socket, rows),
+    do: Enum.reduce(rows, socket, &stream_insert(&2, :calendars, &1))
+
+  # The selection belongs to one version. The router navigates between versions on the same
+  # LiveView, so the recorded version is what distinguishes a filter patch from a version
+  # change, and only the latter clears every piece of review state (AC-20).
+  defp clear_selection_for_version(socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    if socket.assigns.selection_version_id == version_id do
+      socket
+    else
+      socket
+      |> assign(:selected_service_ids, MapSet.new())
+      |> assign(:selection_version_id, version_id)
+      |> drop_combination()
+    end
+  end
+
+  ## Combination review
+
+  # Opening the drawer reviews the selected calendars and writes nothing: the review command
+  # reads one protected input set and returns the union, the conflicts, the per-calendar
+  # effects and the block/transfer projection, all bound to a fingerprint the write path
+  # would have to reproduce. Nothing here persists, and a version holding an unreadable
+  # range cannot combine at all (AC-5).
+  defp open_combine(socket) do
+    rows = selected_calendar_rows(socket)
+
+    if length(rows) < 2 or socket.assigns.invalid_calendars != [] do
+      socket
+    else
+      review_combination(socket, rows, default_destination(rows))
+    end
+  end
+
+  # The default destination is the selection's most-used calendar; a tie follows the list's
+  # own case-insensitive display-name ordering and then the exact service ID, so the choice
+  # never depends on click order (AC-20).
+  defp default_destination(rows) do
+    rows
+    |> Enum.min_by(&{-&1.trip_count, Calendars.display_sort_key(&1), &1.service_id})
+    |> Map.fetch!(:service_id)
+  end
+
+  defp change_combine_destination(socket, destination_id) do
+    if Enum.any?(socket.assigns.combine_rows, &(&1.service_id == destination_id)) do
+      review_combination(socket, socket.assigns.combine_rows, destination_id)
+    else
+      socket
+    end
+  end
+
+  defp review_combination(socket, rows, destination_id) do
+    sources =
+      rows
+      |> Enum.map(& &1.service_id)
+      |> Enum.reject(&(&1 == destination_id))
+      |> Enum.sort()
+
+    fingerprints = Map.new(rows, &{&1.service_id, &1.fingerprint})
+
+    case Gtfs.review_calendar_change(
+           {:combine, destination_id, sources, %{}},
+           fingerprints,
+           audit_context(socket)
+         ) do
+      {:ok, review} ->
+        socket
+        |> assign(:combine_open?, true)
+        |> assign(:combine_error, nil)
+        |> assign(:combine_destination_id, destination_id)
+        |> assign(:combine_review, review)
+        |> assign(:combine_rows, rows)
+        |> assign(:combine_stored, stored_destination(review, rows, destination_id))
+        |> assign(:combine_form, combine_form(destination_id))
+        |> assign(:combine_return_focus_id, "calendar-combine-open")
+
+      {:error, reason} ->
+        socket
+        |> drop_combination()
+        |> assign(:combine_error, combine_error_message(reason))
+    end
+  end
+
+  # The review's own result dates reach the destination's native rows through the same public
+  # projection the write path validates with, so the drawer can state exactly what would be
+  # stored without restating any encoding rule here.
+  defp stored_destination(
+         %{ready?: true, plan: %{result_dates: result_dates}} = review,
+         rows,
+         id
+       )
+       when is_list(result_dates) do
+    destination = Enum.find(rows, &(&1.service_id == id))
+
+    snapshot = %{
+      calendar: destination.calendar,
+      exceptions: destination.exceptions,
+      trip_count: destination.trip_count
+    }
+
+    post_move_trip_count = destination.trip_count + review.moved_trip_count
+
+    case Combination.encode(snapshot, result_dates, post_move_trip_count) do
+      {:ok, encoded} -> encoded
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp stored_destination(_review, _rows, _destination_id), do: nil
+
+  defp drop_combination(socket) do
+    socket
+    |> assign(:combine_open?, false)
+    |> assign(:combine_error, nil)
+    |> assign(:combine_destination_id, nil)
+    |> assign(:combine_review, nil)
+    |> assign(:combine_rows, [])
+    |> assign(:combine_stored, nil)
+    |> assign(:combine_form, combine_form(nil))
+    |> assign(:combine_return_focus_id, nil)
+  end
+
+  defp combine_form(destination_id),
+    do: to_form(%{"destination_id" => destination_id}, as: :combine)
+
+  defp combine_error_message({:invalid_calendar, service_id, _reason}) do
+    "#{service_id} could not be read, so these calendars cannot be combined. Repair it and reload the list."
+  end
+
+  defp combine_error_message(:native_service_required) do
+    "The kept calendar has no weekly days or stored dates to carry the result. Choose another calendar to keep."
+  end
+
+  defp combine_error_message(:stale_review) do
+    "This list changed in another session. Refresh it and select the calendars again."
+  end
+
+  defp combine_error_message(_reason), do: write_error_message(:unavailable)
 
   defp matches?(_summary, ""), do: true
 
@@ -901,20 +1154,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     if column == sort_by, do: sort_dir, else: "none"
   end
 
-  defp regular_days(%{calendar: nil}), do: "Specific dates"
-
-  defp regular_days(%{calendar: calendar}) do
-    days = for {label, field} <- @week_days, Map.fetch!(calendar, field) == 1, do: label
-
-    case days do
-      ["Mon", "Tue", "Wed", "Thu", "Fri"] -> "Mon–Fri"
-      ["Sat", "Sun"] -> "Sat–Sun"
-      ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] -> "Every day"
-      [] -> "No weekly days"
-      other -> Enum.join(other, ", ")
-    end
-  end
-
   defp format_date(date), do: Calendar.strftime(date, "%b %-d, %Y")
 
   defp badge(%{status: %{ended?: true}}), do: {:draft, "Ended"}
@@ -940,6 +1179,42 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   defp result_count(assigns), do: "#{assigns.counts.calendars} calendars"
+
+  ## Selection presentation
+
+  # The select-all control reads as checked only when every matching selectable row is
+  # already selected, the same rule the packaged reference uses for its header checkbox.
+  defp select_all_selected?(assigns) do
+    selectable =
+      assigns.calendars
+      |> Enum.filter(&is_nil(&1.coverage_error))
+      |> Enum.map(& &1.service_id)
+      |> MapSet.new()
+
+    MapSet.size(selectable) > 0 and MapSet.equal?(selectable, assigns.selected_service_ids)
+  end
+
+  defp selection_count_label(1), do: "1 calendar selected"
+  defp selection_count_label(count), do: "#{count} calendars selected"
+
+  ## Combination presentation
+
+  defp combination_scope(assigns) do
+    case assigns.current_gtfs_version do
+      %{name: name} when is_binary(name) -> name
+      _version -> "this service version"
+    end
+  end
+
+  # Opening the review writes nothing, so the drawer says what it is: a no-op offers only
+  # Close, and every other review states that nothing has changed until it is combined.
+  defp combination_footer_note(review) do
+    if CalendarComponents.combination_nothing?(review) do
+      "Nothing to combine."
+    else
+      "Nothing changes until you combine."
+    end
+  end
 
   ## Date-change presentation
 
@@ -1286,6 +1561,85 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         </div>
 
         <div
+          :if={@calendars != [] and @calendars_state == :ready}
+          id="calendar-selection-bar"
+          class={[
+            "flex flex-wrap items-center gap-x-4 gap-y-1 rounded-box border border-base-300 px-4 py-1",
+            MapSet.size(@selected_service_ids) > 0 && "bg-secondary/5"
+          ]}
+        >
+          <label class="inline-flex min-h-11 cursor-pointer items-center gap-2">
+            <input
+              id="calendar-select-all"
+              type="checkbox"
+              class="checkbox checkbox-sm"
+              checked={select_all_selected?(assigns)}
+              aria-label="Select all matching calendars"
+              phx-click="select_all_calendars"
+            />
+            <span class="text-sm">Select all</span>
+          </label>
+          <p
+            :if={MapSet.size(@selected_service_ids) > 0}
+            id="calendar-selection-count"
+            role="status"
+            class="text-sm font-semibold"
+          >
+            {selection_count_label(MapSet.size(@selected_service_ids))}
+          </p>
+          <.button
+            :if={MapSet.size(@selected_service_ids) > 0}
+            id="calendar-combine-open"
+            type="button"
+            phx-click="open_combine"
+            disabled={MapSet.size(@selected_service_ids) < 2 or @invalid_calendars != []}
+            variant="secondary"
+            size="sm"
+            class="min-h-11"
+          >
+            Combine calendars
+          </.button>
+          <p
+            :if={MapSet.size(@selected_service_ids) == 0}
+            id="calendar-selection-hint"
+            class="text-sm text-base-content/70"
+          >
+            Select two or more calendars to combine them.
+          </p>
+          <p
+            :if={MapSet.size(@selected_service_ids) == 1}
+            id="calendar-combine-hint"
+            class="text-sm text-base-content/70"
+          >
+            Select one more calendar to combine.
+          </p>
+          <p
+            :if={@invalid_calendars != []}
+            id="calendar-combine-unavailable"
+            class="text-sm text-base-content/70"
+          >
+            Combining is unavailable until the unreadable calendar range is repaired.
+          </p>
+          <p
+            :if={@combine_error}
+            id="calendar-combine-error"
+            role="alert"
+            class="text-sm text-error"
+          >
+            {@combine_error}
+          </p>
+          <button
+            :if={MapSet.size(@selected_service_ids) > 0}
+            id="calendar-clear-selection"
+            type="button"
+            phx-click="clear_calendar_selection"
+            class="btn btn-sm btn-ghost min-h-11 ml-auto"
+          >
+            Clear selection
+          </button>
+        </div>
+
+        <div
           :if={@calendars != []}
           id="calendars-results"
           class="bg-base-100 border border-base-300 rounded-box"
@@ -1298,27 +1652,62 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               sort_event="sort"
               sort={column_sort_state(@sort_by, @sort_dir, "name")}
             >
-              <.link
-                :if={is_nil(summary.coverage_error)}
-                navigate={detail_path(assigns, summary)}
-                data-calendar-link={summary.service_id}
-                class="link link-primary font-semibold"
-              >
-                {summary.name || "Untitled calendar"}
-              </.link>
-              <%!-- An identity whose retained range cannot be read has no date set to
-              inspect or edit, and the detail read evaluates the dates, so its name is
-              plain text here; the repair action is the import link in the Service dates
-              cell. --%>
-              <span :if={summary.coverage_error} class="font-semibold">
-                {summary.name || "Untitled calendar"}
-              </span>
-              <div class="text-sm text-base-content/70">
-                <code class="font-mono">{summary.service_id}</code>
+              <div class="flex items-start gap-2">
+                <label
+                  :if={is_nil(summary.coverage_error)}
+                  class="inline-flex min-h-11 min-w-8 cursor-pointer items-center justify-center"
+                >
+                  <input
+                    id={"calendar-select-#{URI.encode_www_form(summary.service_id)}"}
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked={MapSet.member?(@selected_service_ids, summary.service_id)}
+                    data-calendar-selected={
+                      to_string(MapSet.member?(@selected_service_ids, summary.service_id))
+                    }
+                    aria-label={"Select #{summary.name || summary.service_id}"}
+                    phx-click="toggle_calendar_selection"
+                    phx-value-service-id={summary.service_id}
+                  />
+                </label>
+                <%!-- An identity whose retained range cannot be read has no evaluated dates,
+                so it cannot be a combination source: the checkbox stays disabled and the
+                repair callout names the fix. --%>
+                <label
+                  :if={summary.coverage_error}
+                  class="inline-flex min-h-11 min-w-8 items-center justify-center"
+                >
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    disabled
+                    aria-label={"#{summary.name || summary.service_id} cannot be selected because its retained range needs repair."}
+                  />
+                </label>
+                <div class="min-w-0">
+                  <.link
+                    :if={is_nil(summary.coverage_error)}
+                    navigate={detail_path(assigns, summary)}
+                    data-calendar-link={summary.service_id}
+                    class="link link-primary font-semibold"
+                  >
+                    {summary.name || "Untitled calendar"}
+                  </.link>
+                  <%!-- An identity whose retained range cannot be read has no date set to
+                  inspect or edit, and the detail read evaluates the dates, so its name is
+                  plain text here; the repair action is the import link in the Service dates
+                  cell. --%>
+                  <span :if={summary.coverage_error} class="font-semibold">
+                    {summary.name || "Untitled calendar"}
+                  </span>
+                  <div class="text-sm text-base-content/70">
+                    <code class="font-mono">{summary.service_id}</code>
+                  </div>
+                </div>
               </div>
             </:col>
             <:col :let={{_id, summary}} label="Regular days">
-              {regular_days(summary)}
+              {CalendarComponents.regular_days(summary)}
             </:col>
             <:col
               :let={{_id, summary}}
@@ -1559,6 +1948,93 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             >
               Refresh snapshot
             </button>
+          </div>
+        </.form>
+      </.drawer>
+
+      <.drawer
+        id="calendar-combine-drawer"
+        open={@combine_open?}
+        on_close="close_combine"
+        title="Combine calendars"
+        return_focus_id={@combine_return_focus_id}
+        class="max-w-[min(100vw,760px)]"
+      >
+        <.form
+          :if={@combine_review != nil}
+          for={@combine_form}
+          id="calendar-combine-form"
+          phx-change="combine_destination"
+          class="space-y-8"
+        >
+          <p id="calendar-combine-subtitle" class="text-sm text-base-content/70">
+            {selection_count_label(length(@combine_rows))} · {combination_scope(assigns)}
+          </p>
+
+          <p
+            :if={@combine_error}
+            id="calendar-combine-drawer-error"
+            role="alert"
+            class="text-sm text-error"
+          >
+            {@combine_error}
+          </p>
+
+          <CalendarComponents.combination_controls
+            id="calendar-combine-destination"
+            form={@combine_form}
+            rows={@combine_rows}
+            destination_id={@combine_destination_id}
+            review={@combine_review}
+            version_id={@current_gtfs_version.id}
+          />
+
+          <CalendarComponents.combination_result
+            id="calendar-combine-result"
+            review={@combine_review}
+            rows={@combine_rows}
+            destination_id={@combine_destination_id}
+            stored={@combine_stored}
+            today={@today}
+            version_id={@current_gtfs_version.id}
+          />
+
+          <CalendarComponents.combination_conflict_labels
+            id="calendar-combine-conflicts"
+            review={@combine_review}
+            rows={@combine_rows}
+            today={@today}
+          />
+
+          <CalendarComponents.combination_effects
+            id="calendar-combine-effects"
+            review={@combine_review}
+            rows={@combine_rows}
+            destination_id={@combine_destination_id}
+          />
+
+          <CalendarComponents.combination_impacts
+            id="calendar-combine-impacts"
+            review={@combine_review}
+            rows={@combine_rows}
+            destination_id={@combine_destination_id}
+            version_id={@current_gtfs_version.id}
+          />
+
+          <div class="-mx-6 -mb-6 sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-base-300 bg-base-100 px-6 pt-3 pb-6">
+            <p id="calendar-combine-footer-note" class="text-sm text-base-content/70">
+              {combination_footer_note(@combine_review)}
+            </p>
+            <.button
+              id="calendar-combine-close"
+              type="button"
+              phx-click="close_combine"
+              variant="secondary"
+              size="sm"
+              class="min-h-11"
+            >
+              Close
+            </.button>
           </div>
         </.form>
       </.drawer>

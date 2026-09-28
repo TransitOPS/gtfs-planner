@@ -1982,3 +1982,17 @@ dialog[role="alertdialog"][open] > div > div {
     margin-bottom: 0.375rem;
   }
 }
+
+/* ── Calendar selection ──
+   The selection belongs to the row, but the shared table owns the <tr>: the row
+   checkbox carries the state and the row reads it, so a selected row is tinted
+   the way the packaged reference tints it. The bar and the row controls are one
+   surface, and the tint is the only per-row affordance, so it must not depend on
+   the coverage CSS above. */
+tbody#calendars-list tr:has(input[data-calendar-selected="true"]) {
+  background-color: color-mix(in oklab, var(--color-secondary) 6%, transparent);
+}
+
+#calendar-selection-bar {
+  border-color: var(--color-base-300);
+}
