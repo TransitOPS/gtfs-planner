@@ -2,26 +2,24 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
   @moduledoc """
   Read-only placeholder pages for GTFS destinations that are navigable before they are built.
 
-  One LiveView serves the three fixed actions in the architecture's route table:
-  Runs and Rosters (`/runs`, `/rosters`) and Evolutions
-  (`/stops/:stop_id/evolutions`). Each mounts through the ordinary `:gtfs_routes`
-  session, so the shared user, organization and published-version hooks decide
-  whether a request reaches it; the editor guard is declared here because a
-  session alone grants no GTFS access.
+  One LiveView serves two fixed actions in the architecture's route table:
+  Runs and Rosters (`/runs`, `/rosters`). Each mounts through the ordinary
+  `:gtfs_routes` session, so the shared user, organization and published-version
+  hooks decide whether a request reaches it; the editor guard is declared here
+  because a session alone grants no GTFS access.
 
   The feature body comes from `GtfsPlannerWeb.ComingSoon`. This LiveView supplies
   only what a page owns: the area sub-navigation, the `This version: <name>` scope
-  label, the heading level, and — for Evolutions — the scoped station the station
-  sub-navigation needs.
+  label and the heading level.
 
-  Evolutions follows `StationReachabilityLive`: `Gtfs.get_stop_by_stop_id/3` scopes
-  the lookup to the selected organization and version, and any stop outside that
-  scope is "not found", which flashes and returns to that version's stops list. No
-  reachability run or closure record is read or written.
+  Evolutions (`/stops/:stop_id/evolutions`) is no longer one of these actions:
+  `GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive` serves that route with the real
+  closure list, and its station scope, version switching and missing-station
+  response live there. Nothing else moved.
 
-  Version switching keeps the current action — and the station on Evolutions — and
-  accepts only a published version of the current organization. A foreign, staging
-  or absent version leaves both the socket and the client's selection untouched.
+  Version switching keeps the current action and accepts only a published version
+  of the current organization. A foreign, staging or absent version leaves both
+  the socket and the client's selection untouched.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -39,11 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
   def mount(_params, _session, socket) do
     feature = ComingSoon.feature(socket.assigns.live_action)
 
-    {:ok,
-     socket
-     |> assign(:page_title, feature.title)
-     |> assign(:station, nil)
-     |> assign(:stop_id, nil)}
+    {:ok, assign(socket, :page_title, feature.title)}
   end
 
   @impl true
@@ -121,14 +115,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
         />
       </:sub_header>
 
-      <:sub_header :if={@area == :station and @station}>
-        <.station_sub_nav
-          station={@station}
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:evolutions}
-        />
-      </:sub_header>
-
       <.coming_soon
         feature={@feature}
         scope_label={"This version: #{@current_gtfs_version.name}"}
@@ -141,27 +127,15 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
   # The area bar a fixed action belongs to. Flex has none: the sitemap places it
   # as a single destination, not a group with siblings.
   defp area(action) when action in [:runs, :rosters], do: :operations
-  defp area(:evolutions), do: :station
   defp area(_action), do: nil
 
-  # Standalone placeholders own the page heading; Evolutions sits under the
-  # station heading the sub-navigation renders.
-  defp heading_level(:evolutions), do: 2
+  # Every remaining placeholder is a standalone page and owns its own heading.
   defp heading_level(_action), do: 1
 
   defp version_target(socket, version_id) do
     case socket.assigns.live_action do
       :runs -> ~p"/gtfs/#{version_id}/runs"
       :rosters -> ~p"/gtfs/#{version_id}/rosters"
-      :evolutions -> evolutions_target(socket.assigns[:stop_id], version_id)
     end
   end
-
-  # A station that the current version does not hold never reaches here with an
-  # ID; that mount redirects to the stops list instead of building a dead link.
-  defp evolutions_target(stop_id, version_id) when is_binary(stop_id) do
-    ~p"/gtfs/#{version_id}/stops/#{stop_id}/evolutions"
-  end
-
-  defp evolutions_target(_stop_id, version_id), do: ~p"/gtfs/#{version_id}/stops"
 end

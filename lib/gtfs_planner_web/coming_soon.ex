@@ -8,9 +8,11 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the four catalog keys only. Any other key raises, so a
+  `feature/1` answers for the three catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
-  for a feature nobody has described.
+  for a feature nobody has described. Evolutions left this catalog when
+  `GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive` took over its station route, so
+  that route no longer has placeholder copy to reach for.
   """
 
   use Phoenix.Component
@@ -95,36 +97,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
     }
   end
 
-  def feature(:evolutions) do
-    %{
-      title: "Evolutions",
-      scope: :version,
-      summary:
-        "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
-      sections: [
-        %{
-          name: "Schedule a closure",
-          text:
-            "Pick a pathway, the calendar of days it’s closed and the hours, such as the elevator on weekdays 9:00 AM–3:00 PM."
-        },
-        %{
-          name: "Pick pathways on the floorplan",
-          text: "See which pathways have closures and which are closed at a time you choose."
-        },
-        %{
-          name: "Check station access",
-          text:
-            "Choose up to 31 days and see whether every entrance still connects to every platform, and whether a step-free route remains."
-        },
-        %{
-          name: "Include closures in your export",
-          text:
-            "Closures are saved with your feed export. They use a GTFS extension that isn’t in the official reference, so some trip planners and validators may ignore them."
-        }
-      ]
-    }
-  end
-
   def feature(:feed_url) do
     %{
       title: "Published feed URL",
@@ -161,9 +133,9 @@ defmodule GtfsPlannerWeb.ComingSoon do
   `scope_label` is caller-resolved text, such as `This version: Fall 2026` or
   `All versions`. The body describes a future feature and carries no controls, so
   a placeholder never offers an action that cannot work yet. The heading level
-  follows the surrounding page: `1` on a standalone placeholder page, `2` under
-  the station heading on Evolutions, and `3` under the route and pattern headings
-  on Alignment. The outcome list's own heading sits one level below it.
+  follows the surrounding page: `1` on a standalone placeholder page and `3` under
+  the route and pattern headings on Alignment. The outcome list's own heading sits
+  one level below it.
 
   The section is a design-system page scope (`ds-page`), so it takes the
   application fonts and ink wherever it renders.

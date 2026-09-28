@@ -3703,3 +3703,112 @@ body:has(#home-page) {
   font: 600 12px var(--font-ds);
   text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;
 }
+
+/* ── Scheduled pathway closures (#evolutions) ──
+   The v2 Schedule-closures design owns the affected region below the station
+   tabs. Every rule here is scoped to the feature root so the navigation shell,
+   daisyUI defaults and the rest of the page keep their current appearance. The
+   region reuses the design-system tokens declared above (`--color-strong`,
+   `--color-muted`, `--color-subtle`, `--color-control`, `--color-canvas`,
+   `--color-action`, `--color-selection`, `--color-focus`, `--radius-control`,
+   `--radius-card`, `--font-ds`, `--font-display`); only the two tokens the v2
+   regions need and the header theme does not define are added, and both carry a
+   pathway-evolutions prefix so they cannot collide with a future global name. */
+@theme {
+  --color-evo-action-hover: #a50f5b; /* filled action hover; 5.6:1 with white text */
+  --radius-evo-badge: 999px; /* count chip on a pathway option */
+}
+#evolutions {
+  font-family: var(--font-ds);
+}
+/* The header's focus treatment, scoped to this feature root. Page controls
+   elsewhere keep their own rings; inside the Evolutions region every control is
+   either a card action or a list row, and both need a visible keyboard target.
+   `outline-offset: -2px` keeps the ring inside the row button so a selected
+   row's inset action bar stays visible. */
+#evolutions :is(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+#evolutions #closures-list:focus-visible {
+  outline-offset: -2px;
+}
+/* Below `md` the closure table becomes one stacked card per row: the pathway
+   spans the full width and the calendar/window pair sits beneath it. The row
+   keeps its own bottom rule, so a long list still reads as separate records. */
+#evolutions #closures-table {
+  border-collapse: collapse;
+}
+@media (max-width: 767px) {
+  #evolutions #closures-table thead {
+    display: none;
+  }
+  #evolutions #closures-table,
+  #evolutions #closures-list {
+    display: block;
+  }
+  #evolutions #closures-list tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 1rem;
+    padding-bottom: 0.75rem;
+  }
+}
+
+/* ── Scheduled pathway closures (#evolutions) ──
+   The v2 Schedule-closures design owns the affected region below the station
+   tabs. Every rule here is scoped to the feature root so the navigation shell,
+   daisyUI defaults and the rest of the page keep their current appearance. The
+   region reuses the design-system tokens declared above (`--color-strong`,
+   `--color-muted`, `--color-subtle`, `--color-control`, `--color-canvas`,
+   `--color-action`, `--color-selection`, `--color-focus`, `--radius-control`,
+   `--radius-card`, `--font-ds`, `--font-display`); only the two tokens the v2
+   regions need and the header theme does not define are added, and both carry a
+   pathway-evolutions prefix so they cannot collide with a future global name. */
+@theme {
+  --color-evo-action-hover: #a50f5b; /* filled action hover; 5.6:1 with white text */
+  --radius-evo-badge: 999px; /* count chip on a pathway option */
+}
+
+#evolutions {
+  font-family: var(--font-ds);
+}
+
+/* The header's focus treatment, scoped to this feature root. Page controls
+   elsewhere keep their own rings; inside the Evolutions region every control is
+   either a card action or a list row, and both need a visible keyboard target.
+   `outline-offset: -2px` keeps the ring inside the row button so a selected
+   row's inset action bar stays visible. */
+#evolutions :is(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+#evolutions #closures-list:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Below `md` the closure table becomes one stacked card per row: the pathway
+   spans the full width and the calendar/window pair sits beneath it. The row
+   keeps its own bottom rule, so a long list still reads as separate records. */
+#evolutions #closures-table {
+  border-collapse: collapse;
+}
+
+@media (max-width: 767px) {
+  #evolutions #closures-table thead {
+    display: none;
+  }
+
+  #evolutions #closures-table,
+  #evolutions #closures-list {
+    display: block;
+  }
+
+  #evolutions #closures-list tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 1rem;
+    padding-bottom: 0.75rem;
+  }
+}

@@ -422,7 +422,8 @@ for (const { width, height, label } of VIEWPORTS) {
       await capture(page, testInfo, `fleet-${label}`);
       await expectNoPageOverflow(page);
 
-      // ── Evolutions is a station tab below the station heading ──
+      // ── Evolutions is a station tab below the station heading, and it opens
+      //    the real closure list rather than the retired placeholder ──
       await page.goto(`/gtfs/${versionId}/stops/${STATION}`);
       await page.waitForSelector("#station-sub-nav");
       await waitForLiveView(page);
@@ -430,9 +431,10 @@ for (const { width, height, label } of VIEWPORTS) {
       await page.waitForURL(/\/evolutions$/);
       await waitForLiveView(page);
 
-      await expect(page.locator("#coming-soon-status")).toHaveText(
-        /Coming soon/,
+      await expect(page.locator("#closures-title")).toHaveText(
+        "Closures at this station",
       );
+      await expect(page.locator("#coming-soon")).toHaveCount(0);
       await expect(page.locator("h1")).toHaveCount(1);
       await expect(
         page.locator("#station-sub-nav a[aria-current='page']"),
