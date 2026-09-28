@@ -245,10 +245,30 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfersTest do
 
     test "refuses conflicting key groups and leaves every row and definition unchanged",
          context do
-      conflicting_type_0_id = insert_transfer!(context, transfer_type: 0)
+      # This pair shares transfer_type and differs only in min_transfer_time, so
+      # dropping min_transfer_time from the dedupe partition would collapse it.
+      conflicting_min_time_nil_id = insert_transfer!(context, transfer_type: 0)
+
+      conflicting_min_time_120_id =
+        insert_transfer!(context, transfer_type: 0, min_transfer_time: 120)
+
+      # A second key group sharing min_transfer_time and differing only in
+      # transfer_type, so dropping transfer_type from the partition collapses it.
+      conflicting_type_0_id =
+        insert_transfer!(context,
+          from_stop_id: "S7",
+          to_stop_id: "S8",
+          transfer_type: 0,
+          min_transfer_time: 120
+        )
 
       conflicting_type_2_id =
-        insert_transfer!(context, transfer_type: 2, min_transfer_time: 120)
+        insert_transfer!(context,
+          from_stop_id: "S7",
+          to_stop_id: "S8",
+          transfer_type: 2,
+          min_transfer_time: 120
+        )
 
       duplicate_id_1 = insert_transfer!(context, from_stop_id: "S5", to_stop_id: "S6")
       duplicate_id_2 = insert_transfer!(context, from_stop_id: "S5", to_stop_id: "S6")
@@ -256,11 +276,12 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfersTest do
       original_definition = index_definition(context)
       original_versions = migrated_versions(context)
 
-      error = assert_raise(RuntimeError, fn -> migrate_up!(context) end)
+      {error, log} =
+        with_log(fn -> assert_raise(RuntimeError, fn -> migrate_up!(context) end) end)
 
       assert error.message =~
                @refusal_prefix <>
-                 "1 transfer key groups hold rows that differ in transfer_type or " <>
+                 "2 transfer key groups hold rows that differ in transfer_type or " <>
                  "min_transfer_time, and 0 type 4 or 5 transfers lack from_trip_id or " <>
                  "to_trip_id. Nothing was changed. Resolve these rows and rerun."
 
@@ -269,9 +290,19 @@ defmodule GtfsPlanner.Repo.Migrations.AllowStoplessInSeatTransfersTest do
                  ~s(gtfs_version_id=#{context.version_id} from_stop_id="S1" to_stop_id="S2" ) <>
                  "from_route_id=nil to_route_id=nil from_trip_id=nil to_trip_id=nil"
 
+      assert error.message =~
+               ~s(conflicting key group: organization_id=#{context.organization_id} ) <>
+                 ~s(gtfs_version_id=#{context.version_id} from_stop_id="S7" to_stop_id="S8" ) <>
+                 "from_route_id=nil to_route_id=nil from_trip_id=nil to_trip_id=nil"
+
+      # A refused run logs no removal for the exact duplicate pair its rollback keeps.
+      refute log =~ "Removed duplicate transfer"
+
       # The refused migration deleted nothing, not even the exact duplicate pair.
       assert transfer_ids(context) ==
                Enum.sort([
+                 conflicting_min_time_nil_id,
+                 conflicting_min_time_120_id,
                  conflicting_type_0_id,
                  conflicting_type_2_id,
                  duplicate_id_1,
