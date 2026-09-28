@@ -249,8 +249,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       html = submit_assign(view, "new")
 
       refute has_element?(view, "#block-review[data-open='true']")
-      assert html =~ "Assigned 1 trip to block 2."
-      assert persisted(x).block_id == "2"
+      assert html =~ "Assigned 1 trip to block 1."
+      assert persisted(x).block_id == "1"
       assert persisted(other).block_id == "101"
       refute has_element?(view, "#assign-form")
       refute has_element?(view, "#trip-drawer")
@@ -258,13 +258,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       # The page holding the changed trip is shown: its new block row is on page 1
       # and the trip deep link is gone from the URL.
       assert_patch(view, base <> "?day=#{key}")
-      assert has_element?(view, "[data-block='2']")
+      assert has_element?(view, "[data-block='1']")
 
       assert [log] = trip_logs(context, x)
       assert log.entity_type == "trip"
       assert log.action == "updated"
       assert log.changed_fields["before"]["block_id"] == nil
-      assert log.changed_fields["after"]["block_id"] == "2"
+      assert log.changed_fields["after"]["block_id"] == "1"
       assert log.changed_fields["affected_trip_ids"] == [x.id]
       assert is_binary(log.changed_fields["operation_id"])
     end
@@ -434,10 +434,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
 
     test "a busy apply keeps the form and target and shows its sentence", context do
       %{x: x} = cross_day_scope(context)
-      set_mox_global()
-      use_reviewed_apply_transaction_mock()
-
-      expect(ReviewedApplyTransactionMock, :run, fn _transaction -> {:error, :busy} end)
 
       %{view: view} = open_day(context, "Weekday", "x")
 
@@ -445,6 +441,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       submit_assign(view, "101")
 
       assert has_element?(view, "#block-review[data-open='true']")
+
+      # `run_write/2` wraps the entire command, so the submit that *opens* the
+      # review runs the real transaction too. The mock is installed only here, so
+      # the one permitted call is the confirmation below.
+      set_mox_global()
+      use_reviewed_apply_transaction_mock()
+
+      expect(ReviewedApplyTransactionMock, :run, fn _transaction -> {:error, :busy} end)
 
       confirm_review(view)
 
@@ -487,16 +491,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       submit_assign(view, "new")
 
       assert has_element?(view, "#block-review[data-open='true']")
-      assert texts(view, "[data-role='review-proposed']") == ["2"]
+      assert texts(view, "[data-role='review-proposed']") == ["1"]
       assert has_element?(view, "#block-review", "In-seat row")
 
       confirm_review(view)
 
-      assert persisted(p).block_id == "2"
+      assert persisted(p).block_id == "1"
 
       assert [log] = trip_logs(context, p)
       assert log.changed_fields["before"]["block_id"] == "101"
-      assert log.changed_fields["after"]["block_id"] == "2"
+      assert log.changed_fields["after"]["block_id"] == "1"
     end
 
     test "an exact match leads the results and the list is capped at 25", context do
