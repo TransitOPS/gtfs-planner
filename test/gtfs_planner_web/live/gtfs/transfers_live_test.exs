@@ -132,7 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
     end
 
     test "a version without general rules shows first use",
-         %{conn: conn, organization: organization, version: version} do
+         %{conn: conn, version: version} do
       {:ok, view, _html} = live(conn, transfers_path(version))
 
       assert has_element?(view, "#transfers-first-use")
