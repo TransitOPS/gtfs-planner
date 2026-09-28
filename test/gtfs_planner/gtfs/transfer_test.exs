@@ -135,6 +135,168 @@ defmodule GtfsPlanner.Gtfs.TransferTest do
     end
   end
 
+  describe "editor_changeset/2" do
+    test "casts only the eight GTFS fields, keeping the tenant columns and id from the struct", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      other_organization = organization_fixture()
+
+      changeset =
+        editor_draft(organization_id, gtfs_version_id, %{
+          "id" => Ecto.UUID.generate(),
+          "organization_id" => other_organization.id,
+          "transfer_type" => "0",
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2"
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :organization_id) == organization_id
+      assert get_field(changeset, :gtfs_version_id) == gtfs_version_id
+      assert get_field(changeset, :id) == nil
+    end
+
+    test "accepts transfer types 0..3 only", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      for transfer_type <- [4, 5, 7] do
+        changeset =
+          editor_draft(organization_id, gtfs_version_id, %{
+            "transfer_type" => to_string(transfer_type),
+            "from_stop_id" => "S1",
+            "to_stop_id" => "S2"
+          })
+
+        refute changeset.valid?
+
+        assert errors_on(changeset).transfer_type == [
+                 "Choose one of the four transfer types"
+               ]
+      end
+    end
+
+    test "requires both stops for the general types", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      attrs = %{"transfer_type" => "0", "from_stop_id" => "S1", "to_stop_id" => "S2"}
+
+      changeset =
+        editor_draft(organization_id, gtfs_version_id, Map.delete(attrs, "from_stop_id"))
+
+      refute changeset.valid?
+      assert errors_on(changeset).from_stop_id == ["Choose a stop or station"]
+
+      changeset = editor_draft(organization_id, gtfs_version_id, Map.delete(attrs, "to_stop_id"))
+
+      refute changeset.valid?
+      assert errors_on(changeset).to_stop_id == ["Choose a stop or station"]
+    end
+
+    test "requires a whole number of seconds for type 2", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      attrs = %{"transfer_type" => "2", "from_stop_id" => "S1", "to_stop_id" => "S2"}
+
+      for value <- [nil, -1, 2_147_483_648] do
+        changeset =
+          editor_draft(
+            organization_id,
+            gtfs_version_id,
+            Map.put(attrs, "min_transfer_time", value)
+          )
+
+        refute changeset.valid?
+
+        assert errors_on(changeset).min_transfer_time == [
+                 "Enter a whole number of seconds, zero or more."
+               ]
+      end
+
+      for value <- [0, 300] do
+        changeset =
+          editor_draft(
+            organization_id,
+            gtfs_version_id,
+            Map.put(attrs, "min_transfer_time", value)
+          )
+
+        assert changeset.valid?
+        assert get_field(changeset, :min_transfer_time) == value
+      end
+    end
+
+    test "keeps no minimum time for types 0, 1 and 3", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      changeset =
+        editor_draft(organization_id, gtfs_version_id, %{
+          "transfer_type" => "1",
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2",
+          "min_transfer_time" => 180
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :min_transfer_time) == nil
+
+      stored = %Transfer{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        transfer_type: 0,
+        from_stop_id: "S1",
+        to_stop_id: "S2",
+        min_transfer_time: 120
+      }
+
+      changeset = Transfer.editor_changeset(stored, %{"transfer_type" => "0"})
+
+      assert changeset.valid?
+      assert get_field(changeset, :min_transfer_time) == nil
+    end
+
+    test "treats a whitespace-only selector as empty", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      changeset =
+        editor_draft(organization_id, gtfs_version_id, %{
+          "transfer_type" => "0",
+          "from_stop_id" => "S1",
+          "from_route_id" => "   ",
+          "to_stop_id" => "S2"
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :from_route_id) == nil
+    end
+
+    test "maps a duplicate six-field key to a changeset error without raising", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      transfer_fixture(organization_id, gtfs_version_id, %{
+        from_stop_id: "S1",
+        to_stop_id: "S2"
+      })
+
+      changeset =
+        editor_draft(organization_id, gtfs_version_id, %{
+          "transfer_type" => "2",
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2",
+          "min_transfer_time" => 60
+        })
+
+      assert {:error, changeset} = Repo.insert(changeset)
+      assert errors_on(changeset) == %{organization_id: ["has already been taken"]}
+    end
+  end
+
   describe "insert/1" do
     test "stores NULL stops for a type 4 transfer between two trips", %{
       organization_id: organization_id,
@@ -250,6 +412,11 @@ defmodule GtfsPlanner.Gtfs.TransferTest do
       assert transfer.from_stop_id == nil
       assert transfer.to_stop_id == nil
     end
+  end
+
+  defp editor_draft(organization_id, gtfs_version_id, attrs) do
+    %Transfer{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+    |> Transfer.editor_changeset(attrs)
   end
 
   defp insert_transfer(attrs) do
