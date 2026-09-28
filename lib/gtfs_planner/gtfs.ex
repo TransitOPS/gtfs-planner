@@ -4475,15 +4475,20 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Applies one block command on a day type of an organization's GTFS version.
 
-  The command is an `:assign` or `:unassign` today; the whole command runs in the
-  configured reviewed transaction (SERIALIZABLE in production). A command with
+  The command is an `:assign` or `:unassign` of trips or a `:rename` or `:merge`
+  of block IDs; the whole command runs in the configured reviewed transaction
+  (SERIALIZABLE in production). A rename takes the selected day type's trips
+  carrying the source ID and is `:block_id_taken` when the new ID is already used
+  on those trips' dates; a merge additionally requires the destination block on
+  the selected day type (`:not_found` otherwise). A command with
   nothing to change returns `{:ok, result}` with no `changed_trip_ids`; a command
   whose effects reach another date returns `{:needs_confirmation, review}` and writes
   nothing until it is called again with the review's fingerprint. Every refusal
   (`:not_found`, `{:ineligible, ids}`, `:too_many_trips`, `:unknown_day_type`,
-  `:invalid_command`, `:invalid_block_id`, `{:stale_review, review}`, `{:audit_failed,
-  reason}`, `:busy`) is an `{:error, reason}` and writes nothing: a refused audit insert
-  rolls the command back and is reported, never raised.
+  `:invalid_command`, `:invalid_block_id`, `:block_id_taken`, `{:stale_review,
+  review}`, `{:audit_failed, reason}`, `:busy`) is an `{:error, reason}` and writes
+  nothing: a refused audit insert rolls the command back and is reported, never
+  raised.
   """
   @spec apply_block_change(
           String.t(),

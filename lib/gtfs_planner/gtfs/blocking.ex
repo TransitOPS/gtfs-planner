@@ -18,10 +18,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   the shared `Blocking.InSeat` rule over every day type both of the record's trips
   run in, not only the selected one (R6, AC-7, INV-2).
 
-  `apply_block_change/4` is the one write path for an `:assign` or `:unassign`
-  command. It locks the version's blocking advisory lock and every trip row its
-  decision depends on before it reviews, so the review the user confirmed and the
-  write describe the same locked state, audits one `"trip"` change log per changed
+  `apply_block_change/4` is the one write path for an `:assign`, `:unassign`,
+  `:rename` or `:merge` command. It locks the version's blocking advisory lock and
+  every trip row its decision depends on before it reviews, so the review the user
+  confirmed and the write describe the same locked state, audits one `"trip"`
+  change log per changed
   trip in the Schedules snapshot shape, and retries a serialization failure or
   deadlock as a whole. It writes `trips.block_id` and the change logs only: no
   transfer row is ever inserted, updated or deleted (INV-3).
@@ -239,17 +240,21 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   Applies one block command on `day_type_key` inside the reviewed transaction.
 
   The command's shape is validated before any transaction (AC-13, Mutation):
-  UUIDs are deduplicated and cast, a malformed one is `:not_found`, a block ID is
-  trimmed and must be 1–255 characters, an empty trip list is `:invalid_command`,
-  and `:rename`/`:merge` are `:invalid_command` until their own step implements
-  them.
+  UUIDs are deduplicated and cast, a malformed one is `:not_found`; a block ID is
+  trimmed and must be 1–255 characters (`:invalid_block_id`); a `:rename` or
+  `:merge` naming one ID twice is `:invalid_command`; an empty trip list is
+  `:invalid_command`.
 
   Everything else runs in the configured transaction, in the order `spec.md`
   Mutation prescribes: calendars and day types, `lock_blocking!/1`, the targets and
   their eligibility (R10), the changed trips and the `@max_command_trips` bound, the
-  affected day types with R8's fresh-ID resolution, one `FOR UPDATE` read of every
-  decision input, R6's in-seat context, `Review.build/1`, the confirmation decision
-  and the write with its audit (INV-1, INV-3, INV-4).
+  affected day types with R8's fresh-ID resolution and a rename's collision check,
+  one `FOR UPDATE` read of every decision input, R6's in-seat context,
+  `Review.build/1`, the confirmation decision and the write with its audit (INV-1,
+  INV-3, INV-4). An `:assign` and an `:unassign` name trips; a `:rename` and a
+  `:merge` name block IDs and take the selected day type's trips carrying the
+  source ID as their targets, so another day type's trips with that ID keep it
+  (R2, R3, AC-13).
 
   A command with nothing to change returns
   `{:ok, %{operation_id: nil, changed_trip_ids: [], block_id: target | nil, review: nil}}`
@@ -276,6 +281,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
              | {:unknown_day_type, [DayTypes.day_type()]}
              | :invalid_command
              | :invalid_block_id
+             | :block_id_taken
              | :too_many_trips
              | :busy}
   def apply_block_change(day_type_key, command, %AuditContext{} = audit, confirmation \\ nil) do
@@ -662,9 +668,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
-  # `:rename` and `:merge` are validated by their own step; the shape rules above
-  # already reject an empty list, a blank ID and a same-source rename.
+  defp validate_command({:rename, from, target}) when is_binary(from) and is_binary(target) do
+    with {:ok, from} <- validate_block_id(from),
+         {:ok, target} <- validate_block_id(target),
+         :ok <- reject_same_block_id(from, target) do
+      {:ok, {:rename, from, target}}
+    end
+  end
+
+  defp validate_command({:merge, from, target}) when is_binary(from) and is_binary(target) do
+    with {:ok, from} <- validate_block_id(from),
+         {:ok, target} <- validate_block_id(target),
+         :ok <- reject_same_block_id(from, target) do
+      {:ok, {:merge, from, target}}
+    end
+  end
+
   defp validate_command(_command), do: {:error, :invalid_command}
+
+  # Renaming a block onto itself or merging a block into itself is not a command
+  # (Mutation). Both IDs are trimmed first, so `{:rename, " 101 ", "101"}` is
+  # rejected like `{:rename, "101", "101"}`.
+  defp reject_same_block_id(id, id), do: {:error, :invalid_command}
+  defp reject_same_block_id(_from, _target), do: :ok
 
   defp cast_trip_ids([]), do: {:error, :invalid_command}
 
@@ -710,7 +736,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     lock_blocking!(version_id)
 
-    targets = load_targets!(audit, command)
+    targets = load_targets!(audit, command, day_type)
     check_eligible!(command, targets)
     changed = expected_changes(command, targets)
 
@@ -740,8 +766,39 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # Step 3: the listed trips within the organization and the version, or `:not_found`
   # for any that is missing, foreign or unpublished (AC-11, CR-4). Deduplicated IDs
   # make the row count the completeness test.
-  defp load_targets!(audit, {:assign, ids, _target}), do: scoped_targets!(audit, ids)
-  defp load_targets!(audit, {:unassign, ids}), do: scoped_targets!(audit, ids)
+  defp load_targets!(audit, {:assign, ids, _target}, _day_type), do: scoped_targets!(audit, ids)
+  defp load_targets!(audit, {:unassign, ids}, _day_type), do: scoped_targets!(audit, ids)
+
+  # Step 3 for a rename or a merge: the targets are the selected day type's trips
+  # carrying the source ID, and no trip of the day type carrying it is `:not_found`
+  # (R2, R3, AC-13). A merge additionally requires the destination ID to be carried
+  # by a trip of the selected day type; a merge into an ID only another day type
+  # uses is `:not_found` too. One read answers both questions.
+  defp load_targets!(audit, {:rename, from, _target}, day_type) do
+    case day_type_block_trips(audit, day_type, [from]) do
+      [] -> Repo.rollback(:not_found)
+      targets -> targets
+    end
+  end
+
+  defp load_targets!(audit, {:merge, from, target}, day_type) do
+    rows = day_type_block_trips(audit, day_type, [from, target])
+    targets = Enum.filter(rows, &(&1.block_id == from))
+
+    if targets == [] or not Enum.any?(rows, &(&1.block_id == target)) do
+      Repo.rollback(:not_found)
+    end
+
+    targets
+  end
+
+  defp day_type_block_trips(%AuditContext{} = audit, day_type, block_ids) do
+    Queries.trip_rows(
+      audit.organization_id,
+      audit.gtfs_version_id,
+      {:blocks, block_ids, day_type.service_ids}
+    )
+  end
 
   defp scoped_targets!(%AuditContext{} = audit, ids) do
     rows = Queries.trip_rows(audit.organization_id, audit.gtfs_version_id, {:uuids, ids})
@@ -765,6 +822,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp check_eligible!({:unassign, _ids}, _targets), do: :ok
 
+  # A rename or a merge moves every trip of the source block as it is, so a
+  # frequency-based or unplottable trip is never ineligible and never dropped from
+  # the block it moves with (AC-6, AC-13).
+  defp check_eligible!({:rename, _from, _target}, _targets), do: :ok
+  defp check_eligible!({:merge, _from, _target}, _targets), do: :ok
+
   # Step 4: a target that already carries the target ID is not a change. A `:new`
   # command resolves the fresh ID only after its affected services are known (R8),
   # and every target necessarily differs from an ID no trip on its own dates uses.
@@ -778,6 +841,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Enum.filter(targets, &(not is_nil(&1.block_id)))
   end
 
+  # The source ID and the destination ID differ (shape validation) and every target
+  # carries the source ID, so every target is a change.
+  defp expected_changes({:rename, _from, _target}, targets), do: targets
+  defp expected_changes({:merge, _from, _target}, targets), do: targets
+
   # Step 5: every day type a changed trip runs in, in list order (R3).
   defp affected_day_types(day_types, changed) do
     changed
@@ -789,8 +857,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # uses. The used set comes from the affected day types' services, which is exactly
   # the set of trips sharing a date with a changed trip.
   defp resolve_target!({:assign, _ids, :new}, affected, %AuditContext{} = audit) do
-    service_ids = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
-    used = Queries.used_block_ids(audit.organization_id, audit.gtfs_version_id, service_ids)
+    used = used_block_ids(affected, audit)
 
     Stream.iterate(1, &(&1 + 1))
     |> Enum.find(&(not MapSet.member?(used, Integer.to_string(&1))))
@@ -799,6 +866,27 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp resolve_target!({:assign, _ids, target}, _affected, _audit), do: target
   defp resolve_target!({:unassign, _ids}, _affected, _audit), do: nil
+
+  # AC-13: a rename may take an ID only when no other trip running on a renamed
+  # trip's dates uses it, resolved under the lock. The targets carry the source ID
+  # the command is leaving and the destination differs from it, so membership of
+  # the destination in the affected services' used set is exactly "used by a trip
+  # that is not a target". A destination only a disjoint day type uses is not in
+  # that set and is accepted (R2, R8).
+  defp resolve_target!({:rename, _from, target}, affected, %AuditContext{} = audit) do
+    if MapSet.member?(used_block_ids(affected, audit), target), do: Repo.rollback(:block_id_taken)
+    target
+  end
+
+  # A merge's destination is required to exist on the selected day type (step 3), so
+  # it is never a fresh ID and needs no collision check: joining it is the point of
+  # the command.
+  defp resolve_target!({:merge, _from, target}, _affected, _audit), do: target
+
+  defp used_block_ids(affected, %AuditContext{} = audit) do
+    service_ids = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+    Queries.used_block_ids(audit.organization_id, audit.gtfs_version_id, service_ids)
+  end
 
   # Step 6: one query locks every decision input — the changed trips and every trip
   # of a touched block on an affected date — in UUID order, and the rows are re-read
@@ -956,6 +1044,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   defp resolved_block_id({:assign, _ids, target}) when is_binary(target), do: target
+  defp resolved_block_id({:rename, _from, target}), do: target
+  defp resolved_block_id({:merge, _from, target}), do: target
   defp resolved_block_id(_command), do: nil
 
   # The configured transaction boundary is retried as a whole: a serialization
