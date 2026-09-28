@@ -44,7 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     confirm_delete_timing copy_pattern confirm_delete_pattern
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
-    alignment_follow_streets
+    alignment_follow_streets confirm_bulk_generation
   )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
@@ -147,10 +147,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_follow, nil)
      |> assign(:alignment_generate_dialog, nil)
      |> assign(:alignment_generate_notice, nil)
+     |> assign(:bulk_selected, nil)
+     |> assign(:bulk_dialog, nil)
+     |> assign(:bulk_result, nil)
+     |> assign(:alignment_bulk, nil)
+     |> assign(:alignment_suggestions, %{})
      |> assign(:details_params, @creation_defaults)
      |> assign(:details_baseline, nil)
      |> assign(:details_form, details_form(@creation_defaults, []))
      |> assign(:dirty?, false)
+     |> assign(:patterns_editable, false)
      |> assign(:impact_dialog, nil)
      |> assign(:pending_navigation, nil)
      |> assign(:details_stale?, false)
@@ -200,9 +206,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:alignment_generate_dialog, nil)
     |> assign(:alignment_generate_notice, nil)
     |> assign(:alignment_generation, nil)
+    |> assign(:bulk_dialog, nil)
+    |> assign(:alignment_bulk, nil)
     |> assign(:alignment_follow, nil)
     |> cancel_async(:alignment_generation)
     |> cancel_async(:alignment_follow)
+    |> cancel_async(:alignment_bulk)
   end
 
   @impl true
@@ -736,6 +745,48 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("toggle_bulk_select", params, socket) do
+    before = socket.assigns[:bulk_selected]
+
+    socket = RoutePatternAlignmentEvents.toggle_bulk_select(socket, params)
+
+    socket =
+      if socket.assigns[:bulk_selected] != before,
+        do: load_screen(socket),
+        else: socket
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("open_bulk", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_bulk(socket, params)}
+  end
+
+  @impl true
+  def handle_event("confirm_bulk_generation", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_bulk(socket, params)}
+  end
+
+  @impl true
+  def handle_event("cancel_bulk_generation", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.cancel_bulk(socket, params)}
+  end
+
+  @impl true
+  def handle_event("review_bulk_suggestions", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.review_suggestions(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_suggestions_applied", params, socket) do
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.suggestions_applied(params)
+     |> assign_dirty()}
+  end
+
+  @impl true
   def handle_event("alignment_review_again", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.review_again(socket, params)}
   end
@@ -1145,6 +1196,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      RoutePatternAlignmentEvents.handle_follow_result(socket, :alignment_follow, result)}
   end
 
+  @impl true
+  # Only fresh results re-stream the rows (the badges live inside the
+  # streamed items): stale arrivals after a cancel or a revoked editor
+  # touch no database and reload nothing.
+  def handle_async(:alignment_bulk, result, socket) do
+    {socket, reload?} =
+      RoutePatternAlignmentEvents.handle_bulk_result(socket, :alignment_bulk, result)
+
+    socket = if reload?, do: load_screen(socket), else: socket
+
+    {:noreply, assign_dirty(socket)}
+  end
+
   defp handle_version_switch(socket, version_id) do
     organization_id = socket.assigns.current_organization.id
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
@@ -1250,6 +1314,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 build_error={@build_error}
                 stale?={@stale?}
                 new_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+                editable?={@patterns_editable}
+                selected={@bulk_selected}
+                bulk_dialog={@bulk_dialog}
+                bulk_result={@bulk_result}
+                bulk_pending={@alignment_bulk != nil}
               />
             <% @load_state == :ready -> %>
               <%= if @pattern || @live_action == :new do %>
@@ -1502,7 +1571,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:stop_choices, screen.stop_choices)
       |> assign(:load_state, :ready)
       |> assign(:stale?, false)
-      |> stream(:patterns, with_alignment(socket, screen.patterns), reset: true)
+      |> then(fn socket ->
+        {rows, preselected} = with_alignment(socket, screen.patterns)
+
+        socket
+        |> stream(:patterns, rows, reset: true)
+        |> assign(:patterns_editable, editor_access?(socket))
+        |> preselect_bulk(preselected)
+      end)
       |> apply_detail(screen.detail, previous_pattern_id)
 
     assign_dirty(socket)
@@ -1510,9 +1586,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # Route › Patterns shows every pattern's alignment status from one batched
   # `Gtfs.route_alignment_summary/3` read (step 35, still 5 queries for any
-  # pattern count per step 34). Keyed by natural `route_pattern_id` like the
-  # consumer in step 36; a pattern absent from the summary renders Not
-  # exported through `list_status/1`'s nil branch.
+  # pattern count per step 34). Keyed by natural `route_pattern_id`; a
+  # pattern absent from the summary renders Not exported through
+  # `list_status/1`'s nil branch. The same read preselects the bulk
+  # selection (step 36, AC-41): patterns with missing sections start
+  # checked, and the selection stays sticky afterwards.
   defp with_alignment(socket, summaries) do
     summary =
       Gtfs.route_alignment_summary(
@@ -1521,10 +1599,32 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         socket.assigns.route_id
       )
 
-    Enum.map(summaries, fn summary_row ->
-      Map.put(summary_row, :alignment, Map.get(summary, summary_row.pattern.route_pattern_id))
-    end)
+    rows =
+      Enum.map(summaries, fn summary_row ->
+        Map.put(summary_row, :alignment, Map.get(summary, summary_row.pattern.route_pattern_id))
+      end)
+
+    preselected =
+      rows
+      |> Enum.filter(fn row -> bulk_missing?(row.alignment) end)
+      |> Enum.map(fn row -> row.pattern.route_pattern_id end)
+
+    {rows, preselected}
   end
+
+  # AC-41 preselects the patterns with missing sections. The selection is
+  # sticky: only the first load initializes it, later loads (saves,
+  # switches, bulk results) keep the operator's toggles.
+  defp preselect_bulk(socket, preselected) do
+    if is_nil(socket.assigns[:bulk_selected]) do
+      assign(socket, :bulk_selected, MapSet.new(preselected))
+    else
+      socket
+    end
+  end
+
+  defp bulk_missing?(%{missing: missing}) when missing > 0, do: true
+  defp bulk_missing?(_status), do: false
 
   defp apply_detail(socket, nil, _previous_pattern_id) do
     socket
@@ -3057,6 +3157,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     dirty? =
       dirty? or socket.assigns.stops_dirty? or
         alignment_dirty?(socket) or
+        map_size(socket.assigns[:alignment_suggestions] || %{}) > 0 or
         (socket.assigns.live_action == :new and socket.assigns.staged_occurrences != []) or
         map_size(socket.assigns.timing_edits) > 0 or
         map_size(socket.assigns.timing_headsign_edits) > 0

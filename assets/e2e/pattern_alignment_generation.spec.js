@@ -381,3 +381,110 @@ test.describe("patterns list", () => {
     expect(problems).toEqual([]);
   });
 });
+
+/**
+ * Bulk generation (spec 12, step 36).
+ *
+ * `test.describe("bulk generation")` opens the BROWSER_ALIGN route's
+ * Patterns list, narrows the preselected set to the two GEN patterns
+ * (GEN-2 routes through BrowserStreetRouting, GEN-1 touches the 40.7500
+ * failure stop), captures the capped confirmation dialog, confirms, and
+ * captures the per-pattern results: GEN-2 reads "Review suggestion" with
+ * a Review action, GEN-1 reads "Draw 1 section". Reviewing GEN-2 patches
+ * to its Alignment task with the suggestion applied as an unsaved draft
+ * (CR-9: nothing here saves, so the seeds stay reusable). The server is
+ * the Playwright webServer block (BROWSER_E2E=true, BrowserStreetRouting —
+ * no live Geoapify calls); only tiles are stubbed.
+ */
+test.describe("bulk generation", () => {
+  const GEN_OK_PATTERN = "BROWSER-ALIGN-GEN-2";
+  const GEN_FAIL_PATTERN = "BROWSER-ALIGN-GEN-1";
+
+  async function openPatternsList(page, versionId) {
+    await page.goto(`/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns`);
+    await page.waitForSelector("#patterns-list", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#patterns-bulk-generate"),
+    ).toBeVisible({ timeout: 15000 });
+  }
+
+  async function selectOnlyGenPatterns(page) {
+    const checked = page.locator(
+      '#patterns-list input[name="bulk-pattern"]:checked',
+    );
+
+    while ((await checked.count()) > 0) {
+      await checked.first().click();
+    }
+
+    await page.locator(`#pattern-bulk-select-${GEN_OK_PATTERN}`).check();
+    await page.locator(`#pattern-bulk-select-${GEN_FAIL_PATTERN}`).check();
+  }
+
+  test("confirms two patterns and reviews the per-pattern results at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openPatternsList(page, versionId);
+    await selectOnlyGenPatterns(page);
+
+    // The confirmation states the section count and the saved-paths
+    // promise before any routing call happens.
+    await page.locator("#patterns-bulk-generate").click();
+    await expect(page.locator("#alignment-bulk-dialog")).toContainText(
+      "Create suggestions for 2 sections in 2 patterns. Saved paths and custom paths stay unchanged. Review the results before saving.",
+      { timeout: 15000 },
+    );
+    await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
+    await captureViewport(page, "bulk-dialog-1440");
+
+    // One pattern routes, the other needs drawing; both results render
+    // per row with a shared summary notice.
+    await page.locator("#alignment-bulk-dialog-confirm").click();
+    await expect(page.locator("#patterns-bulk-notice")).toContainText(
+      "1 of 2 sections generated",
+      { timeout: 30000 },
+    );
+    await expect(
+      page.locator(`#pattern-bulk-success-${GEN_OK_PATTERN}`),
+    ).toContainText("◷ Review suggestion");
+    await expect(
+      page.locator(`#pattern-bulk-failed-${GEN_FAIL_PATTERN}`),
+    ).toContainText("! Draw 1 section");
+    await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
+    await captureViewport(page, "bulk-results-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // A phone-width view stacks the result rows without overflow.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await expect(
+      page.locator(`#pattern-bulk-success-${GEN_OK_PATTERN}`),
+    ).toBeVisible({ timeout: 15000 });
+    await captureFullPage(page, "bulk-results-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // Reviewing the successful pattern patches to its Alignment task
+    // with the suggestion applied as an unsaved draft.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator(`#pattern-bulk-review-${GEN_OK_PATTERN}`).click();
+    await expect(page).toHaveURL(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${GEN_OK_PATTERN}?task=alignment`,
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-task")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+
+    expect(problems).toEqual([]);
+  });
+});

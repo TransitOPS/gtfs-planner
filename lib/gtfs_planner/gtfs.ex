@@ -982,6 +982,16 @@ defmodule GtfsPlanner.Gtfs do
   def suggest_alignment_between(from, to),
     do: Alignments.suggest_between(from, to)
 
+  @doc "Suggests street-routed interior points for every missing section of the given patterns without writing."
+  def suggest_missing_alignments(
+        organization_id,
+        gtfs_version_id,
+        route_id,
+        route_pattern_ids
+      ),
+      do:
+        Alignments.suggest_missing(organization_id, gtfs_version_id, route_id, route_pattern_ids)
+
   @doc "Reviews an alignment save, computing scope actions, affected patterns and a fingerprint without writing."
   def review_alignment_save(pattern_id, draft_params, %AuditContext{} = audit_context),
     do: Alignments.review_save(pattern_id, draft_params, audit_context)

@@ -497,6 +497,17 @@ const PatternAlignment = {
     this._mode = "pan";
     this._select(this._selected, false);
     this._refreshEditChrome();
+    // Bulk hand-off (step 36): the server embeds pending suggestions in
+    // the loaded model. Apply them as dirty drafts like a generation
+    // result (CR-9: drafts only, Save stays the commit) and ack so the
+    // server drops them; the draft keeps the navigation guard armed.
+    const bulk = Array.isArray(model.suggestions) ? model.suggestions : [];
+    if (bulk.length > 0) {
+      this._applySuggestions({ sections: bulk });
+      this.pushEvent("alignment_suggestions_applied", {
+        route_pattern_id: model.route_pattern_id,
+      });
+    }
   },
 
   _drawStopMarkers(model, visitsByPosition, color) {

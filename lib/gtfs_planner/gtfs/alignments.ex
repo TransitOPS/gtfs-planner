@@ -1358,6 +1358,159 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp finite_number?(value) when is_integer(value), do: true
   defp finite_number?(_value), do: false
 
+  @bulk_section_limit 200
+
+  @doc """
+  Suggests street-routed interior points for every missing section of the
+  given patterns (step 36, AC-41).
+
+  Scopes through `RoutePatterns.published_route/3` and a scoped pattern
+  query per id like `editor/4` and `suggest_paths/5`, so foreign
+  organizations or versions resolve to no patterns (INV-2, CL-10).
+  Unknown ids are skipped; only sections with `kind == :missing` count.
+  A total over #{@bulk_section_limit} sections returns
+  `{:error, :too_many_sections}` before any routing call
+  (resource-budget). Otherwise each pattern's missing positions are
+  grouped into contiguous runs sharing one `StreetRouting.route/2` call
+  (step 32's `route_run/2`), routed concurrently with at most 2 requests
+  in flight (`Task.async_stream`, 20 s per run, timed-out tasks killed
+  and reported as `:unavailable`). Run failures mark every position in
+  the run, so successful suggestions are kept when others fail. Leg
+  endpoints are the stop anchors (R5, `[lon, lat]` per INV-1): only
+  interior points are suggested. Nothing is written (CR-9).
+  """
+  @spec suggest_missing(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), [String.t()]) ::
+          {:ok,
+           %{
+             patterns: %{
+               String.t() => %{
+                 suggestions: %{pos_integer() => [[float()]]},
+                 failed: %{pos_integer() => atom()},
+                 generated: non_neg_integer(),
+                 total: non_neg_integer()
+               }
+             },
+             generated: non_neg_integer(),
+             total: non_neg_integer()
+           }}
+          | {:error, :not_found | :too_many_sections}
+  def suggest_missing(organization_id, gtfs_version_id, route_id, pattern_ids)
+      when is_list(pattern_ids) do
+    with {:ok, _route} <-
+           RoutePatterns.published_route(organization_id, gtfs_version_id, route_id) do
+      wanted =
+        pattern_ids
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      missing_by_pattern =
+        Map.new(wanted, fn route_pattern_id ->
+          case scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+            %RoutePattern{} = pattern ->
+              resolved = resolve(pattern)
+
+              positions =
+                resolved.sections
+                |> Enum.filter(&(&1.kind == :missing))
+                |> Enum.map(& &1.position)
+                |> Enum.sort()
+
+              visits_by_position = Map.new(resolved.visits, &{&1.position, &1})
+
+              {route_pattern_id, {positions, visits_by_position}}
+
+            nil ->
+              {route_pattern_id, {[], %{}}}
+          end
+        end)
+
+      total = Enum.sum(for {_id, {positions, _}} <- missing_by_pattern, do: length(positions))
+
+      if total > @bulk_section_limit do
+        {:error, :too_many_sections}
+      else
+        runs =
+          Enum.flat_map(missing_by_pattern, fn {route_pattern_id, {positions, visits}} ->
+            Enum.map(contiguous_runs(positions), fn run ->
+              {route_pattern_id, run, visits}
+            end)
+          end)
+
+        routed =
+          Task.async_stream(
+            runs,
+            fn {route_pattern_id, run, visits} ->
+              {route_pattern_id, run, route_run(run, visits)}
+            end,
+            max_concurrency: 2,
+            timeout: 20_000,
+            on_timeout: :kill_task
+          )
+          |> Enum.reduce(%{}, fn
+            {:ok, {route_pattern_id, _run, {:ok, suggestions}}}, acc ->
+              Map.update(
+                acc,
+                route_pattern_id,
+                %{suggestions: suggestions, failed: %{}},
+                fn entry ->
+                  %{entry | suggestions: Map.merge(entry.suggestions, suggestions)}
+                end
+              )
+
+            {:ok, {route_pattern_id, _run, {:failed, failed}}}, acc ->
+              Map.update(acc, route_pattern_id, %{suggestions: %{}, failed: failed}, fn entry ->
+                %{entry | failed: Map.merge(entry.failed, failed)}
+              end)
+
+            {:exit, _reason}, acc ->
+              acc
+          end)
+
+        # A killed or exited run leaves its positions unaccounted: mark
+        # them `:unavailable` so the total still balances and no success
+        # is silently lost. Re-derive from the routed positions per run
+        # instead: collect routed positions per pattern from `routed`.
+        routed_positions =
+          Map.new(routed, fn {route_pattern_id, entry} ->
+            {route_pattern_id, MapSet.new(Map.keys(entry.suggestions) ++ Map.keys(entry.failed))}
+          end)
+
+        patterns =
+          Map.new(missing_by_pattern, fn {route_pattern_id, {positions, _visits}} ->
+            entry = Map.get(routed, route_pattern_id, %{suggestions: %{}, failed: %{}})
+            seen = Map.get(routed_positions, route_pattern_id, MapSet.new())
+
+            failed =
+              Enum.reduce(positions, entry.failed, fn position, failed ->
+                if MapSet.member?(seen, position),
+                  do: failed,
+                  else: Map.put(failed, position, :unavailable)
+              end)
+
+            suggestions = Map.take(entry.suggestions, positions)
+            failed = Map.take(failed, positions)
+
+            {route_pattern_id,
+             %{
+               suggestions: suggestions,
+               failed: failed,
+               generated: map_size(suggestions),
+               total: length(positions)
+             }}
+          end)
+
+        generated = Enum.sum(for {_id, entry} <- patterns, do: entry.generated)
+
+        {:ok, %{patterns: patterns, generated: generated, total: total}}
+      end
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def suggest_missing(_, _, _, _), do: {:error, :not_found}
+
   @doc """
   Returns the JSON-ready hook model for an `editor/4` result.
 

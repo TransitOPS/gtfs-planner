@@ -21,6 +21,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   so the list never has to be enumerable.
   """
   attr :patterns, :any, required: true
+  attr :selectable?, :boolean, default: false, doc: "editors get the bulk-selection column"
+  attr :selected, :any, default: nil, doc: "MapSet of selected natural route_pattern_ids"
+  attr :bulk_result, :map, default: nil, doc: "suggest_missing result or nil"
   attr :rest, :global
 
   def pattern_list(assigns) do
@@ -33,19 +36,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         row_item={fn {_id, summary} -> summary end}
       >
         <:col :let={summary} label="Pattern / service">
-          <button
-            type="button"
-            id={"pattern-open-#{summary.id}"}
-            phx-click="open_pattern"
-            phx-value-pattern-id={summary.pattern.route_pattern_id}
-            class="inline-flex min-h-11 items-center text-left font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            {summary.pattern.route_pattern_name || summary.pattern.route_pattern_id}
-          </button>
-          <div class="mt-0.5 text-sm text-base-content/70">
-            {summary.pattern.route_pattern_time_desc || "No service description"}
-            <span aria-hidden="true">·</span>
-            {timing_count_label(summary.timing_count)}
+          <div class="flex items-start gap-2">
+            <label
+              :if={@selectable?}
+              class="inline-flex min-h-11 min-w-11 items-center justify-center"
+            >
+              <input
+                type="checkbox"
+                id={"pattern-bulk-select-#{summary.pattern.route_pattern_id}"}
+                name="bulk-pattern"
+                value={summary.pattern.route_pattern_id}
+                checked={bulk_checked?(@selected, summary.pattern.route_pattern_id)}
+                disabled={bulk_missing(summary) == 0}
+                title={if bulk_missing(summary) == 0, do: "No missing sections", else: nil}
+                phx-click="toggle_bulk_select"
+                phx-value-pattern-id={summary.pattern.route_pattern_id}
+                aria-label={"Select #{summary.pattern.route_pattern_id} for bulk generation"}
+                class="checkbox checkbox-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              />
+            </label>
+            <div>
+              <button
+                type="button"
+                id={"pattern-open-#{summary.id}"}
+                phx-click="open_pattern"
+                phx-value-pattern-id={summary.pattern.route_pattern_id}
+                class="inline-flex min-h-11 items-center text-left font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                {summary.pattern.route_pattern_name || summary.pattern.route_pattern_id}
+              </button>
+              <div class="mt-0.5 text-sm text-base-content/70">
+                {summary.pattern.route_pattern_time_desc || "No service description"}
+                <span aria-hidden="true">·</span>
+                {timing_count_label(summary.timing_count)}
+              </div>
+            </div>
           </div>
         </:col>
         <:col :let={summary} label="Direction">
@@ -63,10 +88,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           <span class="tabular-nums">{trip_count_label(summary.trip_count)}</span>
         </:col>
         <:col :let={summary} label="Alignment">
-          <RoutePatternAlignmentComponents.list_status
-            alignment={Map.get(summary, :alignment)}
-            pattern_id={summary.pattern.route_pattern_id}
-          />
+          <%= if bulk_entry(@bulk_result, summary.pattern.route_pattern_id) do %>
+            <RoutePatternAlignmentComponents.bulk_cell
+              entry={bulk_entry(@bulk_result, summary.pattern.route_pattern_id)}
+              pattern_id={summary.pattern.route_pattern_id}
+            />
+          <% else %>
+            <RoutePatternAlignmentComponents.list_status
+              alignment={Map.get(summary, :alignment)}
+              pattern_id={summary.pattern.route_pattern_id}
+            />
+          <% end %>
         </:col>
       </.table>
     </div>
@@ -90,6 +122,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :build_error, :string, default: nil
   attr :stale?, :boolean, required: true
   attr :new_path, :string, required: true
+  attr :editable?, :boolean, default: false, doc: "editors get bulk generation"
+  attr :selected, :any, default: nil, doc: "MapSet of selected natural route_pattern_ids"
+  attr :bulk_dialog, :map, default: nil
+  attr :bulk_result, :map, default: nil
+  attr :bulk_pending, :boolean, default: false
 
   def pattern_list_states(assigns) do
     assigns =
@@ -136,10 +173,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <% not @patterns_empty? -> %>
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h2 id="patterns-heading" class="text-xl font-semibold">Patterns</h2>
-            <.link navigate={@new_path} id="patterns-create" class="btn btn-primary min-h-11">
-              Create pattern
-            </.link>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                :if={@editable?}
+                id="patterns-bulk-generate"
+                type="button"
+                phx-click="open_bulk"
+                disabled={bulk_selected_count(@selected) == 0 or @bulk_pending}
+                class="btn btn-outline min-h-11"
+              >
+                Generate missing paths
+              </button>
+              <.link navigate={@new_path} id="patterns-create" class="btn btn-primary min-h-11">
+                Create pattern
+              </.link>
+            </div>
           </div>
+          <p :if={@bulk_pending} id="patterns-bulk-running" class="mt-1 text-sm text-base-content/70">
+            Finding street paths…
+            <button
+              id="patterns-bulk-cancel"
+              type="button"
+              phx-click="cancel_bulk_generation"
+              class="ml-2 inline-flex min-h-11 items-center font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              Cancel
+            </button>
+          </p>
           <p class="mt-1 text-sm text-base-content/70">
             Each pattern has a stop order and reusable timings. Trips use a pattern to run that service.
           </p>
@@ -166,7 +226,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             </.callout>
           </div>
 
-          <.pattern_list patterns={@patterns} class="mt-4" />
+          <.pattern_list
+            patterns={@patterns}
+            selectable?={@editable?}
+            selected={@selected}
+            bulk_result={@bulk_result}
+            class="mt-4"
+          />
+
+          <div class="mt-3">
+            <RoutePatternAlignmentComponents.bulk_notice result={@bulk_result} />
+          </div>
+
+          <RoutePatternAlignmentComponents.bulk_dialog dialog={@bulk_dialog} />
 
           <details class="mt-4 text-sm">
             <summary class="min-h-11 cursor-pointer">When do I need another pattern?</summary>
@@ -1391,6 +1463,34 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     </div>
     """
   end
+
+  # Bulk selection helpers (step 36): the selection is a MapSet of
+  # natural route_pattern_ids, nil before the first batched summary load.
+  defp bulk_checked?(nil, _id), do: false
+  defp bulk_checked?(%MapSet{} = selected, id), do: MapSet.member?(selected, id)
+  defp bulk_checked?(_selected, _id), do: false
+
+  defp bulk_selected_count(nil), do: 0
+  defp bulk_selected_count(%MapSet{} = selected), do: MapSet.size(selected)
+  defp bulk_selected_count(_selected), do: 0
+
+  defp bulk_missing(%{alignment: %{missing: missing}}), do: missing
+  defp bulk_missing(_summary), do: 0
+
+  defp bulk_entry(nil, _id), do: nil
+
+  defp bulk_entry(%{patterns: patterns}, id) do
+    case Map.get(patterns, id) do
+      %{suggestions: suggestions, failed: failed} = entry
+      when map_size(suggestions) > 0 or map_size(failed) > 0 ->
+        entry
+
+      _ ->
+        nil
+    end
+  end
+
+  defp bulk_entry(_result, _id), do: nil
 
   defp timing_count_label(1), do: "1 timing"
   defp timing_count_label(count), do: "#{count} timings"

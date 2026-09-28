@@ -74,8 +74,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     if is_nil(alignment) do
       socket
     else
-      model = Alignments.hook_model(alignment, editable: editable?, suggestions: [])
+      model =
+        Alignments.hook_model(alignment,
+          editable: editable?,
+          suggestions: bulk_sections(socket, alignment.route_pattern_id)
+        )
+
       Phoenix.LiveView.push_event(socket, "alignment:load", %{model: model})
+    end
+  end
+
+  # Pending bulk suggestions for one pattern, as the hook's
+  # `alignment:suggestions` section entries (step 36). Anything else —
+  # no entry, an acked entry, a misshapen one — loads a clean model.
+  defp bulk_sections(socket, route_pattern_id) do
+    case (socket.assigns[:alignment_suggestions] || %{})[route_pattern_id] do
+      %{sections: sections} when is_list(sections) -> sections
+      _ -> []
     end
   end
 
@@ -100,7 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def retry_tiles(socket, _params),
     do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
-  @doc "Closes the help, discard, delete, simplify, import, generate and save dialogs."
+  @doc "Closes the help, discard, delete, simplify, import, generate, bulk and save dialogs."
   def close_dialogs(socket) do
     socket
     |> Component.assign(:alignment_dialog, nil)
@@ -109,6 +124,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_simplify_dialog, nil)
     |> Component.assign(:alignment_import_dialog, nil)
     |> Component.assign(:alignment_generate_dialog, nil)
+    |> Component.assign(:bulk_dialog, nil)
     |> Component.assign(:alignment_pending, nil)
   end
 
@@ -935,6 +951,281 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_follow, nil)
     |> Component.assign(:alignment_generate_notice, generate_notice(socket, failed))
   end
+
+  @bulk_key :alignment_bulk
+  @bulk_section_limit 200
+
+  @doc """
+  Toggles one pattern in the Route › Patterns bulk selection (step 36).
+
+  Selection is LiveView-local (a MapSet of natural ids); viewers leave
+  the socket unchanged. Unknown ids toggle harmlessly: `open_bulk/2`
+  counts only missing sections of scoped patterns.
+  """
+  def toggle_bulk_select(socket, %{"pattern-id" => route_pattern_id})
+      when is_binary(route_pattern_id) do
+    if bulk_editor?(socket) do
+      selected = socket.assigns[:bulk_selected] || MapSet.new()
+
+      selected =
+        if MapSet.member?(selected, route_pattern_id),
+          do: MapSet.delete(selected, route_pattern_id),
+          else: MapSet.put(selected, route_pattern_id)
+
+      Component.assign(socket, :bulk_selected, selected)
+    else
+      socket
+    end
+  end
+
+  def toggle_bulk_select(socket, _params), do: socket
+
+  @doc """
+  Opens the bulk-generation confirmation (step 36, AC-41).
+
+  Counts the selected patterns' missing sections through the batched
+  `Gtfs.route_alignment_summary/3` read (step 34, still 5 queries).
+  Viewers and an empty selection leave the socket unchanged; a selection
+  over 200 sections opens the capped dialog with no confirm action.
+  """
+  def open_bulk(socket, _params) do
+    if bulk_editor?(socket) do
+      selected =
+        (socket.assigns[:bulk_selected] || MapSet.new())
+        |> MapSet.to_list()
+        |> Enum.filter(&is_binary/1)
+        |> Enum.sort()
+
+      summary =
+        Gtfs.route_alignment_summary(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id,
+          socket.assigns.route_id
+        )
+
+      {total, count} =
+        Enum.reduce(selected, {0, 0}, fn route_pattern_id, {total, count} ->
+          case Map.get(summary, route_pattern_id) do
+            %{missing: missing} when missing > 0 -> {total + missing, count + 1}
+            _ -> {total, count}
+          end
+        end)
+
+      if total == 0 and count == 0 do
+        socket
+      else
+        dialog =
+          if total > @bulk_section_limit,
+            do: %{too_many: true, total: total},
+            else: %{total: total, pattern_count: count, pattern_ids: selected}
+
+        Component.assign(socket, :bulk_dialog, dialog)
+      end
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Starts bulk street-path generation (step 36).
+
+  Runs `Gtfs.suggest_missing_alignments/4` under `start_async` so the
+  list stays interactive while routing (at most 2 concurrent requests
+  server-side). The token lets `handle_bulk_result/3` drop stale
+  arrivals after a cancel or a revoked editor. Viewers, a missing
+  dialog, an in-flight bulk run and an empty or over-cap selection
+  leave the socket unchanged; nothing is written (CR-9).
+  """
+  def confirm_bulk(socket, _params) do
+    with true <- bulk_editor?(socket),
+         %{total: total, pattern_ids: pattern_ids}
+         when is_list(pattern_ids) and total > 0 and total <= @bulk_section_limit <-
+           socket.assigns[:bulk_dialog],
+         nil <- socket.assigns[:alignment_bulk] do
+      organization_id = socket.assigns.current_organization.id
+      version_id = socket.assigns.current_gtfs_version.id
+      route_id = socket.assigns.route_id
+
+      socket
+      |> Component.assign(:bulk_dialog, nil)
+      |> Component.assign(:bulk_result, nil)
+      |> Component.assign(:alignment_bulk, %{token: :erlang.make_ref(), pattern_ids: pattern_ids})
+      |> Component.assign(:status_message, "Finding street paths…")
+      |> Phoenix.LiveView.start_async(@bulk_key, fn ->
+        Gtfs.suggest_missing_alignments(organization_id, version_id, route_id, pattern_ids)
+      end)
+    else
+      _ -> socket
+    end
+  end
+
+  @doc """
+  Cancels in-flight bulk generation (step 36).
+
+  Clears the token before `cancel_async`, so a response that already
+  left the task is dropped by `handle_bulk_result/3`. Pushes nothing.
+  """
+  def cancel_bulk(socket, _params) do
+    socket
+    |> Component.assign(:alignment_bulk, nil)
+    |> Component.assign(:status_message, nil)
+    |> Phoenix.LiveView.cancel_async(@bulk_key)
+  end
+
+  @doc """
+  Handles the async bulk street-routing result (step 36).
+
+  A cleared token (cancel) or a revoked editor drops the result, so a
+  stale result never suggests paths for another route state and never
+  touches the database. Otherwise the per-pattern results render with
+  Review actions, successful suggestions wait in `alignment_suggestions`
+  for their editor hand-off, and failures keep a draw follow-up.
+  Nothing is written (CR-9).
+
+  Returns `{socket, reload?}`: only fresh results need the LiveView to
+  re-stream the rows, since the badges live inside the streamed items.
+  """
+  def handle_bulk_result(socket, _key, {:ok, {:ok, %{patterns: _} = result}}) do
+    case bulk_context(socket) do
+      {:ok, _bulk} -> {apply_bulk_result(socket, result), true}
+      :stale -> {Component.assign(socket, :alignment_bulk, nil), false}
+    end
+  end
+
+  def handle_bulk_result(socket, _key, {:ok, {:error, :too_many_sections}}) do
+    case bulk_context(socket) do
+      {:ok, _bulk} ->
+        {socket
+         |> Component.assign(:alignment_bulk, nil)
+         |> Component.assign(
+           :status_message,
+           "Too many sections selected. Select fewer patterns (limit 200)."
+         ), false}
+
+      :stale ->
+        {Component.assign(socket, :alignment_bulk, nil), false}
+    end
+  end
+
+  def handle_bulk_result(socket, _key, _result) do
+    case bulk_context(socket) do
+      {:ok, _bulk} ->
+        {socket
+         |> Component.assign(:alignment_bulk, nil)
+         |> Component.assign(
+           :status_message,
+           "Street routing is unavailable. Draw the sections or try again later."
+         ), false}
+
+      :stale ->
+        {Component.assign(socket, :alignment_bulk, nil), false}
+    end
+  end
+
+  # A bulk result is live only while its flight is still current, for an
+  # editor. Anything else is stale.
+  defp bulk_context(socket) do
+    with %{token: _} <- socket.assigns[:alignment_bulk],
+         true <- bulk_editor?(socket) do
+      {:ok, socket.assigns[:alignment_bulk]}
+    else
+      _ -> :stale
+    end
+  end
+
+  defp apply_bulk_result(socket, %{patterns: patterns} = result) do
+    suggestions =
+      patterns
+      |> Enum.flat_map(fn {route_pattern_id, entry} ->
+        sections =
+          entry.suggestions
+          |> Enum.sort_by(fn {position, _points} -> position end)
+          |> Enum.map(fn {position, points} -> %{position: position, points: points} end)
+
+        if sections == [], do: [], else: [{route_pattern_id, %{sections: sections}}]
+      end)
+      |> Map.new()
+
+    pending = Map.merge(socket.assigns[:alignment_suggestions] || %{}, suggestions)
+
+    generated = Enum.count(patterns, fn {_id, entry} -> map_size(entry.suggestions) > 0 end)
+
+    socket
+    |> Component.assign(:alignment_bulk, nil)
+    |> Component.assign(:bulk_result, result)
+    |> Component.assign(:alignment_suggestions, pending)
+    |> Component.assign(
+      :status_message,
+      bulk_ready_message(result, generated)
+    )
+  end
+
+  defp bulk_ready_message(%{generated: generated, total: total}, _pattern_count) do
+    if generated == total,
+      do: "Suggestions ready. Review each path before saving.",
+      else: "#{generated} of #{total} sections generated. Review the suggestions."
+  end
+
+  @doc """
+  Hands one pattern's bulk suggestions to its Alignment task (step 36).
+
+  Suggestions live in the LiveView process, so the hand-off stays in
+  the same process with `push_patch` (no remount drops them). The
+  editor's `hook_ready` then embeds them in `alignment:load`, the hook
+  applies them as dirty drafts and acks with
+  `alignment_suggestions_applied`. Patterns without pending suggestions
+  leave the socket unchanged.
+  """
+  def review_suggestions(socket, %{"pattern-id" => route_pattern_id})
+      when is_binary(route_pattern_id) do
+    if Map.has_key?(socket.assigns[:alignment_suggestions] || %{}, route_pattern_id) or
+         bulk_reviewable?(socket, route_pattern_id) do
+      Phoenix.LiveView.push_patch(socket,
+        to: "#{patterns_path(socket)}/#{route_pattern_id}?task=alignment"
+      )
+    else
+      socket
+    end
+  end
+
+  def review_suggestions(socket, _params), do: socket
+
+  # A bulk entry with any routed or failed sections is reviewable even
+  # after its suggestions were acked: the editor still needs the draw
+  # follow-up for failed sections.
+  defp bulk_reviewable?(socket, route_pattern_id) do
+    case socket.assigns[:bulk_result] do
+      %{patterns: patterns} when is_map(patterns) ->
+        case Map.get(patterns, route_pattern_id) do
+          %{total: total} when total > 0 -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  @doc """
+  Drops one pattern's pending bulk suggestions after the hook applied
+  them as dirty drafts (step 36). The LiveView pipes `assign_dirty`
+  after this, so the draft keeps the navigation guard armed.
+  """
+  def suggestions_applied(socket, %{"route_pattern_id" => route_pattern_id})
+      when is_binary(route_pattern_id) do
+    Component.assign(
+      socket,
+      :alignment_suggestions,
+      Map.delete(socket.assigns[:alignment_suggestions] || %{}, route_pattern_id)
+    )
+  end
+
+  def suggestions_applied(socket, _params), do: socket
+
+  # The bulk list needs route-level editing access, not the per-pattern
+  # `alignment_editable` model flag (which is false until an Alignment
+  # task loads). Fresh membership read like every other write boundary.
+  defp bulk_editor?(socket), do: editor_access?(socket)
 
   @doc """
   Reviews the hook's dirty sections for saving (step 28).
