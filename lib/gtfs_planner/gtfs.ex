@@ -4429,6 +4429,26 @@ defmodule GtfsPlanner.Gtfs do
   # ============================================================================
 
   @doc """
+  Loads one day type's blocks, pool and checks through the configured catalog read adapter.
+
+  The read derives the published version's day types, selects `day_type_key` (`nil`
+  selects the first in list order) and returns every trip of that day type exactly
+  once, in the block named by its `block_id` or in the pool, together with the
+  day's findings, counts, peak and timeline axis. A foreign or unpublished version
+  is `{:error, :not_found}`, an unknown key `{:error, {:unknown_day_type, day_types}}`
+  and a lost database connection `{:error, :unavailable}`.
+  """
+  @spec load_blocking_day(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, Blocking.day()}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :unavailable}
+  def load_blocking_day(organization_id, gtfs_version_id, day_type_key) do
+    catalog_read_adapter().load_blocking_day(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
   Returns the minimum layover for an organization's GTFS version.
 
   A version with no stored setting returns `%{min_layover_minutes: 5}`; the read
