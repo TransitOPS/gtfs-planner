@@ -5,8 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   Blocks shows which trips one vehicle works in sequence for a day type, and it
   is the only place a block is edited. This page owns the day-type scope, the
   whole-day count strip, the Service dates, Checks and Peak drawers and every
-  page state; the timeline, the pool and the trip, gap and block drawers arrive
-  in later steps and render inside the same page.
+  page state; the timeline, the List view, the unassigned pool and the trip, gap
+  and block drawers render inside the same page.
 
   The page mounts through the ordinary `:gtfs_routes` session, which decides
   whether a request reaches it; the editor guard is declared here because a
@@ -44,9 +44,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     "status" => :status
   }
 
-  # The timeline holds one page of the day type's blocks. The filtered, sorted
-  # list is derived from the loaded day, so paging, sorting and the filters never
-  # re-read trips (CR-6).
+  # The timeline and the List view hold one page of the day type's blocks and the
+  # Unassigned panel one page of its pool trips. Every page is derived from the
+  # loaded day, so paging, sorting and the filters never re-read trips (CR-6).
   @page_size 100
 
   # A page number is clamped to a positive integer. `@max_page` is the absolute
@@ -72,6 +72,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:visible_count, 0)
      |> assign(:timeline_key, nil)
      |> stream(:block_rows, [], dom_id: &block_dom_id/1)
+     |> stream(:list_rows, [], dom_id: &block_dom_id/1)
+     |> stream(:pool_rows, [], dom_id: &pool_dom_id/1)
      |> assign_empty_derived()}
   end
 
@@ -139,6 +141,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("paginate", %{"page" => page}, socket) do
     patch(socket, %{page: page_number(page)})
+  end
+
+  def handle_event("paginate_pool", %{"page" => page}, socket) do
+    patch(socket, %{pool_page: page_number(page)})
   end
 
   def handle_event("open_drawer", %{"key" => key}, socket) do
@@ -298,7 +304,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         assign(socket, :load_state, :loading)
 
       socket.assigns.loaded_day_key == {:key, socket.assigns.state.day} ->
-        assign_timeline(socket)
+        assign_page_rows(socket)
 
       true ->
         load_day(socket)
@@ -318,7 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:load_state, day_state(day))
         |> assign(:timeline_key, nil)
         |> assign_derived(day)
-        |> assign_timeline()
+        |> assign_page_rows()
 
       {:error, {:unknown_day_type, day_types}} ->
         socket
@@ -350,17 +356,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # The visible page of the day type's blocks: the route and status filters, the
-  # chosen sort over the whole day type, then one page of 100 rows, streamed so a
-  # sort, filter or page change replaces the container. `load_day/1` and the empty
-  # states clear `:timeline_key`, so a reload always resends; an unrelated patch
-  # (a drawer, a deep link) leaves the stream alone.
+  # chosen sort over the whole day type, then one page of 100 rows. The timeline
+  # and the List view are two densities of the same page, so each has its own
+  # stream (a stream belongs to one container) and one key gates both. The key
+  # holds the panel and the view as well as the filters and the page: a container
+  # the client holds is replaced when any of them changes, and a replaced stream
+  # container is empty until the page is sent again, so the reset must happen on
+  # that change too. `load_day/1` and the empty states clear the key, so a reload
+  # always resends.
   defp assign_timeline(socket) do
-    visible = visible_blocks(socket.assigns.day.blocks, socket.assigns.state)
-    page = effective_page(socket.assigns.state.page, length(visible))
+    %{state: state} = socket.assigns
+    visible = visible_blocks(socket.assigns.day.blocks, state)
+    page = effective_page(state.page, length(visible))
 
     key =
-      {socket.assigns.state.route, socket.assigns.state.status, socket.assigns.state.sort,
-       socket.assigns.state.dir, page}
+      {state.panel, state.view, state.route, state.status, state.sort, state.dir, page}
 
     socket = assign(socket, :visible_count, length(visible))
 
@@ -372,8 +382,40 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       socket
       |> assign(:timeline_key, key)
       |> stream(:block_rows, rows, reset: true)
+      |> stream(:list_rows, rows, reset: true)
     end
   end
+
+  # The visible page of the pool: the route filter over the pool's own order
+  # (first departure, then untimed trips by trip ID), then one page of 100 rows,
+  # streamed so a filter or page change replaces the container. The key holds the
+  # panel because the pool table exists only while the Unassigned panel is shown,
+  # and a stream container that is replaced must be filled again.
+  defp assign_pool(socket) do
+    %{state: state} = socket.assigns
+    visible = visible_pool(socket.assigns.day.pool, state.route)
+    page = effective_page(state.pool_page, length(visible))
+    key = {state.panel, state.route, page}
+
+    socket = assign(socket, :pool_visible_count, length(visible))
+
+    if socket.assigns.pool_key == key do
+      socket
+    else
+      rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
+
+      socket
+      |> assign(:pool_key, key)
+      |> stream(:pool_rows, rows, reset: true)
+    end
+  end
+
+  defp visible_pool(pool, nil), do: pool
+  defp visible_pool(pool, route_id), do: Enum.filter(pool, &(&1.route_id == route_id))
+
+  # Both streamed pages are re-derived together, so the timeline, the List view
+  # and the pool stay in step on a day, filter or page change.
+  defp assign_page_rows(socket), do: socket |> assign_timeline() |> assign_pool()
 
   defp effective_page(page, visible_count) do
     min(page, max(div(visible_count + @page_size - 1, @page_size), 1))
@@ -405,6 +447,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp block_dom_id(block),
     do: "block-" <> Base.url_encode64(block.summary.block_id, padding: false)
 
+  defp pool_dom_id(trip), do: "pool-" <> Base.url_encode64(trip.trip_id, padding: false)
+
+  # Each finding names trips by UUID, and the List view, the pool and the
+  # untimed list print a trip's own findings. Grouping once per load keeps that
+  # lookup out of the render path (CR-6).
+  defp findings_by_trip(findings) do
+    findings
+    |> Enum.flat_map(fn finding -> Enum.map(finding.trip_ids, &{&1, finding}) end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+  end
+
   defp assign_derived(socket, day) do
     assign(socket,
       day_types: day.day_types,
@@ -416,7 +469,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       routes: day.routes,
       findings: day.findings,
       mixed_timezones?: day.mixed_timezones?,
-      trip_labels: trip_labels(day)
+      trip_labels: trip_labels(day),
+      findings_by_trip: findings_by_trip(day.findings),
+      untimed_trips: Enum.filter(day.unplottable, & &1.block_id)
     )
   end
 
@@ -433,10 +488,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings: [],
       mixed_timezones?: false,
       trip_labels: %{},
+      findings_by_trip: %{},
+      untimed_trips: [],
       visible_count: 0,
-      timeline_key: nil
+      timeline_key: nil,
+      pool_visible_count: 0,
+      pool_key: nil
     )
     |> stream(:block_rows, [], reset: true)
+    |> stream(:list_rows, [], reset: true)
+    |> stream(:pool_rows, [], reset: true)
   end
 
   # Each finding names trips by UUID; a deep link names them by their natural
@@ -533,14 +594,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   open_drawer={@open_drawer}
                 />
 
-                <%!-- The workspace holds the timeline; the List view and the
-                Unassigned panel arrive in step 22. --%>
                 <BlocksComponents.workspace
                   state={@state}
                   counts={@counts}
                   visible_count={@visible_count}
+                  pool_visible_count={@pool_visible_count}
                   page_size={@page_size}
                   block_rows={@streams.block_rows}
+                  list_rows={@streams.list_rows}
+                  pool_rows={@streams.pool_rows}
+                  untimed_trips={@untimed_trips}
+                  findings_by_trip={@findings_by_trip}
                   axis={@axis}
                   routes={@routes}
                 />

@@ -2,18 +2,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   @moduledoc """
   Function components for Operations › Blocks.
 
-  The page's day-type scope, whole-day summary, the paged timeline, the Service
-  dates, Checks and Peak drawers and the page states live here so
+  The page's day-type scope, whole-day summary, the paged timeline, the List
+  view, the unassigned pool, the Service dates, Checks and Peak drawers, the
+  “not plotted” list and the page states live here so
   `GtfsPlannerWeb.Gtfs.BlocksLive` stays a small state owner. Every component
   takes the pieces of the loaded day it prints, never the whole day, so
   `render/1` in the LiveView never reaches into the server-only day assign
-  (CR-6). Later steps render the list, pool and the trip, gap and block drawers
-  inside the same page.
+  (CR-6). The trip, gap and block drawers render inside the same page.
 
   Times are printed from parsed seconds with `clock/1`; nothing here re-reads a
   clock string from the database (CR-3). The timeline reads the block's trips
   and findings only, and takes the block's plot order from the pure
-  `Checks.sequence/1` so its bars align with the block's own `gaps/1` pairs.
+  `Checks.sequence/1` so its bars align with the block's own `gaps/1` pairs. The
+  List view and the pool take a trip's findings from the day's own finding list,
+  grouped by trip once per load, and print them through `status_badge`.
   """
 
   use GtfsPlannerWeb, :html
@@ -449,22 +451,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   Renders the Blocks workspace: the work-queue tabs, the Timeline/List and
   Whole day/Zoom in segmented controls, the hint line and the current panel.
 
-  The Blocks tab holds the paged timeline; the Unassigned tab and the List view
-  are step 22's, so until then they render no panel body. The paged timeline is
-  the current page of the day type's blocks after the route and status filters
-  and the sort, one 36px row per block, inside a container that scrolls in both
-  axes so the header and the block columns stay put.
+  The Blocks tab holds the paged timeline or the paged List view, both over the
+  same streamed page of blocks: the timeline is one 36px row per block inside a
+  container that scrolls in both axes, and the List view is one stacked trip
+  table per block. The Unassigned tab holds the paged pool and its “Select this
+  page” control. A day type with no blocks shows the first-use copy in the
+  Blocks tab and still lists its unassigned trips in the pool.
 
-  The colocated hook exists because the URL decides the view: a phone-width
-  reader who opens `/blocks` with no `view` gets the List view, which is the
-  full-size alternative to the timeline. It pushes `set_view` once and never
-  patches a URL that already carries a view.
+  A phone-width reader gets the List view rather than the timeline: the two are
+  the same page in two densities, and the List view is the full-size control
+  surface (Accessibility posture). The colocated hook pushes `set_view` once when
+  the URL carries no view; it never patches a URL that already does.
   """
   attr :state, :map, required: true
   attr :counts, :map, required: true
   attr :visible_count, :integer, required: true
+  attr :pool_visible_count, :integer, required: true
   attr :page_size, :integer, required: true
   attr :block_rows, :any, required: true
+  attr :list_rows, :any, required: true
+  attr :pool_rows, :any, required: true
+  attr :untimed_trips, :list, required: true
+  attr :findings_by_trip, :map, required: true
   attr :axis, :map, default: nil
   attr :routes, :map, required: true
 
@@ -504,31 +512,48 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </button>
         </div>
 
-        <div :if={@counts.blocks > 0} class="flex flex-wrap items-end gap-3">
-          <.segmented_control
-            id="blocks-view"
-            name="view"
-            legend="Plan view"
-            legend_class="sr-only"
-            options={[{"Timeline", "timeline"}, {"List", "list"}]}
-            value={Atom.to_string(@state.view)}
-            event="set_view"
-            size={:sm}
-            appearance={:joined}
-          />
-          <.segmented_control
-            :if={@state.view == :timeline}
-            id="blocks-scale"
-            name="scale"
-            legend="Timeline scale"
-            legend_class="sr-only"
-            options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
-            value={Atom.to_string(@state.scale)}
-            event="set_scale"
-            size={:sm}
-            appearance={:joined}
-            emphasis={:quiet}
-          />
+        <div class="flex flex-wrap items-end gap-3">
+          <div
+            :if={@state.panel == :blocks and @counts.blocks > 0}
+            class="flex flex-wrap items-end gap-3"
+          >
+            <.segmented_control
+              id="blocks-view"
+              name="view"
+              legend="Plan view"
+              legend_class="sr-only"
+              options={[{"Timeline", "timeline"}, {"List", "list"}]}
+              value={Atom.to_string(@state.view)}
+              event="set_view"
+              size={:sm}
+              appearance={:joined}
+            />
+            <.segmented_control
+              :if={@state.view == :timeline}
+              id="blocks-scale"
+              name="scale"
+              legend="Timeline scale"
+              legend_class="sr-only"
+              options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
+              value={Atom.to_string(@state.scale)}
+              event="set_scale"
+              size={:sm}
+              appearance={:joined}
+              emphasis={:quiet}
+            />
+          </div>
+
+          <%!-- The reference puts “Select this page” beside the pool's tabs and
+          in the List view's head, where the controls are large. --%>
+          <button
+            :if={select_page?(@state, @counts)}
+            id="blocks-select-page"
+            type="button"
+            phx-click="select_page"
+            class="btn btn-sm min-h-11"
+          >
+            Select this page
+          </button>
         </div>
       </div>
 
@@ -537,6 +562,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </p>
 
       <%= cond do %>
+        <% @state.panel == :pool -> %>
+          <p
+            :if={@counts.blocks == 0}
+            id="blocks-workspace-guidance"
+            class="text-sm text-base-content/70"
+          >
+            Start by selecting trips and assigning them to a new block.
+          </p>
+
+          <.pool
+            pool_rows={@pool_rows}
+            routes={@routes}
+            findings_by_trip={@findings_by_trip}
+            route_filter={@state.route}
+            total={@pool_visible_count}
+            page={@state.pool_page}
+            page_size={@page_size}
+            version_id={@state.version_id}
+          />
         <% @counts.blocks == 0 -> %>
           <p id="blocks-workspace-guidance" class="text-sm text-base-content/70">
             Start by selecting trips and assigning them to a new block.
@@ -555,7 +599,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               Clear filters
             </button>
           </div>
-        <% @state.panel == :blocks and @state.view == :timeline -> %>
+        <% @state.view == :timeline -> %>
           <.timeline
             state={@state}
             block_rows={@block_rows}
@@ -563,8 +607,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             routes={@routes}
           />
         <% true -> %>
-          <%!-- The List view and the Unassigned panel are step 22's. --%>
+          <.block_list
+            block_rows={@list_rows}
+            routes={@routes}
+            findings_by_trip={@findings_by_trip}
+            route_filter={@state.route}
+          />
       <% end %>
+
+      <.untimed_list
+        :if={@state.panel == :blocks}
+        trips={@untimed_trips}
+        routes={@routes}
+        version_id={@state.version_id}
+      />
 
       <div
         :if={@state.panel == :blocks and @visible_count > 0}
@@ -577,6 +633,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           total={@visible_count}
           entity="blocks"
           event="paginate"
+        />
+      </div>
+
+      <div
+        :if={@state.panel == :pool and @pool_visible_count > 0}
+        id="blocks-pool-pager"
+        class="border-t border-base-300 px-4"
+      >
+        <.pagination
+          page={@state.pool_page}
+          per_page={@page_size}
+          total={@pool_visible_count}
+          entity="trips"
+          event="paginate_pool"
         />
       </div>
     </section>
@@ -594,6 +664,408 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       };
     </script>
     """
+  end
+
+  # The pool and the List view carry the reference's “Select this page” control
+  # where their records are; the timeline has no selection column, so it does
+  # not offer it.
+  defp select_page?(%{panel: :pool}, _counts), do: true
+
+  defp select_page?(%{panel: :blocks, view: :list}, counts), do: counts.blocks > 0
+
+  defp select_page?(_state, _counts), do: false
+
+  @doc """
+  Renders the List view: one trip table per streamed block.
+
+  Each table is the block's own trips in the block's order (its plottable,
+  non-frequency sequence first, then the trips that cannot be plotted) and names
+  itself with the block ID, its trip count and its streamed DOM id, so the List
+  view carries the same page of blocks as the timeline (CR-6). It has its own
+  stream because a stream renders in one container: the timeline's rows and these
+  tables are two densities of one page, and the LiveView fills both together. The
+  columns are the reference's Select, Trip, Route, Start, End, From → To, Gap and
+  Issues; the route's long name is the trip's secondary line, and the terminal is
+  the destination line of the From → To cell.
+
+  The gap is the layover before the trip, from the block's own `gaps/1` pairs, so
+  it agrees with the timeline's gap bars; the first trip and every trip outside
+  the plottable sequence have none. The Issues cell prints the trip's findings as
+  status badges, worst first, or “No problems”.
+  """
+  attr :block_rows, :any, required: true, doc: "the List view's own stream of the block page"
+  attr :routes, :map, required: true
+  attr :findings_by_trip, :map, required: true
+  attr :route_filter, :string, default: nil
+
+  def block_list(assigns) do
+    ~H"""
+    <div id="blocks-lists" phx-update="stream">
+      <.block_list_table
+        :for={{dom, block} <- @block_rows}
+        dom={dom}
+        block={block}
+        routes={@routes}
+        findings_by_trip={@findings_by_trip}
+        route_filter={@route_filter}
+      />
+    </div>
+    """
+  end
+
+  # One block's own table, with the page's block order and the block's gaps kept
+  # in the same DOM id the timeline uses, so both views carry the one stream.
+  attr :dom, :string, required: true
+  attr :block, :map, required: true
+  attr :routes, :map, required: true
+  attr :findings_by_trip, :map, required: true
+  attr :route_filter, :string, default: nil
+
+  defp block_list_table(assigns) do
+    assigns =
+      assign(assigns,
+        summary: assigns.block.summary,
+        rows: list_rows(assigns.block, assigns.route_filter),
+        gaps: Map.new(assigns.block.gaps, &{&1.to_id, &1})
+      )
+
+    ~H"""
+    <section id={@dom} class="border-t border-base-300 py-2">
+      <h3 class="flex flex-wrap items-center gap-2 px-4 text-sm font-semibold">
+        Block
+        <button
+          type="button"
+          data-role="list-block"
+          phx-click="open_block"
+          phx-value-block={@summary.block_id}
+          class="link link-primary min-h-11 inline-flex items-center"
+        >
+          {@summary.block_id}
+        </button>
+        <span class="font-normal text-base-content/70">
+          {count_label(@summary.trip_count, "trip", "trips")}
+        </span>
+      </h3>
+
+      <.table id={"block-list-" <> @dom} rows={@rows} responsive="stack">
+        <:col :let={trip} label="Select">
+          <.select_trip trip={trip} />
+        </:col>
+        <:col :let={trip} label="Trip">
+          <div>
+            <strong>{trip.trip_id}</strong>
+            <small class="block text-base-content/70">
+              {route_name(@routes, trip.route_id)}
+            </small>
+          </div>
+        </:col>
+        <:col :let={trip} label="Route">
+          <.route_badge_for route_id={trip.route_id} routes={@routes} />
+        </:col>
+        <:col :let={trip} label="Start">{clock(trip.first_departure)}</:col>
+        <:col :let={trip} label="End">{clock(trip.last_arrival)}</:col>
+        <:col :let={trip} label="From → To">
+          <.endpoints trip={trip} />
+        </:col>
+        <:col :let={trip} label="Gap">
+          <%= if gap = Map.get(@gaps, trip.id) do %>
+            <span data-role="list-gap" data-minutes={div(gap.gap_secs, 60)}>
+              {gap_label(gap)}
+            </span>
+          <% else %>
+            <span class="text-base-content/70">—</span>
+          <% end %>
+        </:col>
+        <:col :let={trip} label="Issues">
+          <.issue_badges findings={Map.get(@findings_by_trip, trip.id, [])} />
+        </:col>
+      </.table>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders the paged Unassigned panel: the pool page, its eligibility text and
+  its own empty states.
+
+  The columns are the reference's Select, Route / trip, Block, Start → end,
+  From → to, Checks and Action. A frequency trip prints “Repeats every N min ·
+  not a single trip”; a trip whose endpoint time is missing prints “Time missing”
+  with a link to its route's Schedules for its calendar; an eligible trip offers
+  “Assign trip” (`open_assign`, scope `trip`) where the other two offer “View
+  trip”.
+
+  The two empty states are distinct: a route filter that matches no pool trip
+  offers to clear it, while an empty pool without a filter says every trip has a
+  block.
+  """
+  attr :pool_rows, :any, required: true
+  attr :routes, :map, required: true
+  attr :findings_by_trip, :map, required: true
+  attr :route_filter, :string, default: nil
+  attr :total, :integer, required: true
+  attr :page, :integer, required: true
+  attr :page_size, :integer, required: true
+  attr :version_id, :string, required: true
+
+  def pool(%{total: 0} = assigns) do
+    ~H"""
+    <div :if={@route_filter} id="blocks-pool-filtered-empty" class="px-4 py-8 text-center">
+      <p class="text-sm text-base-content/70">No unassigned trips match</p>
+      <button
+        id="blocks-pool-clear-filters"
+        type="button"
+        phx-click="filter"
+        phx-value-route=""
+        phx-value-status="all"
+        class="btn btn-sm min-h-11 mt-2"
+      >
+        Clear filters
+      </button>
+    </div>
+
+    <div :if={is_nil(@route_filter)} id="blocks-pool-empty" class="px-4 py-8 text-center">
+      <p class="text-sm text-base-content/70">All trips have a block</p>
+    </div>
+    """
+  end
+
+  def pool(assigns) do
+    ~H"""
+    <.table id="blocks-pool-table" rows={@pool_rows} responsive="stack">
+      <:col :let={{_dom, trip}} label="Select">
+        <.select_trip trip={trip} />
+      </:col>
+      <:col :let={{_dom, trip}} label="Route / trip">
+        <div class="flex items-center gap-2">
+          <.route_badge_for route_id={trip.route_id} routes={@routes} />
+          <div>
+            <strong>{trip.trip_id}</strong>
+            <small class="block text-base-content/70">
+              {route_name(@routes, trip.route_id)}
+            </small>
+          </div>
+        </div>
+      </:col>
+      <:col :let={{_dom, _trip}} label="Block">Unassigned</:col>
+      <:col :let={{_dom, trip}} label="Start → end">
+        <div>
+          <div>{clock(trip.first_departure)} → {clock(trip.last_arrival)}</div>
+          <div
+            :if={text = eligibility_text(trip)}
+            data-role="pool-eligibility"
+            class="text-sm text-base-content/70"
+          >
+            <%= if trip.plottable? do %>
+              {text}
+            <% else %>
+              {text} ·
+              <.link
+                id={"pool-schedules-" <> dom_token(trip.trip_id)}
+                navigate={schedules_path(@version_id, trip)}
+                class="link link-primary"
+              >
+                Open in Schedules
+              </.link>
+            <% end %>
+          </div>
+        </div>
+      </:col>
+      <:col :let={{_dom, trip}} label="From → to">
+        <.endpoints trip={trip} />
+      </:col>
+      <:col :let={{_dom, trip}} label="Checks">
+        <.issue_badges findings={Map.get(@findings_by_trip, trip.id, [])} />
+      </:col>
+      <:col :let={{_dom, trip}} label="Action">
+        <div class="whitespace-nowrap">
+          <button
+            :if={eligible?(trip)}
+            type="button"
+            data-role="assign-trip"
+            phx-click="open_assign"
+            phx-value-scope="trip"
+            phx-value-trip={trip.trip_id}
+            class="link link-primary min-h-11 inline-flex items-center"
+          >
+            Assign trip
+          </button>
+          <button
+            :if={not eligible?(trip)}
+            type="button"
+            data-role="view-trip"
+            phx-click="open_trip"
+            phx-value-trip={trip.trip_id}
+            class="link link-primary min-h-11 inline-flex items-center"
+          >
+            View trip
+          </button>
+        </div>
+      </:col>
+    </.table>
+    """
+  end
+
+  @doc """
+  Renders the “not plotted” disclosure of the Blocks panel: every trip that has
+  a block but no usable endpoint time, with its reason and a link to its route's
+  Schedules for its calendar.
+
+  The timeline cannot draw these trips and the pool does not hold them, so this
+  list is where a blocked trip with missing timing stays visible (AC-23).
+  """
+  attr :trips, :list, required: true
+  attr :routes, :map, required: true
+  attr :version_id, :string, required: true
+
+  def untimed_list(assigns) do
+    ~H"""
+    <details
+      :if={@trips != []}
+      id="blocks-untimed"
+      class="border-t border-base-300 px-4 py-2 text-sm"
+    >
+      <summary class="min-h-11 cursor-pointer content-center">
+        Not plotted · {length(@trips)}
+      </summary>
+
+      <ul class="mt-2 space-y-2">
+        <li
+          :for={trip <- @trips}
+          data-role="untimed-trip"
+          data-trip={trip.trip_id}
+          class="flex flex-wrap items-center gap-2"
+        >
+          <.route_badge_for route_id={trip.route_id} routes={@routes} />
+          <strong>{trip.trip_id}</strong>
+          <span data-role="untimed-reason">{eligibility_text(trip)}</span>
+          <.link
+            id={"untimed-schedules-" <> dom_token(trip.trip_id)}
+            navigate={schedules_path(@version_id, trip)}
+            class="link link-primary min-h-11 inline-flex items-center"
+          >
+            Open in Schedules
+          </.link>
+        </li>
+      </ul>
+    </details>
+    """
+  end
+
+  # The row's selection control: a 44px target around a daisyUI checkbox, and
+  # the trip's natural ID in the event. Step 26 owns the selection state; the
+  # control emits its fixed event today (CR-8).
+  attr :trip, :map, required: true
+
+  defp select_trip(assigns) do
+    ~H"""
+    <label
+      class="grid min-h-11 min-w-7 place-items-center"
+      for={"select-" <> dom_token(@trip.trip_id)}
+    >
+      <input
+        type="checkbox"
+        id={"select-" <> dom_token(@trip.trip_id)}
+        data-role="select-trip"
+        data-trip={@trip.trip_id}
+        phx-click="toggle_trip"
+        phx-value-trip={@trip.trip_id}
+        aria-label={"Select trip " <> @trip.trip_id}
+        class="checkbox"
+      />
+    </label>
+    """
+  end
+
+  # The trip's endpoint stops: the origin, then the destination on its own line
+  # as “→ <terminal>”, which is the reference's From → To cell.
+  attr :trip, :map, required: true
+
+  defp endpoints(assigns) do
+    ~H"""
+    <div>
+      <span>{stop_name(@trip.first_stop)}</span>
+      <span class="block text-base-content/70">→ {stop_name(@trip.last_stop)}</span>
+    </div>
+    """
+  end
+
+  # The findings that name this trip, worst first, as status badges; a trip
+  # without one says so in text rather than leaving the cell blank.
+  attr :findings, :list, required: true
+
+  defp issue_badges(assigns) do
+    assigns =
+      assign(assigns,
+        issues:
+          assigns.findings
+          |> Enum.uniq_by(& &1.code)
+          |> Enum.sort_by(&issue_rank/1)
+      )
+
+    ~H"""
+    <div data-role="trip-issues" class="flex flex-wrap gap-1">
+      <span :if={@issues == []} class="text-base-content/70">No problems</span>
+      <.status_badge
+        :for={finding <- @issues}
+        status={severity_status(finding.severity)}
+        label={code_label(finding.code)}
+        data-role="trip-issue"
+        data-code={finding.code}
+      />
+    </div>
+    """
+  end
+
+  # The route's feed identity for a bare route ID: the badge reads
+  # `route_short_name`, which the day's route map names `short_name`.
+  attr :route_id, :string, required: true
+  attr :routes, :map, required: true
+
+  defp route_badge_for(assigns) do
+    route = Map.get(assigns.routes, assigns.route_id) || %{route_id: assigns.route_id}
+    assigns = assign(assigns, :route, Map.put(route, :route_short_name, route[:short_name]))
+
+    ~H"""
+    <RouteIdentity.route_badge route={@route} />
+    """
+  end
+
+  defp issue_rank(%{severity: :error}), do: 0
+  defp issue_rank(%{severity: :warning}), do: 1
+  defp issue_rank(_finding), do: 2
+
+  # The route's long name, which the reference prints under the trip ID; a route
+  # without one falls back to its short name and then its stored ID.
+  defp route_name(routes, route_id) do
+    route = Map.get(routes, route_id) || %{}
+    route[:long_name] || route[:short_name] || route_id
+  end
+
+  # The pool's single eligibility reason per trip (Checks), with the waiting
+  # time already in minutes; a nil headway can only mean a non-frequency trip.
+  defp eligibility_text(%{frequency?: true} = trip) do
+    "Repeats every #{div(trip.headway_secs, 60)} min · not a single trip"
+  end
+
+  defp eligibility_text(%{plottable?: false}), do: "Time missing"
+  defp eligibility_text(_trip), do: nil
+
+  defp eligible?(trip), do: trip.plottable? and not trip.frequency?
+
+  # A List view row is one of the block's trips the route filter keeps, in the
+  # block's own order, so the table reads top to bottom like the block's work.
+  defp list_rows(block, route_filter) do
+    Enum.filter(block.trips, &visible?(&1, route_filter))
+  end
+
+  defp gap_label(%{gap_secs: secs}) when secs >= 0, do: minutes(secs)
+  defp gap_label(%{gap_secs: secs}), do: "Overlap #{div(-secs, 60)} min"
+
+  # The Schedules page for a trip's route, narrowed to the trip's own calendar
+  # (the `service_id` filter Schedules already reads).
+  defp schedules_path(version_id, trip) do
+    ~p"/gtfs/#{version_id}/routes/#{trip.route_id}/schedules?#{[service_id: trip.service_id]}"
   end
 
   @doc """
