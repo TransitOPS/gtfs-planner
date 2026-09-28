@@ -55,6 +55,20 @@ async function closeReview(page) {
   await expect(page.locator("#calendar-combine-form")).toHaveCount(0);
 }
 
+// A Saturday inside every seeded weekly range: the calendar is seeded relative to the
+// agency-local today, so the fixture keeps its own day of the week.
+async function nextSaturday(page) {
+  return page.evaluate(() => {
+    const date = new Date();
+    date.setDate(date.getDate() + ((6 - date.getDay() + 7) % 7 || 7));
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, "0"),
+      String(date.getDate()).padStart(2, "0"),
+    ].join("-");
+  });
+}
+
 async function clearSelection(page) {
   await page.locator("#calendar-clear-selection").click();
   await expect(page.locator("#calendar-selection-count")).toHaveCount(0);
@@ -202,7 +216,8 @@ test.describe("calendar combination", () => {
     await expect(page.locator("#calendar-combine-conflicts")).toHaveCount(0);
 
     // Changing the destination re-reviews against the real command instead of reusing the first
-    // projection.
+    // projection: the move is the other two calendars' own trips (Saturday 4 + Fall 2), read from
+    // the rows rather than carried over from the previous destination.
     await page
       .locator(
         "#calendar-combine-destination-option-COMBINE_GAMEDAY input[type=radio]",
@@ -214,7 +229,7 @@ test.describe("calendar combination", () => {
       ),
     ).toBeChecked();
     await expect(page.locator("#calendar-combine-result-moved")).toHaveText(
-      "2",
+      "6",
     );
 
     await closeReview(page);
@@ -286,15 +301,18 @@ test.describe("calendar combination", () => {
     );
     const iso = await conflict.getAttribute("data-conflict-date");
     // The summary names the date in full; the marked group states the short form its own legend
-    // already carries in full.
+    // already carries in full. A stored service date is a plain calendar date, so both labels are
+    // formatted in UTC: the runner's own zone must not shift the day it names.
     const label = new Intl.DateTimeFormat("en-US", {
       month: "short",
       day: "numeric",
       year: "numeric",
+      timeZone: "UTC",
     }).format(new Date(`${iso}T00:00:00Z`));
     const shortLabel = new Intl.DateTimeFormat("en-US", {
       month: "short",
       day: "numeric",
+      timeZone: "UTC",
     }).format(new Date(`${iso}T00:00:00Z`));
 
     // Both options name the trips they affect; neither is defaulted.
@@ -400,9 +418,35 @@ test.describe("calendar combination", () => {
       expect(box.width).toBeLessThanOrEqual(expected + 1);
       expect(box.width).toBeGreaterThanOrEqual(expected - 1);
 
-      // The sticky footer stays inside the viewport and the page never scrolls sideways.
-      const close = await page.locator("#calendar-combine-close").boundingBox();
-      expect(close.y + close.height).toBeLessThanOrEqual(viewport.height + 1);
+      // The sticky footer keeps both actions inside the viewport at every width, so a confirmation
+      // never sits below a fold the reviewer cannot reach (AC-24).
+      await expect(page.locator("#calendar-combine-footer-note")).toBeVisible();
+      for (const action of [
+        "#calendar-combine-close",
+        "#calendar-combine-apply",
+      ]) {
+        const actionBox = await page.locator(action).boundingBox();
+        expect(actionBox.y).toBeGreaterThanOrEqual(0);
+        expect(actionBox.y + actionBox.height).toBeLessThanOrEqual(
+          viewport.height + 1,
+        );
+      }
+
+      // The labelled controls are keyboard reachable: focusing one moves focus into the drawer and
+      // the next Tab keeps it there instead of escaping behind the modal.
+      await page.locator("#calendar-combine-close").focus();
+      await expect(page.locator("#calendar-combine-close")).toBeFocused();
+      await page.keyboard.press("Tab");
+      expect(
+        await page.evaluate(() =>
+          document
+            .getElementById("calendar-combine-drawer")
+            .contains(document.activeElement),
+        ),
+      ).toBe(true);
+      await expect(
+        page.locator('input[name="combine[destination_id]"]'),
+      ).toHaveCount(2);
 
       const fits = await page.evaluate(
         () => document.body.scrollWidth <= window.innerWidth,
@@ -459,6 +503,105 @@ test.describe("calendar combination", () => {
     await expect(page.locator("#calendar-combine-form")).toHaveCount(0);
   });
 
+  test("reviews three moving sources on one destination and states the real block consequence", async ({
+    page,
+  }) => {
+    await openCalendars(page);
+
+    // The seeded three-source shape: the Saturday destination plus the Fall, Sunday and
+    // specific-dates sources, whose two block-701 trips only collide once they all run on the
+    // destination's dates.
+    await openReview(page, [
+      "COMBINE_SAT",
+      "COMBINE_FALL",
+      "COMBINE_SUN",
+      "COMBINE_GAMEDAY",
+    ]);
+
+    await expect(page.locator("#calendar-combine-subtitle")).toContainText(
+      "4 calendars selected",
+    );
+    await expect(page.locator("#calendar-combine-result-moved")).toHaveText(
+      "5",
+    );
+    await expect(
+      page.locator("#calendar-combine-result-sources"),
+    ).toContainText("3 calendars");
+
+    // Every retained source keeps its identity and is reachable from the drawer, so the reviewer
+    // can go on to delete it deliberately.
+    await expect(
+      page.locator("#calendar-combine-impacts-retained-COMBINE_SUN"),
+    ).toContainText("Open Sunday shuttle");
+
+    // Each source states the dates it gains from the destination, and every one of them is
+    // reported as retained rather than deleted.
+    for (const serviceId of [
+      "COMBINE_FALL",
+      "COMBINE_SUN",
+      "COMBINE_GAMEDAY",
+    ]) {
+      await expect(
+        page.locator(`#calendar-combine-effects-${serviceId}`),
+      ).toContainText("Also run on");
+    }
+    await expect(page.locator("#calendar-combine-impacts")).toContainText(
+      "stays in the list with 0 trips",
+    );
+
+    // The block consequence is the concrete producer's, not a client guess: the trips that cannot
+    // share a block go to the unassigned pool.
+    await expect(page.locator("#calendar-combine-impacts")).toContainText(
+      "unassigned pool",
+    );
+    await expect(
+      page.locator("#calendar-combine-impacts-cleared-blocks"),
+    ).toContainText("block");
+
+    await closeReview(page);
+    await clearSelection(page);
+  });
+
+  test("reviews a specific-dates destination and states the exact shape of the stored result", async ({
+    page,
+  }) => {
+    await openCalendars(page);
+    await openReview(page, ["COMBINE_SAT", "COMBINE_GAMEDAY"]);
+
+    // The dates-only calendar is the destination, so the result is stored as its own specific
+    // dates and the drawer names the weekly alternative instead of inventing a weekly mask.
+    await page
+      .locator(
+        "#calendar-combine-destination-option-COMBINE_GAMEDAY input[type=radio]",
+      )
+      .click();
+    await expect(
+      page.locator(
+        "#calendar-combine-destination-option-COMBINE_GAMEDAY input[type=radio]",
+      ),
+    ).toBeChecked();
+
+    await expect(page.locator("#calendar-combine-result-moved")).toHaveText(
+      "4",
+    );
+    await expect(page.locator("#calendar-combine-result-stored")).toContainText(
+      /Stored as \d+ specific dates/,
+    );
+    await expect(
+      page.locator("#calendar-combine-result-dates-only"),
+    ).toContainText("stores dates one by one");
+    await expect(
+      page.locator("#calendar-combine-result-dates-only"),
+    ).toContainText("Saturday service");
+    await expect(
+      page.locator("#calendar-combine-result-sources"),
+    ).toContainText("1 calendar");
+    await expect(page.locator("#calendar-combine-conflicts")).toHaveCount(0);
+
+    await closeReview(page);
+    await clearSelection(page);
+  });
+
   // The two journeys below confirm a combination, so they run last: a real confirmation changes the
   // seeded version the journeys above read.
 
@@ -507,6 +650,29 @@ test.describe("calendar combination", () => {
     await expect(
       page.locator('#calendars-list tr[class*="bg-success/10"]'),
     ).toHaveCount(0);
+
+    // The result is a persisted one: a real reload of the ordinary route reads the retained source
+    // row back from the database with no trips and no summary, and the destination keeps the moved
+    // trip (step 22's persisted-reload criterion).
+    await page.reload();
+    await page.waitForSelector("#calendars-list-container");
+    const reloaded = page.locator("#calendars-list tr");
+    await expect(
+      reloaded
+        .filter({ hasText: "COMBINE_SUN" })
+        .locator('td[data-label="Trips"]'),
+    ).toHaveText("0");
+    await expect(
+      reloaded
+        .filter({ hasText: "COMBINE_SAT" })
+        .locator('td[data-label="Trips"]'),
+    ).toHaveText("5");
+    await expect(
+      reloaded
+        .filter({ hasText: "COMBINE_SUN" })
+        .locator("[data-calendar-link]"),
+    ).toBeVisible();
+    await expect(page.locator("#calendar-combine-success")).toHaveCount(0);
   });
 
   test("disables combination while the socket is down and reloads instead of resending", async ({
@@ -516,7 +682,9 @@ test.describe("calendar combination", () => {
     await openReview(page, ["COMBINE_WEEKDAY", "COMBINE_HOLIDAY"]);
 
     // Nothing has been confirmed when the page's own socket drops, so the pre-rendered notice says
-    // exactly that and the confirmation is disabled until the connection returns (AC-23).
+    // exactly that and the confirmation is disabled until the connection returns (AC-23). The
+    // shared dialog hook closes its modal on the same event, which is why the notice lives on the
+    // page: the reviewer reads the state there, not behind a closed drawer.
     await page.evaluate(() => window.liveSocket.disconnect());
 
     const notice = page.locator("#calendar-combine-connection");
@@ -530,20 +698,172 @@ test.describe("calendar combination", () => {
     await expect(
       notice.locator('[data-combine-connection="dispatched"]'),
     ).toBeHidden();
+    await expect(page.locator("#calendar-combine-drawer")).toBeHidden();
     await expect(page.locator("#calendar-combine-apply")).toBeDisabled();
-    await expect(page.locator("#calendar-combine-close")).toBeDisabled();
 
     await page.evaluate(() => window.liveSocket.connect());
 
-    // Reconnecting reloads the authoritative list, hides the notice and leaves the enabled state to
-    // the server. The page never resends the confirmation on its own: the review is still the one
-    // the reviewer prepared, and its answer was not recorded anywhere.
+    // Reconnecting re-reads the authoritative list rather than resending anything: the notice is
+    // gone, no confirmation was applied, and the prepared review is never presented as a current
+    // one - the reviewer selects again against the rows the server just read (AC-23).
     await expect(notice).toBeHidden();
     await expect(page.locator("#calendars-refreshing")).toHaveCount(0);
-    await expect(page.locator("#calendar-combine-close")).toBeEnabled();
-    await expect(page.locator("#calendar-combine-form")).toBeVisible();
+    await expect(page.locator("#calendars-list-container")).toBeVisible();
+    await expect(page.locator("#calendar-combine-success")).toHaveCount(0);
+    await expect(page.locator("#calendar-combine-form")).toHaveCount(0);
+
+    // The list still holds the unchanged rows, and an ordinary review opens again on them.
+    await expect(
+      page
+        .locator("#calendars-list tr")
+        .filter({ hasText: "COMBINE_HOLIDAY" })
+        .locator('td[data-label="Trips"]'),
+    ).toHaveText("0");
+    await openReview(page, ["COMBINE_WEEKDAY", "COMBINE_HOLIDAY"]);
+    await expect(page.locator("#calendar-combine-apply")).toBeVisible();
 
     await closeReview(page);
     await clearSelection(page);
+  });
+
+  // The two journeys below change the seeded version for good, so they run after every journey
+  // that reads it.
+
+  test("marks a review stale after the date-change drawer changes a selected calendar", async ({
+    page,
+    context,
+  }) => {
+    const versionId = await openCalendars(page);
+    await openReview(page, ["COMBINE_SAT", "COMBINE_FALL"]);
+    await expect(page.locator("#calendar-combine-result-moved")).toHaveText(
+      "2",
+    );
+
+    // A second ordinary session changes the source's own dates through the list's pre-existing
+    // date-change drawer: the combination UI is installed and the old drawer still changes exactly
+    // the day it is given, for the one calendar it is told to change it for (AC-2).
+    const other = await context.newPage();
+    await other.goto(`/gtfs/${versionId}/calendars`);
+    await other.waitForSelector("#calendars-list-container");
+    // A second page reaches the drawer through the ordinary route, so its own socket must have
+    // connected before the first click lands on the server-rendered DOM.
+    await other.waitForSelector("[data-phx-main].phx-connected");
+    const changedDate = await nextSaturday(other);
+    await other.click("#calendar-date-change");
+    await other.waitForSelector("#calendar-date-change-form[data-phx-id]");
+    await other.fill("#calendar-date-change-dates-date", changedDate);
+    await expect(
+      other.locator("#calendar-date-change-remove-COMBINE_FALL input"),
+    ).toBeChecked();
+    await other.uncheck("#calendar-date-change-remove-COMBINE_SAT input");
+    await other.click("#calendar-date-change-review");
+    await expect(
+      other.locator("#calendar-date-change-review-panel"),
+    ).toContainText("Stop Fall shuttle");
+    await other.click("#calendar-date-change-apply");
+    await expect(other.locator("#calendars-date-change-status")).toContainText(
+      "Applied the date change",
+      { timeout: 10000 },
+    );
+
+    // The committed day is the one the drawer was given, read back through the ordinary editor.
+    await other.goto(
+      `/gtfs/${versionId}/calendars/show?service_id=COMBINE_FALL`,
+    );
+    await other.waitForSelector("#calendar-editor");
+    await expect(
+      other.locator(`#calendar-exception-chips-${changedDate}`),
+    ).toContainText("Service removed");
+    await other.close();
+
+    // The prepared review no longer describes the source, so confirming writes nothing and offers
+    // the one explicit recovery instead of reusing the old token (AC-23, INV-3).
+    await page.locator("#calendar-combine-apply").click();
+    const status = page.locator("#calendar-combine-errors");
+    await expect(status).toContainText(
+      "Saturday service changed after this review was prepared.",
+    );
+    await expect(status).toContainText(
+      "Another editor changed these calendars, so nothing was combined.",
+    );
+    await expect(page.locator("#calendar-combine-refresh")).toBeVisible();
+    await expect(page.locator("#calendar-combine-apply")).toHaveCount(0);
+    await expect(page.locator("#calendar-combine-success")).toHaveCount(0);
+
+    // Refreshing is the recovery: the drawer re-reviews the current source, so the day the drawer
+    // removed now needs an explicit choice instead of being carried over from the old review.
+    await page.locator("#calendar-combine-refresh").click();
+    const conflict = page.locator(
+      "#calendar-combine-decisions [data-conflict-date]",
+    );
+    await expect(conflict).toHaveCount(1);
+    await expect(conflict).toHaveAttribute("data-conflict-date", changedDate);
+    await expect(conflict).toContainText("Fall shuttle has no service");
+    await expect(conflict).toContainText("Saturday service runs");
+    await expect(page.locator("#calendar-combine-apply")).toBeVisible();
+
+    await closeReview(page);
+    await clearSelection(page);
+  });
+
+  test("keeps the choices and reports the domain refusal when a selected calendar is deleted", async ({
+    page,
+    context,
+  }) => {
+    const versionId = await openCalendars(page);
+
+    // An empty calendar as the destination is a real combination: the two Weekday trips would move
+    // into the copy, so the review offers the confirmation.
+    await openReview(page, ["COMBINE_WEEKDAY_COPY", "COMBINE_WEEKDAY"]);
+    await page
+      .locator(
+        "#calendar-combine-destination-option-COMBINE_WEEKDAY_COPY input[type=radio]",
+      )
+      .click();
+    await expect(page.locator("#calendar-combine-result-moved")).toHaveText(
+      "2",
+    );
+    await expect(page.locator("#calendar-combine-apply")).toBeVisible();
+
+    // A second session deletes the selected destination, which nothing in the review can undo, so
+    // the domain refuses the command and the page repeats that refusal instead of claiming a move.
+    const other = await context.newPage();
+    await other.goto(
+      `/gtfs/${versionId}/calendars/show?service_id=COMBINE_WEEKDAY_COPY`,
+    );
+    await other.waitForSelector("#calendar-editor");
+    await other.waitForSelector("[data-phx-main].phx-connected");
+    // The editor's actions live behind a native disclosure; the reviewer opens it by clicking
+    // its own summary, which survives the LiveView patch that setting `.open` directly loses to.
+    await other.locator("#calendar-actions").click();
+    await expect(other.locator("#calendar-delete")).toBeVisible();
+    await other.click("#calendar-delete");
+    await other.click("#calendar-review-dialog-confirm");
+    await expect(other).toHaveURL(/\/gtfs\/[0-9a-f-]+\/calendars$/);
+    await other.close();
+
+    await page.locator("#calendar-combine-apply").click();
+    const status = page.locator("#calendar-combine-errors");
+    await expect(status).toContainText("Calendars weren’t combined.", {
+      timeout: 10000,
+    });
+    await expect(status).toContainText(
+      "COMBINE_WEEKDAY_COPY could not be read",
+    );
+    await expect(status).toContainText("Your choices are kept");
+
+    // Nothing was written: the source keeps its own trips and the refusal is not a success.
+    await expect(page.locator("#calendar-combine-success")).toHaveCount(0);
+    await page.reload();
+    await page.waitForSelector("#calendars-list-container");
+    await expect(
+      page
+        .locator("#calendars-list tr")
+        .filter({ hasText: "COMBINE_WEEKDAY" })
+        .locator('td[data-label="Trips"]'),
+    ).toHaveText("2");
+    await expect(
+      page.locator("#calendars-list tr", { hasText: "COMBINE_WEEKDAY_COPY" }),
+    ).toHaveCount(0);
   });
 });

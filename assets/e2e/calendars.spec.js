@@ -1199,3 +1199,117 @@ test("browser Back and Forward require explicit discard and cancellation retains
   await expect(page.locator("#calendars-list-container")).toBeVisible();
   expect(page.url()).toContain(`/gtfs/${versionId}/calendars`);
 });
+
+// The list and the combination selection it now carries are one surface: these two journeys read
+// them at every supported width and across versions, without writing anything.
+
+async function switchVersionTo(page, versionName) {
+  await page.locator("#gtfs-version-trigger").click();
+  await page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: versionName })
+    .click();
+  await page.waitForURL(/\/gtfs\/[0-9a-f-]+\/calendars/);
+  await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+}
+
+test("switches versions on the list and keeps each version's own identities", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const versionId = await openCalendars(page);
+
+  // Row identity comes from the semantic detail link, whose attribute is the exact service ID.
+  await expect(
+    page.locator("#calendars-list [data-calendar-link]"),
+  ).toHaveCount(6);
+  await expect(
+    page.locator('#calendars-list [data-calendar-link="CAL_DAILY"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('#calendars-list [data-calendar-link="DETAIL_SCHOOL"]'),
+  ).toHaveCount(0);
+
+  // Switching versions reloads the list for the version the panel names, with that version's own
+  // scoped identities and no row from the version left behind (AC-2). The unreadable imported
+  // identity still keeps its row, but it is not selectable and has no detail link.
+  await switchVersionTo(page, "Browser Calendar Details");
+  const detailsVersionId = new URL(page.url()).pathname.split("/")[2];
+  expect(detailsVersionId).not.toBe(versionId);
+  await expect(page.locator("#calendars-list tr")).toHaveCount(4);
+  await expect(
+    page.locator("#calendars-list [data-calendar-link]"),
+  ).toHaveCount(3);
+  await expect(
+    page.locator('#calendars-list [data-calendar-link="DETAIL_SCHOOL"]'),
+  ).toBeVisible();
+  await expect(page.locator("#calendar-select-DETAIL_REVERSED")).toBeDisabled();
+  await expect(
+    page.locator('#calendars-list [data-calendar-link="CAL_DAILY"]'),
+  ).toHaveCount(0);
+
+  // Switching back reads the first version's rows again rather than caching the second's.
+  await switchVersionTo(page, "Browser E2E Version");
+  expect(new URL(page.url()).pathname).toContain(
+    `/gtfs/${versionId}/calendars`,
+  );
+  await expect(
+    page.locator("#calendars-list [data-calendar-link]"),
+  ).toHaveCount(6);
+  await expect(
+    page.locator('#calendars-list [data-calendar-link="CAL_DAILY"]'),
+  ).toBeVisible();
+});
+
+test("keeps the list and its selection controls labelled, keyboard reachable and overflow-free at every supported width", async ({
+  page,
+}) => {
+  const versionId = await openCalendars(page);
+
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 1024, height: 900 },
+    { width: 390, height: 844 },
+    { width: 320, height: 800 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/gtfs/${versionId}/calendars`);
+    await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+
+    // Every control the list offers takes focus where it stands, including the combination's own
+    // select-all control.
+    for (const id of [
+      "#calendar-search",
+      "#calendar-status",
+      "#calendar-date-change",
+      "#calendars-create",
+      "#calendar-select-all",
+    ]) {
+      await page.locator(id).focus();
+      await expect(page.locator(id)).toBeFocused();
+    }
+
+    // The sort control is a labelled button inside its own column header, and both selection
+    // controls name the calendars they act on.
+    const sortButton = page
+      .locator("#calendars-list-container thead th button")
+      .first();
+    await sortButton.focus();
+    await expect(sortButton).toBeFocused();
+    await expect(page.locator("#calendar-select-all")).toHaveAttribute(
+      "aria-label",
+      /calendar/i,
+    );
+    await expect(page.locator("#calendar-select-CAL_UNUSED")).toHaveAttribute(
+      "aria-label",
+      "Select Unused calendar",
+    );
+
+    // The page never scrolls sideways at any supported width.
+    expect(
+      await page.evaluate(
+        () => document.body.scrollWidth <= window.innerWidth + 1,
+      ),
+    ).toBe(true);
+  }
+});

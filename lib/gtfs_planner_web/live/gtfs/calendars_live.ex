@@ -410,12 +410,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   @impl true
   # Dismissing the summary removes the focused control, so focus is handed to the list's own
-  # selection action instead of being left on the document (AC-24).
+  # selection action instead of being left on the document (AC-24). The list is a stream, so
+  # clearing the highlight only reaches the rendered rows when they are re-sent: without this the
+  # tint would outlive the summary it explains.
   def handle_event("dismiss_combine_success", _params, socket) do
     {:noreply,
      socket
      |> assign(:combine_success, nil)
      |> assign(:combine_highlight, MapSet.new())
+     |> restream_calendars(socket.assigns.calendars)
      |> push_event("calendar:combine-focus", %{
        id: "calendar-select-all",
        fallback_id: "calendar-search"
