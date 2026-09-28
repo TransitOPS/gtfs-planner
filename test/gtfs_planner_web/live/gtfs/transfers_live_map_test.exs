@@ -451,7 +451,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
         "min_transfer_time" => "180"
       })
 
-      assert [rule] = Repo.all(Transfer)
+      assert [rule] = Repo.all_by(Transfer, gtfs_version_id: ctx.version.id)
       assert rule.from_stop_id == "CEN-A"
       assert rule.min_transfer_time == 180
       refute has_element?(view, "#transfer-editor")

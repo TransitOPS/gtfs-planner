@@ -388,12 +388,12 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogListingTest do
         transfer_type: 0
       })
 
-      stored = Repo.aggregate(Transfer, :count)
+      stored = length(Repo.all_by(Transfer, gtfs_version_id: ctx.version.id))
 
       load(ctx, stop: "MKT", search: "harbor", per_page: 1, page: 2, rule: Ecto.UUID.generate())
       Transfers.count_general(ctx.organization.id, ctx.version.id, stop: "MKT")
 
-      assert Repo.aggregate(Transfer, :count) == stored
+      assert length(Repo.all_by(Transfer, gtfs_version_id: ctx.version.id)) == stored
     end
   end
 

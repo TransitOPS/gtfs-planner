@@ -191,7 +191,10 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogTest do
           transfer_type: 0
         })
 
-      stored_count = Repo.aggregate(Transfer, :count)
+      # Only this test's versions: other async tests commit rows concurrently.
+      versions = [version_id, second_version.id, other_version.id]
+      stored = from(t in Transfer, where: t.gtfs_version_id in ^versions)
+      stored_count = Repo.aggregate(stored, :count)
       catalog = load(ctx)
 
       assert row_ids(catalog) == sorted_ids([own, dangling])
@@ -209,7 +212,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogTest do
                {:missing_trip, :from, "X-0001"}
              ]
 
-      assert Repo.aggregate(Transfer, :count) == stored_count
+      assert Repo.aggregate(stored, :count) == stored_count
     end
   end
 

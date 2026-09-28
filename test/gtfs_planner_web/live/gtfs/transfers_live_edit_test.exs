@@ -294,7 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       # The row is updated, the other rule and the row count are not.
       assert Repo.get(Transfer, rule.id).min_transfer_time == 240
       assert Repo.get(Transfer, untouched.id).transfer_type == 0
-      assert Repo.aggregate(Transfer, :count) == 2
+      assert length(Repo.all_by(Transfer, gtfs_version_id: ctx.version.id)) == 2
 
       assert has_element?(view, "#transfers")
       assert has_element?(view, "#transfer-select-#{rule.id}[aria-current='true']")
@@ -438,7 +438,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert text_of(document, "#transfer-draft-preview") =~ "Central · Bay A"
 
       # Nothing is written until the draft is saved.
-      assert Repo.all(Transfer) |> Enum.map(& &1.id) == [rule.id]
+      assert Repo.all_by(Transfer, gtfs_version_id: ctx.version.id) |> Enum.map(& &1.id) == [
+               rule.id
+             ]
 
       save_draft(view, :routes, %{
         "from_stop_id" => "CEN-C",
@@ -451,7 +453,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       assert has_element?(view, "#flash-info", "Transfer saved in #{ctx.version.name}.")
 
-      reverse = Repo.get_by(Transfer, from_stop_id: "CEN-C", to_stop_id: "CEN-A")
+      reverse =
+        Repo.get_by(Transfer,
+          gtfs_version_id: ctx.version.id,
+          from_stop_id: "CEN-C",
+          to_stop_id: "CEN-A"
+        )
 
       assert reverse.from_route_id == "24"
       assert reverse.to_route_id == "12"
@@ -459,7 +466,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert reverse.min_transfer_time == 180
 
       assert Repo.get(Transfer, rule.id).from_stop_id == "CEN-A"
-      assert Repo.aggregate(Transfer, :count) == 2
+      assert length(Repo.all_by(Transfer, gtfs_version_id: ctx.version.id)) == 2
     end
   end
 
