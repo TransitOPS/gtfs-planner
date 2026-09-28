@@ -71,6 +71,24 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       </div>
 
       <.callout
+        :if={@notice == :map_error}
+        id="alignment-notice"
+        kind="warning"
+        title="The background map couldn't load"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>Your alignment and stop list are still available.</p>
+          <button
+            type="button"
+            phx-click="alignment_retry_tiles"
+            class="btn btn-outline min-h-11 shrink-0"
+          >
+            Retry map
+          </button>
+        </div>
+      </.callout>
+
+      <.callout
         :if={@notice == :read_only}
         id="alignment-notice"
         kind="info"
@@ -102,6 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         <section aria-label="Alignment map" class="order-1 min-w-0 lg:order-2">
           <div
             id="alignment-map-root"
+            phx-hook="PatternAlignment"
             phx-update="ignore"
             data-tile-url="/map/tiles/osm-bright/{z}/{x}/{y}"
             class="flex min-h-80 items-center justify-center rounded-lg border border-base-300 bg-base-200 p-6 lg:min-h-[520px]"

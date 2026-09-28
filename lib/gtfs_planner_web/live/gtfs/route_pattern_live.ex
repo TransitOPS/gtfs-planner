@@ -541,6 +541,26 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_hook_ready", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.hook_ready(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_map_error", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.map_error(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_map_ok", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.map_ok(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_retry_tiles", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.retry_tiles(socket, params)}
+  end
+
+  @impl true
   def handle_event("alignment_open_help", _params, socket) do
     {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, :help)}
   end

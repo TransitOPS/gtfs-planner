@@ -14,6 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Alignments
   alias Phoenix.Component
 
   @doc """
@@ -44,16 +45,58 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     with {position, ""} <- parse_position(position_param),
          %{alignment: %{sections: sections}} <- socket.assigns,
          true <- Enum.any?(sections, &(&1.position == position)) do
-      Component.assign(socket, :alignment_state, %{
+      socket
+      |> Component.assign(:alignment_state, %{
         socket.assigns.alignment_state
         | selected: position
       })
+      |> Phoenix.LiveView.push_event("alignment:select", %{position: position})
     else
       _ -> socket
     end
   end
 
   def select_section(socket, _params), do: socket
+
+  @doc """
+  Pushes the saved hook model after the map hook mounts.
+
+  The model comes from the production `Gtfs.alignment_editor/4` result
+  already on the socket (INV-2); points stay `[lon, lat]` (INV-1) and the
+  route colour fallback was decided server-side. A socket without a loaded
+  model answers nothing.
+  """
+  def hook_ready(socket, _params) do
+    %{alignment: alignment, alignment_editable: editable?} = socket.assigns
+
+    if is_nil(alignment) do
+      socket
+    else
+      model = Alignments.hook_model(alignment, editable: editable?, suggestions: [])
+      Phoenix.LiveView.push_event(socket, "alignment:load", %{model: model})
+    end
+  end
+
+  @doc "Shows the tile-failure notice; the sections stay usable."
+  def map_error(socket, _params),
+    do: Component.assign(socket, :alignment_notice, :map_error)
+
+  @doc "Clears the tile-failure notice, restoring the load-time notice."
+  def map_ok(socket, _params) do
+    if socket.assigns[:alignment_notice] == :map_error do
+      Component.assign(
+        socket,
+        :alignment_notice,
+        notice_for(socket.assigns[:alignment], socket.assigns[:alignment_editable])
+      )
+    else
+      socket
+    end
+  end
+
+  @doc "Asks the hook to rebuild its tile layer after a tile failure."
+  def retry_tiles(socket, _params),
+    do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
   @doc "Opens or closes the alignment help dialog."
   def set_dialog(socket, dialog), do: Component.assign(socket, :alignment_dialog, dialog)
@@ -77,24 +120,29 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       {:ok, alignment} ->
         editable? = editor_access?(socket)
 
-        notice =
-          cond do
-            not editable? -> :read_only
-            alignment.status.export == :stale -> :out_of_date
-            alignment.status.export == :imported -> :imported_shape
-            true -> nil
-          end
-
         {:ok,
          socket
          |> Component.assign(:alignment, alignment)
          |> Component.assign(:alignment_state, fresh_state(socket.assigns.alignment_state))
          |> Component.assign(:alignment_editable, editable?)
-         |> Component.assign(:alignment_notice, notice)
+         |> Component.assign(:alignment_notice, notice_for(alignment, editable?))
          |> Component.assign(:alignment_dialog, nil)}
 
       {:error, :not_found} ->
         {:error, :not_found}
+    end
+  end
+
+  # The single notice decision, shared by the load boundary and the tile
+  # recovery path so `map_ok` restores exactly what the load showed.
+  defp notice_for(nil, _editable?), do: nil
+  defp notice_for(_alignment, false), do: :read_only
+
+  defp notice_for(alignment, true) do
+    cond do
+      alignment.status.export == :stale -> :out_of_date
+      alignment.status.export == :imported -> :imported_shape
+      true -> nil
     end
   end
 

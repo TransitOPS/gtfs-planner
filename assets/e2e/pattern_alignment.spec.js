@@ -24,11 +24,11 @@ const ALIGN_PATTERN = "BROWSER-ALIGN-A";
 
 const CAPTURE_DIR = process.env.PATTERN_ALIGNMENT_CAPTURE_DIR;
 
-// A 1×1 transparent PNG served for every tile request, so captures never
-// depend on the network or on Geoapify credits. The shell itself renders no
-// tiles yet; the stub already covers the map steps that follow.
+// A verified-transparent 1×1 PNG served for every tile request, so captures
+// never depend on the network or on Geoapify credits. (An earlier literal
+// for this stub decoded to a half-green pixel and tinted the whole map.)
 const BLANK_PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
   "base64",
 );
 
@@ -142,5 +142,87 @@ test.describe("alignment shell", () => {
     expect(await bodyFitsViewport(page)).toBe(true);
 
     expect(problems).toEqual([]);
+  });
+});
+
+test.describe("alignment map", () => {
+  test("shows section lines on the Leaflet map at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    // Two saved sections plus the missing dashed connector, and one pin
+    // per stop visit run.
+    await expect(
+      page.locator("#alignment-map-root .pa-stop-pin").first(),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("#alignment-map-root")).toContainText(
+      "Hide stop labels",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "map-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    await captureFullPage(page, "map-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+
+  test("shows the tile-failure notice when tiles return 500", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await page.route("**/map/tiles/**", async (route) => {
+      await route.fulfill({ status: 500, body: "tile boom" });
+    });
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(page.locator("#alignment-notice")).toContainText(
+      "The background map couldn't load",
+      { timeout: 20000 },
+    );
+    await expect(page.locator("#alignment-notice")).toContainText(
+      "Your alignment and stop list are still available.",
+    );
+    // The sections stay usable behind the notice.
+    await expect(page.locator("#alignment-section-2")).toBeVisible();
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "map-error-1440");
+
+    // The refused tiles surface exactly one console resource error; nothing
+    // else may fail.
+    expect(problems.some((p) => p.includes("500"))).toBe(true);
+    expect(problems.filter((p) => !p.includes("500"))).toEqual([]);
   });
 });
