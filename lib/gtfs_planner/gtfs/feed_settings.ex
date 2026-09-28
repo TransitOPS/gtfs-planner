@@ -33,6 +33,16 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   lock returns `:stale` with no write, so a save that started before another editor's save
   loses instead of overwriting it (R8).
 
+  A version-wide timezone change is a review and an apply bound by a fingerprint (R3,
+  INV-3). `review_timezone_change/2` trims and validates the chosen zone with
+  `DisplayClock.valid_zone?/1` (INV-4), share-locks the published version row, and reports
+  every agency's current zone and route count together with a token that binds the zone to
+  the `{agency row id, agency_timezone}` pairs it observed. `apply_timezone_change/3`
+  validates the zone again, takes the version row `FOR UPDATE`, recomputes the token, and
+  refuses a mismatch with `:stale_review` before it writes anything. On a match one
+  `UPDATE` statement sets `agency_timezone` and `updated_at` for the version's agencies;
+  no stop time, frequency or calendar row is read or written (CR-7).
+
   Outside import and test fixtures this module is the application's writer of `agencies`
   and `feed_info` rows and of the agency columns they own (INV-5).
   """
@@ -59,6 +69,20 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   @type scope :: AuditContext.t()
   @type zone_state :: {:ok, String.t()} | {:unresolved, :missing | :invalid | :conflicting}
   @type agency_row :: %{agency: Agency.t(), route_count: non_neg_integer()}
+
+  @type timezone_review :: %{
+          zone: String.t(),
+          fingerprint: String.t(),
+          agencies: [
+            %{
+              id: Ecto.UUID.t(),
+              agency_id: String.t(),
+              agency_name: String.t(),
+              from: String.t(),
+              route_count: non_neg_integer()
+            }
+          ]
+        }
 
   @type health :: %{
           agency_count: non_neg_integer(),
@@ -255,6 +279,94 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       |> lock_scoped_agency!(id)
       |> update_agency_locked!(attrs, token)
     end)
+  end
+
+  @doc """
+  Reviews a version-wide timezone change against the version's current agencies (R3,
+  INV-3).
+
+  `zone` is the zone the editor chose; surrounding whitespace is trimmed and the trimmed
+  name must be one `DisplayClock.valid_zone?/1` accepts (INV-4). One transaction then
+  authorizes the actor, share-locks the published version row (INV-2) and loads the
+  version's agencies with the route counts `list_agencies/2` reports (R5). With no
+  agencies there is no zone to change and the review returns `:no_agencies`.
+
+  Each returned agency names the zone it holds now in `from`, and `fingerprint` binds the
+  reviewed zone to the `{agency row id, agency_timezone}` pairs the review observed, so
+  `apply_timezone_change/3` can tell whether the version still matches this review.
+
+  ## Returns
+
+  - `{:ok, review}` with `:zone`, `:fingerprint` and `:agencies`
+  - `{:error, :invalid_timezone}` for a blank, non-binary or unknown zone
+  - `{:error, :forbidden}` for a deactivated or non-editor member
+  - `{:error, :not_found}` for a scope that is not a published version of the actor's
+    organization
+  - `{:error, :no_agencies}` when the version has no agencies
+  """
+  @spec review_timezone_change(AuditContext.t(), String.t()) ::
+          {:ok, timezone_review()}
+          | {:error, :forbidden | :not_found | :invalid_timezone | :no_agencies}
+  def review_timezone_change(%AuditContext{} = audit_context, zone) do
+    case normalize_zone(zone) do
+      :invalid ->
+        {:error, :invalid_timezone}
+
+      zone ->
+        Repo.transaction(fn ->
+          authorize_editor!(audit_context)
+          share_version!(audit_context)
+
+          audit_context
+          |> list_agencies_in_scope()
+          |> timezone_review_locked!(zone)
+        end)
+    end
+  end
+
+  @doc """
+  Applies a reviewed version-wide timezone change atomically (R3, INV-3, CR-7).
+
+  `zone` is validated exactly as `review_timezone_change/2` validates it, and
+  `fingerprint` is the token that review returned. One transaction authorizes the actor,
+  takes the published version row `FOR UPDATE` (INV-2) and recomputes the fingerprint from
+  the version's current `{agency row id, agency_timezone}` pairs and the given zone. Any
+  difference rolls back `:stale_review` with no write, so an agency added or removed after
+  the review, an agency whose zone changed after it, and a different zone applied with an
+  earlier review's token all change nothing.
+
+  On a match one `UPDATE` sets `agency_timezone` and `updated_at` for every agency of the
+  version and the number of rows it rewrote is returned. Stop times, frequencies and
+  calendars are neither read nor written (CR-7), so stored clock times are unchanged.
+
+  ## Returns
+
+  - `{:ok, updated_agency_count}` on an apply
+  - `{:error, :invalid_timezone}` for a blank, non-binary or unknown zone
+  - `{:error, :forbidden}` for a deactivated or non-editor member
+  - `{:error, :not_found}` for a scope that is not a published version of the actor's
+    organization
+  - `{:error, :stale_review}` when the version no longer matches the review, or the given
+    zone differs from the reviewed one
+  """
+  @spec apply_timezone_change(AuditContext.t(), String.t(), String.t()) ::
+          {:ok, non_neg_integer()}
+          | {:error, :forbidden | :not_found | :invalid_timezone | :stale_review}
+  def apply_timezone_change(%AuditContext{} = audit_context, zone, fingerprint) do
+    case normalize_zone(zone) do
+      :invalid ->
+        {:error, :invalid_timezone}
+
+      zone ->
+        Repo.transaction(fn ->
+          authorize_editor!(audit_context)
+          lock_version!(audit_context)
+
+          audit_context
+          |> agencies_in_scope()
+          |> apply_timezone_locked!(zone, fingerprint, audit_context)
+        end)
+    end
   end
 
   @doc """
@@ -682,6 +794,83 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
     else
       Repo.rollback(:stale)
     end
+  end
+
+  # -- Timezone change -------------------------------------------------------
+
+  # The zone field may carry surrounding whitespace and `valid_zone?/1` compares exactly,
+  # so trimming here keeps DisplayClock the single zone authority (INV-4). Anything that is
+  # not a trimmed catalog name is refused before a transaction is opened.
+  defp normalize_zone(zone) when is_binary(zone) do
+    zone = String.trim(zone)
+
+    if DisplayClock.valid_zone?(zone), do: zone, else: :invalid
+  end
+
+  defp normalize_zone(_zone), do: :invalid
+
+  defp list_agencies_in_scope(%AuditContext{} = audit_context) do
+    list_agencies(audit_context.organization_id, audit_context.gtfs_version_id)
+  end
+
+  defp timezone_review_locked!([], _zone), do: Repo.rollback(:no_agencies)
+
+  defp timezone_review_locked!(rows, zone) do
+    agencies = Enum.map(rows, & &1.agency)
+
+    %{
+      zone: zone,
+      fingerprint: timezone_fingerprint(zone, timezone_pairs(agencies)),
+      agencies: Enum.map(rows, &timezone_review_row/1)
+    }
+  end
+
+  defp timezone_review_row(%{agency: agency, route_count: route_count}) do
+    %{
+      id: agency.id,
+      agency_id: agency.agency_id,
+      agency_name: agency.agency_name,
+      from: agency.agency_timezone,
+      route_count: route_count
+    }
+  end
+
+  # The fingerprint covers the agency rows the review observed, not the route counts the
+  # review displays, so a route moving between agencies does not invalidate a review: only
+  # the agency set and its zones bind the command (INV-3, R3).
+  defp apply_timezone_locked!(agencies, zone, fingerprint, %AuditContext{} = audit_context) do
+    unless timezone_fingerprint(zone, timezone_pairs(agencies)) == fingerprint do
+      Repo.rollback(:stale_review)
+    end
+
+    update_timezones!(zone, audit_context)
+  end
+
+  defp timezone_pairs(agencies) do
+    Enum.map(agencies, fn %Agency{} = agency -> {agency.id, agency.agency_timezone} end)
+  end
+
+  defp timezone_fingerprint(zone, pairs) do
+    :crypto.hash(:sha256, :erlang.term_to_binary({:timezone, zone, Enum.sort(pairs)}))
+    |> Base.encode16(case: :lower)
+  end
+
+  # The whole version moves in one statement, so a failed apply cannot leave part of the
+  # agency set rezoned. `update_all` writes no timestamps of its own, hence the explicit
+  # `updated_at`: an edit drawer open across an apply then reports a conflict (R8).
+  defp update_timezones!(zone, %AuditContext{} = audit_context) do
+    now = DateTime.utc_now()
+
+    {count, _} =
+      Agency
+      |> where(
+        [a],
+        a.organization_id == ^audit_context.organization_id and
+          a.gtfs_version_id == ^audit_context.gtfs_version_id
+      )
+      |> Repo.update_all(set: [agency_timezone: zone, updated_at: now])
+
+    count
   end
 
   defp insert_or_rollback!(changeset) do
