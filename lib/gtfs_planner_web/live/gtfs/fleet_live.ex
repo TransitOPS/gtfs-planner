@@ -615,7 +615,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:fleet} />
+        <.settings_nav
+          gtfs_version_id={@current_gtfs_version.id}
+          active_tab={:fleet}
+          organization={@current_organization}
+        />
       </:sub_header>
 
       <.header>

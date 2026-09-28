@@ -388,4 +388,120 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       end
     end
   end
+
+  describe "product filtering (ProductSurfaces)" do
+    # The seven Settings sections a Pathways organization hides (spec R5).
+    defp pathways_hidden_keys do
+      [:feed_details, :agencies, :fares, :export_defaults, :feed_url, :garages, :fleet]
+    end
+
+    defp product_org_with_version(product, roles) do
+      organization = organization_fixture(%{product: product})
+      member = member_with_roles(organization, roles)
+      version = gtfs_version_fixture(organization.id)
+      %{organization: organization, member: member, version: version}
+    end
+
+    test "a Pathways editor+admin sees only the Organization group and no tab bar",
+         %{conn: conn} do
+      %{organization: organization, member: admin, version: version} =
+        product_org_with_version(:pathways, [
+          "pathways_studio_editor",
+          "pathways_studio_admin"
+        ])
+
+      conn = log_in_user(conn, admin, organization: organization)
+      {:ok, view, _html} = live(conn, settings_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      for key <- pathways_hidden_keys() do
+        refute has_element?(view, "#settings-entry-#{key}")
+      end
+
+      refute has_element?(view, "#settings-nav")
+      refute has_element?(view, "#settings-empty")
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-overview section"), "id") ==
+               ["settings-organization"]
+
+      assert text_of(doc, "#settings-organization h2") == "Organization"
+
+      assert_entry(
+        doc,
+        :organization_name,
+        "Organization name",
+        "/admin/users/organization-settings",
+        "Available"
+      )
+
+      assert_entry(doc, :users, "Users", "/admin/users", "Available")
+    end
+
+    test "a Pathways editor without admin sees the empty state and no groups",
+         %{conn: conn} do
+      %{organization: organization, member: editor, version: version} =
+        product_org_with_version(:pathways, ["pathways_studio_editor"])
+
+      conn = log_in_user(conn, editor, organization: organization)
+      {:ok, view, _html} = live(conn, settings_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert has_element?(view, "#settings-empty")
+
+      assert text_of(doc, "#settings-empty") ==
+               "No settings are available for this organization."
+
+      refute has_element?(view, "#settings-overview section")
+      refute has_element?(view, "#settings-nav")
+    end
+
+    test "a Planner editor+admin sees every entry and tab", %{conn: conn} do
+      %{organization: organization, member: admin, version: version} =
+        product_org_with_version(:planner, [
+          "pathways_studio_editor",
+          "pathways_studio_admin"
+        ])
+
+      conn = log_in_user(conn, admin, organization: organization)
+      {:ok, view, _html} = live(conn, settings_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      for key <- pathways_hidden_keys() do
+        assert has_element?(view, "#settings-entry-#{key}")
+      end
+
+      for id <- [
+            "settings-tab-index",
+            "settings-tab-feed_details",
+            "settings-tab-agencies",
+            "settings-tab-fares",
+            "settings-tab-export_defaults",
+            "settings-tab-feed_url",
+            "settings-tab-garages",
+            "settings-tab-fleet"
+          ] do
+        assert has_element?(view, "##{id}")
+      end
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-overview section"), "id") ==
+               ["settings-version", "settings-all-versions", "settings-organization"]
+    end
+
+    test "hidden pages stay reachable for a Pathways editor (hidden, not denied)",
+         %{conn: conn} do
+      %{organization: organization, member: editor, version: version} =
+        product_org_with_version(:pathways, ["pathways_studio_editor"])
+
+      conn = log_in_user(conn, editor, organization: organization)
+
+      assert {:ok, fleet_view, _html} = live(conn, "/gtfs/#{version.id}/settings/fleet")
+      assert has_element?(fleet_view, "h1", "Fleet")
+
+      assert {:ok, blocks_view, _html} = live(conn, "/gtfs/#{version.id}/blocks")
+      assert has_element?(blocks_view, "h1", "Blocks")
+
+      assert {:ok, flex_view, _html} = live(conn, "/gtfs/#{version.id}/flex")
+      assert has_element?(flex_view, "h1", "Flex")
+    end
+  end
 end
