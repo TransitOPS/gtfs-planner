@@ -33,6 +33,12 @@ defmodule GtfsPlanner.Gtfs.Routes do
   caller-supplied taken-ID snapshot. `create_editor_route/3` performs the final
   database allocation under the published-version write lock.
 
+  `route_map/3` is the scoped facade for the S-3 batch route-map projection
+  (`GtfsPlanner.Gtfs.Routes.Map.route_map/3`): one published route's ordered
+  occurrence visits, connector sections with source/status labels and distinct
+  imported shape variants over landed pattern, stop and shape rows. Map reads
+  fail independently of editor reads and run no geometry query here.
+
   `create_editor_route/3` is the R3 creation command with audit-backed replay
   protection. It runs one serializable transaction that reauthorizes the actor,
   locks the published version, resolves the submitted agency (seam `S-1`),
@@ -296,6 +302,20 @@ defmodule GtfsPlanner.Gtfs.Routes do
   rescue
     DBConnection.ConnectionError -> {:error, :unavailable}
   end
+
+  @doc """
+  Projects one published route's saved map geometry (R7, seam `S-3`).
+
+  Thin scoped facade for `GtfsPlanner.Gtfs.Routes.Map.route_map/3`: the batch
+  projection over landed `route_patterns`, `route_pattern_stops`, `stops` and
+  `shapes`/`trips` rows. A foreign, unpublished or unknown scope is
+  `{:error, :not_found}` with no map fragments; a lost database connection is
+  `{:error, :unavailable}`. Map reads fail independently of editor reads.
+  """
+  @spec route_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, map()} | {:error, :not_found | :unavailable}
+  def route_map(organization_id, gtfs_version_id, route_id),
+    do: GtfsPlanner.Gtfs.Routes.Map.route_map(organization_id, gtfs_version_id, route_id)
 
   @doc """
   Infers the creation route identifier (R3, pure precursor).

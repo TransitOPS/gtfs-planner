@@ -220,6 +220,20 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Projects one published route's saved map geometry through seam `S-3`
+  (`GtfsPlanner.Gtfs.Routes.Map.route_map/3` over landed pattern, stop and
+  shape rows).
+
+  The map read fails independently of editor reads: a foreign or unpublished
+  scope is `{:error, :not_found}` and a lost database connection is
+  `{:error, :unavailable}`.
+  """
+  @spec route_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, map()} | {:error, :not_found | :unavailable}
+  def route_map(organization_id, gtfs_version_id, route_id),
+    do: Routes.route_map(organization_id, gtfs_version_id, route_id)
+
+  @doc """
   Fetches a single stop by its GTFS `stop_id` for the station detail surface
   through the configured catalog read adapter.
 
