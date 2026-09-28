@@ -68,6 +68,18 @@ const TIMEZONE_CAPTURE_DIR =
     ".specs/13-agencies-and-feed-details/evidence/visual/agencies-timezone",
   );
 
+// The version `browser_seed.exs` creates with neither agencies nor routes, so
+// the create block starts from the empty state (EV-20, EV-21).
+const NO_AGENCY_VERSION = "Browser No Agency Version";
+
+// The create drawer block's own evidence folder (EV-21).
+const CREATE_CAPTURE_DIR =
+  process.env.AGENCIES_CREATE_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/agencies-create",
+  );
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -826,5 +838,209 @@ test.describe("@agencies-timezone", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-applied-1280");
+  });
+});
+
+// Settings › Agencies create drawer (EV-20, EV-21; step 17).
+//
+// The drawer the header's Create agency action and the empty state's Create
+// first agency action open. The first journey runs on "Browser No Agency
+// Version" (no agencies, no routes) and creates "North Coast Transit" with the
+// drawer's own schedule timezone field; the second runs on "Browser Agencies
+// Version" (North Coast Transit 5, Harbor Shuttle 2, Riverside Community
+// Transport 0 routes) and creates "Browser Coastal Ferry", which takes the
+// version zone instead of a field.
+//
+// Declared last on purpose: the second journey adds an agency to the version the
+// `@agencies-list` block reads earlier in the same file, and the suite runs one
+// worker with no retries, so the declared order is the seeding order (CR-10).
+//
+// Captures land in this block's own evidence folder as
+// `create-first-{1280,375}.png`, `create-validation-1280.png`,
+// `create-saved-1280.png`, `create-later-{1280,375}.png` and
+// `create-later-saved-1280.png`.
+test.describe("@agencies-create", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("creates the first agency with its own schedule timezone field", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const noAgencyId = await versionId(page, NO_AGENCY_VERSION);
+    await page.goto(`/gtfs/${noAgencyId}/settings/agencies`);
+    await page.waitForSelector("#agencies-empty");
+    await waitForLiveView(page);
+
+    const overlay = page.locator("#agency-drawer-overlay");
+    const timezone = page.locator("#agency-form_agency_timezone");
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#agencies-empty")).toContainText("Give your service a name");
+    await expect(page.locator("#agencies")).toHaveCount(0);
+
+    await page.click("#agencies-create-first");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-drawer-title")).toHaveText("Create agency");
+
+    // The first agency decides the version zone, so it is the one form with the
+    // timezone field — the shared control, with the accepted names behind it.
+    await expect(timezone).toBeVisible();
+    await expect(timezone).toHaveAttribute("list", "agency-form_agency_timezone-zones");
+    await expect(timezone).toHaveAttribute("autocomplete", "off");
+    await expect(
+      page.locator("#agency-form_agency_timezone-zones option[value='America/Chicago']"),
+    ).toHaveCount(1);
+    await expect(
+      page.locator("#agency-form_agency_timezone-zones option[value='Not/a_zone']"),
+    ).toHaveCount(0);
+    await expect(page.locator("#agency-zone-callout")).toHaveCount(0);
+
+    // Identity, then rider contact, in the prototype's order.
+    await expect(page.locator("#agency-form label .label")).toHaveText([
+      "Agency name",
+      "Website",
+      "Schedule timezone",
+      "Language (optional)",
+      "Phone (optional)",
+      "Email (optional)",
+      "Fare website (optional)",
+    ]);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-first-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#agency-save")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-first-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    // A refused value is marked on its field and creates nothing.
+    await page.fill("#agency-form_agency_name", "North Coast Transit");
+    await page.fill("#agency-form_agency_url", "www.example.com");
+    await page.fill("#agency-form_agency_timezone", "America/Chicago");
+    await page.click("#agency-save");
+
+    await expect(page.locator("#agency-form_agency_url-error")).toContainText(
+      "must be a full web address starting with https:// or http://",
+    );
+    await expect(page.locator("#agency-form_agency_url")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    await expect(page.locator("#agency-form_agency_url")).toBeFocused();
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-validation-1280");
+
+    // The corrected save creates the agency and reloads the page behind it.
+    await page.fill("#agency-form_agency_url", "https://northcoast.example");
+    await watchPendingState(page, "#agency-save");
+    await page.click("#agency-save");
+
+    const pendingStates = await readPendingStates(page);
+
+    expect(
+      pendingStates.some((state) => state.disabled && state.text === "Creating…"),
+    ).toBe(true);
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText("North Coast Transit created.");
+    await expect(page.locator("#agencies-empty")).toHaveCount(0);
+
+    const rows = page.locator("#agencies tr");
+
+    await expect(rows).toHaveCount(1);
+    await expect(rows.nth(0)).toContainText("North Coast Transit");
+    await expect(rows.nth(0)).toContainText("northcoast.example");
+    await expect(rows.nth(0).locator("td[data-label='Timezone']")).toContainText(
+      "America/Chicago",
+    );
+    await expect(page.locator("#agencies-create")).toBeVisible();
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-saved-1280");
+  });
+
+  test("creates a later agency with the version zone instead of a field", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const agenciesId = await versionId(page, AGENCIES_VERSION);
+    await page.goto(`/gtfs/${agenciesId}/settings/agencies`);
+    await page.waitForSelector("#agencies");
+    await waitForLiveView(page);
+
+    const overlay = page.locator("#agency-drawer-overlay");
+    const callout = page.locator("#agency-zone-callout");
+
+    await expect(page.locator("#agencies tr")).toHaveCount(3);
+    await page.click("#agencies-create");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-drawer-title")).toHaveText("Create agency");
+
+    // The version holds one zone, so a later agency is told which one it takes
+    // rather than being offered a second field (R2, AC-12).
+    await expect(page.locator("#agency-form_agency_timezone")).toHaveCount(0);
+    await expect(page.locator("#agency-form_agency_timezone-zones")).toHaveCount(0);
+    await expect(callout).toContainText("America/New_York");
+    await expect(callout).toContainText(
+      "Schedule timezone for this version. To update every agency together, use Change timezone on the agency list.",
+    );
+
+    await expect(page.locator("#agency-form label .label")).toHaveText([
+      "Agency name",
+      "Website",
+      "Language (optional)",
+      "Phone (optional)",
+      "Email (optional)",
+      "Fare website (optional)",
+    ]);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-later-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#agency-save")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-later-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await page.fill("#agency-form_agency_name", "Browser Coastal Ferry");
+    await page.fill("#agency-form_agency_url", "https://coastal.example");
+    await page.click("#agency-save");
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText(
+      "Browser Coastal Ferry created.",
+    );
+
+    const rows = page.locator("#agencies tr");
+
+    await expect(rows).toHaveCount(4);
+
+    // The list sorts by name, and the new agency's name sorts first.
+    await expect(rows.nth(0)).toContainText("Browser Coastal Ferry");
+    await expect(rows.nth(0)).toContainText("coastal.example");
+
+    const zones = await page
+      .locator("#agencies tr td[data-label='Timezone']")
+      .allInnerTexts();
+
+    expect(zones.map((cell) => cell.trim())).toEqual([
+      "America/New_York",
+      "America/New_York",
+      "America/New_York",
+      "America/New_York",
+    ]);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-later-saved-1280");
   });
 });

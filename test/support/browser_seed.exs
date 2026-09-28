@@ -2628,6 +2628,13 @@ case Accounts.register_first_admin(%{
         })
     end
 
+    # The empty agency list and the first-agency drawer need a version that has
+    # neither agencies nor routes, so nothing is backfilled and the create form
+    # is the one with the schedule timezone field (settings_agencies_feed.spec.js;
+    # EV-20, EV-21).
+    {:ok, no_agency_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser No Agency Version"})
+
     agencies_default_before
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
     |> Repo.update!()
@@ -2635,7 +2642,8 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: agencies version #{agencies_version.id} (NCT 5, HBR 2, RCT 0 routes, " <>
         "America/New_York), mixed timezone version #{mixed_timezone_version.id} " <>
-        "(America/New_York and America/Chicago), default kept as #{agencies_default_before.name}"
+        "(America/New_York and America/Chicago), no-agency version #{no_agency_version.id} " <>
+        "(no agencies, no routes), default kept as #{agencies_default_before.name}"
     )
 
   {:error, changeset} ->

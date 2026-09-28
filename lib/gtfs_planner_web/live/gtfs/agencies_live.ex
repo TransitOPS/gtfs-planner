@@ -32,6 +32,19 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   returns `:stale_review`, which shows the stale notice with Review again and
   writes nothing (AC-18).
 
+  Creation is the same drawer pattern in its simplest form: the header's Create
+  agency action and the empty state's Create first agency action open
+  `#agency-drawer`, whose form holds the prototype's two sections. Only the
+  version's first agency carries a schedule timezone field, because the first
+  agency decides the version's zone and every later one takes it (R2, AC-12);
+  validating and saving go through `FeedSettings.change_agency/2` and
+  `create_agency/2` (CR-1). A version that already has agencies but no single
+  valid zone cannot take another one: both actions open the timezone flow
+  instead, and the server refuses the same case with `:timezone_unresolved`
+  (AC-13). An unsaved form is protected like the Feed details drawer — the
+  discard question on every close route and the shared `unsaved_guard/1` hook on
+  reload (AC-6).
+
   Access follows the other Settings pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
   guard itself because a session alone grants no GTFS access. Version switching
@@ -41,8 +54,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.Gtfs.FeedSettingsComponents, only: [timezone_input: 1]
+  import GtfsPlannerWeb.Gtfs.FeedSettingsComponents,
+    only: [agency_form_fields: 1, timezone_input: 1, unsaved_guard: 1]
 
+  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
@@ -54,6 +69,14 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # refusal.
   @invalid_zone_error "Choose a valid timezone, such as America/New_York."
   @missing_ack_error "Confirm that the selected timezone is used by these schedules before applying it."
+  # A version that already has agencies keeps one zone, so a new agency can only
+  # be added once the version resolves it: the create actions open the timezone
+  # flow with this note instead of a form that could not be saved (AC-13).
+  @zone_needed_note "Choose one timezone before adding an agency."
+  # The form ids the save failure hands to the `FormErrorFocus` hook; the drawer
+  # markup spells the same ids, so the hook and the failure path agree.
+  @agency_form_id "agency-form"
+  @agency_form_error_id "agency-form-error"
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -71,6 +94,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
      |> assign(:zone_names, [])
      |> assign(:timezone_review, nil)
      |> assign(:timezone_ack_error, nil)
+     |> assign(:timezone_notice, nil)
+     |> assign(:agency_drawer, nil)
+     |> assign(:agency_form, nil)
+     |> assign(:agency_baseline, nil)
+     |> assign(:agency_dirty?, false)
+     |> assign(:agency_confirm_discard?, false)
      |> assign(:return_focus_id, nil)
      |> stream(:agencies, [])}
   end
@@ -133,15 +162,100 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # return focus.
   @impl true
   def handle_event("open_timezone", params, socket) do
-    {:noreply,
-     socket
-     |> assign(:timezone_drawer, :choose)
-     |> assign(:timezone_form, timezone_form(prefilled_zone(socket.assigns.health.zone)))
-     |> assign(:timezone_agencies, agencies_in_scope(socket))
-     |> assign(:timezone_review, nil)
-     |> assign(:timezone_ack_error, nil)
-     |> assign(:zone_names, DisplayClock.zone_names())
-     |> assign(:return_focus_id, params["opener_id"])}
+    {:noreply, open_timezone_drawer(socket, params["opener_id"], nil)}
+  end
+
+  # Both creation actions land here, and the version's zone decides what opens:
+  # with agencies already in the version but no single valid zone, a create could
+  # not be saved, so the timezone flow opens under its own note (AC-13). With no
+  # agencies the drawer's own timezone field is where that first zone comes from.
+  @impl true
+  def handle_event("open_create", params, socket) do
+    if socket.assigns.health.agency_count > 0 && unresolved_zone?(socket.assigns.health.zone) do
+      {:noreply, open_timezone_drawer(socket, params["opener_id"], @zone_needed_note)}
+    else
+      {:noreply, open_create_drawer(socket, params["opener_id"])}
+    end
+  end
+
+  # Validation on change goes through `FeedSettings.change_agency/2`, the same
+  # changeset the save uses, so a change the save would refuse is visible beside
+  # its field as the editor types it (R9, AC-12).
+  @impl true
+  def handle_event("validate_agency", %{"agency" => params}, socket) do
+    changeset = FeedSettings.change_agency(socket.assigns.agency_baseline, params)
+
+    {:noreply, assign_agency_draft(socket, changeset, :validate)}
+  end
+
+  def handle_event("validate_agency", _params, socket), do: {:noreply, socket}
+
+  # The one write path of the drawer: the context authorizes the actor, locks the
+  # published version, resolves the zone, chooses the ID and runs the backfill in
+  # one transaction (R1, R2, R6, R10, INV-2, INV-5).
+  @impl true
+  def handle_event("save_agency", %{"agency" => params}, socket) do
+    case FeedSettings.create_agency(audit_context(socket), params) do
+      {:ok, agency} ->
+        {:noreply,
+         socket
+         |> close_agency()
+         |> load_agencies()
+         |> put_flash(:info, "#{agency.agency_name} created.")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign_agency_draft(changeset)
+         |> push_event("focus_form_error", %{
+           form_id: @agency_form_id,
+           fallback_id: @agency_form_error_id
+         })}
+
+      # The version lost its single zone between opening the drawer and saving, so
+      # no agency was created. The page reloads first, because the drawer that
+      # opens next describes the version as it now is, not as it was when the
+      # form was opened.
+      {:error, :timezone_unresolved} ->
+        {:noreply,
+         socket
+         |> close_agency()
+         |> load_agencies()
+         |> open_timezone_drawer(nil, @zone_needed_note)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> close_agency()
+         |> put_flash(:error, "You no longer have editor access to this organization.")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> close_agency()
+         |> put_flash(:error, "This version is no longer available.")
+         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+    end
+  end
+
+  def handle_event("save_agency", _params, socket), do: {:noreply, socket}
+
+  # Every route out of the create drawer — Cancel, the close button and, through
+  # the `OverlayDialog` hook's dismiss control, Escape and the backdrop — lands on
+  # this event, so a changed draft is asked about exactly once (AC-6).
+  @impl true
+  def handle_event("close_agency_drawer", _params, socket) do
+    {:noreply, request_agency_close(socket)}
+  end
+
+  @impl true
+  def handle_event("cancel_discard_agency", _params, socket) do
+    {:noreply, assign(socket, :agency_confirm_discard?, false)}
+  end
+
+  @impl true
+  def handle_event("confirm_discard_agency", _params, socket) do
+    {:noreply, close_agency(socket)}
   end
 
   @impl true
@@ -266,6 +380,16 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
         <.empty_state id="agencies-empty" title="Give your service a name" class="mt-6">
           {empty_body(@health.unassigned_routes)}
+          <:action>
+            <.button
+              id="agencies-create-first"
+              class="min-h-11"
+              phx-click="open_create"
+              phx-value-opener_id="agencies-create-first"
+            >
+              Create first agency
+            </.button>
+          </:action>
         </.empty_state>
 
         <.support_note id="agencies-support-note">
@@ -282,6 +406,16 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         <.header>
           Agencies
           <:subtitle>{subtitle()}</:subtitle>
+          <:actions>
+            <.button
+              id="agencies-create"
+              class="min-h-11"
+              phx-click="open_create"
+              phx-value-opener_id="agencies-create"
+            >
+              Create agency
+            </.button>
+          </:actions>
         </.header>
 
         <%!-- `callout/1` spreads global attributes onto its own class, so the margin
@@ -401,11 +535,47 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         agencies={@timezone_agencies}
         review={@timezone_review}
         ack_error={@timezone_ack_error}
+        notice={@timezone_notice}
         resolved?={resolved_zone?(@health.zone)}
         return_focus_id={@return_focus_id}
         version={@current_gtfs_version}
         organization={@current_organization}
       />
+
+      <.agency_drawer
+        mode={@agency_drawer}
+        form={@agency_form}
+        first_agency?={@health.agency_count == 0}
+        zone={zone_name(@health.zone)}
+        zone_names={@zone_names}
+        dirty?={@agency_dirty?}
+        return_focus_id={@return_focus_id}
+        version={@current_gtfs_version}
+        organization={@current_organization}
+      />
+
+      <%!--
+        The discard question is the only exit from a changed draft, so the create
+        drawer stays open and visible behind it. Escape belongs to the dialog while
+        it is up: the `OverlayDialog` hook turns it into a click on "Keep editing".
+        `described_by` names `.confirm_dialog`'s own `#agency-discard-body` wrapper,
+        so the paragraph inside it carries no id of its own.
+      --%>
+      <.confirm_dialog
+        :if={@agency_confirm_discard?}
+        id="agency-discard"
+        open={true}
+        title="Discard unsaved changes?"
+        confirm_label="Discard changes"
+        pending_label="Discarding…"
+        cancel_label="Keep editing"
+        on_confirm="confirm_discard_agency"
+        on_cancel="cancel_discard_agency"
+        confirm_variant="danger"
+        described_by="agency-discard-body"
+      >
+        <p>Your entries will be lost. No agency is created.</p>
+      </.confirm_dialog>
     </Layouts.app>
     """
   end
@@ -420,6 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   attr :agencies, :list, required: true
   attr :review, :any, required: true
   attr :ack_error, :string, default: nil
+  attr :notice, :string, default: nil
   attr :resolved?, :boolean, required: true
   attr :return_focus_id, :string, default: nil
   attr :version, :any, required: true
@@ -440,6 +611,16 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         </p>
 
         <%= if @mode == :choose do %>
+          <%!-- A create action that could not open its own form leaves the reason
+          here, so the editor reads why the timezone flow opened instead (AC-13). --%>
+          <.callout
+            :if={@notice}
+            id="agency-timezone-notice"
+            kind="info"
+            title={@notice}
+            class="mt-4"
+          />
+
           <p class="mt-2 text-sm text-base-content/70">
             Every agency in this version must use one schedule timezone. Review the affected agencies
             before applying a change.
@@ -627,6 +808,96 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     """
   end
 
+  # The create drawer is the prototype's agency form: Agency identity, then
+  # Rider contact, in one surface whose fields step 18's edit drawer reuses
+  # unchanged. Only the first agency carries the schedule timezone field — a
+  # later agency shows the zone the version already holds and takes it on save
+  # (R2, AC-12) — and the footer's one write is `create_agency/2`.
+  attr :mode, :any, required: true
+  attr :form, :any, required: true
+  attr :first_agency?, :boolean, required: true
+  attr :zone, :string, default: nil
+  attr :zone_names, :list, required: true
+  attr :dirty?, :boolean, required: true
+  attr :return_focus_id, :string, default: nil
+  attr :version, :any, required: true
+  attr :organization, :any, required: true
+
+  defp agency_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="agency-drawer"
+      open={@mode != nil}
+      on_close="close_agency_drawer"
+      title={agency_drawer_title(@mode)}
+      return_focus_id={@return_focus_id}
+    >
+      <:header_actions>
+        <span
+          :if={@dirty?}
+          id="agency-unsaved"
+          class="badge badge-warning badge-sm whitespace-nowrap"
+        >
+          Unsaved changes
+        </span>
+      </:header_actions>
+
+      <div :if={@mode} id="agency-form-panel" phx-hook="FormErrorFocus">
+        <.unsaved_guard id="agency-unsaved-guard" dirty={@dirty?} />
+
+        <p id="agency-drawer-scope" class="text-xs text-base-content/70">
+          {scope_line(@version, @organization)}
+        </p>
+
+        <p class="mt-2 text-sm text-base-content/70">
+          Use the public name riders recognize. Optional fields are marked.
+        </p>
+
+        <.form
+          for={@form}
+          id="agency-form"
+          novalidate
+          phx-change="validate_agency"
+          phx-submit="save_agency"
+          class="mt-4"
+        >
+          <.callout
+            :if={save_failed?(@form)}
+            id="agency-form-error"
+            kind="error"
+            title="Nothing was created. Check the highlighted fields."
+            tabindex="-1"
+            class="mb-4"
+          />
+
+          <.agency_form_fields
+            form={@form}
+            first_agency?={@first_agency?}
+            zone={@zone}
+            zone_names={@zone_names}
+          />
+
+          <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+            <.button
+              id="agency-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_agency_drawer"
+            >
+              Cancel
+            </.button>
+
+            <.button id="agency-save" type="submit" class="min-h-11" phx-disable-with="Creating…">
+              Create agency
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -733,6 +1004,97 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp unassigned_routes_sentence(1), do: "1 route has no agency yet."
   defp unassigned_routes_sentence(count), do: "#{count} routes have no agency yet."
 
+  # One entry point for both actions that open the timezone drawer: the band and
+  # the callout themselves, and a create action that a version's unresolved zone
+  # sends here instead of opening a form it could not save (AC-13).
+  defp open_timezone_drawer(socket, opener_id, notice) do
+    socket
+    |> assign(:timezone_drawer, :choose)
+    |> assign(:timezone_form, timezone_form(prefilled_zone(socket.assigns.health.zone)))
+    |> assign(:timezone_agencies, agencies_in_scope(socket))
+    |> assign(:timezone_review, nil)
+    |> assign(:timezone_ack_error, nil)
+    |> assign(:timezone_notice, notice)
+    |> assign(:zone_names, DisplayClock.zone_names())
+    |> assign(:return_focus_id, opener_id)
+  end
+
+  defp close_timezone(socket) do
+    socket
+    |> assign(:timezone_drawer, nil)
+    |> assign(:timezone_review, nil)
+    |> assign(:timezone_ack_error, nil)
+    |> assign(:timezone_notice, nil)
+    |> assign(:timezone_agencies, [])
+    |> assign(:zone_names, [])
+  end
+
+  # The create form is built on an empty agency carrying the scope, so the
+  # changeset the drawer validates with is the one the save would insert, and the
+  # zone catalog is read only for the first agency: that is the one case with a
+  # timezone field to suggest names for (R2).
+  defp open_create_drawer(socket, opener_id) do
+    baseline = %Agency{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id
+    }
+
+    first_agency? = socket.assigns.health.agency_count == 0
+
+    socket
+    |> assign(:agency_baseline, baseline)
+    |> assign(:agency_drawer, :create)
+    |> assign(:agency_confirm_discard?, false)
+    |> assign(:zone_names, if(first_agency?, do: DisplayClock.zone_names(), else: []))
+    |> assign(:return_focus_id, opener_id)
+    |> assign_agency_draft(FeedSettings.change_agency(baseline, %{}))
+  end
+
+  # The form, the action it reports and the dirty state always move together, so
+  # one helper binds them: a handler cannot show a draft the guard would ignore,
+  # or guard a form that shows nothing. `action: :validate` marks the round trip
+  # as a keystroke, so `used_input?/1` shows an error beside the field the editor
+  # has touched and the create-failure callout stays for saves only.
+  defp assign_agency_draft(socket, changeset, action \\ nil) do
+    changeset = if action, do: Map.put(changeset, :action, action), else: changeset
+
+    socket
+    |> assign(:agency_form, to_form(changeset, as: :agency, id: @agency_form_id))
+    |> assign(:agency_dirty?, changeset.changes != %{})
+  end
+
+  # A changed draft is never discarded by accident: every close route lands
+  # here, and only "Discard changes" reaches `close_agency/1`.
+  defp request_agency_close(%{assigns: %{agency_dirty?: true}} = socket),
+    do: assign(socket, :agency_confirm_discard?, true)
+
+  defp request_agency_close(socket), do: close_agency(socket)
+
+  defp close_agency(socket) do
+    socket
+    |> assign(:agency_drawer, nil)
+    |> assign(:agency_form, nil)
+    |> assign(:agency_baseline, nil)
+    |> assign(:agency_dirty?, false)
+    |> assign(:agency_confirm_discard?, false)
+    |> assign(:zone_names, [])
+  end
+
+  # A failed save is the only state that earns the view-level banner. Validation
+  # on change marks its own fields and must not shout about a save never attempted.
+  defp save_failed?(%Phoenix.HTML.Form{source: %Ecto.Changeset{action: action, errors: errors}})
+       when action in [:update, :insert] and errors != [],
+       do: true
+
+  defp save_failed?(_form), do: false
+
+  # Step 18's edit mode names the agency it edits; the create drawer this step
+  # owns has one title, so the clause stays total over the mode.
+  defp agency_drawer_title(_mode), do: "Create agency"
+
+  defp zone_name({:ok, zone}), do: zone
+  defp zone_name({:unresolved, _reason}), do: nil
+
   # One review → apply pair, and the drawer is the only caller: a refused review
   # stays on the zone field, and every scope refusal closes the drawer because
   # there is no version left to change.
@@ -776,15 +1138,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          |> put_flash(:error, "This version is no longer available.")
          |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
     end
-  end
-
-  defp close_timezone(socket) do
-    socket
-    |> assign(:timezone_drawer, nil)
-    |> assign(:timezone_review, nil)
-    |> assign(:timezone_ack_error, nil)
-    |> assign(:timezone_agencies, [])
-    |> assign(:zone_names, [])
   end
 
   # The zone is one free-text field the context validates in one place, so the

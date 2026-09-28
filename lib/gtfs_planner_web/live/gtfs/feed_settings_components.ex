@@ -22,6 +22,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   `timezone_input/1` renders the schedule timezone field with the datalist of
   names PostgreSQL accepts, so the version timezone is chosen from one list in
   both the timezone drawer and the first-agency drawer.
+
+  `agency_form_fields/1` renders the agency drawer's two sections — Agency
+  identity and Rider contact — in the prototype's field order. It owns no
+  events and no state, so the create drawer, the edit drawer and the onboarding
+  drawer describe one agency the same way; only the version's first agency
+  carries a timezone field, because every later agency takes the zone the
+  version already holds (R2).
   """
 
   use GtfsPlannerWeb, :html
@@ -124,6 +131,70 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
     <datalist id={"#{@id}-zones"}>
       <option :for={zone <- @zones} value={zone}></option>
     </datalist>
+    """
+  end
+
+  @doc """
+  Renders the agency identity and rider contact fields for `form`.
+
+  `first_agency?: true` shows the schedule timezone field, because the first
+  agency decides the version's zone; every other agency shows `zone` in an info
+  callout instead, so a create cannot submit a second zone (R2, AC-12).
+  `zone_names` is `DisplayClock.zone_names/0`. The optional fields carry their
+  "(optional)" marker in the visible label, and the form's own id prefixes the
+  generated field ids.
+  """
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :first_agency?, :boolean, required: true
+  attr :zone, :string, default: nil
+  attr :zone_names, :list, default: []
+
+  def agency_form_fields(assigns) do
+    ~H"""
+    <fieldset class="mt-6 border-t border-base-300 pt-5 first:mt-0 first:border-t-0 first:pt-0">
+      <legend class="pr-4 text-base font-semibold text-base-content">Agency identity</legend>
+
+      <div class="mt-4">
+        <.input field={@form[:agency_name]} type="text" label="Agency name" />
+        <.input field={@form[:agency_url]} type="url" label="Website" />
+
+        <.timezone_input
+          :if={@first_agency?}
+          field={@form[:agency_timezone]}
+          zones={@zone_names}
+          id={@form[:agency_timezone].id}
+        />
+
+        <div :if={!@first_agency?} class="mb-2">
+          <.callout
+            id="agency-zone-callout"
+            kind="info"
+            title={@zone}
+          >
+            Schedule timezone for this version. To update every agency together, use
+            Change timezone on the agency list.
+          </.callout>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="mt-6 border-t border-base-300 pt-5">
+      <legend class="pr-4 text-base font-semibold text-base-content">Rider contact</legend>
+
+      <div class="mt-4">
+        <.language_select field={@form[:agency_lang]} label="Language" optional />
+
+        <.input
+          field={@form[:agency_phone]}
+          type="tel"
+          label="Phone (optional)"
+          help="Keep the local formatting riders recognize."
+        />
+
+        <.input field={@form[:agency_email]} type="email" label="Email (optional)" />
+        <.input field={@form[:agency_fare_url]} type="url" label="Fare website (optional)" />
+      </div>
+    </fieldset>
     """
   end
 
