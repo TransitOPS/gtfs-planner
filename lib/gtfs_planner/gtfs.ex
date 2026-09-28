@@ -2003,6 +2003,12 @@ defmodule GtfsPlanner.Gtfs do
          expected_fingerprint,
          %AuditContext{} = audit_ctx
        ) do
+    # Reviewed alignment rewrites child stop geometry, a combination input, so the scoped version
+    # share lock is taken before the stop-level `FOR UPDATE`, the fingerprint comparison and every
+    # child update. The surrounding serializable transaction and its whole-transaction retry stay
+    # exactly as they were.
+    Versions.lock_for_input_write!(audit_ctx.organization_id, audit_ctx.gtfs_version_id)
+
     case load_stop_level_for_update_scoped(stop_level_id, audit_ctx) do
       nil ->
         Repo.rollback(:not_found)
@@ -2125,15 +2131,19 @@ defmodule GtfsPlanner.Gtfs do
           | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()} | term()}
   def apply_alignment_to_child_stops(%StopLevel{} = stop_level, image_w, image_h) do
     with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h) do
-      persist_derived_coords(derived)
+      persist_derived_coords(derived, stop_level)
     end
   end
 
-  defp persist_derived_coords([]), do: {:ok, 0}
+  defp persist_derived_coords([], _stop_level), do: {:ok, 0}
 
-  defp persist_derived_coords(derived) when is_list(derived) do
+  defp persist_derived_coords(derived, %StopLevel{} = stop_level) when is_list(derived) do
     transaction_result =
       Repo.transaction(fn ->
+        # Derived child coordinates are a reviewed combination input, so the version share lock is
+        # the first statement of this transaction, before the child stop rows are read or updated.
+        Versions.lock_for_input_write!(stop_level.organization_id, stop_level.gtfs_version_id)
+
         Enum.map(derived, fn entry ->
           case update_derived_stop_coords(entry) do
             {:ok, updated_stop} -> updated_stop
@@ -5113,6 +5123,7 @@ defmodule GtfsPlanner.Gtfs do
 
         multi =
           Ecto.Multi.new()
+          |> lock_input_write_multi(organization_id, gtfs_version_id)
           |> Ecto.Multi.run(:rename_stops_to_temp, fn repo, _changes ->
             {:ok,
              update_stop_field_values(
@@ -6390,6 +6401,7 @@ defmodule GtfsPlanner.Gtfs do
 
   defp rollback_multi(log, audit_ctx, entity, update_attrs) do
     Ecto.Multi.new()
+    |> lock_input_write_multi(log.organization_id, log.gtfs_version_id)
     |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
       update_entity_without_broadcast(entity, update_attrs)
     end)

@@ -3,7 +3,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   # must take the scoped version share lock before their insert, so a calendar change that
   # owns the same version row `FOR UPDATE` cannot commit a reviewed input between a review
   # load and its apply. A staging scope keeps writing because `Versions.lock_for_input_write!/2`
-  # is a scoped row lock, not an authorization check.
+  # is a scoped row lock, not an authorization check. The same boundary covers the named
+  # schedule, pattern, stop/parent, bulk geometry/naming/rollback and published pathway-import
+  # writers, whose contention cases live in the later describes below.
   #
   # `async: false` plus `Sandbox.unboxed_run/2` gives every participant its own committing
   # PostgreSQL connection. Contention is proven by polling `pg_blocking_pids/1` for the
@@ -31,11 +33,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Import.{ChangeDecision, ChangeRun, ChangeRuns}
+  alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
@@ -569,6 +574,312 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end
   end
 
+  describe "bulk stop writers" do
+    test "a reviewed alignment and a derived child-stop alignment wait behind the version lock",
+         %{supervisor: supervisor} do
+      scope = seed_scope("bulk-alignment")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      reviewed = seed_alignment_scope(scope, "A", %{x: 50, y: 40}, "1.0", "2.0")
+      derived = seed_alignment_scope(scope, "B", %{x: 60, y: 40}, "3.0", "4.0")
+
+      assert {:ok, aligned_derived} =
+               unboxed(fn ->
+                 Gtfs.update_stop_level_alignment(derived.stop_level, alignment_attrs())
+               end)
+
+      audit = bulk_audit(scope, reviewed.station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {reviewed_writer, reviewed_backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.save_and_apply_stop_level_alignment(
+            reviewed.stop_level.id,
+            reviewed.attrs,
+            1000,
+            800,
+            audit
+          )
+        end)
+
+      {derived_writer, derived_backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.apply_alignment_to_child_stops(aligned_derived, 1000, 800)
+        end)
+
+      send(reviewed_writer.pid, :go)
+      send(derived_writer.pid, :go)
+
+      assert_blocked_by(reviewed_backend, holder_backend)
+      assert_blocked_by(derived_backend, holder_backend)
+
+      # While the version is exclusively owned, neither child stop's projected geometry is
+      # visible and the reviewed stop level still carries no saved alignment.
+      assert coordinates?(stop_coordinates(scope, "ALIGN_CHILD_A"), "1.0", "2.0")
+      assert coordinates?(stop_coordinates(scope, "ALIGN_CHILD_B"), "3.0", "4.0")
+      refute stop_level_aligned?(reviewed.stop_level.id)
+      assert stop_change_logs(scope, reviewed.child.id) == []
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok,
+              %{
+                apply_result: %{
+                  updated_stop_count: 1,
+                  unchanged_count: 0,
+                  unplaced_count: 0
+                }
+              }} = Task.await(reviewed_writer, @collect_timeout)
+
+      assert {:ok, 1} = Task.await(derived_writer, @collect_timeout)
+
+      refute coordinates?(stop_coordinates(scope, "ALIGN_CHILD_A"), "1.0", "2.0")
+      refute coordinates?(stop_coordinates(scope, "ALIGN_CHILD_B"), "3.0", "4.0")
+      assert stop_level_aligned?(reviewed.stop_level.id)
+
+      assert [%ChangeLog{entity_type: "stop", action: "updated"}] =
+               stop_change_logs(scope, reviewed.child.id)
+    end
+
+    test "station naming waits behind the version lock and cannot commit renamed IDs",
+         %{supervisor: supervisor} do
+      scope = seed_scope("bulk-naming")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      station =
+        unboxed(fn ->
+          stop_fixture(scope.organization.id, scope.version.id, %{
+            stop_id: "NAMING_STATION",
+            stop_name: "Naming Station",
+            location_type: 1
+          })
+        end)
+
+      unboxed(fn ->
+        stop_fixture(scope.organization.id, scope.version.id, %{
+          stop_id: "NAMING_PLATFORM",
+          stop_name: "Platform 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "ground"
+        })
+      end)
+
+      # The exact renamed ID comes from the real preview rather than from a naming convention
+      # repeated in the test.
+      assert {:ok, preview} =
+               unboxed(fn ->
+                 Gtfs.preview_station_naming(
+                   scope.organization.id,
+                   scope.version.id,
+                   station.stop_id
+                 )
+               end)
+
+      assert [%{old_id: "NAMING_PLATFORM", new_id: renamed_id}] = preview.rows
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {writer, backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.apply_station_naming(
+            scope.organization.id,
+            scope.version.id,
+            station.stop_id
+          )
+        end)
+
+      send(writer.pid, :go)
+      assert_blocked_by(backend, holder_backend)
+
+      # No stop ID and no referencing row was rewritten while the version is exclusively owned.
+      assert stop_ids(scope) == ["NAMING_PLATFORM", "NAMING_STATION"]
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %{renamed_stops: 1, updated_pathways: 0, updated_references: 0}} =
+               Task.await(writer, @collect_timeout)
+
+      assert stop_ids(scope) == Enum.sort(["NAMING_STATION", renamed_id])
+    end
+
+    test "a stop rollback waits behind the version lock and preserves the rollback audit",
+         %{supervisor: supervisor} do
+      scope = seed_scope("bulk-rollback")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      audit = bulk_audit(scope, "ROLLBACK_STATION")
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
+
+      stop =
+        unboxed(fn ->
+          stop_fixture(scope.organization.id, scope.version.id, %{
+            stop_id: "ROLLBACK_STOP",
+            stop_name: "Original"
+          })
+        end)
+
+      unboxed(fn ->
+        Gtfs.record_change(audit, :stop, stop, "updated", %{stop_name: "Changed"})
+        Gtfs.update_stop(stop, %{stop_name: "Changed"})
+      end)
+
+      log = unboxed(fn -> Repo.one!(stop_change_log_query(scope, stop.id, "updated")) end)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {writer, backend} =
+        start_writer(supervisor, fn -> Gtfs.rollback_entity(log, audit) end)
+
+      send(writer.pid, :go)
+      assert_blocked_by(backend, holder_backend)
+
+      # The stop name and the rollback journal are untouched while the version is owned.
+      assert stop_name(scope, "ROLLBACK_STOP") == "Changed"
+      assert stop_change_logs(scope, stop.id, "rolled_back") == []
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %Stop{stop_name: "Original", stop_id: "ROLLBACK_STOP"}} =
+               Task.await(writer, @collect_timeout)
+
+      assert stop_name(scope, "ROLLBACK_STOP") == "Original"
+
+      assert [%ChangeLog{rolled_back_to_log_id: rolled_back_to}] =
+               stop_change_logs(scope, stop.id, "rolled_back")
+
+      assert rolled_back_to == log.id
+    end
+
+    test "a published pathway-import stop decision waits, then applies with its audit and lease fence",
+         %{supervisor: supervisor} do
+      scope = seed_scope("bulk-import-decision")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      run =
+        seed_import_run(scope, [
+          import_decision("stop:WAITING_STOP", "WAITING_STOP"),
+          import_decision("stop:LEASE_STOP", "LEASE_STOP")
+        ])
+
+      audit = import_audit_context(run)
+
+      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {writer, backend} =
+        start_writer(supervisor, fn ->
+          ChangeRuns.apply_decision(
+            scope.organization.id,
+            run.run.id,
+            "stop:WAITING_STOP",
+            run.generation,
+            run.token,
+            audit
+          )
+        end)
+
+      send(writer.pid, :go)
+      assert_blocked_by(backend, holder_backend)
+
+      # The entity row, the audit log, the decision row and the run progress are untouched while
+      # the version is exclusively owned.
+      assert stop_ids(scope) == []
+      assert change_logs(scope) == []
+      assert import_decision_status("stop:WAITING_STOP") == :approved
+      assert import_run_progress(run.run.id) == 0
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %ChangeDecision{status: :applied}} = Task.await(writer, @collect_timeout)
+
+      assert stop_ids(scope) == ["WAITING_STOP"]
+      assert import_run_progress(run.run.id) == 1
+
+      assert [
+               %ChangeLog{
+                 entity_type: "stop",
+                 action: "created",
+                 station_stop_id: "WAITING_STOP"
+               }
+             ] = change_logs(scope)
+
+      # The lease fence is unchanged by the new lock: a token that is not the current lease still
+      # refuses the decision and writes nothing.
+      assert {:error, :lease_lost} =
+               unboxed(fn ->
+                 ChangeRuns.apply_decision(
+                   scope.organization.id,
+                   run.run.id,
+                   "stop:LEASE_STOP",
+                   run.generation,
+                   run.token <> "-stale",
+                   audit
+                 )
+               end)
+
+      assert stop_ids(scope) == ["WAITING_STOP"]
+      assert import_decision_status("stop:LEASE_STOP") == :approved
+      assert import_run_progress(run.run.id) == 1
+    end
+
+    test "a full import writes its unpublished target and keeps the publication lifecycle",
+         %{supervisor: supervisor} do
+      scope = seed_scope("bulk-import-target")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      {holder, _holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      # The import owns its own unpublished target; the published version a combination would own
+      # is a different row, so an import-scoped write still commits while it is locked exclusively.
+      assert {:ok, %Stop{stop_id: "IMPORTED_STOP"}} =
+               unboxed(fn ->
+                 Gtfs.import_create_stop(
+                   stop_attrs(scope, "IMPORTED_STOP", %{
+                     gtfs_version_id: scope.staging_version.id
+                   })
+                 )
+               end)
+
+      assert {:ok, %GtfsVersion{publication_status: "importing", published_at: nil}} =
+               unboxed(fn ->
+                 Versions.claim_staging_gtfs_version(
+                   scope.organization.id,
+                   scope.staging_version.id
+                 )
+               end)
+
+      assert {:ok, %GtfsVersion{publication_status: "published", published_at: published_at}} =
+               unboxed(fn ->
+                 Versions.publish_importing_gtfs_version(
+                   scope.organization.id,
+                   scope.staging_version.id
+                 )
+               end)
+
+      assert %DateTime{} = published_at
+
+      send(holder.pid, :release)
+      assert Task.await(holder, @collect_timeout) == {:error, :released}
+
+      # The combination-owned published version is untouched, and the imported stop belongs to the
+      # import target alone.
+      assert %GtfsVersion{publication_status: "published"} =
+               unboxed(fn -> Repo.get!(GtfsVersion, scope.version.id) end)
+
+      assert stop_ids_for_version(scope.organization.id, scope.version.id) == []
+
+      assert stop_ids_for_version(scope.organization.id, scope.staging_version.id) == [
+               "IMPORTED_STOP"
+             ]
+    end
+  end
+
   # Releases the writer into real contention for the version row while an independent
   # session owns it exclusively, and verifies the writer really waits on that session.
   defp hold_exclusive_version(scope, supervisor) do
@@ -850,21 +1161,28 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end)
   end
 
-  defp cleanup(organization_ids) do
+  defp cleanup(organization_ids, user_ids \\ []) do
     unboxed(fn ->
       Repo.delete_all(from(t in Transfer, where: t.organization_id in ^organization_ids))
       Repo.delete_all(from(p in Pathway, where: p.organization_id in ^organization_ids))
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(t in Trip, where: t.organization_id in ^organization_ids))
       Repo.delete_all(from(s in StopTime, where: s.organization_id in ^organization_ids))
+      Repo.delete_all(from(sl in StopLevel, where: sl.organization_id in ^organization_ids))
+      Repo.delete_all(from(l in Level, where: l.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
+      Repo.delete_all(from(m in UserOrgMembership, where: m.user_id in ^user_ids))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      Repo.delete_all(from(u in User, where: u.id in ^user_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
       refute Repo.exists?(from(s in Stop, where: s.organization_id in ^organization_ids))
       refute Repo.exists?(from(t in Trip, where: t.organization_id in ^organization_ids))
+      refute Repo.exists?(from(sl in StopLevel, where: sl.organization_id in ^organization_ids))
+      refute Repo.exists?(from(l in Level, where: l.organization_id in ^organization_ids))
       refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))
+      refute Repo.exists?(from(u in User, where: u.id in ^user_ids))
       :ok
     end)
   end
@@ -1020,6 +1338,225 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end)
   rescue
     error in Postgrex.Error -> {:error, error}
+  end
+
+  # -- Bulk stop writer fixtures and probes ----------------------------------
+
+  # One station on an active level with a single child stop carrying a diagram coordinate, plus
+  # the reviewed alignment attrs whose fingerprint came from the real preview before any lock.
+  defp seed_alignment_scope(scope, suffix, diagram_coordinate, lat, lon) do
+    unboxed(fn ->
+      station =
+        stop_fixture(scope.organization.id, scope.version.id, %{
+          stop_id: "ALIGN_STATION_#{suffix}",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(scope.organization.id, scope.version.id, %{
+          level_id: "L_ALIGN_#{suffix}",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: scope.organization.id,
+          gtfs_version_id: scope.version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      child =
+        stop_fixture(scope.organization.id, scope.version.id, %{
+          stop_id: "ALIGN_CHILD_#{suffix}",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: diagram_coordinate,
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon)
+        })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, alignment_attrs(), 1000, 800)
+
+      %{
+        station: station,
+        level: level,
+        stop_level: stop_level,
+        child: child,
+        attrs: Map.put(alignment_attrs(), :fingerprint, review.fingerprint)
+      }
+    end)
+  end
+
+  defp alignment_attrs do
+    %{
+      floorplan_center_lat: 40.7128,
+      floorplan_center_lon: -74.006,
+      floorplan_scale_mpp: 0.25,
+      floorplan_rotation_deg: 0.0
+    }
+  end
+
+  defp bulk_audit(scope, station_stop_id) do
+    actor =
+      unboxed(fn ->
+        user_fixture(%{email: "bulk-stop-#{System.system_time(:microsecond)}@example.com"})
+      end)
+
+    %AuditContext{
+      organization_id: scope.organization.id,
+      gtfs_version_id: scope.version.id,
+      station_stop_id: station_stop_id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+  end
+
+  defp stop_level_aligned?(stop_level_id) do
+    unboxed(fn ->
+      from(sl in StopLevel, where: sl.id == ^stop_level_id, select: sl.floorplan_center_lat)
+      |> Repo.one()
+    end) != nil
+  end
+
+  defp stop_name(scope, stop_id) do
+    unboxed(fn ->
+      from(s in Stop,
+        where:
+          s.organization_id == ^scope.organization.id and
+            s.gtfs_version_id == ^scope.version.id and s.stop_id == ^stop_id,
+        select: s.stop_name
+      )
+      |> Repo.one()
+    end)
+  end
+
+  defp stop_ids_for_version(organization_id, gtfs_version_id) do
+    unboxed(fn ->
+      from(s in Stop,
+        where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+        order_by: s.stop_id,
+        select: s.stop_id
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp change_logs(scope) do
+    unboxed(fn ->
+      from(l in ChangeLog,
+        where:
+          l.organization_id == ^scope.organization.id and
+            l.gtfs_version_id == ^scope.version.id,
+        order_by: [asc: l.inserted_at],
+        select: l
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp stop_change_logs(scope, stop_row_id), do: stop_change_logs(scope, stop_row_id, nil)
+
+  defp stop_change_logs(scope, stop_row_id, action) do
+    unboxed(fn -> Repo.all(stop_change_log_query(scope, stop_row_id, action)) end)
+  end
+
+  defp stop_change_log_query(scope, stop_row_id, action) do
+    query =
+      from(l in ChangeLog,
+        where:
+          l.organization_id == ^scope.organization.id and
+            l.gtfs_version_id == ^scope.version.id and l.entity_id == ^stop_row_id,
+        order_by: [asc: l.inserted_at]
+      )
+
+    if action, do: where(query, [l], l.action == ^action), else: query
+  end
+
+  # One approved stop decision on one fenced apply attempt, as the real worker would hold it.
+  defp seed_import_run(scope, decisions) do
+    unboxed(fn ->
+      actor = %{
+        id: Ecto.UUID.generate(),
+        email: "bulk-stop-#{System.unique_integer([:positive])}@example.test"
+      }
+
+      {:ok, run} =
+        ChangeRuns.create_pending_compute(scope.organization.id, scope.version.id, actor, [])
+
+      {:ok, _computing, compute_generation, compute_token} =
+        ChangeRuns.claim(scope.organization.id, run.id, :compute)
+
+      {:ok, review} =
+        ChangeRuns.persist_review(
+          scope.organization.id,
+          run.id,
+          compute_generation,
+          compute_token,
+          %{decisions: decisions, summary: %{applicable: length(decisions)}, diagnostics: []}
+        )
+
+      Enum.each(decisions, fn decision ->
+        {:ok, _approved} =
+          ChangeRuns.set_decision_status(
+            scope.organization.id,
+            review.id,
+            decision.decision_id,
+            :approved
+          )
+      end)
+
+      {:ok, pending_apply} = ChangeRuns.request_apply(scope.organization.id, review.id)
+
+      {:ok, claimed, generation, token} =
+        ChangeRuns.claim(scope.organization.id, pending_apply.id, :apply)
+
+      %{run: claimed, generation: generation, token: token}
+    end)
+  end
+
+  defp import_decision(decision_id, stop_id) do
+    %{
+      serializer_version: 1,
+      decision_id: decision_id,
+      entity_type: :stop,
+      action: :add,
+      status: :pending,
+      natural_key: stop_id,
+      current_values: %{},
+      uploaded_values: %{
+        stop_name: "Imported #{stop_id}",
+        stop_lat: 40.0,
+        stop_lon: -70.0
+      },
+      changed_fields: [],
+      dependency_keys: [],
+      current_fingerprint: nil,
+      user_edited: false
+    }
+  end
+
+  defp import_audit_context(seeded) do
+    %AuditContext{
+      organization_id: seeded.run.organization_id,
+      gtfs_version_id: seeded.run.gtfs_version_id,
+      station_stop_id: nil,
+      actor_id: seeded.run.actor_id,
+      actor_email: seeded.run.actor_email
+    }
+  end
+
+  defp import_decision_status(decision_id) do
+    unboxed(fn ->
+      from(d in ChangeDecision, where: d.decision_id == ^decision_id, select: d.status)
+      |> Repo.one()
+    end)
+  end
+
+  defp import_run_progress(run_id) do
+    unboxed(fn -> Repo.get!(ChangeRun, run_id).progress_current end)
   end
 
   defp cleanup_schedule_scope(scope) do

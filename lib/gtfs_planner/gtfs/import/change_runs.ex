@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   alias GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer
   alias GtfsPlanner.Gtfs.Import.ChangeRun
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
   @type actor :: %{required(:id) => Ecto.UUID.t(), required(:email) => String.t()}
@@ -387,7 +388,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          opts
        ) do
     transaction_with_broadcast(fn ->
-      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+      with gtfs_version_id when is_binary(gtfs_version_id) <-
+             run_version_scope(organization_id, run_id),
+           _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
+           {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
            :ok <- valid_audit_context?(run, context),
            %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
         apply_or_return_decision(run, decision, generation, token, context, opts)
@@ -397,6 +401,19 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+  end
+
+  # Applying one decision publishes stop/pathway/level rows of the run's version, a combination
+  # input. The run scope is read without a lock first, then the scoped version share lock is taken
+  # before the fenced run row, the decision row and the entity row, so a concurrent calendar
+  # mutation cannot commit between the fingerprint check and the mutation. `fenced_run/5` then
+  # rechecks the run row and its lease after the lock wait.
+  defp run_version_scope(organization_id, run_id) do
+    from(r in ChangeRun,
+      where: r.id == ^run_id and r.organization_id == ^organization_id,
+      select: r.gtfs_version_id
+    )
+    |> Repo.one()
   end
 
   defp apply_or_return_decision(_run, %ChangeDecision{status: :applied} = decision, _, _, _, _),
