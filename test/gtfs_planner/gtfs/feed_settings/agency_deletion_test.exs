@@ -481,8 +481,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyDeletionTest do
         agency_id: "A"
       })
 
-      charlie =
-        agency_fixture(context.organization.id, context.version.id, agency_attrs("C", "Charlie"))
+      agency_fixture(context.organization.id, context.version.id, agency_attrs("C", "Charlie"))
 
       assert {:ok, review} =
                FeedSettings.review_agency_deletion(
@@ -502,8 +501,47 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyDeletionTest do
                  review.fingerprint
                )
 
+      # Charlie keeps two agencies in scope, so the last-agency rule cannot be what
+      # refuses: the vanished receiving agency refuses, in `deletion_apply_locked!/4`.
+      assert agency_ids(context.version) == ["A", "C"]
+      assert route_agency_ids(context.version) == ["A"]
+    end
+
+    test "refuses a receiving agency whose own ID is blank", context do
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "r1",
+        agency_id: "A"
+      })
+
+      assert {:ok, review} =
+               FeedSettings.review_agency_deletion(
+                 context.audit,
+                 context.alpha.id,
+                 context.bravo.id
+               )
+
+      # Bravo's row ID is untouched, so the reviewed token still binds this command: only
+      # a blank receiving agency can refuse it, and without the guard the move would write
+      # a blank reference onto the route.
+      force_blank_agency_id!(context.bravo)
+
+      assert {:error, :stale_review} =
+               FeedSettings.delete_agency(
+                 context.audit,
+                 context.alpha.id,
+                 context.bravo.id,
+                 review.fingerprint
+               )
+
+      assert {:error, :invalid_target} =
+               FeedSettings.review_agency_deletion(
+                 context.audit,
+                 context.alpha.id,
+                 context.bravo.id
+               )
+
       assert Repo.get(Agency, context.alpha.id) != nil
-      assert Repo.get(Agency, charlie.id) != nil
+      assert Repo.get(Agency, context.bravo.id) != nil
       assert route_agency_ids(context.version) == ["A"]
     end
 
@@ -837,6 +875,15 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyDeletionTest do
       )
     )
     |> Repo.insert!()
+  end
+
+  # The import path bypasses the trimming changesets, so a whitespace-only agency_id can
+  # only be reproduced with a raw write (R5).
+  defp force_blank_agency_id!(agency) do
+    {1, _returned} =
+      Repo.update_all(from(a in Agency, where: a.id == ^agency.id), set: [agency_id: "   "])
+
+    :ok
   end
 
   defp insert_translation(context, attrs) do

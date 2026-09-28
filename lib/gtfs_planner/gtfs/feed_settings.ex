@@ -1175,8 +1175,10 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
     }
   end
 
-  # A receiving agency must exist in the same version and differ from the agency (R7). An
-  # agency with no routes needs none, and a target given for one is ignored, so a review
+  # A receiving agency must exist in the same version, differ from the agency and name an
+  # agency at all (R7): its ID is blank when the import path left a whitespace-only value
+  # behind (R5), and a move onto it would unassign the routes while reporting them moved.
+  # An agency with no routes needs none, and a target given for one is ignored, so a review
   # and an apply called with the same arguments bind the same command either way.
   defp resolve_deletion_target(%{agency: agency, target: target, routes: routes}, target_id) do
     cond do
@@ -1185,6 +1187,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       target == nil -> {:error, :invalid_target}
       target.id == agency.id -> {:error, :invalid_target}
       routes == [] -> {:ok, nil}
+      blank_agency_reference?(target.agency_id) -> {:error, :invalid_target}
       true -> {:ok, target}
     end
   end
