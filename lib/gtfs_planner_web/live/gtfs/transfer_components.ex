@@ -301,6 +301,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp count_label(count, true), do: "#{count} in-seat #{pluralize(count, "record")}"
   defp count_label(count, false), do: "#{count} #{pluralize(count, "rule")}"
 
+  # A checked set replaces the list count with itself, in the reference's words:
+  # the operator's next decision is what the count bar's live region says.
+  defp selection_count_label(_total_count, checked_count, _in_seat?) when checked_count > 0,
+    do: "#{checked_count} selected · this version"
+
+  defp selection_count_label(total_count, _checked_count, in_seat?),
+    do: count_label(total_count, in_seat?)
+
   # The footer names what the list can do with a row: general rows drive the
   # context pane, in-seat rows are read-only here and kept in export.
   defp table_footer(true), do: "Read-only here. All records are retained in export."
@@ -342,9 +350,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   rows. The count names the rows the view holds — general rules or in-seat
   records — as the reference's count bar does.
 
+  Once a rule is checked, the general view's bar also carries the selection's own
+  controls: the "Select all shown" checkbox beside the checked count, and "Delete
+  selected" on the right. They appear with the selection and leave with it, so an
+  empty list and a fresh one read exactly as they did before. Nothing here checks
+  or deletes a type 4/5 record (R1), so the in-seat view keeps the count and the
+  direction hint and nothing else.
+
   ## Examples
 
       <.rule_count total_count={0} in_seat?={false} />
+      <.rule_count total_count={12} in_seat?={false} checked_count={2} all_checked?={false} />
   """
   attr :total_count, :integer, required: true
 
@@ -352,11 +368,45 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     required: true,
     doc: "whether the count names in-seat records instead of rules"
 
+  attr :checked_count, :integer, default: 0, doc: "how many of the shown rules are checked"
+
+  attr :all_checked?, :boolean,
+    default: false,
+    doc: "whether every rule the page shows is checked"
+
   def rule_count(assigns) do
     ~H"""
-    <div class="flex min-h-12 items-center justify-between gap-4 border-b border-base-300 px-4 py-2 text-sm text-base-content/70">
-      <span id="transfers-count" role="status">{count_label(@total_count, @in_seat?)}</span>
-      <span id="transfers-direction-hint">One direction per rule</span>
+    <div class="flex min-h-12 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-base-300 px-4 py-2 text-sm text-base-content/70">
+      <div class="flex min-h-11 flex-wrap items-center gap-x-4 gap-y-1">
+        <label
+          :if={not @in_seat? and @checked_count > 0}
+          class="flex min-h-11 cursor-pointer items-center gap-2"
+        >
+          <input
+            type="checkbox"
+            id="transfers-select-all"
+            checked={@all_checked?}
+            phx-click="toggle_check_all"
+            class="checkbox"
+          />
+          <span>Select all shown</span>
+        </label>
+        <span id="transfers-count" role="status">
+          {selection_count_label(@total_count, @checked_count, @in_seat?)}
+        </span>
+      </div>
+      <.button
+        :if={not @in_seat? and @checked_count > 0}
+        id="transfers-delete-selected"
+        type="button"
+        variant="danger"
+        size="sm"
+        class="min-h-11"
+        phx-click="delete_selected"
+      >
+        Delete selected
+      </.button>
+      <span :if={@checked_count == 0} id="transfers-direction-hint">One direction per rule</span>
     </div>
     """
   end
@@ -374,6 +424,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   with the `transfers-<uuid>` DOM ids the page contract fixes. Selection lives in
   the URL: the caller passes the selected id and the current sort, and a row
   button renders its own highlight from them.
+
+  The general view leads with the reference's select column: one checkbox per row,
+  labelled with the connection it selects, whose checked state is the map the
+  caller passes. The in-seat view has no such column, because a type 4/5 record is
+  never checked or deleted here (R1).
 
   The in-seat view lists the same columns read-only: the attention badge cannot
   appear (the catalog annotates in-seat rows with no reasons) and the footer
@@ -406,10 +461,27 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     required: true,
     doc: "whether the rows are the read-only in-seat records"
 
+  attr :checked, :map,
+    default: %{},
+    doc: "the checked rules, as `%{id => the updated_at the row carried when it was checked}`"
+
   def rules_table(assigns) do
     ~H"""
     <div>
       <.table id="transfers" rows={@rows} responsive="stack">
+        <:col :let={{_dom_id, row}} :if={not @in_seat?} label="Select">
+          <div class="flex min-h-11 min-w-11 items-center">
+            <input
+              type="checkbox"
+              id={"transfer-check-#{row.id}"}
+              checked={Map.has_key?(@checked, row.id)}
+              phx-click="toggle_check"
+              phx-value-id={row.id}
+              aria-label={"Select #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
+              class="checkbox"
+            />
+          </div>
+        </:col>
         <:col
           :let={{_dom_id, row}}
           label="From"
@@ -925,6 +997,22 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
             View route {route_label(@row.to)}
           </.link>
         </div>
+
+        <div
+          :if={not @in_seat?}
+          class="mt-4 flex flex-wrap items-center gap-4 border-t border-base-300 pt-4"
+        >
+          <.button
+            id="transfer-inspector-delete"
+            type="button"
+            variant="danger"
+            size="sm"
+            class="min-h-11"
+            phx-click="confirm_delete"
+          >
+            Delete
+          </.button>
+        </div>
       </div>
     </div>
     """
@@ -1134,5 +1222,97 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       </p>
     </div>
     """
+  end
+
+  @doc """
+  Renders the confirmation for deleting the rules the operator selected.
+
+  The dialog lists every rule it will delete — both endpoints with the scope each
+  side covers, and the type — and names the version the deletion lands in, so the
+  operator confirms named rules rather than a count (R8). A refusal keeps the
+  dialog open with its reason, because the rules the click captured no longer
+  match what a confirm would delete.
+
+  It is a general-view surface: a type 4/5 record is never listed and never
+  deletable here (R1).
+
+  ## Examples
+
+      <.delete_dialog :if={@delete_dialog} dialog={@delete_dialog} version_name="2026-01" />
+  """
+  attr :dialog, :map, required: true, doc: "the page's pending deletion"
+
+  attr :version_name, :string,
+    required: true,
+    doc: "the name of the version the listed rules belong to"
+
+  def delete_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="transfer-delete-dialog"
+      open={true}
+      size="lg"
+      title={delete_dialog_title(length(@dialog.rows))}
+      confirm_label={delete_dialog_confirm_label(length(@dialog.rows))}
+      pending_label="Deleting…"
+      on_confirm="apply_delete"
+      on_cancel="cancel_delete"
+      confirm_variant="danger"
+      described_by="transfer-delete-dialog-body"
+      return_focus_id={@dialog.return_focus_id}
+    >
+      <div class="space-y-3">
+        <ul class="border border-base-300">
+          <li
+            :for={row <- @dialog.rows}
+            id={"transfer-delete-row-#{row.id}"}
+            class="border-b border-base-300 p-3 last:border-b-0"
+          >
+            <strong class="block">{endpoint_name(row.from)} → {endpoint_name(row.to)}</strong>
+            <span class="block text-sm text-base-content/70">
+              {selector_label(row.from, :from)} → {selector_label(row.to, :to)} · {type_label(
+                row.transfer.transfer_type
+              )}
+            </span>
+          </li>
+        </ul>
+        <p>
+          These exact rules will be removed from {@version_name} and its next export. Stops, routes, and rules outside this selection stay unchanged.
+        </p>
+        <p>
+          Only the listed records will be deleted. In-seat records are excluded. This cannot be undone.
+        </p>
+        <.callout
+          :if={@dialog.error}
+          id="transfer-delete-error"
+          kind="error"
+          title="Nothing was deleted."
+        >
+          <p>{delete_error_text(@dialog.error)}</p>
+        </.callout>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  defp delete_dialog_title(1), do: "Delete 1 transfer rule?"
+  defp delete_dialog_title(count), do: "Delete #{count} transfer rules?"
+
+  defp delete_dialog_confirm_label(1), do: "Delete 1 rule"
+  defp delete_dialog_confirm_label(count), do: "Delete #{count} rules"
+
+  # The three refusals the delete facades answer, under the band's own "Nothing
+  # was deleted.": each reason says what happened to the selection the dialog was
+  # built from.
+  defp delete_error_text(:stale) do
+    "One or more rules changed since you selected them. Close this dialog to see the latest rules."
+  end
+
+  defp delete_error_text(:not_found) do
+    "One or more rules were already removed or can't be deleted here."
+  end
+
+  defp delete_error_text(_busy) do
+    "The server was busy. Try again."
   end
 end

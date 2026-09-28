@@ -93,6 +93,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:page_ids, nil)
      |> assign(:url_params, %{})
      |> assign(:filters_open?, false)
+     |> assign(:checked, %{})
+     |> assign(:delete_dialog, nil)
      |> assign_filters(@empty_filters)
      |> stream(:transfers, [])}
   end
@@ -118,7 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         sort_dir = next_sort_dir(socket, sort_by)
 
         {:noreply,
-         push_patch(socket,
+         push_patch(clear_checked(socket),
            to: list_path(socket, sort_by: sort_by, sort_dir: sort_dir, page: 1, rule: nil)
          )}
     end
@@ -126,7 +128,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    {:noreply, push_patch(socket, to: list_path(socket, page: parse_page(page), rule: nil))}
+    {:noreply,
+     push_patch(clear_checked(socket), to: list_path(socket, page: parse_page(page), rule: nil))}
   end
 
   @impl true
@@ -141,14 +144,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   def handle_event("filter", params, socket) do
     filters = merge_filters(socket.assigns.filters, params, socket.assigns.view)
 
-    {:noreply, push_patch(socket, to: list_path(socket, filters: filters, page: 1, rule: nil))}
+    {:noreply,
+     push_patch(clear_checked(socket),
+       to: list_path(socket, filters: filters, page: 1, rule: nil)
+     )}
   end
 
   @impl true
   def handle_event("search", params, socket) do
     filters = %{socket.assigns.filters | q: parse_string(Map.get(params, "q"))}
 
-    {:noreply, push_patch(socket, to: list_path(socket, filters: filters, page: 1, rule: nil))}
+    {:noreply,
+     push_patch(clear_checked(socket),
+       to: list_path(socket, filters: filters, page: 1, rule: nil)
+     )}
   end
 
   @impl true
@@ -159,16 +168,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_event("clear_filters", _params, socket) do
     # The bare list of the current view: the view param stays, every filter, the
-    # page and the selection are dropped.
-    {:noreply, push_patch(socket, to: list_path(socket, clear_overrides()))}
+    # page, the selection and the checked rules are dropped.
+    {:noreply, push_patch(clear_checked(socket), to: list_path(socket, clear_overrides()))}
   end
 
   @impl true
   def handle_event("switch_view", %{"view" => value}, socket) do
     # The chips switch the list to a view whose rows are a different set, so the
-    # filters, the page and the selected rule are left behind with the old view.
+    # filters, the page, the selected rule and the checked rules are left behind
+    # with the old view.
     {:noreply,
-     push_patch(socket,
+     push_patch(clear_checked(socket),
        to: list_path(socket, view: parse_view(value), filters: @empty_filters, page: 1, rule: nil)
      )}
   end
@@ -193,6 +203,49 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_event("close_compare", _params, socket) do
     {:noreply, assign(socket, :compare_open?, false)}
+  end
+
+  @impl true
+  def handle_event("toggle_check", %{"id" => id}, socket) do
+    # Only a row of the shown page of the general view can be checked, so a
+    # crafted event cannot check an in-seat, foreign, other-page or vanished row
+    # (CR-1, CR-5).
+    if selectable?(socket, id) do
+      {:noreply, toggle_checked(socket, id)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_check_all", _params, socket) do
+    {:noreply, toggle_all_shown(socket)}
+  end
+
+  @impl true
+  def handle_event("delete_selected", _params, socket) do
+    {:noreply, open_delete_dialog(socket, checked_rows(socket), "transfers-delete-selected")}
+  end
+
+  @impl true
+  def handle_event("confirm_delete", _params, socket) do
+    case socket.assigns.selected do
+      %{transfer: %{transfer_type: type}} = row when type in @general_types ->
+        {:noreply, open_delete_dialog(socket, [row], "transfer-inspector-delete")}
+
+      _row ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_delete", _params, socket) do
+    {:noreply, assign(socket, :delete_dialog, nil)}
+  end
+
+  @impl true
+  def handle_event("apply_delete", _params, socket) do
+    {:noreply, apply_delete(socket)}
   end
 
   @impl true
@@ -260,7 +313,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
                   filters_open?={@filters_open?}
                   in_seat?={@view == :in_seat}
                 />
-                <.rule_count total_count={@total_count} in_seat?={@view == :in_seat} />
+                <.rule_count
+                  total_count={@total_count}
+                  checked_count={checked_count(@checked)}
+                  all_checked?={all_shown_checked?(@page_ids, @checked)}
+                  in_seat?={@view == :in_seat}
+                />
                 <.no_results :if={@total_count == 0} />
                 <.rules_table
                   :if={@total_count > 0}
@@ -272,6 +330,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
                   per_page={@per_page}
                   total_count={@total_count}
                   in_seat?={@view == :in_seat}
+                  checked={@checked}
                 />
               </div>
               <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
@@ -291,6 +350,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
               :if={@compare_open?}
               row={@selected}
               competitors={@competitors}
+            />
+            <.delete_dialog
+              :if={@delete_dialog}
+              dialog={@delete_dialog}
+              version_name={@current_gtfs_version.name}
             />
           </:context>
         </.workspace>
@@ -615,6 +679,167 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # are managed instead of offering a first-use action of its own.
   defp in_seat_empty?(%{counts: %{in_seat: 0}}, :in_seat), do: true
   defp in_seat_empty?(_catalog, _view), do: false
+
+  # --- selection and deletion ------------------------------------------------
+
+  # The count bar's own numbers: how many rules are checked, and whether the whole
+  # shown page is. `@checked` only ever names rows of the current page, so the two
+  # agree.
+  defp checked_count(checked), do: map_size(checked)
+
+  defp all_shown_checked?(ids, checked) when is_list(ids),
+    do: ids != [] and Enum.all?(ids, &Map.has_key?(checked, &1))
+
+  defp all_shown_checked?(_ids, _checked), do: false
+
+  defp clear_checked(socket), do: assign(socket, :checked, %{})
+
+  # The checked set is the shown page's own ids mapped to the `updated_at` each
+  # row carried when it was checked: that exact pair, never the filter, the
+  # search, the sort or the page, is what a deletion may name (R8, CR-5).
+  defp selectable?(socket, id) when is_binary(id),
+    do: socket.assigns.view == :general and Map.has_key?(socket.assigns.page_rows, id)
+
+  defp selectable?(_socket, _id), do: false
+
+  defp toggle_checked(socket, id) do
+    checked =
+      if Map.has_key?(socket.assigns.checked, id) do
+        Map.delete(socket.assigns.checked, id)
+      else
+        Map.put(socket.assigns.checked, id, checked_at(socket, id))
+      end
+
+    socket
+    |> assign(:checked, checked)
+    |> restream_row(id)
+  end
+
+  # The timestamp a deletion has to match: the one the row carried when it was
+  # checked, and the loaded row's own for a row the operator never checked, which
+  # is what the inspector's Delete uses.
+  defp checked_at(socket, id) do
+    Map.get(socket.assigns.checked, id) || row_timestamp(socket, id)
+  end
+
+  defp row_timestamp(socket, id) do
+    case Map.fetch(socket.assigns.page_rows, id) do
+      {:ok, row} -> row.transfer.updated_at
+      :error -> nil
+    end
+  end
+
+  defp toggle_all_shown(%{assigns: %{view: view, page_ids: ids}} = socket)
+       when view != :general or ids in [nil, []],
+       do: socket
+
+  defp toggle_all_shown(socket) do
+    ids = socket.assigns.page_ids
+
+    if all_shown_checked?(ids, socket.assigns.checked) do
+      socket
+      |> clear_checked()
+      |> restream_rows(ids)
+    else
+      checked = Map.new(ids, &{&1, checked_at(socket, &1)})
+
+      socket
+      |> assign(:checked, checked)
+      |> restream_rows(ids)
+    end
+  end
+
+  # The rows a deletion may name, in the order the page shows them, so the dialog
+  # lists them the way the table does.
+  defp checked_rows(socket) do
+    socket.assigns.page_ids
+    |> List.wrap()
+    |> Enum.filter(&Map.has_key?(socket.assigns.checked, &1))
+    |> Enum.map(&Map.fetch!(socket.assigns.page_rows, &1))
+  end
+
+  # A streamed row reaches the client again only when it is inserted again, so the
+  # rows whose checkbox moved are re-streamed for the new state to render.
+  defp restream_row(socket, id) do
+    case Map.fetch(socket.assigns.page_rows, id) do
+      {:ok, row} -> stream_insert(socket, :transfers, row)
+      :error -> socket
+    end
+  end
+
+  defp restream_rows(socket, ids), do: Enum.reduce(ids, socket, &restream_row(&2, &1))
+
+  # The dialog carries the rows it will delete and the exact pairs those rows had
+  # when they were checked, so a confirm sends what the operator saw; an empty
+  # selection opens nothing at all.
+  defp open_delete_dialog(socket, [], _return_focus_id), do: assign(socket, :delete_dialog, nil)
+
+  defp open_delete_dialog(socket, rows, return_focus_id) do
+    pairs = Enum.map(rows, &{&1.id, checked_at(socket, &1.id)})
+
+    assign(socket, :delete_dialog, %{
+      rows: rows,
+      pairs: pairs,
+      error: nil,
+      return_focus_id: return_focus_id
+    })
+  end
+
+  # A confirmed deletion sends the captured pairs. Success clears the selection,
+  # closes the dialog and reloads the list without a selected rule; a refusal
+  # keeps the dialog open with its reason, because the rows the click captured no
+  # longer match what a confirm would delete (R8). Nothing is deleted
+  # optimistically and no id and no timestamp come from the client.
+  defp apply_delete(%{assigns: %{delete_dialog: nil}} = socket), do: socket
+
+  defp apply_delete(socket) do
+    dialog = socket.assigns.delete_dialog
+
+    case delete_rows(dialog.pairs, delete_audit_context(socket)) do
+      {:ok, count} ->
+        socket
+        |> clear_checked()
+        |> assign(:delete_dialog, nil)
+        |> put_flash(:info, deleted_message(count))
+        |> push_patch(to: list_path(socket, rule: nil))
+
+      {:error, reason} ->
+        assign(socket, :delete_dialog, %{dialog | error: delete_error(reason)})
+    end
+  end
+
+  # One pair goes through the single-rule facade and several through the batch
+  # one; both answer how many rules they deleted.
+  defp delete_rows([{id, updated_at}], audit) do
+    case Gtfs.delete_general_transfer(id, updated_at, audit) do
+      {:ok, _rule} -> {:ok, 1}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_rows(pairs, audit), do: Gtfs.delete_general_transfers(pairs, audit)
+
+  # The organization and the version come from the socket, never from a client
+  # payload, so a deletion can only land in the page's own version (R10); the
+  # actor is the signed-in user, as the other GTFS pages build it (R9).
+  defp delete_audit_context(socket) do
+    %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: nil,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
+  defp deleted_message(1), do: "1 transfer rule deleted."
+  defp deleted_message(count), do: "#{count} transfer rules deleted."
+
+  # The refusals the delete facades document; anything else is a server failure
+  # the operator can retry.
+  defp delete_error(:stale), do: :stale
+  defp delete_error(:not_found), do: :not_found
+  defp delete_error(_reason), do: :busy
 
   defp transfers_target(version_id), do: ~p"/gtfs/#{version_id}/transfers"
 end
