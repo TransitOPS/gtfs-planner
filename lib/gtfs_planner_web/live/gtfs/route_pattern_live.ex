@@ -131,6 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
        }
      )
      |> assign(:alignment_dialog, nil)
+     |> assign(:alignment_discard_dialog, nil)
      |> assign(:alignment_delete_dialog, nil)
      |> assign(:alignment_simplify_dialog, nil)
      |> assign(:alignment_notice, nil)
@@ -530,11 +531,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   def handle_event("switch_task", %{"task" => task}, socket) do
     resolved = resolve_task(socket.assigns.live_action, task)
 
-    {:noreply,
-     socket
-     |> assign(:task, resolved)
-     |> assign(:error_message, nil)
-     |> push_patch(to: task_path(socket, resolved))}
+    if socket.assigns.task == :alignment and resolved != :alignment and
+         alignment_dirty?(socket) do
+      # An unsaved alignment draft blocks task switches the same way other
+      # editor guards do: stash the task path and reuse the existing
+      # discard dialog instead of patching away the draft.
+      {:noreply, assign(socket, :pending_navigation, task_path(socket, resolved))}
+    else
+      {:noreply,
+       socket
+       |> assign(:task, resolved)
+       |> assign(:error_message, nil)
+       |> push_patch(to: task_path(socket, resolved))}
+    end
   end
 
   @impl true
@@ -569,7 +578,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("alignment_draft_state", params, socket) do
-    {:noreply, RoutePatternAlignmentEvents.draft_state(socket, params)}
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.draft_state(params)
+     |> assign_dirty()}
   end
 
   @impl true
@@ -580,6 +592,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_close_dialog", _params, socket) do
     {:noreply, RoutePatternAlignmentEvents.close_dialogs(socket)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_discard", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_discard(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_discard", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_discard(socket, params)}
   end
 
   @impl true
@@ -1202,6 +1224,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         version_name={@current_gtfs_version.name}
                         organization_name={@current_organization.name}
                         delete_dialog={@alignment_delete_dialog}
+                        discard_dialog={@alignment_discard_dialog}
                         simplify_dialog={@alignment_simplify_dialog}
                       />
                     <% else %>
@@ -2890,6 +2913,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     dirty? =
       dirty? or socket.assigns.stops_dirty? or
+        alignment_dirty?(socket) or
         (socket.assigns.live_action == :new and socket.assigns.staged_occurrences != []) or
         map_size(socket.assigns.timing_edits) > 0 or
         map_size(socket.assigns.timing_headsign_edits) > 0
@@ -2898,6 +2922,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       socket
     else
       push_event(assign(socket, :dirty?, dirty?), "route_pattern_dirty", %{dirty: dirty?})
+    end
+  end
+
+  # An alignment draft is dirty while the hook reports dirty positions.
+  # Read defensively: sockets that never mounted the Alignment task still
+  # carry the mount-time `%{dirty_positions: []}` shape.
+  defp alignment_dirty?(socket) do
+    case socket.assigns[:alignment_state] do
+      %{dirty_positions: [_ | _]} -> true
+      _ -> false
     end
   end
 

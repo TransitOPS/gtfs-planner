@@ -245,6 +245,15 @@ const PatternAlignment = {
     this._bounds = null;
   },
 
+  // A reconnect keeps the hook-owned drafts (CR-5): re-push the current
+  // draft state so the server badges and dirty guard reflect the draft
+  // that survived the drop. Never re-requests the model, so a saved
+  // path cannot overwrite the draft on reconnect.
+  reconnected() {
+    if (this._destroyed) return;
+    this.pushDraftState();
+  },
+
   _buildChrome() {
     const wrap = document.createElement("div");
     wrap.className = "pa-map";

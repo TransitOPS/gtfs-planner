@@ -26,6 +26,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: "%{position, from, to} when the delete dialog is open"
 
+  attr :discard_dialog, :any,
+    default: nil,
+    doc: "non-nil when the alignment discard dialog is open"
+
   attr :simplify_dialog, :map,
     default: nil,
     doc: "%{position, tolerance} when the simplify dialog is open"
@@ -35,10 +39,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       assigns
       |> assign(:visits_by_position, visits_by_position(assigns.alignment))
       |> assign(:selected, selected_section(assigns.alignment, assigns.state))
+      |> assign(:dirty_positions, dirty_positions(assigns.state))
+      |> assign(:flagged_positions, flagged_positions(assigns.state))
       |> assign(:header_status, header_status(assigns.alignment))
       |> assign(:footer_status, footer_status(assigns.alignment))
       |> assign(:save_title, save_title(assigns.alignment, assigns.editable?))
       |> assign(:saved_count, saved_count(assigns.alignment))
+
+    assigns =
+      assign(
+        assigns,
+        :header_status,
+        dirty_header_status(assigns.dirty_positions, assigns.header_status)
+      )
 
     ~H"""
     <div id="alignment-task" class="mt-6">
@@ -64,7 +77,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
             <.icon name="hero-question-mark-circle-solid" class="h-5 w-5" /> How to edit
           </button>
           <%!-- Save enables with the draft/save flow in a later step; until then it
-            stays disabled with a per-state reason so no dead event ever fires. --%>
+            stays disabled with a per-state reason so no dead event ever fires.
+            It carries data-commit so the RoutePatternEditor hook disables it
+            while offline (step 27 guard wiring). --%>
+          <button
+            :if={@dirty_positions != []}
+            id="alignment-discard"
+            type="button"
+            phx-click="alignment_open_discard"
+            class="btn btn-outline min-h-11"
+          >
+            Discard changes
+          </button>
           <button
             id="alignment-save"
             type="button"
@@ -159,6 +183,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
               section={section}
               visits_by_position={@visits_by_position}
               selected={@selected != nil and section.position == @selected.position}
+              dirty?={section.position in @dirty_positions}
+              flagged?={section.position in @flagged_positions}
             />
           </div>
 
@@ -168,6 +194,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
             visits_by_position={@visits_by_position}
             total={length(@alignment.sections)}
             editable?={@editable?}
+            dirty?={@selected.position in @dirty_positions}
+            flagged?={@selected.position in @flagged_positions}
           />
 
           <div id="alignment-footer" class="border-t border-base-200 p-4">
@@ -186,6 +214,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         organization_name={@organization_name}
       />
 
+      <.discard_dialog dialog={@discard_dialog} />
       <.delete_dialog dialog={@delete_dialog} />
       <.simplify_dialog dialog={@simplify_dialog} />
     </div>
@@ -195,12 +224,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   attr :section, :map, required: true
   attr :visits_by_position, :map, required: true
   attr :selected, :boolean, required: true
+  attr :dirty?, :boolean, default: false
+  attr :flagged?, :boolean, default: false
 
   def section_row(assigns) do
     assigns =
       assigns
       |> assign(:names, section_names(assigns.section, assigns.visits_by_position))
-      |> assign(:status, section_status(assigns.section))
+      |> assign(:status, draft_status(assigns.section, assigns[:dirty?], assigns[:flagged?]))
       |> assign(:scope, section_scope(assigns.section, assigns.visits_by_position))
 
     ~H"""
@@ -247,11 +278,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: false,
     doc: "shows the keyboard point list toggle for editable non-missing sections"
 
+  attr :dirty?, :boolean, default: false
+  attr :flagged?, :boolean, default: false
+
   def section_detail(assigns) do
     assigns =
       assigns
       |> assign(:names, section_names(assigns.section, assigns.visits_by_position))
-      |> assign(:status, section_status(assigns.section))
+      |> assign(:status, draft_status(assigns.section, assigns[:dirty?], assigns[:flagged?]))
       |> assign(:repeat, repeat_labels(assigns.section, assigns.visits_by_position))
       |> assign(:guidance, section_guidance(assigns.section))
       |> assign(:draw?, draw_section?(assigns.section, assigns.editable?))
@@ -470,6 +504,30 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     """
   end
 
+  attr :dialog, :any, default: nil, doc: "non-nil when the discard dialog is open"
+
+  def discard_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="alignment-discard-dialog"
+      open={@dialog != nil}
+      title="Discard unsaved changes?"
+      confirm_label="Discard changes"
+      pending_label="Discarding…"
+      on_confirm="alignment_confirm_discard"
+      on_cancel="alignment_close_dialog"
+      described_by="alignment-discard-dialog-body"
+      return_focus_id="alignment-discard"
+    >
+      <div>
+        <p>
+          Your saved path will stay unchanged. The edits in this draft will be lost.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
   attr :open, :boolean, required: true
   attr :version_name, :string, default: nil
   attr :organization_name, :string, default: nil
@@ -580,6 +638,32 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   defp section_status(%{kind: :missing}), do: %{text: "! Missing", tone: "badge-error"}
   defp section_status(%{kind: :blocked}), do: %{text: "⚠ Blocked", tone: "badge-error"}
   defp section_status(_section), do: %{text: "✓ Saved", tone: "badge-success"}
+
+  # Draft badges (step 27 guards): a dirty section reads ◷ Unsaved even
+  # when its saved kind is Saved/Shared, and a flagged section asks for
+  # review. Text plus symbol, never color alone.
+  defp draft_status(_section, true, _flagged?),
+    do: %{text: "◷ Unsaved", tone: "badge-warning"}
+
+  defp draft_status(_section, _dirty?, true),
+    do: %{text: "Check this section", tone: "badge-warning"}
+
+  defp draft_status(section, _dirty?, _flagged?), do: section_status(section)
+
+  defp dirty_positions(%{dirty_positions: positions}) when is_list(positions),
+    do: positions
+
+  defp dirty_positions(_state), do: []
+
+  defp flagged_positions(%{flagged_positions: positions}) when is_list(positions),
+    do: positions
+
+  defp flagged_positions(_state), do: []
+
+  defp dirty_header_status([_ | _] = _dirty, _status),
+    do: %{text: "◷ Unsaved changes", tone: "badge-warning"}
+
+  defp dirty_header_status(_dirty, status), do: status
 
   defp section_scope(section, visits_by_position) do
     from = Map.get(visits_by_position, section.position, %{})

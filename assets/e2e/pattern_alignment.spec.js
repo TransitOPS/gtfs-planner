@@ -557,6 +557,116 @@ test.describe("section actions", () => {
   });
 });
 
+test.describe("draft guards", () => {
+  test("shows Unsaved badges, the discard dialog and the task-switch guard at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_ACTIONS_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator("#alignment-map-root .pa-stop-pin").first(),
+    ).toBeVisible({ timeout: 15000 });
+
+    // Section 1 is selected by default with saved geometry: clearing its
+    // interior points through the real section action creates a hook
+    // draft, which the server mirrors as Unsaved badges and a dirty
+    // guard (no map pixel math needed for the badge states).
+    await page.locator("#alignment-detail summary").click();
+    await expect(page.locator("#alignment-clear")).toBeVisible();
+    await page.locator("#alignment-clear").click();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "Unsaved",
+    );
+    await expect(page.locator("#alignment-discard")).toBeVisible();
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "unsaved-1440");
+
+    // The in-place discard dialog carries the prototype copy; keeping
+    // editing preserves the dirty badges.
+    await page.locator("#alignment-discard").click();
+    await expect(page.locator("#alignment-discard-dialog")).toContainText(
+      "Discard unsaved changes?",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-discard-dialog")).toContainText(
+      "Your saved path will stay unchanged.",
+    );
+    // The confirm panel plays a 150 ms entry fade; capture only once it
+    // settles at full opacity, never mid-animation.
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector(
+          "#alignment-discard-dialog > div > div",
+        );
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      { timeout: 5000 },
+    );
+    await captureViewport(page, "discard-dialog-1440");
+    await page.locator("#alignment-discard-dialog-cancel").click();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+    );
+
+    // A dirty task switch reuses the existing navigation discard
+    // dialog instead of patching away the draft.
+    await page.locator("#pattern-task-stops").click();
+    await expect(page.locator("#discard-changes-dialog")).toContainText(
+      "Discard unsaved changes?",
+      { timeout: 15000 },
+    );
+    await page.locator("#discard-changes-dialog-cancel").click();
+    await expect(page.locator("#alignment-task")).toBeVisible();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+    );
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // A fresh load starts clean; clearing again proves the phone stack
+    // keeps the badges without overflow.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_ACTIONS_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await page.locator("#alignment-detail summary").click();
+    await expect(page.locator("#alignment-clear")).toBeVisible({
+      timeout: 15000,
+    });
+    await page.locator("#alignment-clear").click();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "Unsaved",
+    );
+    await captureFullPage(page, "unsaved-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
+
 test.describe("alignment map", () => {
   test("shows section lines on the Leaflet map at desktop and phone widths", async ({
     page,

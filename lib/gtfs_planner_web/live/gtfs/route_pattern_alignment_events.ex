@@ -98,10 +98,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def retry_tiles(socket, _params),
     do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
-  @doc "Closes the help, delete and simplify dialogs."
+  @doc "Closes the help, discard, delete and simplify dialogs."
   def close_dialogs(socket) do
     socket
     |> Component.assign(:alignment_dialog, nil)
+    |> Component.assign(:alignment_discard_dialog, nil)
     |> Component.assign(:alignment_delete_dialog, nil)
     |> Component.assign(:alignment_simplify_dialog, nil)
   end
@@ -187,6 +188,47 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   @simplify_tolerances [5, 10, 25]
   @default_tolerance 10
+
+  @doc """
+  Opens the alignment discard dialog for a dirty draft.
+
+  Viewers, clean drafts and sockets without a loaded model leave the
+  socket unchanged. Confirming pushes a fresh `alignment:load` so the
+  hook drops its drafts; the server dirty state clears when the hook
+  re-pushes `alignment_draft_state` with no dirty positions.
+  """
+  def open_discard(socket, _params) do
+    if editable?(socket) and alignment_dirty?(socket) and
+         not is_nil(socket.assigns[:alignment]) do
+      Component.assign(socket, :alignment_discard_dialog, true)
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Confirms the alignment discard dialog: closes it and pushes the saved
+  hook model so the hook redraws without drafts (CR-5). The dirty badges
+  stay until the hook's next `alignment_draft_state` confirms the clean
+  state; viewers or a missing model simply close the dialog.
+  """
+  def confirm_discard(socket, _params) do
+    socket = Component.assign(socket, :alignment_discard_dialog, nil)
+
+    case {editable?(socket), socket.assigns[:alignment]} do
+      {true, alignment} when not is_nil(alignment) ->
+        model =
+          Alignments.hook_model(alignment,
+            editable: socket.assigns[:alignment_editable] == true,
+            suggestions: []
+          )
+
+        Phoenix.LiveView.push_event(socket, "alignment:load", %{model: model})
+
+      _ ->
+        socket
+    end
+  end
 
   @doc """
   Opens the delete dialog for a saved section.
@@ -341,6 +383,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   defp editable?(socket), do: socket.assigns[:alignment_editable] == true
 
+  defp alignment_dirty?(socket) do
+    case socket.assigns[:alignment_state] do
+      %{dirty_positions: [_ | _]} -> true
+      _ -> false
+    end
+  end
+
   defp visit_names(visits, position) do
     from = Enum.find(visits, &(&1.position == position)) || %{}
     to = Enum.find(visits, &(&1.position == position + 1)) || %{}
@@ -373,6 +422,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_editable, editable?)
          |> Component.assign(:alignment_notice, notice_for(alignment, editable?))
          |> Component.assign(:alignment_dialog, nil)
+         |> Component.assign(:alignment_discard_dialog, nil)
          |> Component.assign(:alignment_delete_dialog, nil)
          |> Component.assign(:alignment_simplify_dialog, nil)}
 
