@@ -960,7 +960,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     assigns = assign(assigns, :station_title, station_title)
 
     ~H"""
-    <div id="station-sub-nav" class="w-full px-4 sm:px-6 lg:px-8">
+    <div id="station-sub-nav" class="w-full">
       <div class="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex min-w-0 items-center gap-2">
           <.link
@@ -1034,7 +1034,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
     state =
       if is_active do
-        "font-semibold border-primary text-base-content"
+        "font-semibold border-action text-action"
       else
         "font-medium border-transparent text-base-content/70 hover:text-base-content hover:border-base-300"
       end
@@ -1079,7 +1079,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     assigns = assign(assigns, :route_display, route_display)
 
     ~H"""
-    <nav class="w-full px-4 sm:px-6 lg:px-8" aria-label="Route navigation">
+    <nav class="w-full" aria-label="Route navigation">
       <div class="flex flex-wrap items-center justify-between gap-2 py-3">
         <div class="flex items-center gap-2 min-w-0">
           <.link
@@ -1138,8 +1138,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def routes_tabs(assigns) do
     ~H"""
-    <nav id="routes-tabs" aria-label="Routes sections" class="w-full px-4 sm:px-6 lg:px-8">
-      <div class="overflow-x-auto border-b border-base-300">
+    <nav
+      id="routes-tabs"
+      aria-label="Routes sections"
+      class="w-full"
+    >
+      <div class="overflow-x-auto">
         <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
             id="routes-tab-routes"
@@ -1175,8 +1179,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def operations_sub_nav(assigns) do
     ~H"""
-    <nav id="operations-sub-nav" aria-label="Operations sections" class="w-full px-4 sm:px-6 lg:px-8">
-      <div class="overflow-x-auto border-b border-base-300">
+    <nav
+      id="operations-sub-nav"
+      aria-label="Operations sections"
+      class="w-full"
+    >
+      <div class="overflow-x-auto">
         <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
             id="operations-tab-blocks"
@@ -1220,8 +1228,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def gtfs_sub_nav(assigns) do
     ~H"""
-    <nav id="gtfs-sub-nav" aria-label="GTFS sections" class="w-full px-4 sm:px-6 lg:px-8">
-      <div class="overflow-x-auto border-b border-base-300">
+    <nav
+      id="gtfs-sub-nav"
+      aria-label="GTFS sections"
+      class="w-full"
+    >
+      <div class="overflow-x-auto">
         <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
             id="gtfs-tab-export"
@@ -1269,8 +1281,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def settings_nav(assigns) do
     ~H"""
-    <nav id="settings-nav" aria-label="Settings sections" class="w-full px-4 sm:px-6 lg:px-8">
-      <div class="overflow-x-auto border-b border-base-300">
+    <nav
+      id="settings-nav"
+      aria-label="Settings sections"
+      class="w-full"
+    >
+      <div class="overflow-x-auto">
         <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
             id="settings-tab-index"

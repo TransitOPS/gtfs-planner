@@ -226,6 +226,39 @@ body {
   border-bottom-width: 0;
 }
 
+/* Page padding lives on the sub-header wrapper (mirroring the header and main
+   column), so slot content must not add its own. The diagram action strip is
+   the exception: it keeps its own padding and full-bleed border, so cancel the
+   wrapper's padding around it with negative margins at each breakpoint. */
+#sub-header-wrapper #diagram-action-strip {
+  margin-left: -1rem;
+  margin-right: -1rem;
+}
+@media (min-width: 640px) {
+  #sub-header-wrapper #diagram-action-strip {
+    margin-left: -1.5rem;
+    margin-right: -1.5rem;
+  }
+}
+@media (min-width: 1024px) {
+  #sub-header-wrapper #diagram-action-strip {
+    margin-left: -2rem;
+    margin-right: -2rem;
+  }
+}
+
+/* Immersive diagram modes lay out #sub-header-wrapper's children directly;
+   flatten the padding/column containers there so canvas sizing is unchanged,
+   and drop the negative margins (the flattened wrapper adds no padding). */
+#diagram-page[data-immersive="true"] #sub-header-wrapper > div,
+#diagram-page[data-immersive="true"] #sub-header-wrapper > div > div {
+  display: contents;
+}
+#diagram-page[data-immersive="true"] #sub-header-wrapper #diagram-action-strip {
+  margin-left: 0;
+  margin-right: 0;
+}
+
 /* ── Immersive editing modes (Add stop / Connect / Align) ──
    Entering an editing mode hides the global header and station sub-nav so the
    action strip + canvas fill the viewport. `display: none` (not an off-screen
