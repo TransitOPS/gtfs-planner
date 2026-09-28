@@ -71,16 +71,36 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogTest do
       assert row_ids(general_catalog) == sorted_ids(general)
       assert general_catalog.total_count == 3
       assert general_catalog.page == 1
-      assert general_catalog.per_page == 3
+      assert general_catalog.per_page == 50
       assert general_catalog.counts == %{general: 3, in_seat: 2}
-      assert general_catalog.filter_options == %{stops: [], routes: [], types: []}
+
+      assert general_catalog.filter_options == %{
+               stops: [
+                 %{stop_id: "CEN", name: "Central Station"},
+                 %{stop_id: "HBR", name: "Harbor"},
+                 %{stop_id: "MKT", name: "Market Street"}
+               ],
+               routes: [%{route_id: "12", route_short_name: "12", route_long_name: "Riverside"}],
+               types: [0, 1, 2, 3]
+             }
 
       assert in_seat_catalog.view == :in_seat
       assert row_ids(in_seat_catalog) == sorted_ids(in_seat)
       assert in_seat_catalog.total_count == 2
-      assert in_seat_catalog.per_page == 2
+      assert in_seat_catalog.per_page == 50
       assert in_seat_catalog.counts == %{general: 3, in_seat: 2}
-      assert in_seat_catalog.filter_options == %{stops: [], routes: [], types: []}
+
+      assert in_seat_catalog.filter_options == %{
+               stops: [
+                 %{stop_id: "HBR", name: "Harbor"},
+                 %{stop_id: "MKT", name: "Market Street"}
+               ],
+               routes: [
+                 %{route_id: "12", route_short_name: "12", route_long_name: "Riverside"},
+                 %{route_id: "24", route_short_name: "24", route_long_name: "Harbor"}
+               ],
+               types: [4, 5]
+             }
     end
 
     test "returns an empty first page when the version has no rules", ctx do
@@ -89,7 +109,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.CatalogTest do
       assert catalog.rows == []
       assert catalog.total_count == 0
       assert catalog.page == 1
-      assert catalog.per_page == 1
+      assert catalog.per_page == 50
       assert catalog.selected == nil
       assert catalog.competitors == []
       assert catalog.counts == %{general: 0, in_seat: 0}
