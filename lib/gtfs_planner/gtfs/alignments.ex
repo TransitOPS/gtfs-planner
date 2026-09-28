@@ -240,6 +240,271 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     |> Enum.sort_by(fn user -> {user.route_id, user.route_pattern_id} end)
   end
 
+  @type blocker :: %{
+          route_pattern_id: String.t(),
+          pattern_label: String.t(),
+          trip_id: String.t(),
+          stop_time_count: non_neg_integer(),
+          visit_count: pos_integer()
+        }
+
+  @type shape_plan :: %{
+          shape_id: String.t(),
+          mode: :existing | :adopt | :allocate,
+          replaced: [
+            %{
+              shape_id: String.t(),
+              trip_count: pos_integer(),
+              action: :adopted | :deleted,
+              points: [[term()]]
+            }
+          ],
+          previous: [
+            %{
+              shape_id: String.t() | nil,
+              trip_count: pos_integer(),
+              visit_distances: [Decimal.t() | nil]
+            }
+          ],
+          blockers: [blocker()]
+        }
+
+  @doc """
+  Plans the pattern's shape ID, replaced shapes and materialization blockers.
+
+  R10 owner: a pattern with `shape_id` keeps it (`:existing`); otherwise the
+  plan adopts the single imported shape used only by this pattern's linked
+  trips (`:adopt`), or allocates the first unused `route_pattern_id`,
+  `route_pattern_id-2`, ... ID (`:allocate`). An ID is unused when no `shapes`
+  row has it and no `route_pattern.shape_id` owns it. Adoption needs every
+  linked trip on the same non-nil shape; a nil or mixed set allocates. R11:
+  `replaced` lists each linked shape no trip outside this pattern's linked set
+  references (adopted, or deleted after the move), with its prior points as
+  `[lat, lon, sequence, dist]` rows by sequence for the `pattern_shape` audit
+  entry. R13: `blockers` names linked trips whose stop-time count differs
+  from `visit_count`. Read-only; writes are step 11's (INV-5: adoption or
+  deletion happens only in an apply with `confirm_replacements: true`). Every
+  query filters by the pattern's organization and version (INV-2). Consumed by
+  `review_save/3` and `materialize_pattern!/4` (steps 10, 11, 12, 15).
+  """
+  @spec shape_plan(RoutePattern.t(), pos_integer()) :: shape_plan()
+  def shape_plan(%RoutePattern{} = pattern, visit_count) do
+    linked = linked_trips(pattern)
+    outside_counts = outside_shape_counts(pattern)
+    {stop_counts, visit_vectors} = stop_time_observations(pattern, linked)
+    shape_points = replaced_shape_points(pattern, linked, outside_counts)
+
+    previous = previous_vectors(linked, visit_vectors)
+    blockers = materialization_blockers(pattern, visit_count, linked, stop_counts)
+
+    if present?(pattern.shape_id) do
+      %{shape_id: pattern.shape_id, mode: :existing, replaced: [], previous: previous, blockers: blockers}
+    else
+      distinct_shapes = linked |> Enum.map(& &1.shape_id) |> Enum.uniq()
+
+      case distinct_shapes do
+        [shape_id] when is_binary(shape_id) and shape_id != "" ->
+          if Map.get(outside_counts, shape_id, 0) == 0 do
+            %{
+              shape_id: shape_id,
+              mode: :adopt,
+              replaced: [
+                %{
+                  shape_id: shape_id,
+                  trip_count: length(linked),
+                  action: :adopted,
+                  points: Map.get(shape_points, shape_id, [])
+                }
+              ],
+              previous: previous,
+              blockers: blockers
+            }
+          else
+            allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers)
+          end
+
+        _ ->
+          allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers)
+      end
+    end
+  end
+
+  defp allocate_plan(pattern, linked, outside_counts, shape_points, previous, blockers) do
+    replaced =
+      linked
+      |> Enum.map(& &1.shape_id)
+      |> Enum.reject(&(is_nil(&1) or &1 == ""))
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.reject(&(Map.get(outside_counts, &1, 0) > 0))
+      |> Enum.map(fn shape_id ->
+        %{
+          shape_id: shape_id,
+          trip_count: Enum.count(linked, &(&1.shape_id == shape_id)),
+          action: :deleted,
+          points: Map.get(shape_points, shape_id, [])
+        }
+      end)
+
+    %{
+      shape_id: first_unused_shape_id(pattern),
+      mode: :allocate,
+      replaced: replaced,
+      previous: previous,
+      blockers: blockers
+    }
+  end
+
+  defp linked_trips(%RoutePattern{} = pattern) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^pattern.organization_id and
+          t.gtfs_version_id == ^pattern.gtfs_version_id and
+          t.route_id == ^pattern.route_id and
+          t.route_pattern_id == ^pattern.route_pattern_id and
+          t.pattern_derivation_state == "linked",
+      order_by: [asc: t.trip_id],
+      select: %{trip_id: t.trip_id, shape_id: t.shape_id}
+    )
+    |> Repo.all()
+  end
+
+  defp outside_shape_counts(%RoutePattern{} = pattern) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^pattern.organization_id and
+          t.gtfs_version_id == ^pattern.gtfs_version_id and not is_nil(t.shape_id) and
+          t.shape_id != "" and
+          not (t.route_id == ^pattern.route_id and
+                 t.route_pattern_id == ^pattern.route_pattern_id and
+                 t.pattern_derivation_state == "linked"),
+      group_by: t.shape_id,
+      select: {t.shape_id, count(t.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp stop_time_observations(_pattern, []), do: {%{}, %{}}
+
+  defp stop_time_observations(%RoutePattern{} = pattern, linked) do
+    trip_ids = Enum.map(linked, & &1.trip_id)
+
+    rows =
+      from(st in StopTime,
+        where:
+          st.organization_id == ^pattern.organization_id and
+            st.gtfs_version_id == ^pattern.gtfs_version_id and st.trip_id in ^trip_ids,
+        order_by: [asc: st.trip_id, asc: st.stop_sequence],
+        select: {st.trip_id, st.shape_dist_traveled}
+      )
+      |> Repo.all()
+
+    grouped = Enum.group_by(rows, &elem(&1, 0), &elem(&1, 1))
+
+    counts = Map.new(trip_ids, fn trip_id -> {trip_id, length(Map.get(grouped, trip_id, []))} end)
+    vectors = Map.new(trip_ids, fn trip_id -> {trip_id, Map.get(grouped, trip_id, [])} end)
+
+    {counts, vectors}
+  end
+
+  defp replaced_shape_points(_pattern, [], _outside_counts), do: %{}
+
+  defp replaced_shape_points(%RoutePattern{} = pattern, linked, outside_counts) do
+    shape_ids =
+      linked
+      |> Enum.map(& &1.shape_id)
+      |> Enum.reject(&(is_nil(&1) or &1 == ""))
+      |> Enum.uniq()
+      |> Enum.reject(&(Map.get(outside_counts, &1, 0) > 0))
+
+    if shape_ids == [] do
+      %{}
+    else
+      from(s in Shape,
+        where:
+          s.organization_id == ^pattern.organization_id and
+            s.gtfs_version_id == ^pattern.gtfs_version_id and s.shape_id in ^shape_ids,
+        order_by: [asc: s.shape_id, asc: s.shape_pt_sequence],
+        select: %{
+          shape_id: s.shape_id,
+          lat: s.shape_pt_lat,
+          lon: s.shape_pt_lon,
+          sequence: s.shape_pt_sequence,
+          dist: s.shape_dist_traveled
+        }
+      )
+      |> Repo.all()
+      |> Enum.group_by(& &1.shape_id, fn row ->
+        [decimal_to_float(row.lat), decimal_to_float(row.lon), row.sequence, row.dist]
+      end)
+    end
+  end
+
+  defp first_unused_shape_id(%RoutePattern{} = pattern) do
+    Stream.iterate(1, &(&1 + 1))
+    |> Enum.find_value(fn
+      1 -> unless shape_id_taken?(pattern, pattern.route_pattern_id), do: pattern.route_pattern_id
+      n -> unless shape_id_taken?(pattern, "#{pattern.route_pattern_id}-#{n}"), do: "#{pattern.route_pattern_id}-#{n}"
+    end)
+  end
+
+  defp shape_id_taken?(%RoutePattern{} = pattern, candidate) do
+    Repo.exists?(
+      from(s in Shape,
+        where:
+          s.organization_id == ^pattern.organization_id and
+            s.gtfs_version_id == ^pattern.gtfs_version_id and s.shape_id == ^candidate
+      )
+    ) or
+      Repo.exists?(
+        from(p in RoutePattern,
+          where:
+            p.organization_id == ^pattern.organization_id and
+              p.gtfs_version_id == ^pattern.gtfs_version_id and p.shape_id == ^candidate
+        )
+      )
+  end
+
+  defp previous_vectors(linked, visit_vectors) do
+    linked
+    |> Enum.group_by(fn %{trip_id: trip_id, shape_id: shape_id} ->
+      {shape_id, Map.get(visit_vectors, trip_id, [])}
+    end)
+    |> Enum.map(fn {{shape_id, distances}, entries} ->
+      %{shape_id: shape_id, trip_count: length(entries), visit_distances: distances}
+    end)
+    |> Enum.sort_by(fn %{shape_id: shape_id, visit_distances: distances} ->
+      {shape_id || "", Enum.map(distances, &distance_key/1)}
+    end)
+  end
+
+  defp distance_key(nil), do: ""
+  defp distance_key(%Decimal{} = dist), do: Decimal.to_string(dist, :normal)
+
+  defp materialization_blockers(pattern, visit_count, linked, stop_counts) do
+    label = pattern_label(pattern)
+
+    linked
+    |> Enum.filter(fn %{trip_id: trip_id} -> Map.get(stop_counts, trip_id, 0) != visit_count end)
+    |> Enum.sort_by(& &1.trip_id)
+    |> Enum.map(fn %{trip_id: trip_id} ->
+      %{
+        route_pattern_id: pattern.route_pattern_id,
+        pattern_label: label,
+        trip_id: trip_id,
+        stop_time_count: Map.get(stop_counts, trip_id, 0),
+        visit_count: visit_count
+      }
+    end)
+  end
+
+  defp pattern_label(%RoutePattern{route_pattern_name: name})
+       when is_binary(name) and name != "",
+       do: name
+
+  defp pattern_label(%RoutePattern{route_pattern_id: natural_id}), do: natural_id
+
   @type imported_shape :: %{
           shape_id: String.t(),
           trip_count: non_neg_integer(),
