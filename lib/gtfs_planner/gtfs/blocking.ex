@@ -5,7 +5,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   Every function is scoped to one organization and GTFS version: organization,
   version and actor come from arguments, never from submitted parameters. The
   minimum layover is stored per published version, read as a default without
-  writing a row, and validated before it reaches the table.
+  writing a row, and validated before it reaches the table. A save takes the
+  scoped version row `FOR SHARE` before its published check and its row write, so
+  a calendar combination that owns the version cannot commit a fresh layover
+  between its review and its apply.
 
   `load_day/3` loads one day type of a published version inside one transaction:
   it derives the day types from `Calendars.list_calendars/3`, selects the requested
@@ -23,6 +26,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   they run, grouped by code, trip pair and block, with the day types and their
   summed date count. It takes no lock, so it can run after a Schedules commit
   without holding the day it just changed.
+
+  `project_calendar_combination/2` is the pure batch producer a calendar combination
+  review reads: it projects every proposed service-ID move and destination date change at
+  once, decides which moved blocks must be cleared from that one projection, and reports
+  the real before/after checks and in-seat states. `CalendarChange`/`Schedules` keep
+  their single-trip R9 answer, and no calendar-side module evaluates blocks a second time
+  (CR-2).
 
   `apply_block_change/4` is the one write path for an `:assign`, `:unassign`,
   `:rename` or `:merge` command. It locks the version's blocking advisory lock and
@@ -47,6 +57,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Versions
 
   @default_min_layover_minutes 5
+  @published_status "published"
   @seconds_per_hour 3600
 
   # The timeline chart and the Peak drawer bucket the day in 15-minute bins.
@@ -121,6 +132,54 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           review: Review.review() | nil
         }
 
+  @typedoc """
+  The loaded review input set one calendar combination is projected over.
+
+  `calendars` carries every selected calendar in the summary shape
+  `Calendars.list_calendars/3` returns and `DayTypes` consumes, `trips` every trip of
+  the review's closure with its real endpoints, `transfers` the type-4/5 records naming
+  those trips and `settings` the version's stored minimum layover. `raw` and `today`
+  belong to the review fingerprint and the upcoming/past split rather than to the block
+  projection.
+  """
+  @type combination_inputs :: %{
+          calendars: [DayTypes.calendar()],
+          trips: [Queries.trip_row()],
+          selected_trip_ids: [Ecto.UUID.t()],
+          transfers: [Queries.in_seat_row()],
+          settings: %{min_layover_minutes: 0..120},
+          raw: map(),
+          today: Date.t()
+        }
+
+  @typedoc "The resolved combination command the projection reads."
+  @type combination_command :: %{
+          destination_id: String.t(),
+          source_ids: [String.t()],
+          result_dates: [Date.t()]
+        }
+
+  @typedoc """
+  One `Checks`/`InSeat` finding with the day-type and date context it was evaluated in.
+  """
+  @type combination_finding :: %{
+          code: Checks.code(),
+          severity: Checks.severity(),
+          block_id: String.t() | nil,
+          trip_ids: [Ecto.UUID.t()],
+          transfer_id: Ecto.UUID.t() | nil,
+          detail: map(),
+          day_type_keys: [String.t()],
+          dates: [Date.t()]
+        }
+
+  @type combination_projection :: %{
+          cleared_trip_ids: [Ecto.UUID.t()],
+          before_findings: [combination_finding()],
+          after_findings: [combination_finding()],
+          transfers: [%{id: Ecto.UUID.t(), before: InSeat.state(), after: InSeat.state()}]
+        }
+
   @doc """
   Returns the minimum layover for one organization's GTFS version.
 
@@ -157,15 +216,32 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   @doc """
   Stores the minimum layover for one organization's published GTFS version.
 
-  Returns `{:error, :not_found}` when the version is unpublished or belongs to
-  another organization, and `{:error, changeset}` when the value is not a whole
-  number from 0 to 120. One row is kept per organization and version, so a
-  repeated save replaces the stored value.
+  The save runs in one transaction whose first statement is the scoped version row
+  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the minimum layover a review
+  loaded cannot change under a calendar combination that owns the version, and this
+  save waits behind such an owner in turn. Returns `{:error, :not_found}` when the
+  version is unpublished or belongs to another organization, and
+  `{:error, changeset}` when the value is not a whole number from 0 to 120. One row
+  is kept per organization and version, so a repeated save replaces the stored value.
   """
   @spec update_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
           {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def update_settings(organization_id, gtfs_version_id, attrs) do
-    if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
+    case Repo.transaction(fn -> write_settings!(organization_id, gtfs_version_id, attrs) end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The version share lock is the first statement of the write transaction, before the
+  # published check and the upsert, whether the save updates a stored row or inserts the
+  # version's first one (INV-1). Nothing in this writer takes the version row `FOR UPDATE`,
+  # so no caller upgrades the share lock, and the transaction makes the check and the write
+  # one unit while returning the upsert's own result tuple.
+  defp write_settings!(organization_id, gtfs_version_id, attrs) do
+    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+
+    if version.publication_status == @published_status do
       %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
       |> BlockingSetting.changeset(attrs)
       |> Repo.insert(
@@ -174,6 +250,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         returning: true
       )
     else
+      # The shared lock takes no publication stance, so the published requirement stays here,
+      # exactly as `Calendars` and `RoutePatterns` apply theirs after the lock.
       {:error, :not_found}
     end
   end
@@ -335,14 +413,98 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     service_dates = calendar_service_dates(organization_id, gtfs_version_id)
     companions = block_companions(organization_id, gtfs_version_id, block_id, trip.id)
 
-    companions_before = companions_on_dates(companions, service_dates, trip.service_id)
-    companions_after = companions_on_dates(companions, service_dates, service_id)
+    companions_before =
+      companions_on_dates(
+        companions,
+        service_dates,
+        service_dates_for(service_dates, trip.service_id)
+      )
+
+    companions_after =
+      companions_on_dates(companions, service_dates, service_dates_for(service_dates, service_id))
 
     MapSet.subset?(companions_after, companions_before)
   end
 
   def calendar_change_keeps_block?(_organization_id, _gtfs_version_id, %Trip{}, _service_id),
     do: true
+
+  @doc """
+  Projects every block and in-seat consequence of one calendar combination (AC-17, AC-18).
+
+  `inputs` is the loaded review input set of `combination_inputs()` and `command` the
+  resolved combination, whose `result_dates` are the destination's committed dates. The
+  function is pure: it reads the loaded rows and the version's stored layover and no
+  database, clock, file or network, so the review and the apply path ask this one
+  producer what a combination does to blocks (CR-1, CR-2). An incomplete plan has no
+  projected effects: `result_dates` must be a list.
+
+  One projection carries every proposed change at once - each source trip's `service_id`
+  becomes the destination and the destination's own dates become `result_dates` - and the
+  keep decision is derived from it alone. A moved blocked trip keeps its block only when
+  the companion UUIDs of that projection are a subset of its original companions, where a
+  companion counts when its own dates intersect the trip's (`companions_on_dates/3`, the
+  same rule `calendar_change_keeps_block?/4` answers for one trip). Every keep decision
+  comes from this one before/after pair and the clears are applied together afterwards,
+  so clearing one block can never make another move look safe (AC-17, PM-4). A trip's
+  block decision follows its service: AC-11 moves every trip of a source calendar,
+  including a companion the selection did not name.
+
+  `cleared_trip_ids` lists exactly the moved trips whose block is cleared, sorted.
+  Destination trips and trips on other calendars are never candidates: destination block
+  IDs stay assigned, and the findings below report what their changed dates add.
+
+  `before_findings` and `after_findings` are the real `Checks.block_findings/3` and
+  `InSeat.finding/3` results of each projection, evaluated per derived day type over the
+  trips that run in it - the scoping the day load and the block review use - and
+  deduplicated by day type and `Checks.finding_key/1`. Each finding carries
+  `day_type_keys` and `dates`, the day types it was evaluated in and their dates, so a
+  warning a combination adds on a gained date is distinguishable from the same pair's
+  pre-existing warning and a changed detail is never hidden behind an unchanged key.
+  Findings are sorted by day types and key, so reordering the input lists returns an
+  identical projection. An unblocked trip contributes no finding here: its unassignment
+  is `cleared_trip_ids` and unassigned-pool notices belong to the day read.
+
+  `transfers` reports every distinct type-4/5 record of `inputs.transfers` once, sorted by
+  record UUID, with its `InSeat` state before and after the projection. Records are read
+  only: a clear or a date change that makes one stale is reported, never rewritten
+  (AC-11, AC-18).
+  """
+  @spec project_calendar_combination(combination_inputs(), combination_command()) ::
+          combination_projection()
+  def project_calendar_combination(
+        %{
+          calendars: calendars,
+          trips: trips,
+          transfers: transfers,
+          settings: %{min_layover_minutes: min_layover_minutes}
+        },
+        %{destination_id: destination_id, source_ids: source_ids, result_dates: result_dates}
+      )
+      when is_list(calendars) and is_list(trips) and is_list(transfers) and
+             is_binary(destination_id) and is_list(source_ids) and is_list(result_dates) do
+    moved_services = MapSet.new([destination_id | source_ids])
+
+    before = projection_state(calendars, trips, transfers, min_layover_minutes)
+
+    after_moves =
+      projection_state(
+        move_calendars(calendars, destination_id, result_dates),
+        Enum.map(trips, &move_trip(&1, moved_services, destination_id)),
+        transfers,
+        min_layover_minutes
+      )
+
+    cleared_trip_ids = clear_decisions(before, after_moves, moved_services, destination_id)
+    after_state = state_trips(after_moves, clear_trips(after_moves.trips, cleared_trip_ids))
+
+    %{
+      cleared_trip_ids: cleared_trip_ids,
+      before_findings: before.findings,
+      after_findings: after_state.findings,
+      transfers: transfer_states(before, after_state, transfers)
+    }
+  end
 
   @doc """
   Applies one block command on `day_type_key` inside the reviewed transaction.
@@ -636,16 +798,262 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     |> Repo.all()
   end
 
-  defp companions_on_dates(companions, service_dates, service_id) do
-    dates = Map.get(service_dates, service_id, MapSet.new())
-
+  # The UUIDs of `companions` that run on any date of `dates` - the changed trip's own
+  # dates. This is R9's companion set: the single-trip check and the batch combination
+  # projection both read it, each over its own projection of services and dates (AC-17).
+  defp companions_on_dates(companions, service_dates, dates) do
     companions
     |> Enum.filter(&companion_on_dates?(&1.service_id, service_dates, dates))
     |> MapSet.new(& &1.id)
   end
 
   defp companion_on_dates?(service_id, service_dates, dates) do
-    not MapSet.disjoint?(Map.get(service_dates, service_id, MapSet.new()), dates)
+    not MapSet.disjoint?(service_dates_for(service_dates, service_id), dates)
+  end
+
+  # A service the version does not hold has no dates, so it never shares one.
+  defp service_dates_for(service_dates, service_id) do
+    Map.get(service_dates, service_id, MapSet.new())
+  end
+
+  # -- Calendar combination projection --------------------------------------
+
+  # One projection: the day types and service dates of its calendars, the trips it holds,
+  # the checks of those trips and the in-seat context they are read with. The context is
+  # built once per state, so the findings and the transfer states cannot disagree about it.
+  defp projection_state(calendars, trips, transfers, min_layover_minutes) do
+    projection_state(
+      DayTypes.derive(calendars),
+      DayTypes.service_dates(calendars),
+      trips,
+      transfers,
+      min_layover_minutes
+    )
+  end
+
+  defp projection_state(day_types, service_dates, trips, transfers, min_layover_minutes) do
+    in_seat = projection_in_seat_context(day_types, service_dates, trips)
+
+    %{
+      day_types: day_types,
+      service_dates: service_dates,
+      trips: trips,
+      transfers: transfers,
+      min_layover_minutes: min_layover_minutes,
+      in_seat: in_seat,
+      findings: projection_findings(day_types, trips, transfers, in_seat, min_layover_minutes)
+    }
+  end
+
+  # The same day types and dates with a different trip set: the after-clears state reads the
+  # moved projection's calendars and asks the checks again.
+  defp state_trips(%{day_types: day_types, service_dates: service_dates} = state, trips) do
+    in_seat = projection_in_seat_context(day_types, service_dates, trips)
+
+    %{
+      state
+      | trips: trips,
+        in_seat: in_seat,
+        findings:
+          projection_findings(
+            day_types,
+            trips,
+            state.transfers,
+            in_seat,
+            state.min_layover_minutes
+          )
+    }
+  end
+
+  # R9 over one projection: a block is kept only when every companion the trip runs with
+  # in that projection also ran with it before it moved (AC-17, PM-4).
+  defp clears_block?(trip, before, moved, destination_id) do
+    companions_before =
+      companions_on_dates(
+        block_others(before.trips, trip),
+        before.service_dates,
+        service_dates_for(before.service_dates, trip.service_id)
+      )
+
+    companions_after =
+      companions_on_dates(
+        block_others(moved.trips, trip),
+        moved.service_dates,
+        service_dates_for(moved.service_dates, destination_id)
+      )
+
+    not MapSet.subset?(companions_after, companions_before)
+  end
+
+  # Every moved blocked trip is decided: a trip whose service moves takes its block with it
+  # whether or not the review selection named it. The destination's own trips are not candidates -
+  # AC-17 keeps destination block IDs assigned and the findings report what their gained dates add -
+  # so a destination trip that would fail the same subset test is reported, never cleared.
+  defp clear_candidate?(trip, moved_services, destination_id) do
+    is_binary(trip.block_id) and trip.service_id != destination_id and
+      MapSet.member?(moved_services, trip.service_id)
+  end
+
+  defp block_others(trips, trip) do
+    Enum.filter(trips, &(&1.block_id == trip.block_id and &1.id != trip.id))
+  end
+
+  defp clear_decisions(before, moved, moved_services, destination_id) do
+    before.trips
+    |> Enum.filter(fn trip ->
+      clear_candidate?(trip, moved_services, destination_id) and
+        clears_block?(trip, before, moved, destination_id)
+    end)
+    |> Enum.map(& &1.id)
+    |> Enum.sort()
+  end
+
+  defp clear_trips(trips, cleared_trip_ids) do
+    cleared = MapSet.new(cleared_trip_ids)
+
+    Enum.map(trips, fn trip ->
+      if MapSet.member?(cleared, trip.id), do: %{trip | block_id: nil}, else: trip
+    end)
+  end
+
+  # Only the destination's dates change: a source calendar keeps its own definition after
+  # its last trip moves, so its dates stay part of the version's day types (INV-2).
+  defp move_calendars(calendars, destination_id, result_dates) do
+    Enum.map(calendars, fn calendar ->
+      if calendar.service_id == destination_id do
+        %{calendar | active_dates: result_dates}
+      else
+        calendar
+      end
+    end)
+  end
+
+  defp move_trip(trip, moved_services, destination_id) do
+    if MapSet.member?(moved_services, trip.service_id) do
+      %{trip | service_id: destination_id}
+    else
+      trip
+    end
+  end
+
+  defp transfer_states(before, after_state, transfers) do
+    transfers
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.sort_by(& &1.id)
+    |> Enum.map(fn row ->
+      %{
+        id: row.id,
+        before: InSeat.state(row, before.in_seat),
+        after: InSeat.state(row, after_state.in_seat)
+      }
+    end)
+  end
+
+  defp projection_in_seat_context(day_types, service_dates, trips) do
+    %{
+      trips: Map.new(trips, &{&1.trip_id, &1}),
+      service_dates: service_dates,
+      day_types: day_types,
+      sequences: projection_sequences(day_types, trips)
+    }
+  end
+
+  # `Checks.sequence/1` is the order the in-seat rule reads, keyed by day type and block ID
+  # for `{day key, block}`. Every derived day type is handed over: the rule itself keeps
+  # only the day types where both of a record's trips run.
+  defp projection_sequences(day_types, trips) do
+    block_ids =
+      trips
+      |> Enum.filter(&is_binary(&1.block_id))
+      |> Enum.map(& &1.block_id)
+      |> Enum.uniq()
+
+    for day_type <- day_types,
+        block_id <- block_ids,
+        into: %{} do
+      order =
+        trips
+        |> Enum.filter(&(&1.block_id == block_id and &1.service_id in day_type.service_ids))
+        |> Checks.sequence()
+        |> Enum.map(& &1.id)
+
+      {{day_type.key, block_id}, order}
+    end
+  end
+
+  # The day's checks, per day type, plus the in-seat findings of every distinct record. A
+  # trip without a block is in no block's findings here; `cleared_trip_ids` reports its
+  # unassignment.
+  defp projection_findings(day_types, trips, transfers, in_seat_context, min_layover_minutes) do
+    service_by_uuid = Map.new(trips, &{&1.id, &1.service_id})
+
+    block_findings =
+      Enum.flat_map(day_types, &day_type_findings(&1, trips, min_layover_minutes))
+
+    in_seat_findings =
+      transfers
+      |> Enum.uniq_by(& &1.id)
+      |> Enum.flat_map(fn row ->
+        row
+        |> InSeat.finding(InSeat.state(row, in_seat_context), in_seat_context)
+        |> List.wrap()
+        |> Enum.map(
+          &with_day_type_context(&1, applicable_day_types(&1, day_types, service_by_uuid))
+        )
+      end)
+
+    (block_findings ++ in_seat_findings)
+    |> Enum.uniq_by(&finding_context_key/1)
+    |> Enum.sort_by(&finding_context_key/1)
+  end
+
+  defp day_type_findings(day_type, trips, min_layover_minutes) do
+    day_type
+    |> day_type_trips(trips)
+    |> Enum.group_by(& &1.block_id)
+    |> Enum.flat_map(fn {block_id, block_trips} ->
+      block_id
+      |> Checks.block_findings(Enum.sort_by(block_trips, & &1.trip_id), min_layover_minutes)
+      |> Enum.map(&with_day_type_context(&1, [day_type]))
+    end)
+  end
+
+  defp day_type_trips(day_type, trips) do
+    Enum.filter(trips, &(is_binary(&1.block_id) and &1.service_id in day_type.service_ids))
+  end
+
+  # The day types a finding applies to: the ones running every service its trips name, so
+  # their dates are the dates all of those trips run.
+  defp applicable_day_types(finding, day_types, service_by_uuid) do
+    service_ids =
+      finding.trip_ids
+      |> Enum.flat_map(&service_of(&1, service_by_uuid))
+      |> Enum.uniq()
+
+    case service_ids do
+      [] -> []
+      service_ids -> Enum.filter(day_types, &runs_all?(&1, service_ids))
+    end
+  end
+
+  defp runs_all?(day_type, service_ids) do
+    Enum.all?(service_ids, &(&1 in day_type.service_ids))
+  end
+
+  # A finding naming a trip the projection does not hold has no service to look up.
+  defp service_of(trip_id, service_by_uuid) do
+    List.wrap(Map.get(service_by_uuid, trip_id))
+  end
+
+  defp with_day_type_context(finding, day_types) do
+    Map.merge(finding, %{
+      day_type_keys: Enum.map(day_types, & &1.key),
+      dates: day_types |> Enum.flat_map(& &1.dates) |> Enum.uniq() |> Enum.sort(Date)
+    })
+  end
+
+  defp finding_context_key(finding) do
+    {finding.day_type_keys, Checks.finding_key(finding)}
   end
 
   defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, min_layover) do

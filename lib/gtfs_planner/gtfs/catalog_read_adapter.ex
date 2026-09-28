@@ -15,7 +15,10 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   scope, with only `DBConnection.ConnectionError` becoming `{:error, :unavailable}`.
   The calendar list resolves its agency-local today and version-wide feed gaps
   through one operational read so the list header and its gap callout come from
-  the same clock resolution.
+  the same clock resolution. The calendar screen read composes the summaries with
+  those same facts in one protected snapshot, and reports `complete?: false` with
+  `gaps: nil` for a version that holds a retained invalid weekly range instead of
+  asserting a complete gap set.
 
   `GtfsPlanner.Gtfs.CatalogReadAdapter.Repo` is the production implementation.
   `GtfsPlanner.Gtfs` resolves the module at call time from
@@ -67,6 +70,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
           checks: FareZones.checks(),
           stops: FareZones.stop_page()
         }
+  @type calendar_screen :: Calendars.screen()
 
   @callback load_route_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, route_page()} | unavailable()
@@ -86,6 +90,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               {:ok, Stop.t()} | {:error, :not_found | :unavailable}
   @callback load_calendar_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, calendar_page()} | {:error, :not_found | :unavailable}
+  @callback load_calendar_screen(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+              {:ok, calendar_screen()} | {:error, :not_found | :unavailable}
   @callback fetch_calendar(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, Calendars.payload()} | {:error, :not_found | :unavailable}
   @callback load_calendar_feed_status(Ecto.UUID.t(), Ecto.UUID.t()) ::

@@ -296,7 +296,53 @@ defmodule GtfsPlanner.Versions do
     GtfsVersion.changeset(version, attrs)
   end
 
+  # --- writer coordination --------------------------------------------------
+
+  @doc """
+  Locks one organization-scoped version row `FOR SHARE` for a direct input writer.
+
+  Cooperating writers take this lock inside their own transaction before any route,
+  pattern, block, trip or stop lock, so a calendar mutation or a calendar combination that
+  owns the same version row `FOR UPDATE` cannot commit a fresh input between a review and
+  its apply. Two writers of the same version therefore wait for each other only for as long
+  as one of them is replacing version-wide input.
+
+  This is a scoped row lock for the caller's transaction, not an authorization check, and it
+  does not change publication rules: a `"staging"` or `"importing"` scope is locked exactly
+  like a published one, so import helpers that own an unpublished version keep writing.
+  Callers that must refuse an unpublished scope keep their own published check.
+
+  Returns the locked `%GtfsVersion{}`, or rolls the surrounding transaction back with
+  `:not_found` when the version does not exist inside that organization. Call only inside
+  `Repo.transaction/1`.
+  """
+  @spec lock_for_input_write!(Ecto.UUID.t(), Ecto.UUID.t()) :: GtfsVersion.t()
+  def lock_for_input_write!(organization_id, version_id) do
+    organization_id
+    |> scoped_version_for_share(version_id)
+    |> case do
+      %GtfsVersion{} = version -> version
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
   # --- private --------------------------------------------------------------
+
+  # A literal lock string is required by Ecto. This is the same scoped share lock the
+  # calendar reads and schedule writers already take, so input writers exclude each other
+  # and any exclusive version owner instead of racing it.
+  defp scoped_version_for_share(organization_id, version_id) do
+    if uuid?(organization_id) and uuid?(version_id) do
+      from(v in GtfsVersion,
+        where: v.id == ^version_id and v.organization_id == ^organization_id,
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+    end
+  end
+
+  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+  defp uuid?(_value), do: false
 
   defp lifecycle_state(organization_id, version_id) do
     from(v in GtfsVersion,

@@ -17,9 +17,12 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
   preserving the domain's own `{:error, :not_found}`. A blocking day read delegates to
   `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way, as do the
-  Schedules block warning and the first-day-type key. The calendar list feed
-  status resolves the agency-local today once and reports the version-wide
-  service gaps with it. The Fare zones workspace resolves its inventory, checks
+  Schedules block warning and the first-day-type key. The calendar screen read
+  delegates the same way, so its one protected snapshot carries the summaries, the
+  resolved agency-local today and the global horizon and gaps, with `gaps: nil`
+  and `complete?: false` when the version holds a retained invalid calendar range.
+  The calendar list feed status resolves the agency-local today once and reports
+  the version-wide service gaps with it. The Fare zones workspace resolves its inventory, checks
   and first stop page in one operational read, so a lost connection is reported
   once for the whole workspace. Nothing else is rescued, so
   a malformed id, a bad query, or any other defect still raises rather than being
@@ -123,6 +126,15 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   def load_calendar_catalog(organization_id, gtfs_version_id, opts) do
     case run(fn -> Calendars.list_calendars(organization_id, gtfs_version_id, opts) end) do
       {:ok, {:ok, summaries}} -> {:ok, summaries}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_calendar_screen(organization_id, gtfs_version_id, opts) do
+    case run(fn -> Calendars.load_screen(organization_id, gtfs_version_id, opts) end) do
+      {:ok, {:ok, screen}} -> {:ok, screen}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end

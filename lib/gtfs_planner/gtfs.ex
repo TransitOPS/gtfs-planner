@@ -78,6 +78,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Validations.WalkabilityTest
+  alias GtfsPlanner.Versions
 
   require Logger
 
@@ -461,6 +462,25 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
   def delete_general_transfers(pairs, %AuditContext{} = audit) do
     Transfers.delete_general_many(pairs, audit)
+  end
+
+  @doc """
+  Loads one coherent calendar screen snapshot through the configured catalog read adapter.
+
+  The snapshot carries every calendar row with its exceptions, derived periods and
+  grouped route usage, together with the single agency-local `today` and its `zone`
+  resolution, the global `horizon` and the version-wide service `gaps`. `opts` may
+  carry `:sort_by`/`:sort_dir`, and `:service_ids` limits only the returned `:rows`;
+  the global horizon and gaps are computed over the whole version before any filter.
+  A version holding a retained reversed weekly range reports `complete?: false` with
+  `:invalid_calendars` populated and `gaps: nil` rather than an asserted complete gap
+  set. A foreign, invalid or unpublished scope is `{:error, :not_found}` and a lost
+  database connection is `{:error, :unavailable}`.
+  """
+  @spec load_calendar_screen(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Calendars.screen()} | {:error, :not_found | :unavailable}
+  def load_calendar_screen(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_calendar_screen(organization_id, gtfs_version_id, opts)
   end
 
   @doc """
@@ -1983,6 +2003,12 @@ defmodule GtfsPlanner.Gtfs do
          expected_fingerprint,
          %AuditContext{} = audit_ctx
        ) do
+    # Reviewed alignment rewrites child stop geometry, a combination input, so the scoped version
+    # share lock is taken before the stop-level `FOR UPDATE`, the fingerprint comparison and every
+    # child update. The surrounding serializable transaction and its whole-transaction retry stay
+    # exactly as they were.
+    Versions.lock_for_input_write!(audit_ctx.organization_id, audit_ctx.gtfs_version_id)
+
     case load_stop_level_for_update_scoped(stop_level_id, audit_ctx) do
       nil ->
         Repo.rollback(:not_found)
@@ -2105,15 +2131,19 @@ defmodule GtfsPlanner.Gtfs do
           | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()} | term()}
   def apply_alignment_to_child_stops(%StopLevel{} = stop_level, image_w, image_h) do
     with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h) do
-      persist_derived_coords(derived)
+      persist_derived_coords(derived, stop_level)
     end
   end
 
-  defp persist_derived_coords([]), do: {:ok, 0}
+  defp persist_derived_coords([], _stop_level), do: {:ok, 0}
 
-  defp persist_derived_coords(derived) when is_list(derived) do
+  defp persist_derived_coords(derived, %StopLevel{} = stop_level) when is_list(derived) do
     transaction_result =
       Repo.transaction(fn ->
+        # Derived child coordinates are a reviewed combination input, so the version share lock is
+        # the first statement of this transaction, before the child stop rows are read or updated.
+        Versions.lock_for_input_write!(stop_level.organization_id, stop_level.gtfs_version_id)
+
         Enum.map(derived, fn entry ->
           case update_derived_stop_coords(entry) do
             {:ok, updated_stop} -> updated_stop
@@ -2994,7 +3024,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_stop(attrs \\ %{}) do
     %Stop{}
     |> Stop.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
     |> broadcast([:stops, :created])
   end
 
@@ -3004,7 +3034,7 @@ defmodule GtfsPlanner.Gtfs do
   def import_create_stop(attrs \\ %{}) do
     %Stop{}
     |> Stop.import_changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
     |> broadcast([:stops, :created])
   end
 
@@ -3022,7 +3052,7 @@ defmodule GtfsPlanner.Gtfs do
   def update_stop(%Stop{} = stop, attrs) do
     stop
     |> Stop.changeset(attrs)
-    |> Repo.update()
+    |> update_with_input_write_lock()
     |> broadcast([:stops, :updated])
   end
 
@@ -3041,6 +3071,7 @@ defmodule GtfsPlanner.Gtfs do
 
       multi =
         Ecto.Multi.new()
+        |> lock_input_write_multi(stop.organization_id, stop.gtfs_version_id)
         |> Ecto.Multi.run(:update_stop, fn _repo, _changes ->
           stop
           |> Stop.changeset(attrs)
@@ -3076,7 +3107,7 @@ defmodule GtfsPlanner.Gtfs do
   def import_update_stop(%Stop{} = stop, attrs) do
     stop
     |> Stop.import_changeset(attrs)
-    |> Repo.update()
+    |> update_with_input_write_lock()
     |> broadcast([:stops, :updated])
   end
 
@@ -3092,7 +3123,7 @@ defmodule GtfsPlanner.Gtfs do
       {:error, %Ecto.Changeset{}}
   """
   def delete_stop(%Stop{} = stop) do
-    Repo.delete(stop)
+    delete_with_input_write_lock(stop)
     |> broadcast([:stops, :deleted])
   end
 
@@ -3122,6 +3153,7 @@ defmodule GtfsPlanner.Gtfs do
 
       stop ->
         Ecto.Multi.new()
+        |> lock_input_write_multi(organization_id, gtfs_version_id)
         |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
         |> Ecto.Multi.delete(:stop, stop)
         |> Repo.transaction()
@@ -3886,7 +3918,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_agency(attrs \\ %{}) do
     %Agency{}
     |> Agency.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
   end
 
   # Display clock functions
@@ -4465,7 +4497,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_trip(attrs \\ %{}) do
     %Trip{}
     |> Trip.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
   end
 
   # StopTime functions
@@ -4486,7 +4518,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_stop_time(attrs \\ %{}) do
     %StopTime{}
     |> StopTime.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
   end
 
   # Calendar functions
@@ -4553,11 +4585,29 @@ defmodule GtfsPlanner.Gtfs do
   def duplicate_calendar(service_id, attrs, %AuditContext{} = audit_context),
     do: Calendars.duplicate_calendar(service_id, attrs, audit_context)
 
-  @doc "Reviews a calendar command against the caller's retained source fingerprints."
+  @doc """
+  Reviews a calendar command against the caller's retained source fingerprints.
+
+  The reviewed `{:combine, destination_id, source_ids, decisions}` command reads the complete
+  protected input set of the version instead of one form source and returns the factual reviewed
+  combination - conflicts, per-calendar effects, moved trip count, retained sources and the
+  simultaneous block effects - with a fingerprint over those rows. A command whose decisions are
+  incomplete has no projected result and no token.
+  """
   def review_calendar_change(command, source_fingerprints, %AuditContext{} = audit_context),
     do: Calendars.review_calendar_change(command, source_fingerprints, audit_context)
 
-  @doc "Applies a previously reviewed calendar command under the write lock."
+  @doc """
+  Applies a previously reviewed calendar command under the write lock.
+
+  A retained-form command recomputes the reviewed source from current rows and refuses a mismatch
+  with `:stale_review`. A reviewed `{:combine, destination_id, source_ids, decisions}` applies in
+  one ordinary read-committed transaction and returns
+  `%{action: :combined | :unchanged, operation_id: uuid | nil, destination_id: id,
+  moved_trip_count: n, changed_trip_ids: [uuid], affected_service_ids: [id]}`; a no-op has a nil
+  `operation_id` and writes nothing. A serialization failure or deadlock retries the whole
+  transaction at most three times and then returns `:busy`.
+  """
   def apply_calendar_change(command, fingerprint, %AuditContext{} = audit_context),
     do: Calendars.apply_calendar_change(command, fingerprint, audit_context)
 
@@ -5091,6 +5141,7 @@ defmodule GtfsPlanner.Gtfs do
 
         multi =
           Ecto.Multi.new()
+          |> lock_input_write_multi(organization_id, gtfs_version_id)
           |> Ecto.Multi.run(:rename_stops_to_temp, fn repo, _changes ->
             {:ok,
              update_stop_field_values(
@@ -5867,6 +5918,80 @@ defmodule GtfsPlanner.Gtfs do
   defp broadcast_topic_for(%Pathway{}), do: [:pathways, :updated]
   defp broadcast_topic_for(%Level{}), do: [:levels, :updated]
 
+  # -- Direct input writer coordination --
+
+  # Direct trip, stop-time and agency inserts are reviewed inputs of a calendar combination
+  # (trip membership, the display zone that dates agency-local "today"), so each one takes the
+  # scoped version share lock inside its own transaction before the insert. Invalid input is
+  # refused with the changeset exactly as `Repo.insert/1` did, without a transaction or a lock.
+  defp insert_with_input_write_lock(changeset) do
+    if changeset.valid? do
+      Repo.transaction(fn -> insert_after_version_lock(changeset) end)
+    else
+      # Repo rejects an invalid changeset without a query and sets its action, which forms
+      # need to render field errors.
+      Repo.insert(changeset)
+    end
+  end
+
+  defp insert_after_version_lock(changeset) do
+    lock_changeset_version!(changeset)
+
+    case Repo.insert(changeset) do
+      {:ok, row} -> row
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  # Stop and parent rows are reviewed inputs too: the combination projection reads endpoint and
+  # parent coordinates with a parent-coordinate fallback and the fingerprint carries parent rows
+  # including their absence. Each stop update therefore takes the same scoped version share lock
+  # before its row mutation; invalid input keeps its changeset error without a transaction.
+  defp update_with_input_write_lock(changeset) do
+    if changeset.valid? do
+      Repo.transaction(fn -> update_after_version_lock(changeset) end)
+    else
+      # Repo rejects an invalid changeset without a query and sets its action, which forms
+      # need to render field errors.
+      Repo.update(changeset)
+    end
+  end
+
+  defp update_after_version_lock(changeset) do
+    lock_changeset_version!(changeset)
+
+    case Repo.update(changeset) do
+      {:ok, row} -> row
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp delete_with_input_write_lock(row) do
+    Repo.transaction(fn ->
+      Versions.lock_for_input_write!(row.organization_id, row.gtfs_version_id)
+
+      case Repo.delete(row) do
+        {:ok, deleted} -> deleted
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  # The stop cascade and the child-deletion transaction lock the version as their first step,
+  # before the `FOR UPDATE` on the referenced rows and before any stop_id rewrite.
+  defp lock_input_write_multi(multi, organization_id, gtfs_version_id) do
+    Ecto.Multi.run(multi, :lock_version, fn _repo, _changes ->
+      {:ok, Versions.lock_for_input_write!(organization_id, gtfs_version_id)}
+    end)
+  end
+
+  defp lock_changeset_version!(changeset) do
+    Versions.lock_for_input_write!(
+      Ecto.Changeset.get_field(changeset, :organization_id),
+      Ecto.Changeset.get_field(changeset, :gtfs_version_id)
+    )
+  end
+
   # -- Snapshot helpers --
 
   defp build_snapshot(_entity_type, nil), do: nil
@@ -6077,11 +6202,13 @@ defmodule GtfsPlanner.Gtfs do
   # Calendar diffs are already explicit aggregate before/after snapshots.
   defp audited_attrs_for(type, attrs) when type in [:calendar, "calendar"], do: attrs
 
-  # A trip update carries the explicit before/after snapshots and its operation
-  # scope; no trip column is diffed field-by-field.
+  # A trip update carries the explicit before/after snapshots, its operation scope and - for a
+  # reviewed calendar combination - the one optional combination envelope; no trip column is diffed
+  # field-by-field. The per-trip `affected_trip_ids` list is deliberately unused by a combination,
+  # whose complete member list lives once in the envelope (AC-26).
   defp audited_attrs_for(type, attrs) when type in [:trip, "trip"] do
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(before after operation_id affected_trip_ids)
+      to_string(key) in ~w(before after operation_id affected_trip_ids combination)
     end)
   end
 
@@ -6206,7 +6333,9 @@ defmodule GtfsPlanner.Gtfs do
   # per-calendar before/after snapshots, so one log per changed calendar can be
   # reconstructed into the whole command.
   defp put_calendar_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_service_ids, :selected_dates], changed, fn key, acc ->
+    keys = [:operation_id, :affected_service_ids, :selected_dates, :combination]
+
+    Enum.reduce(keys, changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
@@ -6218,7 +6347,7 @@ defmodule GtfsPlanner.Gtfs do
   # UUIDs alongside the per-trip before/after snapshot, so one log per affected
   # trip can be reconstructed into the whole command.
   defp put_trip_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_trip_ids], changed, fn key, acc ->
+    Enum.reduce([:operation_id, :affected_trip_ids, :combination], changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
@@ -6298,6 +6427,7 @@ defmodule GtfsPlanner.Gtfs do
 
   defp rollback_multi(log, audit_ctx, entity, update_attrs) do
     Ecto.Multi.new()
+    |> lock_input_write_multi(log.organization_id, log.gtfs_version_id)
     |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
       update_entity_without_broadcast(entity, update_attrs)
     end)

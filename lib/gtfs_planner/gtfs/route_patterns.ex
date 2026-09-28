@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
   @pattern_fields ~w(route_pattern_name route_pattern_time_desc route_pattern_typicality direction_id headsign canonical_route_pattern route_pattern_sort_order)
@@ -1802,10 +1803,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   @doc """
   Locks one published route of the audit context's organization and version with `FOR UPDATE`.
 
-  Call only inside `Repo.transaction/1`. This is a lock, not a transaction: it takes the row lock
-  and rolls back `:not_found` when the route does not exist or its version is not published.
+  Call only inside `Repo.transaction/1`. This is a lock, not a transaction. It takes the
+  organization-scoped version row `FOR SHARE` first, so a calendar mutation or a calendar
+  combination that owns that version cannot commit fresh pattern input between a review and its
+  apply, then the route `FOR UPDATE`, keeping the rule-table lock order. It rolls back
+  `:not_found` when the version is outside the organization, the route does not exist, or the
+  version is not published.
   """
   def lock_published_route!(%AuditContext{} = audit, route_id) do
+    # The shared lock is a scope, not an authorization: callers that took it earlier in the same
+    # transaction (the schedule writers) re-lock the row here without upgrading or reordering it.
+    version = Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
     route =
       from(route in Route,
         where:
@@ -1817,7 +1826,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     case route do
       %Route{} = row ->
-        if Repo.get!(GtfsVersion, row.gtfs_version_id).publication_status == "published" do
+        # The published requirement is applied after the shared lock, exactly as `Calendars` does,
+        # because the shared lock itself takes no publication stance.
+        if version.publication_status == "published" do
           row
         else
           Repo.rollback(:not_found)

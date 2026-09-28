@@ -98,6 +98,11 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   @doc """
   Converts a calendar CSV row to attributes map.
 
+  Weekday flags and both dates are parsed independently, so a row whose end date
+  precedes its start date stays accepted here. Import acceptance is deliberately
+  permissive; `GtfsPlanner.Gtfs.Calendars` identifies such a retained range as a
+  coverage error on its summary instead of rejecting the file.
+
   ## Parameters
 
     * `row_map` - Map of CSV column names to values
