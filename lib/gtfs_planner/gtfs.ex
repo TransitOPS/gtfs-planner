@@ -3307,6 +3307,33 @@ defmodule GtfsPlanner.Gtfs do
     do: PathwayEvolutions.create_pathway_evolution(attrs, audit_context)
 
   @doc """
+  Updates one persisted closure under the published-version write lock.
+
+  The scoped row is loaded `FOR UPDATE` and compared with the supplied
+  fingerprint before any write, so a save based on an older row returns
+  `:stale_review` while edits beside the row never do. References are
+  rechecked and an unchanged valid submission writes neither row nor audit.
+  One `pathway_evolution` change log records the `before`/`after` snapshots in
+  the same transaction; any audit failure rolls the update back. Returns the
+  persisted row, its fingerprint and notices, or a changeset field error,
+  `:forbidden`, `:not_found` or `:stale_review`.
+  """
+  def update_pathway_evolution(id, attrs, fingerprint, audit_context),
+    do: PathwayEvolutions.update_pathway_evolution(id, attrs, fingerprint, audit_context)
+
+  @doc """
+  Deletes one persisted closure under the published-version write lock.
+
+  The same fingerprint guard as `update_pathway_evolution/4` applies; a stale
+  fingerprint preserves the row. Deletion is independent of calendar activity
+  and removes only the closure row. One `pathway_evolution` change log records
+  the `before` snapshot in the same transaction; any audit failure rolls the
+  delete back.
+  """
+  def delete_pathway_evolution(id, fingerprint, audit_context),
+    do: PathwayEvolutions.delete_pathway_evolution(id, fingerprint, audit_context)
+
+  @doc """
   Returns a unique stop_id within an organization and GTFS version.
 
   Uses the provided base stop_id if available, otherwise appends `_2`, `_3`, etc.
@@ -6933,6 +6960,12 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  # A closure update carries the explicit before/after snapshots; no closure
+  # column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs) when type in [:pathway_evolution, "pathway_evolution"] do
+    Map.filter(attrs, fn {key, _value} -> to_string(key) in ~w(before after) end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -6998,6 +7031,17 @@ defmodule GtfsPlanner.Gtfs do
               :pattern_shape,
               "pattern_shape"
             ] and action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+  end
+
+  # Closures, like calendars and trips, diff two explicit normalized snapshots:
+  # the update log carries before/after while the entity snapshot stays the
+  # after state.
+  defp build_changed_fields(entity_type, "updated", _snapshot, attrs)
+       when entity_type in [:pathway_evolution, "pathway_evolution"] do
     %{
       "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
