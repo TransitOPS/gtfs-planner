@@ -78,6 +78,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Validations.WalkabilityTest
+  alias GtfsPlanner.Versions
 
   require Logger
 
@@ -3905,7 +3906,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_agency(attrs \\ %{}) do
     %Agency{}
     |> Agency.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
   end
 
   # Display clock functions
@@ -4484,7 +4485,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_trip(attrs \\ %{}) do
     %Trip{}
     |> Trip.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
   end
 
   # StopTime functions
@@ -4505,7 +4506,7 @@ defmodule GtfsPlanner.Gtfs do
   def create_stop_time(attrs \\ %{}) do
     %StopTime{}
     |> StopTime.changeset(attrs)
-    |> Repo.insert()
+    |> insert_with_input_write_lock()
   end
 
   # Calendar functions
@@ -5885,6 +5886,32 @@ defmodule GtfsPlanner.Gtfs do
   defp broadcast_topic_for(%Stop{}), do: [:stops, :updated]
   defp broadcast_topic_for(%Pathway{}), do: [:pathways, :updated]
   defp broadcast_topic_for(%Level{}), do: [:levels, :updated]
+
+  # -- Direct input writer coordination --
+
+  # Direct trip, stop-time and agency inserts are reviewed inputs of a calendar combination
+  # (trip membership, the display zone that dates agency-local "today"), so each one takes the
+  # scoped version share lock inside its own transaction before the insert. Invalid input is
+  # refused with the changeset exactly as `Repo.insert/1` did, without a transaction or a lock.
+  defp insert_with_input_write_lock(changeset) do
+    if changeset.valid? do
+      Repo.transaction(fn -> insert_after_version_lock(changeset) end)
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp insert_after_version_lock(changeset) do
+    Versions.lock_for_input_write!(
+      Ecto.Changeset.get_field(changeset, :organization_id),
+      Ecto.Changeset.get_field(changeset, :gtfs_version_id)
+    )
+
+    case Repo.insert(changeset) do
+      {:ok, row} -> row
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
 
   # -- Snapshot helpers --
 

@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
@@ -2366,12 +2367,12 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     :ok
   end
 
+  # The shared input-write lock takes no publication stance, so calendar reads and
+  # schedule writers keep their own stricter published requirement here.
   defp lock_shared_published_version!(organization_id, version_id) do
-    organization_id
-    |> published_version_for_share(version_id)
-    |> case do
-      %GtfsVersion{} = version -> version
-      nil -> Repo.rollback(:not_found)
+    case Versions.lock_for_input_write!(organization_id, version_id) do
+      %GtfsVersion{publication_status: @published_status} = version -> version
+      %GtfsVersion{} -> Repo.rollback(:not_found)
     end
   end
 
@@ -2388,20 +2389,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   end
 
-  # A literal lock string is required by Ecto; sharing the scoped version row
-  # excludes cooperating writers only for the duration of one aggregate load.
-  defp published_version_for_share(organization_id, version_id) do
-    if uuid?(organization_id) and uuid?(version_id) do
-      from(v in GtfsVersion,
-        where:
-          v.id == ^version_id and v.organization_id == ^organization_id and
-            v.publication_status == ^@published_status,
-        lock: "FOR SHARE"
-      )
-      |> Repo.one()
-    end
-  end
-
+  # A literal lock string is required by Ecto.
   defp published_version_for_update(organization_id, version_id) do
     if uuid?(organization_id) and uuid?(version_id) do
       from(v in GtfsVersion,
