@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   import Ecto.Query
 
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
@@ -506,6 +507,312 @@ defmodule GtfsPlanner.Gtfs.Alignments do
        do: name
 
   defp pattern_label(%RoutePattern{route_pattern_id: natural_id}), do: natural_id
+
+  @doc """
+  Materializes a complete pattern into its GTFS rows, in the current transaction.
+
+  Call inside the apply transaction after the route, pattern and linked-trip
+  locks are held (step 12 owns those locks). Rolls back with
+  `{:blocked, blockers}` when the plan carries R13 trip blockers or the
+  geometry rebuilds as blocked (INV-3); otherwise writes in order: the
+  pattern's `shapes` rows under `plan.shape_id` (deleted, then chunked
+  inserts of 1,000), per-visit `route_pattern_stops.shape_dist_traveled`,
+  the pattern's `shape_id` and `alignment_digest`, linked trips' `shape_id`
+  and `updated_at` (INV-4), and linked trips' stop-time distances by
+  stop-sequence position. The positional update's affected-row count is
+  rechecked against `visit_count * linked_trip_count` and rolls back with
+  freshly derived blockers on mismatch. Replaced shapes with action
+  `:deleted` lose their rows only when no trip in the version still
+  references them (R11); the `pattern_shape` audit entry records the
+  replaced shapes' prior points and the prior per-trip distance vectors
+  (INV-5). Every read and write filters by the pattern's organization and
+  version (INV-2); interiors stay `[lon, lat]` until `Materializer.build/2`
+  writes the `shape_pt_lat` / `shape_pt_lon` columns (INV-1).
+  """
+  @spec materialize_pattern!(RoutePattern.t(), resolved(), shape_plan(), AuditContext.t()) :: %{
+          shape_id: String.t(),
+          trips_updated: non_neg_integer(),
+          shapes_deleted: [String.t()]
+        }
+  def materialize_pattern!(
+        %RoutePattern{} = pattern,
+        %{visits: visits, sections: sections},
+        %{shape_id: shape_id, blockers: plan_blockers, replaced: replaced, previous: previous},
+        %AuditContext{} = audit_context
+      ) do
+    if plan_blockers != [] do
+      Repo.rollback({:blocked, plan_blockers})
+    end
+
+    materializer_visits = Enum.map(visits, fn visit -> %{lat: visit.lat, lon: visit.lon} end)
+    interiors = Enum.map(sections, & &1.points)
+
+    built =
+      case Materializer.build(materializer_visits, interiors) do
+        {:ok, built} -> built
+        {:error, {:blocked, _}} -> Repo.rollback({:blocked, plan_blockers})
+      end
+
+    %{points: points, visit_distances: visit_distances, digest: digest} = built
+
+    now = DateTime.utc_now()
+    visit_count = length(visits)
+
+    rewrite_shape_rows!(pattern, shape_id, points, now)
+    write_visit_distances!(pattern, visits, visit_distances, now)
+    update_pattern_shape!(pattern, shape_id, digest, now)
+    trips_updated = update_linked_trips!(pattern, shape_id, now)
+    update_stop_time_distances!(pattern, visit_count, trips_updated, visit_distances)
+    shapes_deleted = delete_replaced_shapes!(pattern, replaced)
+
+    pattern_after = Repo.reload!(pattern)
+
+    audit!(audit_context, :pattern_shape, pattern_after, "updated", %{
+      before: %{
+        shape_id: pattern.shape_id,
+        alignment_digest: pattern.alignment_digest,
+        replaced_shapes: audit_shapes(replaced),
+        previous: audit_previous(previous)
+      },
+      after: %{
+        shape_id: shape_id,
+        alignment_digest: digest,
+        visit_distances: Enum.map(visit_distances, &Decimal.to_string/1),
+        point_count: length(points)
+      }
+    })
+
+    %{shape_id: shape_id, trips_updated: trips_updated, shapes_deleted: shapes_deleted}
+  end
+
+  defp rewrite_shape_rows!(pattern, shape_id, points, now) do
+    Repo.delete_all(
+      from(s in Shape,
+        where:
+          s.organization_id == ^pattern.organization_id and
+            s.gtfs_version_id == ^pattern.gtfs_version_id and
+            s.shape_id == ^shape_id
+      )
+    )
+
+    points
+    |> Enum.map(fn %{sequence: sequence, lat: lat, lon: lon, dist: dist} ->
+      %{
+        organization_id: pattern.organization_id,
+        gtfs_version_id: pattern.gtfs_version_id,
+        shape_id: shape_id,
+        shape_pt_lat: lat,
+        shape_pt_lon: lon,
+        shape_pt_sequence: sequence,
+        shape_dist_traveled: dist,
+        inserted_at: now,
+        updated_at: now
+      }
+    end)
+    |> Enum.chunk_every(1_000)
+    |> Enum.each(&Repo.insert_all(Shape, &1))
+
+    :ok
+  end
+
+  defp write_visit_distances!(pattern, visits, visit_distances, now) do
+    visits
+    |> Enum.zip(visit_distances)
+    |> Enum.each(fn {visit, dist} ->
+      Repo.update_all(
+        from(o in RoutePatternStop,
+          where:
+            o.id == ^visit.occurrence_id and
+              o.organization_id == ^pattern.organization_id and
+              o.gtfs_version_id == ^pattern.gtfs_version_id
+        ),
+        set: [shape_dist_traveled: dist, updated_at: now]
+      )
+    end)
+
+    :ok
+  end
+
+  defp update_pattern_shape!(pattern, shape_id, digest, now) do
+    Repo.update_all(
+      from(p in RoutePattern,
+        where:
+          p.id == ^pattern.id and
+            p.organization_id == ^pattern.organization_id and
+            p.gtfs_version_id == ^pattern.gtfs_version_id
+      ),
+      set: [shape_id: shape_id, alignment_digest: digest, updated_at: now]
+    )
+
+    :ok
+  end
+
+  defp update_linked_trips!(pattern, shape_id, now) do
+    {count, _} =
+      Repo.update_all(
+        from(t in Trip,
+          where:
+            t.organization_id == ^pattern.organization_id and
+              t.gtfs_version_id == ^pattern.gtfs_version_id and
+              t.route_id == ^pattern.route_id and
+              t.route_pattern_id == ^pattern.route_pattern_id and
+              t.pattern_derivation_state == "linked"
+        ),
+        set: [shape_id: shape_id, updated_at: now]
+      )
+
+    count
+  end
+
+  defp update_stop_time_distances!(pattern, visit_count, trips_updated, visit_distances) do
+    positions = if visit_count > 0, do: Enum.to_list(1..visit_count), else: []
+
+    %{num_rows: updated} =
+      Repo.query!(
+        """
+        UPDATE stop_times AS st
+        SET shape_dist_traveled = dists.dist, updated_at = NOW()
+        FROM (
+          SELECT s.id AS sid,
+                 row_number() OVER (PARTITION BY s.trip_id ORDER BY s.stop_sequence) AS rn
+          FROM stop_times AS s
+          JOIN trips AS t
+            ON t.organization_id = s.organization_id
+           AND t.gtfs_version_id = s.gtfs_version_id
+           AND t.trip_id = s.trip_id
+          WHERE s.organization_id = $1
+            AND s.gtfs_version_id = $2
+            AND t.route_id = $3
+            AND t.route_pattern_id = $4
+            AND t.pattern_derivation_state = 'linked'
+        ) AS ordered
+        JOIN unnest($5::int[], $6::numeric[]) AS dists(rn, dist)
+          ON dists.rn = ordered.rn
+        WHERE st.id = ordered.sid
+        """,
+        [
+          Ecto.UUID.dump!(pattern.organization_id),
+          Ecto.UUID.dump!(pattern.gtfs_version_id),
+          pattern.route_id,
+          pattern.route_pattern_id,
+          positions,
+          visit_distances
+        ]
+      )
+
+    if updated != visit_count * trips_updated do
+      Repo.rollback({:blocked, stop_count_blockers!(pattern, visit_count)})
+    end
+
+    :ok
+  end
+
+  defp stop_count_blockers!(pattern, visit_count) do
+    linked_ids =
+      from(t in Trip,
+        where:
+          t.organization_id == ^pattern.organization_id and
+            t.gtfs_version_id == ^pattern.gtfs_version_id and
+            t.route_id == ^pattern.route_id and
+            t.route_pattern_id == ^pattern.route_pattern_id and
+            t.pattern_derivation_state == "linked",
+        order_by: [asc: t.trip_id],
+        select: t.trip_id
+      )
+      |> Repo.all()
+
+    counts =
+      if linked_ids == [] do
+        %{}
+      else
+        from(st in StopTime,
+          where:
+            st.organization_id == ^pattern.organization_id and
+              st.gtfs_version_id == ^pattern.gtfs_version_id and
+              st.trip_id in ^linked_ids,
+          group_by: st.trip_id,
+          select: {st.trip_id, count(st.id)}
+        )
+        |> Repo.all()
+        |> Map.new()
+      end
+
+    label = pattern_label(pattern)
+
+    linked_ids
+    |> Enum.filter(fn trip_id -> Map.get(counts, trip_id, 0) != visit_count end)
+    |> Enum.map(fn trip_id ->
+      %{
+        route_pattern_id: pattern.route_pattern_id,
+        pattern_label: label,
+        trip_id: trip_id,
+        stop_time_count: Map.get(counts, trip_id, 0),
+        visit_count: visit_count
+      }
+    end)
+  end
+
+  defp delete_replaced_shapes!(pattern, replaced) do
+    replaced
+    |> Enum.filter(&(&1.action == :deleted))
+    |> Enum.filter(fn %{shape_id: shape_id} ->
+      not Repo.exists?(
+        from(t in Trip,
+          where:
+            t.organization_id == ^pattern.organization_id and
+              t.gtfs_version_id == ^pattern.gtfs_version_id and
+              t.shape_id == ^shape_id
+        )
+      )
+    end)
+    |> Enum.map(fn %{shape_id: shape_id} ->
+      Repo.delete_all(
+        from(s in Shape,
+          where:
+            s.organization_id == ^pattern.organization_id and
+              s.gtfs_version_id == ^pattern.gtfs_version_id and
+              s.shape_id == ^shape_id
+        )
+      )
+
+      shape_id
+    end)
+  end
+
+  defp audit_shapes(replaced) do
+    Enum.map(replaced, fn entry ->
+      %{
+        shape_id: entry.shape_id,
+        trip_count: entry.trip_count,
+        action: entry.action,
+        points: Enum.map(entry.points, &audit_point/1)
+      }
+    end)
+  end
+
+  defp audit_point([lat, lon, sequence, dist]), do: [lat, lon, sequence, audit_decimal(dist)]
+  defp audit_point(other), do: other
+
+  defp audit_previous(previous) do
+    Enum.map(previous, fn entry ->
+      %{
+        shape_id: entry.shape_id,
+        trip_count: entry.trip_count,
+        visit_distances: Enum.map(entry.visit_distances, &audit_decimal/1)
+      }
+    end)
+  end
+
+  defp audit_decimal(nil), do: nil
+  defp audit_decimal(%Decimal{} = dist), do: Decimal.to_string(dist)
+  defp audit_decimal(other), do: other
+
+  defp audit!(audit_context, type, entity, action, attrs) do
+    case Gtfs.record_change_in_transaction(audit_context, type, entity, action, attrs) do
+      {:ok, log} -> log
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
 
   @type imported_shape :: %{
           shape_id: String.t(),
