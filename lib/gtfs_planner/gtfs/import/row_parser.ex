@@ -10,6 +10,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   are processed without creating dynamic atoms or individual changesets.
   """
 
+  # The GTFS spec leaves `transfer_type` optional and defines an empty value as
+  # a recommended transfer point between routes.
+  @default_transfer_type 0
+
   @doc """
   Converts a route CSV row to attributes map.
 
@@ -1033,8 +1037,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
 
   Applies the GTFS endpoint rule: `transfer_type` is parsed first, then types 4
   and 5 (in-seat and not-in-seat linked trips) require both trip IDs and may omit
-  both stops, while every other type requires both stop IDs. Every stop, route and
-  trip value is normalized with `empty_to_nil/1`, so an empty column stores NULL.
+  both stops, while every other type requires both stop IDs. `transfer_type` is
+  optional in the GTFS spec, so an empty or absent column reads as `0` (a
+  recommended transfer point between routes). Every stop, route and trip value is
+  normalized with `empty_to_nil/1`, so an empty column stores NULL.
 
   ## Parameters
 
@@ -1048,8 +1054,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
     * `{:error, reason}` - Validation failure
   """
   def transfer_row_to_attrs(row_map, organization_id, gtfs_version_id) do
-    with {:ok, transfer_type_str} <- extract_required(row_map, "transfer_type"),
-         {:ok, transfer_type} <- parse_transfer_type(transfer_type_str),
+    with {:ok, transfer_type} <- parse_transfer_type(row_map["transfer_type"]),
          :ok <- require_transfer_endpoints(row_map, transfer_type) do
       {:ok, min_transfer_time} = parse_integer(row_map["min_transfer_time"])
 
@@ -1495,15 +1500,18 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   end
 
   @doc """
-  Parses transfer_type (0-5, required).
+  Parses transfer_type (0-5, optional).
+
+  The GTFS spec marks `transfer_type` optional: an empty or absent value means
+  `0`, a recommended transfer point between routes.
 
   ## Returns
 
     * `{:ok, integer}` - Valid transfer type
     * `{:error, reason}` - Parse failure
   """
-  def parse_transfer_type(nil), do: {:error, "transfer_type is required"}
-  def parse_transfer_type(""), do: {:error, "transfer_type is required"}
+  def parse_transfer_type(nil), do: {:ok, @default_transfer_type}
+  def parse_transfer_type(""), do: {:ok, @default_transfer_type}
 
   def parse_transfer_type(string) when is_binary(string) do
     case Integer.parse(string) do

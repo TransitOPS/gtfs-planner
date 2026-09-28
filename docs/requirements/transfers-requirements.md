@@ -20,7 +20,7 @@ The Transfers section manages the `transfers.txt` file, an optional file in the 
 | `to_route_id` | Foreign ID (routes.route_id) | Optional | Identifies the route where the transfer ends. If defined, the rule applies to departing trips on this route at the specified stop. |
 | `from_trip_id` | Foreign ID (trips.trip_id) | Conditionally Required | Identifies the specific trip where the transfer begins. Required for transfer_type 4 or 5 (linked trips). Takes precedence over from_route_id. |
 | `to_trip_id` | Foreign ID (trips.trip_id) | Conditionally Required | Identifies the specific trip where the transfer ends. Required for transfer_type 4 or 5 (linked trips). Takes precedence over to_route_id. |
-| `transfer_type` | Enum | Required | Indicates the type of connection. See Transfer Types below. |
+| `transfer_type` | Enum | Optional | Indicates the type of connection. An empty or absent value means type 0. See Transfer Types below. |
 | `min_transfer_time` | Non-negative Integer | Optional | Minimum time in seconds required to make a transfer. Used when transfer_type = 2. |
 
 ### 1.2 Transfer Types

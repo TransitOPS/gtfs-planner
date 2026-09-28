@@ -5,6 +5,8 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
   - Real `Import.import_files/3` stores stopless type 4 and 5 rows with NULL stops
     and both trip IDs, keeps stops required for types 0-3, and names the missing
     field through `RowParser.transfer_row_to_attrs/3`.
+  - The optional `transfer_type` column imports as type 0 when it is empty or
+    absent, so a feed that leaves it blank is stored rather than failed.
   - A full `Export.export_to_zip/3` writes a `transfers.txt` whose rows equal the
     literal input rows field for field (empty fields stay empty), and re-importing
     that export stores the same attribute values in a second version.
@@ -163,6 +165,43 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
 
       assert MapSet.new(stored_transfer_rows(organization.id, second_version.id)) ==
                MapSet.new(expected_stored_rows)
+    end
+  end
+
+  describe "an omitted transfer_type" do
+    test "imports empty and absent transfer_type columns as type 0", %{
+      organization: organization,
+      version: version
+    } do
+      # Real feeds (for example Sound Transit route 40) leave the optional
+      # `transfer_type` column empty on their stop-pair rows, and some omit the
+      # column entirely. An empty value means type 0 in the GTFS spec, so those
+      # rows must import as recommended transfer points rather than fail the
+      # whole feed.
+      transfers_csv = """
+      from_stop_id,from_route_id,to_stop_id,to_route_id,transfer_type,min_transfer_time
+      99603,100479,99610,2LINE,,
+      99610,100479,99603,2LINE,,
+      99603,2LINE,99610,100479,,
+      99610,2LINE,99603,100479,,
+      621,100479,623,2LINE,2,120
+      623,100479,621,2LINE,2,120
+      621,2LINE,623,100479,2,120
+      """
+
+      files = [%{filename: "transfers.txt", content: transfers_csv}]
+
+      assert {:ok, result} = Import.import_files(organization.id, version.id, files)
+      assert result.counts[:transfers] == 7
+      assert Gtfs.count_transfers(organization.id, version.id) == 7
+
+      types =
+        organization.id
+        |> Gtfs.list_transfers(version.id)
+        |> Enum.map(& &1.transfer_type)
+        |> Enum.sort()
+
+      assert types == [0, 0, 0, 0, 2, 2, 2]
     end
   end
 
