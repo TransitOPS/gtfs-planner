@@ -254,12 +254,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("open_assign", _params, socket), do: {:noreply, socket}
 
-  # The search input carries the whole form, so the handler keeps the checked
-  # radio as well as the narrowed search (the form is re-rendered on every event).
+  # One search event serves both pickers: the assignment form's and the block
+  # drawer's merge form. The change event belongs to the form, so the handler
+  # keeps the checked radio as well as the narrowed search (the form is
+  # re-rendered on every event). At most one of the two forms is on the page, so
+  # the payload decides which one the search belongs to.
   def handle_event("search_destination", params, socket) do
-    case socket.assigns.assign do
-      nil -> {:noreply, socket}
-      assign -> {:noreply, assign(socket, :assign, put_form_params(assign, params))}
+    cond do
+      socket.assigns.block_action && Map.has_key?(params, "block_action") ->
+        {:noreply, save_block_action(socket, params)}
+
+      socket.assigns.assign ->
+        {:noreply, assign(socket, :assign, put_form_params(socket.assigns.assign, params))}
+
+      true ->
+        {:noreply, socket}
     end
   end
 
@@ -277,6 +286,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         case command(assign) do
           {:ok, command} -> run_command(assign(socket, :assign, assign), command, nil)
           {:error, message} -> {:noreply, assign(socket, :assign, %{assign | error: message})}
+        end
+    end
+  end
+
+  # The block drawer's three actions (AC-27). The block a command acts on comes
+  # from the loaded day's own drawer and a remove-all's trip IDs from the same
+  # block, so a crafted event can never name another block or trip (CR-4); the
+  # submit then runs the same reviewed command path as an assignment (CL-18).
+  def handle_event("submit_block_action", params, socket) do
+    case socket.assigns.block_action do
+      nil ->
+        {:noreply, socket}
+
+      action ->
+        action = put_block_action_params(action, params)
+
+        case block_command(action) do
+          {:ok, command} ->
+            run_command(assign(socket, :block_action, action), command, nil)
+
+          {:error, message} ->
+            {:noreply, assign(socket, :block_action, %{action | error: message})}
         end
     end
   end
@@ -784,9 +815,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # “Change selection” returns focus to whichever opener the reader used: the
   # bulk bar's “Assign N trips” for a selection, the trip drawer's own control
-  # for one trip.
-  defp review_focus(%{scope: :selection}), do: "bulk-assign"
-  defp review_focus(_assign), do: "trip-change-assignment"
+  # for one trip, and the block drawer's own control for one of its three
+  # actions (AC-27).
+  defp review_focus(%{assign: %{scope: :selection}}), do: "bulk-assign"
+  defp review_focus(%{assign: %{scope: :trip}}), do: "trip-change-assignment"
+  defp review_focus(%{block_action: %{kind: :rename}}), do: "block-rename-id"
+  defp review_focus(%{block_action: %{kind: :merge}}), do: "block-merge-search"
+  defp review_focus(%{block_action: %{kind: :remove_all}}), do: "block-remove-all"
+  defp review_focus(_assigns), do: "trip-change-assignment"
 
   # “Use eligible trips” drops every ineligible trip from the selection and keeps
   # the dialog open on the rest; a selection left with nothing to assign closes
@@ -821,13 +857,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:gap_view, if(is_nil(trip), do: gap))
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
         |> assign(:back_block, if(block, do: block.summary.block_id))
+        |> assign(:block_action, block_action_state(socket.assigns.block_action, block))
 
       _other ->
         assign(socket,
           trip_view: nil,
           gap_view: nil,
           block_view: nil,
-          back_block: nil
+          back_block: nil,
+          block_action: nil
         )
     end
   end
@@ -1080,9 +1118,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp clear_command_error(socket) do
-    case socket.assigns.assign do
+    socket =
+      case socket.assigns.assign do
+        nil -> socket
+        assign -> assign(socket, :assign, %{assign | error: nil, ineligible: []})
+      end
+
+    case socket.assigns.block_action do
       nil -> socket
-      assign -> assign(socket, :assign, %{assign | error: nil, ineligible: []})
+      action -> assign(socket, :block_action, %{action | error: nil})
     end
   end
 
@@ -1099,33 +1143,62 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A failed save keeps the form, its target and its review: only the sentence
-  # changes, so a retry repeats exactly the reviewed command (AC-26).
+  # changes, so a retry repeats exactly the reviewed command (AC-26). A block
+  # drawer action keeps its own control's sentence and the value the reader
+  # typed (AC-27).
   defp refuse(socket, reason) do
-    message = command_error(reason)
+    message = command_error(reason, socket.assigns.block_action)
 
-    case socket.assigns.assign do
-      nil -> put_flash(socket, :error, message)
-      assign -> assign(socket, :assign, %{assign | error: message})
+    cond do
+      socket.assigns.assign ->
+        assign(socket, :assign, %{socket.assigns.assign | error: message})
+
+      socket.assigns.block_action ->
+        assign(socket, :block_action, %{socket.assigns.block_action | error: message})
+
+      true ->
+        put_flash(socket, :error, message)
     end
   end
 
-  defp command_error(:busy), do: "Another change is being saved. Try again."
-  defp command_error(:not_found), do: "That trip isn't in this version."
-  defp command_error(:unknown_day_type), do: "This day type isn't in this version."
-  defp command_error(:invalid_command), do: "That change isn't valid."
+  defp command_error(:busy, _state), do: "Another change is being saved. Try again."
+  defp command_error(:not_found, _state), do: "That trip isn't in this version."
+  defp command_error(:unknown_day_type, _state), do: "This day type isn't in this version."
 
-  defp command_error(:invalid_block_id),
+  # A rename onto the block's own ID is the one `:invalid_command` the drawer can
+  # cause, and it gets its own sentence (AC-27).
+  defp command_error(:invalid_command, %{kind: :rename, block_id: block_id, rename: value})
+       when is_binary(value) do
+    if String.trim(value) == block_id,
+      do: "Enter a different block ID.",
+      else: "That change isn't valid."
+  end
+
+  defp command_error(:invalid_command, _state), do: "That change isn't valid."
+
+  defp command_error(:invalid_block_id, _state),
     do: "Enter a block ID of 1 to 255 characters."
 
-  defp command_error(:block_id_taken),
-    do: "That block ID already runs on these dates. Choose another."
+  # A taken ID names the ID the reader typed, so the sentence says which one to
+  # change (AC-27).
+  defp command_error(:block_id_taken, %{kind: :rename, rename: value}) when is_binary(value),
+    do: "Block #{String.trim(value)} already runs on these dates. Choose another ID or merge."
 
-  defp command_error(:too_many_trips), do: "This change touches too many trips."
+  defp command_error(:block_id_taken, _state),
+    do: "That block ID already runs on these dates. Choose another ID or merge."
 
-  defp command_error({:audit_failed, _reason}),
+  defp command_error(:too_many_trips, _state), do: "This change touches too many trips."
+
+  defp command_error({:audit_failed, _reason}, _state),
     do: "The change couldn't be saved. Nothing was written."
 
-  defp command_error(_reason), do: "The change couldn't be saved. Try again."
+  defp command_error(_reason, _state), do: "The change couldn't be saved. Try again."
+
+  # The sentence a review shows above itself when the confirmation failed: the
+  # pending form's own failure, whichever form opened the review (AC-26, AC-27).
+  defp pending_error(%{assign: %{error: error}}) when is_binary(error), do: error
+  defp pending_error(%{block_action: %{error: error}}) when is_binary(error), do: error
+  defp pending_error(_assigns), do: nil
 
   # --- the assignment form (step 25) -----------------------------------------
 
@@ -1214,6 +1287,104 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp count_label(1), do: "1 trip"
   defp count_label(count), do: "#{count} trips"
+
+  # --- the block drawer's actions (step 27) ----------------------------------
+
+  # The drawer's three actions share one state, rebuilt from the loaded day's own
+  # block whenever that block or its trips change (a day-type switch, a reload or
+  # another writer's trip). The trip IDs a remove-all unassigns come from that
+  # block, so no parameter names them (CR-4), and the rename field starts on the
+  # block's own ID, so resubmitting it unchanged is the “Enter a different block
+  # ID.” case rather than a silent no-op (AC-27).
+  defp block_action_state(_action, nil), do: nil
+
+  defp block_action_state(action, %{summary: %{block_id: block_id}} = block) do
+    trip_ids = Enum.map(block.trips, & &1.id)
+
+    if match?(%{block_id: ^block_id, trip_ids: ^trip_ids}, action) do
+      action
+    else
+      %{
+        block_id: block_id,
+        trip_ids: trip_ids,
+        kind: nil,
+        rename: block_id,
+        merge: "",
+        search: "",
+        error: nil
+      }
+    end
+  end
+
+  defp save_block_action(socket, params) do
+    assign(socket, :block_action, put_block_action_params(socket.assigns.block_action, params))
+  end
+
+  # The two forms send their fields as `block_action[...]` and the remove-all
+  # button sends `phx-value-action`, so one payload shape is read here. A value
+  # that is not a string (a crafted event, or a repeated parameter) is ignored
+  # rather than passed on to the context.
+  defp put_block_action_params(action, params) do
+    values = Map.merge(block_action_params(params), Map.take(params, ["action"]))
+
+    %{
+      action
+      | kind: block_action_kind(values["action"]) || action.kind,
+        rename: block_action_string(values["block_id"], action.rename),
+        merge: block_action_string(values["destination"], action.merge),
+        search: block_action_string(values["search"], action.search)
+    }
+  end
+
+  defp block_action_params(%{"block_action" => values}) when is_map(values), do: values
+  defp block_action_params(params), do: params
+
+  defp block_action_string(value, _current) when is_binary(value), do: value
+  defp block_action_string(_value, current), do: current
+
+  defp block_action_kind("rename"), do: :rename
+  defp block_action_kind("merge"), do: :merge
+  defp block_action_kind("remove_all"), do: :remove_all
+  defp block_action_kind(_action), do: nil
+
+  # The three actions are the context's own commands (Mutation): a rename trims
+  # its ID here (the context trims again and refuses an empty or over-long one),
+  # a merge joins an ID the picker offered, and remove-all unassigns the block's
+  # trips on the selected day type. An action with no destination or no kind is
+  # refused with the shared sentence instead of reaching the context.
+  defp block_command(%{kind: :rename, block_id: block_id, rename: value})
+       when is_binary(value),
+       do: {:ok, {:rename, block_id, String.trim(value)}}
+
+  defp block_command(%{kind: :merge, block_id: block_id, merge: destination})
+       when is_binary(destination) and destination != "",
+       do: {:ok, {:merge, block_id, destination}}
+
+  defp block_command(%{kind: :merge}), do: {:error, "Choose a destination block."}
+
+  defp block_command(%{kind: :remove_all, trip_ids: [_ | _] = ids}), do: {:ok, {:unassign, ids}}
+
+  defp block_command(_action), do: {:error, command_error(:invalid_command, nil)}
+
+  # The merge picker offers the day type's other blocks — never the block being
+  # merged, and no “New block” or “No block”, because a merge always joins an
+  # existing ID (AC-13, reference picker).
+  defp merge_destinations(%{block_action: nil}), do: {[], 0}
+
+  defp merge_destinations(%{block_action: action, destination_blocks: blocks}) do
+    blocks
+    |> Enum.reject(&(&1.block_id == action.block_id))
+    |> destination_options(action.search)
+  end
+
+  defp block_action_form(nil), do: nil
+
+  defp block_action_form(action) do
+    to_form(
+      %{"block_id" => action.rename, "search" => action.search},
+      as: :block_action
+    )
+  end
 
   # --- editor authority ------------------------------------------------------
 
@@ -1327,6 +1498,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       gap_view: nil,
       block_view: nil,
       back_block: nil,
+      block_action: nil,
       mixed_timezones?: false,
       trip_labels: %{},
       findings_by_trip: %{},
@@ -1360,11 +1532,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         assigns.assign && assigns.assign.search
       )
 
+    {merge_options, merge_total} = merge_destinations(assigns)
+
     assigns =
       assigns
       |> assign(:assign_form, assign_form(assigns.assign))
+      |> assign(:block_action_form, block_action_form(assigns.block_action))
       |> assign(:destination_options, options)
       |> assign(:destination_total, total)
+      |> assign(:merge_options, merge_options)
+      |> assign(:merge_total, merge_total)
       |> assign(:bulk, bulk_summary(assigns))
       |> assign(:selection_dates, selection_dates(assigns))
 
@@ -1538,6 +1715,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     block={block}
                     routes={@routes}
                     findings_by_trip={@findings_by_trip}
+                    action={@block_action}
+                    form={@block_action_form}
+                    merge_options={@merge_options}
+                    merge_total={@merge_total}
                   />
                 <% end %>
 
@@ -1556,10 +1737,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 <BlocksComponents.review_dialog
                   review={@review}
                   stale?={@review_stale?}
-                  error={@assign && @assign.error}
+                  error={pending_error(assigns)}
                   day_type={@day_type}
                   version_name={@current_gtfs_version.name}
-                  return_focus_id={review_focus(@assign)}
+                  return_focus_id={review_focus(assigns)}
                 />
               <% true -> %>
             <% end %>

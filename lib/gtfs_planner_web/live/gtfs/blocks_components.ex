@@ -1116,20 +1116,46 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the read-only block drawer: the block's identity, its trip count and
-  span, then each trip of the block in the block's own order with the gap text
-  between consecutive trips and the trip's own findings.
+  Renders the block drawer: the block's identity, its trip count and span, each
+  trip of the block in the block's own order with the gap text between
+  consecutive trips and the trip's own findings, then the block's three actions.
 
   The gap note prints the same sentence as the gap drawer from the block's own
   `gaps/1` pairs, and it is the only way to open that drawer for an overlapping
   pair, whose timeline bar is suppressed; every gap note keeps the block in the
   URL, so both drawers offer “Back to block <id>”. “Inspect” opens the trip drawer
   with the block kept, which is what gives that drawer its back link (AC-25).
+
+  The actions are the reference's “Rename block”, “Merge into…” and “Remove all
+  trips” (AC-27). A rename renames this block's trips on the selected day type, a
+  merge joins them to another block of the day type (the picker offers no “New
+  block” and no “No block”, because a merge always lands on an existing ID), and
+  remove-all takes this block's trips on the selected day type back to the pool.
+  Each one submits the same `submit_block_action` event, so all three run through
+  the reviewed command and show the same review dialog with its split, its
+  affected day types and its added problems.
+
+  A refusal prints under the control that caused it — the rename field's own
+  error sits inside the form, so the input keeps what the reader typed (AC-27) —
+  and the rename field starts on the block's own ID, so resubmitting it unchanged
+  is the “Enter a different block ID.” case rather than a silent no-op.
   """
   attr :open, :boolean, required: true
   attr :block, :map, required: true
   attr :routes, :map, required: true
   attr :findings_by_trip, :map, required: true
+
+  attr :action, :map,
+    default: nil,
+    doc: "the drawer's action state, nil while the drawer is closed"
+
+  attr :form, :any, default: nil, doc: "the rename field's and merge search's form"
+
+  attr :merge_options, :list,
+    default: [],
+    doc: "the other blocks of the day type the picker offers"
+
+  attr :merge_total, :integer, default: 0, doc: "the merge search's match count before the cap"
 
   def block_drawer(assigns) do
     assigns =
@@ -1189,9 +1215,119 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <.issue_badges findings={Map.get(@findings_by_trip, row.trip.id, [])} />
         </div>
       </div>
+
+      <div class="mt-4 space-y-3 border-t border-base-300 pt-3">
+        <h3 class="text-sm font-semibold">Block actions</h3>
+
+        <.form
+          for={@form}
+          id="block-rename-form"
+          phx-submit="submit_block_action"
+          class="space-y-2"
+        >
+          <input type="hidden" name="block_action[action]" value="rename" />
+          <.input
+            id="block-rename-id"
+            field={@form[:block_id]}
+            label="Block ID"
+            errors={rename_errors(@action)}
+            help="The ID stored in GTFS. IDs on disjoint service dates may be reused."
+          />
+          <button type="submit" id="block-rename-submit" class="btn btn-sm min-h-11">
+            Rename block
+          </button>
+        </.form>
+
+        <.form
+          for={@form}
+          id="block-merge-form"
+          phx-change="search_destination"
+          phx-debounce="200"
+          phx-submit="submit_block_action"
+          class="space-y-2 border-t border-base-300 pt-3"
+        >
+          <input type="hidden" name="block_action[action]" value="merge" />
+          <.input
+            id="block-merge-search"
+            field={@form[:search]}
+            type="search"
+            label="Find a block"
+            placeholder="Search block ID"
+            autocomplete="off"
+            help="Choose the block these trips join. A merge never creates an ID."
+          />
+
+          <fieldset>
+            <legend class="text-sm font-medium">Merge into</legend>
+            <div class="mt-2 space-y-2">
+              <label
+                :for={option <- @merge_options}
+                data-role="merge-option"
+                data-block={option.block_id}
+                class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+              >
+                <input
+                  type="radio"
+                  id={"block-merge-" <> dom_token(option.block_id)}
+                  name="block_action[destination]"
+                  value={option.block_id}
+                  checked={@action.merge == option.block_id}
+                  class="radio radio-sm"
+                />
+                <span>
+                  <span class="text-sm font-medium">Block {option.block_id}</span>
+                  <small class="block text-base-content/70">{option.detail}</small>
+                </span>
+              </label>
+            </div>
+            <p id="block-merge-summary" class="mt-2 text-sm text-base-content/70" role="status">
+              {destination_summary(@merge_options, @merge_total)}
+            </p>
+          </fieldset>
+
+          <p
+            :if={@action.kind == :merge}
+            id="block-merge-error"
+            class="text-sm text-error"
+            role="alert"
+          >
+            {@action.error}
+          </p>
+
+          <button type="submit" id="block-merge-submit" class="btn btn-sm min-h-11">
+            Merge blocks
+          </button>
+        </.form>
+
+        <div class="border-t border-base-300 pt-3">
+          <button
+            type="button"
+            id="block-remove-all"
+            phx-click="submit_block_action"
+            phx-value-action="remove_all"
+            class="btn btn-sm min-h-11"
+          >
+            Remove all trips
+          </button>
+          <p
+            :if={@action.kind == :remove_all}
+            id="block-remove-error"
+            class="text-sm text-error"
+            role="alert"
+          >
+            {@action.error}
+          </p>
+        </div>
+      </div>
     </.drawer>
     """
   end
+
+  # The rename field's own error: the sentence the context's refusal maps to, so
+  # it sits under the input it belongs to (AC-27). The merge's own error has no
+  # field of its own and prints under the picker instead.
+  defp rename_errors(%{kind: :rename, error: error}) when is_binary(error), do: [error]
+  defp rename_errors(_action), do: []
 
   # The block drawer's rows: the block's own trip order with the gap that precedes
   # each trip, taken from the block's `gaps/1` pairs by the later trip's UUID and
