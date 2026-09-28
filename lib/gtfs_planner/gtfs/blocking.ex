@@ -886,9 +886,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # Every moved blocked trip is decided: a trip whose service moves takes its block with it
-  # whether or not the review selection named it.
-  defp clear_candidate?(trip, moved_services) do
-    is_binary(trip.block_id) and MapSet.member?(moved_services, trip.service_id)
+  # whether or not the review selection named it. The destination's own trips are not candidates -
+  # AC-17 keeps destination block IDs assigned and the findings report what their gained dates add -
+  # so a destination trip that would fail the same subset test is reported, never cleared.
+  defp clear_candidate?(trip, moved_services, destination_id) do
+    is_binary(trip.block_id) and trip.service_id != destination_id and
+      MapSet.member?(moved_services, trip.service_id)
   end
 
   defp block_others(trips, trip) do
@@ -898,7 +901,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   defp clear_decisions(before, moved, moved_services, destination_id) do
     before.trips
     |> Enum.filter(fn trip ->
-      clear_candidate?(trip, moved_services) and
+      clear_candidate?(trip, moved_services, destination_id) and
         clears_block?(trip, before, moved, destination_id)
     end)
     |> Enum.map(& &1.id)

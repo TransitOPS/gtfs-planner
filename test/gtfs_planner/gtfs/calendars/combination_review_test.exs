@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
   @moduledoc """
-  Step 14: the protected input set one calendar combination is reviewed and applied from.
+  The protected input set one calendar combination is reviewed and applied from, and the public
+  reviewed combination (steps 14-15).
 
   `Calendars.load_combination_inputs!/2` is the internal entrypoint steps 15 and 16 call
   inside their own ordinary read-committed `Repo.transaction/1`. These cases prove, against
@@ -21,9 +22,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
   - A source writer that commits while the version lock is awaited is present in the loaded
     inputs even when its calendar had no trips when the wait began.
 
-  Step 15 owns the public `Gtfs.review_calendar_change/3` dispatch and EV-4. The focused gate
-  command `mix test test/gtfs_planner/gtfs/calendars/combination_review_test.exs` is deferred to
-  branch review.
+  Step 15 adds the public review cases below: `Gtfs.review_calendar_change/3` composes the pure
+  `Combination` plan and the real `Blocking` projection into one factual review with no writes,
+  its complete-input token changes when an observed row changes and cannot be influenced by a
+  client value, an undecided conflict has no result, no block effects and no token, and foreign
+  scopes, wrong fingerprint keys, malformed commands and an unencodable destination yield no
+  usable review.
+
+  The focused gate command `mix test test/gtfs_planner/gtfs/calendars/combination_review_test.exs`
+  (with `combination_blocks_test.exs`) is deferred to branch review.
   """
   use GtfsPlanner.DataCase, async: false
 
@@ -40,11 +47,13 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
@@ -63,6 +72,38 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
 
   # The selected destination and one moving source, both seeded by every fixture below.
   @command {:combine, "DEST", ["SAT"], %{}}
+
+  # The reviewed dates of the step-15 fixture: the destination's March weekdays, the moving
+  # source's March Saturdays, and their union in date order.
+  @review_weekdays [
+    ~D[2026-03-02],
+    ~D[2026-03-03],
+    ~D[2026-03-04],
+    ~D[2026-03-05],
+    ~D[2026-03-06],
+    ~D[2026-03-09],
+    ~D[2026-03-10],
+    ~D[2026-03-11],
+    ~D[2026-03-12],
+    ~D[2026-03-13]
+  ]
+  @review_saturdays [~D[2026-03-07], ~D[2026-03-14], ~D[2026-03-21], ~D[2026-03-28]]
+  @review_union [
+    ~D[2026-03-02],
+    ~D[2026-03-03],
+    ~D[2026-03-04],
+    ~D[2026-03-05],
+    ~D[2026-03-06],
+    ~D[2026-03-07],
+    ~D[2026-03-09],
+    ~D[2026-03-10],
+    ~D[2026-03-11],
+    ~D[2026-03-12],
+    ~D[2026-03-13],
+    ~D[2026-03-14],
+    ~D[2026-03-21],
+    ~D[2026-03-28]
+  ]
 
   setup do
     supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
@@ -342,6 +383,431 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     end
   end
 
+  describe "the public combination review" do
+    test "returns the factual reviewed effects through the default adapters without writing",
+         context do
+      scope = seed_review_scope(context)
+      footprint = scope_footprint(context)
+
+      assert {:ok, review} = review(context, @command)
+
+      assert review.action == :combine
+      assert review.ready?
+      assert review.retained_sources == ["SAT"]
+      assert review.moved_trip_count == 1
+      assert review.fingerprint =~ ~r/\A[0-9a-f]{64}\z/
+      assert review.conflicts == []
+
+      assert review.plan.ready?
+      assert review.plan.result_dates == @review_union
+      assert review.plan.union_dates == @review_union
+      assert review.plan.unresolved_dates == []
+
+      destination_effect = effect(review, "DEST")
+      source_effect = effect(review, "SAT")
+
+      assert destination_effect.moving? == false
+      assert destination_effect.trip_count == 1
+      assert destination_effect.gained_dates == @review_saturdays
+      assert destination_effect.lost_dates == []
+
+      assert source_effect.moving? == true
+      assert source_effect.trip_count == 1
+      assert source_effect.gained_dates == @review_weekdays
+      assert source_effect.lost_dates == []
+
+      # The upcoming/past halves are the agency-local today's and partition the gains.
+      today = DisplayClock.today(context.organization.id, context.version.id).date
+
+      assert source_effect.upcoming_gained_dates ==
+               Enum.filter(@review_weekdays, &(Date.compare(&1, today) != :lt))
+
+      assert source_effect.past_gained_dates ==
+               Enum.filter(@review_weekdays, &(Date.compare(&1, today) == :lt))
+
+      assert source_effect.upcoming_gained_dates ++ source_effect.past_gained_dates ==
+               @review_weekdays
+
+      # The block effects are the committed producer's over the loader's real rows: the moved
+      # trip's block gains the non-selected companion's 2026-03-09 and clears, the destination
+      # trip's own block stays assigned, and both type-4 records are evaluated.
+      assert review.block_effects.cleared_trip_ids == [scope.trips.source.id]
+
+      assert Enum.map(review.block_effects.transfers, & &1.id) ==
+               Enum.sort([scope.transfers.to_counterpart.id, scope.transfers.to_companion.id])
+
+      # The block findings and in-seat findings are the real `Checks`/`InSeat` answers: the moved
+      # frequency trip is reported as such and both type-4 records are stale before the move.
+      assert Enum.sort(Enum.map(review.block_effects.before_findings, & &1.code)) ==
+               [:frequency_trip, :in_seat_stale, :in_seat_unconfirmed]
+
+      assert is_list(review.block_effects.after_findings)
+
+      # A review writes nothing at all.
+      assert scope_footprint(context) == footprint
+    end
+
+    test "keeps the destination's block assigned and reports its gained-date warning", context do
+      scope = seed_destination_block_scope(context)
+
+      assert {:ok, review} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", ["SRC"], %{}},
+                 selected_fingerprints("DEST", ["SRC"]),
+                 context.audit
+               )
+
+      assert review.ready?
+      assert review.plan.result_dates == [~D[2026-03-02], ~D[2026-03-09]]
+
+      # The destination's own trip is not a clear candidate even though its projected
+      # companions on the gained 2026-03-09 are not a subset of its original ones: AC-17 keeps
+      # destination block IDs assigned, so only the moving source is decided.
+      assert review.block_effects.cleared_trip_ids == []
+      refute scope.trips.destination.id in review.block_effects.cleared_trip_ids
+
+      # The block keeps its ID and the gained date adds a real warning about it.
+      warning =
+        Enum.find(
+          review.block_effects.after_findings,
+          &(&1.code == :overlap and &1.block_id == "R705")
+        )
+
+      assert warning.day_type_keys == [DayTypes.key(["DEST", "SRC", "XNO"])]
+      assert warning.dates == [~D[2026-03-09]]
+
+      assert Enum.sort(warning.trip_ids) ==
+               Enum.sort([scope.trips.destination.id, scope.trips.non_selected.id])
+
+      refute Enum.any?(review.block_effects.before_findings, &(&1.code == :overlap))
+    end
+
+    test "decides the single conflict date from run and no_service", context do
+      seed_conflict_scope(context)
+
+      assert {:ok, unresolved} =
+               review(context, conflict_command(%{}), conflict_fingerprints())
+
+      refute unresolved.ready?
+      assert unresolved.fingerprint == nil
+      assert unresolved.block_effects == nil
+      assert unresolved.plan.result_dates == nil
+      assert unresolved.plan.unresolved_dates == [~D[2026-03-11]]
+      assert unresolved.moved_trip_count == 1
+      assert unresolved.retained_sources == ["SRC"]
+
+      assert unresolved.conflicts == [
+               %{
+                 date: ~D[2026-03-11],
+                 running_ids: ["SRC"],
+                 removing_ids: ["DEST"],
+                 group_key: "2026-03-11"
+               }
+             ]
+
+      assert {:ok, run_review} =
+               review(
+                 context,
+                 conflict_command(%{"2026-03-11" => "run"}),
+                 conflict_fingerprints()
+               )
+
+      assert run_review.ready?
+      assert run_review.plan.unresolved_dates == []
+      assert ~D[2026-03-11] in run_review.plan.result_dates
+      assert is_binary(run_review.fingerprint)
+      assert run_review.fingerprint != unresolved.fingerprint
+
+      assert {:ok, cancel_review} =
+               review(
+                 context,
+                 conflict_command(%{"2026-03-11" => "no_service"}),
+                 conflict_fingerprints()
+               )
+
+      assert cancel_review.ready?
+      assert cancel_review.plan.result_dates == run_review.plan.result_dates -- [~D[2026-03-11]]
+      refute cancel_review.fingerprint == run_review.fingerprint
+
+      # The atom and string wire forms are one command, so they cannot mint two tokens.
+      assert {:ok, atom_review} =
+               review(
+                 context,
+                 conflict_command(%{"2026-03-11" => :run}),
+                 conflict_fingerprints()
+               )
+
+      assert atom_review.fingerprint == run_review.fingerprint
+    end
+
+    test "refuses a choice outside the current conflicts", context do
+      seed_conflict_scope(context)
+
+      assert {:error, :invalid_command} =
+               review(
+                 context,
+                 conflict_command(%{"2026-03-05" => "run"}),
+                 conflict_fingerprints()
+               )
+
+      assert {:error, :invalid_command} =
+               review(
+                 context,
+                 conflict_command(%{"2026-03-11" => "cancel"}),
+                 conflict_fingerprints()
+               )
+
+      assert {:error, :invalid_command} =
+               review(
+                 context,
+                 conflict_command(%{~D[2026-03-11] => "run", "2026-03-11" => "run"}),
+                 conflict_fingerprints()
+               )
+    end
+  end
+
+  describe "the reviewed combination fingerprint" do
+    test "changes when one trip is replaced by another at an equal count and route", context do
+      scope = seed_review_scope(context)
+      token = review_token(context)
+
+      assert {:ok, _replacement} =
+               Gtfs.create_trip(%{
+                 organization_id: context.organization.id,
+                 gtfs_version_id: context.version.id,
+                 route_id: context.route.route_id,
+                 trip_id: "DEST_T2",
+                 service_id: "DEST",
+                 block_id: "R701"
+               })
+
+      assert {:ok, %{trips: 1}} =
+               Gtfs.delete_trips(
+                 context.route.route_id,
+                 "DEST",
+                 [scope.trips.destination.id],
+                 context.audit
+               )
+
+      # The destination still holds exactly one trip on the same route, so a count- or
+      # route-based token would not notice the replacement.
+      assert trip_count(context, "DEST") == 1
+      refute review_token(context) == token
+    end
+
+    test "changes when an endpoint parent's coordinates change", context do
+      scope = seed_review_scope(context)
+      token = review_token(context)
+
+      # The source trip's first endpoint is a child stop with no coordinates of its own, so its
+      # reviewed position comes from this parent through `Queries`' fallback.
+      assert {:ok, _parent} = Gtfs.update_stop(scope.parent, %{stop_lat: Decimal.new("43.10")})
+
+      refute review_token(context) == token
+    end
+
+    test "changes when the minimum layover changes", context do
+      token = review_token(context)
+
+      assert {:ok, _setting} =
+               Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
+                 min_layover_minutes: 12
+               })
+
+      refute review_token(context) == token
+    end
+
+    test "changes when a counterpart trip is retimed", context do
+      token = review_token(context)
+
+      # A retime of the counterpart's first endpoint: the raw stop-time rows and every derived
+      # clock move, while the reviewed calendars, dates and blocks do not.
+      assert {1, _} =
+               Repo.update_all(
+                 from(st in StopTime,
+                   where: st.trip_id == "SUN_T1" and st.stop_sequence == 1
+                 ),
+                 set: [arrival_time: "13:30:00", departure_time: "13:30:00"]
+               )
+
+      refute review_token(context) == token
+    end
+
+    test "changes when a stop time crosses midnight", context do
+      token = review_token(context)
+
+      # The counterpart's last endpoint becomes a post-midnight time, so the stored value and
+      # the parsed seconds both move past 24 hours.
+      assert {1, _} =
+               Repo.update_all(
+                 from(st in StopTime,
+                   where: st.trip_id == "SUN_T1" and st.stop_sequence == 2
+                 ),
+                 set: [arrival_time: "24:30:00", departure_time: "24:30:00"]
+               )
+
+      refute review_token(context) == token
+    end
+
+    test "is not influenced by the client's fingerprint values", context do
+      token = review_token(context)
+
+      assert {:ok, other} =
+               Gtfs.review_calendar_change(
+                 @command,
+                 selected_fingerprints("DEST", ["SAT"], "another-client-value"),
+                 context.audit
+               )
+
+      assert other.fingerprint == token
+    end
+  end
+
+  describe "combination command and scope refusals" do
+    test "refuses a foreign, unpublished or non-editor scope", context do
+      seed_review_scope(context)
+
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      {:ok, staging_version} =
+        Versions.create_staging_gtfs_version(context.organization.id, %{name: "Staging"})
+
+      viewer = user_fixture(%{email: "combination-reviewer-#{unique()}@example.test"})
+      organization_membership_fixture(viewer, context.organization, ["pathways_studio_admin"])
+
+      assert {:error, :forbidden} =
+               Gtfs.review_calendar_change(@command, review_fingerprints(), %{
+                 context.audit
+                 | actor_id: viewer.id
+               })
+
+      assert {:error, :not_found} =
+               Gtfs.review_calendar_change(@command, review_fingerprints(), %{
+                 context.audit
+                 | organization_id: other_organization.id
+               })
+
+      assert {:error, :not_found} =
+               Gtfs.review_calendar_change(@command, review_fingerprints(), %{
+                 context.audit
+                 | gtfs_version_id: other_version.id
+               })
+
+      assert {:error, :not_found} =
+               Gtfs.review_calendar_change(@command, review_fingerprints(), %{
+                 context.audit
+                 | gtfs_version_id: staging_version.id
+               })
+    end
+
+    test "refuses a fingerprint map whose keys are not exactly the selected IDs", context do
+      seed_review_scope(context)
+
+      assert {:error, :stale_review} =
+               Gtfs.review_calendar_change(@command, %{"DEST" => "token"}, context.audit)
+
+      assert {:error, :stale_review} =
+               Gtfs.review_calendar_change(
+                 @command,
+                 %{"DEST" => "token", "SAT" => "token", "MID" => "token"},
+                 context.audit
+               )
+
+      assert {:error, :stale_review} =
+               Gtfs.review_calendar_change(
+                 @command,
+                 %{"DEST" => "token", "SAT" => ""},
+                 context.audit
+               )
+    end
+
+    test "refuses a malformed combination command before any load", context do
+      seed_review_scope(context)
+
+      assert {:error, :invalid_command} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", ["SAT", "SAT"], %{}},
+                 %{"DEST" => "token", "SAT" => "token"},
+                 context.audit
+               )
+
+      assert {:error, :invalid_command} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", [], %{}},
+                 %{"DEST" => "token"},
+                 context.audit
+               )
+
+      assert {:error, :invalid_command} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", ["SAT", "DEST"], %{}},
+                 review_fingerprints(),
+                 context.audit
+               )
+
+      assert {:error, :invalid_command} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", ["SAT"], :undecided},
+                 review_fingerprints(),
+                 context.audit
+               )
+
+      assert {:error, :invalid_command} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", ["SAT"], %{"2026-03-07" => "cancel"}},
+                 review_fingerprints(),
+                 context.audit
+               )
+
+      assert {:error, :invalid_command} =
+               Gtfs.review_calendar_change(
+                 {:combine, "DEST", ["SAT"], %{"not-a-date" => "run"}},
+                 review_fingerprints(),
+                 context.audit
+               )
+    end
+
+    test "keeps service IDs exact instead of trimming them", context do
+      seed_review_scope(context)
+
+      # " DEST " is a different identity from "DEST", so the review reports the exact submitted
+      # ID as the missing calendar and never reads the trimmed destination's rows.
+      assert {:error, {:invalid_calendar, " DEST ", :missing}} =
+               Gtfs.review_calendar_change(
+                 {:combine, " DEST ", ["SAT"], %{}},
+                 %{" DEST " => "token", "SAT" => "token"},
+                 context.audit
+               )
+    end
+
+    test "refuses an unencodable destination as native_service_required", context do
+      organization_id = context.organization.id
+      version_id = context.version.id
+
+      calendar_attribute_fixture(organization_id, version_id, %{
+        service_id: "META",
+        service_description: "Metadata only"
+      })
+
+      blocked_trip_fixture(organization_id, version_id, context.route.route_id, %{
+        trip_id: "META_T1",
+        service_id: "META"
+      })
+
+      # A metadata-only source with no dates, so the reviewed result is empty while the
+      # destination's own trip would still reference it.
+      calendar_service_fixture(organization_id, version_id, %{service_id: "SRC", dates: []})
+
+      assert {:error, :native_service_required} =
+               Gtfs.review_calendar_change(
+                 {:combine, "META", ["SRC"], %{}},
+                 selected_fingerprints("META", ["SRC"]),
+                 context.audit
+               )
+    end
+  end
+
   # --- fixtures -------------------------------------------------------------
 
   # Destination and source plus one non-selected companion on the touched block, one
@@ -555,6 +1021,329 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
   end
 
   defp unique, do: System.unique_integer([:positive])
+
+  # The step-15 fixture: destination "DEST" (March weekdays 2026-03-02..2026-03-13), moving
+  # source "SAT" (March Saturdays), the non-selected date-only companions "MID"/"SUN"/"HOL", a
+  # counterpart block and the two type-4 records naming the source trip. Every date is literal,
+  # so the reviewed union, gains, losses and clears are all enumerable. The source trip's first
+  # endpoint is a coordinate-less child stop, so its reviewed position comes from the parent.
+  defp seed_review_scope(context) do
+    {organization_id, version_id} = {context.organization.id, context.version.id}
+    route_id = context.route.route_id
+
+    destination =
+      calendar_service_fixture(organization_id, version_id, %{
+        service_id: "DEST",
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-03-02],
+        end_date: ~D[2026-03-13]
+      })
+
+    source =
+      calendar_service_fixture(organization_id, version_id, %{
+        service_id: "SAT",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 0,
+        start_date: ~D[2026-03-01],
+        end_date: ~D[2026-03-31]
+      })
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "MID",
+      dates: [~D[2026-03-09]]
+    })
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "SUN",
+      dates: [~D[2026-03-08]]
+    })
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "HOL",
+      dates: [~D[2026-03-10]]
+    })
+
+    parent =
+      stop_fixture(organization_id, version_id, %{
+        stop_id: "PARENT_REVIEW",
+        location_type: 1,
+        stop_lat: Decimal.new("42.36"),
+        stop_lon: Decimal.new("-71.06")
+      })
+
+    level =
+      level_fixture(organization_id, version_id, %{
+        level_id: "LEVEL_REVIEW",
+        level_name: "Street",
+        level_index: 0.0
+      })
+
+    child =
+      stop_fixture(organization_id, version_id, %{
+        stop_id: "CHILD_REVIEW",
+        stop_lat: nil,
+        stop_lon: nil,
+        parent_station: parent.stop_id,
+        level_id: level.id
+      })
+
+    trips = %{
+      destination:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "DEST_T1",
+          service_id: destination.service_id,
+          block_id: "R701",
+          first_arrival: "08:00:00",
+          last_arrival: "09:00:00"
+        }),
+      source:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "SAT_T1",
+          service_id: source.service_id,
+          block_id: "R700",
+          first_arrival: "09:30:00",
+          last_arrival: "10:30:00",
+          first_stop: child.stop_id
+        }),
+      companion:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "MID_T1",
+          service_id: "MID",
+          block_id: "R700",
+          first_arrival: "11:00:00",
+          last_arrival: "12:00:00"
+        }),
+      counterpart:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "SUN_T1",
+          service_id: "SUN",
+          block_id: "R800",
+          first_arrival: "13:00:00",
+          last_arrival: "14:00:00"
+        }),
+      block_mate:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "HOL_T1",
+          service_id: "HOL",
+          block_id: "R800",
+          first_arrival: "13:30:00",
+          last_arrival: "14:30:00"
+        })
+    }
+
+    frequency_row_fixture(organization_id, version_id, %{
+      trip_id: "SAT_T1",
+      start_time: "06:00:00",
+      end_time: "09:00:00",
+      headway_secs: 900
+    })
+
+    transfers = %{
+      to_counterpart:
+        in_seat_transfer_fixture(
+          organization_id,
+          version_id,
+          trips.source,
+          trips.counterpart
+        ),
+      to_companion:
+        in_seat_transfer_fixture(organization_id, version_id, trips.source, trips.companion)
+    }
+
+    %{trips: trips, transfers: transfers, parent: parent}
+  end
+
+  # The destination removed its own Wednesday 2026-03-11 while the moving source "SRC" runs it,
+  # so the review has exactly one conflict date to decide.
+  defp seed_conflict_scope(context) do
+    {organization_id, version_id} = {context.organization.id, context.version.id}
+    route_id = context.route.route_id
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "DEST",
+      saturday: 0,
+      sunday: 0,
+      start_date: ~D[2026-03-02],
+      end_date: ~D[2026-03-13]
+    })
+
+    calendar_date_fixture(organization_id, version_id, %{
+      service_id: "DEST",
+      date: ~D[2026-03-11],
+      exception_type: 2
+    })
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "SRC",
+      saturday: 0,
+      sunday: 0,
+      start_date: ~D[2026-03-02],
+      end_date: ~D[2026-03-13]
+    })
+
+    trips = %{
+      destination:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "DEST_T1",
+          service_id: "DEST",
+          block_id: "R901"
+        }),
+      source:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "SRC_T1",
+          service_id: "SRC",
+          block_id: "R900"
+        })
+    }
+
+    %{trips: trips}
+  end
+
+  # A destination whose own block gains a non-selected companion on the one date the move adds:
+  # "DEST" runs 2026-03-02 alone on block "R705", "XNO" runs 2026-03-09 on that same block, and
+  # the moving "SRC" runs 2026-03-09, so the reviewed result is both dates.
+  defp seed_destination_block_scope(context) do
+    {organization_id, version_id} = {context.organization.id, context.version.id}
+    route_id = context.route.route_id
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "DEST",
+      tuesday: 0,
+      wednesday: 0,
+      thursday: 0,
+      friday: 0,
+      saturday: 0,
+      sunday: 0,
+      start_date: ~D[2026-03-02],
+      end_date: ~D[2026-03-02]
+    })
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "SRC",
+      dates: [~D[2026-03-09]]
+    })
+
+    calendar_service_fixture(organization_id, version_id, %{
+      service_id: "XNO",
+      dates: [~D[2026-03-09]]
+    })
+
+    trips = %{
+      destination:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "DEST_T1",
+          service_id: "DEST",
+          block_id: "R705",
+          first_arrival: "08:30:00",
+          last_arrival: "09:30:00"
+        }),
+      non_selected:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "XNO_T1",
+          service_id: "XNO",
+          block_id: "R705",
+          first_arrival: "08:45:00",
+          last_arrival: "09:45:00"
+        }),
+      source:
+        blocked_trip_fixture(organization_id, version_id, route_id, %{
+          trip_id: "SRC_T1",
+          service_id: "SRC",
+          block_id: "R706",
+          first_arrival: "10:00:00",
+          last_arrival: "11:00:00"
+        })
+    }
+
+    %{trips: trips}
+  end
+
+  defp conflict_command(decisions), do: {:combine, "DEST", ["SRC"], decisions}
+
+  # The fingerprint map a caller submits: exactly one entry per selected ID, the destination
+  # included. Its values are carry-overs from the retained-form calling convention; the reviewed
+  # token is computed from the rows the server loads.
+  defp review_fingerprints, do: selected_fingerprints("DEST", ["SAT"])
+
+  # The conflict fixture's selected IDs, so the one reviewed command and its fingerprint map agree.
+  defp conflict_fingerprints, do: selected_fingerprints("DEST", ["SRC"])
+
+  defp selected_fingerprints(destination_id, source_ids, value \\ "client-fingerprint") do
+    Map.new([destination_id | source_ids], &{&1, "#{value}-#{&1}"})
+  end
+
+  defp review(context, command), do: review(context, command, review_fingerprints())
+
+  defp review(context, command, fingerprints) do
+    Gtfs.review_calendar_change(command, fingerprints, context.audit)
+  end
+
+  defp review_token(context) do
+    assert {:ok, review} = review(context, @command)
+    review.fingerprint
+  end
+
+  defp effect(review, service_id), do: Enum.find(review.effects, &(&1.service_id == service_id))
+
+  defp trip_count(context, service_id) do
+    Repo.aggregate(
+      from(t in Trip,
+        where:
+          t.organization_id == ^context.organization.id and
+            t.gtfs_version_id == ^context.version.id and t.service_id == ^service_id
+      ),
+      :count
+    )
+  end
+
+  # Everything a calendar combination must not write, read inside the test's own transaction.
+  defp scope_footprint(context) do
+    organization_id = context.organization.id
+    version_id = context.version.id
+
+    %{
+      logs:
+        Repo.aggregate(from(l in ChangeLog, where: l.organization_id == ^organization_id), :count),
+      trips:
+        Repo.all(
+          from(t in Trip,
+            where: t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id,
+            order_by: t.id,
+            select: {t.id, t.service_id, t.block_id, t.updated_at}
+          )
+        ),
+      calendars:
+        Repo.all(
+          from(c in Calendar,
+            where: c.organization_id == ^organization_id and c.gtfs_version_id == ^version_id,
+            order_by: c.service_id,
+            select: {c.service_id, c.monday, c.start_date, c.end_date, c.updated_at}
+          )
+        ),
+      exceptions:
+        Repo.all(
+          from(d in CalendarDate,
+            where: d.organization_id == ^organization_id and d.gtfs_version_id == ^version_id,
+            order_by: [d.service_id, d.date],
+            select: {d.service_id, d.date, d.exception_type}
+          )
+        ),
+      attributes:
+        Repo.all(
+          from(a in CalendarAttribute,
+            where: a.organization_id == ^organization_id and a.gtfs_version_id == ^version_id,
+            order_by: a.service_id,
+            select: {a.service_id, a.service_description}
+          )
+        )
+    }
+  end
 
   defp audit_for(organization_id, version_id, actor_id) do
     %AuditContext{

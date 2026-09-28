@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.Calendars.Combination
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Route
@@ -73,6 +74,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   )a
   @weekly_day_fields ~w(monday tuesday wednesday thursday friday saturday sunday)a
   @weekly_fields @weekly_day_fields ++ [:start_date, :end_date]
+  @combination_decisions %{"run" => :run, "no_service" => :no_service}
   @type kind :: :weekly | :dates_only
   @type coverage_error :: %{service_id: String.t(), reason: :reversed_range}
   @type command ::
@@ -83,6 +85,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | {:put_exceptions, String.t(), [Date.t()], 1 | 2}
           | {:remove_exceptions, String.t(), [Date.t()]}
           | {:date_change, [Date.t()], [String.t()], [String.t()]}
+          | {:combine, String.t(), [String.t()], %{String.t() => :run | :no_service}}
   @type calendar_usage :: %{
           optional(:service_id) => String.t(),
           trip_count: non_neg_integer(),
@@ -153,6 +156,17 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           warnings: list(),
           affected_service_ids: [String.t()],
           active_date_count: non_neg_integer()
+        }
+  @type combination_review :: %{
+          action: :combine,
+          ready?: boolean(),
+          fingerprint: String.t() | nil,
+          conflicts: [Combination.conflict()],
+          effects: [Combination.effect()],
+          moved_trip_count: non_neg_integer(),
+          retained_sources: [String.t()],
+          block_effects: Blocking.combination_projection() | nil,
+          plan: Combination.plan()
         }
 
   @doc """
@@ -413,17 +427,24 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   projected `active_date_count` and a command-bound `fingerprint` that
   `apply_calendar_change/3` requires. The shared version lock is released before the
   caller renders the review.
+
+  The combination command `{:combine, destination_id, source_ids, decisions}` is
+  reviewed from the complete protected input set instead of one retained form source:
+  `source_fingerprints` must map every selected ID, the destination and every source,
+  and the result is `action: :combine` with the reviewed `conflicts`, the per-calendar
+  `effects`, the `moved_trip_count`, the `retained_sources`, the simultaneous
+  `block_effects` and a `fingerprint` over the loaded rows. An incomplete decision set
+  has no `result_dates`, no block effects and no fingerprint, and a destination that
+  cannot carry the result natively returns `:native_service_required`. The token is
+  computed from the rows the server just loaded, so the supplied fingerprint values are
+  only required to be present and well shaped: they are never hashed.
   """
   @spec review_calendar_change(term(), map(), AuditContext.t()) ::
-          {:ok, review_result()} | {:error, write_error()}
+          {:ok, review_result() | combination_review()} | {:error, write_error()}
   def review_calendar_change(command, source_fingerprints, %AuditContext{} = audit_context) do
     with {:ok, normalized} <- normalize_command(command),
          :ok <- normalize_source_fingerprints(source_fingerprints, command_targets(normalized)) do
-      transact(fn ->
-        authorize_editor!(audit_context)
-        lock_shared_published_version!(audit_context)
-        review!(normalized, source_fingerprints, audit_context)
-      end)
+      transact(fn -> review_in_transaction!(normalized, source_fingerprints, audit_context) end)
     end
   end
 
@@ -703,6 +724,167 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   # absent row from a stored default of the same value without a second definition of the default.
   defp absent_marker(%{min_layover_minutes: minutes}, raw_settings) do
     %{min_layover_minutes: minutes, absent?: raw_settings == []}
+  end
+
+  # -- Reviewed combination ------------------------------------------------
+
+  # One complete reviewed combination, composed from the single protected load above: the pure
+  # `Combination.plan/5` decides the union, the conflicts and the result, `Combination.encode/3`
+  # proves the destination can carry that result natively while trips still reference it, and the
+  # committed package-05 `Blocking` producer projects the simultaneous block and in-seat
+  # consequences. Nothing is written: the digest below is the only authority an apply accepts, and
+  # every lock is released when this transaction returns, before the caller renders the review.
+  defp review_combination!(
+         {:combine, destination_id, source_ids, decisions} = normalized,
+         %AuditContext{} = audit_context
+       ) do
+    inputs = load_combination_inputs!(normalized, audit_context)
+
+    case Combination.plan(
+           inputs.raw.selected_calendars,
+           destination_id,
+           source_ids,
+           decisions,
+           inputs.today
+         ) do
+      {:ok, plan} -> combination_review(normalized, inputs, plan, audit_context)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp combination_review(
+         {:combine, destination_id, source_ids, _decisions} = normalized,
+         inputs,
+         plan,
+         %AuditContext{} = audit_context
+       ) do
+    if plan.ready? do
+      validate_native_destination!(inputs, destination_id, source_ids, plan.result_dates)
+
+      %{
+        action: :combine,
+        ready?: true,
+        fingerprint: combination_fingerprint(inputs, normalized, plan, audit_context),
+        conflicts: plan.conflicts,
+        effects: plan.effects,
+        moved_trip_count: moved_trip_count(inputs, source_ids),
+        retained_sources: Enum.sort(source_ids),
+        block_effects:
+          Blocking.project_calendar_combination(inputs, %{
+            destination_id: destination_id,
+            source_ids: source_ids,
+            result_dates: plan.result_dates
+          }),
+        plan: plan
+      }
+    else
+      incomplete_combination_review(inputs, source_ids, plan)
+    end
+  end
+
+  # An undecided review has no committed result, so it has no projected final block effects and no
+  # applicable token: the union, the conflicts and the source facts are honest, but nothing here may
+  # be applied and no decision is implied.
+  defp incomplete_combination_review(inputs, source_ids, plan) do
+    %{
+      action: :combine,
+      ready?: false,
+      fingerprint: nil,
+      conflicts: plan.conflicts,
+      effects: plan.effects,
+      moved_trip_count: moved_trip_count(inputs, source_ids),
+      retained_sources: Enum.sort(source_ids),
+      block_effects: nil,
+      plan: plan
+    }
+  end
+
+  # AC-10 before the editor confirms: a projected destination with neither a weekly row nor an
+  # exception row, while any trip would still reference it after the moves, cannot be applied, so the
+  # review returns the same `:native_service_required` the write path will. Every trip of every moving
+  # source references the destination once the reviewed moves are applied.
+  defp validate_native_destination!(inputs, destination_id, source_ids, result_dates) do
+    selected = inputs.raw.selected_calendars
+
+    post_move_trip_count =
+      Map.fetch!(selected, destination_id).trip_count + moved_trip_count(inputs, source_ids)
+
+    case Combination.encode(
+           Map.fetch!(selected, destination_id),
+           result_dates,
+           post_move_trip_count
+         ) do
+      {:ok, _encoded} -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # A combination moves every trip of every source calendar, so this is the reviewed move count.
+  # The counts are the scoped grouped usage the loader read, never a client total.
+  defp moved_trip_count(inputs, source_ids) do
+    source_ids
+    |> Enum.map(&Map.fetch!(inputs.raw.selected_calendars, &1).trip_count)
+    |> Enum.sum()
+  end
+
+  # The complete-input digest: the one authority a combination apply accepts. It binds the
+  # organization/version scope, the exact command (destination, sorted exact selected IDs and the
+  # normalized decisions), the resolved result dates and agency-local review date, the closure's
+  # calendar rows - every selected weekly/attribute/exception row and every non-selected companion
+  # calendar whose dates decide a moved block (AC-17) - and the rows the review actually read:
+  # trip UUIDs/natural IDs and their mutable columns, endpoint stop times, frequencies, endpoint
+  # stops and their parents including absence, the settings row or its absence, the transfer rows
+  # and the agency rows that resolved the date and zone. Same-count replacement, retiming, a
+  # minimum-layover, parent or midnight change all move it; a client-supplied total cannot, because
+  # no client value is hashed and every collection below comes from the loader in the deterministic
+  # order `Queries` documents (trips by UUID, raw sources and transfers by their natural keys,
+  # settings at most one row per version, agencies by agency ID).
+  defp combination_fingerprint(
+         inputs,
+         {:combine, destination_id, source_ids, decisions},
+         plan,
+         %AuditContext{} = audit_context
+       ) do
+    raw = inputs.raw
+
+    digest(%{
+      action: :combine,
+      scope: {audit_context.organization_id, audit_context.gtfs_version_id},
+      destination_id: destination_id,
+      source_ids: Enum.sort(source_ids),
+      decisions: decisions,
+      result_dates: plan.result_dates,
+      today: inputs.today,
+      calendars: combination_calendar_rows(inputs.calendars),
+      trips: raw.trips,
+      stop_times: raw.stop_times,
+      frequencies: raw.frequencies,
+      stops: raw.stops,
+      parents: raw.parents,
+      settings: raw.settings,
+      transfers: raw.transfers,
+      agencies: raw.agencies
+    })
+  end
+
+  # The closure's stored rows, not the list surface's presentation summary: the weekly row, the
+  # metadata anchor, the exceptions in date order, the evaluated active dates and the grouped trip
+  # count, one entry per exact service ID in ID order. Every selected row is here, and so is every
+  # non-selected companion calendar. The summary's own display fields - warnings, status, periods,
+  # routes - are derived for the list and are deliberately not hashed.
+  defp combination_calendar_rows(calendars) do
+    calendars
+    |> Enum.sort_by(& &1.service_id)
+    |> Enum.map(fn calendar ->
+      %{
+        service_id: calendar.service_id,
+        calendar: calendar.calendar,
+        attributes: calendar.attributes,
+        exceptions: Enum.sort_by(calendar.exceptions, &exception_sort_key/1),
+        active_dates: calendar.active_dates,
+        trip_count: calendar.trip_count
+      }
+    end)
   end
 
   defp exception_sort_key(%CalendarDate{} = exception) do
@@ -1583,6 +1765,33 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  # A review's transaction body. A combination review *is* the protected boundary of
+  # `load_combination_inputs!/2`: it acquires the scoped published version `FOR UPDATE` itself and
+  # rechecks the actor membership after that wait, so the shared version-share body below - the one
+  # every retained-form command keeps - would take the wrong lock for it.
+  defp review_in_transaction!(
+         {:combine, _destination_id, _source_ids, _decisions} = normalized,
+         _source_fingerprints,
+         audit_context
+       ) do
+    review_combination!(normalized, audit_context)
+  end
+
+  defp review_in_transaction!(normalized, source_fingerprints, audit_context) do
+    authorize_editor!(audit_context)
+    lock_shared_published_version!(audit_context)
+    review!(normalized, source_fingerprints, audit_context)
+  end
+
+  # A combination's write path is the next step's; a reviewed combination is refused here rather
+  # than reaching the single-service plan clauses with a different command shape.
+  defp apply!(
+         {:combine, _destination_id, _source_ids, _decisions},
+         _review_fingerprint,
+         _audit_context
+       ),
+       do: Repo.rollback(:invalid_command)
 
   defp apply!(normalized, review_fingerprint, audit_context) do
     sources = current_sources!(command_targets(normalized), audit_context)
@@ -2539,6 +2748,20 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   end
 
+  # A combination keeps exact service IDs - no trimming and no case folding - and normalizes the
+  # submitted decision map to the command type's form: ISO-8601 date keys and the `:run` /
+  # `:no_service` atoms. Only the two allowlisted wire strings are accepted, so no submitted value
+  # ever becomes an atom, and a duplicate date, an empty source list or a destination named as a
+  # source is refused before any database work.
+  defp normalize_command({:combine, destination_id, source_ids, decisions})
+       when is_map(decisions) do
+    with {:ok, destination_id} <- check_service_id(destination_id),
+         {:ok, source_ids} <- normalize_combination_source_ids(source_ids, destination_id),
+         {:ok, decisions} <- normalize_combination_decisions(decisions) do
+      {:ok, {:combine, destination_id, source_ids, decisions}}
+    end
+  end
+
   defp normalize_command(_command), do: {:error, :invalid_command}
 
   defp normalize_command_service_id(service_id, fun) do
@@ -2575,6 +2798,67 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp normalize_command_service_ids(_values), do: {:error, :invalid_command}
 
+  defp normalize_combination_source_ids(values, destination_id) when is_list(values) do
+    cond do
+      values == [] -> {:error, :invalid_command}
+      not Enum.all?(values, &(is_binary(&1) and &1 != "")) -> {:error, :invalid_command}
+      Enum.uniq(values) != values -> {:error, :invalid_command}
+      destination_id in values -> {:error, :invalid_command}
+      true -> {:ok, values}
+    end
+  end
+
+  defp normalize_combination_source_ids(_values, _destination_id), do: {:error, :invalid_command}
+
+  defp normalize_combination_decisions(decisions) do
+    Enum.reduce_while(decisions, {:ok, %{}}, fn decision, {:ok, normalized} ->
+      put_combination_decision(normalized, decision)
+    end)
+  end
+
+  # One submitted decision becomes one exact ISO-8601 date key. A non-date key, a value outside
+  # the allowlist and a second entry for a date that is already normalized are all
+  # `:invalid_command`, so a `%Date{}` and its own ISO string cannot decide one date twice.
+  defp put_combination_decision(normalized, {key, value}) do
+    with {:ok, date} <- combination_decision_date(key),
+         {:ok, decision} <- combination_decision_value(value) do
+      iso_date = Date.to_iso8601(date)
+
+      if Map.has_key?(normalized, iso_date) do
+        {:halt, {:error, :invalid_command}}
+      else
+        {:cont, {:ok, Map.put(normalized, iso_date, decision)}}
+      end
+    else
+      {:error, _reason} -> {:halt, {:error, :invalid_command}}
+    end
+  end
+
+  # The wire form is an ISO-8601 date string; a `%Date{}` is accepted so a caller that already
+  # resolved the conflict dates does not have to re-encode them.
+  defp combination_decision_date(%Date{} = date), do: {:ok, date}
+
+  defp combination_decision_date(key) when is_binary(key) do
+    case Date.from_iso8601(key) do
+      {:ok, date} -> {:ok, date}
+      {:error, _reason} -> {:error, :invalid_command}
+    end
+  end
+
+  defp combination_decision_date(_key), do: {:error, :invalid_command}
+
+  defp combination_decision_value(decision) when decision in [:run, :no_service],
+    do: {:ok, decision}
+
+  defp combination_decision_value(value) when is_binary(value) do
+    case Map.fetch(@combination_decisions, value) do
+      {:ok, decision} -> {:ok, decision}
+      :error -> {:error, :invalid_command}
+    end
+  end
+
+  defp combination_decision_value(_value), do: {:error, :invalid_command}
+
   defp check_range_order(first_date, last_date) do
     if Date.compare(first_date, last_date) == :gt, do: {:error, :invalid_command}, else: :ok
   end
@@ -2602,6 +2886,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp command_targets({:date_change, _dates, remove_from, add_to}),
     do: remove_from |> Kernel.++(add_to) |> Enum.uniq() |> Enum.sort()
+
+  defp command_targets({:combine, destination_id, source_ids, _decisions}),
+    do: [destination_id | source_ids] |> Enum.uniq() |> Enum.sort()
 
   # Exact keys must match the normalized targets and every value must be a real
   # non-empty fingerprint; there is no missing-key or nil bypass.

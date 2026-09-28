@@ -19,6 +19,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
   - A trip whose service moves is decided whether or not the selection named it, an
     unblocked moving trip is never a clear, and a transfer record naming trips the
     projection does not hold is reported `{:stale, :trip_missing}`.
+  - The destination's own trip is never a clear candidate: a destination block that gains a
+    non-selected companion on a gained date keeps its ID (AC-17) and the new warning about it
+    is reported instead of a silent unassignment.
   - Reordering every input list returns an identical projection.
 
   Every expectation comes from the literal dates, times and block IDs of the fixtures below
@@ -196,6 +199,31 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
     end
   end
 
+  describe "destination block preservation" do
+    test "a destination block that gains a companion on a gained date keeps its ID" do
+      result = project(destination_block_inputs(), destination_block_command())
+
+      # "trip-d" is the destination's own trip on block "705". Before the move it runs alone on
+      # 2026-03-02; the reviewed result adds 2026-03-09, where the non-selected "XNO" trip-x runs
+      # the same block, so trip-d's projected companions are not a subset of its original ones.
+      # AC-17 keeps destination block IDs assigned, so no trip is cleared here at all: the
+      # regression a subset-only rule would produce is `["trip-d"]`.
+      assert result.cleared_trip_ids == []
+      refute "trip-d" in result.cleared_trip_ids
+
+      refute Enum.any?(result.before_findings, &(&1.code == :overlap and &1.block_id == "705"))
+
+      # The destination block keeps its ID and the combination's own new warning about it is
+      # reported, which is what a review shows instead of a silent unassignment.
+      warning = overlap_on_block(result.after_findings, "705")
+
+      assert Enum.sort(warning.trip_ids) == ["trip-d", "trip-x"]
+      assert warning.day_type_keys == [DayTypes.key(["DEST", "SRC", "XNO"])]
+      assert warning.dates == [~D[2026-03-09]]
+      assert warning.block_id == "705"
+    end
+  end
+
   describe "determinism" do
     test "reordering every input list returns an identical projection" do
       data = sunonly_inputs([transfer("tr-1", "S", "X")])
@@ -347,6 +375,33 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
       findings,
       &(&1.code == :overlap and &1.block_id == "700" and &1.day_type_keys == [day_type_key])
     )
+  end
+
+  defp overlap_on_block(findings, block_id) do
+    Enum.find(findings, &(&1.code == :overlap and &1.block_id == block_id))
+  end
+
+  # Destination block "705": the destination's own trip-d runs alone on 2026-03-02, the
+  # non-selected "XNO" trip-x runs the gained 2026-03-09 on the same block, and the moving
+  # "SRC" trip-s runs 2026-03-09 on its own block.
+  defp destination_block_inputs do
+    trips = [
+      trip("trip-d", "DEST", "705", at(8, 30), at(9, 30), trip_id: "D"),
+      trip("trip-x", "XNO", "705", at(8, 45), at(9, 45), trip_id: "X"),
+      trip("trip-s", "SRC", "706", at(10, 0), at(11, 0), trip_id: "S")
+    ]
+
+    calendars = [
+      calendar("DEST", [~D[2026-03-02]], 1),
+      calendar("SRC", [~D[2026-03-09]], 1),
+      calendar("XNO", [~D[2026-03-09]], 1)
+    ]
+
+    inputs(calendars, trips, [], ["trip-d", "trip-s"])
+  end
+
+  defp destination_block_command do
+    %{destination_id: "DEST", source_ids: ["SRC"], result_dates: [~D[2026-03-02], ~D[2026-03-09]]}
   end
 
   defp in_seat_finding(findings), do: Enum.find(findings, &(&1.transfer_id == "tr-1"))

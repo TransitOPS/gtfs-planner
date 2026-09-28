@@ -4585,7 +4585,15 @@ defmodule GtfsPlanner.Gtfs do
   def duplicate_calendar(service_id, attrs, %AuditContext{} = audit_context),
     do: Calendars.duplicate_calendar(service_id, attrs, audit_context)
 
-  @doc "Reviews a calendar command against the caller's retained source fingerprints."
+  @doc """
+  Reviews a calendar command against the caller's retained source fingerprints.
+
+  The reviewed `{:combine, destination_id, source_ids, decisions}` command reads the complete
+  protected input set of the version instead of one form source and returns the factual reviewed
+  combination - conflicts, per-calendar effects, moved trip count, retained sources and the
+  simultaneous block effects - with a fingerprint over those rows. A command whose decisions are
+  incomplete has no projected result and no token.
+  """
   def review_calendar_change(command, source_fingerprints, %AuditContext{} = audit_context),
     do: Calendars.review_calendar_change(command, source_fingerprints, audit_context)
 
