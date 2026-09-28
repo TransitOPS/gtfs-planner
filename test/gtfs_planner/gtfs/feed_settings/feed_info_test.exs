@@ -6,14 +6,18 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.FeedInfoTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.FeedInfo
   alias GtfsPlanner.Gtfs.FeedSettings
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
   @url_message "must be a full web address starting with https:// or http://"
+  @race_timeout 10_000
 
   @valid_attrs %{
     feed_publisher_name: "Metro Transit",
@@ -172,29 +176,94 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.FeedInfoTest do
       assert row_count(context.organization) == 1
     end
 
-    test "a duplicate first insert is refused by the version's unique index", context do
-      {:ok, _saved} = FeedSettings.save_feed_info(context.audit, @valid_attrs, nil)
+    test "the losing save of a concurrent first insert returns :stale and writes no row",
+         _context do
+      # Two committing connections reproduce a first-insert race: the winner holds its
+      # insert open while the loser's save locks the version's still-absent feed info
+      # row and then inserts it, so the loser's own insert is the one that meets the
+      # version's unique index. Fixtures commit because the racing saves cannot share
+      # the sandbox's single transaction.
+      start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
 
-      # The save's insert branch inserts exactly this changeset when its own load of the
-      # row sees nothing, which is how a loser of a concurrent first insert gets here. The
-      # savepoint matches the save's insert, so the expected violation leaves the sandbox
-      # transaction usable for the row-count assertions below.
-      duplicate =
-        %FeedInfo{
-          organization_id: context.organization.id,
-          gtfs_version_id: context.version.id
-        }
-        |> FeedInfo.editor_changeset(@valid_attrs)
-        |> Repo.insert(mode: :savepoint)
+      Sandbox.unboxed_run(Repo, fn ->
+        organization = organization_fixture()
+        version = gtfs_version_fixture(organization.id)
+        actor = editor_fixture(organization)
+        audit = audit_context(organization, version, actor)
+        winner_attrs = @valid_attrs
+        loser_attrs = Map.put(@valid_attrs, :feed_publisher_name, "Lost Race")
+        owner = self()
+        handler_id = {__MODULE__, make_ref()}
 
-      assert {:error, %Ecto.Changeset{errors: errors}} = duplicate
+        :ok =
+          :telemetry.attach(
+            handler_id,
+            [:gtfs_planner, :repo, :query],
+            fn _event, _measurements, metadata, destination ->
+              # The loser runs only this save, so an insert on its connection can only
+              # come from `insert_stale_safe!/1`: a `:stale` from the loaded-row branch
+              # never attempts one.
+              if metadata.source == "feed_info" and
+                   String.starts_with?(metadata.query, "INSERT") do
+                send(destination, {:feed_info_insert, self()})
+              end
+            end,
+            owner
+          )
 
-      assert Enum.any?(errors, fn
-               {_field, {_message, opts}} when is_list(opts) -> opts[:constraint] == :unique
-               _error -> false
-             end)
+        try do
+          winner =
+            unboxed_connection(fn ->
+              Repo.transaction(fn ->
+                result = FeedSettings.save_feed_info(audit, winner_attrs, nil)
+                send(owner, {:winner_result, self(), result})
 
-      assert row_count(context.organization) == 1
+                receive do
+                  :release_winner -> :ok
+                end
+              end)
+
+              send(owner, {:winner_committed, self()})
+            end)
+
+          try do
+            assert_receive {:winner_result, ^winner, {:ok, %FeedInfo{}}}, @race_timeout
+
+            loser =
+              unboxed_connection(fn ->
+                %Postgrex.Result{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
+                send(owner, {:loser_backend, self(), backend_pid})
+
+                result = FeedSettings.save_feed_info(audit, loser_attrs, nil)
+                send(owner, {:loser_result, self(), result})
+              end)
+
+            assert_receive {:loser_backend, ^loser, backend_pid}, @race_timeout
+
+            # Releasing only while the loser is blocked keeps the winner's row
+            # uncommitted through the loser's read of it; the insert message asserted
+            # below is what proves the loser then inserted rather than re-read.
+            assert_postgres_lock_wait!(backend_pid)
+            send(winner, :release_winner)
+
+            assert_receive {:loser_result, ^loser, {:error, :stale}}, @race_timeout
+            assert_receive {:feed_info_insert, ^loser}, @race_timeout
+          after
+            send(winner, :release_winner)
+          end
+
+          assert_receive {:winner_committed, ^winner}, @race_timeout
+
+          # The stored row is the winner's: the losing save wrote nothing.
+          assert %FeedInfo{feed_publisher_name: "Metro Transit"} =
+                   FeedSettings.get_feed_info(organization.id, version.id)
+
+          assert row_count(organization) == 1
+        after
+          :telemetry.detach(handler_id)
+          delete_committed_fixtures(organization.id, actor.id)
+        end
+      end)
     end
   end
 
@@ -333,6 +402,53 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.FeedInfoTest do
       from(f in FeedInfo, where: f.organization_id == ^organization.id),
       :count
     )
+  end
+
+  # The race above commits for real, so its fixtures are deleted by hand instead of
+  # being rolled back with the sandbox transaction.
+  defp delete_committed_fixtures(organization_id, actor_id) do
+    Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+    Repo.delete_all(from(u in User, where: u.id == ^actor_id))
+  end
+
+  defp unboxed_connection(fun) do
+    {:ok, pid} =
+      Task.Supervisor.start_child(__MODULE__.TaskSupervisor, fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
+
+        try do
+          fun.()
+        after
+          Sandbox.checkin(Repo)
+        end
+      end)
+
+    pid
+  end
+
+  defp assert_postgres_lock_wait!(backend_pid, attempts_remaining \\ 200)
+
+  defp assert_postgres_lock_wait!(_backend_pid, 0) do
+    flunk("the losing save never blocked on the version's unique index")
+  end
+
+  defp assert_postgres_lock_wait!(backend_pid, attempts_remaining) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+        [backend_pid]
+      )
+
+    case rows do
+      [["Lock"]] ->
+        :ok
+
+      _ ->
+        receive do
+        after
+          10 -> assert_postgres_lock_wait!(backend_pid, attempts_remaining - 1)
+        end
+    end
   end
 
   defp audit_context(organization, version, actor) do
