@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
@@ -34,8 +35,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   @drawers %{"service_dates" => :service_dates, "checks" => :checks, "peak" => :peak}
 
-  # A page number is clamped to a positive integer. Clamping to the day's own
-  # page count needs the filtered, sorted list, which the timeline step owns.
+  @sort_keys %{
+    "block" => :block,
+    "trips" => :trips,
+    "start" => :start,
+    "end" => :end,
+    "hours" => :hours,
+    "status" => :status
+  }
+
+  # The timeline holds one page of the day type's blocks. The filtered, sorted
+  # list is derived from the loaded day, so paging, sorting and the filters never
+  # re-read trips (CR-6).
+  @page_size 100
+
+  # A page number is clamped to a positive integer. `@max_page` is the absolute
+  # guard against a crafted URL; the day's own page count is applied when the page
+  # is sliced, so an out-of-range page renders the last page's rows rather than a
+  # page the pager would deny. The URL keeps the requested page (EV-19).
   @max_page 10_000
 
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
@@ -48,9 +65,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:page_title, "Blocks")
      |> assign(:day, nil)
      |> assign(:loaded_day_key, nil)
+     |> assign(:page_size, @page_size)
      |> assign(:load_state, :loading)
      |> assign(:open_drawer, nil)
      |> assign(:selection, MapSet.new())
+     |> assign(:visible_count, 0)
+     |> assign(:timeline_key, nil)
+     |> stream(:block_rows, [], dom_id: &block_dom_id/1)
      |> assign_empty_derived()}
   end
 
@@ -72,6 +93,52 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     status = if params["status"] == "problems", do: :problems, else: :all
 
     patch(socket, %{route: blank_to_nil(params["route"]), status: status, page: 1, pool_page: 1})
+  end
+
+  def handle_event("set_panel", %{"panel" => "blocks"}, socket) do
+    patch(socket, %{panel: :blocks})
+  end
+
+  def handle_event("set_panel", %{"panel" => "pool"}, socket) do
+    patch(socket, %{panel: :pool, pool_page: 1})
+  end
+
+  def handle_event("set_panel", _params, socket), do: {:noreply, socket}
+
+  def handle_event("set_view", %{"view" => "timeline"}, socket) do
+    patch(socket, %{view: :timeline})
+  end
+
+  def handle_event("set_view", %{"view" => "list"}, socket) do
+    patch(socket, %{view: :list})
+  end
+
+  def handle_event("set_view", _params, socket), do: {:noreply, socket}
+
+  def handle_event("set_scale", %{"scale" => "day"}, socket) do
+    patch(socket, %{scale: :day})
+  end
+
+  def handle_event("set_scale", %{"scale" => "zoom"}, socket) do
+    patch(socket, %{scale: :zoom})
+  end
+
+  def handle_event("set_scale", _params, socket), do: {:noreply, socket}
+
+  # Sorting the same key again reverses it; any other key starts ascending. The
+  # sort covers the whole day type, so it returns to page 1 (AC-22).
+  def handle_event("sort", %{"key" => key}, socket) do
+    case Map.fetch(@sort_keys, key) do
+      {:ok, sort} ->
+        patch(socket, %{sort: sort, dir: toggled_dir(socket.assigns.state, sort), page: 1})
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("paginate", %{"page" => page}, socket) do
+    patch(socket, %{page: page_number(page)})
   end
 
   def handle_event("open_drawer", %{"key" => key}, socket) do
@@ -160,26 +227,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       sort: sort(params["sort"]),
       dir: if(params["dir"] == "desc", do: :desc, else: :asc),
       scale: if(params["scale"] == "zoom", do: :zoom, else: :day),
-      page: page(params["page"]),
-      pool_page: page(params["pool_page"]),
+      page: page_number(params["page"]),
+      pool_page: page_number(params["pool_page"]),
       trip: blank_to_nil(params["trip"]),
       block: blank_to_nil(params["block"])
     }
   end
 
-  defp sort(value) when value in ["trips", "start", "end", "hours", "status"],
-    do: String.to_existing_atom(value)
+  defp sort(value) when is_map_key(@sort_keys, value), do: Map.fetch!(@sort_keys, value)
 
   defp sort(_value), do: :block
 
-  defp page(value) when is_binary(value) do
+  defp toggled_dir(%{sort: sort, dir: :asc}, sort), do: :desc
+  defp toggled_dir(_state, _sort), do: :asc
+
+  defp page_number(value) when is_binary(value) do
     case Integer.parse(value) do
       {page, ""} when page >= 1 -> min(page, @max_page)
       _other -> 1
     end
   end
 
-  defp page(_value), do: 1
+  defp page_number(_value), do: 1
 
   # Every non-default parameter, in a fixed order, so a patch carries only what
   # the reader needs and an empty day type stays at `/blocks` (CR-7).
@@ -224,14 +293,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp blank_to_nil(_value), do: nil
 
   defp ensure_day_loaded(socket) do
-    if connected?(socket) do
-      if socket.assigns.loaded_day_key == {:key, socket.assigns.state.day} do
-        socket
-      else
+    cond do
+      not connected?(socket) ->
+        assign(socket, :load_state, :loading)
+
+      socket.assigns.loaded_day_key == {:key, socket.assigns.state.day} ->
+        assign_timeline(socket)
+
+      true ->
         load_day(socket)
-      end
-    else
-      assign(socket, :load_state, :loading)
     end
   end
 
@@ -246,7 +316,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:day, day)
         |> assign(:loaded_day_key, {:key, state.day})
         |> assign(:load_state, day_state(day))
+        |> assign(:timeline_key, nil)
         |> assign_derived(day)
+        |> assign_timeline()
 
       {:error, {:unknown_day_type, day_types}} ->
         socket
@@ -277,6 +349,62 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     if Map.has_key?(day.routes, state.route), do: state, else: %{state | route: nil}
   end
 
+  # The visible page of the day type's blocks: the route and status filters, the
+  # chosen sort over the whole day type, then one page of 100 rows, streamed so a
+  # sort, filter or page change replaces the container. `load_day/1` and the empty
+  # states clear `:timeline_key`, so a reload always resends; an unrelated patch
+  # (a drawer, a deep link) leaves the stream alone.
+  defp assign_timeline(socket) do
+    visible = visible_blocks(socket.assigns.day.blocks, socket.assigns.state)
+    page = effective_page(socket.assigns.state.page, length(visible))
+
+    key =
+      {socket.assigns.state.route, socket.assigns.state.status, socket.assigns.state.sort,
+       socket.assigns.state.dir, page}
+
+    socket = assign(socket, :visible_count, length(visible))
+
+    if socket.assigns.timeline_key == key do
+      socket
+    else
+      rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
+
+      socket
+      |> assign(:timeline_key, key)
+      |> stream(:block_rows, rows, reset: true)
+    end
+  end
+
+  defp effective_page(page, visible_count) do
+    min(page, max(div(visible_count + @page_size - 1, @page_size), 1))
+  end
+
+  defp visible_blocks(blocks, state) do
+    by_id = Map.new(blocks, &{&1.summary.block_id, &1})
+
+    blocks
+    |> Enum.filter(
+      &(block_on_route?(&1, state.route) and block_matching_status?(&1, state.status))
+    )
+    |> Enum.map(& &1.summary)
+    |> Summary.sort_blocks(state.sort, state.dir)
+    |> Enum.map(&by_id[&1.block_id])
+  end
+
+  defp block_on_route?(_block, nil), do: true
+
+  defp block_on_route?(block, route_id) do
+    Enum.any?(block.trips, &(&1.route_id == route_id))
+  end
+
+  defp block_matching_status?(_block, :all), do: true
+  defp block_matching_status?(block, :problems), do: block.summary.status in [:error, :warning]
+
+  # The stream needs a stable id per block, and a block ID may hold any Unicode;
+  # the URL-safe Base64 token keeps the id within ASCII (Setup and hazards).
+  defp block_dom_id(block),
+    do: "block-" <> Base.url_encode64(block.summary.block_id, padding: false)
+
   defp assign_derived(socket, day) do
     assign(socket,
       day_types: day.day_types,
@@ -293,7 +421,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp assign_empty_derived(socket) do
-    assign(socket,
+    socket
+    |> assign(
       day_types: [],
       day_type: nil,
       counts: @empty_counts,
@@ -303,8 +432,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       routes: %{},
       findings: [],
       mixed_timezones?: false,
-      trip_labels: %{}
+      trip_labels: %{},
+      visible_count: 0,
+      timeline_key: nil
     )
+    |> stream(:block_rows, [], reset: true)
   end
 
   # Each finding names trips by UUID; a deep link names them by their natural
@@ -401,21 +533,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   open_drawer={@open_drawer}
                 />
 
-                <%!-- The workspace is the mount point for the timeline and pool
-                (steps 21-22). Until they render, only the no-blocks guidance is
-                part of this step. --%>
-                <section
-                  id="blocks-workspace"
-                  class={@counts.blocks == 0 && "rounded-box border border-base-300 bg-base-100 p-6"}
-                >
-                  <p
-                    :if={@counts.blocks == 0}
-                    id="blocks-workspace-guidance"
-                    class="text-sm text-base-content/70"
-                  >
-                    Start by selecting trips and assigning them to a new block.
-                  </p>
-                </section>
+                <%!-- The workspace holds the timeline; the List view and the
+                Unassigned panel arrive in step 22. --%>
+                <BlocksComponents.workspace
+                  state={@state}
+                  counts={@counts}
+                  visible_count={@visible_count}
+                  page_size={@page_size}
+                  block_rows={@streams.block_rows}
+                  axis={@axis}
+                  routes={@routes}
+                />
 
                 <BlocksComponents.service_dates_drawer
                   open={@open_drawer == :service_dates}

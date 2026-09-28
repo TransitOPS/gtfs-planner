@@ -2,19 +2,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   @moduledoc """
   Function components for Operations › Blocks.
 
-  The page's day-type scope, whole-day summary, the Service dates, Checks and
-  Peak drawers and the page states live here so
+  The page's day-type scope, whole-day summary, the paged timeline, the Service
+  dates, Checks and Peak drawers and the page states live here so
   `GtfsPlannerWeb.Gtfs.BlocksLive` stays a small state owner. Every component
   takes the pieces of the loaded day it prints, never the whole day, so
   `render/1` in the LiveView never reaches into the server-only day assign
-  (CR-6). Later steps render the timeline, the pool and the trip, gap and block
-  drawers inside the same page.
+  (CR-6). Later steps render the list, pool and the trip, gap and block drawers
+  inside the same page.
 
   Times are printed from parsed seconds with `clock/1`; nothing here re-reads a
-  clock string from the database (CR-3).
+  clock string from the database (CR-3). The timeline reads the block's trips
+  and findings only, and takes the block's plot order from the pure
+  `Checks.sequence/1` so its bars align with the block's own `gaps/1` pairs.
   """
 
   use GtfsPlannerWeb, :html
+
+  alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
   Renders the day-type scope: the day-type select, the route filter, “Problems
@@ -441,6 +446,415 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
+  Renders the Blocks workspace: the work-queue tabs, the Timeline/List and
+  Whole day/Zoom in segmented controls, the hint line and the current panel.
+
+  The Blocks tab holds the paged timeline; the Unassigned tab and the List view
+  are step 22's, so until then they render no panel body. The paged timeline is
+  the current page of the day type's blocks after the route and status filters
+  and the sort, one 36px row per block, inside a container that scrolls in both
+  axes so the header and the block columns stay put.
+
+  The colocated hook exists because the URL decides the view: a phone-width
+  reader who opens `/blocks` with no `view` gets the List view, which is the
+  full-size alternative to the timeline. It pushes `set_view` once and never
+  patches a URL that already carries a view.
+  """
+  attr :state, :map, required: true
+  attr :counts, :map, required: true
+  attr :visible_count, :integer, required: true
+  attr :page_size, :integer, required: true
+  attr :block_rows, :any, required: true
+  attr :axis, :map, default: nil
+  attr :routes, :map, required: true
+
+  def workspace(assigns) do
+    assigns = assign(assigns, :filtered?, filtered?(assigns.state))
+
+    ~H"""
+    <section
+      id="blocks-workspace"
+      phx-hook=".BlocksViewportDefault"
+      class={[
+        "overflow-hidden",
+        @counts.blocks == 0 && "rounded-box border border-base-300 bg-base-100 p-6"
+      ]}
+    >
+      <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-base-300 bg-canvas px-4 py-2">
+        <div class="flex flex-wrap items-center gap-3" role="group" aria-label="Work queue">
+          <button
+            id="panel-blocks"
+            type="button"
+            phx-click="set_panel"
+            phx-value-panel="blocks"
+            aria-pressed={to_string(@state.panel == :blocks)}
+            class={["btn btn-sm min-h-11", @state.panel == :blocks && "btn-primary"]}
+          >
+            Blocks
+          </button>
+          <button
+            id="panel-pool"
+            type="button"
+            phx-click="set_panel"
+            phx-value-panel="pool"
+            aria-pressed={to_string(@state.panel == :pool)}
+            class={["btn btn-sm min-h-11", @state.panel == :pool && "btn-primary"]}
+          >
+            Unassigned · {@counts.unassigned}
+          </button>
+        </div>
+
+        <div :if={@counts.blocks > 0} class="flex flex-wrap items-end gap-3">
+          <.segmented_control
+            id="blocks-view"
+            name="view"
+            legend="Plan view"
+            legend_class="sr-only"
+            options={[{"Timeline", "timeline"}, {"List", "list"}]}
+            value={Atom.to_string(@state.view)}
+            event="set_view"
+            size={:sm}
+            appearance={:joined}
+          />
+          <.segmented_control
+            :if={@state.view == :timeline}
+            id="blocks-scale"
+            name="scale"
+            legend="Timeline scale"
+            legend_class="sr-only"
+            options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
+            value={Atom.to_string(@state.scale)}
+            event="set_scale"
+            size={:sm}
+            appearance={:joined}
+            emphasis={:quiet}
+          />
+        </div>
+      </div>
+
+      <p class="border-b border-base-300 px-4 py-2 text-xs text-base-content/70">
+        {workspace_note(@state, @filtered?)}
+      </p>
+
+      <%= cond do %>
+        <% @counts.blocks == 0 -> %>
+          <p id="blocks-workspace-guidance" class="text-sm text-base-content/70">
+            Start by selecting trips and assigning them to a new block.
+          </p>
+        <% @filtered? and @visible_count == 0 -> %>
+          <div id="blocks-filtered-empty" class="px-4 py-8 text-center">
+            <p class="text-sm text-base-content/70">No blocks match these filters</p>
+            <button
+              id="blocks-clear-filters"
+              type="button"
+              phx-click="filter"
+              phx-value-route=""
+              phx-value-status="all"
+              class="btn btn-sm min-h-11 mt-2"
+            >
+              Clear filters
+            </button>
+          </div>
+        <% @state.panel == :blocks and @state.view == :timeline -> %>
+          <.timeline
+            state={@state}
+            block_rows={@block_rows}
+            axis={@axis}
+            routes={@routes}
+          />
+        <% true -> %>
+          <%!-- The List view and the Unassigned panel are step 22's. --%>
+      <% end %>
+
+      <div
+        :if={@state.panel == :blocks and @visible_count > 0}
+        id="blocks-pager"
+        class="border-t border-base-300 px-4"
+      >
+        <.pagination
+          page={@state.page}
+          per_page={@page_size}
+          total={@visible_count}
+          entity="blocks"
+          event="paginate"
+        />
+      </div>
+    </section>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".BlocksViewportDefault">
+      export default {
+        mounted() {
+          const url = new URL(window.location.href)
+          if (url.searchParams.has("view")) return
+          if (!window.matchMedia("(max-width: 767px)").matches) return
+          if (this.pushedViewDefault) return
+          this.pushedViewDefault = true
+          this.pushEvent("set_view", {view: "list"})
+        }
+      };
+    </script>
+    """
+  end
+
+  @doc """
+  Renders the paged timeline: the sticky sortable header, the whole-day axis with
+  a tick every two hours, and one `block_row/1` per streamed block.
+
+  The header buttons sort the whole day type, not the page, and carry the
+  direction in `aria-sort` and an arrow (CR-8's `sort` event). The axis and every
+  bar are positioned by percentage of the same span, so they stay aligned inside
+  the one scroll container.
+  """
+  attr :state, :map, required: true
+  attr :block_rows, :any, required: true
+  attr :axis, :map, default: nil
+  attr :routes, :map, required: true
+
+  def timeline(assigns) do
+    assigns =
+      assigns
+      |> assign(:columns, sort_columns())
+      |> assign(:ticks, axis_ticks(assigns.axis))
+      |> assign(:track_style, track_style(assigns.axis))
+
+    ~H"""
+    <div id="blocks-timeline-scroll">
+      <table
+        id="blocks-timeline"
+        data-scale={@state.scale}
+        aria-label="Blocks by service-day time"
+      >
+        <colgroup>
+          <col class="blocks-col-block" />
+          <col class="blocks-col-trips" />
+          <col class="blocks-col-start" />
+          <col class="blocks-col-end" />
+          <col class="blocks-col-hours" />
+          <col class="blocks-col-status" />
+          <col />
+        </colgroup>
+        <thead>
+          <tr>
+            <th
+              :for={column <- @columns}
+              scope="col"
+              aria-sort={aria_sort(@state, column.key)}
+              class={["blocks-meta", "blocks-meta-#{column.key}"]}
+            >
+              <button
+                type="button"
+                phx-click="sort"
+                phx-value-key={column.key}
+                class="blocks-sort"
+              >
+                {column.label}
+                <span :if={Atom.to_string(@state.sort) == column.key} aria-hidden="true">
+                  {sort_arrow(@state.dir)}
+                </span>
+              </button>
+            </th>
+            <th scope="col" class="blocks-axis">
+              <span class="blocks-axis-inner">
+                <span
+                  :for={tick <- @ticks}
+                  class="blocks-axis-tick"
+                  style={tick.style}
+                >
+                  {tick.label}
+                </span>
+              </span>
+            </th>
+          </tr>
+        </thead>
+        <tbody id="blocks-timeline-body" phx-update="stream">
+          <.block_row
+            :for={{dom_id, block} <- @block_rows}
+            dom={dom_id}
+            block={block}
+            axis={@axis}
+            routes={@routes}
+            track_style={@track_style}
+            route_filter={@state.route}
+          />
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one 36px block row: the sticky Block, Trips, Start, End, Hours and
+  Status cells and the track with the block's trip bars and gaps.
+
+  The bars are the block's sequence (plottable, non-frequency trips) so they line
+  up with `gaps/1`'s consecutive pairs; an unplottable or repeating trip appears
+  in its block and in the Status cell's finding instead of as a bar. With a route
+  filter applied, a trip of another route renders no bar and no gap, matching the
+  filter that already excluded the block when it has no trip on the route.
+  """
+  attr :dom, :string, required: true
+  attr :block, :map, required: true
+  attr :axis, :map, default: nil
+  attr :routes, :map, required: true
+  attr :track_style, :string, default: nil
+  attr :route_filter, :string, default: nil
+
+  def block_row(assigns) do
+    assigns =
+      assigns
+      |> assign(:summary, assigns.block.summary)
+      |> assign(:plotted, plotted(assigns.block))
+      |> assign(:status, status_label(assigns.block.summary))
+
+    ~H"""
+    <tr id={@dom} data-block={@summary.block_id} class="blocks-row">
+      <td class={["blocks-meta", "blocks-meta-block"]}>
+        <button
+          type="button"
+          phx-click="open_block"
+          phx-value-block={@summary.block_id}
+          class="blocks-block-button"
+          title={"Block " <> @summary.block_id}
+        >
+          {@summary.block_id}
+        </button>
+      </td>
+      <td class={["blocks-meta", "blocks-meta-trips"]}>{@summary.trip_count}</td>
+      <td class={["blocks-meta", "blocks-meta-start"]}>{clock(@summary.start_secs)}</td>
+      <td class={["blocks-meta", "blocks-meta-end"]}>{clock(@summary.end_secs)}</td>
+      <td class={["blocks-meta", "blocks-meta-hours"]}>{hours(@summary.hours)}</td>
+      <td class={["blocks-meta", "blocks-meta-status"]}>
+        <span data-role="block-status" class="inline-flex items-center gap-1">
+          <.icon name={@status.icon} class="size-3.5 shrink-0" /> {@status.label}
+        </span>
+      </td>
+      <td class="blocks-track" style={@track_style}>
+        <%= for row <- @plotted do %>
+          <%= if visible?(row.trip, @route_filter) do %>
+            <.gap
+              :if={row.gap}
+              gap={row.gap}
+              from={row.previous}
+              axis={@axis}
+              short?={row.short?}
+            />
+            <.trip_bar
+              trip={row.trip}
+              axis={@axis}
+              route={Map.get(@routes, row.trip.route_id)}
+              overlap?={row.overlap?}
+              shift?={row.shift?}
+            />
+          <% end %>
+        <% end %>
+      </td>
+    </tr>
+    """
+  end
+
+  @doc """
+  Renders one trip as a 24px button positioned by the day type's axis.
+
+  The bar carries the route's feed colours through `RouteIdentity.route_colors/1`
+  (with its neutral fallback), the route's short name, and a title naming the trip,
+  route, times and both endpoint stops. An overlapping trip adds the error icon
+  and an outline, and every second overlapping bar in a run shifts up so the two
+  are legible without relying on colour.
+  """
+  attr :trip, :map, required: true
+  attr :axis, :map, default: nil
+  attr :route, :map, default: nil
+  attr :overlap?, :boolean, default: false
+  attr :shift?, :boolean, default: false
+
+  def trip_bar(assigns) do
+    {colors, fallback_class} = RouteIdentity.route_colors(assigns.route || %{})
+
+    assigns =
+      assigns
+      |> assign(:colors, colors)
+      |> assign(:fallback_class, fallback_class)
+      |> assign(:label, route_label(assigns.route))
+      |> assign(:geometry, bar_geometry(assigns.trip, assigns.axis))
+      |> assign(:bar_title, bar_title(assigns.trip, assigns.route))
+      |> assign(:style, join_style([bar_geometry(assigns.trip, assigns.axis), colors]))
+
+    ~H"""
+    <button
+      type="button"
+      id={"trip-bar-" <> dom_token(@trip.trip_id)}
+      data-role="trip-bar"
+      data-trip={@trip.trip_id}
+      data-route={@trip.route_id}
+      data-overlap={to_string(@overlap?)}
+      phx-click="open_trip"
+      phx-value-trip={@trip.trip_id}
+      style={@style}
+      class={[
+        "blocks-bar",
+        @fallback_class,
+        @overlap? && "blocks-bar-overlap",
+        @shift? && "blocks-bar-shift"
+      ]}
+      title={@bar_title}
+    >
+      <span :if={@overlap?} data-role="trip-bar-overlap" class="blocks-bar-icon">
+        <.icon name="hero-x-circle-mini" class="size-3" />
+      </span>
+      <span class="blocks-bar-label">{@label}</span>
+    </button>
+    """
+  end
+
+  @doc """
+  Renders the gap before a trip as a button spanning the layover.
+
+  The bar spans from the previous trip's last arrival to this trip's first
+  departure, so `from` is the earlier trip of the pair. Its minutes print only
+  when the bar is at least 32px wide, which the container query reads from the
+  bar's own width. An empty move draws dashed with the move icon and a short
+  layover draws the warning outline, so the two differ by more than colour.
+  """
+  attr :gap, :map, required: true
+  attr :from, :map, required: true
+  attr :axis, :map, default: nil
+  attr :short?, :boolean, default: false
+
+  def gap(assigns) do
+    assigns =
+      assigns
+      |> assign(:move?, match?({:moves, _}, assigns.gap.handoff))
+      |> assign(:style, gap_geometry(assigns.gap, assigns.from, assigns.axis))
+
+    ~H"""
+    <button
+      type="button"
+      data-role="blocks-gap"
+      data-from={@from.id}
+      data-to={@gap.to_id}
+      data-minutes={div(@gap.gap_secs, 60)}
+      data-handoff={handoff_key(@gap.handoff)}
+      data-short={to_string(@short?)}
+      phx-click="open_gap"
+      phx-value-from={@from.id}
+      phx-value-to={@gap.to_id}
+      style={@style}
+      class={[
+        "blocks-gap",
+        @short? && "blocks-gap-short",
+        @move? && "blocks-gap-move"
+      ]}
+      title={gap_title(@gap)}
+    >
+      <span :if={@move?} data-role="gap-move-icon" class="blocks-gap-icon">
+        <.icon name="hero-arrow-up-right-mini" class="size-3" />
+      </span>
+      <span class="blocks-gap-label">{div(@gap.gap_secs, 60)}</span>
+    </button>
+    """
+  end
+
+  @doc """
   Prints parsed seconds as `HH:MM`, with ` +1d`/` +2d` after midnight (Copy).
   """
   def clock(nil), do: "—"
@@ -620,4 +1034,209 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     do: "Can't be confirmed in this view · #{reason}"
 
   defp minutes(secs) when is_integer(secs), do: "#{div(secs, 60)} min"
+
+  # ── Timeline helpers ──
+
+  # The axis prints a tick every two hours, like the reference prototype: from
+  # the axis start up to the last whole tick inside the span. A zero-length axis
+  # (one instant) still yields its own start tick, and a tick so close to the end
+  # that its label would run past the track (and widen the timeline's scroll area)
+  # is left out.
+  @tick_secs 7200
+  @axis_label_max_percent 92.0
+  @min_track_span_secs 60
+
+  defp filtered?(state), do: state.route != nil or state.status == :problems
+
+  defp workspace_note(%{panel: :pool}, _filtered?) do
+    "Select trips using times and terminal connections. Frequency trips and missing times " <>
+      "require separate attention."
+  end
+
+  defp workspace_note(%{view: :list}, filtered?) do
+    "Select trips to move or remove their assignments. " <> whole_block_note(filtered?)
+  end
+
+  defp workspace_note(_state, filtered?) do
+    "Select a trip, block ID, or gap to inspect. Use List for larger controls. " <>
+      whole_block_note(filtered?)
+  end
+
+  defp whole_block_note(true), do: "Checks cover each whole block; other routes are hidden."
+  defp whole_block_note(false), do: "Checks cover each whole block."
+
+  defp sort_columns do
+    [
+      %{key: "block", label: "Block"},
+      %{key: "trips", label: "Trips"},
+      %{key: "start", label: "Start"},
+      %{key: "end", label: "End"},
+      %{key: "hours", label: "Hours"},
+      %{key: "status", label: "Status"}
+    ]
+  end
+
+  defp aria_sort(state, key) do
+    cond do
+      Atom.to_string(state.sort) != key -> "none"
+      state.dir == :asc -> "ascending"
+      true -> "descending"
+    end
+  end
+
+  defp sort_arrow(:asc), do: "↑"
+  defp sort_arrow(_dir), do: "↓"
+
+  defp axis_ticks(nil), do: []
+
+  defp axis_ticks(axis) do
+    {start, span} = axis_geometry(axis)
+    count = max(div(span + @tick_secs - 1, @tick_secs), 1)
+
+    0..(count - 1)
+    |> Enum.map(&{&1, &1 * @tick_secs * 100 / span})
+    |> Enum.reject(fn {_index, left} -> left > @axis_label_max_percent end)
+    |> Enum.map(fn {index, left} ->
+      %{style: "left: #{percent_value(left)}%", label: clock(start + index * @tick_secs)}
+    end)
+  end
+
+  # One faint rule every two hours, drawn as a repeating gradient so the track
+  # and the axis share one spacing rule.
+  defp track_style(nil), do: nil
+
+  defp track_style(axis) do
+    {_start, span} = axis_geometry(axis)
+    "--blocks-grid: #{percent(@tick_secs, span)}%"
+  end
+
+  defp axis_geometry(%{start_secs: start, end_secs: end_secs}) do
+    {start, max(end_secs - start, @min_track_span_secs)}
+  end
+
+  defp axis_geometry(_axis), do: {0, @min_track_span_secs}
+
+  defp bar_geometry(trip, axis) do
+    {start, span} = axis_geometry(axis)
+
+    "left: #{percent(trip.first_departure - start, span)}%; " <>
+      "width: #{percent(trip.last_arrival - trip.first_departure, span)}%"
+  end
+
+  defp gap_geometry(gap, previous, axis) do
+    {start, span} = axis_geometry(axis)
+
+    "left: #{percent(previous.last_arrival - start, span)}%; " <>
+      "width: #{percent(gap.gap_secs, span)}%"
+  end
+
+  # Two decimals, so a test can read the geometry straight out of the style and
+  # the bars line up with the axis ticks to the hundredth of a percent.
+  defp percent(value, span), do: percent_value(value * 100 / span)
+
+  defp percent_value(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2)
+
+  defp join_style(styles) do
+    styles |> Enum.reject(&is_nil/1) |> Enum.join("; ")
+  end
+
+  defp plotted(block) do
+    sequence = Checks.sequence(block.trips)
+    overlap_ids = overlap_trip_ids(block.findings)
+    short_pairs = short_layover_pairs(block.findings)
+
+    sequence
+    |> Enum.with_index()
+    |> Enum.map(fn {trip, index} ->
+      gap = if index == 0, do: nil, else: Enum.at(block.gaps, index - 1)
+      overlap? = MapSet.member?(overlap_ids, trip.id)
+
+      %{
+        trip: trip,
+        previous: if(index == 0, do: nil, else: Enum.at(sequence, index - 1)),
+        gap: gap,
+        overlap?: overlap?,
+        shift?: overlap? and rem(overlapping_depth(sequence, index, trip), 2) == 1,
+        short?: gap != nil and MapSet.member?(short_pairs, MapSet.new([gap.from_id, gap.to_id]))
+      }
+    end)
+  end
+
+  defp overlap_trip_ids(findings) do
+    findings
+    |> Enum.filter(&(&1.code == :overlap))
+    |> Enum.flat_map(& &1.trip_ids)
+    |> MapSet.new()
+  end
+
+  defp short_layover_pairs(findings) do
+    findings
+    |> Enum.filter(&(&1.code == :short_layover))
+    |> MapSet.new(&MapSet.new(&1.trip_ids))
+  end
+
+  # How many earlier trips are still out when this one starts, which is what sets
+  # an overlapping bar's vertical offset.
+  defp overlapping_depth(sequence, index, trip) do
+    sequence |> Enum.take(index) |> Enum.count(&(&1.last_arrival > trip.first_arrival))
+  end
+
+  defp visible?(_trip, nil), do: true
+  defp visible?(trip, route_id), do: trip.route_id == route_id
+
+  defp status_label(%{status: :ok}), do: %{icon: "hero-check-mini", label: "No problems"}
+
+  defp status_label(%{status_code: code}) do
+    %{icon: code_icon(code), label: code_label(code)}
+  end
+
+  # Copy: error, warning, empty move, other notices, none.
+  defp code_icon(:overlap), do: "hero-x-circle-mini"
+  defp code_icon(:short_layover), do: "hero-exclamation-triangle-mini"
+  defp code_icon(:in_seat_stale), do: "hero-exclamation-triangle-mini"
+  defp code_icon(:repositions), do: "hero-arrow-up-right-mini"
+  defp code_icon(_code), do: "hero-information-circle-mini"
+
+  defp hours(nil), do: "—"
+  defp hours(hours), do: :erlang.float_to_binary(hours * 1.0, decimals: 1)
+
+  defp route_label(nil), do: "Unknown route"
+
+  defp route_label(route) do
+    case route[:short_name] || route[:long_name] || route[:route_id] do
+      nil -> "Unknown route"
+      "" -> "Unknown route"
+      label -> label
+    end
+  end
+
+  defp bar_title(trip, route) do
+    "Trip #{trip.trip_id} · Route #{route_label(route)} · " <>
+      "#{clock(trip.first_departure)}–#{clock(trip.last_arrival)} · " <>
+      "#{stop_name(trip.first_stop)} → #{stop_name(trip.last_stop)}"
+  end
+
+  defp stop_name(%{name: name}) when is_binary(name) and name != "", do: name
+  defp stop_name(%{stop_id: stop_id}) when is_binary(stop_id), do: stop_id
+  defp stop_name(_stop), do: "unknown stop"
+
+  defp gap_title(%{handoff: {:moves, _}} = gap),
+    do: "#{minutes(gap.gap_secs)} gap · the vehicle moves empty"
+
+  defp gap_title(%{handoff: :same_stop} = gap), do: "#{minutes(gap.gap_secs)} gap · same stop"
+
+  defp gap_title(%{handoff: :same_station} = gap),
+    do: "#{minutes(gap.gap_secs)} gap · same station"
+
+  defp gap_title(%{handoff: {:nearby, meters}} = gap),
+    do: "#{minutes(gap.gap_secs)} gap · nearby stop, #{meters} m"
+
+  defp handoff_key(:same_stop), do: "same_stop"
+  defp handoff_key(:same_station), do: "same_station"
+  defp handoff_key({:nearby, meters}), do: "nearby-#{meters}"
+  defp handoff_key({:moves, _meters}), do: "moves"
+
+  # A DOM id token for a block or trip ID that may hold any Unicode: the same
+  # URL-safe Base64 as the block rows, never the raw ID (Setup and hazards).
+  defp dom_token(id), do: Base.url_encode64(id, padding: false)
 end

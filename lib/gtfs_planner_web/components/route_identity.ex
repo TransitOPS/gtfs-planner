@@ -39,22 +39,35 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     (lighter + 0.05) / (darker + 0.05)
   end
 
+  @doc """
+  Returns a route's colours as a safe inline style and a fallback class.
+
+  The style carries the normalized background and the foreground that reaches
+  4.5:1 contrast against it, so a caller that paints its own surface (a timeline
+  trip bar) never interpolates an unvalidated feed value. An invalid or missing
+  background yields no style and the neutral `bg-base-300 text-base-content`
+  class instead, so colour stays decorative and never the only signal.
+  """
+  @spec route_colors(map()) :: {String.t() | nil, String.t() | nil}
+  def route_colors(route) do
+    bg = Map.get(route, :route_color)
+    fg = Map.get(route, :route_text_color)
+
+    case normalize_hex(bg) do
+      {:ok, norm_bg} ->
+        resolved_fg = resolve_foreground(norm_bg, fg)
+        {"background-color: ##{norm_bg}; color: ##{resolved_fg}", nil}
+
+      :error ->
+        {nil, "bg-base-300 text-base-content"}
+    end
+  end
+
   attr :route, :map, required: true
   attr :class, :any, default: nil
 
   def route_badge(assigns) do
-    bg = Map.get(assigns.route, :route_color)
-    fg = Map.get(assigns.route, :route_text_color)
-
-    {style, badge_class} =
-      case normalize_hex(bg) do
-        {:ok, norm_bg} ->
-          resolved_fg = resolve_foreground(norm_bg, fg)
-          {"background-color: ##{norm_bg}; color: ##{resolved_fg}", nil}
-
-        :error ->
-          {nil, "bg-base-300 text-base-content"}
-      end
+    {style, badge_class} = route_colors(assigns.route)
 
     label = badge_text(assigns.route)
 
