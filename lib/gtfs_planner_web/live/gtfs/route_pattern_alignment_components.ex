@@ -738,6 +738,39 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     """
   end
 
+  attr :alignment, :map,
+    default: nil,
+    doc: "the Gtfs.route_alignment_summary/3 status for one pattern (nil renders Not exported)"
+
+  attr :pattern_id, :string, required: true, doc: "natural route_pattern_id for the cell button"
+
+  @doc """
+  Renders one Route › Patterns Alignment cell (step 35): the six-state
+  summary badge from `Gtfs.route_alignment_summary/3` inside a keyboard
+  operable button that patches to the pattern's Alignment task. Status is
+  always symbol + text, never colour alone.
+  """
+  def list_status(assigns) do
+    assigns = assign(assigns, :parts, list_status_parts(assigns.alignment))
+
+    ~H"""
+    <button
+      type="button"
+      id={"pattern-alignment-#{@pattern_id}"}
+      phx-click="open_pattern_alignment"
+      phx-value-pattern-id={@pattern_id}
+      aria-label={"Open alignment for #{@pattern_id}: #{@parts.text}"}
+      class="inline-flex min-h-11 cursor-pointer items-center transition hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    >
+      <.alignment_status_badge
+        id={"pattern-alignment-status-#{@pattern_id}"}
+        text={@parts.text}
+        tone={@parts.tone}
+      />
+    </button>
+    """
+  end
+
   attr :dialog, :map, default: nil, doc: "%{position, from, to} or nil"
 
   def delete_dialog(assigns) do
@@ -1403,11 +1436,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   defp section_scope(%{kind: :override}), do: "Custom path"
   defp section_scope(_section), do: "This pattern"
 
-  defp header_status(nil), do: %{text: "Not exported", tone: "badge-ghost"}
+  defp header_status(nil), do: list_status_parts(nil)
 
-  defp header_status(alignment) do
-    status = alignment.status
+  defp header_status(alignment), do: list_status_parts(alignment.status)
 
+  # Six-state Route › Patterns wording shared by the Alignment task header
+  # and the patterns-list cell (step 35): symbol + text, never colour alone.
+  defp list_status_parts(nil), do: %{text: "Not exported", tone: "badge-ghost"}
+
+  defp list_status_parts(status) do
     cond do
       status.missing > 0 -> %{text: "! #{status.missing} missing", tone: "badge-error"}
       status.blocked > 0 -> %{text: "⚠ Blocked", tone: "badge-error"}

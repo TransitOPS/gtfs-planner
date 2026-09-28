@@ -11,6 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
 
   @doc """
   Renders the route's pattern list with its counts, direction grouping and
@@ -60,6 +61,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </:col>
         <:col :let={summary} label="Trips" align="right">
           <span class="tabular-nums">{trip_count_label(summary.trip_count)}</span>
+        </:col>
+        <:col :let={summary} label="Alignment">
+          <RoutePatternAlignmentComponents.list_status
+            alignment={Map.get(summary, :alignment)}
+            pattern_id={summary.pattern.route_pattern_id}
+          />
         </:col>
       </.table>
     </div>

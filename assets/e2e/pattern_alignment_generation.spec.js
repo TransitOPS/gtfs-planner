@@ -311,3 +311,73 @@ test.describe("follow streets", () => {
     expect(problems).toEqual([]);
   });
 });
+
+/**
+ * Patterns list (spec 12, step 35).
+ *
+ * `test.describe("patterns list")` opens the BROWSER_ALIGN route's Patterns
+ * list, where every row carries its batched alignment status from
+ * `Gtfs.route_alignment_summary/3`. The ACTIONS pattern is fully drawn and
+ * applied, so its cell reads Exported; several patterns still miss sections.
+ * Clicking a cell patches to that pattern's Alignment task in the same
+ * LiveView (no remount). Nothing here writes, so every viewport reuses the
+ * same rows.
+ */
+test.describe("patterns list", () => {
+  const EXPORTED_PATTERN = "BROWSER-ALIGN-ACTIONS";
+
+  async function openPatternsList(page, versionId) {
+    await page.goto(`/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns`);
+    await page.waitForSelector("#patterns-list", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#patterns-list [id^='pattern-alignment-']").first(),
+    ).toBeVisible({ timeout: 15000 });
+  }
+
+  test("shows the Alignment column and patches to the task at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openPatternsList(page, versionId);
+
+    // The Alignment column header and one status cell per pattern row.
+    await expect(page.locator("#patterns-list-container")).toContainText(
+      "Alignment",
+    );
+    await expect(
+      page.locator(`#pattern-alignment-${EXPORTED_PATTERN}`),
+    ).toContainText("✓ Exported");
+    await expect(page.locator("#patterns-list")).toContainText("missing");
+    await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
+    await captureViewport(page, "patterns-list-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // The cell patches to the Alignment task without remounting the page.
+    await page.locator(`#pattern-alignment-${EXPORTED_PATTERN}`).click();
+    await expect(page).toHaveURL(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${EXPORTED_PATTERN}?task=alignment`,
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-task")).toBeVisible({
+      timeout: 15000,
+    });
+
+    // A phone-width load stacks each row under its labels, including the
+    // Alignment status, without horizontal overflow.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openPatternsList(page, versionId);
+    await expect(
+      page.locator(`#pattern-alignment-${EXPORTED_PATTERN}`),
+    ).toContainText("✓ Exported");
+    await captureFullPage(page, "patterns-list-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});

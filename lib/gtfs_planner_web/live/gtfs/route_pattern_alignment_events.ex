@@ -236,6 +236,28 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   end
 
   @doc """
+  Opens a pattern's Alignment task from the Route › Patterns list (step 35).
+
+  A dirty editor (staged stop edits, timing edits or alignment drafts,
+  all folded into `dirty?`) stashes the alignment path in the existing
+  `pending_navigation` discard dialog instead of patching away the draft;
+  a clean click patches in the same LiveView process, so no remount drops
+  suggestions or hook state.
+  """
+  def open_pattern_alignment(socket, %{"pattern-id" => pattern_id})
+      when is_binary(pattern_id) do
+    path = "#{patterns_path(socket)}/#{pattern_id}?task=alignment"
+
+    if socket.assigns[:dirty?] do
+      Component.assign(socket, :pending_navigation, path)
+    else
+      Phoenix.LiveView.push_patch(socket, to: path)
+    end
+  end
+
+  def open_pattern_alignment(socket, _params), do: socket
+
+  @doc """
   Opens the delete dialog for a saved section.
 
   Viewers and unknown positions leave the socket unchanged; the dialog
@@ -1367,6 +1389,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   defp parse_tolerance(_value), do: :error
 
   defp editable?(socket), do: socket.assigns[:alignment_editable] == true
+
+  # Same Route › Patterns base the LiveView's own `patterns_path/1` builds;
+  # kept local so the list cell never drifts from the router paths.
+  defp patterns_path(socket) do
+    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+  end
 
   defp alignment_dirty?(socket) do
     case socket.assigns[:alignment_state] do

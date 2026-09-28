@@ -1088,6 +1088,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("open_pattern_alignment", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_pattern_alignment(socket, params)}
+  end
+
+  @impl true
   def handle_event("back_to_patterns", _params, socket) do
     guard_navigation(socket, patterns_path(socket))
   end
@@ -1497,10 +1502,28 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:stop_choices, screen.stop_choices)
       |> assign(:load_state, :ready)
       |> assign(:stale?, false)
-      |> stream(:patterns, screen.patterns, reset: true)
+      |> stream(:patterns, with_alignment(socket, screen.patterns), reset: true)
       |> apply_detail(screen.detail, previous_pattern_id)
 
     assign_dirty(socket)
+  end
+
+  # Route › Patterns shows every pattern's alignment status from one batched
+  # `Gtfs.route_alignment_summary/3` read (step 35, still 5 queries for any
+  # pattern count per step 34). Keyed by natural `route_pattern_id` like the
+  # consumer in step 36; a pattern absent from the summary renders Not
+  # exported through `list_status/1`'s nil branch.
+  defp with_alignment(socket, summaries) do
+    summary =
+      Gtfs.route_alignment_summary(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        socket.assigns.route_id
+      )
+
+    Enum.map(summaries, fn summary_row ->
+      Map.put(summary_row, :alignment, Map.get(summary, summary_row.pattern.route_pattern_id))
+    end)
   end
 
   defp apply_detail(socket, nil, _previous_pattern_id) do
