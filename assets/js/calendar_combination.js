@@ -33,17 +33,27 @@ const CalendarCombination = {
     }
     notice.hidden = false;
 
-    const submit = this.submit();
-    if (submit) submit.disabled = true;
+    this.setSubmitDisabled(true);
   },
 
   reconnected() {
     const notice = this.notice();
     if (notice) notice.hidden = true;
 
-    // The server owns the enabled state from here on; asking it to reload is what resolves a
-    // confirmation whose answer was lost, and it never resends the old command.
+    // The server owns the enabled state, so the control is restored from the pending flag it last
+    // rendered instead of staying disabled: the reconnect patch does not touch the button (its
+    // server-rendered HTML is unchanged), so an attribute this hook set while offline would
+    // otherwise outlive the connection and leave the confirmation permanently dead. Asking the
+    // server to reload is what resolves a confirmation whose answer was lost, and it never resends
+    // the old command.
+    this.setSubmitDisabled(this.el.dataset.combinePending === "true");
+
     this.pushEvent("combine_reconnect", {});
+  },
+
+  setSubmitDisabled(disabled) {
+    const submit = this.submit();
+    if (submit) submit.disabled = disabled;
   },
 
   notice() {

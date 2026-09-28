@@ -1410,17 +1410,30 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       </div>
     </div>
 
-    <p
+    <div
       :if={@success.action == :unchanged}
       id={@id}
       role="status"
       tabindex="-1"
       data-combine-success="unchanged"
-      class="focus:outline-none rounded-box border border-base-300 bg-base-100 px-4 py-3 text-sm"
+      class="focus:outline-none rounded-box border border-base-300 bg-base-100 px-4 py-3"
     >
-      Nothing changed: no trip moved and {@success.destination_name} already ran on the reviewed
-      dates.
-    </p>
+      <div class="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <p class="min-w-0 flex-1 basis-[320px] text-sm">
+          Nothing changed: no trip moved and {@success.destination_name} already ran on the reviewed
+          dates.
+        </p>
+        <button
+          id={@id <> "-dismiss"}
+          type="button"
+          phx-click="dismiss_combine_success"
+          class="btn btn-ghost btn-sm min-h-11 min-w-11"
+          aria-label="Dismiss the combination summary"
+        >
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </div>
+    </div>
     """
   end
 

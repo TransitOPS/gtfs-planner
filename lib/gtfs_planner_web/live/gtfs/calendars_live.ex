@@ -671,7 +671,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       |> assign(:selection_version_id, version_id)
       |> drop_combination()
       |> clear_combination_notices()
-      |> bump_combine_generation()
     end
   end
 
@@ -832,7 +831,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   # A closed drawer keeps only the list. The return-focus target survives the close patch so the
   # dialog hook can hand focus back to the control that opened it, exactly as the date-change
-  # drawer does; it is replaced on the next review and cleared only by a version change.
+  # drawer does; it is replaced on the next review and cleared only by a version change. Dropping
+  # the review also supersedes it: every path that clears it bumps the generation here, so a result
+  # still in flight settles against nothing instead of being presented (or read) after the review
+  # it belonged to is gone.
   defp drop_combination(socket) do
     socket
     |> assign(:combine_open?, false)
@@ -849,6 +851,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:combine_refresh_required?, false)
     |> assign(:combine_status, nil)
     |> assign(:combine_dispatched?, false)
+    |> bump_combine_generation()
   end
 
   defp clear_combination_notices(socket) do
@@ -1966,6 +1969,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         id="calendar-combine-transport"
         phx-hook="CalendarCombination"
         data-combine-dispatched={to_string(@combine_dispatched?)}
+        data-combine-pending={to_string(@combine_pending?)}
         class="mt-4"
       >
         <div
@@ -2743,6 +2747,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 id="calendar-combine-refresh"
                 type="button"
                 phx-click="combine_refresh"
+                disabled={@combine_pending?}
                 size="sm"
                 class="min-h-11 min-w-[196px]"
               >
