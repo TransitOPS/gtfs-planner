@@ -10,7 +10,7 @@
 // Step 14 owns the `shell` case; the following UI steps add one capture case
 // each to this file.
 import { test, expect } from "@playwright/test";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bodyFitsViewport, readPendingStates, watchPendingState } from "./browser_helpers.js";
@@ -867,12 +867,23 @@ test("delete dialog", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-delete-replacement-form")).toContainText(
     "Replace references with",
   );
-  // A referenced zone can only move to another inventory zone: no Unassigned.
-  await expect(page.locator("#fare-zone-delete-replacement option")).toHaveText([
-    "Eastbank · B",
-    "C · C",
-    "Airport · D",
-  ]);
+  // A referenced zone can only move to another inventory zone: every other zone
+  // of the inventory is offered, the zone being deleted is not, and Unassigned
+  // never is. The list is asserted by membership rather than as a literal set
+  // because the drawer case above leaves its own created zone behind.
+  const replacements = page.locator("#fare-zone-delete-replacement option");
+  const inventoryCount = Number(
+    await page.locator("#fare-zone-inventory-count").textContent(),
+  );
+
+  await expect(replacements).toHaveCount(inventoryCount - 1);
+
+  for (const label of ["Eastbank · B", "C · C", "Airport · D"]) {
+    await expect(replacements.filter({ hasText: label })).toHaveCount(1);
+  }
+
+  await expect(replacements.filter({ hasText: "Unassigned" })).toHaveCount(0);
+  await expect(replacements.filter({ hasText: "Central · A" })).toHaveCount(0);
   await expect(page.locator("#fare-zone-delete-warning")).toHaveText(
     "Stops and fare rules will move together. This changes which journeys the related fares cover.",
   );
@@ -1427,4 +1438,513 @@ test("stop details", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-row-all")).not.toHaveAttribute("aria-current", "page");
 
   await capture(page, testInfo, "stop-details-fares-1440", { fullPage: false });
+});
+
+// ── journey (step 29, EV-27) ──────────────────────────────────────────────
+
+// The ordinary-entry journey. Every case below enters through the account menu's
+// Settings link and the Settings bar's Fares tab rather than a direct URL, so the
+// journey covers the navigation an editor uses, and only the map's tile template
+// is substituted. The seeded "Browser Fare Zones Version" carries 26 located
+// boardable stops in two clusters 0.071 degrees apart - eight of them west of the
+// fitted midpoint longitude, one stop with no coordinates, four unassigned - and
+// a 10,000-stop sibling version for the scale measurement.
+test.describe("fare zones journey", () => {
+  const WEST_STOPS = [
+    "Central West 1",
+    "Central West 2",
+    "Central West 3",
+    "Central West 4",
+    "Central West 5",
+    "Central West 6",
+    "Central West 7",
+    "Central West 8",
+  ];
+
+  // Switches the header's version panel to the named version. The option carries
+  // the version ID and the trigger navigates, so the journey reads the ID from the
+  // panel instead of assuming which version is the organization's default.
+  async function selectVersion(page, name) {
+    const option = page
+      .locator("#gtfs-version-panel [data-version-option]")
+      .filter({ hasText: name });
+
+    await expect(option).toHaveCount(1);
+
+    const versionId = await option.getAttribute("data-version-id");
+    if (!versionId) throw new Error(`${name} is missing its version ID`);
+
+    if ((await option.getAttribute("aria-current")) === "true") return versionId;
+
+    // A click that lands before the header's hook mounts is dropped, so the
+    // panel and the option are retried until the version actually changed. The
+    // panel opens on a server round trip, so the check precedes each click.
+    await expect(async () => {
+      if (!(await page.locator("#gtfs-version-panel").isVisible())) {
+        await page.locator("#gtfs-version-trigger").click();
+      }
+
+      await expect(page.locator("#gtfs-version-panel")).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 20000 });
+
+    await option.click();
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/`));
+    await waitForLiveView(page);
+
+    return versionId;
+  }
+
+  // Ordinary entry: the version, the account menu's Settings link, then the
+  // Settings bar's Fares tab. Returns the version ID the workspace opened with.
+  async function enterFaresThroughSettings(page) {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const versionId = await selectVersion(page, VERSION_NAME);
+    const trigger = page.locator("#user-menu [data-user-menu-trigger]");
+    const settings = page.locator("#user-menu-panel #settings-link");
+
+    await expect(async () => {
+      if (!(await settings.isVisible())) await trigger.click();
+
+      await expect(settings).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 20000 });
+
+    await expect(settings).toHaveAttribute("href", `/gtfs/${versionId}/settings`);
+    await settings.click();
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings$`));
+    await waitForLiveView(page);
+    await expect(page.locator("#settings-overview")).toBeVisible();
+
+    await expect(async () => {
+      if (!/\/settings\/fares$/.test(new URL(page.url()).pathname)) {
+        await page.locator("#settings-tab-fares").click();
+      }
+
+      await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares$`), {
+        timeout: 3000,
+      });
+    }).toPass({ timeout: 25000 });
+
+    await waitForLiveView(page);
+
+    await expect(page.locator("#fares-tab-zones")).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#fare-zones-panel")).toBeAttached();
+
+    return versionId;
+  }
+
+  // The rows the server marks checked are the selection, so the list is the
+  // readable shape of what a box, a click or Space selected.
+  function selectedRows(page) {
+    return page.locator("#fare-zone-stops tr", {
+      has: page.locator('input[type="checkbox"]:checked'),
+    });
+  }
+
+  // A dragged box: the pointer must go down on the canvas itself, so callers
+  // start clear of the frame's controls. Intermediate moves are the pointermove
+  // events the hook draws the box from.
+  async function dragOnMap(page, start, end) {
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move((start.x + end.x) / 2, (start.y + end.y) / 2, { steps: 8 });
+    await page.mouse.move(end.x, end.y, { steps: 8 });
+    await page.mouse.up();
+  }
+
+  // The map pane's transform is the pan's offset in container pixels, so a box
+  // drawn after a pan is placed by the offset the map actually moved rather than
+  // by the mouse delta an inertial release can overshoot.
+  async function mapPaneOffset(page) {
+    return page.evaluate(() => {
+      const pane = document.querySelector("#fare-zone-map .leaflet-map-pane");
+      if (!pane) throw new Error("the map pane is not rendered");
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(pane).transform);
+      return { x: matrix.m41, y: matrix.m42 };
+    });
+  }
+
+  async function settledPaneOffset(page) {
+    let previous = await mapPaneOffset(page);
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await page.waitForTimeout(150);
+      const current = await mapPaneOffset(page);
+      if (Math.abs(current.x - previous.x) < 0.5 && Math.abs(current.y - previous.y) < 0.5) {
+        return current;
+      }
+      previous = current;
+    }
+
+    return previous;
+  }
+
+  // Tab until the focused element matches the selector. The journey walks the
+  // real tab order instead of focusing a control directly, so the cap only fails
+  // loudly when a control is unreachable by keyboard.
+  async function tabTo(page, selector, { steps = 250 } = {}) {
+    for (let step = 0; step < steps; step += 1) {
+      await page.keyboard.press("Tab");
+      const reached = await page.evaluate(
+        (target) => Boolean(document.activeElement?.matches(target)),
+        selector,
+      );
+      if (reached) return;
+    }
+
+    throw new Error(`Tab never reached ${selector} in ${steps} steps`);
+  }
+
+  // Writes the scale measurement beside the captures, so branch review's run
+  // refreshes it with the machine it actually measured on.
+  function writeScaleMeasurement(testInfo, record) {
+    const dir = CAPTURE_DIR || testInfo.outputPath();
+
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, "map-scale.json"), `${JSON.stringify(record, null, 2)}\n`);
+
+    return resolve(dir, "map-scale.json");
+  }
+
+  test("entry reaches the Zones tab through Settings", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+
+    const versionId = await enterFaresThroughSettings(page);
+
+    await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares$`));
+    await expect(page.locator("#fares-tab-zones")).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#fare-zones-panel")).toBeAttached();
+    await expect(page.locator("#fare-zone-stage-title")).toHaveText("All stops");
+    await expect(page.locator("#fare-zone-inventory")).toBeVisible();
+    // The entry opened the fixture's own version, not the organization's default.
+    await expect(page.locator("#gtfs-version-trigger")).toHaveAttribute(
+      "aria-label",
+      `Version, ${VERSION_NAME}`,
+    );
+    await expect(page.locator("#fare-zone-map [data-map-canvas]")).toHaveAttribute(
+      "data-map-state",
+      "ready",
+    );
+
+    await capture(page, testInfo, "journey-zones-1440", { fullPage: false });
+  });
+
+  test("a box selects the west cluster and a pan keeps it", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await enterFaresThroughSettings(page);
+
+    const frame = page.locator("#fare-zone-map");
+    const canvas = page.locator("#fare-zone-map [data-map-canvas]");
+
+    await expect(canvas).toHaveAttribute("data-map-state", "ready");
+    await expect(canvas).toHaveAttribute("data-point-count", "26");
+
+    await page.locator("#fare-zone-map [data-map-fit]").click();
+    await expect(page.locator("#fare-zone-map [data-map-mode='select']")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // The fitted frame centres the fixture's bounds, and only the eight west stops
+    // sit west of the midpoint longitude. The box starts left of the westmost stop
+    // and below the frame's mode controls, and ends on the frame's centre column.
+    const box = await frame.boundingBox();
+    const first = { x: box.x + 6, y: box.y + 70 };
+    const half = { x: box.x + box.width / 2, y: box.y + box.height - 6 };
+
+    await dragOnMap(page, first, half);
+
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("8 stops selected");
+    await expect(canvas).toHaveAttribute("data-selected-count", "8");
+    await expect(selectedRows(page)).toHaveCount(8);
+
+    for (const name of WEST_STOPS) {
+      await expect(selectedRows(page).filter({ hasText: name })).toHaveCount(1);
+    }
+
+    await expect(selectedRows(page).filter({ hasText: "Riverside" })).toHaveCount(0);
+    await expect(selectedRows(page).filter({ hasText: "Bayline" })).toHaveCount(0);
+
+    await capture(page, testInfo, "journey-zones-box-1440", { fullPage: false });
+
+    // Pan mode owns the drag: the map moves, the hinted mode changes, and the
+    // selection is left exactly as it was.
+    await page.locator("#fare-zone-map [data-map-mode='pan']").click();
+    await expect(page.locator("#fare-zone-map [data-map-mode='pan']")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.locator("#fare-zone-map [data-map-hint]")).toContainText(
+      "Drag the map to move.",
+    );
+
+    const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const before = await settledPaneOffset(page);
+
+    await dragOnMap(page, centre, { x: centre.x + 200, y: centre.y });
+
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("8 stops selected");
+    await expect(canvas).toHaveAttribute("data-selected-count", "8");
+
+    const after = await settledPaneOffset(page);
+    const moved = { x: after.x - before.x, y: after.y - before.y };
+
+    expect(Math.round(moved.x)).toBeGreaterThanOrEqual(150);
+    expect(Math.abs(Math.round(moved.y))).toBeLessThan(60);
+
+    await capture(page, testInfo, "journey-zones-panned-1440", { fullPage: false });
+
+    // Select mode owns the drag again, and the box's corners are projected after
+    // the pan, so a box over the cluster's moved position selects exactly the same
+    // eight stops rather than the pixels the cluster used to occupy.
+    await page.locator("#fare-zone-map [data-map-mode='select']").click();
+    await dragOnMap(
+      page,
+      { x: first.x + moved.x, y: first.y + moved.y },
+      { x: half.x + moved.x, y: half.y + moved.y },
+    );
+
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("8 stops selected");
+    await expect(canvas).toHaveAttribute("data-selected-count", "8");
+    await expect(selectedRows(page)).toHaveCount(8);
+
+    for (const name of WEST_STOPS) {
+      await expect(selectedRows(page).filter({ hasText: name })).toHaveCount(1);
+    }
+
+    await capture(page, testInfo, "journey-zones-box-panned-1440", { fullPage: false });
+  });
+
+  test("the keyboard alone assigns a stop", async ({ page, context }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await enterFaresThroughSettings(page);
+
+    const firstRow = page.locator("#fare-zone-stops tr").first();
+
+    await expect(firstRow).toContainText("Bayline 1");
+
+    // Tab to the first row's checkbox and Space selects it.
+    await tabTo(page, "#fare-zone-stops tr:first-child input[type='checkbox']");
+    await page.keyboard.press("Space");
+
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("1 stop selected");
+
+    // Tab on to Assign zone and open it with Enter.
+    await tabTo(page, "#fare-zone-assign-selection");
+    await page.keyboard.press("Enter");
+
+    const dialog = page.locator("#fare-zone-assignment-dialog");
+
+    await expect(dialog).toBeVisible();
+    await expect(page.locator("#fare-zone-assignment-target")).toHaveValue("A");
+
+    // The review's own focus starts on Keep selection; Tab walks the dialog's
+    // focus order (Keep selection, Save assignments, body, the target select).
+    await tabTo(page, "#fare-zone-assignment-target", { steps: 12 });
+
+    // A closed native `<select>` ignores arrow keys in headless Chromium on this
+    // host, so the zone is chosen with the control's own type-ahead: the option's
+    // first letter selects it and fires the change the review is rebuilt from.
+    await page.keyboard.press("e");
+
+    await expect(page.locator("#fare-zone-assignment-target")).toHaveValue("B");
+    await expect(page.locator("#fare-zone-assignment-summary")).toContainText(
+      "1 assignment will change",
+    );
+    await expect(page.locator("#fare-zone-assignment-row-1")).toContainText("→ B");
+
+    await capture(page, testInfo, "journey-zones-assignment-1440", { fullPage: false });
+
+    await tabTo(page, "#fare-zone-assignment-dialog-confirm", { steps: 12 });
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#fare-zone-saved")).toContainText(
+      "1 stop assigned to Eastbank.",
+    );
+    await expect(firstRow).toContainText("Eastbank");
+
+    // Tabbing scrolled the list, so the capture returns to the callout the save
+    // left behind.
+    await page.locator("#fare-zone-saved").scrollIntoViewIfNeeded();
+
+    await capture(page, testInfo, "journey-zones-keyboard-saved-1440", { fullPage: false });
+
+    // A second, freshly loaded page reads the stored zone: the save is not this
+    // socket's state.
+    const reloaded = await context.newPage();
+
+    await reloaded.setViewportSize(DESKTOP);
+    await routeBlankTiles(reloaded);
+    await openFares(reloaded, "zones");
+    await expect(
+      reloaded.locator("#fare-zone-stops tr").filter({ hasText: "Bayline 1" }),
+    ).toContainText("Eastbank");
+
+    // Undo restores the zone the save replaced, and the reloaded page sees it.
+    await page.locator("#fare-zone-undo").click();
+
+    await expect(page.locator("#fare-zone-saved")).toContainText("Change undone.");
+    await expect(firstRow).toContainText("Unassigned");
+
+    await reloaded.reload();
+    await waitForLiveView(reloaded);
+    await expect(
+      reloaded.locator("#fare-zone-stops tr").filter({ hasText: "Bayline 1" }),
+    ).toContainText("Unassigned");
+
+    await page.locator("#fare-zone-saved").scrollIntoViewIfNeeded();
+
+    await capture(page, testInfo, "journey-zones-keyboard-undone-1440", { fullPage: false });
+
+    await reloaded.close();
+  });
+
+  test("a failed map offers both ways out and rehydrates on retry", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await page.route("**/map/tiles/**", (route) => route.fulfill({ status: 500, body: "" }));
+    await enterFaresThroughSettings(page);
+
+    const canvas = page.locator("#fare-zone-map [data-map-canvas]");
+
+    // The fallback replaces the frame, and the legend and the complete list stay.
+    await expect(page.locator("#fare-zone-map")).toHaveCount(0);
+    await expect(page.locator("#fare-zone-map-unavailable")).toBeVisible();
+    await expect(page.locator("#fare-zone-map-unavailable")).toContainText(
+      "The map is unavailable",
+    );
+    await expect(page.locator("#fare-zone-map-retry")).toHaveText("Retry map");
+    await expect(page.locator("#fare-zone-stop-list")).toBeVisible();
+
+    await capture(page, testInfo, "journey-zones-fallback-1440", { fullPage: false });
+
+    // Use stop list is the fallback's other way out, and the list selects as it
+    // always does.
+    await page.locator("#fare-zone-map-use-list").click();
+
+    await expect(page.locator("#fare-zone-map-unavailable")).toHaveCount(0);
+    await expect(page.locator("#fare-zone-stop-list")).toBeVisible();
+
+    await page
+      .locator("#fare-zone-stops tr")
+      .filter({ hasText: "Bayline 2" })
+      .locator('input[type="checkbox"]')
+      .check();
+
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("1 stop selected");
+
+    // Tiles answer again, and the stage returns to Map + list, which still holds
+    // the failed state until Retry map is chosen.
+    await page.unroute("**/map/tiles/**");
+    await routeBlankTiles(page);
+    await page.locator('label[for="fare-zone-view-option-map"]').click();
+
+    await expect(page.locator("#fare-zone-map-retry")).toBeVisible();
+
+    await page.locator("#fare-zone-map-retry").click();
+
+    await expect(canvas).toHaveAttribute("data-map-state", "ready");
+    await expect(canvas).toHaveAttribute("data-point-count", "26");
+    // The fresh mount hydrated the selection made while the map was gone.
+    await expect(canvas).toHaveAttribute("data-selected-count", "1");
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("1 stop selected");
+
+    await capture(page, testInfo, "journey-zones-retry-1440", { fullPage: false });
+  });
+
+  test("returning from Fare rules re-mounts the map with the selection", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await enterFaresThroughSettings(page);
+
+    const canvas = page.locator("#fare-zone-map [data-map-canvas]");
+
+    await expect(canvas).toHaveAttribute("data-map-state", "ready");
+
+    await page
+      .locator("#fare-zone-stops tr")
+      .filter({ hasText: "Bayline 3" })
+      .locator('input[type="checkbox"]')
+      .check();
+
+    await expect(canvas).toHaveAttribute("data-selected-count", "1");
+
+    // The panel that owns the map leaves the document on the other tab, so the
+    // returning hook is a new mount that hydrates from its own reply (CR-8).
+    await openTab(page, "rules");
+    await expect(page.locator("#fare-zone-map")).toHaveCount(0);
+
+    await openTab(page, "zones");
+
+    await expect(canvas).toHaveAttribute("data-map-state", "ready");
+    await expect(canvas).toHaveAttribute("data-point-count", "26");
+    await expect(canvas).toHaveAttribute("data-selected-count", "1");
+    await expect(page.locator("#fare-zone-selection-count")).toHaveText("1 stop selected");
+
+    await capture(page, testInfo, "journey-zones-tab-return-1440", { fullPage: false });
+  });
+
+  test("every tab fits 320 x 800", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await enterFaresThroughSettings(page);
+
+    await page.setViewportSize(NARROW);
+
+    for (const tab of ["zones", "rules", "checks"]) {
+      if (tab !== "zones") await openTab(page, tab);
+
+      await expect(page.locator(`#fare-${tab}-panel`)).toBeAttached();
+      expect(await bodyFitsViewport(page), `body overflows on the ${tab} tab`).toBe(true);
+
+      await capture(page, testInfo, `journey-${tab}-320`, { fullPage: false });
+    }
+  });
+
+  test("the 10,000-stop version reaches a ready map", async ({ page }, testInfo) => {
+    // The payload and the draw are the measurement this case exists for, so the
+    // case's own deadline is longer than a normal page's.
+    testInfo.setTimeout(180_000);
+
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const versionId = await selectVersion(page, "Browser Fare Zones Scale Version");
+    const startedAt = Date.now();
+
+    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(page);
+
+    const canvas = page.locator("#fare-zone-map [data-map-canvas]");
+
+    await expect(canvas).toHaveAttribute("data-map-state", "ready", { timeout: 120_000 });
+    await expect(canvas).toHaveAttribute("data-point-count", "10000");
+
+    const elapsedMs = Date.now() - startedAt;
+    const artifact = writeScaleMeasurement(testInfo, {
+      version: "Browser Fare Zones Scale Version",
+      version_id: versionId,
+      points: 10_000,
+      elapsed_ms: elapsedMs,
+      method:
+        "Date.now() before page.goto for /gtfs/<id>/settings/fares until #fare-zone-map [data-map-canvas] reported data-map-state=ready",
+      viewport: `${DESKTOP.width}x${DESKTOP.height}`,
+      user_agent: await page.evaluate(() => navigator.userAgent),
+      measured_at: new Date().toISOString(),
+    });
+
+    expect(elapsedMs).toBeGreaterThan(0);
+    expect(artifact.endsWith("map-scale.json")).toBe(true);
+
+    await capture(page, testInfo, "journey-zones-scale-1440", { fullPage: false });
+  });
 });
