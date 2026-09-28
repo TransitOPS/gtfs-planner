@@ -634,6 +634,21 @@ defmodule GtfsPlanner.Gtfs do
     catalog_read_adapter().load_stop_regions(organization_id, gtfs_version_id, station)
   end
 
+  @doc """
+  Loads the Fare zones workspace's inventory, checks and first stop page through
+  the configured catalog read adapter.
+
+  The workspace's three tabs read the same load, and a lost database connection
+  is reported once as `{:error, :unavailable}` so the page can offer its reload
+  action instead of blanking data already on screen. `:filter`, `:q` and `:page`
+  select the stop page the Zones tab lists.
+  """
+  @spec load_fare_workspace(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, CatalogReadAdapter.fare_workspace()} | CatalogReadAdapter.unavailable()
+  def load_fare_workspace(organization_id, gtfs_version_id, opts) do
+    catalog_read_adapter().load_fare_workspace(organization_id, gtfs_version_id, opts)
+  end
+
   @spec resolve_station_journal_scope(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, Scope.t()} | {:error, :not_found | :invalid_id}
   def resolve_station_journal_scope(organization_id, gtfs_version_id, station_id, actor_id),

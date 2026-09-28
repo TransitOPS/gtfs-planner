@@ -1168,6 +1168,79 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
+  Renders the Fares area tabs shared by the zone, fare-rule and checks views.
+
+  The tabs reuse `routes_tabs/1`'s underline presentation and switch between the
+  workspace's three live actions with a patch, so a tab change keeps the Zones
+  tab's query state in the URL. The Checks tab carries the workspace's issue
+  count, so a setup problem stays visible from the other two tabs; `nil` means
+  the count is not known yet and no badge is claimed.
+
+  ## Examples
+
+      <.fares_tabs
+        gtfs_version_id={@current_gtfs_version.id}
+        active_tab={@live_action}
+        checks_count={2}
+      />
+  """
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+
+  attr :active_tab, :atom,
+    values: [:zones, :rules, :checks],
+    default: :zones,
+    doc: "the workspace tab the current action renders"
+
+  attr :checks_count, :integer,
+    default: nil,
+    doc: "the setup issues the Checks tab reports, or nil before the workspace loads"
+
+  def fares_tabs(assigns) do
+    ~H"""
+    <nav
+      id="fares-tabs"
+      aria-label="Fares sections"
+      class="overflow-x-auto border-b border-base-300"
+    >
+      <div class="flex min-w-max items-end gap-1 sm:min-w-0">
+        <.link
+          id="fares-tab-zones"
+          patch={"/gtfs/#{@gtfs_version_id}/settings/fares"}
+          class={sub_nav_link_class(@active_tab == :zones)}
+          aria-current={@active_tab == :zones && "page"}
+        >
+          Zones
+        </.link>
+        <.link
+          id="fares-tab-rules"
+          patch={"/gtfs/#{@gtfs_version_id}/settings/fares/rules"}
+          class={sub_nav_link_class(@active_tab == :rules)}
+          aria-current={@active_tab == :rules && "page"}
+        >
+          Fare rules
+        </.link>
+        <.link
+          id="fares-tab-checks"
+          patch={"/gtfs/#{@gtfs_version_id}/settings/fares/checks"}
+          class={[sub_nav_link_class(@active_tab == :checks), "gap-2"]}
+          aria-current={@active_tab == :checks && "page"}
+        >
+          Checks
+          <%!-- The badge appears only once the workspace load resolved the
+          count: a zero before that would claim a clean version on no data. --%>
+          <.status_badge
+            :if={is_integer(@checks_count)}
+            id="fares-checks-count"
+            status={if @checks_count > 0, do: :warning, else: :active}
+            label={Integer.to_string(@checks_count)}
+          />
+        </.link>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
   Renders the Operations area tabs shared by Blocks, Runs and Rosters.
 
   ## Examples

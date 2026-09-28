@@ -175,6 +175,14 @@ defmodule GtfsPlannerWeb.Router do
       live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
+      # The Fare zones workspace owns the Fares section. Its three destinations
+      # are one LiveView with one action each, so the tab links patch between
+      # them and the Zones tab's query state survives a tab change. They are
+      # literal paths declared ahead of the section route, so neither "fares"
+      # nor its child segments can be read as a section slug.
+      live "/settings/fares", Gtfs.FaresLive, :zones
+      live "/settings/fares/rules", Gtfs.FaresLive, :rules
+      live "/settings/fares/checks", Gtfs.FaresLive, :checks
       live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index
