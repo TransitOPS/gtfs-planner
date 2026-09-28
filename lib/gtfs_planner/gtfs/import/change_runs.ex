@@ -388,20 +388,29 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          context,
          opts
        ) do
-    transaction_with_broadcast(fn ->
-      with gtfs_version_id when is_binary(gtfs_version_id) <-
-             run_version_scope(organization_id, run_id),
-           _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
-           {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
-           :ok <- valid_audit_context?(run, context),
-           %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
-        apply_or_return_decision(run, decision, generation, token, context, opts)
-      else
-        nil -> Repo.rollback(:not_found)
-        {:error, :lease_lost} -> Repo.rollback(:lease_lost)
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
+    try do
+      transaction_with_broadcast(fn ->
+        with gtfs_version_id when is_binary(gtfs_version_id) <-
+               run_version_scope(organization_id, run_id),
+             _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
+             {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+             :ok <- valid_audit_context?(run, context),
+             %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
+          apply_or_return_decision(run, decision, generation, token, context, opts)
+        else
+          nil -> Repo.rollback(:not_found)
+          {:error, :lease_lost} -> Repo.rollback(:lease_lost)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    rescue
+      e in [Ecto.ConstraintError, Postgrex.Error] ->
+        if closure_reference_violation?(e) do
+          {:error, :pathway_in_use}
+        else
+          reraise(e, __STACKTRACE__)
+        end
+    end
   end
 
   # Applying one decision publishes stop/pathway/level rows of the run's version, a combination
@@ -416,6 +425,30 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     )
     |> Repo.one()
   end
+
+  # Step-6 deletion boundary: a closure inserted after the apply precheck
+  # trips the step-1 ON DELETE RESTRICT FK. The per-decision transaction has
+  # already rolled back at this outer boundary, so only the named violation
+  # maps to :pathway_in_use for the ChangeWorker mark_apply_failure flow.
+  # The code allowlist covers both historic 23503 and the newer 23001
+  # restrict_violation that ON DELETE RESTRICT now reports.
+  defp closure_reference_violation?(%Ecto.ConstraintError{
+         type: :foreign_key,
+         constraint: constraint
+       }),
+       do: to_string(constraint) == "pathway_evolutions_pathway_fkey"
+
+  defp closure_reference_violation?(%Postgrex.Error{postgres: postgres}),
+    do:
+      Map.get(postgres, :constraint) == "pathway_evolutions_pathway_fkey" and
+        to_string(Map.get(postgres, :code)) in [
+          "restrict_violation",
+          "foreign_key_violation",
+          "23001",
+          "23503"
+        ]
+
+  defp closure_reference_violation?(_other), do: false
 
   defp apply_or_return_decision(_run, %ChangeDecision{status: :applied} = decision, _, _, _, _),
     do: {{:ok, decision}, []}

@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
   alias GtfsPlanner.Repo
 
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -528,6 +529,129 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     assert change_log_count(organization) == 1
 
     assert [%ChangeDecision{status: :applied}] =
+             ChangeRuns.list_decisions(organization.id, run.id)
+  end
+
+  test "a closure-backed pathway removal fails with pathway_in_use while its sibling applies, and retry succeeds after the closure is removed" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    actor = user_fixture()
+    organization_membership_fixture(actor, organization)
+
+    level_fixture(organization.id, version.id, %{level_id: "L1", level_index: 0.0})
+
+    stop_fixture(organization.id, version.id, %{stop_id: "STN_1", location_type: 1})
+
+    stop_fixture(organization.id, version.id, %{
+      stop_id: "ENT_1",
+      location_type: 2,
+      parent_station: "STN_1",
+      level_id: "L1"
+    })
+
+    stop_fixture(organization.id, version.id, %{
+      stop_id: "PLAT_1",
+      location_type: 0,
+      parent_station: "STN_1",
+      level_id: "L1"
+    })
+
+    pathway_fixture(organization.id, version.id, "ENT_1", "PLAT_1", %{
+      pathway_id: "PW_BLOCKED",
+      pathway_mode: 2
+    })
+
+    pathway_fixture(organization.id, version.id, "ENT_1", "PLAT_1", %{
+      pathway_id: "PW_FREE",
+      pathway_mode: 1
+    })
+
+    calendar_fixture(organization.id, version.id, %{service_id: "SVC_WEEK"})
+
+    editor_audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      station_stop_id: "STN_1",
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    assert {:ok, %{evolution: evolution, fingerprint: fingerprint}} =
+             GtfsPlanner.Gtfs.create_pathway_evolution(
+               %{
+                 pathway_id: "PW_BLOCKED",
+                 service_id: "SVC_WEEK",
+                 start_time: "09:00",
+                 end_time: "10:00"
+               },
+               editor_audit
+             )
+
+    run =
+      review_run!(organization.id, version.id, [
+        decision(:pathway, :remove, "PW_BLOCKED", %{}, [], "pathway:PW_BLOCKED"),
+        decision(:pathway, :remove, "PW_FREE", %{}, [], "pathway:PW_FREE")
+      ])
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    assert %ChangeRun{state: :partial} = Repo.get!(ChangeRun, run.id)
+
+    decisions = ChangeRuns.list_decisions(organization.id, run.id)
+
+    assert %ChangeDecision{status: :failed, apply_failure_code: "pathway_in_use"} =
+             Enum.find(decisions, &(&1.decision_id == "pathway:PW_BLOCKED"))
+
+    assert %ChangeDecision{status: :applied} =
+             Enum.find(decisions, &(&1.decision_id == "pathway:PW_FREE"))
+
+    assert GtfsPlanner.Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "PW_BLOCKED")
+
+    refute GtfsPlanner.Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "PW_FREE")
+    assert Repo.get!(GtfsPlanner.Gtfs.PathwayEvolution, evolution.id)
+
+    assert {:ok, _deleted} =
+             GtfsPlanner.Gtfs.delete_pathway_evolution(evolution.id, fingerprint, editor_audit)
+
+    artifact_root = Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_path)
+    Application.delete_env(:gtfs_planner, :gtfs_task_artifacts_path)
+
+    retry_result =
+      try do
+        ChangeRuns.retry(organization.id, run.id)
+      after
+        Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, artifact_root)
+      end
+
+    assert {:ok, %ChangeRun{progress_current: 0, progress_total: 1} = pending_apply} =
+             retry_result
+
+    assert {:ok, retried, retry_generation, retry_token} =
+             ChangeRuns.claim(organization.id, pending_apply.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               retried,
+               retry_generation,
+               retry_token,
+               audit_context(retried),
+               ChangeRuns.topic(retried)
+             )
+
+    assert %ChangeRun{state: :completed, progress_current: 1} = Repo.get!(ChangeRun, run.id)
+
+    refute GtfsPlanner.Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "PW_BLOCKED")
+
+    assert [%ChangeDecision{status: :applied}, %ChangeDecision{status: :applied}] =
              ChangeRuns.list_decisions(organization.id, run.id)
   end
 

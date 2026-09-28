@@ -124,6 +124,85 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ConcurrencyTest do
     assert {state.closure_rows, state.exception_rows} in [{1, 1}, {0, 0}]
   end
 
+  test "a concurrent closure insert and pathway delete has exactly one valid outcome", %{
+    supervisor: supervisor
+  } do
+    scope = seed_scope("insert-delete")
+
+    on_exit(fn -> cleanup([scope]) end)
+
+    # Task.await in the harness re-raises a worker crash, so an uncaught FK
+    # or aborted-transaction error fails this test instead of hiding.
+    results =
+      race_through_locked_version(scope, supervisor, fn index ->
+        if index == 0 do
+          create_closure(scope)
+        else
+          # Join the version-row rendezvous without changing the production
+          # delete path: delete_pathway/1 takes no version lock, so the test
+          # holds the row explicitly to prove both writers were blocked
+          # before release, then runs the ordinary facade delete.
+          Repo.one(from(v in GtfsVersion, where: v.id == ^scope.version.id, lock: "FOR UPDATE"))
+
+          case Gtfs.get_pathway_by_pathway_id(
+                 scope.organization.id,
+                 scope.version.id,
+                 "PW_ENTRY"
+               ) do
+            nil -> {:error, :not_found}
+            pathway -> Gtfs.delete_pathway(pathway)
+          end
+        end
+      end)
+
+    [create_result, delete_result] = results
+
+    assert match?({:ok, %Pathway{}}, delete_result) or
+             delete_result == {:error, :pathway_in_use}
+
+    assert match?({:ok, %{evolution: %PathwayEvolution{}}}, create_result) or
+             match?({:error, %Ecto.Changeset{}}, create_result)
+
+    state =
+      unboxed(fn ->
+        organization_id = scope.organization.id
+        version_id = scope.version.id
+
+        %{
+          pathway_rows:
+            Repo.aggregate(
+              from(p in Pathway,
+                where:
+                  p.organization_id == ^organization_id and
+                    p.gtfs_version_id == ^version_id and p.pathway_id == "PW_ENTRY"
+              ),
+              :count
+            ),
+          closure_rows:
+            Repo.aggregate(
+              from(e in PathwayEvolution,
+                where:
+                  e.organization_id == ^organization_id and
+                    e.gtfs_version_id == ^version_id and e.pathway_id == "PW_ENTRY"
+              ),
+              :count
+            )
+        }
+      end)
+
+    # Exactly one side wins: RESTRICT forbids a closure without its pathway,
+    # and the guard forbids deleting a pathway that still has closures.
+    assert {state.pathway_rows, state.closure_rows} in [{1, 1}, {0, 0}]
+
+    if state.closure_rows == 1 do
+      assert match?({:ok, _}, create_result)
+      assert delete_result == {:error, :pathway_in_use}
+    else
+      assert match?({:ok, %Pathway{}}, delete_result)
+      assert match?({:error, %Ecto.Changeset{}}, create_result)
+    end
+  end
+
   defp create_closure(scope) do
     Gtfs.create_pathway_evolution(
       %{pathway_id: "PW_ENTRY", service_id: "SVC", start_time: "09:00", end_time: "10:00"},
