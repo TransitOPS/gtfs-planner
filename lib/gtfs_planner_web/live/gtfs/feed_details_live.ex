@@ -257,7 +257,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:feed_details} />
+        <.settings_nav
+          gtfs_version_id={@current_gtfs_version.id}
+          active_tab={:feed_details}
+          organization={@current_organization}
+        />
       </:sub_header>
 
       <.header>

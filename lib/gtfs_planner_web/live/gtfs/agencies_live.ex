@@ -511,7 +511,11 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:agencies} />
+        <.settings_nav
+          gtfs_version_id={@current_gtfs_version.id}
+          active_tab={:agencies}
+          organization={@current_organization}
+        />
       </:sub_header>
 
       <%= if @health.agency_count == 0 do %>

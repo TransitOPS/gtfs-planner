@@ -544,14 +544,20 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       conn = log_in_user(conn, editor, organization: organization)
 
-      assert {:ok, fleet_view, _html} = live(conn, "/gtfs/#{version.id}/settings/fleet")
-      assert has_element?(fleet_view, "h1", "Fleet")
-
-      assert {:ok, blocks_view, _html} = live(conn, "/gtfs/#{version.id}/blocks")
-      assert has_element?(blocks_view, "h1", "Blocks")
-
-      assert {:ok, flex_view, _html} = live(conn, "/gtfs/#{version.id}/flex")
-      assert has_element?(flex_view, "h1", "Flex")
+      for path <- [
+            "/settings/fleet",
+            "/settings/garages",
+            "/settings/fares",
+            "/settings/feed-details",
+            "/settings/agencies",
+            "/blocks",
+            "/flex"
+          ] do
+        assert {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{path}")
+        assert has_element?(view, "h1")
+        refute has_element?(view, ~s([id^="settings-tab-"])), "#{path} shows hidden settings tabs"
+        refute has_element?(view, "#flash-error"), "#{path} shows an error flash"
+      end
     end
   end
 end
