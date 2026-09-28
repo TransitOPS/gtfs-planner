@@ -122,7 +122,11 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
         {created_trip_id, "SAT", nil}
       ])
 
-    assert committed_footprint(scope) == %{before | trips: expected_trips}
+    # `reviewed_trip_id` is only the footprint's lowest SAT trip UUID, which the late trip's fresh
+    # UUID can now own, so the reviewed trip's own identity is asserted above instead.
+    assert Map.delete(committed_footprint(scope), :reviewed_trip_id) ==
+             Map.delete(%{before | trips: expected_trips}, :reviewed_trip_id)
+
     assert log_count(scope) == 0
   end
 
@@ -168,19 +172,18 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
     assert_blocked_by(apply_task.backend, holder.backend)
 
     # The writer starts while the combine is already queued for the exclusive version lock, so it
-    # waits for the combine's commit rather than being observed by it.
-    writer = start_trip_writer(supervisor, scope)
-    assert_blocked_by(writer.backend, holder.backend)
+    # queues behind the combine and waits on the combine's own backend: the combine's token was
+    # reviewed before the writer's trip existed, and the writer can only insert after the combine
+    # has committed and released the version row.
+    writer = start_queued_trip_writer(supervisor, scope)
+    assert_blocked_by(writer.backend, apply_task.backend)
 
     send(holder.task.pid, :release)
 
-    # The combine owns the version row and the writer is waiting on the combine's own backend: the
-    # combine's token was reviewed before the writer's trip existed, and the writer starts only
-    # after the combine holds the lock.
-    assert_blocked_by(writer.backend, apply_task.backend)
     assert {:error, :released} = Task.await(holder.task, @collect_timeout)
 
     assert {:ok, result} = Task.await(apply_task.task, @collect_timeout)
+    assert result.action == :combined
     assert result.changed_trip_ids == [reviewed_trip_id]
 
     assert {:ok, created_trip_id} = Task.await(writer.task, @collect_timeout)
@@ -192,7 +195,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
            ]
 
     assert unboxed(fn -> trip_service(scope, reviewed_trip_id) end) == "DEST"
-    assert unboxed(fn -> log_count(scope) end) == 2
+
+    # The destination's evaluated dates did not change, so the combine's only write is the one
+    # moved trip's log; the late trip's own insert adds no audit.
+    assert unboxed(fn -> log_count(scope) end) == 1
   end
 
   # --- committed scope -------------------------------------------------------
@@ -329,17 +335,23 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
     }
   end
 
+  # The review must run on its own committing connection. Taken on the shared sandbox owner
+  # connection the review's scoped version `FOR UPDATE` would be held until the end of the case and
+  # deadlock every unboxed rendezvous participant below; `unboxed_run/2` releases it when the review
+  # transaction commits.
   defp review_token(scope) do
-    {:ok, review} =
-      Gtfs.review_calendar_change(
-        @command,
-        %{"DEST" => "client-DEST", "SAT" => "client-SAT"},
-        scope.audit
-      )
+    unboxed(fn ->
+      {:ok, review} =
+        Gtfs.review_calendar_change(
+          @command,
+          %{"DEST" => "client-DEST", "SAT" => "client-SAT"},
+          scope.audit
+        )
 
-    assert review.ready?
-    assert is_binary(review.fingerprint)
-    review.fingerprint
+      assert review.ready?
+      assert is_binary(review.fingerprint)
+      review.fingerprint
+    end)
   end
 
   defp create_source_trip!(scope, trip_id) do
@@ -397,6 +409,30 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
     assert_receive {:writer_locked, task_pid, backend}, @contention_timeout
     assert task_pid == task.pid
     %{task: task, backend: backend}
+  end
+
+  # A racing input writer for the case where the combine already holds the exclusive version row.
+  # It must announce before attempting the shared version lock, because that lock waits on the
+  # combine's own holder and so never becomes observable afterwards; it inserts and commits its trip
+  # as soon as the combine has released the row. The announcement is sent inside the writer's
+  # transaction, so the shared lock follows it and the case observes the writer waiting.
+  defp start_queued_trip_writer(supervisor, scope) do
+    parent = self()
+    task = Task.Supervisor.async_nolink(supervisor, fn -> write_queued_trip(scope, parent) end)
+
+    assert_receive {:writer_started, task_pid, backend}, @contention_timeout
+    assert task_pid == task.pid
+    %{task: task, backend: backend}
+  end
+
+  defp write_queued_trip(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        send(parent, {:writer_started, self(), backend_pid()})
+        Versions.lock_for_input_write!(scope.organization_id, scope.version_id)
+        create_source_trip!(scope, "LATE_SAT_T1")
+      end)
+    end)
   end
 
   defp write_late_trip(scope, parent) do

@@ -204,9 +204,22 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationApplyTest do
 
       assert Enum.all?(logs, &(&1.changed_fields["operation_id"] == result.operation_id))
 
+      # Only the one log hosting the envelope carries the member list; every other trip log holds
+      # its own snapshot and the operation UUID and nothing that grows with the selection.
       assert Enum.all?(logs, fn log ->
-               Enum.sort(Map.keys(log.changed_fields)) == ["after", "before", "operation_id"]
+               keys = Enum.sort(Map.keys(log.changed_fields))
+
+               if Map.has_key?(log.changed_fields, "combination") do
+                 keys == ["after", "before", "combination", "operation_id"]
+               else
+                 keys == ["after", "before", "operation_id"]
+               end
              end)
+
+      # The envelope is hosted by the lowest changed-trip UUID log, the placement the contract
+      # requires when the destination itself does not change (AC-19).
+      [envelope_log] = Enum.filter(logs, &Map.has_key?(&1.changed_fields, "combination"))
+      assert envelope_log.entity_id == Enum.min(result.changed_trip_ids)
     end
 
     test "an unchanged combination writes nothing and reports no operation", context do
@@ -601,18 +614,41 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationApplyTest do
 
   defp member_audit(context) do
     member = user_fixture(%{email: "combination-member-#{unique()}@example.test"})
-    organization_membership_fixture(member, context.organization, ["viewer"])
+    organization_membership_fixture(member, context.organization, ["pathways_studio_admin"])
 
     audit_for(context.organization.id, context.version.id, member.id)
   end
 
+  # A published version is the only writable scope, so the staging case needs a real staging row.
+  # The state/timestamp check requires `published_at IS NULL` for any non-published status, so the
+  # row is moved to a valid staging state and restored afterwards, leaving the published version
+  # the later cases in the same test review.
   defp with_staging_version(context, fun) do
+    {status, published_at} = version_publication_state(context)
+
+    set_publication_state(context, "staging", nil)
+
+    try do
+      fun.()
+    after
+      set_publication_state(context, status, published_at)
+    end
+  end
+
+  defp version_publication_state(context) do
+    Repo.one!(
+      from(v in GtfsVersion,
+        where: v.id == ^context.version.id,
+        select: {v.publication_status, v.published_at}
+      )
+    )
+  end
+
+  defp set_publication_state(context, status, published_at) do
     Repo.update_all(
       from(v in GtfsVersion, where: v.id == ^context.version.id),
-      set: [publication_status: "staging"]
+      set: [publication_status: status, published_at: published_at]
     )
-
-    fun.()
   end
 
   # --- helpers ---------------------------------------------------------------
