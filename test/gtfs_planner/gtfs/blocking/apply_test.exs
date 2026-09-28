@@ -20,8 +20,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyTest do
     `{:error, {:ineligible, [id]}}`, while unassigning a frequency trip succeeds;
   - `:new` with weekday trips using 1–3 and Saturday-only trips using 4 resolves to
     "4" and the review shows it;
-  - with the `change_logs` rejection trigger installed, the command raises and every
-    `block_id` is unchanged;
+  - with the `change_logs` rejection trigger installed, the command returns
+    `{:error, {:audit_failed, %Postgrex.Error{}}}` and every `block_id` is unchanged;
   - assigning trips already in the target returns `{:ok, %{changed_trip_ids: []}}`
     with no logs;
   - transfer rows are identical before and after an assign and an unassign;
@@ -292,14 +292,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyTest do
       assert change_log_count(scope) == 1
     end
 
-    test "an audit rejection rolls every block change back", %{scope: scope} do
+    test "an audit rejection is refused and rolls every block change back", %{scope: scope} do
       weekday_service(scope)
       x = trip(scope, %{trip_id: "x"})
       install_trip_audit_rejection_trigger!()
 
-      assert_raise Postgrex.Error, fn ->
-        Gtfs.apply_block_change(weekday_key(scope), {:assign, [x.id], "101"}, scope.audit)
-      end
+      assert {:error, {:audit_failed, reason}} =
+               Gtfs.apply_block_change(weekday_key(scope), {:assign, [x.id], "101"}, scope.audit)
+
+      assert %Postgrex.Error{} = reason
 
       remove_trip_audit_rejection_trigger!()
 

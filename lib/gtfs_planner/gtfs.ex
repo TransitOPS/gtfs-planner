@@ -4481,8 +4481,9 @@ defmodule GtfsPlanner.Gtfs do
   whose effects reach another date returns `{:needs_confirmation, review}` and writes
   nothing until it is called again with the review's fingerprint. Every refusal
   (`:not_found`, `{:ineligible, ids}`, `:too_many_trips`, `:unknown_day_type`,
-  `:invalid_command`, `:invalid_block_id`, `{:stale_review, review}`, `:busy`) is an
-  `{:error, reason}` and writes nothing.
+  `:invalid_command`, `:invalid_block_id`, `{:stale_review, review}`, `{:audit_failed,
+  reason}`, `:busy`) is an `{:error, reason}` and writes nothing: a refused audit insert
+  rolls the command back and is reported, never raised.
   """
   @spec apply_block_change(
           String.t(),

@@ -258,6 +258,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   supplied `confirmation` is applied only when it equals the recomputed
   `review.fingerprint`, otherwise the command returns `{:error, {:stale_review,
   review}}` and writes nothing.
+
+  Every refusal reaches the caller as an `{:error, reason}` tuple. An audit insert the
+  database rejects, or one the audit layer refuses, rolls the command back and returns
+  `{:error, {:audit_failed, reason}}` with whatever the audit layer provides — a
+  changeset or the exception — so a command failure is never raised out of the
+  transaction (AC-10, INV-4).
   """
   @spec apply_block_change(String.t(), command(), AuditContext.t(), String.t() | nil) ::
           {:ok, apply_result()}
@@ -265,6 +271,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           | {:error,
              {:stale_review, Review.review()}
              | {:ineligible, [Ecto.UUID.t()]}
+             | {:audit_failed, term()}
              | :not_found
              | {:unknown_day_type, [DayTypes.day_type()]}
              | :invalid_command
@@ -813,11 +820,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       Queries.lock_trips!(organization_id, version_id, changed_ids, touched, service_ids)
 
     rows = Queries.trip_rows(organization_id, version_id, {:uuids, locked_ids})
-    changed_ids = MapSet.new(changed_ids)
+    changed_id_set = MapSet.new(changed_ids)
 
     changes =
       rows
-      |> Enum.filter(&(MapSet.member?(changed_ids, &1.id) and &1.block_id != target))
+      |> Enum.filter(&(MapSet.member?(changed_id_set, &1.id) and &1.block_id != target))
       |> Enum.map(&%{trip: &1, from: &1.block_id, to: target})
 
     {rows, changes}
@@ -883,25 +890,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     if count != length(changed_ids), do: Repo.rollback(:busy)
 
-    Enum.each(trips, fn trip ->
-      snapshot = Map.fetch!(snapshots, trip.id)
-
-      case GtfsPlanner.Gtfs.record_change_in_transaction(
-             audit,
-             :trip,
-             %{trip | block_id: target},
-             "updated",
-             %{
-               before: snapshot,
-               after: Map.put(snapshot, "block_id", target),
-               operation_id: operation_id,
-               affected_trip_ids: changed_ids
-             }
-           ) do
-        {:ok, _log} -> :ok
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
+    Enum.each(trips, &audit_change!(audit, &1, target, snapshots, operation_id, changed_ids))
 
     %{
       operation_id: operation_id,
@@ -909,6 +898,36 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       block_id: target,
       review: review
     }
+  end
+
+  # One `"trip"` change log per changed trip, in the Schedules snapshot shape with the
+  # command's operation ID and the whole affected list (INV-4). Any audit failure rolls
+  # the command back first and then leaves as the returned
+  # `{:error, {:audit_failed, reason}}`: a returned `{:error, changeset}` keeps the
+  # changeset and a database-rejected insert keeps the exception, so an audit failure
+  # reaches the caller as a refusal and never as an exception raised out of the
+  # transaction (AC-10).
+  defp audit_change!(%AuditContext{} = audit, trip, target, snapshots, operation_id, changed_ids) do
+    snapshot = Map.fetch!(snapshots, trip.id)
+
+    case GtfsPlanner.Gtfs.record_change_in_transaction(
+           audit,
+           :trip,
+           %{trip | block_id: target},
+           "updated",
+           %{
+             before: snapshot,
+             after: Map.put(snapshot, "block_id", target),
+             operation_id: operation_id,
+             affected_trip_ids: changed_ids
+           }
+         ) do
+      {:ok, _log} -> :ok
+      {:error, reason} -> Repo.rollback({:audit_failed, reason})
+    end
+  rescue
+    error in [Postgrex.Error, Ecto.ConstraintError, DBConnection.ConnectionError] ->
+      Repo.rollback({:audit_failed, error})
   end
 
   # The audit snapshot is built from the stored rows rather than the day read's trip
