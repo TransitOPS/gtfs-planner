@@ -1000,6 +1000,24 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
             title="Your new zone starts empty. It remains available while you build its stop membership."
           />
 
+          <%!-- The destructive exit sits where the reference puts it: inside the
+          edit form, under the summary that names what the ID carries. It is a
+          text action, not a filled button, so it never reads as the drawer's
+          own save. --%>
+          <div :if={@editing?} class="pt-2">
+            <.button
+              id="fare-zone-delete"
+              type="button"
+              variant="quiet"
+              class="min-h-11 text-error"
+              phx-click="open_delete_zone"
+              phx-value-zone_id={@entity.zone_id}
+              phx-value-opener_id={@return_focus_id}
+            >
+              Delete zone…
+            </.button>
+          </div>
+
           <div class="flex flex-wrap items-center gap-3 pt-3">
             <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
               {if @editing?, do: "Save zone", else: "Create zone"}
@@ -1011,6 +1029,138 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
         </.form>
       </div>
     </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the confirm dialog that deletes a zone.
+
+  `zone_delete` is the socket's whole dialog state: the inventory entry the
+  dialog opened on, the replacement select's value, the counts that entry had
+  when the dialog opened (the fence the write compares against), and the stale
+  counts or error a refused write produced. The entry decides the dialog's
+  shape. A zone fare rules use says "Replace references with" and offers the
+  other inventory zones only; an unreferenced zone with stops says "Move its
+  stops to" and offers Unassigned first; an empty zone replaces the select with
+  its own sentence and deletes from "Delete empty zone".
+
+  The disabled confirm always says why. A zone fare rules use cannot be deleted
+  without a replacement zone, so a version with no other zone keeps the zone and
+  the reason on screen rather than offering a button that would write anyway
+  (AC-27).
+
+  ## Examples
+
+      <.delete_zone_dialog
+        :if={@zone_delete}
+        zone_delete={@zone_delete}
+        zones={@inventory.zones}
+      />
+  """
+  attr :zone_delete, :map, required: true, doc: "the socket's `@zone_delete` state"
+  attr :zones, :list, required: true, doc: "the inventory's zones, offered as replacements"
+  attr :return_focus_id, :string, default: nil
+
+  def delete_zone_dialog(assigns) do
+    zone = assigns.zone_delete.zone
+    options = delete_replacement_options(zone, assigns.zones)
+    referenced? = zone.stop_count > 0 or zone.rule_count > 0
+
+    assigns =
+      assigns
+      |> assign(:zone, zone)
+      |> assign(:options, options)
+      |> assign(:referenced?, referenced?)
+      |> assign(:replacement, assigns.zone_delete.replacement || "")
+      |> assign(
+        :replacement_label,
+        if(zone.rule_count > 0, do: "Replace references with", else: "Move its stops to")
+      )
+      |> assign(:warning, delete_warning(zone))
+      |> assign(
+        :confirm_label,
+        if(referenced?, do: "Replace & delete", else: "Delete empty zone")
+      )
+      |> assign(:confirm_disabled, options == [])
+      |> assign(:reason, delete_disabled_reason(zone, options))
+
+    ~H"""
+    <.confirm_dialog
+      id="fare-zone-delete-dialog"
+      open={true}
+      title={"Delete #{@zone.name}?"}
+      confirm_label={@confirm_label}
+      pending_label="Deleting…"
+      on_confirm="delete_zone"
+      on_cancel="cancel_delete_zone"
+      cancel_label="Keep zone"
+      confirm_disabled={@confirm_disabled}
+      confirm_variant="danger"
+      return_focus_id={@return_focus_id}
+      described_by="fare-zone-delete-dialog-body"
+      size="lg"
+    >
+      <div id="fare-zone-delete-body" class="space-y-3">
+        <p id="fare-zone-delete-consequence">
+          {stops_copy(@zone.stop_count)} and {fare_rules_copy(@zone.rule_count)} use this zone.
+        </p>
+
+        <p :if={@zone.other_stop_count > 0} id="fare-zone-delete-others">
+          {delete_station_line(@zone.other_stop_count)}
+        </p>
+
+        <%!-- The reference puts the dialog's own message where the body starts,
+        above the select it explains. A refused write keeps the dialog open
+        here, so the reason and the control it explains stay together. --%>
+        <.callout
+          :if={@zone_delete.stale}
+          id="fare-zone-delete-stale"
+          kind="warning"
+          title={stale_zone_copy(@zone_delete.stale)}
+          role="alert"
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        />
+
+        <.callout
+          :if={@zone_delete.error}
+          id="fare-zone-delete-error"
+          kind="error"
+          title={@zone_delete.error}
+          role="alert"
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        />
+
+        <form
+          :if={@referenced?}
+          id="fare-zone-delete-replacement-form"
+          phx-change="change_replacement"
+        >
+          <.input
+            id="fare-zone-delete-replacement"
+            name="replacement"
+            type="select"
+            label={@replacement_label}
+            value={@replacement}
+            options={@options}
+          />
+        </form>
+
+        <.callout
+          :if={@referenced?}
+          id="fare-zone-delete-warning"
+          kind="warning"
+          title={@warning}
+        />
+
+        <p :if={not @referenced?} id="fare-zone-delete-empty">
+          This empty zone has no references. Deleting it will not change stops or fares.
+        </p>
+
+        <p :if={@reason} id="fare-zone-delete-reason">{@reason}</p>
+      </div>
+    </.confirm_dialog>
     """
   end
 
@@ -1029,6 +1179,46 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   defp station_line(count),
     do: "Also updates #{count} stations or entrances with this zone ID."
+
+  # The delete dialog's own copy. A count of one reads as one, the way the
+  # workspace's other count lines do.
+  defp fare_rules_copy(1), do: "1 fare rule"
+  defp fare_rules_copy(count), do: "#{count} fare rules"
+
+  defp delete_station_line(1), do: "Also moves 1 station or entrance with this zone ID."
+
+  defp delete_station_line(count),
+    do: "Also moves #{count} stations or entrances with this zone ID."
+
+  defp stale_zone_copy(%{stop_count: stop_count, rule_count: rule_count}) do
+    "This zone changed since you opened this dialog. It now has " <>
+      "#{stops_copy(stop_count)} and #{fare_rules_copy(rule_count)}."
+  end
+
+  # The replacement select. Unassigned is the unreferenced zone's own choice and
+  # comes first when it is offered; a zone fare rules use can only move to
+  # another inventory zone, which is what the write will accept.
+  defp delete_replacement_options(%{zone_id: zone_id, rule_count: 0}, zones) do
+    [{"Unassigned", ""} | target_options(Enum.reject(zones, &(&1.zone_id == zone_id)))]
+  end
+
+  defp delete_replacement_options(%{zone_id: zone_id}, zones) do
+    target_options(Enum.reject(zones, &(&1.zone_id == zone_id)))
+  end
+
+  defp delete_warning(%{rule_count: rule_count}) when rule_count > 0 do
+    "Stops and fare rules will move together. This changes which journeys the related fares cover."
+  end
+
+  defp delete_warning(_zone), do: "Stops are kept. Only their zone assignment changes."
+
+  # A disabled confirm is never silent. The only state that disables it is a
+  # zone fare rules use with no other zone to move them to.
+  defp delete_disabled_reason(%{rule_count: rule_count}, []) when rule_count > 0 do
+    "Create another zone first. Fare rules need a replacement zone."
+  end
+
+  defp delete_disabled_reason(_zone, _options), do: nil
 
   # The palette's own labels, keyed by the palette key `FareZone` stores.
   defp palette_options do

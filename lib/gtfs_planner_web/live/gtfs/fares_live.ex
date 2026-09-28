@@ -70,6 +70,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   When the inventory carries no zone at all, the workspace is replaced by the
   first-use state (AC-22). A filter that matches no stop is not that state: an
   empty filter renders the list's own empty message.
+
+  The delete dialog is the zone drawer's destructive exit. `Delete zone…` in an
+  edit drawer closes it and opens the danger confirm, which captures the zone's
+  counts as the fence `delete_zone/5` compares against and states what the
+  deletion changes before anything is written: the zone's counts, the member
+  stop types it also moves, the replacement select with its label, and either
+  the warning or the empty zone's own sentence (AC-27). A zone fare rules use
+  can only be deleted through another inventory zone, so a version with no other
+  zone disables the confirm with its reason. A refused write keeps the dialog
+  open on freshly read values: a stale result states the counts the zone now has
+  and fences the next confirm against them, and a zone another editor removed
+  closes the dialog with what happened. Success patches to All stops and reports
+  "Zone deleted." (AC-16, AC-26).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -77,6 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
       assignment_dialog: 1,
+      delete_zone_dialog: 1,
       first_use_empty: 1,
       load_error: 1,
       loading: 1,
@@ -113,6 +127,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   @zone_updated_message "Zone updated."
 
+  # AC-26's delete outcomes, named once for the same reason as the drawer's.
+  @zone_deleted_message "Zone deleted."
+
+  @delete_missing_message "This zone no longer exists."
+
   # The color a new zone starts with, the reference's own default.
   @new_zone_color "ochre"
 
@@ -140,6 +159,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:zone_form, new_zone_form())
      |> assign(:zone_error, nil)
      |> assign(:zone_return_focus_id, nil)
+     |> assign(:zone_delete, nil)
+     |> assign(:zone_delete_return_focus_id, nil)
      |> assign(:zone_notice, nil)
      |> stream(:stops, [])}
   end
@@ -323,6 +344,35 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   def handle_event("save_zone", _params, socket), do: {:noreply, socket}
 
+  # `Delete zone…` in an edit drawer. The drawer closes because the confirm
+  # replaces it, and the zone's counts are captured now: they are the fence
+  # `delete_zone/5` compares against, so the write can only see a zone whose
+  # membership is what the operator was shown (AC-16).
+  @impl true
+  def handle_event("open_delete_zone", params, socket) when is_map(params) do
+    {:noreply, open_delete_zone(socket, params)}
+  end
+
+  def handle_event("open_delete_zone", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("change_replacement", %{"replacement" => replacement}, socket)
+      when is_binary(replacement) do
+    {:noreply, change_replacement(socket, replacement)}
+  end
+
+  def handle_event("change_replacement", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("cancel_delete_zone", _params, socket) do
+    {:noreply, assign(socket, :zone_delete, nil)}
+  end
+
+  @impl true
+  def handle_event("delete_zone", _params, socket) do
+    {:noreply, delete_zone(socket)}
+  end
+
   # Copy of GaragesLive's version handlers, pointed at the current tab so a
   # version switch keeps the operator on the workspace view they were reading.
   @impl true
@@ -459,6 +509,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         :if={@assignment}
         assignment={@assignment}
         zones={inventory_zones(assigns)}
+      />
+
+      <.delete_zone_dialog
+        :if={@zone_delete}
+        zone_delete={@zone_delete}
+        zones={inventory_zones(assigns)}
+        return_focus_id={@zone_delete_return_focus_id}
       />
 
       <.zone_drawer
@@ -796,6 +853,169 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # The inventory entry of a zone filter's exact ID, byte-for-byte.
   defp zone_entry(socket, zone_id) do
     Enum.find(inventory_zones(socket.assigns), &(&1.zone_id == zone_id))
+  end
+
+  # Opening the delete dialog is a read of the inventory the page already holds:
+  # an ID no longer in it changes nothing, because the click raced the change
+  # that removed the zone. The replacement starts at the first other zone when
+  # fare rules use this zone (the select the confirm needs) and at Unassigned
+  # when none do, which is the reference's own default.
+  defp open_delete_zone(socket, %{"zone_id" => zone_id} = params) when is_binary(zone_id) do
+    case zone_entry(socket, zone_id) do
+      nil ->
+        socket
+
+      entry ->
+        socket
+        |> close_zone_drawer()
+        |> assign(:zone_delete, delete_state(socket, entry))
+        |> assign(:zone_delete_return_focus_id, params["opener_id"])
+    end
+  end
+
+  defp open_delete_zone(socket, _params), do: socket
+
+  # The dialog's own state. `expected` is the fence and `zone` what the dialog
+  # renders; a replacement is kept only while it is one this zone's write would
+  # accept, so a value another editor invalidated falls back to the default
+  # instead of leaving the select on a zone that no longer exists.
+  defp delete_state(socket, entry, opts \\ []) do
+    zones = inventory_zones(socket.assigns)
+    replacement = Keyword.get(opts, :replacement)
+
+    replacement =
+      if valid_delete_replacement?(replacement, entry, zones) do
+        replacement
+      else
+        default_delete_replacement(entry, zones)
+      end
+
+    %{
+      zone: entry,
+      replacement: replacement,
+      expected: %{stop_count: entry.stop_count, rule_count: entry.rule_count},
+      error: Keyword.get(opts, :error),
+      stale: Keyword.get(opts, :stale)
+    }
+  end
+
+  # Unassigned is the unreferenced-zone choice only. A zone fare rules use needs
+  # another inventory zone, which is exactly what the domain refuses
+  # `:replacement_required` and `:invalid_replacement` on.
+  defp valid_delete_replacement?(replacement, entry, zones) do
+    cond do
+      is_nil(replacement) -> entry.rule_count == 0
+      not is_binary(replacement) -> false
+      replacement == entry.zone_id -> false
+      true -> Enum.any?(zones, &(&1.zone_id == replacement))
+    end
+  end
+
+  defp default_delete_replacement(%{rule_count: 0}, _zones), do: nil
+
+  defp default_delete_replacement(%{zone_id: zone_id}, zones) do
+    Enum.find_value(zones, fn zone -> if zone.zone_id != zone_id, do: zone.zone_id end)
+  end
+
+  # The select's value arrives from the browser, so it is validated against this
+  # version's own inventory before it becomes the replacement: a crafted value
+  # changes nothing rather than reaching the write as an invalid one.
+  defp change_replacement(%{assigns: %{zone_delete: nil}} = socket, _value), do: socket
+
+  defp change_replacement(socket, value) do
+    delete = socket.assigns.zone_delete
+    replacement = if value == "", do: nil, else: value
+
+    if valid_delete_replacement?(replacement, delete.zone, inventory_zones(socket.assigns)) do
+      assign(socket, :zone_delete, %{delete | replacement: replacement})
+    else
+      socket
+    end
+  end
+
+  # Confirming runs the one domain call the step promises and nothing else. The
+  # counts the dialog showed travel with it, so a stop or rule that moved since
+  # it opened is a refusal rather than a silent move (AC-16).
+  defp delete_zone(%{assigns: %{zone_delete: nil}} = socket), do: socket
+
+  defp delete_zone(socket) do
+    delete = socket.assigns.zone_delete
+
+    case FareZones.delete_zone(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           delete.zone.zone_id,
+           delete.replacement,
+           delete.expected
+         ) do
+      {:ok, _result} ->
+        # A write happened, so the workspace is the base path the reference
+        # reports from (All stops), the previous assignment save's Undo is no
+        # longer what the page is about, and the dialog is done.
+        socket
+        |> assign(:zone_delete, nil)
+        |> assign(:undo, nil)
+        |> assign(:zone_notice, @zone_deleted_message)
+        |> push_patch(to: zones_path(socket.assigns.current_gtfs_version.id))
+
+      # Another editor changed the zone since the dialog opened. Nothing was
+      # written: the dialog stays open on the freshly read entry, states the
+      # counts the zone now has, and fences the next confirm against them.
+      {:error, {:stale, _zone}} ->
+        reopen_delete(socket, :stale)
+
+      {:error, :invalid_replacement} ->
+        reopen_delete(socket, :replacement_gone)
+
+      {:error, :replacement_required} ->
+        reopen_delete(socket, :replacement_gone)
+
+      {:error, :not_found} ->
+        socket
+        |> load_workspace()
+        |> close_delete(@delete_missing_message)
+    end
+  end
+
+  # A refused delete re-reads the workspace first, so the dialog's counts, its
+  # replacement select and the list behind it describe the database as it is
+  # now. The dialog stays open with its reason unless the zone itself is gone.
+  defp reopen_delete(socket, reason) do
+    delete = socket.assigns.zone_delete
+    socket = load_workspace(socket)
+
+    case zone_entry(socket, delete.zone.zone_id) do
+      nil ->
+        close_delete(socket, @delete_missing_message)
+
+      entry ->
+        assign(
+          socket,
+          :zone_delete,
+          delete_state(socket, entry, delete_refusal(reason, entry, delete))
+        )
+    end
+  end
+
+  # The two refusals the dialog has copy for. A stale result states the counts
+  # it just read, so the sentence and the fence beside it can never disagree; a
+  # replacement another editor removed reports the save failure and lets the
+  # re-read select offer the zones that exist now.
+  defp delete_refusal(:stale, entry, delete) do
+    [
+      replacement: delete.replacement,
+      stale: %{stop_count: entry.stop_count, rule_count: entry.rule_count}
+    ]
+  end
+
+  defp delete_refusal(:replacement_gone, _entry, delete) do
+    [replacement: delete.replacement, error: @save_failed_message]
+  end
+
+  defp close_delete(socket, notice) do
+    socket
+    |> assign(:zone_delete, nil)
+    |> assign(:zone_notice, notice)
   end
 
   defp open_assignment(socket, mode) do

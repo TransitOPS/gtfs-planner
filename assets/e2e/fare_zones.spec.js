@@ -827,3 +827,101 @@ test("zone drawer", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?dialog=zone", "ref-zone");
 });
+
+// ── delete dialog ─────────────────────────────────────────────────────────
+
+// The dialog the zone drawer's destructive exit opens. It is a capture case as
+// well as a behavioural one, so it reads the copy, the replacement select and
+// the two shapes the seeded fixture carries - Central, which three rule groups
+// and a station member carry, and the empty Airport - against the reference's
+// own `?dialog=delete`. Nothing is confirmed: the case must be able to run
+// without mutating the fixture other cases read.
+test("delete dialog", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await openFares(page, "zones");
+
+  // Central: 11 boardable stops, a station member and four rule references.
+  await page.locator("#fare-zone-inventory-filters a").filter({ hasText: "Central" }).click();
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Central");
+
+  await page.locator("#fare-zone-edit").click();
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "true");
+  await expect(page.locator("#fare-zone-delete")).toHaveText("Delete zone…");
+
+  await page.locator("#fare-zone-delete").click();
+
+  const dialog = page.locator("#fare-zone-delete-dialog");
+
+  await expect(dialog).toHaveAttribute("data-open", "true");
+  await expect(dialog).toHaveAttribute("role", "alertdialog");
+  // The confirm replaces the drawer rather than stacking on it.
+  await expect(page.locator("#fare-zone-drawer-overlay")).toHaveAttribute("data-open", "false");
+  await expect(page.locator("#fare-zone-delete-dialog-title")).toHaveText("Delete Central?");
+
+  await expect(page.locator("#fare-zone-delete-consequence")).toHaveText(
+    "11 stops and 4 fare rules use this zone.",
+  );
+  await expect(page.locator("#fare-zone-delete-others")).toHaveText(
+    "Also moves 1 station or entrance with this zone ID.",
+  );
+  await expect(page.locator("#fare-zone-delete-replacement-form")).toContainText(
+    "Replace references with",
+  );
+  // A referenced zone can only move to another inventory zone: no Unassigned.
+  await expect(page.locator("#fare-zone-delete-replacement option")).toHaveText([
+    "Eastbank · B",
+    "C · C",
+    "Airport · D",
+  ]);
+  await expect(page.locator("#fare-zone-delete-warning")).toHaveText(
+    "Stops and fare rules will move together. This changes which journeys the related fares cover.",
+  );
+  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toHaveText("Replace & delete");
+  await expect(page.locator("#fare-zone-delete-dialog-cancel")).toHaveText("Keep zone");
+  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toBeEnabled();
+  await expect(page.locator("#fare-zone-delete-reason")).toHaveCount(0);
+
+  await capture(page, testInfo, "delete-1440", { fullPage: false });
+
+  // At 320 px the panel fits the viewport and the page does not overflow.
+  await page.setViewportSize(NARROW);
+  await expect(dialog).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  const panel = await page.locator("#fare-zone-delete-dialog > div > div").boundingBox();
+  expect(Math.round(panel.width)).toBeLessThanOrEqual(NARROW.width);
+  expect(Math.round(panel.x)).toBeGreaterThanOrEqual(0);
+
+  await capture(page, testInfo, "delete-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // Keeping the zone closes the dialog and returns focus to the control that
+  // opened the drawer, which is the only one still on screen.
+  await page.locator("#fare-zone-delete-dialog-cancel").click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("#fare-zone-edit")).toBeFocused();
+
+  // The empty unreferenced zone: no select, its own sentence and label.
+  await page.locator("#fare-zone-inventory-filters a").filter({ hasText: "Airport" }).click();
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Airport");
+  await page.locator("#fare-zone-edit").click();
+  await page.locator("#fare-zone-delete").click();
+
+  await expect(page.locator("#fare-zone-delete-dialog-title")).toHaveText("Delete Airport?");
+  await expect(page.locator("#fare-zone-delete-consequence")).toHaveText(
+    "0 stops and 0 fare rules use this zone.",
+  );
+  await expect(page.locator("#fare-zone-delete-empty")).toHaveText(
+    "This empty zone has no references. Deleting it will not change stops or fares.",
+  );
+  await expect(page.locator("#fare-zone-delete-replacement-form")).toHaveCount(0);
+  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toHaveText("Delete empty zone");
+
+  await capture(page, testInfo, "delete-empty-1440", { fullPage: false });
+
+  await page.locator("#fare-zone-delete-dialog-cancel").click();
+  await expect(page.locator("#fare-zone-delete-dialog")).toHaveCount(0);
+
+  await captureReference(page, testInfo, "?dialog=delete", "ref-delete");
+});
