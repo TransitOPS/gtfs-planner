@@ -52,6 +52,28 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
     * While a conflict is undecided no final gain or loss exists, so the entry carries
       the source facts with `nil` date collections instead of an empty list that would
       read as "nothing changes".
+
+  ## Native destination rows
+
+    * `encode/3` projects the destination's own native rows for exactly the planned
+      result dates; a source calendar is never re-encoded, because only the destination
+      receives the combined dates. The caller persists the returned rows.
+    * A weekly destination keeps its kind, metadata and weekday mask. Its endpoints are
+      the first and last result dates that mask serves, so the projected baseline covers
+      the dates in use; when no result date falls on the mask, the original valid range
+      stays. Additions are `result - baseline` and removals `baseline - result`, so an
+      empty result removes every baseline date instead of resurrecting weekdays. A
+      dates-only destination stores exactly the result dates as additions and keeps no
+      weekly row.
+    * Unchanged effective dates return the original rows untouched with `changed?: false`,
+      redundant exceptions included, so a no-op writes nothing. Otherwise the projected
+      rows come back with `changed?: true`.
+    * A projection that would leave the destination with neither a weekly row nor an
+      exception row is refused as `:native_service_required` while any trip would still
+      reference the destination after the moves: the attributes anchor is metadata, not
+      native service identity, so the editor keeps a weekly destination, changes a
+      decision or cancels instead of receiving a synthesized service date or a silently
+      converted kind.
   """
 
   alias GtfsPlanner.Gtfs.Calendar
@@ -59,6 +81,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
 
   @decision_strings %{"run" => :run, "no_service" => :no_service}
+  @added 1
   @removed 2
 
   @type service_id :: String.t()
@@ -101,6 +124,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
 
   @type invalid_command :: :invalid_command
   @type invalid_calendar :: {:invalid_calendar, service_id(), atom()}
+
+  @type encoded_exception :: %{date: Date.t(), exception_type: 1 | 2}
+
+  @type encoded :: %{
+          calendar: Calendar.t() | nil,
+          exceptions: [encoded_exception()],
+          changed?: boolean()
+        }
 
   @type evaluation :: %{
           service_id: service_id(),
@@ -167,6 +198,52 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
   end
 
   def expand_group_choices(_conflicts, _choices), do: {:error, :invalid_command}
+
+  @doc """
+  Projects the destination's native rows for exactly `result_dates`.
+
+  `destination` is the destination's snapshot - the same map `plan/5` consumes - and
+  `result_dates` is that plan's committed result, so a source calendar never reaches this
+  function. `post_move_trip_count` counts every trip that would reference the destination
+  once the reviewed moves are applied: its existing trips plus the moving sources' trips.
+
+  A weekly destination keeps its weekday mask and kind, and its endpoints come from the
+  first and last result dates that mask serves - or stay as they are when none of them
+  does. The projected baseline is evaluated by `ServiceDates`, and the projection stores
+  `result - baseline` as additions and `baseline - result` as removals, so an empty result
+  removes every baseline date instead of resurrecting weekdays. A dates-only destination
+  stores exactly the result dates as additions and keeps no weekly row.
+
+  When the destination's effective dates do not change, its original rows come back
+  unchanged with `changed?: false` - redundant exceptions included - so a no-op writes
+  nothing. Otherwise the projected rows are returned with `changed?: true`.
+
+  A projected destination with neither a weekly row nor an exception row is refused as
+  `{:error, :native_service_required}` while any trip would still reference it, because
+  the attributes anchor is metadata rather than native service identity; the editor keeps
+  a weekly destination, changes a decision or cancels instead. With no post-move trips
+  that metadata-only result is allowed.
+
+  `result_dates` is `nil` only while the plan is incomplete, which is
+  `{:error, :incomplete_plan}`. A malformed destination, result or trip count is
+  `{:error, :invalid_command}` rather than a raise.
+  """
+  @spec encode(snapshot(), [Date.t()] | nil, non_neg_integer()) ::
+          {:ok, encoded()}
+          | {:error, invalid_command() | :incomplete_plan | :native_service_required}
+  def encode(_destination, nil, _post_move_trip_count), do: {:error, :incomplete_plan}
+
+  def encode(destination, result_dates, post_move_trip_count)
+      when is_map(destination) and is_list(result_dates) and is_integer(post_move_trip_count) and
+             post_move_trip_count >= 0 do
+    with {:ok, calendar} <- destination_calendar(destination),
+         {:ok, exceptions} <- destination_exceptions(destination),
+         {:ok, result} <- encoding_result(result_dates) do
+      project(calendar, exceptions, result, post_move_trip_count)
+    end
+  end
+
+  def encode(_destination, _result_dates, _post_move_trip_count), do: {:error, :invalid_command}
 
   # -- command validation -----------------------------------------------------
 
@@ -300,11 +377,11 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
       nil ->
         {:ok, nil}
 
-      %Calendar{start_date: %Date{} = start_date, end_date: %Date{} = end_date} = calendar ->
-        if Date.compare(end_date, start_date) == :lt do
-          {:error, {:invalid_calendar, service_id, :reversed_range}}
-        else
+      %Calendar{start_date: %Date{}, end_date: %Date{}} = calendar ->
+        if ordered_range?(calendar) do
           {:ok, calendar}
+        else
+          {:error, {:invalid_calendar, service_id, :reversed_range}}
         end
 
       _other ->
@@ -312,18 +389,29 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
     end
   end
 
+  # A weekly row is usable only when both endpoints exist and are ordered; every
+  # projection and evaluation in this module shares that question.
+  defp ordered_range?(%Calendar{start_date: %Date{} = start_date, end_date: %Date{} = end_date}),
+    do: Date.compare(end_date, start_date) != :lt
+
+  defp ordered_range?(%Calendar{}), do: false
+
   defp snapshot_exceptions(service_id, snapshot) do
     exceptions = Map.fetch!(snapshot, :exceptions)
 
-    if Enum.all?(exceptions, &exception_date?/1) and
-         MapSet.disjoint?(exception_dates(exceptions, 1), exception_dates(exceptions, @removed)) do
+    if valid_exceptions?(exceptions) do
       {:ok, exceptions}
     else
       exception_error(service_id, exceptions)
     end
   end
 
-  defp exception_date?(%{date: %Date{}, exception_type: type}) when type in [1, @removed],
+  defp valid_exceptions?(exceptions) do
+    is_list(exceptions) and Enum.all?(exceptions, &exception_date?/1) and
+      MapSet.disjoint?(exception_dates(exceptions, @added), exception_dates(exceptions, @removed))
+  end
+
+  defp exception_date?(%{date: %Date{}, exception_type: type}) when type in [@added, @removed],
     do: true
 
   defp exception_date?(_exception), do: false
@@ -508,4 +596,126 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
 
   # Upcoming includes the agency-local review date itself.
   defp split_at(dates, today), do: Enum.split_with(dates, &(Date.compare(&1, today) != :lt))
+
+  # -- native encoding --------------------------------------------------------
+
+  defp destination_calendar(%{calendar: nil}), do: {:ok, nil}
+
+  defp destination_calendar(%{calendar: %Calendar{} = calendar}) do
+    if ordered_range?(calendar), do: {:ok, calendar}, else: {:error, :invalid_command}
+  end
+
+  defp destination_calendar(_destination), do: {:error, :invalid_command}
+
+  defp destination_exceptions(%{exceptions: exceptions}) do
+    if valid_exceptions?(exceptions), do: {:ok, exceptions}, else: {:error, :invalid_command}
+  end
+
+  defp destination_exceptions(_destination), do: {:error, :invalid_command}
+
+  # The planned result is a set: duplicates and arrival order carry no meaning.
+  defp encoding_result(result_dates) do
+    if Enum.all?(result_dates, &is_struct(&1, Date)) do
+      {:ok, result_dates |> MapSet.new() |> sort_dates()}
+    else
+      {:error, :invalid_command}
+    end
+  end
+
+  defp project(calendar, exceptions, result, post_move_trip_count) do
+    projected = project_rows(calendar, result)
+    assert_projection!(projected, result)
+
+    cond do
+      native_service_required?(projected, post_move_trip_count) ->
+        {:error, :native_service_required}
+
+      # Effective dates are unchanged, so the destination keeps its original rows - and
+      # its redundant exceptions - and nothing is written.
+      ServiceDates.active_dates(calendar, exceptions) == result ->
+        {:ok, %{calendar: calendar, exceptions: exception_rows(exceptions), changed?: false}}
+
+      true ->
+        {:ok, Map.put(projected, :changed?, true)}
+    end
+  end
+
+  # A dates-only destination stores exactly the result as additions and no weekly row.
+  defp project_rows(nil, result) do
+    %{calendar: nil, exceptions: exception_rows(Enum.map(result, &exception_row(&1, @added)))}
+  end
+
+  # A weekly destination keeps its mask and kind: the new endpoints come from the planned
+  # dates the mask serves, so the projected baseline covers the dates in use, and the
+  # additions and removals around that baseline reproduce the result exactly.
+  defp project_rows(%Calendar{} = calendar, result) do
+    {start_date, end_date} = weekly_endpoints(calendar, result)
+    weekly = %Calendar{calendar | start_date: start_date, end_date: end_date}
+    baseline = weekly |> ServiceDates.active_dates([]) |> MapSet.new()
+    planned = MapSet.new(result)
+
+    %{
+      calendar: weekly,
+      exceptions:
+        exception_rows(
+          Enum.map(MapSet.difference(planned, baseline), &exception_row(&1, @added)) ++
+            Enum.map(MapSet.difference(baseline, planned), &exception_row(&1, @removed))
+        )
+    }
+  end
+
+  defp weekly_endpoints(%Calendar{} = calendar, []),
+    do: {calendar.start_date, calendar.end_date}
+
+  defp weekly_endpoints(%Calendar{} = calendar, result) do
+    # The mask question goes to `ServiceDates` itself - a candidate weekly row spanning
+    # the result - so endpoint selection cannot disagree with the evaluator that later
+    # reconstructs the row. Cost is one pass over the result's own span, the same order
+    # as the evaluation `plan/5` already performs per selected calendar.
+    served =
+      calendar
+      |> spanning_weekly(result)
+      |> ServiceDates.active_dates([])
+      |> MapSet.new()
+
+    case Enum.filter(result, &MapSet.member?(served, &1)) do
+      [] -> {calendar.start_date, calendar.end_date}
+      mask_dates -> {hd(mask_dates), List.last(mask_dates)}
+    end
+  end
+
+  defp spanning_weekly(%Calendar{} = calendar, result) do
+    %Calendar{calendar | start_date: hd(result), end_date: List.last(result)}
+  end
+
+  # Critique M2, made unconditional: a trip service ID that resolves to neither a
+  # `calendar.txt` row nor a `calendar_dates.txt` row is a dangling native reference, and
+  # the attributes anchor is an extension table rather than native service identity. The
+  # refusal is checked on the projection, so it also covers cancelling a dates-only
+  # calendar's only addition even though its effective dates were already empty.
+  defp native_service_required?(%{calendar: nil, exceptions: []}, post_move_trip_count),
+    do: post_move_trip_count > 0
+
+  defp native_service_required?(_projected, _post_move_trip_count), do: false
+
+  # The projected rows must evaluate to exactly the planned result; both sides go through
+  # `ServiceDates`, so a disagreement is a programming error, not a rejected command.
+  defp assert_projection!(projected, result) do
+    reconstructed = ServiceDates.active_dates(projected.calendar, projected.exceptions)
+
+    if reconstructed != result do
+      raise ArgumentError,
+            "combination encoding evaluated to #{inspect(reconstructed)} instead of " <>
+              "#{inspect(result)}"
+    end
+  end
+
+  # Native exception attrs sorted by date, the shape `Gtfs.Calendars` persists.
+  defp exception_row(date, exception_type), do: %{date: date, exception_type: exception_type}
+
+  defp exception_rows(exceptions) do
+    exceptions
+    |> Enum.map(&%{date: &1.date, exception_type: &1.exception_type})
+    |> Enum.sort_by(& &1.date, Date)
+  end
 end

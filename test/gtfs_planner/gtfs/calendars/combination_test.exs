@@ -1,14 +1,18 @@
 defmodule GtfsPlanner.Gtfs.Calendars.CombinationTest do
   @moduledoc """
   Pure combination algebra: the effective-date union, deliberate conflicts, explicit
-  decisions, conflict grouping and per-calendar consequences.
+  decisions, conflict grouping, per-calendar consequences and the exact native rows a
+  destination needs to hold the chosen dates.
 
   Every case uses literal service IDs and civil dates taken from the accepted rules:
   Thanksgiving removed by one calendar and run by another, two conflicts separated by a
   normal service day, an ordinary weekday absence, an out-of-range and a dates-only
   removal, adjacent conflicts with equal and with different participants, a group value
-  expanded against the current review, and the agency-local today split. `plan/5` and
-  `expand_group_choices/2` are pure, so no database or clock is involved.
+  expanded against the current review, the agency-local today split, and the native
+  destination encoding (a Monday mask receiving Saturday dates, an empty weekly result,
+  the refused dates-only cancellation of 2026-01-05 and the unchanged-date no-op).
+  `plan/5`, `expand_group_choices/2` and `encode/3` are pure, so no database or clock is
+  involved.
 
   These cases are a committed source of EV-2 (`combination_test.exs`), owned by step 17.
   """
@@ -17,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationTest do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.Combination
+  alias GtfsPlanner.Gtfs.Calendars.ServiceDates
 
   @month_first ~D[2026-11-23]
   @month_last ~D[2026-11-30]
@@ -363,6 +368,179 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationTest do
     end
   end
 
+  describe "encode/3 native destination rows" do
+    test "keeps a Monday mask but adds Saturday dates and removes every baseline date" do
+      destination = monday_destination([], 0)
+      result_dates = [~D[2026-01-10], ~D[2026-01-17]]
+
+      assert {:ok, encoded} = Combination.encode(destination, result_dates, 2)
+
+      assert encoded.changed? == true
+      assert encoded.calendar.service_id == "MONDAY_DEST"
+      assert encoded.calendar.start_date == ~D[2026-01-05]
+      assert encoded.calendar.end_date == ~D[2026-01-26]
+      assert weekly_mask(encoded.calendar) == [1, 0, 0, 0, 0, 0, 0]
+
+      assert encoded.exceptions == [
+               %{date: ~D[2026-01-05], exception_type: 2},
+               %{date: ~D[2026-01-10], exception_type: 1},
+               %{date: ~D[2026-01-12], exception_type: 2},
+               %{date: ~D[2026-01-17], exception_type: 1},
+               %{date: ~D[2026-01-19], exception_type: 2},
+               %{date: ~D[2026-01-26], exception_type: 2}
+             ]
+
+      assert ServiceDates.active_dates(encoded.calendar, encoded.exceptions) == result_dates
+    end
+
+    test "moves the weekly endpoints to the first and last result dates on the mask" do
+      destination = monday_destination([], 3)
+      result_dates = [~D[2026-01-05], ~D[2026-01-10], ~D[2026-02-02]]
+
+      assert {:ok, encoded} = Combination.encode(destination, result_dates, 3)
+
+      assert encoded.changed? == true
+      assert encoded.calendar.start_date == ~D[2026-01-05]
+      assert encoded.calendar.end_date == ~D[2026-02-02]
+      assert weekly_mask(encoded.calendar) == [1, 0, 0, 0, 0, 0, 0]
+
+      assert encoded.exceptions == [
+               %{date: ~D[2026-01-10], exception_type: 1},
+               %{date: ~D[2026-01-12], exception_type: 2},
+               %{date: ~D[2026-01-19], exception_type: 2},
+               %{date: ~D[2026-01-26], exception_type: 2}
+             ]
+
+      assert ServiceDates.active_dates(encoded.calendar, encoded.exceptions) == result_dates
+    end
+
+    test "removes every baseline date instead of resurrecting weekdays for an empty result" do
+      destination = monday_destination([], 4)
+
+      assert {:ok, encoded} = Combination.encode(destination, [], 4)
+
+      assert encoded.changed? == true
+      assert weekly_mask(encoded.calendar) == [1, 0, 0, 0, 0, 0, 0]
+
+      assert encoded.exceptions == [
+               %{date: ~D[2026-01-05], exception_type: 2},
+               %{date: ~D[2026-01-12], exception_type: 2},
+               %{date: ~D[2026-01-19], exception_type: 2},
+               %{date: ~D[2026-01-26], exception_type: 2}
+             ]
+
+      assert ServiceDates.active_dates(encoded.calendar, encoded.exceptions) == []
+    end
+
+    test "keeps an imported all-zero weekly row with the result dates as additions" do
+      destination = snapshot(weekly(~D[2026-01-05], ~D[2026-01-26], []), [], 2)
+
+      assert {:ok, encoded} = Combination.encode(destination, [~D[2026-01-10]], 2)
+
+      assert encoded.changed? == true
+      assert weekly_mask(encoded.calendar) == [0, 0, 0, 0, 0, 0, 0]
+      assert encoded.calendar.start_date == ~D[2026-01-05]
+      assert encoded.calendar.end_date == ~D[2026-01-26]
+      assert encoded.exceptions == [%{date: ~D[2026-01-10], exception_type: 1}]
+      assert ServiceDates.active_dates(encoded.calendar, encoded.exceptions) == [~D[2026-01-10]]
+    end
+
+    test "stores exactly the result as additions on a dates-only destination" do
+      destination = snapshot(nil, [added(~D[2026-01-05])], 0)
+
+      assert {:ok, encoded} = Combination.encode(destination, [~D[2026-01-05], ~D[2026-01-06]], 0)
+
+      assert encoded.changed? == true
+      assert encoded.calendar == nil
+
+      assert encoded.exceptions == [
+               %{date: ~D[2026-01-05], exception_type: 1},
+               %{date: ~D[2026-01-06], exception_type: 1}
+             ]
+    end
+
+    test "refuses to strand trips on a dates-only destination by cancelling its only addition" do
+      existing_trip = snapshot(nil, [added(~D[2026-01-05])], 1)
+      incoming_trips = snapshot(nil, [added(~D[2026-01-05])], 0)
+
+      assert Combination.encode(existing_trip, [], 1) == {:error, :native_service_required}
+      assert Combination.encode(incoming_trips, [], 2) == {:error, :native_service_required}
+    end
+
+    test "allows an empty metadata-only result when no trip references the destination" do
+      destination = snapshot(nil, [added(~D[2026-01-05])], 0)
+
+      assert Combination.encode(destination, [], 0) ==
+               {:ok, %{calendar: nil, exceptions: [], changed?: true}}
+    end
+
+    test "refuses a metadata-only destination while incoming trips would reference it" do
+      destination = snapshot(nil, [], 0)
+
+      assert Combination.encode(destination, [], 2) == {:error, :native_service_required}
+
+      assert Combination.encode(destination, [], 0) ==
+               {:ok, %{calendar: nil, exceptions: [], changed?: false}}
+    end
+
+    test "refuses a dates-only destination left with no rows before returning a no-op" do
+      destination = snapshot(nil, [removed(~D[2026-01-06])], 3)
+
+      assert Combination.encode(destination, [], 3) == {:error, :native_service_required}
+
+      assert Combination.encode(destination, [], 0) ==
+               {:ok,
+                %{
+                  calendar: nil,
+                  exceptions: [%{date: ~D[2026-01-06], exception_type: 2}],
+                  changed?: false
+                }}
+    end
+
+    test "preserves original calendar rows and their redundant exceptions on a no-op" do
+      destination = snapshot(monday_weekly(), [added(~D[2026-01-12])], 5)
+      result_dates = [~D[2026-01-05], ~D[2026-01-12], ~D[2026-01-19], ~D[2026-01-26]]
+
+      assert {:ok, encoded} = Combination.encode(destination, result_dates, 5)
+
+      assert encoded.changed? == false
+      assert encoded.calendar == destination.calendar
+      assert encoded.exceptions == [%{date: ~D[2026-01-12], exception_type: 1}]
+    end
+
+    test "preserves original dates-only rows when the effective dates are unchanged" do
+      destination = snapshot(nil, [added(~D[2026-01-05])], 3)
+
+      assert Combination.encode(destination, [~D[2026-01-05]], 3) ==
+               {:ok,
+                %{
+                  calendar: nil,
+                  exceptions: [%{date: ~D[2026-01-05], exception_type: 1}],
+                  changed?: false
+                }}
+    end
+
+    test "treats an incomplete plan as an error instead of an empty result" do
+      assert Combination.encode(monday_destination([], 0), nil, 0) == {:error, :incomplete_plan}
+    end
+
+    test "rejects a malformed encoding request instead of raising" do
+      destination = monday_destination([], 0)
+      reversed = %{destination | calendar: weekly(~D[2026-01-26], ~D[2026-01-05], [1])}
+      contradictory = snapshot(nil, [added(~D[2026-01-05]), removed(~D[2026-01-05])], 0)
+
+      assert Combination.encode(%{}, [], 0) == {:error, :invalid_command}
+      assert Combination.encode(reversed, [], 0) == {:error, :invalid_command}
+      assert Combination.encode(contradictory, [], 0) == {:error, :invalid_command}
+      assert Combination.encode(destination, "2026-01-05", 0) == {:error, :invalid_command}
+
+      assert Combination.encode(destination, [~N[2026-01-05T00:00:00]], 0) ==
+               {:error, :invalid_command}
+
+      assert Combination.encode(destination, [], -1) == {:error, :invalid_command}
+    end
+  end
+
   describe "plan/5 command validation" do
     test "rejects repeated sources, destination-as-source, no sources and unknown IDs" do
       sources = %{"SEASONAL" => year_round(2), "YEAR_ROUND" => year_round(7)}
@@ -554,6 +732,27 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationTest do
     exceptions = [removed(~D[2026-12-25])]
 
     snapshot(weekly(@month_first, @month_last, @weekdays), exceptions, trip_count)
+  end
+
+  # A Monday-only destination row over four Mondays: 2026-01-05, -12, -19, -26.
+  defp monday_destination(exceptions, trip_count) do
+    snapshot(monday_weekly(), exceptions, trip_count)
+  end
+
+  defp monday_weekly do
+    %{weekly(~D[2026-01-05], ~D[2026-01-26], [1]) | service_id: "MONDAY_DEST"}
+  end
+
+  defp weekly_mask(calendar) do
+    [
+      calendar.monday,
+      calendar.tuesday,
+      calendar.wednesday,
+      calendar.thursday,
+      calendar.friday,
+      calendar.saturday,
+      calendar.sunday
+    ]
   end
 
   # The snapshots carry the attributes key the review loader supplies; the pure algebra
