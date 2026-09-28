@@ -13,7 +13,7 @@ import { test, expect } from "@playwright/test";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bodyFitsViewport } from "./browser_helpers.js";
+import { bodyFitsViewport, readPendingStates, watchPendingState } from "./browser_helpers.js";
 
 // The Playwright runner starts in `assets/`, so repository-relative inputs are
 // resolved from the checkout root the way `playwright.config.js` does.
@@ -523,4 +523,114 @@ test("selection bar", async ({ page }, testInfo) => {
   expect(Math.round(paginationBox.y + paginationBox.height)).toBeLessThanOrEqual(
     Math.round(barBox.y) + 1,
   );
+});
+
+// ── assignment review ─────────────────────────────────────────────────────
+
+// The reviewed assignment: the bar's two actions, the dialog's review of what a
+// save would change, the success callout and Undo. The seeded version holds 8
+// "Central West" stops in zone A (Central) and 12 "Riverside" stops in zone B
+// (Eastbank), so moving two west stops to Eastbank is a real change between two
+// declared zones and Undo has exact previous zones to restore.
+test("assignment review", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await openFares(page, "zones");
+
+  const rows = page.locator("#fare-zone-stops tr");
+  const rowFor = (stopName) => rows.filter({ hasText: stopName });
+  const checkboxFor = (stopName) => rowFor(stopName).locator('input[type="checkbox"]');
+
+  await expect(rows).toHaveCount(27);
+  await checkboxFor("Central West 1").check();
+  await checkboxFor("Central West 2").check();
+  await expect(page.locator("#fare-zone-selection-count")).toHaveText("2 stops selected");
+
+  // Assign zone opens the review. Its default target is the first zone of the
+  // inventory (Central, ID A), which both selected stops already have, so the
+  // review changes nothing and says why its confirm button is disabled.
+  await page.locator("#fare-zone-assign-selection").click();
+
+  const dialog = page.locator("#fare-zone-assignment-dialog");
+
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#fare-zone-assignment-dialog-title")).toHaveText(
+    "Assign selected stops",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-intro")).toHaveText(
+    "Review 2 selected stops before saving.",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-target")).toHaveValue("A");
+  await expect(dialog.locator("#fare-zone-assignment-reason")).toHaveText(
+    "Nothing to change: every selected stop already has this zone.",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-dialog-confirm")).toBeDisabled();
+
+  // Choosing Eastbank reviews a real move: two assignments change, both move
+  // between zones, and the moved-stop warning appears with the rows.
+  await dialog.locator("#fare-zone-assignment-target").selectOption("B");
+
+  await expect(dialog.locator("#fare-zone-assignment-summary")).toContainText(
+    "2 assignments will change",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-summary-change")).toHaveText(
+    "0 unassigned stops added · 2 moved from another zone",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-summary-unchanged")).toHaveText(
+    "0 already in this zone · left unchanged",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-moved")).toContainText(
+    "Moving stops can change which fares apply to their journeys.",
+  );
+  await expect(dialog.locator("#fare-zone-assignment-row-1")).toContainText("Central West 1");
+  await expect(dialog.locator("#fare-zone-assignment-row-1")).toContainText("A → B");
+  await expect(dialog.locator("#fare-zone-assignment-dialog-confirm")).toBeEnabled();
+
+  await capture(page, testInfo, "assignment-1440", { fullPage: false });
+
+  // At 320 px the panel fits the viewport and its body scrolls, so the review
+  // stays readable on the narrow layout.
+  await page.setViewportSize(NARROW);
+  await expect(dialog).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  const panel = await page.locator("#fare-zone-assignment-dialog > div > div").boundingBox();
+
+  expect(Math.round(panel.width)).toBeLessThanOrEqual(NARROW.width);
+  expect(Math.round(panel.x)).toBeGreaterThanOrEqual(0);
+
+  await capture(page, testInfo, "assignment-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // Save shows its pending label, then closes the dialog and reports what was
+  // written. The dialog is gone rather than merely hidden.
+  await watchPendingState(page, "#fare-zone-assignment-dialog-confirm");
+  await dialog.locator("#fare-zone-assignment-dialog-confirm").click();
+
+  const pendingStates = await readPendingStates(page);
+
+  expect(
+    pendingStates.some(({ disabled }) => disabled),
+    `no disabled pending state observed in ${JSON.stringify(pendingStates)}`,
+  ).toBe(true);
+
+  await expect(page.locator("#fare-zone-assignment-dialog")).toHaveCount(0);
+  await expect(page.locator("#fare-zone-saved")).toContainText("2 stops assigned to Eastbank.");
+  await expect(rowFor("Central West 1")).toContainText("Eastbank");
+  await expect(rowFor("Central West 2")).toContainText("Eastbank");
+  await expect(page.locator("#fare-zone-row-2-count")).toHaveText("14");
+  await expect(page.locator("#fare-zone-selection-hint")).toBeVisible();
+
+  await capture(page, testInfo, "assignment-saved", { fullPage: false });
+
+  // Undo restores the zones the save replaced and ends the offer.
+  await page.locator("#fare-zone-undo").click();
+
+  await expect(page.locator("#fare-zone-saved")).toContainText("Change undone.");
+  await expect(page.locator("#fare-zone-undo")).toHaveCount(0);
+  await expect(rowFor("Central West 1")).toContainText("Central");
+  await expect(rowFor("Central West 2")).toContainText("Central");
+  await expect(page.locator("#fare-zone-row-2-count")).toHaveText("12");
+
+  await captureReference(page, testInfo, "?dialog=assignment", "ref-assignment");
 });

@@ -42,14 +42,28 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   offer "Select all N matching" and the bar can count what the filter cannot show.
   The rows are re-streamed when the selection changes, so a checkbox rendered by
   the server and the state behind it never disagree.
+
+  `@assignment` is the review a selection is committed through and `@undo` the
+  report of the save that happened. Opening a review is a read: `preview_assignment/4`
+  reports from current database values what each selected stop would change to, and
+  the dialog states it before anything is written. `apply_assignment/3` writes the
+  reviewed changes, and the review it was written from is what is passed along, so
+  a stop that changed since the review can only produce a stale result, never a
+  silent overwrite. Nothing about a failed or stale save closes the dialog: the
+  review is the operator's work, and it stays on screen with the reason it could not
+  be saved until they cancel it, refresh it or succeed. A successful save hands the
+  applied changes to `@undo`, which is the only state Undo runs from and which the
+  next save replaces, a tab change clears and a version switch cannot carry.
   """
 
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
+      assignment_dialog: 1,
       load_error: 1,
       loading: 1,
+      saved_callout: 1,
       selection_bar: 1,
       stage_header: 1,
       stop_list: 1,
@@ -61,6 +75,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  # The outcomes AC-25 and AC-26 fix, named once so the same failure is never
+  # described two ways.
+  @unknown_zone_message "That zone no longer exists. Choose another zone."
+
+  @invalid_selection_message "Some selected stops are no longer in this version. Clear your selection and select again."
+
+  @save_failed_message "Changes couldn’t be saved. Your edits are still here."
+
+  @undo_stale_message "Undo wasn’t applied because some stops changed after the save."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -77,18 +101,22 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:page, 1)
      |> assign(:selection, MapSet.new())
      |> assign(:matching_ids, MapSet.new())
+     |> assign(:assignment, nil)
+     |> assign(:undo, nil)
      |> stream(:stops, [])}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {filter, q, page} = zones_params(socket.assigns.live_action, params)
+    action = socket.assigns.live_action
+    {filter, q, page} = zones_params(action, params)
 
     socket =
       socket
       |> assign(:filter, filter)
       |> assign(:q, q)
       |> assign(:page, page)
+      |> assign(:undo, undo_after_patch(socket, action))
 
     if connected?(socket) do
       {:noreply, load_workspace(socket)}
@@ -157,6 +185,70 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @impl true
   def handle_event("clear_selection", _params, socket) do
     {:noreply, socket |> assign(:selection, MapSet.new()) |> restream_page()}
+  end
+
+  # Opening a review is a read: the domain reports, from current database values,
+  # what each selected stop would change to, and which of its sibling platforms
+  # the selection does not cover (AC-9). The target of an assign review is the
+  # zone the operator is filtering by when the inventory still carries it, else
+  # the first zone; an unassign review has no target at all, which the domain
+  # reads as nil.
+  @impl true
+  def handle_event("open_assignment", %{"mode" => "assign"}, socket) do
+    {:noreply, open_assignment(socket, :assign)}
+  end
+
+  def handle_event("open_assignment", %{"mode" => "unassign"}, socket) do
+    {:noreply, open_assignment(socket, :unassign)}
+  end
+
+  def handle_event("open_assignment", _params, socket), do: {:noreply, socket}
+
+  # The select's value is a zone ID of this version's inventory, byte-exact. A
+  # value the inventory does not carry is a zone another editor removed, so the
+  # review is rebuilt against the current inventory with that said out loud.
+  @impl true
+  def handle_event("change_assignment_target", %{"target" => target}, socket)
+      when is_binary(target) do
+    case socket.assigns.assignment do
+      %{mode: :assign} -> {:noreply, review(socket, :assign, target: target)}
+      _assignment -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("change_assignment_target", _params, socket), do: {:noreply, socket}
+
+  # A refresh re-reads the review from current values, so a stale review becomes
+  # savable again with the counts the database now reports. The target is kept:
+  # choosing it was part of the work the operator must not lose.
+  @impl true
+  def handle_event("refresh_assignment", _params, socket) do
+    case socket.assigns.assignment do
+      %{mode: mode, target: target} ->
+        {:noreply, socket |> load_workspace() |> review(mode, target: target)}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_assignment", _params, socket) do
+    {:noreply, assign(socket, :assignment, nil)}
+  end
+
+  # Save writes exactly the reviewed changes. Success clears the selection and
+  # reloads the workspace, so the rows and the inventory show what was written,
+  # and hands the applied changes to Undo; every other outcome leaves the dialog
+  # open with the review intact and names what happened.
+  @impl true
+  def handle_event("apply_assignment", _params, socket) do
+    {:noreply, apply_assignment(socket)}
+  end
+
+  @impl true
+  def handle_event("undo_assignment", _params, socket) do
+    {:noreply, undo_assignment(socket)}
   end
 
   # Copy of GaragesLive's version handlers, pointed at the current tab so a
@@ -235,6 +327,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
               subtitle={stage_subtitle(@filter, @inventory)}
             />
 
+            <.saved_callout :if={@undo} undo={@undo} />
+
             <.stop_list
               stops={@streams.stops}
               stop_page={@stop_page}
@@ -246,12 +340,22 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
               matching_count={MapSet.size(@matching_ids)}
             />
 
-            <.selection_bar selection={@selection} matching_ids={@matching_ids} />
+            <.selection_bar
+              selection={@selection}
+              matching_ids={@matching_ids}
+              zones={@inventory.zones}
+            />
           </section>
         </div>
         <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2"></div>
         <div :if={@live_action == :checks} id="fare-checks-panel" class="mt-2"></div>
       <% end %>
+
+      <.assignment_dialog
+        :if={@assignment}
+        assignment={@assignment}
+        zones={inventory_zones(assigns)}
+      />
     </Layouts.app>
     """
   end
@@ -407,6 +511,196 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp page_entries(%{assigns: %{stop_page: %{entries: entries}}}), do: entries
   defp page_entries(_socket), do: []
+
+  # A tab change replaces the workspace the assignment belonged to, so the Undo of
+  # the previous save goes with it; a filter, search or page patch inside the Zones
+  # tab keeps the same action and keeps Undo in reach (AC-25). A version switch
+  # navigates and remounts the LiveView, so its own state is already empty.
+  defp undo_after_patch(socket, action) do
+    if action == socket.assigns.live_action, do: socket.assigns.undo, else: nil
+  end
+
+  defp open_assignment(socket, mode) do
+    if MapSet.size(socket.assigns.selection) == 0 do
+      socket
+    else
+      review(socket, mode, [])
+    end
+  end
+
+  # The review the dialog shows, rebuilt from current values every time it is
+  # opened, refreshed or given a new target. An assign review with no target is
+  # not one: the domain reads a nil target as "unassign", so an empty inventory
+  # stops here with the reason the dialog shows instead of previewing that write.
+  #
+  # Errors are returned as state rather than thrown: a stale selection and a zone
+  # that left the inventory are ordinary outcomes of editing the same version from
+  # two places, and both must leave the review on screen (AC-26).
+  defp review(socket, mode, opts) do
+    target = if mode == :assign, do: Keyword.get(opts, :target, default_target(socket)), else: nil
+    error = Keyword.get(opts, :error)
+
+    if mode == :assign and is_nil(target) do
+      assign(socket, :assignment, assignment_state(mode, nil, nil, error))
+    else
+      case preview(socket, target) do
+        {:ok, preview} ->
+          assign(socket, :assignment, assignment_state(mode, target, preview, error))
+
+        {:error, :unknown_zone} when mode == :assign ->
+          socket
+          |> load_workspace()
+          |> review(:assign, error: @unknown_zone_message)
+
+        {:error, _reason} ->
+          assign(
+            socket,
+            :assignment,
+            assignment_state(mode, target, nil, error || @invalid_selection_message)
+          )
+      end
+    end
+  end
+
+  defp preview(socket, target) do
+    FareZones.preview_assignment(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      MapSet.to_list(socket.assigns.selection),
+      target
+    )
+  end
+
+  defp assignment_state(mode, target, preview, error) do
+    %{mode: mode, target: target, preview: preview, error: error, stale: 0}
+  end
+
+  # Only a current review with something to save is a write. A review whose
+  # preview carries no changes has nothing to write, and the dialog says why its
+  # button is disabled instead of silently doing nothing.
+  defp apply_assignment(%{assigns: %{assignment: nil}} = socket), do: socket
+  defp apply_assignment(%{assigns: %{assignment: %{preview: nil}}} = socket), do: socket
+
+  defp apply_assignment(%{assigns: %{assignment: %{preview: %{changes: []}}}} = socket),
+    do: socket
+
+  defp apply_assignment(socket) do
+    assignment = socket.assigns.assignment
+
+    case FareZones.apply_assignment(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           assignment.preview.changes
+         ) do
+      {:ok, %{applied: applied}} ->
+        # The review is done: the selection it was made from is cleared, and the
+        # workspace is read again so the rows show the zones that were written.
+        socket =
+          socket
+          |> assign(:selection, MapSet.new())
+          |> load_workspace()
+          |> assign(:assignment, nil)
+
+        assign(socket, :undo, %{
+          kind: "success",
+          applied: applied,
+          message: assigned_copy(assignment.mode, applied, zone_name(socket, assignment.target))
+        })
+
+      # A stale result is the whole point of the fence: nothing was written, the
+      # stops that moved are counted, and the review stays open to be refreshed.
+      {:error, {:stale, stops}} ->
+        assign(socket, :assignment, %{assignment | stale: length(stops)})
+
+      {:error, :unknown_zone} ->
+        # The target left the inventory since the review was opened: read the
+        # workspace again so the select offers the zones that exist now, and
+        # review the first valid target with the operator told why theirs is gone.
+        socket
+        |> load_workspace()
+        |> review(assignment.mode, error: @unknown_zone_message)
+
+      {:error, :invalid_selection} ->
+        assign(socket, :assignment, %{assignment | error: @invalid_selection_message})
+
+      {:error, :not_found} ->
+        assign(socket, :assignment, %{assignment | error: @save_failed_message})
+    end
+  end
+
+  defp undo_assignment(%{assigns: %{undo: nil}} = socket), do: socket
+  defp undo_assignment(%{assigns: %{undo: %{applied: nil}}} = socket), do: socket
+
+  # Undo runs from the applied changes of the save it reports and nowhere else, so
+  # it can only restore what this socket wrote. It restores the exact previous zone
+  # bytes, including a zone that left the inventory in the meantime.
+  defp undo_assignment(socket) do
+    case FareZones.undo_assignment(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.undo.applied
+         ) do
+      {:ok, %{applied: _applied}} ->
+        socket
+        |> load_workspace()
+        |> assign(:undo, %{kind: "success", applied: nil, message: "Change undone."})
+
+      {:error, reason} ->
+        socket
+        |> reload_after_undo(reason)
+        |> assign(:undo, %{kind: "error", applied: nil, message: undo_failure_copy(reason)})
+    end
+  end
+
+  # Undo's own failures: the stops changed after the save it refers to, or the pair
+  # is no longer a published version of the organization. Either way nothing was
+  # written, the callout states which happened, and the change is not offered again.
+  defp undo_failure_copy(:not_found), do: @save_failed_message
+  defp undo_failure_copy(_stale_or_invalid), do: @undo_stale_message
+
+  defp reload_after_undo(socket, :not_found), do: socket
+  defp reload_after_undo(socket, _reason), do: load_workspace(socket)
+
+  defp assigned_copy(:assign, applied, zone_name) do
+    "#{stops_count(length(applied))} assigned to #{zone_name}."
+  end
+
+  defp assigned_copy(:unassign, applied, _zone_name) do
+    "#{stops_count(length(applied))} unassigned."
+  end
+
+  # The inventory's zones, from the LiveView's assigns (the render reads them too,
+  # so this takes the assigns map rather than the socket).
+  defp inventory_zones(%{inventory: nil}), do: []
+  defp inventory_zones(%{inventory: inventory}), do: inventory.zones
+
+  # The zone the current filter names when the inventory still carries it, else the
+  # first zone of the inventory. The IDs are compared byte-for-byte.
+  defp default_target(socket) do
+    zones = inventory_zones(socket.assigns)
+
+    case socket.assigns.filter do
+      {:zone, zone_id} ->
+        if Enum.any?(zones, &(&1.zone_id == zone_id)), do: zone_id, else: first_zone_id(zones)
+
+      _filter ->
+        first_zone_id(zones)
+    end
+  end
+
+  defp first_zone_id([%{zone_id: zone_id} | _rest]), do: zone_id
+  defp first_zone_id(_zones), do: nil
+
+  # The target's display name for the report of what was written, or its exact ID
+  # when the inventory carries no record for it.
+  defp zone_name(_socket, nil), do: nil
+
+  defp zone_name(socket, target) do
+    case Enum.find(inventory_zones(socket.assigns), &(&1.zone_id == target)) do
+      nil -> target
+      zone -> zone.name
+    end
+  end
 
   # A `zone` value the inventory does not carry - a stale link, or a zone renamed
   # or deleted since the URL was made - shows All stops rather than a filter that

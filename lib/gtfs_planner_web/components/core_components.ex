@@ -2021,7 +2021,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   attr :confirm_disabled, :boolean,
     default: false,
-    doc: "disables the confirm action without pending state"
+    doc: """
+    disables the confirm action without pending state. The button keeps the
+    dialog's own chrome at a muted weight, so a confirm that cannot run reads as
+    unavailable next to the reason the caller renders for it.
+    """
 
   attr :single_action, :boolean,
     default: false,
@@ -2093,7 +2097,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 "h-[44px] min-w-[44px]",
                 @variant_bg,
                 "px-4 text-sm font-semibold",
-                @variant_text
+                @variant_text,
+                "disabled:opacity-60"
               ]}
               phx-click={@on_confirm}
               phx-target={@target}

@@ -26,11 +26,23 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   The selection bar states what the server currently holds selected and how much
   of it the current filter cannot show, and it is the stage's sticky footer, so a
-  selection stays readable and clearable while a long list scrolls.
+  selection stays readable and clearable while a long list scrolls. Its actions
+  open the assignment review, which is where a selection becomes a write.
+
+  Reviewed bulk assignment is the dialog and the callout that follows it. The
+  dialog states what a save will change before anything is written and lists the
+  reviewed rows; it never closes itself, so a stale review, a target zone another
+  editor removed and a save that failed all leave the operator's review in place.
+  The callout reports what a completed save did and offers Undo, which is the
+  domain's own restore of the exact previous zone bytes.
 
   The Fare rules and Checks bodies are added beside these components by the
   following steps.
   """
+
+  # The review lists at most this many rows; AC-25 asks for the first 100 and a
+  # count of the rest.
+  @review_row_limit 100
 
   use GtfsPlannerWeb, :html
 
@@ -341,22 +353,26 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   @doc """
   Renders the selection bar: how many stops are selected, how much of that the
-  current filter cannot show, and the action that clears the selection.
+  current filter cannot show, and the actions that work on the selection.
 
   Nothing selected renders the reference's hint in the stage's footer instead of
   the bar. Both counts are the server's own: the size of the selection, and the
   size of the selection the current filter and search do not match. The action
-  row holds Clear; the assignment actions join it in step 19.
+  row holds Clear beside the two assignment actions; Unassign needs only a
+  selection, while Assign zone needs a zone to assign to, so it is disabled with
+  the reason visible beside the count when the version has none.
 
   ## Examples
 
-      <.selection_bar selection={@selection} matching_ids={@matching_ids} />
+      <.selection_bar selection={@selection} matching_ids={@matching_ids} zones={@inventory.zones} />
   """
   attr :selection, :any, required: true, doc: "the `MapSet` of selected stop UUIDs"
 
   attr :matching_ids, :any,
     required: true,
     doc: "the stop UUIDs the current filter and search match"
+
+  attr :zones, :list, required: true, doc: "the inventory's zones, the assign targets"
 
   def selection_bar(assigns) do
     selected_count = MapSet.size(assigns.selection)
@@ -365,6 +381,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       assigns
       |> assign(:selected_count, selected_count)
       |> assign(:empty?, selected_count == 0)
+      |> assign(:assignable?, assigns.zones != [])
       |> assign(
         :outside_count,
         MapSet.size(MapSet.difference(assigns.selection, assigns.matching_ids))
@@ -384,6 +401,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           <p :if={@outside_count > 0} id="fare-zone-selection-outside" class="text-xs">
             {@outside_count} outside current filter
           </p>
+          <p :if={!@assignable?} id="fare-zone-assign-unavailable" class="text-xs">
+            Create a fare zone first.
+          </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <.button
@@ -395,6 +415,29 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
             phx-click="clear_selection"
           >
             Clear
+          </.button>
+          <.button
+            id="fare-zone-unassign-selection"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="min-h-11"
+            phx-click="open_assignment"
+            phx-value-mode="unassign"
+          >
+            Unassign
+          </.button>
+          <.button
+            id="fare-zone-assign-selection"
+            type="button"
+            variant="primary"
+            size="sm"
+            class="min-h-11"
+            phx-click="open_assignment"
+            phx-value-mode="assign"
+            disabled={!@assignable?}
+          >
+            Assign zone
           </.button>
         </div>
       </div>
@@ -569,4 +612,302 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     </div>
     """
   end
+
+  @doc """
+  Renders the assignment review: the AC-9 report of what a save would change.
+
+  The dialog is where a selection becomes a write, and it states the whole
+  change before it happens: how many assignments change, how they split between
+  unassigned stops that gain the target and stops that move from another zone,
+  how many selected stops already hold it, and which of their sibling platforms
+  the selection does not cover. The reviewed rows follow, named one per line with
+  the zone they have now and the zone they would have, so the operator reads the
+  exact bytes the save will write.
+
+  It never closes itself. A stale review, a target zone that another editor
+  removed and a save that failed all leave the dialog open with its target and
+  its rows, because the review is the work that must not be lost; the error or
+  stale callout inside the dialog names what happened, and `cancel_assignment`
+  or a successful save is the only way out.
+
+  Every state that cannot be saved says so in words. The confirm button is
+  disabled while the review is stale (its "Refresh review" control is the way
+  out), while an assign review has no zone to assign to, and while the review
+  would change nothing; a save in flight shows its own "Saving…" label and is
+  disabled by the dialog's `phx-disable-with`, which is what stops a second
+  click reaching the server.
+
+  ## Examples
+
+      <.assignment_dialog :if={@assignment} assignment={@assignment} zones={@inventory.zones} />
+  """
+  attr :assignment, :map, required: true, doc: "the review state the socket holds"
+
+  attr :zones, :list,
+    required: true,
+    doc: "the inventory's zones, offered as assign targets"
+
+  def assignment_dialog(assigns) do
+    assignment = assigns.assignment
+    preview = assignment.preview
+    rows = if preview, do: Enum.take(preview.rows, @review_row_limit), else: []
+
+    assigns =
+      assigns
+      |> assign(:preview, preview)
+      |> assign(:rows, rows)
+      |> assign(:more, if(preview, do: length(preview.rows) - length(rows), else: 0))
+      |> assign(:selected_count, if(preview, do: length(preview.rows), else: 0))
+      |> assign(:remove?, assignment.mode == :unassign)
+      |> assign(:target, assignment.target)
+      |> assign(:options, target_options(assigns.zones))
+      |> assign(:summary, if(preview, do: assignment_summary(assignment), else: nil))
+      |> assign(:reason, confirm_reason(assignment))
+      |> assign(:confirm_disabled, not confirmable?(assignment))
+
+    ~H"""
+    <.confirm_dialog
+      id="fare-zone-assignment-dialog"
+      open={true}
+      title={if @remove?, do: "Remove zone assignments", else: "Assign selected stops"}
+      confirm_label={if @remove?, do: "Remove assignments", else: "Save assignments"}
+      pending_label="Saving…"
+      on_confirm="apply_assignment"
+      on_cancel="cancel_assignment"
+      cancel_label="Keep selection"
+      confirm_disabled={@confirm_disabled}
+      confirm_variant={if @remove?, do: "danger", else: "primary"}
+      return_focus_id={
+        if @remove?, do: "fare-zone-unassign-selection", else: "fare-zone-assign-selection"
+      }
+      described_by="fare-zone-assignment-dialog-body"
+      size="lg"
+    >
+      <%!-- One rhythm for the review's blocks: the wrapper owns the gap between
+      them, so the summary, the warnings and the rows never touch. --%>
+      <div id="fare-zone-assignment-review" class="space-y-3">
+        <p :if={@selected_count > 0} id="fare-zone-assignment-intro">
+          {selected_stops_copy(@selected_count)} before saving.
+        </p>
+
+        <.callout
+          :if={@assignment.error}
+          id="fare-zone-assignment-error"
+          kind="error"
+          title={@assignment.error}
+          role="alert"
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        />
+
+        <form
+          :if={!@remove?}
+          id="fare-zone-assignment-target-form"
+          phx-change="change_assignment_target"
+        >
+          <.input
+            id="fare-zone-assignment-target"
+            name="target"
+            type="select"
+            label="Assign to zone"
+            value={@target}
+            options={@options}
+          />
+        </form>
+
+        <.callout
+          :if={@summary}
+          id="fare-zone-assignment-summary"
+          kind="info"
+          title={@summary.headline}
+        >
+          <p id="fare-zone-assignment-summary-change">{@summary.change_line}</p>
+          <p id="fare-zone-assignment-summary-unchanged">{@summary.unchanged_line}</p>
+        </.callout>
+
+        <.callout
+          :if={not @remove? and @summary != nil and @summary.moved?}
+          id="fare-zone-assignment-moved"
+          kind="warning"
+          title="Moving stops can change which fares apply to their journeys."
+        >
+          <p>Existing fare rules keep their zone references.</p>
+        </.callout>
+
+        <.callout
+          :if={@summary != nil and @preview.unselected_sibling_count > 0}
+          id="fare-zone-assignment-siblings"
+          kind="info"
+          title={sibling_platforms_copy(@preview.unselected_sibling_count)}
+        >
+          <p>Each platform is assigned separately; station groups are never changed silently.</p>
+        </.callout>
+
+        <div :if={@rows != []} id="fare-zone-assignment-rows">
+          <div
+            :for={{row, index} <- Enum.with_index(@rows, 1)}
+            id={"fare-zone-assignment-row-#{index}"}
+            class="flex items-center justify-between gap-3 border-b border-base-200 py-2"
+          >
+            <span class="text-base-content">{row.stop_name || row.stop_id}</span>
+            <span class="shrink-0 text-xs tabular-nums">
+              {zone_label(row.from)} → {zone_label(row.to)}
+            </span>
+          </div>
+          <p :if={@more > 0} id="fare-zone-assignment-more" class="py-2 text-xs">
+            and {@more} more
+          </p>
+        </div>
+
+        <%!-- The reference puts the stale notice after the reviewed rows and just
+        above the footer, which is also where the disabled confirm button is: the
+        operator re-reads what would be written, then sees that it moved. --%>
+        <.callout
+          :if={@assignment.stale > 0}
+          id="fare-zone-assignment-stale"
+          kind="warning"
+          title={stale_stops_copy(@assignment.stale)}
+          role="alert"
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        >
+          <div class="mt-2">
+            <.button
+              id="fare-zone-assignment-refresh"
+              type="button"
+              variant="secondary"
+              size="sm"
+              class="min-h-11"
+              phx-click="refresh_assignment"
+            >
+              Refresh review
+            </.button>
+          </div>
+        </.callout>
+
+        <p :if={@reason} id="fare-zone-assignment-reason">{@reason}</p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders what a completed assignment did, with Undo while it is still offered.
+
+  The message is the count the save applied, so the callout reports the write
+  that happened rather than the review that was shown. Undo is present only
+  while the socket still holds the applied changes: a second save, a tab change
+  and a version switch each replace or drop it, and an undone or superseded
+  change reports its outcome without the button.
+
+  ## Examples
+
+      <.saved_callout :if={@undo} undo={@undo} />
+  """
+  attr :undo, :map, required: true, doc: "the socket's `@undo` state"
+
+  def saved_callout(assigns) do
+    ~H"""
+    <div id="fare-zone-saved" class="mb-3 mt-3">
+      <.callout kind={@undo.kind} title={@undo.message}>
+        <div :if={@undo.applied} class="mt-2">
+          <.button
+            id="fare-zone-undo"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="min-h-11"
+            phx-click="undo_assignment"
+          >
+            Undo
+          </.button>
+        </div>
+      </.callout>
+    </div>
+    """
+  end
+
+  # The select's options: every zone of the version's inventory, labeled by the
+  # name people recognize beside the exact ID that travels with the feed.
+  defp target_options(zones) do
+    Enum.map(zones, &{"#{&1.name} · #{&1.zone_id}", &1.zone_id})
+  end
+
+  # The review's own arithmetic, in the reference's order: what changes first,
+  # then what does not.
+  defp assignment_summary(assignment) do
+    preview = assignment.preview
+
+    case assignment.mode do
+      :unassign ->
+        %{
+          headline: "#{assignments_copy(preview.changed_count)} will change",
+          change_line: "#{stops_copy(preview.changed_count)} become unassigned",
+          unchanged_line: already_copy(:unassign, preview.unchanged_count),
+          moved?: false
+        }
+
+      :assign ->
+        %{
+          headline: "#{assignments_copy(preview.changed_count)} will change",
+          change_line: "#{added_copy(preview.added_count)} · #{moved_copy(preview.moved_count)}",
+          unchanged_line: already_copy(:assign, preview.unchanged_count),
+          moved?: preview.moved_count > 0
+        }
+    end
+  end
+
+  defp zone_label(nil), do: "None"
+  defp zone_label(zone_id), do: zone_id
+
+  defp stops_copy(1), do: "1 stop"
+  defp stops_copy(count), do: "#{count} stops"
+
+  # A review that would change nothing is not a failure, so it says what the
+  # selection already is rather than leaving the disabled button unexplained.
+  defp confirm_reason(%{mode: :assign, target: nil}), do: "Create a fare zone first."
+  defp confirm_reason(%{stale: stale}) when stale > 0, do: nil
+  defp confirm_reason(%{error: error}) when is_binary(error), do: nil
+  defp confirm_reason(%{preview: nil}), do: nil
+
+  defp confirm_reason(%{mode: :assign, preview: %{changed_count: 0}}),
+    do: "Nothing to change: every selected stop already has this zone."
+
+  defp confirm_reason(%{preview: %{changed_count: 0}}),
+    do: "Nothing to change: every selected stop is already unassigned."
+
+  defp confirm_reason(_assignment), do: nil
+
+  # A stale review, an unknown target and a lost selection each carry their own
+  # visible reason, so they are not also "nothing to change".
+  defp confirmable?(%{stale: stale}) when stale > 0, do: false
+  defp confirmable?(%{error: error}) when is_binary(error), do: false
+  defp confirmable?(%{mode: :assign, target: nil}), do: false
+  defp confirmable?(%{preview: %{changed_count: count}}) when count > 0, do: true
+  defp confirmable?(_assignment), do: false
+
+  defp selected_stops_copy(1), do: "Review 1 selected stop"
+  defp selected_stops_copy(count), do: "Review #{count} selected stops"
+
+  defp assignments_copy(1), do: "1 assignment"
+  defp assignments_copy(count), do: "#{count} assignments"
+
+  defp added_copy(1), do: "1 unassigned stop added"
+  defp added_copy(count), do: "#{count} unassigned stops added"
+
+  defp moved_copy(1), do: "1 moved from another zone"
+  defp moved_copy(count), do: "#{count} moved from another zone"
+
+  defp already_copy(:unassign, 1), do: "1 already unassigned · left unchanged"
+  defp already_copy(:unassign, count), do: "#{count} already unassigned · left unchanged"
+  defp already_copy(:assign, 1), do: "1 already in this zone · left unchanged"
+  defp already_copy(:assign, count), do: "#{count} already in this zone · left unchanged"
+
+  defp stale_stops_copy(1), do: "1 selected stop changed since you opened this review."
+
+  defp stale_stops_copy(count),
+    do: "#{count} selected stops changed since you opened this review."
+
+  defp sibling_platforms_copy(1), do: "1 sibling platform is not selected."
+  defp sibling_platforms_copy(count), do: "#{count} sibling platforms are not selected."
 end
