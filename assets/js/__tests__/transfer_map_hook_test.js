@@ -564,8 +564,11 @@ describe("transfer_map_hook pick session", () => {
       "transfer-map-candidate",
     );
     expect(markerOptions(L, 0).icon.className).toContain("rounded-full");
-    expect(markerOptions(L, 1).icon.html).toContain("rounded-[3px]");
+    expect(markerOptions(L, 1).icon.className).toContain("rounded-[3px]");
 
+    // Starting the session pushed the current bounds; the click is the only event
+    // this case counts.
+    hook.pushEvent.mockClear();
     clickHandler(L, 0)();
     expect(hook.pushEvent).toHaveBeenCalledTimes(1);
     expect(hook.pushEvent).toHaveBeenCalledWith("transfer_map_pick", {
@@ -610,6 +613,9 @@ describe("transfer_map_hook pick session", () => {
     events.get("transfer_map:pick_start")({ pick_id: 3, side: "a" });
     events.get("transfer_map:pick_candidates")({ pick_id: 3, stops: [A_POINT] });
 
+    // Starting the session pushed the current bounds; the unrelated key must not
+    // add a pick of its own.
+    hook.pushEvent.mockClear();
     pressKey(L, 0, "a");
     expect(hook.pushEvent).not.toHaveBeenCalled();
 

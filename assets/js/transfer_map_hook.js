@@ -348,6 +348,9 @@ const TransferMapHook = {
         icon: stopIcon(this._L, child, this._childColor),
         title: child.name,
       });
+      // The fit frames everything this payload draws, so a platform outside the
+      // endpoints' own box is not clipped at the edge of the view.
+      this._points.push(child);
     });
 
     if (a && b && loop) {
@@ -356,7 +359,7 @@ const TransferMapHook = {
         title: a.name,
         zIndexOffset: LETTER_Z_OFFSET,
       });
-      this._points = [a];
+      this._points = [a, ...this._points];
 
       const loopOptions = {
         radius: LOOP_RADIUS,
