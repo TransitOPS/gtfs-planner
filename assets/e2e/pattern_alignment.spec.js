@@ -899,3 +899,126 @@ test.describe("save dialogs", () => {
     expect(problems).toEqual([]);
   });
 });
+
+test.describe("imported shapes", () => {
+  test("reviews imported shapes and converts them into drafts", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    // The divergent pattern keeps two imported shapes (one trip on the
+    // second): the notice names both and the dialog lists each with its
+    // trip count and length.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/BROWSER-ALIGN-IMPORTED?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+
+    await expect(page.locator("#alignment-notice")).toContainText(
+      "This pattern uses 2 imported shapes",
+    );
+    await expect(page.locator("#alignment-review-import")).toContainText(
+      "Compare shapes",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "imported-1440");
+
+    await page.locator("#alignment-review-import").click();
+    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "Choose an imported path",
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "IMP-ALIGN-1",
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "IMP-ALIGN-2",
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "Saving the replacement would affect all 2 trips.",
+    );
+    await page.locator("#alignment-import-shape-IMP-ALIGN-2").check();
+    await expect(
+      page.locator("#alignment-import-shape-IMP-ALIGN-2"),
+    ).toBeChecked();
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector(
+          "#alignment-import-dialog > div > div",
+        );
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      { timeout: 5000 },
+    );
+    await captureViewport(page, "import-dialog-1440");
+    await page.locator("#alignment-import-dialog-cancel").click();
+    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
+      "data-open",
+      "false",
+      { timeout: 15000 },
+    );
+
+    // The single-shape pattern converts its far shape into a flagged
+    // draft: the section stays a straight amber line with an unsaved
+    // badge until it is reviewed and saved.
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/BROWSER-ALIGN-IMPORTED-SINGLE?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+
+    await expect(page.locator("#alignment-notice")).toContainText(
+      "Imported path · original shape retained",
+    );
+    await page.locator("#alignment-review-import").click();
+    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "Review imported path",
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "IMP-ALIGN-3",
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "3 imported points",
+    );
+    await page.locator("#alignment-import-dialog-confirm").click();
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-save")).toBeEnabled();
+    await page.locator("#alignment-map-root").scrollIntoViewIfNeeded();
+    await captureViewport(page, "import-draft-1440");
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await captureFullPage(page, "imported-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});

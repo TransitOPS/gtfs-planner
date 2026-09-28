@@ -44,6 +44,10 @@
  *   removes the selected handles; Shift-drag box-selects via
  *   `pointsInBounds`; Esc returns to Pan; Ctrl/⌘Z undoes and Shift+Ctrl/⌘Z
  *   redoes. Every commit pushes `alignment_draft_state`.
+ * - `alignment:convert` (step 29) splits the dialog-chosen imported shape
+ *   with `convertImportedShape` into one dirty `set` draft per section,
+ *   flags uncertain sections for review, and draws imported shapes as grey
+ *   read-only reference polylines while the pattern still exports them.
  * - The first `tileerror` pushes `alignment_map_error` exactly once; a
  *   later `tileload` pushes `alignment_map_ok`. `alignment:retry_tiles`
  *   rebuilds the tile layer so a new failure episode reports again.
@@ -54,6 +58,7 @@
  */
 
 import {
+  convertImportedShape,
   fromLatLng,
   nearestEdgeIndex,
   pointsInBounds,
@@ -71,6 +76,9 @@ const HALO_WEIGHT = 12;
 const HALO_OPACITY = 0.25;
 const TILE_ATTRIBUTION =
   "Powered by Geoapify | © OpenMapTiles © OpenStreetMap contributors";
+// Imported whole shapes (step 29) draw as a neutral reference while the
+// pattern still exports them: read-only, never selectable, beneath drafts.
+const IMPORTED_COLOR = "#6b7280";
 const MARKER_ICON_SIZE = 30;
 const HANDLE_ICON_SIZE = 44;
 const HANDLE_ICON_ANCHOR = HANDLE_ICON_SIZE / 2;
@@ -104,6 +112,8 @@ const PatternAlignment = {
     this._savePending = false;
     this._hideLabels = false;
     this._sectionLayers = new Map();
+    this._importedLayers = [];
+    this._flagged = new Set();
     this._stopMarkers = [];
     this._bounds = null;
     this._map = null;
@@ -212,6 +222,11 @@ const PatternAlignment = {
     this.handleEvent("alignment:delete_section", (payload) =>
       this._deleteSection(payload),
     );
+    // Step 29 import review: the server pushes the dialog-chosen shape;
+    // the hook splits it into flagged section drafts (CR-9: drafts only).
+    this.handleEvent("alignment:convert", (payload) =>
+      this._convertImported(payload),
+    );
     this.handleEvent("alignment:simplify", (payload) =>
       this._simplifySection(payload),
     );
@@ -257,6 +272,8 @@ const PatternAlignment = {
     }
     this._tileLayer = null;
     this._sectionLayers = new Map();
+    this._importedLayers = [];
+    this._flagged = new Set();
     this._stopMarkers = [];
     this._handles = [];
     this._bounds = null;
@@ -382,6 +399,7 @@ const PatternAlignment = {
     // A fresh model starts a fresh editing session: drafts, history and
     // the handle selection belong to the previous geometry.
     this._drafts = new Map();
+    this._flagged = new Set();
     this._undo = [];
     this._redo = [];
     this._selectedPoints = new Set();
@@ -452,6 +470,7 @@ const PatternAlignment = {
     }
 
     this._drawStopMarkers(model, visitsByPosition, color);
+    this._drawImported(model, extend);
 
     if (bounds && bounds.isValid()) {
       this._bounds = bounds;
@@ -542,6 +561,7 @@ const PatternAlignment = {
 
   _clearOverlays() {
     if (!this._map) return;
+    this._clearImported();
     for (const { line, halo } of this._sectionLayers.values()) {
       if (halo) this._map.removeLayer(halo);
       this._map.removeLayer(line);
@@ -551,6 +571,93 @@ const PatternAlignment = {
     this._sectionLayers = new Map();
     this._stopMarkers = [];
     this._handles = [];
+  },
+
+  // --- Imported shapes (step 29) -----------------------------------------
+  //
+  // While the pattern still exports imported shapes, each one draws as a
+  // grey read-only reference polyline: non-interactive, never in
+  // `_sectionLayers`, so it cannot be selected or edited. Conversion
+  // replaces this layer with editable section drafts on the same points.
+  _drawImported(model, extend) {
+    this._clearImported();
+    if (!this._map || !window.L) return;
+    if (!model || model.export !== "imported") return;
+    const L = window.L;
+    for (const shape of model.imported_shapes || []) {
+      // Points travel as [lon, lat] with an optional imported distance
+      // third element (INV-1); only the first two draw.
+      const latlngs = (shape.points || []).map(([lon, lat]) => [lat, lon]);
+      if (latlngs.length < 2) continue;
+      const line = L.polyline(latlngs, {
+        color: IMPORTED_COLOR,
+        weight: 3,
+        opacity: 0.7,
+        interactive: false,
+      }).addTo(this._map);
+      line.bringToBack();
+      this._importedLayers.push(line);
+      if (extend) extend(latlngs);
+    }
+  },
+
+  _clearImported() {
+    if (this._map) {
+      for (const line of this._importedLayers) this._map.removeLayer(line);
+    }
+    this._importedLayers = [];
+  },
+
+  // Splits the dialog-chosen imported shape into one dirty `set` draft
+  // per section via `convertImportedShape` (step 22): visits map from
+  // `{lat, lon}` to `[lon, lat]`, the shape entry passes through with
+  // its imported distances, and flagged sections land in `_flagged` so
+  // the next `alignment_draft_state` asks for review ("Check this
+  // section"). The reference layer is removed: the drafts now carry
+  // the same geometry editably. Draft-local like every other action:
+  // the only server traffic is the draft-state push (CR-9); the server
+  // announces the draft in the page status region when it pushes this.
+  _convertImported(payload) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const shapeId = payload ? payload.shape_id : null;
+    const entry = (this._model.imported_shapes || []).find(
+      (shape) => shape.shape_id === shapeId,
+    );
+    if (!entry) return;
+    const visits = (this._model.visits || []).map((visit) => [
+      visit.lon,
+      visit.lat,
+    ]);
+    let result;
+    try {
+      result = convertImportedShape({
+        visits,
+        shapePoints: entry.points || [],
+        visitDistances: entry.visit_distances,
+      });
+    } catch (_) {
+      return;
+    }
+    if (!result || !Array.isArray(result.sections)) return;
+    this._clearImported();
+    this._flagged = new Set();
+    const sections = this._model.sections || [];
+    sections.forEach((section, index) => {
+      const converted = result.sections[index];
+      if (!converted) return;
+      this._recordOp(
+        section.position,
+        converted.interior.map(([lon, lat]) => [lon, lat]),
+        "set",
+        { dirty: true },
+      );
+      if (converted.flagged) this._flagged.add(section.position);
+    });
+    const first = sections.length > 0 ? sections[0].position : null;
+    if (first !== null) this._select(first, true);
+    if (this._editableSection(this._selected)) this._setMode("edit");
+    this.pushDraftState();
   },
 
   // --- Point editing (step 24) -------------------------------------------
@@ -848,6 +955,13 @@ const PatternAlignment = {
   // change. Delete drafts are always dirty; use_shared keeps its entry
   // even when the shared points happen to match the base.
   _applyOp(position, points, op, options) {
+    this._recordOp(position, points, op, options);
+    this.pushDraftState();
+  },
+
+  // The recording half of _applyOp without the draft-state push, so
+  // multi-section flows (import conversion) push exactly once.
+  _recordOp(position, points, op, options) {
     const before = this._effectiveInterior(position);
     const after = [...points];
     const section = this._savedSection(position);
@@ -872,7 +986,6 @@ const PatternAlignment = {
     this._undo.push({ position, before, after, prevOp, nextOp: op });
     this._redo = [];
     this._refreshSection(position);
-    this.pushDraftState();
   },
 
   _applySnapshot(position, points, op) {
@@ -1554,7 +1667,7 @@ const PatternAlignment = {
       point_count: this._effectiveInterior(this._selected).length,
       can_undo: this._undo.length > 0,
       can_redo: this._redo.length > 0,
-      flagged_positions: [],
+      flagged_positions: [...this._flagged].sort((a, b) => a - b),
       review_positions: [],
     });
   },

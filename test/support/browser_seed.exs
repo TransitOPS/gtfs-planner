@@ -3965,7 +3965,49 @@ case Accounts.register_first_admin(%{
 
     align_occurrences.(align_pattern.("BROWSER-ALIGN-IMPORTED-B"), ["AL_S4", "AL_S5"])
 
-    IO.puts("Browser seed: pattern alignment fixtures (BROWSER_ALIGN with 11 patterns)")
+    # Step 29 needs a single-shape imported pattern whose shape sits ~500 m
+    # north of its stops, so dialog conversion flags its section for review.
+    pattern_imported_single = align_pattern.("BROWSER-ALIGN-IMPORTED-SINGLE")
+    occurrences_imported_single = align_occurrences.(pattern_imported_single, ["AL_S4", "AL_S5"])
+    timing_imported_single = align_timing.(pattern_imported_single, occurrences_imported_single)
+
+    for {shape_id, sequence, lat, lon, dist} <- [
+          {"IMP-ALIGN-3", 0, "40.720800", "-74.003000", "0"},
+          {"IMP-ALIGN-3", 1, "40.721300", "-74.002500", "70.0"},
+          {"IMP-ALIGN-3", 2, "40.721800", "-74.002000", "140.0"}
+        ] do
+      %GtfsPlanner.Gtfs.Shape{}
+      |> GtfsPlanner.Gtfs.Shape.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: shape_id,
+        shape_pt_sequence: sequence,
+        shape_pt_lat: lat,
+        shape_pt_lon: lon,
+        shape_dist_traveled: dist
+      })
+      |> Repo.insert!()
+    end
+
+    {:ok, imported_single_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: align_route.route_id,
+        trip_id: "BROWSER_ALIGN_IMP_T3",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Alignment Imported Single",
+        direction_id: 0,
+        shape_id: "IMP-ALIGN-3"
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(imported_single_trip, %{
+      route_pattern_id: "BROWSER-ALIGN-IMPORTED-SINGLE",
+      timed_pattern_id: timing_imported_single.id,
+      pattern_derivation_state: "linked"
+    })
+
+    IO.puts("Browser seed: pattern alignment fixtures (BROWSER_ALIGN with 12 patterns)")
 
     # ── Agencies list page (settings_agencies_feed.spec.js; EV-16, EV-17) ──
     #

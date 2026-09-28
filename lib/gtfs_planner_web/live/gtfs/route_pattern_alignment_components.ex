@@ -42,6 +42,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: ":stale_stops, :stale_review, :busy, :save_error or {:error, message}"
 
+  attr :import_dialog, :map,
+    default: nil,
+    doc: "%{shape_id} when the import review dialog is open"
+
   attr :applying?, :boolean,
     default: false,
     doc: "disables Save while a save apply round-trips"
@@ -158,9 +162,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         :if={@notice == :imported_shape}
         id="alignment-notice"
         kind="info"
-        title="Imported path · original shape retained"
+        title={import_notice_title(@alignment)}
       >
-        This pattern already has a shape. Review it before converting it into editable sections.
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>{import_notice_body(@alignment)}</p>
+          <button
+            type="button"
+            id="alignment-review-import"
+            phx-click="alignment_open_import"
+            class="btn btn-outline min-h-11 shrink-0"
+          >
+            {import_notice_cta(@alignment)}
+          </button>
+        </div>
       </.callout>
 
       <.callout
@@ -307,6 +321,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         version_name={@version_name}
         organization_name={@organization_name}
       />
+      <.import_dialog dialog={@import_dialog} alignment={@alignment} />
       <.blocked_dialog pending={@pending} />
       <.conflict_dialog pending={@pending} visits_by_position={@visits_by_position} />
     </div>
@@ -838,6 +853,95 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     """
   end
 
+  attr :dialog, :map, default: nil, doc: "%{shape_id} when the import review dialog is open"
+  attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
+
+  # Step 29 import dialog: a single imported shape shows its length,
+  # visit count and point count in a card; divergent shapes render as
+  # radios with trip counts and lengths plus a warning naming every
+  # affected trip. "Keep original" only closes; "Create editable draft"
+  # pushes alignment:convert for the chosen shape (CR-9: the server
+  # never converts, the hook drafts). The prototype's "Proposed
+  # workflow" paragraph is omitted (production behavior is real).
+  def import_dialog(assigns) do
+    assigns =
+      assigns
+      |> assign(:shapes, import_shapes(assigns.alignment))
+      |> assign(:open?, import_open?(assigns.dialog, assigns.alignment))
+      |> assign(:total_trips, import_total_trips(assigns.alignment))
+      |> assign(:visit_count, import_visit_count(assigns.alignment))
+
+    ~H"""
+    <.confirm_dialog
+      id="alignment-import-dialog"
+      open={@open?}
+      title={import_dialog_title(@shapes)}
+      confirm_label="Create editable draft"
+      pending_label="Creating…"
+      confirm_variant="primary"
+      on_confirm="alignment_confirm_import"
+      on_cancel="alignment_close_dialog"
+      cancel_label="Keep original"
+      described_by="alignment-import-dialog-body"
+      return_focus_id="alignment-review-import"
+      size="lg"
+    >
+      <div :if={@open?}>
+        <p :if={length(@shapes) == 1}>
+          The existing whole shape is retained for exports. Conversion creates an
+          editable draft; it does not change the saved shape.
+        </p>
+        <p :if={length(@shapes) > 1}>
+          {length(@shapes)} shapes are referenced by this pattern's trips. They are
+          retained until you explicitly replace them.
+        </p>
+        <div :if={length(@shapes) == 1} class="mt-3 rounded-lg border border-base-300 p-3">
+          <p class="text-sm font-semibold">Shape {hd(@shapes).shape_id}</p>
+          <p class="mt-1 text-sm text-base-content/70">
+            {import_shape_km(hd(@shapes))} · {@visit_count} {if(@visit_count == 1,
+              do: "visit",
+              else: "visits"
+            )} · {length(hd(@shapes).points || [])} imported points
+          </p>
+        </div>
+        <form
+          :if={length(@shapes) > 1}
+          id="alignment-import-form"
+          phx-change="alignment_import_choice"
+        >
+          <label
+            :for={shape <- @shapes}
+            for={"alignment-import-shape-#{shape.shape_id}"}
+            class="mt-2 flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-base-300 p-3 has-checked:border-primary"
+          >
+            <input
+              type="radio"
+              id={"alignment-import-shape-#{shape.shape_id}"}
+              name="import_shape"
+              value={shape.shape_id}
+              checked={import_selected?(@dialog, shape, @shapes)}
+              class="radio mt-1"
+            />
+            <span>
+              <strong>Shape {shape.shape_id}</strong>
+              <small class="block text-base-content/70">
+                {shape.trip_count} {if(shape.trip_count == 1, do: "trip", else: "trips")} · {import_shape_km(
+                  shape
+                )}
+              </small>
+            </span>
+          </label>
+        </form>
+        <p :if={length(@shapes) > 1} class="mt-3">
+          <span class="badge badge-warning">
+            Saving the replacement would affect all {@total_trips} trips.
+          </span>
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
   attr :dialog, :any, default: nil, doc: "non-nil when the discard dialog is open"
 
   def discard_dialog(assigns) do
@@ -1107,6 +1211,69 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   defp save_notice_message({:error, message}) when is_binary(message), do: message
   defp save_notice_message(_notice), do: "Your draft is still here. Try saving again."
+
+  # Step 29 import notice/dialog copy. A single imported shape keeps the
+  # "Imported path" title with a review entry point; divergent shapes
+  # name their count and keep both originals until an explicit save.
+  defp import_shapes(%{imported_shapes: shapes}) when is_list(shapes), do: shapes
+  defp import_shapes(_alignment), do: []
+
+  defp import_notice_title(alignment) do
+    case import_shapes(alignment) do
+      [_single] -> "Imported path · original shape retained"
+      [_ | _] = shapes -> "This pattern uses #{length(shapes)} imported shapes"
+      [] -> "Imported path · original shape retained"
+    end
+  end
+
+  defp import_notice_body(alignment) do
+    case import_shapes(alignment) do
+      [_single] ->
+        "This pattern already has a shape. Review it before converting it into editable sections."
+
+      [_first, _second] ->
+        "Choose how to handle these paths before editing. Export retains both originals."
+
+      [_ | _] = shapes ->
+        "Choose how to handle these paths before editing. Export retains all #{length(shapes)} originals."
+
+      [] ->
+        "This pattern already has a shape. Review it before converting it into editable sections."
+    end
+  end
+
+  defp import_notice_cta(alignment) do
+    if length(import_shapes(alignment)) > 1, do: "Compare shapes", else: "Review imported path"
+  end
+
+  defp import_open?(%{shape_id: shape_id}, alignment),
+    do: shape_id in Enum.map(import_shapes(alignment), & &1.shape_id)
+
+  defp import_open?(_dialog, _alignment), do: false
+
+  defp import_total_trips(alignment) do
+    alignment |> import_shapes() |> Enum.map(& &1.trip_count) |> Enum.sum()
+  end
+
+  defp import_visit_count(%{visits: visits}) when is_list(visits), do: length(visits)
+  defp import_visit_count(_alignment), do: 0
+
+  defp import_dialog_title([_single]), do: "Review imported path"
+  defp import_dialog_title(_shapes), do: "Choose an imported path"
+
+  defp import_shape_km(%{length_m: length_m}) when is_number(length_m) do
+    "#{:erlang.float_to_binary(length_m / 1000, decimals: 1)} km"
+  end
+
+  defp import_shape_km(_shape), do: "—"
+
+  defp import_selected?(%{shape_id: selected}, %{shape_id: shape_id}, _shapes),
+    do: selected == shape_id
+
+  defp import_selected?(_dialog, %{shape_id: shape_id}, [first | _]),
+    do: shape_id == first.shape_id
+
+  defp import_selected?(_dialog, _shape, _shapes), do: false
 
   # The save dialog shows the pending review; any other pending kind
   # leaves it closed.

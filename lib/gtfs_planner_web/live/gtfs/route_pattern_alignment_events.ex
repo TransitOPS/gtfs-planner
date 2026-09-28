@@ -98,13 +98,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def retry_tiles(socket, _params),
     do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
-  @doc "Closes the help, discard, delete, simplify and save dialogs."
+  @doc "Closes the help, discard, delete, simplify, import and save dialogs."
   def close_dialogs(socket) do
     socket
     |> Component.assign(:alignment_dialog, nil)
     |> Component.assign(:alignment_discard_dialog, nil)
     |> Component.assign(:alignment_delete_dialog, nil)
     |> Component.assign(:alignment_simplify_dialog, nil)
+    |> Component.assign(:alignment_import_dialog, nil)
     |> Component.assign(:alignment_pending, nil)
   end
 
@@ -366,6 +367,79 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   end
 
   def action_notice(socket, _params), do: socket
+
+  @doc """
+  Opens the import review dialog for a pattern on imported shapes (step 29).
+
+  Viewers and patterns without imported shapes leave the socket
+  unchanged. The dialog pre-selects the first shape (shapes arrive sorted
+  by ID); divergent choices update it through `import_choice/2`.
+  Conversion itself is client-only (CR-9): confirming only pushes
+  `alignment:convert` for the hook to draft, never writes.
+  """
+  def open_import(socket, _params) do
+    with true <- editable?(socket),
+         %{alignment: %{imported_shapes: [%{shape_id: first} | _]}} <- socket.assigns do
+      Component.assign(socket, :alignment_import_dialog, %{shape_id: first})
+    else
+      _ -> socket
+    end
+  end
+
+  @doc """
+  Records the divergent shape choice from the import dialog form (step 29).
+
+  Read-only like `save_choice/2`: only a shape the loaded model actually
+  references is kept, so a stale form never converts a foreign shape.
+  """
+  def import_choice(socket, params) when is_map(params) do
+    case {editable?(socket), socket.assigns[:alignment_import_dialog], socket.assigns[:alignment]} do
+      {true, %{shape_id: _}, %{imported_shapes: shapes}} when is_list(shapes) ->
+        wanted = import_choice_param(params)
+
+        if wanted in Enum.map(shapes, & &1.shape_id) do
+          Component.assign(socket, :alignment_import_dialog, %{shape_id: wanted})
+        else
+          socket
+        end
+
+      _ ->
+        socket
+    end
+  end
+
+  def import_choice(socket, _params), do: socket
+
+  @doc """
+  Confirms the import dialog: closes it and pushes `alignment:convert`
+  with the chosen shape so the hook drafts every section (CR-5, CR-9).
+  A closed dialog or an unknown shape only closes, never pushes.
+  """
+  def confirm_import(socket, _params) do
+    case {editable?(socket), socket.assigns[:alignment_import_dialog], socket.assigns[:alignment]} do
+      {true, %{shape_id: wanted}, %{imported_shapes: shapes}} when is_list(shapes) ->
+        socket =
+          socket
+          |> Component.assign(:alignment_import_dialog, nil)
+          |> Component.assign(
+            :status_message,
+            "Editable draft created. Original shape retained until you save."
+          )
+
+        if wanted in Enum.map(shapes, & &1.shape_id) do
+          Phoenix.LiveView.push_event(socket, "alignment:convert", %{shape_id: wanted})
+        else
+          socket
+        end
+
+      _ ->
+        Component.assign(socket, :alignment_import_dialog, nil)
+    end
+  end
+
+  defp import_choice_param(%{"import_shape" => wanted}) when is_binary(wanted), do: wanted
+  defp import_choice_param(%{import_shape: wanted}) when is_binary(wanted), do: wanted
+  defp import_choice_param(_params), do: nil
 
   @doc """
   Reviews the hook's dirty sections for saving (step 28).
@@ -843,6 +917,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_discard_dialog, nil)
          |> Component.assign(:alignment_delete_dialog, nil)
          |> Component.assign(:alignment_simplify_dialog, nil)
+         |> Component.assign(:alignment_import_dialog, nil)
          |> Component.assign(:alignment_pending, nil)
          |> Component.assign(:alignment_save_notice, nil)
          |> Component.assign(:alignment_forced_local, [])}
