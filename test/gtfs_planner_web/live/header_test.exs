@@ -38,7 +38,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
   end
 
   describe "Header - Authenticated Users" do
-    test "displays the Pathways Studio wordmark link with the design-system face", %{conn: conn} do
+    test "displays the GTFS Planner logo brand link without an organization", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -46,20 +46,25 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(
                view,
-               "#app-header a[href='/'][aria-label='Pathways Studio - Go to homepage']"
+               "#app-brand[aria-label='GTFS Planner, go to home']"
              )
 
       assert has_element?(
                view,
-               "#app-header a[href='/'] span.font-display",
-               "Pathways Studio"
+               "#app-brand-logo[src='/images/gtfs-planner-logo.svg']"
              )
 
-      # The header no longer carries the logo tile; only the auth layout keeps it.
-      refute has_element?(view, "#app-header .bg-brand")
+      brand_html = view |> element("#app-brand") |> render()
+      assert brand_html =~ ~s(alt="")
+
+      # Logo only: no divider and no organization name without an organization.
+      refute has_element?(view, "#app-brand span")
+
+      # The header no longer carries the text wordmark; only the logo image remains.
+      refute has_element?(view, "#app-brand .font-display")
     end
 
-    test "shows the organization name beneath the product name", %{conn: conn} do
+    test "shows the organization name inside the brand link", %{conn: conn} do
       organization = organization_fixture()
       user = user_fixture()
 
@@ -75,19 +80,113 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(
                view,
-               "#app-header a[href='/'] span.text-muted",
+               "#app-brand span.text-muted",
                organization.name
              )
     end
 
-    test "omits the organization name when there is no organization", %{conn: conn} do
+    test "omits the divider and organization name when there is no organization", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      assert has_element?(view, "#app-header a[href='/'] span.font-display")
-      refute has_element?(view, "#app-header a[href='/'] span.text-muted")
+      assert has_element?(view, "#app-brand-logo")
+      refute has_element?(view, "#app-brand span")
+    end
+
+    test "a Planner editor gets the GTFS Planner logo with the organization name", %{
+      conn: conn
+    } do
+      organization = organization_fixture(%{product: :planner})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#app-brand[aria-label='GTFS Planner, go to home']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-brand-logo[src='/images/gtfs-planner-logo.svg']"
+             )
+
+      brand_html = view |> element("#app-brand") |> render()
+      assert brand_html =~ ~s(alt="")
+      assert brand_html =~ organization.name
+      assert has_element?(view, "#app-brand span[aria-hidden='true']")
+    end
+
+    test "a Pathways editor gets the Pathways Studio logo with the organization name", %{
+      conn: conn
+    } do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#app-brand[aria-label='Pathways Studio, go to home']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-brand-logo[src='/images/pathways-studio-logo.svg']"
+             )
+
+      brand_html = view |> element("#app-brand") |> render()
+      assert brand_html =~ ~s(alt="")
+      assert brand_html =~ organization.name
+      assert has_element?(view, "#app-brand span[aria-hidden='true']")
+    end
+
+    test "a system administrator without an organization gets the Planner logo only", %{
+      conn: conn
+    } do
+      admin = user_fixture()
+      membership_org = organization_fixture()
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: admin.id,
+          organization_id: membership_org.id,
+          roles: ["administrator"]
+        })
+
+      conn = log_in_user(conn, admin)
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations")
+
+      assert has_element?(
+               view,
+               "#app-brand[aria-label='GTFS Planner, go to home']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-brand-logo[src='/images/gtfs-planner-logo.svg']"
+             )
+
+      refute has_element?(view, "#app-brand span")
     end
 
     test "account menu trigger is labeled and paneled with the email", %{conn: conn} do

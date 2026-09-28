@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Layouts do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlannerWeb.Navigation
+  alias GtfsPlannerWeb.ProductSurfaces
 
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
@@ -71,15 +72,24 @@ defmodule GtfsPlannerWeb.Layouts do
       <div class="px-4 sm:px-6 lg:px-8">
         <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8">
           <.link
+            id="app-brand"
             href={~p"/"}
-            class="flex min-h-[72px] shrink-0 flex-col justify-center"
-            aria-label="Pathways Studio - Go to homepage"
+            class="flex min-h-[72px] shrink-0 items-center gap-3.5 no-underline max-md:flex-col max-md:items-start max-md:justify-center max-md:gap-1.5 max-md:py-2"
+            aria-label={"#{ProductSurfaces.name(ProductSurfaces.brand(assigns[:current_organization]))}, go to home"}
           >
-            <span class="font-display text-[21px] font-semibold leading-none tracking-[-0.04em] text-strong">
-              Pathways Studio
-            </span>
-            <span :if={@current_organization} class="mt-1.5 text-[13px] leading-none text-muted">
-              {@current_organization.name}
+            <img
+              id="app-brand-logo"
+              src={ProductSurfaces.logo_path(ProductSurfaces.brand(assigns[:current_organization]))}
+              alt=""
+              class="h-9 w-fit md:h-11"
+            />
+            <span
+              :if={assigns[:current_organization]}
+              aria-hidden="true"
+              class="h-8 w-px bg-subtle max-md:hidden"
+            />
+            <span :if={assigns[:current_organization]} class="text-[13px] leading-none text-muted">
+              {assigns[:current_organization].name}
             </span>
           </.link>
 
