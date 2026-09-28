@@ -131,6 +131,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
        }
      )
      |> assign(:alignment_dialog, nil)
+     |> assign(:alignment_delete_dialog, nil)
+     |> assign(:alignment_simplify_dialog, nil)
      |> assign(:alignment_notice, nil)
      |> assign(:alignment_pending, nil)
      |> assign(:alignment_editable, false)
@@ -573,6 +575,46 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_close_help", _params, socket) do
     {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, nil)}
+  end
+
+  @impl true
+  def handle_event("alignment_close_dialog", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.close_dialogs(socket)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_delete", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_delete(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_delete", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_delete(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_simplify", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_simplify(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_simplify_tolerance", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.simplify_tolerance(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_simplify", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_simplify(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_simplify_result", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.simplify_result(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_action_notice", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.action_notice(socket, params)}
   end
 
   @impl true
@@ -1159,6 +1201,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         offline?={@offline?}
                         version_name={@current_gtfs_version.name}
                         organization_name={@current_organization.name}
+                        delete_dialog={@alignment_delete_dialog}
+                        simplify_dialog={@alignment_simplify_dialog}
                       />
                     <% else %>
                       <.skeleton

@@ -22,6 +22,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   attr :version_name, :string, default: nil, doc: "named in the help dialog scope line"
   attr :organization_name, :string, default: nil, doc: "named in the help dialog scope line"
 
+  attr :delete_dialog, :map,
+    default: nil,
+    doc: "%{position, from, to} when the delete dialog is open"
+
+  attr :simplify_dialog, :map,
+    default: nil,
+    doc: "%{position, tolerance} when the simplify dialog is open"
+
   def alignment_task(assigns) do
     assigns =
       assigns
@@ -177,6 +185,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         version_name={@version_name}
         organization_name={@organization_name}
       />
+
+      <.delete_dialog dialog={@delete_dialog} />
+      <.simplify_dialog dialog={@simplify_dialog} />
     </div>
     """
   end
@@ -243,6 +254,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:status, section_status(assigns.section))
       |> assign(:repeat, repeat_labels(assigns.section, assigns.visits_by_position))
       |> assign(:guidance, section_guidance(assigns.section))
+      |> assign(:draw?, draw_section?(assigns.section, assigns.editable?))
+      |> assign(:more?, more_actions?(assigns.section, assigns.editable?))
+      |> assign(:use_shared?, use_shared?(assigns.section))
+      |> assign(
+        :simplify?,
+        simplify_section?(assigns.section, assigns.visits_by_position, assigns.editable?)
+      )
 
     ~H"""
     <div id="alignment-detail" class="border-t border-base-200 p-4">
@@ -257,6 +275,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         Visits {@repeat.from} → {@repeat.to}
       </p>
       <p class="mt-1 text-sm text-base-content/70">{@guidance}</p>
+      <%!-- Draw manually (step 26): the primary action on sections without
+        saved geometry. No Generate control renders (CR-10). --%>
+      <div :if={@draw?} class="pa-actions mt-3">
+        <button
+          type="button"
+          id="alignment-draw"
+          phx-click={
+            JS.dispatch("alignment:action",
+              to: "#alignment-map-root",
+              detail: %{action: "draw", position: @section.position}
+            )
+          }
+          class="btn btn-outline min-h-11 w-full"
+        >
+          Draw manually
+        </button>
+      </div>
       <%!-- The keyboard point list (step 25): the button dispatches a DOM
         action to the PatternAlignment hook, which owns the ignored list
         container below (CR-5). Rendered only for editable non-missing
@@ -284,6 +319,61 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         phx-update="ignore"
       >
       </div>
+      <%!-- More section actions (step 26): Simplify, Clear and Delete for
+        saved sections, plus Use shared path on overrides beside a shared
+        path. Simplify lives here (not beside Point list) because the
+        server cannot see hook drafts; it renders from saved geometry. --%>
+      <details :if={@more?} class="pa-more-actions mt-3">
+        <summary>More section actions</summary>
+        <div class="pa-actions">
+          <button
+            :if={@simplify?}
+            type="button"
+            id="alignment-simplify-open"
+            phx-click="alignment_open_simplify"
+            phx-value-position={@section.position}
+            class="btn btn-outline min-h-11 w-full"
+          >
+            Simplify
+          </button>
+          <button
+            type="button"
+            id="alignment-clear"
+            phx-click={
+              JS.dispatch("alignment:action",
+                to: "#alignment-map-root",
+                detail: %{action: "clear", position: @section.position}
+              )
+            }
+            class="btn btn-outline min-h-11 w-full"
+          >
+            Clear interior points
+          </button>
+          <button
+            type="button"
+            id="alignment-delete-open"
+            phx-click="alignment_open_delete"
+            phx-value-position={@section.position}
+            class="btn btn-outline min-h-11 w-full"
+          >
+            Delete section
+          </button>
+          <button
+            :if={@use_shared?}
+            type="button"
+            id="alignment-use-shared"
+            phx-click={
+              JS.dispatch("alignment:action",
+                to: "#alignment-map-root",
+                detail: %{action: "use_shared", position: @section.position}
+              )
+            }
+            class="btn btn-outline min-h-11 w-full"
+          >
+            Use shared path
+          </button>
+        </div>
+      </details>
     </div>
     """
   end
@@ -298,6 +388,85 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   def alignment_status_badge(assigns) do
     ~H"""
     <span id={@id} class={["badge", @tone]}>{@text}</span>
+    """
+  end
+
+  attr :dialog, :map, default: nil, doc: "%{position, from, to} or nil"
+
+  def delete_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="alignment-delete-dialog"
+      open={@dialog != nil}
+      title="Delete this section's path?"
+      confirm_label="Delete path"
+      pending_label="Deleting…"
+      on_confirm="alignment_confirm_delete"
+      on_cancel="alignment_close_dialog"
+      described_by="alignment-delete-dialog-body"
+      return_focus_id="alignment-delete-open"
+    >
+      <div>
+        <p :if={@dialog}>
+          {@dialog.from} → {@dialog.to} will have no path in this pattern. The stops
+          and their timings stay in place.
+        </p>
+        <p class="mt-2 text-sm text-base-content/70">
+          Other patterns keep their paths. You can undo this draft change.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  attr :dialog, :map, default: nil, doc: "%{position, tolerance} or nil"
+
+  def simplify_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="alignment-simplify-dialog"
+      open={@dialog != nil}
+      title="Simplify this section"
+      confirm_label="Preview simplification"
+      pending_label="Simplifying…"
+      confirm_variant="primary"
+      on_confirm="alignment_confirm_simplify"
+      on_cancel="alignment_close_dialog"
+      described_by="alignment-simplify-dialog-body"
+      return_focus_id="alignment-simplify-open"
+    >
+      <div>
+        <p>Preview fewer points while keeping the stop anchors fixed.</p>
+        <div class="mt-3">
+          <label
+            for="alignment-simplify-tolerance"
+            class="block text-sm font-semibold"
+          >
+            Maximum path deviation
+          </label>
+          <select
+            id="alignment-simplify-tolerance"
+            name="tolerance_m"
+            phx-change="alignment_simplify_tolerance"
+            class="select select-bordered mt-1 min-h-11 w-full"
+          >
+            <option value="5" selected={@dialog && @dialog.tolerance == 5}>
+              5 metres · preserve detail
+            </option>
+            <option value="10" selected={@dialog == nil or @dialog.tolerance == 10}>
+              10 metres · balanced
+            </option>
+            <option value="25" selected={@dialog && @dialog.tolerance == 25}>
+              25 metres · fewer points
+            </option>
+          </select>
+        </div>
+        <p class="mt-3 text-sm text-base-content/70">
+          Applies to the selected points, or to this section when none are
+          selected. Stop anchors stay fixed.
+        </p>
+      </div>
+    </.confirm_dialog>
     """
   end
 
@@ -343,6 +512,51 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     </.confirm_dialog>
     """
   end
+
+  # Draw is the primary action on sections without saved geometry:
+  # missing sections, and blocked zero-length connectors whose anchors
+  # resolve. A blocked section without coordinates cannot be drawn.
+  defp draw_section?(%{kind: :missing}, true), do: true
+
+  defp draw_section?(%{kind: :blocked, blocked_reason: reason}, true),
+    do: reason != :no_coordinates
+
+  defp draw_section?(_section, _editable?), do: false
+
+  # Clear, Delete (and Simplify below) act on saved geometry.
+  defp more_actions?(%{kind: kind}, true) when kind in [:override, :shared],
+    do: true
+
+  defp more_actions?(_section, _editable?), do: false
+
+  defp use_shared?(%{kind: :override, shared_points: shared})
+       when is_list(shared) and length(shared) > 0,
+       do: true
+
+  defp use_shared?(_section), do: false
+
+  # Simplify needs at least 4 anchor-to-anchor points: both anchors plus
+  # at least 2 interior points. Sections without resolvable anchors never
+  # reach 4.
+  defp simplify_section?(section, visits_by_position, true) do
+    interior = length(section.points || [])
+    anchors = if section_anchors?(section, visits_by_position), do: 2, else: 0
+    anchors + interior >= 4
+  end
+
+  defp simplify_section?(_section, _visits, _editable?), do: false
+
+  defp section_anchors?(section, visits_by_position) do
+    from = Map.get(visits_by_position, section.position, %{})
+    to = Map.get(visits_by_position, section.position + 1, %{})
+    visit_coords?(from) and visit_coords?(to)
+  end
+
+  defp visit_coords?(%{lat: lat, lon: lon})
+       when is_number(lat) and is_number(lon),
+       do: true
+
+  defp visit_coords?(_visit), do: false
 
   defp visits_by_position(nil), do: %{}
 

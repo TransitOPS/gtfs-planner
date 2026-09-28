@@ -21,6 +21,9 @@ const EDITOR_USER = {
 
 const ALIGN_ROUTE = "BROWSER_ALIGN";
 const ALIGN_PATTERN = "BROWSER-ALIGN-A";
+// Step 26 draws a five-point saved section here so the Simplify action
+// renders from saved geometry (the server cannot see hook drafts, CR-5).
+const ALIGN_ACTIONS_PATTERN = "BROWSER-ALIGN-ACTIONS";
 
 const CAPTURE_DIR = process.env.PATTERN_ALIGNMENT_CAPTURE_DIR;
 
@@ -449,6 +452,105 @@ test.describe("point list", () => {
       page.locator("#alignment-map-root .alignment-handle:focus"),
     ).toHaveCount(1);
     await captureFullPage(page, "point-list-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
+
+test.describe("section actions", () => {
+  test("shows More section actions, Draw manually and the Simplify dialog at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_ACTIONS_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator("#alignment-map-root .pa-stop-pin").first(),
+    ).toBeVisible({ timeout: 15000 });
+
+    // Section 1 is selected by default with three saved interior points:
+    // open More section actions and read the saved-section buttons.
+    await page.locator("#alignment-detail summary").click();
+    await expect(page.locator("#alignment-clear")).toBeVisible();
+    await expect(page.locator("#alignment-delete-open")).toBeVisible();
+    await expect(page.locator("#alignment-simplify-open")).toBeVisible();
+    await expect(page.locator("#alignment-detail")).toContainText(
+      "More section actions",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "actions-1440");
+
+    // The Simplify dialog opens with the 10 m balanced default selected.
+    await page.locator("#alignment-simplify-open").click();
+    await expect(
+      page.locator("#alignment-simplify-dialog"),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("#alignment-simplify-dialog")).toContainText(
+      "Simplify this section",
+    );
+    await expect(page.locator("#alignment-simplify-dialog")).toContainText(
+      "Maximum path deviation",
+    );
+    await expect(
+      page.locator("#alignment-simplify-tolerance"),
+    ).toHaveValue("10");
+    // The confirm panel plays a 150 ms entry fade; capture only once it
+    // settles at full opacity, never mid-animation.
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector(
+          "#alignment-simplify-dialog > div > div",
+        );
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      { timeout: 5000 },
+    );
+    await captureViewport(page, "simplify-dialog-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // A missing section offers Draw manually instead of More actions.
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await page.locator("#alignment-section-3").click();
+    await expect(page.locator("#alignment-draw")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-draw")).toContainText(
+      "Draw manually",
+    );
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_ACTIONS_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    await page.locator("#alignment-detail summary").click();
+    await expect(page.locator("#alignment-clear")).toBeVisible({
+      timeout: 15000,
+    });
+    await captureFullPage(page, "actions-320");
     expect(await bodyFitsViewport(page)).toBe(true);
 
     expect(problems).toEqual([]);

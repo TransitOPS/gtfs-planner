@@ -3692,7 +3692,9 @@ case Accounts.register_first_admin(%{
     # the production review/apply composition as the seeded editor, so it has
     # a shared path and an owned shape. LOOP is a drawn loop, IMPORTED carries
     # linked trips on two imported shapes, LONG has 200 visits, GEN-1/GEN-2
-    # are missing (GEN-1 touches the 40.7500 stop), and the -B patterns are
+    # are missing (GEN-1 touches the 40.7500 stop), ACTIONS holds a drawn
+    # five-point section for the step 26 Simplify capture on its own stop
+    # pair (so shared-user counts on A/B never move), and the -B patterns are
     # clean copies for the 320 px runs. Tile requests in later steps go
     # through the existing /map/tiles proxy; no live Geoapify call happens here.
     Enum.each(
@@ -3702,6 +3704,9 @@ case Accounts.register_first_admin(%{
         {"AL_S3", "Align Market", "40.714800", "-74.004000"},
         {"AL_S4", "Align Harbor", "40.715800", "-74.003000"},
         {"AL_S5", "Align Park", "40.716800", "-74.002000"},
+        {"AL_A1", "Actions North", "40.730000", "-73.990000"},
+        {"AL_A2", "Actions Central", "40.731000", "-73.989000"},
+        {"AL_A3", "Actions South", "40.732000", "-73.988000"},
         {"AL_G1", "Gen Hilltop", "40.750000", "-73.980000"},
         {"AL_G2", "Gen Valley", "40.751000", "-73.979000"}
       ],
@@ -3833,6 +3838,21 @@ case Accounts.register_first_admin(%{
       "2" => "shared"
     })
 
+    # Step 26 needs a saved section with at least 4 anchor-to-anchor
+    # points for its Simplify capture. ACTIONS draws one on a fresh stop
+    # pair so the A/B shared-user counts never move.
+    pattern_actions = align_pattern.("BROWSER-ALIGN-ACTIONS")
+    align_occurrences.(pattern_actions, ["AL_A1", "AL_A2", "AL_A3"])
+
+    align_draw.(
+      pattern_actions,
+      [
+        {1, [[-73.989700, 40.730300], [-73.989500, 40.730500], [-73.989200, 40.730700]]},
+        {2, [[-73.988500, 40.731500]]}
+      ],
+      %{"1" => "shared", "2" => "local"}
+    )
+
     {:ok, align_trip} =
       Gtfs.create_trip(%{
         organization_id: org.id,
@@ -3945,7 +3965,7 @@ case Accounts.register_first_admin(%{
 
     align_occurrences.(align_pattern.("BROWSER-ALIGN-IMPORTED-B"), ["AL_S4", "AL_S5"])
 
-    IO.puts("Browser seed: pattern alignment fixtures (BROWSER_ALIGN with 10 patterns)")
+    IO.puts("Browser seed: pattern alignment fixtures (BROWSER_ALIGN with 11 patterns)")
 
     # ── Agencies list page (settings_agencies_feed.spec.js; EV-16, EV-17) ──
     #

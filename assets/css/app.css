@@ -1425,6 +1425,36 @@ dialog[role="alertdialog"][open] > div > div {
   pointer-events: none;
 }
 
+/* Section-level draft actions (spec 12, step 26). The native More
+   section actions disclosure keeps Clear/Delete behind one explicit
+   tap; daisyUI `btn` carries the theme. The summary is a 44 px target
+   with the same visible focus ring as the point-list controls. */
+#alignment-detail .pa-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+#alignment-detail .pa-more-actions {
+  margin-top: 0.75rem;
+}
+
+#alignment-detail .pa-more-actions > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.875rem;
+  opacity: 0.7;
+  cursor: pointer;
+  border-radius: 0.25rem;
+}
+
+#alignment-detail .pa-more-actions > summary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 /* Keyboard point list (spec 12, step 25). Hook-owned rows inside the
    server-rendered `#alignment-detail` panel (CR-5), following the
    prototype's Editing-points point list: helper copy, one checkbox row

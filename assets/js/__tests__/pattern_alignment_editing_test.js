@@ -218,6 +218,10 @@ describe("pattern_alignment_editing drag", () => {
         [-74.0, 40.005],
         [-73.999, 40.016],
       ],
+      // Step 26 carries the draft op through undo so a delete or
+      // use_shared draft restores exactly; geometry edits are sets.
+      prevOp: null,
+      nextOp: "set",
     });
     const states = draftStates(ctx.pushed);
     expect(states[states.length - 1].payload.dirty_positions).toEqual([1]);

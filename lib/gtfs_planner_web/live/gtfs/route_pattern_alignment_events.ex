@@ -98,6 +98,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def retry_tiles(socket, _params),
     do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
+  @doc "Closes the help, delete and simplify dialogs."
+  def close_dialogs(socket) do
+    socket
+    |> Component.assign(:alignment_dialog, nil)
+    |> Component.assign(:alignment_delete_dialog, nil)
+    |> Component.assign(:alignment_simplify_dialog, nil)
+  end
+
   @doc "Opens or closes the alignment help dialog."
   def set_dialog(socket, dialog), do: Component.assign(socket, :alignment_dialog, dialog)
 
@@ -177,6 +185,168 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     end
   end
 
+  @simplify_tolerances [5, 10, 25]
+  @default_tolerance 10
+
+  @doc """
+  Opens the delete dialog for a saved section.
+
+  Viewers and unknown positions leave the socket unchanged; the dialog
+  carries its own position so confirming never acts on a re-selected
+  section.
+  """
+  def open_delete(socket, %{"position" => position_param}) do
+    with true <- editable?(socket),
+         {position, ""} <- parse_position(position_param),
+         %{alignment: %{sections: sections, visits: visits}} <- socket.assigns,
+         section when not is_nil(section) <-
+           Enum.find(sections, &(&1.position == position)),
+         true <- section.kind in [:override, :shared] do
+      names = visit_names(visits, position)
+
+      Component.assign(socket, :alignment_delete_dialog, %{
+        position: position,
+        from: names.from,
+        to: names.to
+      })
+    else
+      _ -> socket
+    end
+  end
+
+  def open_delete(socket, _params), do: socket
+
+  @doc """
+  Confirms the delete dialog: closes it and pushes
+  `alignment:delete_section` for the hook's delete draft (CR-5). The
+  hook announces the draft change through `alignment_action_notice`.
+  """
+  def confirm_delete(socket, _params) do
+    case {editable?(socket), socket.assigns[:alignment_delete_dialog]} do
+      {true, %{position: position}} ->
+        socket
+        |> Component.assign(:alignment_delete_dialog, nil)
+        |> Phoenix.LiveView.push_event("alignment:delete_section", %{
+          position: position
+        })
+
+      _ ->
+        Component.assign(socket, :alignment_delete_dialog, nil)
+    end
+  end
+
+  @doc "Opens the simplify dialog for a section with a 10 m default."
+  def open_simplify(socket, %{"position" => position_param}) do
+    with true <- editable?(socket),
+         {position, ""} <- parse_position(position_param),
+         %{alignment: %{sections: sections}} <- socket.assigns,
+         true <- Enum.any?(sections, &(&1.position == position)) do
+      Component.assign(socket, :alignment_simplify_dialog, %{
+        position: position,
+        tolerance: @default_tolerance
+      })
+    else
+      _ -> socket
+    end
+  end
+
+  def open_simplify(socket, _params), do: socket
+
+  @doc "Keeps the simplify tolerance to the 5/10/25 m options."
+  def simplify_tolerance(socket, %{"tolerance_m" => tolerance_param}) do
+    with %{tolerance: _} <- socket.assigns[:alignment_simplify_dialog],
+         {tolerance, ""} <- parse_tolerance(tolerance_param),
+         true <- tolerance in @simplify_tolerances do
+      Component.assign(socket, :alignment_simplify_dialog, %{
+        socket.assigns[:alignment_simplify_dialog]
+        | tolerance: tolerance
+      })
+    else
+      _ -> socket
+    end
+  end
+
+  def simplify_tolerance(socket, _params), do: socket
+
+  @doc """
+  Confirms the simplify dialog: closes it and pushes
+  `alignment:simplify` with the selected tolerance. The hook reports the
+  removed count through `alignment_simplify_result`.
+  """
+  def confirm_simplify(socket, _params) do
+    case {editable?(socket), socket.assigns[:alignment_simplify_dialog]} do
+      {true, %{position: position, tolerance: tolerance}} ->
+        socket
+        |> Component.assign(:alignment_simplify_dialog, nil)
+        |> Phoenix.LiveView.push_event("alignment:simplify", %{
+          position: position,
+          tolerance_m: tolerance
+        })
+
+      _ ->
+        Component.assign(socket, :alignment_simplify_dialog, nil)
+    end
+  end
+
+  @doc """
+  Reports the hook's simplify outcome in the page status region: how
+  many points were removed (Undo restores them), or that nothing
+  changed at this tolerance.
+  """
+  def simplify_result(socket, %{"removed" => removed})
+      when is_integer(removed) and removed > 0 do
+    Component.assign(
+      socket,
+      :status_message,
+      "#{removed} #{points_noun(removed)} removed. Undo restores them."
+    )
+  end
+
+  def simplify_result(socket, %{"removed" => 0}) do
+    Component.assign(
+      socket,
+      :status_message,
+      "No points can be removed at this tolerance. Path unchanged."
+    )
+  end
+
+  def simplify_result(socket, _params), do: socket
+
+  @doc """
+  Announces a hook section action (draw, clear, use_shared, delete) in
+  the page status region. Draft-local like `draft_state`: no database
+  write, outside `@editor_write_events`.
+  """
+  def action_notice(socket, %{"message" => message})
+      when is_binary(message) and byte_size(message) > 0 do
+    Component.assign(socket, :status_message, String.slice(message, 0, 300))
+  end
+
+  def action_notice(socket, _params), do: socket
+
+  defp points_noun(1), do: "point"
+  defp points_noun(_), do: "points"
+
+  defp parse_tolerance(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {tolerance, ""} when tolerance > 0 -> {tolerance, ""}
+      _ -> :error
+    end
+  end
+
+  defp parse_tolerance(value) when is_integer(value) and value > 0,
+    do: {value, ""}
+
+  defp parse_tolerance(_value), do: :error
+
+  defp editable?(socket), do: socket.assigns[:alignment_editable] == true
+
+  defp visit_names(visits, position) do
+    from = Enum.find(visits, &(&1.position == position)) || %{}
+    to = Enum.find(visits, &(&1.position == position + 1)) || %{}
+    %{from: Map.get(from, :name, ""), to: Map.get(to, :name, "")}
+  end
+
   defp alignment_route?(assigns) do
     assigns.task == :alignment and assigns.load_state == :ready and
       assigns.live_action == :show and not is_nil(assigns.pattern)
@@ -202,7 +372,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_state, fresh_state(socket.assigns.alignment_state))
          |> Component.assign(:alignment_editable, editable?)
          |> Component.assign(:alignment_notice, notice_for(alignment, editable?))
-         |> Component.assign(:alignment_dialog, nil)}
+         |> Component.assign(:alignment_dialog, nil)
+         |> Component.assign(:alignment_delete_dialog, nil)
+         |> Component.assign(:alignment_simplify_dialog, nil)}
 
       {:error, :not_found} ->
         {:error, :not_found}

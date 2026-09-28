@@ -26,6 +26,15 @@
  *   the keyboard path never dead-ends. Marker keydown moves the focused
  *   handle by container pixels (2 px, 10 px with Shift), Space/Enter
  *   toggles its selection, Delete removes it.
+ * - Section actions (step 26): server-rendered detail buttons dispatch
+ *   DOM `alignment:action`s (`draw` on missing/zero-length sections,
+ *   `clear` on saved ones, `use_shared` on overrides beside a shared
+ *   path); `alignment:delete_section` (after the delete dialog confirms)
+ *   drafts the section as missing, drawn as the red dashed connector;
+ *   `alignment:simplify` runs `simplifyInterior` over the selected run
+ *   or the whole section and reports `alignment_simplify_result`.
+ *   Every action commits one undo entry and announces through
+ *   `alignment_action_notice` into the page status region.
  * - Clicking a section pushes `alignment_select_section`; `alignment:select`
  *   widens that polyline with a halo and fits its bounds.
  * - Edit points mode (step 24) shows draggable `L.marker` handles for the
@@ -48,6 +57,7 @@ import {
   fromLatLng,
   nearestEdgeIndex,
   pointsInBounds,
+  simplifyInterior,
   toLatLng,
 } from "./alignment_geometry";
 
@@ -169,10 +179,16 @@ const PatternAlignment = {
     document.addEventListener("keyup", this._onKeyUp);
     document.addEventListener("mousemove", this._onPointerMove);
     document.addEventListener("mouseup", this._onPointerUp);
-    // The server "Point list" button dispatches a DOM action (not a
-    // LiveView push), following the CalendarDateChange precedent.
+    // The server detail buttons dispatch DOM actions (not LiveView
+    // pushes), following the CalendarDateChange precedent. Section
+    // actions (step 26) name their section; selection-only callers omit
+    // it and the hook uses the selected section.
     this._onAction = (event) => {
-      if (event?.detail?.action === "toggle_points") this._togglePointList();
+      const action = event?.detail?.action;
+      if (action === "toggle_points") this._togglePointList();
+      if (action === "draw") this._drawManual(event?.detail);
+      if (action === "clear") this._clearInterior(event?.detail);
+      if (action === "use_shared") this._useShared(event?.detail);
     };
     root.addEventListener("alignment:action", this._onAction);
     map.on("mousedown", (event) => this._maybeStartBox(event));
@@ -185,6 +201,12 @@ const PatternAlignment = {
       this._select(position, true),
     );
     this.handleEvent("alignment:retry_tiles", () => this._retryTiles());
+    this.handleEvent("alignment:delete_section", (payload) =>
+      this._deleteSection(payload),
+    );
+    this.handleEvent("alignment:simplify", (payload) =>
+      this._simplifySection(payload),
+    );
 
     this.pushEvent("alignment_hook_ready", {});
   },
@@ -398,6 +420,7 @@ const PatternAlignment = {
         halo: null,
         latlngs,
         color: style.color,
+        dash: style.dashArray || null,
       });
       extend(latlngs);
     }
@@ -539,14 +562,20 @@ const PatternAlignment = {
   },
 
   // Edit mode is available on the selected section when the model is
-  // editable, the section is saved geometry (never missing) and both stop
-  // anchors resolve. Blocked sections may be edited: they draw a straight
-  // connector with an empty interior, and clicking it inserts the first
-  // point.
+  // editable and both stop anchors resolve. Saved geometry is always
+  // editable; a missing section becomes editable once Draw creates its
+  // set draft (step 26), and a section with a delete draft never is.
+  // Blocked sections may be edited: they draw a straight connector with
+  // an empty interior, and clicking it inserts the first point.
   _editableSection(position) {
     if (!this._model?.editable) return false;
+    const draft = this._drafts.get(position);
+    if (draft && draft.op === "delete") return false;
     const section = this._savedSection(position);
-    if (!section || section.kind === "missing") return false;
+    if (!section) return false;
+    if (section.kind === "missing" && (!draft || draft.op !== "set")) {
+      return false;
+    }
     return this._sectionAnchors(position) !== null;
   },
 
@@ -753,45 +782,89 @@ const PatternAlignment = {
 
   // Record one undo entry for a user-complete gesture (click, dragend,
   // key), then redraw the line, handles and bar and push the draft state.
-  _commit(position, points) {
+  // Returns true when a change was committed. The op defaults to "set";
+  // a geometry edit over a use_shared draft converts it to a custom set,
+  // since the points no longer match the shared path.
+  _commit(position, points, op) {
     const before = this._effectiveInterior(position);
     const after = [...points];
-    if (pointsEqual(before, after)) return;
+    if (pointsEqual(before, after)) return false;
+    const nextOp = op || "set";
     const section = this._savedSection(position);
     const base = this._savedInterior(position);
-    let draft = this._drafts.get(position);
-    if (!draft) {
-      draft = {
-        op: "set",
+    const draft = this._drafts.get(position);
+    const prevOp = draft ? draft.op : null;
+    let next = draft;
+    if (!next) {
+      next = {
+        op: nextOp,
         base,
         revision: section?.revision ? { ...section.revision } : null,
         points: before,
         dirty: false,
       };
-      this._drafts.set(position, draft);
+      this._drafts.set(position, next);
     }
-    draft.points = after;
-    draft.dirty = !pointsEqual(after, draft.base);
-    if (!draft.dirty) this._drafts.delete(position);
-    this._undo.push({ position, before, after });
+    next.op = nextOp;
+    next.points = after;
+    next.dirty = !pointsEqual(after, next.base);
+    if (!next.dirty && nextOp === "set") this._drafts.delete(position);
+    this._undo.push({ position, before, after, prevOp, nextOp });
+    this._redo = [];
+    this._refreshSection(position);
+    this.pushDraftState();
+    return true;
+  },
+
+  // Record a section-level action (step 26) as one undo entry even when
+  // the points equal the saved base: draw/delete/use_shared change the
+  // section kind, not just its points, so the draft entry itself is the
+  // change. Delete drafts are always dirty; use_shared keeps its entry
+  // even when the shared points happen to match the base.
+  _applyOp(position, points, op, options) {
+    const before = this._effectiveInterior(position);
+    const after = [...points];
+    const section = this._savedSection(position);
+    const base = this._savedInterior(position);
+    const draft = this._drafts.get(position);
+    const prevOp = draft ? draft.op : null;
+    let next = draft;
+    if (!next) {
+      next = {
+        op,
+        base,
+        revision: section?.revision ? { ...section.revision } : null,
+        points: before,
+        dirty: false,
+      };
+      this._drafts.set(position, next);
+    }
+    next.op = op;
+    next.points = after;
+    const forceDirty = options && options.dirty;
+    next.dirty = forceDirty ? true : !pointsEqual(after, next.base);
+    this._undo.push({ position, before, after, prevOp, nextOp: op });
     this._redo = [];
     this._refreshSection(position);
     this.pushDraftState();
   },
 
-  _applySnapshot(position, points) {
+  _applySnapshot(position, points, op) {
     const section = this._savedSection(position);
     const base = this._savedInterior(position);
-    if (pointsEqual(points, base)) {
+    const nextOp = op || "set";
+    if (nextOp === "set" && pointsEqual(points, base)) {
       this._drafts.delete(position);
     } else {
       const draft = this._drafts.get(position) || {
-        op: "set",
+        op: nextOp,
         base,
         revision: section?.revision ? { ...section.revision } : null,
       };
+      draft.op = nextOp;
       draft.points = [...points];
-      draft.dirty = true;
+      draft.dirty =
+        nextOp === "delete" ? true : !pointsEqual(points, draft.base);
       this._drafts.set(position, draft);
     }
     this._refreshSection(position);
@@ -819,11 +892,35 @@ const PatternAlignment = {
     if (!entry || !anchors) return;
     entry.latlngs = this._chainLatLngs(anchors, this._effectiveInterior(position));
     entry.line.setLatLngs(entry.latlngs);
-    const color = this._isDirty(position) ? UNSAVED_COLOR : entry.color;
-    if (entry.line.options.color !== color) entry.line.setStyle({ color });
-    if (entry.halo && entry.halo.options.color !== color) {
-      entry.halo.setLatLngs(entry.latlngs);
-      entry.halo.setStyle({ color });
+    // A delete draft previews the missing state: the anchors stay, drawn
+    // as the red dashed missing connector (step 26). Every other draft
+    // keeps its saved style in the amber unsaved colour.
+    const draft = this._drafts.get(position);
+    if (draft && draft.op === "delete") {
+      if (entry.line.options.color !== MISSING_COLOR) {
+        entry.line.setStyle({ color: MISSING_COLOR, dashArray: MISSING_DASH });
+      } else if (entry.line.options.dashArray !== MISSING_DASH) {
+        entry.line.setStyle({ dashArray: MISSING_DASH });
+      }
+      if (entry.halo) {
+        entry.halo.setLatLngs(entry.latlngs);
+        if (entry.halo.options.color !== MISSING_COLOR) {
+          entry.halo.setStyle({ color: MISSING_COLOR });
+        }
+      }
+    } else {
+      const color = this._isDirty(position) ? UNSAVED_COLOR : entry.color;
+      const dash = entry.dash || null;
+      if (
+        entry.line.options.color !== color ||
+        (entry.line.options.dashArray || null) !== dash
+      ) {
+        entry.line.setStyle({ color, dashArray: dash });
+      }
+      if (entry.halo && entry.halo.options.color !== color) {
+        entry.halo.setLatLngs(entry.latlngs);
+        entry.halo.setStyle({ color });
+      }
     }
     this._selectedPoints = new Set(
       [...this._selectedPoints].filter(
@@ -842,7 +939,7 @@ const PatternAlignment = {
     // The selection names handles by index; a restored array may be
     // shorter, so clear it and let the next gesture select afresh.
     this._selectedPoints = new Set();
-    this._applySnapshot(entry.position, entry.before);
+    this._applySnapshot(entry.position, entry.before, entry.prevOp);
     this.pushDraftState();
   },
 
@@ -851,7 +948,7 @@ const PatternAlignment = {
     if (!entry) return;
     this._undo.push(entry);
     this._selectedPoints = new Set();
-    this._applySnapshot(entry.position, entry.after);
+    this._applySnapshot(entry.position, entry.after, entry.nextOp);
     this.pushDraftState();
   },
 
@@ -1204,6 +1301,146 @@ const PatternAlignment = {
     }
     this._selectedPoints = new Set();
     this._commit(position, next);
+  },
+
+  // --- Section actions (step 26) ----------------------------------------
+  //
+  // Server-rendered detail buttons dispatch DOM `alignment:action`s for
+  // draw/clear/use_shared; delete and simplify arrive as handleEvents
+  // after the server dialogs confirm. Every action commits exactly one
+  // undo entry, redraws through _refreshSection and announces through
+  // the page status region via `alignment_action_notice` (the
+  // prototype's toast maps to the existing status region, CR-7).
+
+  // The dispatched detail names its section position; callers without one
+  // act on the selected section. An explicit unknown position is
+  // ignored, never silently applied elsewhere.
+  _actionPosition(detail) {
+    const raw = detail ? detail.position : null;
+    if (raw === undefined || raw === null) return this._selected;
+    if (
+      Number.isInteger(raw) &&
+      raw >= 1 &&
+      this._sectionLayers.has(raw)
+    ) {
+      return raw;
+    }
+    return null;
+  },
+
+  _notify(message) {
+    this.pushEvent("alignment_action_notice", { message });
+  },
+
+  // Draw manually (missing or zero-length sections): a straight set
+  // draft plus Edit mode, so the next click on the line inserts the
+  // first point. Saved geometry keeps its points; use Clear there.
+  _drawManual(detail) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const position = this._actionPosition(detail);
+    if (!position) return;
+    if (!this._sectionAnchors(position)) return;
+    const section = this._savedSection(position);
+    if (!section || (section.kind !== "missing" && section.kind !== "blocked")) {
+      return;
+    }
+    this._applyOp(position, [], "set", { dirty: true });
+    this._select(position, false);
+    this._setMode("edit");
+    this._notify("Click the line to add a point, then drag it onto the street.");
+  },
+
+  // Clear interior points: a set draft with [], leaving a straight saved
+  // path, never a missing one. A no-op clear records nothing.
+  _clearInterior(detail) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const position = this._actionPosition(detail);
+    if (!position) return;
+    const section = this._savedSection(position);
+    if (!section || section.kind === "missing") return;
+    if (!this._sectionAnchors(position)) return;
+    if (this._commit(position, [])) {
+      this._notify(
+        "Interior points cleared. A straight draft remains. Undo is available.",
+      );
+    }
+  },
+
+  // Use shared path (overrides beside a shared path): a use_shared draft
+  // that draws the shared points. Later geometry edits convert it to a
+  // custom set through _commit.
+  _useShared(detail) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const position = this._actionPosition(detail);
+    if (!position) return;
+    const section = this._savedSection(position);
+    if (!section || section.kind !== "override") return;
+    const shared = section.shared_points;
+    if (!Array.isArray(shared)) return;
+    if (!this._sectionAnchors(position)) return;
+    this._applyOp(position, [...shared], "use_shared", {});
+    this._notify("Shared path restored in this draft. Save to apply it.");
+  },
+
+  // Delete section (confirmed in #alignment-delete-dialog): a delete
+  // draft drawn as the missing connector. Editing falls back to Pan so
+  // no handles linger on the removed path.
+  _deleteSection(payload) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const raw = payload ? payload.position : null;
+    const position =
+      Number.isInteger(raw) && raw >= 1 ? raw : this._selected;
+    const section = this._savedSection(position);
+    if (!section || section.kind === "missing") return;
+    if (!this._sectionAnchors(position)) return;
+    if (!this._sectionLayers.has(position)) return;
+    this._applyOp(position, [], "delete", { dirty: true });
+    if (this._mode === "edit" && this._selected === position) {
+      this._setMode("pan");
+    }
+    this._notify("Section removed from draft. Undo is available.");
+  },
+
+  // Simplify (confirmed in #alignment-simplify-dialog): simplifyInterior
+  // over the selected run when one exists, else the whole section.
+  // Anchors stay fixed by construction. A no-op leaves the draft
+  // unchanged; both outcomes report through alignment_simplify_result.
+  _simplifySection(payload) {
+    if (this._destroyed || !this._map) return;
+    const raw = payload ? payload.position : null;
+    const position =
+      Number.isInteger(raw) && raw >= 1 ? raw : this._selected;
+    const tolerance = payload ? Number(payload.tolerance_m) : NaN;
+    if (!this._model || !this._model.editable) return;
+    if (!Number.isFinite(tolerance) || tolerance <= 0) return;
+    const anchors = this._sectionAnchors(position);
+    if (!anchors) return;
+    const draft = this._drafts.get(position);
+    if (draft && draft.op === "delete") return;
+    const interior = this._effectiveInterior(position);
+    const selected =
+      this._selectedPoints.size > 0 && position === this._selected
+        ? new Set(this._selectedPoints)
+        : undefined;
+    const anchorA = [anchors.from.lon, anchors.from.lat];
+    const anchorB = [anchors.to.lon, anchors.to.lat];
+    const simplified = simplifyInterior(
+      anchorA,
+      interior,
+      anchorB,
+      tolerance,
+      selected,
+    );
+    const removed = interior.length - simplified.length;
+    if (removed > 0) {
+      this._selectedPoints = new Set();
+      this._commit(position, simplified);
+    }
+    this.pushEvent("alignment_simplify_result", { removed, position });
   },
 
   // --- Draft state ---------------------------------------------------------
