@@ -258,6 +258,63 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
     end)
   end
 
+  describe "run/2 trusted options" do
+    test "run/1 and run/2 commit at serializable isolation and drop untrusted options" do
+      Sandbox.unboxed_run(Repo, fn ->
+        assert {:ok, "serializable"} =
+                 ReviewedApplyTransaction.Repo.run(
+                   fn ->
+                     %Postgrex.Result{rows: [[isolation]]} =
+                       Repo.query!("SHOW transaction_isolation")
+
+                     isolation
+                   end,
+                   timeout: 300_000,
+                   pool: :untrusted,
+                   log: :untrusted,
+                   mode: :untrusted
+                 )
+
+        assert {:ok, "serializable"} =
+                 ReviewedApplyTransaction.Repo.run(fn ->
+                   %Postgrex.Result{rows: [[isolation]]} =
+                     Repo.query!("SHOW transaction_isolation")
+
+                   isolation
+                 end)
+      end)
+    end
+
+    test "run/2 forwards the trusted timeout to the transaction boundary" do
+      outcome =
+        try do
+          {:completed,
+           Sandbox.unboxed_run(Repo, fn ->
+             ReviewedApplyTransaction.Repo.run(
+               fn -> Repo.query!("SELECT pg_sleep(0.2)") end,
+               timeout: 25
+             )
+           end)}
+        rescue
+          error -> {:raised, error}
+        catch
+          kind, reason -> {kind, reason}
+        end
+
+      # The bounded timeout must cut the transaction off; only its absence
+      # would let the sleep complete.
+      refute match?({:completed, _}, outcome)
+
+      Sandbox.unboxed_run(Repo, fn ->
+        assert {:ok, %Postgrex.Result{}} =
+                 ReviewedApplyTransaction.Repo.run(
+                   fn -> Repo.query!("SELECT pg_sleep(0.05)") end,
+                   timeout: 5_000
+                 )
+      end)
+    end
+  end
+
   defp start_unboxed_task(task) do
     child_id = make_ref()
 
