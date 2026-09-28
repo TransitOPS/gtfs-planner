@@ -16,7 +16,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   does not erase the others. Calendar list and detail reads delegate to
   `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
   preserving the domain's own `{:error, :not_found}`. A blocking day read delegates to
-  `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way. The calendar
+  `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way, as do the
+  Schedules block warning and the first-day-type key. The calendar
   list feed status resolves the agency-local today once and reports the version-wide
   service gaps with it. Nothing else is rescued, so
   a malformed id, a bad query, or any other defect still raises rather than being
@@ -151,6 +152,26 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   def load_blocking_day(organization_id, gtfs_version_id, day_type_key) do
     case run(fn -> Blocking.load_day(organization_id, gtfs_version_id, day_type_key) end) do
       {:ok, {:ok, day}} -> {:ok, day}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def block_problems_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    case run(fn ->
+           Blocking.block_problems_for_trips(organization_id, gtfs_version_id, trip_ids)
+         end) do
+      {:ok, {:ok, problems}} -> {:ok, problems}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def first_day_type_key(organization_id, gtfs_version_id, service_id) do
+    case run(fn -> Blocking.first_day_type_key(organization_id, gtfs_version_id, service_id) end) do
+      {:ok, {:ok, key}} -> {:ok, key}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end

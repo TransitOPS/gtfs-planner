@@ -20,6 +20,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
+  alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
@@ -28,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
   @weekday "EDT_WKD"
   @saturday "EDT_SAT"
+  @nodates "EDT_NODATES"
 
   setup context do
     organization = organization_fixture(%{alias: "editing-#{System.unique_integer([:positive])}"})
@@ -288,6 +291,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
 
       trip = trip_row(scope, "EDT_T0600")
+      assert trip.block_id == "E-1"
       before_rows = stop_times(scope, "EDT_T0600")
 
       render_click(view, "open_edit_drawer", %{"trip" => trip.id})
@@ -319,7 +323,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       updated = Repo.get!(Trip, trip.id)
       assert updated.trip_headsign == "Retimed"
-      assert updated.block_id == "E-7"
+      # The crafted block field is not part of an edit request: the stored block is
+      # whatever it already was (D1).
+      assert updated.block_id == trip.block_id
       assert updated.trip_short_name == "9001"
       assert updated.wheelchair_accessible == 1
       assert updated.bikes_allowed == 2
@@ -382,10 +388,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
         })
 
       # The context changeset refused the enum; the drawer is still open with the
-      # typed values, and nothing was written.
+      # typed values, and nothing was written. The block row keeps showing the
+      # stored block, so the crafted field renders nowhere.
       assert has_element?(view, "#trip-drawer-overlay[data-open='true']")
       assert html =~ "Kept heading"
-      assert html =~ "E-KEEP"
+      assert renders(view, "#trip-block-value") =~ "Block E-1"
+      refute html =~ "E-KEEP"
       assert html =~ ~s(id="trip-access-error")
       assert Repo.get!(Trip, trip.id).block_id == trip.block_id
     end
@@ -424,8 +432,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert html =~ ~s(id="trip-stable-id")
       assert html =~ "EDT_T0600"
       assert html =~ "This ID stays the same when you edit the trip."
-      assert html =~ ~s(id="trip-block-list")
-      assert html =~ ~s(value="E-1")
+      # The block sits behind the disclosure read-only: its value and the Blocks
+      # link, with no input and no suggestion list.
+      assert renders(view, "#trip-block-value") =~ "Block E-1"
+      refute has_element?(view, "#trip-block-list")
+      refute has_element?(view, "#trip-block input")
     end
 
     test "a custom trip shows its warning and only offers compatible timings", context do
@@ -509,6 +520,232 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
     end
   end
 
+  describe "read-only blocks in the drawer" do
+    test "the edit drawer shows the block read-only with a Blocks link", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      trip = trip_row(scope, "EDT_T0600")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      assert renders(view, "#trip-block-value") =~ "Block E-1"
+      assert renders(view, "#trip-block-link") =~ "Change on Blocks"
+      refute has_element?(view, "#trip-block input")
+      refute has_element?(view, "#trip-block-list")
+
+      assert element_href(view, "#trip-block-link") == blocks_path(scope, @weekday, "EDT_T0600")
+    end
+
+    test "a trip with no block shows No block", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      trip = trip_row(scope, "EDT_SHORT_1")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      assert renders(view, "#trip-block-value") =~ "No block"
+      assert has_element?(view, "#trip-block-link")
+    end
+
+    test "a service that runs on no date shows it with no link", context do
+      scope = editing_scope(context)
+      nodates_calendar(scope)
+
+      schedule_trip_fixture(scope.organization_id, scope.version.id, "EDT1", scope.long, %{
+        service_id: @nodates,
+        trip_id: "EDT_NODATES",
+        start_time: "06:00:00",
+        block_id: "E-0"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope, %{"service_id" => @nodates}))
+      trip = trip_row_for(scope, @nodates, "EDT_NODATES")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      assert renders(view, "#trip-block-value") =~ "Block E-0"
+      assert renders(view, "#trip-block-none") =~ "Not running on any date"
+      refute has_element?(view, "#trip-block-link")
+    end
+
+    test "a crafted block field leaves the stored block unchanged", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      trip = trip_row(scope, "EDT_T0600")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" => edit_params(scope, %{"block_id" => "E-CRAFTED", "trip_headsign" => "Crafted"})
+      })
+
+      # The other field was saved, so the request was not simply refused.
+      updated = Repo.get!(Trip, trip.id)
+      assert updated.trip_headsign == "Crafted"
+      assert updated.block_id == "E-1"
+    end
+
+    test "a frequency trip's refusal names what can still change", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      before = count_trips(scope)
+
+      frequency = trip_row(scope, "EDT_FREQ")
+      render_click(view, "open_duplicate_drawer", %{"trip" => frequency.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" =>
+          duplicate_params(scope, %{
+            "pattern_id" => scope.short.pattern.id,
+            "timed_pattern_id" => scope.short.timing.id,
+            "start_time" => "13:30"
+          })
+      })
+
+      assert ScheduleComponents.error_message(:frequency_trip) ==
+               "Frequency service can't be edited here. Its calendar and details can still change."
+
+      assert renders(view, "#trip-drawer-error") =~
+               "Frequency service can&#39;t be edited here. Its calendar and details can still change."
+
+      assert count_trips(scope) == before
+    end
+  end
+
+  describe "block notices after a save" do
+    test "a calendar change that clears the block names the new calendar", context do
+      scope = editing_scope(context)
+
+      # A second trip of block E-1 that runs only on Saturday: moving EDT_T0600 to
+      # that calendar puts it on another vehicle's work, so D2 clears the block in
+      # the same save.
+      schedule_trip_fixture(scope.organization_id, scope.version.id, "EDT1", scope.long, %{
+        service_id: @saturday,
+        trip_id: "EDT_SAT_E1",
+        start_time: "06:00:00",
+        block_id: "E-1"
+      })
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+      trip = trip_row(scope, "EDT_T0600")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" => edit_params(scope, %{"service_id" => @saturday})
+      })
+
+      assert Repo.get!(Trip, trip.id).block_id == nil
+
+      notice = renders(view, "#schedules-block-notice")
+
+      assert notice =~ "Calendar saved"
+      assert notice =~ "block removed"
+
+      assert notice =~
+               "Removed from block E-1: on Saturday, block E-1 is another vehicle&#39;s work. " <>
+                 "Assign it on Blocks."
+
+      assert renders(view, "#schedules-block-notice-link") =~ "Change on Blocks"
+
+      assert element_href(view, "#schedules-block-notice-link") ==
+               blocks_path(scope, @saturday, "EDT_T0600")
+    end
+
+    test "a retime that creates an overlap names the problem and its dates", context do
+      scope = editing_scope(context)
+      notice_block(scope)
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+      trip = trip_row(scope, "EDT_NOTICE_A")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" =>
+          edit_params(scope, %{
+            "pattern_id" => scope.short.pattern.id,
+            "timed_pattern_id" => scope.short.timing.id,
+            "start_time" => "18:00"
+          })
+      })
+
+      notice = renders(view, "#schedules-block-notice")
+
+      assert notice =~ "Trip saved"
+      assert notice =~ "Block E-9 has an overlap on #{weekday_date_count(scope)} days."
+      assert notice =~ "Review on Blocks."
+      refute notice =~ "more."
+
+      assert element_href(view, "#schedules-block-notice-link") ==
+               blocks_path(scope, @weekday, "EDT_NOTICE_A")
+    end
+
+    test "a start change that adds no problem shows no notice", context do
+      scope = editing_scope(context)
+      notice_block(scope)
+
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+      trip = trip_row(scope, "EDT_NOTICE_A")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" =>
+          edit_params(scope, %{
+            "pattern_id" => scope.short.pattern.id,
+            "timed_pattern_id" => scope.short.timing.id,
+            "start_time" => "17:30"
+          })
+      })
+
+      assert Repo.get!(Trip, trip.id).block_id == "E-9"
+      refute has_element?(view, "#schedules-block-notice")
+    end
+
+    test "more problems than the notice lists are counted", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      trip = trip_row(scope, "EDT_T0600")
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" => edit_params(scope, %{"start_time" => "05:00"})
+      })
+
+      notice = renders(view, "#schedules-block-notice")
+
+      assert notice =~ "Block E-1 has an overlap on #{weekday_date_count(scope)} days."
+      assert notice =~ ~r/and [1-9]\d* more\./
+      assert notice =~ "Review on Blocks."
+    end
+
+    test "the notice clears on the next drawer open or filter change", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      trip = trip_row(scope, "EDT_T0600")
+
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" => edit_params(scope, %{"start_time" => "05:00"})
+      })
+
+      assert has_element?(view, "#schedules-block-notice")
+
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+      refute has_element?(view, "#schedules-block-notice")
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" => edit_params(scope, %{"start_time" => "04:00"})
+      })
+
+      assert has_element?(view, "#schedules-block-notice")
+
+      render_patch(view, schedules_path(scope, %{"direction" => "1"}))
+      refute has_element?(view, "#schedules-block-notice")
+    end
+  end
+
   describe "duplicate trip" do
     test "duplication takes the source start plus thirty minutes and one timing", context do
       scope = editing_scope(context)
@@ -538,7 +775,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
         Repo.all(from(t in Trip, where: t.trip_id == "EDT1-0-EDT_WKD-0730"))
 
       assert duplicate.timed_pattern_id == scope.long.timing.id
-      assert duplicate.block_id == "E-1"
+      # A duplicate carries no block: assignment belongs to Blocks (D1).
+      assert duplicate.block_id == nil
 
       assert Enum.map(stop_times(scope, "EDT1-0-EDT_WKD-0730"), & &1.departure_time) ==
                ["07:30:00", "13:30:00"]
@@ -1182,7 +1420,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
         "start_time" => "06:00",
         "trip_headsign" => "",
         "trip_short_name" => "",
-        "block_id" => "",
         "wheelchair_accessible" => "0",
         "bikes_allowed" => "0"
       },
@@ -1206,12 +1443,80 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
     view |> element(selector) |> render()
   end
 
+  # --- block expectations --------------------------------------------------
+
+  # The drawer's Blocks link names the first day type containing the trip's service,
+  # derived here from the version's calendars through the pure day-type module rather
+  # than from the function the page calls.
+  defp block_day_type_key(scope, service_id) do
+    {:ok, calendars} = Calendars.list_calendars(scope.organization_id, scope.version.id)
+
+    calendars
+    |> DayTypes.derive()
+    |> DayTypes.containing(service_id)
+    |> hd()
+    |> Map.fetch!(:key)
+  end
+
+  defp blocks_path(scope, service_id, trip_id) do
+    key = block_day_type_key(scope, service_id)
+
+    "/gtfs/#{scope.version.id}/blocks?" <> URI.encode_query(%{"day" => key, "trip" => trip_id})
+  end
+
+  defp weekday_date_count(scope) do
+    {:ok, calendars} = Calendars.list_calendars(scope.organization_id, scope.version.id)
+
+    calendars
+    |> DayTypes.derive()
+    |> DayTypes.containing(@weekday)
+    |> Enum.map(& &1.date_count)
+    |> Enum.sum()
+  end
+
+  defp element_href(view, selector) do
+    html = renders(view, selector)
+
+    case Regex.run(~r/href="([^"]*)"/, html) do
+      [_, href] -> String.replace(href, "&amp;", "&")
+      nil -> flunk("no href on #{selector}: #{html}")
+    end
+  end
+
+  defp nodates_calendar(scope) do
+    calendar_fixture(scope.organization_id, scope.version.id, %{
+      service_id: @nodates,
+      monday: 0,
+      tuesday: 0,
+      wednesday: 0,
+      thursday: 0,
+      friday: 0,
+      saturday: 0,
+      sunday: 0
+    })
+  end
+
+  # Two ten-minute trips in one block an hour apart: they overlap only after the
+  # first is retimed onto the second.
+  defp notice_block(scope) do
+    for {trip_id, start_time} <- [{"EDT_NOTICE_A", "17:00:00"}, {"EDT_NOTICE_B", "18:00:00"}] do
+      schedule_trip_fixture(scope.organization_id, scope.version.id, "EDT1", scope.short, %{
+        service_id: @weekday,
+        trip_id: trip_id,
+        start_time: start_time,
+        block_id: "E-9"
+      })
+    end
+  end
+
   # --- independent row assertions --------------------------------------------
 
-  defp trip_row(scope, trip_id) do
+  defp trip_row(scope, trip_id), do: trip_row_for(scope, @weekday, trip_id)
+
+  defp trip_row_for(scope, service_id, trip_id) do
     {:ok, schedule} =
       Gtfs.load_route_schedule(scope.organization_id, scope.version.id, "EDT1", %{
-        "service_id" => @weekday
+        "service_id" => service_id
       })
 
     schedule.sections

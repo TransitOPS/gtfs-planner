@@ -18,6 +18,10 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
 
+  # The problems notice names three problems and counts the rest, so a block with
+  # many overlaps does not turn the timetable into a wall of sentences.
+  @max_notice_problems 3
+
   # The pinned selection column is a fixed 3rem so the Start column can pin at a
   # known offset without measuring the rendered table.
   defp selection_cell_class, do: "sticky left-0 z-20 w-12 min-w-12 max-w-12 px-0 text-center"
@@ -381,7 +385,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :drawer, :any, required: true
   attr :patterns, :list, required: true
   attr :calendars, :list, required: true
-  attr :block_suggestions, :list, default: []
+  attr :blocks_path, :string, required: true
   attr :patterns_path, :string, required: true
 
   def trip_drawer(assigns) do
@@ -559,19 +563,30 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             value={@values["trip_short_name"]}
             errors={error_list(@drawer, :trip_short_name)}
           />
-          <.input
-            id="trip-block"
-            name="drawer[block_id]"
-            type="text"
-            label="Block (optional)"
-            value={@values["block_id"]}
-            list="trip-block-list"
-            help="Trips with the same block use the same vehicle."
-            errors={error_list(@drawer, :block_id)}
-          />
-          <datalist id="trip-block-list">
-            <option :for={block <- @block_suggestions} value={block}></option>
-          </datalist>
+          <div class="fieldset mb-2">
+            <p class="label text-base mb-1">Block</p>
+            <div id="trip-block">
+              <p id="trip-block-value">{block_value(@drawer)}</p>
+              <.link
+                :if={is_binary(@drawer.block_day_key)}
+                id="trip-block-link"
+                navigate={block_link(@drawer, @blocks_path)}
+                class="link inline-flex min-h-11 items-center"
+              >
+                Change on Blocks
+              </.link>
+              <p
+                :if={@drawer.block_day_key == :none}
+                id="trip-block-none"
+                class="text-sm text-base-content/70"
+              >
+                Not running on any date
+              </p>
+              <p class="text-sm text-base-content/70">
+                Trips with the same block use the same vehicle.
+              </p>
+            </div>
+          </div>
           <details id="trip-accessibility" class="rounded-box border border-base-300 p-3">
             <summary class="min-h-11 cursor-pointer text-sm font-semibold">
               Accessibility and trip ID
@@ -689,6 +704,90 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     """
   end
 
+  @doc """
+  Renders the block notice a Schedules save can leave behind.
+
+  A D2 clear names the calendar that took the trip off its block; a block problem
+  lists up to #{@max_notice_problems} of the trip's current errors and warnings with
+  the number of dates each affects. Both carry a Blocks link when the trip's service
+  has a day to open, and the notice stays until the next drawer open or filter
+  change.
+  """
+  attr :notice, :map, required: true
+
+  def block_notice(assigns) do
+    ~H"""
+    <div id="schedules-block-notice">
+      <.callout kind="warning" title={notice_title(@notice)}>
+        <p>{notice_message(@notice)}</p>
+        <p :if={@notice.link} class="mt-1">
+          <.link
+            id="schedules-block-notice-link"
+            navigate={@notice.link}
+            class="link inline-flex min-h-11 items-center"
+          >
+            Change on Blocks
+          </.link>
+        </p>
+      </.callout>
+    </div>
+    """
+  end
+
+  defp notice_title(%{kind: :block_cleared}), do: "Calendar saved · block removed"
+  defp notice_title(%{kind: :block_problems}), do: "Trip saved"
+
+  defp notice_message(%{kind: :block_cleared} = notice) do
+    "Removed from block #{notice.block_id}: on #{notice.calendar_label}, block #{notice.block_id}" <>
+      " is another vehicle's work. Assign it on Blocks."
+  end
+
+  defp notice_message(%{kind: :block_problems} = notice), do: problems_message(notice.problems)
+
+  # The spec's sentence is per problem: the same block ID repeating across problems
+  # is the list, not a defect, so identical sentences collapse to one and the rest
+  # are counted.
+  defp problems_message(problems) do
+    sentences =
+      problems
+      |> Enum.map(&problem_sentence/1)
+      |> Enum.uniq()
+      |> Enum.take(@max_notice_problems)
+
+    more = length(problems) - length(sentences)
+
+    Enum.join(sentences ++ more_sentence(more) ++ ["Review on Blocks."], " ")
+  end
+
+  defp more_sentence(0), do: []
+  defp more_sentence(more), do: ["and #{more} more."]
+
+  defp problem_sentence(%{code: :overlap, block_id: block_id, date_count: date_count}) do
+    "Block #{block_id} has an overlap on #{date_count} days."
+  end
+
+  defp problem_sentence(%{code: :short_layover, block_id: block_id, date_count: date_count}) do
+    "Block #{block_id} has a short layover on #{date_count} days."
+  end
+
+  defp problem_sentence(%{code: :in_seat_stale, block_id: block_id, date_count: date_count}) do
+    "Block #{block_id} has an in-seat record to review on #{date_count} days."
+  end
+
+  defp problem_sentence(%{block_id: block_id, date_count: date_count}) do
+    "Block #{block_id} has a problem on #{date_count} days."
+  end
+
+  defp block_value(%{trip: %{block_id: block_id}}) when is_binary(block_id),
+    do: "Block #{block_id}"
+
+  defp block_value(_drawer), do: "No block"
+
+  defp block_link(drawer, blocks_path) do
+    blocks_path <>
+      "?" <> URI.encode_query(%{"day" => drawer.block_day_key, "trip" => drawer.trip_id})
+  end
+
   # Fixed UI copy for every error atom a schedule mutation can return (CR-6).
   # Raw atoms never reach the screen: an unknown atom falls back to the save
   # failure sentence.
@@ -701,7 +800,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   def error_message(:busy), do: "Another change is being saved. Try again."
 
   def error_message(:frequency_trip) do
-    "Frequency service can't be edited here. Its blocks, calendar and details can still change."
+    "Frequency service can't be edited here. Its calendar and details can still change."
   end
 
   def error_message(:stops_differ) do

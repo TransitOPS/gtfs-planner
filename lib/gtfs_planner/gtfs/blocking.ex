@@ -18,6 +18,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   the shared `Blocking.InSeat` rule over every day type both of the record's trips
   run in, not only the selected one (R6, AC-7, INV-2).
 
+  `block_problems_for_trips/3` is the advisory read behind the Schedules drawer's
+  warning: the current errors and warnings that involve the given trips on any date
+  they run, grouped by code, trip pair and block, with the day types and their
+  summed date count. It takes no lock, so it can run after a Schedules commit
+  without holding the day it just changed.
+
   `apply_block_change/4` is the one write path for an `:assign`, `:unassign`,
   `:rename` or `:merge` command. It locks the version's blocking advisory lock and
   every trip row its decision depends on before it reviews, so the review the user
@@ -63,6 +69,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @type in_seat_entry :: %{row: Queries.in_seat_row(), state: InSeat.state()}
+
+  @type problem :: %{
+          code: Checks.code(),
+          block_id: String.t() | nil,
+          day_type_keys: [String.t()],
+          date_count: non_neg_integer()
+        }
 
   @type day :: %{
           day_types: [DayTypes.day_type()],
@@ -216,6 +229,60 @@ defmodule GtfsPlanner.Gtfs.Blocking do
            }
          end) do
       {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Returns the key of the first day type in list order containing `service_id`.
+
+  The day types come from `Calendars.list_calendars/3` through `DayTypes.derive/1`,
+  so the key is the one a day load resolves and a Blocks deep link may select; it is
+  derived, never stored, and nothing falls back to another day type (INV-6). A
+  service no day type contains — a calendar with no active date — is `:none`, and a
+  foreign or unpublished version is `{:error, :not_found}`.
+  """
+  @spec first_day_type_key(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, String.t() | :none} | {:error, :not_found}
+  def first_day_type_key(organization_id, gtfs_version_id, service_id) do
+    case Repo.transaction(fn ->
+           organization_id
+           |> load_calendars!(gtfs_version_id)
+           |> DayTypes.derive()
+           |> DayTypes.containing(service_id)
+           |> first_day_type_key!()
+         end) do
+      {:ok, key} -> {:ok, key}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Returns the current errors and warnings involving the given trips, grouped.
+
+  This is the advisory read a Schedules save asks for: for each trip that names a
+  block, and each day type its service runs in, the block's trips on that day type
+  are checked with `Checks.block_findings/3`, and the type 4/5 records naming any of
+  the given trips are evaluated once with `InSeat.state/2` through the same context
+  the day load uses (INV-2, CR-2). Only `:error` and `:warning` findings that name a
+  requested trip are kept, so a problem between two other trips is not reported.
+
+  Findings are grouped by code, sorted trip IDs and block ID; each group carries the
+  day types it applies to in day-type list order and their summed `date_count`, so
+  "on <n> days" counts each date once however many day types a service spans. Errors
+  come before warnings.
+
+  The read is advisory: it takes no lock, so it never blocks a writer and never
+  decides whether a write may proceed. A foreign or unpublished version is
+  `{:error, :not_found}`.
+  """
+  @spec block_problems_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          {:ok, [problem()]} | {:error, :not_found}
+  def block_problems_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    case Repo.transaction(fn ->
+           read_block_problems(organization_id, gtfs_version_id, trip_ids)
+         end) do
+      {:ok, problems} -> {:ok, problems}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -385,6 +452,131 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  defp first_day_type_key!([]), do: :none
+  defp first_day_type_key!([day_type | _day_types]), do: day_type.key
+
+  defp read_block_problems(organization_id, gtfs_version_id, trip_ids) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    min_layover_minutes = get_settings(organization_id, gtfs_version_id).min_layover_minutes
+    trips = problem_trips(organization_id, gtfs_version_id, trip_ids)
+
+    block_entries =
+      block_problem_entries(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        trips,
+        min_layover_minutes
+      )
+
+    in_seat_entries =
+      in_seat_problem_entries(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        DayTypes.service_dates(calendars),
+        trips
+      )
+
+    problem_groups(block_entries ++ in_seat_entries, MapSet.new(trips, & &1.id), day_types)
+  end
+
+  defp problem_trips(organization_id, gtfs_version_id, trip_ids) do
+    Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, Enum.uniq(trip_ids)})
+  end
+
+  # One `{finding, day_type}` per check result. A block shared by several requested
+  # trips is checked once per day type, and the pair is deduplicated, so the day
+  # type's date count is added to a problem at most once.
+  defp block_problem_entries(organization_id, gtfs_version_id, day_types, trips, min_layover) do
+    trips
+    |> Enum.filter(&is_binary(&1.block_id))
+    |> Enum.flat_map(fn trip ->
+      for day_type <- DayTypes.containing(day_types, trip.service_id) do
+        block_trips =
+          Queries.trip_rows(
+            organization_id,
+            gtfs_version_id,
+            {:blocks, [trip.block_id], day_type.service_ids}
+          )
+
+        {Checks.block_findings(trip.block_id, block_trips, min_layover), day_type}
+      end
+    end)
+    |> Enum.flat_map(fn {findings, day_type} -> Enum.map(findings, &{&1, day_type}) end)
+    |> Enum.uniq_by(fn {finding, day_type} -> {Checks.finding_key(finding), day_type.key} end)
+  end
+
+  # The type 4/5 records naming a requested trip, evaluated once over the derived
+  # day types. A record whose evaluation names a requested trip is attributed to
+  # every day type that trip runs in, like a block finding of the same trip.
+  defp in_seat_problem_entries(organization_id, gtfs_version_id, day_types, service_dates, trips) do
+    if Enum.any?(trips, &is_binary(&1.block_id)) do
+      %{rows: rows, context: context} =
+        in_seat_context(organization_id, gtfs_version_id, day_types, service_dates, trips)
+
+      trips_by_uuid = Map.new(trips, &{&1.id, &1})
+
+      rows
+      |> Enum.map(&{&1, InSeat.state(&1, context)})
+      |> Enum.map(fn {row, state} -> InSeat.finding(row, state, context) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.flat_map(&in_seat_problem_day_types(&1, trips_by_uuid, day_types))
+      |> Enum.uniq_by(fn {finding, day_type} -> {Checks.finding_key(finding), day_type.key} end)
+    else
+      []
+    end
+  end
+
+  defp in_seat_problem_day_types(finding, trips_by_uuid, day_types) do
+    finding.trip_ids
+    |> Enum.flat_map(fn uuid ->
+      case Map.fetch(trips_by_uuid, uuid) do
+        {:ok, trip} -> DayTypes.containing(day_types, trip.service_id)
+        :error -> []
+      end
+    end)
+    |> Enum.uniq_by(& &1.key)
+    |> Enum.map(&{finding, &1})
+  end
+
+  defp problem_groups(entries, requested, day_types) do
+    order = Map.new(Enum.with_index(day_types), fn {day_type, index} -> {day_type.key, index} end)
+
+    entries
+    |> Enum.filter(&problem_entry?(&1, requested))
+    |> Enum.group_by(fn {finding, _day_type} ->
+      {finding.code, Enum.sort(finding.trip_ids), finding.block_id}
+    end)
+    |> Enum.map(fn {{code, _trip_ids, block_id}, group} ->
+      group_day_types =
+        group
+        |> Enum.map(fn {_finding, day_type} -> day_type end)
+        |> Enum.uniq_by(& &1.key)
+        |> Enum.sort_by(&Map.fetch!(order, &1.key))
+
+      problem = %{
+        code: code,
+        block_id: block_id,
+        day_type_keys: Enum.map(group_day_types, & &1.key),
+        date_count: Enum.sum(Enum.map(group_day_types, & &1.date_count))
+      }
+
+      {problem_severity_rank(hd(group)), problem}
+    end)
+    |> Enum.sort_by(fn {rank, problem} -> {rank, problem.block_id, problem.code} end)
+    |> Enum.map(fn {_rank, problem} -> problem end)
+  end
+
+  defp problem_entry?({finding, _day_type}, requested) do
+    finding.severity in [:error, :warning] and
+      Enum.any?(finding.trip_ids, &MapSet.member?(requested, &1))
+  end
+
+  defp problem_severity_rank({%{severity: :error}, _day_type}), do: 0
+  defp problem_severity_rank({_finding, _day_type}), do: 1
 
   defp trip_service_id!(organization_id, gtfs_version_id, trip_id) do
     query =

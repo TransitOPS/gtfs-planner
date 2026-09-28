@@ -4450,6 +4450,38 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns the current block errors and warnings involving the given trips.
+
+  Natural trip IDs name the trips; for each one that runs in a block, every day
+  type its service runs in is checked and the type 4/5 records naming it are
+  evaluated, so the answer covers every date the trip runs, not only the one on
+  screen. Each problem carries its code, block ID, day-type keys and the number of
+  dates it affects, errors before warnings. The read takes no lock: it is advisory
+  and never decides whether a write may proceed. A foreign or unpublished version
+  is `{:error, :not_found}` and a lost database connection `{:error, :unavailable}`.
+  """
+  @spec block_problems_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          {:ok, [Blocking.problem()]} | {:error, :not_found | :unavailable}
+  def block_problems_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    catalog_read_adapter().block_problems_for_trips(organization_id, gtfs_version_id, trip_ids)
+  end
+
+  @doc """
+  Returns the key of the first day type containing a service, or `:none`.
+
+  The key is derived from the published version's calendars through the same
+  `Blocking.DayTypes` derivation every day load uses, so it selects exactly the day
+  type it names and never falls back to another (INV-6). A service whose calendar
+  has no active date is `{:ok, :none}`; a foreign or unpublished version is
+  `{:error, :not_found}` and a lost database connection `{:error, :unavailable}`.
+  """
+  @spec first_blocking_day_type_key(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, String.t() | :none} | {:error, :not_found | :unavailable}
+  def first_blocking_day_type_key(organization_id, gtfs_version_id, service_id) do
+    catalog_read_adapter().first_day_type_key(organization_id, gtfs_version_id, service_id)
+  end
+
+  @doc """
   Returns the minimum layover for an organization's GTFS version.
 
   A version with no stored setting returns `%{min_layover_minutes: 5}`; the read
