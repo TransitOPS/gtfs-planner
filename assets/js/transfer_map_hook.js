@@ -17,14 +17,19 @@
  *   data-extent          version_extent/2 as JSON ({south, west, north, east}),
  *                        `{}` or absent when the version has no coordinates
  *
- * This is an external-runtime boundary: window.L (Leaflet) and the Esri tile
- * hosts. Missing Leaflet degrades to a "fatal" map state rather than an
- * exception, and a failed tile reports "imagery_unavailable". Neither state may
- * block the list, the inspector or the form — the page renders the unavailable
- * panel from the state event (AC-22).
+ * The basemap is streets, not aerial imagery: a transfer rule is read against
+ * the blocks and crossings the connection crosses, and a satellite photo
+ * underneath it hides all of them.
+ *
+ * This is an external-runtime boundary: window.L (Leaflet) and the tile source.
+ * Missing Leaflet degrades to a "fatal" map state rather than an exception, and
+ * a failed tile reports "imagery_unavailable" (the state name predates the
+ * basemap change and is the server's contract). Neither state may block the
+ * list, the inspector or the form — the page renders the unavailable panel from
+ * the state event (AC-22).
  */
 
-import { addEsriBasemap } from "./basemap_layers";
+import { addStreetBasemap, STREET_MAX_ZOOM } from "./basemap_layers";
 import {
   DIAGRAM_BASE_COLOR,
   paletteColor,
@@ -46,8 +51,8 @@ const SINGLE_POINT_ZOOM = 17;
 const LOOP_RADIUS = 22;
 
 // The connection is drawn as a cased line: an accent dash over a white underlay.
-// The Esri transportation layer draws dashed lines of its own, so an uncased dash
-// reads as basemap detail rather than as the rule's direction.
+// The street basemap draws dashed lines of its own, so an uncased dash reads as
+// basemap detail rather than as the rule's direction.
 const LINE_WEIGHT = 3;
 const CASING_WEIGHT = 7;
 const CASING_COLOR = "#ffffff";
@@ -142,7 +147,7 @@ function letterIcon(L, letter, tone) {
 
 // Child stops and pick candidates share the station diagram's location-type
 // shape grammar, so a platform reads the same here as on the diagram. A
-// candidate is a target: the white ring lifts it off the imagery, Leaflet puts
+// candidate is a target: the white ring lifts it off the basemap, Leaflet puts
 // tabindex="0" on this element for `keyboard: true`, and the theme outline marks
 // where Tab and Enter will act.
 function stopIcon(L, stop, color, { interactive = false } = {}) {
@@ -204,9 +209,12 @@ const TransferMapHook = {
       dragging: true,
       scrollWheelZoom: false,
       attributionControl: true,
+      // The street tiles stop here, so the map stops here too rather than
+      // zooming into an empty grid.
+      maxZoom: STREET_MAX_ZOOM,
     });
 
-    this._tileLayers = addEsriBasemap(L, this.map).filter(Boolean);
+    this._tileLayers = addStreetBasemap(L, this.map).filter(Boolean);
     this._bindTileState();
 
     this.layers = L.layerGroup().addTo(this.map);
@@ -274,7 +282,7 @@ const TransferMapHook = {
     this._push("transfer_map_state", { generation: this.generation, state });
   },
 
-  // A tile that loaded is enough to call the imagery present, and a failed tile
+  // A tile that loaded is enough to call the basemap present, and a failed tile
   // reports the degraded state. The layer's `load` event is not that signal:
   // Leaflet fires it once every tile in view is ready, and a tile that errored
   // counts as ready, so a wholly aborted basemap ends with `load` and clears the
