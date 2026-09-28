@@ -458,6 +458,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   read-only and holds every record that names the trip, including one whose pair
   has no hosting gap (AC-25, INV-3). A frequency trip carries the repeat text and
   an unplottable one its missing-time warning; neither can be plotted.
+
+  A trip opened from the block drawer keeps that block in the URL and prints
+  “Back to block <id>”, which returns to the block drawer (step 24).
   """
   attr :open, :boolean, required: true
   attr :trip, :map, required: true
@@ -467,6 +470,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :day_types, :list, required: true
   attr :findings, :list, required: true
   attr :in_seat, :list, required: true
+  attr :back_block, :string, default: nil
 
   def trip_drawer(assigns) do
     assigns =
@@ -581,9 +585,273 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           No type 4/5 records reference this trip.
         </p>
       </section>
+
+      <%!-- “Back to block” is what a trip opened from the block drawer gets; a trip
+      opened from a bar or a marker has no block context and no back link. --%>
+      <div :if={@back_block} class="mt-6 border-t border-base-300 pt-4">
+        <button
+          id="trip-back-to-block"
+          type="button"
+          phx-click="open_block"
+          phx-value-block={@back_block}
+          class="btn btn-sm min-h-11"
+        >
+          Back to block {@back_block}
+        </button>
+      </div>
     </.drawer>
     """
   end
+
+  @doc """
+  Renders the read-only gap drawer: both trips with their times, the layover or
+  handoff sentence, the rider note for a handoff a rider can make on foot, and
+  any type 4/5 record for the pair.
+
+  The sentence and the note come from the block's own gap and handoff (R5), so the
+  drawer re-derives neither a distance nor a handoff kind: an empty move is the
+  only kind that never prints the rider note, and it is the only one that says the
+  driving time is unknown. A negative gap is an overlap, and its drawer prints the
+  overlap minutes; the timeline deliberately draws no bar for one, so this drawer
+  and the block drawer's own gap note are how an overlapping pair is read (AC-4).
+
+  Anything the pair's record list leaves open is stated rather than left blank,
+  and the two “Inspect” buttons open each trip's own drawer with this block kept,
+  so the trip drawer can return here through the block.
+  """
+  attr :open, :boolean, required: true
+  attr :from, :map, required: true
+  attr :to, :map, required: true
+  attr :gap, :map, required: true
+  attr :block_id, :string, required: true
+  attr :records, :list, required: true
+  attr :short?, :boolean, default: false
+  attr :back_block, :string, default: nil
+
+  def gap_drawer(assigns) do
+    assigns = assign(assigns, :text, gap_text(assigns.gap, assigns.from, assigns.to))
+
+    ~H"""
+    <.drawer id="gap-drawer" open={@open} title="Time between trips">
+      <p class="text-sm text-base-content/70">
+        Block {@block_id} · {@from.trip_id} → {@to.trip_id}
+      </p>
+
+      <dl class="mt-4 divide-y divide-base-300 border-y border-base-300 text-sm">
+        <.trip_field label="Arrival">
+          <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
+        </.trip_field>
+        <.trip_field label="Departure">
+          <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
+        </.trip_field>
+      </dl>
+
+      <%!-- A layover below the minimum is the block's own :short_layover finding,
+      which is also what outlines the timeline's gap bar. --%>
+      <.callout
+        id="gap-text"
+        data-short={to_string(@short?)}
+        kind={if @short?, do: "warning", else: "info"}
+        title={@text}
+      />
+
+      <p :if={rider_note?(@gap)} id="gap-rider-note" class="mt-3 text-sm">
+        Trip planners such as Google Maps may tell riders they can stay on board.
+      </p>
+
+      <section id="gap-transfers" class="mt-6 border-t border-base-300 pt-4">
+        <h3 class="text-sm font-semibold">Transfer records · {length(@records)}</h3>
+        <div class="mt-2 space-y-3">
+          <div
+            :for={entry <- @records}
+            data-role="gap-transfer"
+            data-transfer-type={entry.row.transfer_type}
+            class="border-l-4 border-base-300 pl-3"
+          >
+            <div class="flex flex-wrap items-center gap-2">
+              <strong>{transfer_type_label(entry.row.transfer_type)}</strong>
+              <.status_badge
+                status={transfer_state_status(entry.state)}
+                label={transfer_state_label(entry.state)}
+              />
+            </div>
+            <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
+            <p data-role="gap-transfer-state" class="text-sm text-base-content/70">
+              {in_seat_state_text(entry.state)}
+            </p>
+          </div>
+        </div>
+        <p :if={@records == []} class="mt-2 text-sm text-base-content/70">
+          No explicit record for this pair. Inferred rider connections vary by consumer.
+        </p>
+      </section>
+
+      <div class="mt-6 flex flex-wrap gap-2 border-t border-base-300 pt-4">
+        <button
+          :for={trip <- [@from, @to]}
+          type="button"
+          data-role="gap-inspect"
+          phx-click="open_trip"
+          phx-value-trip={trip.trip_id}
+          phx-value-block={@back_block}
+          class="btn btn-sm min-h-11"
+        >
+          Inspect {trip.trip_id}
+        </button>
+        <button
+          :if={@back_block}
+          id="gap-back-to-block"
+          type="button"
+          phx-click="open_block"
+          phx-value-block={@back_block}
+          class="btn btn-sm min-h-11"
+        >
+          Back to block {@back_block}
+        </button>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the read-only block drawer: the block's identity, its trip count and
+  span, then each trip of the block in the block's own order with the gap text
+  between consecutive trips and the trip's own findings.
+
+  The gap note prints the same sentence as the gap drawer from the block's own
+  `gaps/1` pairs, and it is the only way to open that drawer for an overlapping
+  pair, whose timeline bar is suppressed; every gap note keeps the block in the
+  URL, so both drawers offer “Back to block <id>”. “Inspect” opens the trip drawer
+  with the block kept, which is what gives that drawer its back link (AC-25).
+  """
+  attr :open, :boolean, required: true
+  attr :block, :map, required: true
+  attr :routes, :map, required: true
+  attr :findings_by_trip, :map, required: true
+
+  def block_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:summary, assigns.block.summary)
+      |> assign(:rows, block_trip_rows(assigns.block))
+
+    ~H"""
+    <.drawer id="block-drawer" open={@open} title={"Block " <> @summary.block_id}>
+      <p class="text-sm text-base-content/70">
+        {count_label(@summary.trip_count, "trip", "trips")} · {clock(@summary.start_secs)}–{clock(
+          @summary.end_secs
+        )}
+      </p>
+
+      <div class="mt-4 divide-y divide-base-300 border-t border-base-300">
+        <div :for={row <- @rows} class="py-3">
+          <div
+            :if={row.gap}
+            class="rounded-box mb-2 border border-base-300 bg-base-200/40 px-3"
+          >
+            <button
+              type="button"
+              data-role="block-gap"
+              data-minutes={div(row.gap.gap_secs, 60)}
+              phx-click="open_gap"
+              phx-value-from={row.gap.from_id}
+              phx-value-to={row.gap.to_id}
+              phx-value-block={@summary.block_id}
+              class="link link-primary min-h-11 text-left text-sm"
+            >
+              {gap_text(row.gap, row.from, row.trip)}
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <.route_badge_for route_id={row.trip.route_id} routes={@routes} />
+            <strong class="text-sm">
+              {row.trip.trip_id} · {clock(row.trip.first_departure)}–{clock(row.trip.last_arrival)}
+            </strong>
+            <button
+              type="button"
+              data-role="block-inspect"
+              phx-click="open_trip"
+              phx-value-trip={row.trip.trip_id}
+              phx-value-block={@summary.block_id}
+              class="link link-primary min-h-11"
+            >
+              Inspect
+            </button>
+          </div>
+
+          <p class="text-sm text-base-content/70">
+            {stop_name(row.trip.first_stop)} → {stop_name(row.trip.last_stop)}
+          </p>
+
+          <.issue_badges findings={Map.get(@findings_by_trip, row.trip.id, [])} />
+        </div>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # The block drawer's rows: the block's own trip order with the gap that precedes
+  # each trip, taken from the block's `gaps/1` pairs by the later trip's UUID and
+  # kept only when the two trips are adjacent in that order, so a gap note always
+  # sits between the two trips it joins (and the first trip has none).
+  defp block_trip_rows(block) do
+    gaps = Map.new(block.gaps, &{&1.to_id, &1})
+    trips = block.trips
+
+    trips
+    |> Enum.with_index()
+    |> Enum.map(fn {trip, index} ->
+      previous = if index == 0, do: nil, else: Enum.at(trips, index - 1)
+      gap = if previous, do: Map.get(gaps, trip.id)
+      gap = if gap && gap.from_id == previous.id, do: gap
+
+      %{trip: trip, from: if(gap, do: previous), gap: gap}
+    end)
+  end
+
+  # Copy: the layover at one stop, the same station, a nearby stop with its
+  # distance and the time available, or the empty move, which alone says the
+  # driving time is unknown (and, without coordinates, that it cannot be estimated
+  # either).
+  defp gap_text(%{gap_secs: secs}, _from, _to) when secs < 0,
+    do: "#{minutes(-secs)} overlap"
+
+  defp gap_text(%{handoff: :same_stop, gap_secs: secs}, _from, to),
+    do: "#{minutes(secs)} layover at #{stop_name(to.first_stop)}"
+
+  defp gap_text(%{handoff: :same_station, gap_secs: secs}, from, _to),
+    do: "Same station · #{minutes(secs)} at #{station_name(from.last_stop)}"
+
+  defp gap_text(%{handoff: {:nearby, meters}, gap_secs: secs}, _from, _to),
+    do: "Nearby stop · #{meters} m · #{minutes(secs)} available"
+
+  defp gap_text(%{handoff: {:moves, nil}}, from, to),
+    do: move_text(from, to, " (coordinates unavailable)")
+
+  defp gap_text(%{handoff: {:moves, _meters}}, from, to), do: move_text(from, to, "")
+
+  defp move_text(from, to, qualifier) do
+    "Moves empty: #{stop_name(from.last_stop)} → #{stop_name(to.first_stop)}. " <>
+      "Driving time is unknown#{qualifier}."
+  end
+
+  # The station a same-station handoff shares is the stops' parent station; a stop
+  # reference carries the parent's ID rather than its name, so the ID stands for
+  # the station here.
+  defp station_name(%{parent_station: parent})
+       when is_binary(parent) and parent != "",
+       do: parent
+
+  defp station_name(stop), do: stop_name(stop)
+
+  # The rider note is for a handoff a rider could make on foot: the same stop, the
+  # same station or a nearby one. An empty move never shows it, however short the
+  # gap (Copy, FH-19).
+  defp rider_note?(%{handoff: :same_stop}), do: true
+  defp rider_note?(%{handoff: :same_station}), do: true
+  defp rider_note?(%{handoff: {:nearby, _meters}}), do: true
+  defp rider_note?(_gap), do: false
 
   @doc """
   Renders the notice a `trip=` deep link shows when the trip is not in the loaded

@@ -29,6 +29,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   the trip (overriding a requested `page`/`pool_page`), and shows
   `#blocks-trip-elsewhere` with the trip's own day types or the unavailable
   sentence when the loaded day type or the version does not hold it (AC-29).
+
+  `gap=` (`<from trip uuid>|<to trip uuid>`) and `block=` are the other two
+  drawers, and the three together are a small stack: `block=` keeps its context
+  in the URL while a gap or a trip is open on top of it, so the gap and trip
+  drawers offer “Back to block <id>”. The top of the stack is the one drawer
+  rendered open (trip, then gap, then block), one URL change resolves it against
+  the loaded day and no drawer reaches into the day in `render/1` (CR-6).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -93,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      socket
      |> assign(:state, state)
      |> ensure_day_loaded()
-     |> resolve_trip()}
+     |> resolve_drawers()}
   end
 
   @impl true
@@ -189,29 +196,53 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # Mirrors the catch-all on `set_panel` / `set_view` / `set_scale`.
   def handle_event("open_drawer", _params, socket), do: {:noreply, socket}
 
-  # The trip drawer is part of the URL (`trip=`), so closing it drops the
-  # parameter as well as the panel-only drawer's state; the other drawers keep the
-  # URL they had. Step 24 shares the rule for the block drawer.
+  # The trip, gap and block drawers are part of the URL, so closing one drops the
+  # parameters as well as the panel-only drawer's own state; the other drawers
+  # keep the URL they had. The panel drawers render over the page, so one of them
+  # opens alongside whichever URL drawer the page had.
   def handle_event("close_drawer", _params, socket) do
     socket = assign(socket, :open_drawer, nil)
 
-    if socket.assigns.state.trip do
-      patch(socket, %{trip: nil})
+    if socket.assigns.state.trip || socket.assigns.state.gap || socket.assigns.state.block do
+      patch(socket, %{trip: nil, gap: nil, block: nil})
     else
       {:noreply, socket}
     end
   end
 
-  def handle_event("open_trip", %{"trip" => trip_id}, socket) do
-    patch(socket, %{trip: blank_to_nil(trip_id)}, close_drawer: true)
+  # A trip opened from another drawer keeps that drawer's `block` in the URL, so
+  # the trip drawer can offer “Back to block <id>”; a trip opened from a bar or a
+  # marker carries no `block` and drops any the URL held. Every drawer clears the
+  # other two, so one URL never holds a stack of two open drawers.
+  def handle_event("open_trip", %{"trip" => trip_id} = params, socket) do
+    patch(
+      socket,
+      %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
+      close_drawer: true
+    )
+  end
+
+  # The pair is the two trip UUIDs the gap bar or the block drawer's gap note
+  # sent; the URL carries them as one `gap=` parameter so the drawer is a deep
+  # link too.
+  def handle_event("open_gap", params, socket) do
+    patch(
+      socket,
+      %{
+        gap: gap_param(params["from"], params["to"]),
+        trip: nil,
+        block: blank_to_nil(params["block"])
+      },
+      close_drawer: true
+    )
   end
 
   def handle_event("open_block", %{"block" => block_id}, socket) do
-    patch(socket, %{block: blank_to_nil(block_id)}, close_drawer: true)
+    patch(socket, %{block: blank_to_nil(block_id), trip: nil, gap: nil}, close_drawer: true)
   end
 
   def handle_event("retry", _params, socket) do
-    {:noreply, socket |> load_day() |> resolve_trip()}
+    {:noreply, socket |> load_day() |> resolve_drawers()}
   end
 
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
@@ -270,6 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       page: page_number(params["page"]),
       pool_page: page_number(params["pool_page"]),
       trip: blank_to_nil(params["trip"]),
+      gap: blank_to_nil(params["gap"]),
       block: blank_to_nil(params["block"])
     }
   end
@@ -289,6 +321,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp page_number(_value), do: 1
+
+  # The two trip UUIDs of a gap, in the one URL parameter the drawer reads back.
+  # UUIDs hold no `|`, so the separator cannot be ambiguous; anything else closes
+  # the drawer rather than opening a half pair.
+  defp gap_param(from, to) do
+    case {blank_to_nil(from), blank_to_nil(to)} do
+      {nil, _to} -> nil
+      {_from, nil} -> nil
+      {from, to} -> from <> "|" <> to
+    end
+  end
 
   # Every non-default parameter, in a fixed order, so a patch carries only what
   # the reader needs and an empty day type stays at `/blocks` (CR-7).
@@ -312,6 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {"page", page_param(state.page)},
       {"pool_page", page_param(state.pool_page)},
       {"trip", state.trip},
+      {"gap", state.gap},
       {"block", state.block}
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
@@ -455,34 +499,53 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # and the pool stay in step on a day, filter or page change.
   defp assign_page_rows(socket), do: socket |> assign_timeline() |> assign_pool()
 
+  # The drawer stack of the current URL: a trip sits on top of a gap, which sits
+  # on top of a block, and only the top one renders open. The block is resolved
+  # first, because it is what a gap and a trip opened from it keep as their way
+  # back; the resolved block also decides whether “Back to block <id>” appears at
+  # all, so a stale `block=` in the URL cannot offer a block the day type does not
+  # hold. Resolution needs the loaded day: the disconnected first paint keeps its
+  # skeleton, and an unavailable or unknown day keeps its own state with no drawer.
+  defp resolve_drawers(socket) do
+    case {connected?(socket), socket.assigns.day} do
+      {true, day} when not is_nil(day) ->
+        state = socket.assigns.state
+        block = find_block(day, state.block)
+        gap = resolve_gap(day, state.gap)
+        {socket, trip} = resolve_trip_view(socket, day, state.trip)
+
+        socket
+        |> assign(:trip_view, trip)
+        |> assign(:gap_view, if(is_nil(trip), do: gap))
+        |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
+        |> assign(:back_block, if(block, do: block.summary.block_id))
+
+      _other ->
+        assign(socket,
+          trip_view: nil,
+          gap_view: nil,
+          block_view: nil,
+          back_block: nil
+        )
+    end
+  end
+
   # A `trip` deep link resolves to that trip's drawer on the page that holds it
   # (AC-29). The trip's day types come from `Blocking.trip_day_types/3`, the one
   # derivation the day load also uses, so the drawer's all-dates scope and an
   # “another day type” notice agree with the loaded day (INV-6, CR-2). The page
   # holding the trip overrides the requested `page`/`pool_page` (Pages), which is
   # why the resolved page is written back before either streamed page is sliced.
-  #
-  # Resolution needs the loaded day: the disconnected first paint keeps its
-  # skeleton, and an unavailable or unknown day keeps its own state with no drawer.
-  defp resolve_trip(socket) do
-    case {connected?(socket), socket.assigns.day, socket.assigns.state.trip} do
-      {true, day, trip_id} when not is_nil(day) and not is_nil(trip_id) ->
-        resolve_trip_id(socket, day, trip_id)
+  defp resolve_trip_view(socket, _day, nil), do: {socket, nil}
 
-      _other ->
-        assign(socket, :trip_view, nil)
-    end
-  end
-
-  defp resolve_trip_id(socket, day, trip_id) do
+  defp resolve_trip_view(socket, day, trip_id) do
     case find_day_trip(day, trip_id) do
       nil ->
-        resolve_absent_trip(socket, trip_id)
+        {socket, resolve_absent_trip(socket, trip_id)}
 
       trip ->
-        socket
-        |> assign(:trip_view, {:trip, trip, trip_day_types(socket, trip_id)})
-        |> override_trip_page(trip)
+        socket = override_trip_page(socket, trip)
+        {socket, {:trip, trip, trip_day_types(socket, trip_id)}}
     end
   end
 
@@ -490,9 +553,69 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # version does not hold is the unavailable notice.
   defp resolve_absent_trip(socket, trip_id) do
     case trip_day_types_result(socket, trip_id) do
-      {:ok, day_types} -> assign(socket, :trip_view, {:elsewhere, trip_id, day_types})
-      :error -> assign(socket, :trip_view, {:unknown, trip_id})
+      {:ok, day_types} -> {:elsewhere, trip_id, day_types}
+      :error -> {:unknown, trip_id}
     end
+  end
+
+  defp find_block(_day, nil), do: nil
+
+  defp find_block(day, block_id) do
+    Enum.find(day.blocks, &(&1.summary.block_id == block_id))
+  end
+
+  # A `gap` deep link names the pair of consecutive trips; the drawer reads the
+  # block's own gap entry (R5's handoff and the layover seconds) and the day's
+  # own records for the pair, so neither is recomputed or re-derived here.
+  defp resolve_gap(_day, nil), do: nil
+
+  defp resolve_gap(day, gap) do
+    case String.split(gap, "|") do
+      [from_id, to_id] -> find_gap(day, from_id, to_id)
+      _other -> nil
+    end
+  end
+
+  defp find_gap(day, from_id, to_id) do
+    Enum.find_value(day.blocks, fn block ->
+      gap_entry(day, block, from_id, to_id)
+    end)
+  end
+
+  defp gap_entry(day, block, from_id, to_id) do
+    with from when not is_nil(from) <- Enum.find(block.trips, &(&1.id == from_id)),
+         to when not is_nil(to) <- Enum.find(block.trips, &(&1.id == to_id)),
+         gap when not is_nil(gap) <-
+           Enum.find(block.gaps, &(&1.from_id == from_id and &1.to_id == to_id)) do
+      %{
+        block_id: block.summary.block_id,
+        from: from,
+        to: to,
+        gap: gap,
+        records: pair_records(day.in_seat, from, to),
+        short?: short_layover?(block, from_id, to_id)
+      }
+    else
+      _other -> nil
+    end
+  end
+
+  # Every type 4/5 record naming both trips of the pair, whichever of the two
+  # trips the day's own map lists it under (INV-3: a record is read, never
+  # written, and one whose pair has no hosting gap is still shown).
+  defp pair_records(in_seat, from, to) do
+    (Map.get(in_seat, from.id, []) ++ Map.get(in_seat, to.id, []))
+    |> Enum.filter(&(&1.row.from_trip_id == from.trip_id and &1.row.to_trip_id == to.trip_id))
+    |> Enum.uniq()
+  end
+
+  # The short-layover warning is the block's own finding for the pair, so the
+  # drawer and the timeline's gap bar read the same verdict.
+  defp short_layover?(block, from_id, to_id) do
+    Enum.any?(block.findings, fn finding ->
+      finding.code == :short_layover and
+        MapSet.new(finding.trip_ids) == MapSet.new([from_id, to_id])
+    end)
   end
 
   defp trip_day_types(socket, trip_id) do
@@ -629,6 +752,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings: [],
       in_seat: %{},
       trip_view: nil,
+      gap_view: nil,
+      block_view: nil,
+      back_block: nil,
       mixed_timezones?: false,
       trip_labels: %{},
       findings_by_trip: %{},
@@ -779,6 +905,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                       day_types={day_types}
                       findings={Map.get(@findings_by_trip, trip.id, [])}
                       in_seat={Map.get(@in_seat, trip.id, [])}
+                      back_block={@back_block}
                     />
                   <% {:elsewhere, trip_id, day_types} -> %>
                     <BlocksComponents.trip_elsewhere
@@ -794,6 +921,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                       version_id={@state.version_id}
                     />
                   <% _other -> %>
+                <% end %>
+
+                <%= if gap = @gap_view do %>
+                  <BlocksComponents.gap_drawer
+                    open={true}
+                    from={gap.from}
+                    to={gap.to}
+                    gap={gap.gap}
+                    block_id={gap.block_id}
+                    records={gap.records}
+                    short?={gap.short?}
+                    back_block={@back_block}
+                  />
+                <% end %>
+
+                <%= if block = @block_view do %>
+                  <BlocksComponents.block_drawer
+                    open={true}
+                    block={block}
+                    routes={@routes}
+                    findings_by_trip={@findings_by_trip}
+                  />
                 <% end %>
               <% true -> %>
             <% end %>
