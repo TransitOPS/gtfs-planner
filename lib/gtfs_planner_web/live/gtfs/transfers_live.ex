@@ -44,6 +44,21 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   without reloading, and a new load closes it. Every read stays scoped to the
   socket's organization and version, and nothing here mutates a row (R1).
 
+  The create editor replaces the list pane while a draft is open and keeps the
+  draft in `@editor`: the eight GTFS fields the operator has entered, the scope
+  they chose, the two resolved stops, the option lists the current scope shows,
+  the form built from those fields, and whether the draft differs from the one it
+  opened with. A change arrives as the whole draft, and the event's `_target`
+  says which field moved: a changed stop clears that side's route and trip and
+  re-resolves the stop for its hint, a changed route clears that side's trip, and
+  a changed scope applies the scope's own rule — routes require both routes, and
+  a saved rule stores no selector the chosen scope does not render. Option lists
+  come from the step 7 facades, and the stop search from
+  `Gtfs.search_transfer_stops/3` through the `LiveSelect` component. Saving goes
+  through `Gtfs.create_general_transfer/2` with the socket's audit context, so the
+  editor can only ever create a type 0–3 rule of this organization and version,
+  and every refusal keeps the draft on screen.
+
   Version switching keeps the action and accepts only a published version of the
   current organization. A foreign, staging or absent version leaves both the
   socket and the client's selection untouched, as on the other GTFS pages.
@@ -54,7 +69,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   import GtfsPlannerWeb.Gtfs.TransferComponents
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Versions
+  alias LiveSelect.Component, as: LiveSelectComponent
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -68,6 +86,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # lists types 0–3, the in-seat view the read-only types 4 and 5.
   @general_types 0..3
   @in_seat_types 4..5
+
+  # The editor's draft carries the eight GTFS fields as strings; anything else a
+  # form or a crafted event submits is read by `Transfer.editor_changeset/2`'s own
+  # cast, which takes only these and knows nothing of a tenant (CR-1).
+  @editor_params ~w(from_stop_id to_stop_id from_route_id to_route_id from_trip_id to_trip_id
+                    transfer_type min_transfer_time)
+
+  # The scope is a workflow choice, so it is parsed through its own table, and it
+  # decides which selectors the draft may keep and the rule may store.
+  @scopes %{"stops" => :stops, "routes" => :routes, "custom" => :custom}
+  @selector_params %{
+    stops: ~w(from_route_id to_route_id from_trip_id to_trip_id),
+    routes: ~w(from_trip_id to_trip_id),
+    custom: []
+  }
+
+  # The two stop searches the editor renders: a LiveSelect change names the
+  # component it came from, which is the only place a side is decided.
+  @stop_component_sides %{"transfer-from-stop" => :from, "transfer-to-stop" => :to}
 
   @empty_filters %{q: nil, stop: nil, route: nil, type: nil, attention: false}
 
@@ -95,6 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:filters_open?, false)
      |> assign(:checked, %{})
      |> assign(:delete_dialog, nil)
+     |> assign(:editor, nil)
      |> assign_filters(@empty_filters)
      |> stream(:transfers, [])}
   end
@@ -102,7 +140,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_params(params, _uri, socket) do
     url_params = Map.take(params, @owned_params)
-    load_catalog(assign(socket, :url_params, url_params), url_params)
+
+    socket =
+      socket
+      |> assign(:url_params, url_params)
+      |> assign(:in_seat_path, in_seat_path(socket))
+
+    load_catalog(socket, url_params)
   end
 
   @impl true
@@ -249,6 +293,39 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   @impl true
+  def handle_event("open_create", _params, socket) do
+    if socket.assigns.view == :general and is_nil(socket.assigns.editor) do
+      {:noreply, assign(socket, :editor, new_editor(socket))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("editor_change", params, socket) do
+    case socket.assigns.editor do
+      nil -> {:noreply, socket}
+      editor -> {:noreply, change_draft(socket, editor, params)}
+    end
+  end
+
+  @impl true
+  def handle_event("live_select_change", params, socket) do
+    {:noreply, search_stops(socket, params)}
+  end
+
+  @impl true
+  def handle_event("save", params, socket), do: {:noreply, submit_draft(socket, params)}
+
+  @impl true
+  def handle_event("retry_save", params, socket), do: {:noreply, submit_draft(socket, params)}
+
+  @impl true
+  def handle_event("cancel_editor", _params, socket) do
+    {:noreply, assign(socket, :editor, nil)}
+  end
+
+  @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
     if Versions.published_gtfs_version_for_org?(
          socket.assigns.current_organization.id,
@@ -276,6 +353,350 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     end
   end
 
+  # --- create editor ---------------------------------------------------------
+
+  # The draft the editor holds: the eight GTFS fields as the operator entered them,
+  # the scope they chose, the two resolved stops, the options the scope shows, the
+  # form built from those fields, and whether the draft still equals the one it
+  # opened with.
+  defp new_editor(socket) do
+    params = blank_params()
+
+    %{
+      mode: :create,
+      scope: :stops,
+      params: params,
+      form: editor_form(socket, params, nil),
+      from_stop: nil,
+      to_stop: nil,
+      options: empty_options(),
+      initial: params,
+      dirty?: false,
+      error: nil
+    }
+  end
+
+  # A new draft is a minimum-time rule with no time: the reference's prefilled 180
+  # seconds would become a stored decision the operator never made.
+  defp blank_params do
+    %{
+      "from_stop_id" => "",
+      "to_stop_id" => "",
+      "from_route_id" => "",
+      "to_route_id" => "",
+      "from_trip_id" => "",
+      "to_trip_id" => "",
+      "transfer_type" => "2",
+      "min_transfer_time" => ""
+    }
+  end
+
+  defp empty_options, do: %{from_routes: [], to_routes: [], from_trips: [], to_trips: []}
+
+  defp editor_form(socket, params, action) do
+    Transfer.editor_changeset(editor_base(socket), params)
+    |> form_for(action)
+  end
+
+  # The changeset carries the errors the form shows, so its action decides which of
+  # them are visible: a draft that has not been used has none, a changed draft is
+  # `:validate`, and a refused save is `:insert`.
+  defp form_for(changeset, action), do: to_form(put_form_action(changeset, action), as: :transfer)
+
+  defp put_form_action(changeset, nil), do: changeset
+  defp put_form_action(changeset, action), do: Map.put(changeset, :action, action)
+
+  # The organization and the version come from the socket, never from a form or an
+  # event, so a draft can only ever be saved inside the page's own version (R10).
+  defp editor_base(socket) do
+    %Transfer{
+      organization_id: organization_id(socket),
+      gtfs_version_id: version_id(socket)
+    }
+  end
+
+  # One change carries the whole draft back. `_target` names the field that moved,
+  # and the dependents follow it: a new stop clears that side's route and trip and
+  # resolves the stop again, a new route clears that side's trip, and a new scope
+  # drops every selector the scope does not render. Anything else is only merged,
+  # so an absent or unknown target cannot silently clear the operator's work.
+  defp change_draft(socket, editor, params) do
+    scope = parse_scope(Map.get(params, "scope"), editor.scope)
+    target = editor_target(params)
+
+    editor = %{
+      editor
+      | scope: scope,
+        params:
+          editor.params
+          |> Map.merge(Map.take(submitted_values(params), @editor_params))
+          |> strip_selectors(scope)
+    }
+
+    editor = clear_dependents(editor, target)
+    editor = refresh_stop(socket, editor, target)
+    editor = refresh_options(socket, editor)
+
+    put_editor(socket, %{
+      editor
+      | dirty?: editor.params != editor.initial,
+        form: editor_form(socket, editor.params, :validate)
+    })
+  end
+
+  defp clear_dependents(editor, "from_stop_id"),
+    do: clear_params(editor, ~w(from_route_id from_trip_id))
+
+  defp clear_dependents(editor, "from_route_id"), do: clear_params(editor, ~w(from_trip_id))
+
+  defp clear_dependents(editor, "to_stop_id"),
+    do: clear_params(editor, ~w(to_route_id to_trip_id))
+
+  defp clear_dependents(editor, "to_route_id"), do: clear_params(editor, ~w(to_trip_id))
+
+  # A new scope is a different question about the connection, and its selectors
+  # were answered for the old one: all four are dropped, so a route chosen under
+  # "a route pair" never reappears as the narrower scope's answer.
+  defp clear_dependents(editor, "scope"),
+    do: clear_params(editor, ~w(from_route_id to_route_id from_trip_id to_trip_id))
+
+  defp clear_dependents(editor, _target), do: editor
+
+  defp clear_params(editor, keys) do
+    %{editor | params: Enum.reduce(keys, editor.params, &Map.put(&2, &1, nil))}
+  end
+
+  defp refresh_stop(socket, editor, "from_stop_id"),
+    do: %{editor | from_stop: load_stop(socket, editor.params["from_stop_id"])}
+
+  defp refresh_stop(socket, editor, "to_stop_id"),
+    do: %{editor | to_stop: load_stop(socket, editor.params["to_stop_id"])}
+
+  defp refresh_stop(_socket, editor, _target), do: editor
+
+  # The chosen stop resolves through the page's own version (R10), so a foreign or
+  # unreachable id leaves the draft without a stop and the save refuses it with the
+  # server's own field error instead of a hint built from another version's stop.
+  defp load_stop(socket, stop_id) do
+    case parse_string(stop_id) do
+      nil ->
+        nil
+
+      stop_id ->
+        case Gtfs.fetch_transfer_stop(organization_id(socket), version_id(socket), stop_id) do
+          {:ok, stop} -> stop
+          :error -> nil
+        end
+    end
+  end
+
+  # The options the current scope renders, rebuilt from the draft: route options
+  # follow that side's stop and trip options that side's route and stop. A scope
+  # that renders no selectors keeps none, so a narrowed scope cannot save a
+  # selector it no longer shows.
+  defp refresh_options(_socket, %{scope: :stops} = editor),
+    do: %{editor | options: empty_options()}
+
+  defp refresh_options(socket, editor) do
+    options = %{
+      from_routes: draft_route_options(socket, editor, :from),
+      to_routes: draft_route_options(socket, editor, :to),
+      from_trips: draft_trip_options(socket, editor, :from),
+      to_trips: draft_trip_options(socket, editor, :to)
+    }
+
+    %{editor | options: options}
+  end
+
+  defp draft_route_options(socket, editor, side) do
+    Gtfs.transfer_route_options(
+      organization_id(socket),
+      version_id(socket),
+      draft_param(editor, "#{side}_stop_id"),
+      draft_param(editor, "#{side}_route_id")
+    )
+  end
+
+  defp draft_trip_options(socket, editor, side) do
+    Gtfs.transfer_trip_options(
+      organization_id(socket),
+      version_id(socket),
+      draft_param(editor, "#{side}_route_id"),
+      draft_param(editor, "#{side}_stop_id"),
+      side,
+      draft_param(editor, "#{side}_trip_id")
+    )
+  end
+
+  # The stop search a LiveSelect asks for. Only the editor's own two searches are
+  # answered, each from this version's selectable stops (R2), so the widget's list
+  # holds nothing the page could not store.
+  defp search_stops(socket, params) do
+    with %{editor: %{mode: :create}, view: :general} <- socket.assigns,
+         id when is_binary(id) <- Map.get(params, "id"),
+         true <- Map.has_key?(@stop_component_sides, id),
+         text when is_binary(text) <- Map.get(params, "text") do
+      %{stops: stops} =
+        Gtfs.search_transfer_stops(organization_id(socket), version_id(socket), text)
+
+      send_update(LiveSelectComponent,
+        id: id,
+        options: Enum.map(stops, &%{label: stop_label(&1), value: &1.stop_id})
+      )
+
+      socket
+    else
+      _other -> socket
+    end
+  end
+
+  defp submit_draft(socket, params) do
+    case socket.assigns.editor do
+      nil -> socket
+      editor -> apply_submission(socket, editor, params)
+    end
+  end
+
+  # A save submits the whole form and a retry re-submits what the draft holds. The
+  # draft takes the submitted fields under the scope's own rule, and the changeset
+  # reads the submission as it arrived, so a crafted tenant or type value is
+  # refused or ignored by `Transfer.editor_changeset/2` rather than by a second
+  # check here (CR-1).
+  defp apply_submission(socket, editor, params) do
+    scope = parse_scope(Map.get(params, "scope"), editor.scope)
+    values = submitted_values(params)
+
+    draft =
+      editor.params
+      |> Map.merge(Map.take(values, @editor_params))
+      |> strip_selectors(scope)
+
+    submitted = Map.merge(draft, Map.drop(values, @editor_params))
+    editor = %{editor | scope: scope, params: draft, dirty?: draft != editor.initial}
+
+    case route_pair_errors(draft, scope) do
+      [] -> create_rule(socket, editor, submitted)
+      errors -> refuse_route_pair(socket, editor, submitted, errors)
+    end
+  end
+
+  defp create_rule(socket, editor, submitted) do
+    case Gtfs.create_general_transfer(submitted, audit_context(socket)) do
+      {:ok, transfer} ->
+        socket
+        |> assign(:editor, nil)
+        |> put_flash(:info, "Transfer saved in #{socket.assigns.current_gtfs_version.name}.")
+        |> push_patch(to: list_path(socket, rule: transfer.id))
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        socket
+        |> put_editor(%{editor | form: form_for(changeset, :insert), error: nil})
+        |> push_event("focus_form_error", %{form_id: "transfer-form"})
+
+      {:error, {:duplicate, collision}} ->
+        put_editor(socket, %{editor | error: {:duplicate, collision}})
+
+      # A create has no stored row to be stale or missing, so every refusal that is
+      # not a field error or a duplicate is the server's generic failure: the draft
+      # stays and the operator can retry.
+      {:error, _reason} ->
+        put_editor(socket, %{editor | error: :busy})
+    end
+  end
+
+  # "A route pair at selected stops" is a requirement of the scope rather than of a
+  # field, and the server has nothing to refuse yet, so the pair is checked here and
+  # the message lands on the select that is missing.
+  defp refuse_route_pair(socket, editor, submitted, errors) do
+    changeset =
+      Enum.reduce(errors, Transfer.editor_changeset(editor_base(socket), submitted), fn
+        {field, message}, changeset -> Ecto.Changeset.add_error(changeset, field, message)
+      end)
+
+    socket
+    |> put_editor(%{editor | form: form_for(changeset, :insert), error: nil})
+    |> push_event("focus_form_error", %{form_id: "transfer-form"})
+  end
+
+  defp route_pair_errors(_params, scope) when scope != :routes, do: []
+
+  defp route_pair_errors(params, :routes) do
+    []
+    |> put_route_error(:from_route_id, params["from_route_id"], "Choose an arriving route")
+    |> put_route_error(:to_route_id, params["to_route_id"], "Choose a departing route")
+  end
+
+  defp put_route_error(errors, field, value, message) do
+    case parse_string(value) do
+      nil -> errors ++ [{field, message}]
+      _value -> errors
+    end
+  end
+
+  defp strip_selectors(params, scope) do
+    Enum.reduce(Map.fetch!(@selector_params, scope), params, &Map.put(&2, &1, nil))
+  end
+
+  defp parse_scope(value, current) do
+    case value do
+      scope when is_binary(scope) -> Map.get(@scopes, scope, current)
+      _value -> current
+    end
+  end
+
+  defp submitted_values(%{"transfer" => %{} = values}), do: values
+  defp submitted_values(_params), do: %{}
+
+  # The scope select is the one control outside the form's own namespace, so its
+  # change arrives as the whole form with `["scope"]` as the target.
+  defp editor_target(params) do
+    case Map.get(params, "_target") do
+      [field] when is_binary(field) -> field
+      [_form, field] when is_binary(field) -> field
+      _target -> nil
+    end
+  end
+
+  # A draft value the facade queries may read: anything that is not a string is not
+  # a stop, route or trip id this page could have chosen.
+  defp draft_param(editor, key) do
+    case editor.params[key] do
+      value when is_binary(value) -> parse_string(value)
+      _value -> nil
+    end
+  end
+
+  # The editor replaces the general view's list pane. It is a general-view surface,
+  # so a draft still open when the page patches to the other view waits behind the
+  # general chip instead of rendering over the in-seat rows.
+  defp editor_open?(%{mode: :create}, :general), do: true
+  defp editor_open?(_editor, _view), do: false
+
+  defp list_mode?(%{mode: :create}, :general), do: false
+  defp list_mode?(_editor, _view), do: true
+
+  # Where a type 4/5 collision points (R1): the bare in-seat list of this version.
+  defp in_seat_path(socket) do
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/transfers?view=in_seat"
+  end
+
+  defp organization_id(socket), do: socket.assigns.current_organization.id
+  defp version_id(socket), do: socket.assigns.current_gtfs_version.id
+
+  defp put_editor(socket, editor), do: assign(socket, :editor, editor)
+
+  # The audit context every write is attributed to, as the calendar and schedule
+  # pages build it.
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: organization_id(socket),
+      gtfs_version_id: version_id(socket),
+      station_stop_id: nil,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -296,58 +717,85 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         <.header>
           Transfers
           <:subtitle>Help riders make the right connection.</:subtitle>
+          <:actions :if={@catalog_state == :ready and @view == :general and is_nil(@editor)}>
+            <.button id="transfers-create" type="button" class="min-h-11" phx-click="open_create">
+              Create transfer
+            </.button>
+          </:actions>
         </.header>
 
         <.workspace>
           <:list>
             <.load_failure :if={@catalog_state == :unavailable} />
             <div :if={@catalog_state == :ready}>
-              <.view_chips view={@view} counts={@catalog.counts} />
-              <.first_use :if={first_use?(@catalog, @view)} />
-              <div :if={list?(@catalog, @view)}>
-                <.list_toolbar
-                  search_form={@search_form}
-                  filter_form={@filter_form}
-                  filter_options={@catalog.filter_options}
-                  filter_count={filter_count(@filters)}
-                  filters_open?={@filters_open?}
-                  in_seat?={@view == :in_seat}
-                />
-                <.rule_count
-                  total_count={@total_count}
-                  checked_count={checked_count(@checked)}
-                  all_checked?={all_shown_checked?(@page_ids, @checked)}
-                  in_seat?={@view == :in_seat}
-                />
-                <.no_results :if={@total_count == 0} />
-                <.rules_table
-                  :if={@total_count > 0}
-                  rows={@streams.transfers}
-                  selected_id={@selected_id}
-                  sort_by={@sort_by}
-                  sort_dir={@sort_dir}
-                  page={@page}
-                  per_page={@per_page}
-                  total_count={@total_count}
-                  in_seat?={@view == :in_seat}
-                  checked={@checked}
-                />
+              <.editor
+                :if={editor_open?(@editor, @view)}
+                editor={@editor}
+                version_name={@current_gtfs_version.name}
+                in_seat_path={@in_seat_path}
+              />
+              <div :if={list_mode?(@editor, @view)}>
+                <.view_chips view={@view} counts={@catalog.counts} />
+                <.first_use :if={first_use?(@catalog, @view)}>
+                  <:action>
+                    <.button
+                      id="transfers-first-use-create"
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      class="min-h-11"
+                      phx-click="open_create"
+                    >
+                      Create transfer
+                    </.button>
+                  </:action>
+                </.first_use>
+                <div :if={list?(@catalog, @view)}>
+                  <.list_toolbar
+                    search_form={@search_form}
+                    filter_form={@filter_form}
+                    filter_options={@catalog.filter_options}
+                    filter_count={filter_count(@filters)}
+                    filters_open?={@filters_open?}
+                    in_seat?={@view == :in_seat}
+                  />
+                  <.rule_count
+                    total_count={@total_count}
+                    checked_count={checked_count(@checked)}
+                    all_checked?={all_shown_checked?(@page_ids, @checked)}
+                    in_seat?={@view == :in_seat}
+                  />
+                  <.no_results :if={@total_count == 0} />
+                  <.rules_table
+                    :if={@total_count > 0}
+                    rows={@streams.transfers}
+                    selected_id={@selected_id}
+                    sort_by={@sort_by}
+                    sort_dir={@sort_dir}
+                    page={@page}
+                    per_page={@per_page}
+                    total_count={@total_count}
+                    in_seat?={@view == :in_seat}
+                    checked={@checked}
+                  />
+                </div>
+                <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
               </div>
-              <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
             </div>
           </:list>
           <:context>
+            <.draft_preview :if={editor_open?(@editor, @view)} editor={@editor} />
             <.inspector
-              :if={@selected}
+              :if={not editor_open?(@editor, @view) and @selected}
               row={@selected}
               competitors={@competitors}
               compare_open?={@compare_open?}
               version_id={@current_gtfs_version.id}
               in_seat?={@view == :in_seat}
             />
-            <.context_empty :if={is_nil(@selected)} />
+            <.context_empty :if={not editor_open?(@editor, @view) and is_nil(@selected)} />
             <.compare_dialog
-              :if={@compare_open?}
+              :if={not editor_open?(@editor, @view) and @compare_open?}
               row={@selected}
               competitors={@competitors}
             />

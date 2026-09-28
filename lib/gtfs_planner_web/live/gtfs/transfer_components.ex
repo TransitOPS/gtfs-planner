@@ -37,6 +37,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Transfer
+  alias LiveSelect.Component, as: LiveSelectComponent
 
   @doc """
   Renders the two-pane transfer workspace.
@@ -323,11 +325,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   defp route_filter_options(routes) do
-    Enum.map(routes, &{route_filter_label(&1), &1.route_id})
+    Enum.map(routes, &{route_display_name(&1), &1.route_id})
   end
 
   # "12 · Riverside", or whichever half the route has, or its bare id.
-  defp route_filter_label(%{route_id: route_id} = route) do
+  defp route_display_name(%{route_id: route_id} = route) do
     parts =
       [Map.get(route, :route_short_name), Map.get(route, :route_long_name)]
       |> Enum.map(&blank_to_nil/1)
@@ -1315,4 +1317,623 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp delete_error_text(_busy) do
     "The server was busy. Try again."
   end
+
+  # The three scopes the editor offers, in the reference's wording. A scope is the
+  # operator's workflow choice; the stored rule keeps only GTFS fields.
+  @scope_choices [
+    {"stops", "All services at selected stops", "Use a station to cover all its platforms."},
+    {"routes", "A route pair at selected stops",
+     "Stops still define where the connection happens."},
+    {"custom", "Specific trips or mixed selectors",
+     "Stops still define where the connection happens."}
+  ]
+
+  # One line of help per type, under the type's own label.
+  @type_help %{
+    0 => "Prefer this connection point.",
+    1 => "The departing service waits for this arrival.",
+    2 => "Allow enough time to reach the next service.",
+    3 => "Do not offer this connection."
+  }
+
+  # Where a stop's kind line reads from: a station says how many platforms it
+  # covers, a child platform names its station, and anything else is a plain stop.
+  @stop_hint_unset "Choose a stop from this version."
+
+  @doc """
+  Renders the create-transfer editor in place of the list pane.
+
+  The form is the reference's `create` state: the rule's scope, the two stops
+  with a `LiveSelect` search each, the route and trip selects the scope allows,
+  the four type choices with their help, the minimum time a minimum-time rule
+  requires with its live "m s" readout, the Blocks note, and the footer that
+  saves or cancels the draft. The draft's own values are the form's: the LiveView
+  clears the dependents of a changed stop or route and reloads the option lists,
+  and this component renders whatever the draft holds.
+
+  A `nil` `error` renders nothing; a duplicate names the colliding row's view — a
+  general rule can be edited, a type 4/5 record cannot (R1) — and the busy notice
+  keeps the draft and offers the retry. Field errors are the form's own, so the
+  stop fields carry theirs beside the LiveSelect, which owns the input.
+
+  The editor is a general-view surface: the page renders it for the general view
+  only, and its one write is the save.
+
+  ## Examples
+
+      <.editor
+        editor={@editor}
+        version_name={@current_gtfs_version.name}
+        in_seat_path={@in_seat_path}
+      />
+  """
+  attr :editor, :map, required: true, doc: "the page's editor draft"
+  attr :version_name, :string, required: true, doc: "the name of the draft's version"
+
+  attr :in_seat_path, :string,
+    required: true,
+    doc: "the in-seat list of this version, for a collision with a type 4/5 record"
+
+  def editor(assigns) do
+    assigns =
+      assigns
+      |> assign(:from_stop_errors, field_errors(assigns.editor.form, :from_stop_id))
+      |> assign(:to_stop_errors, field_errors(assigns.editor.form, :to_stop_id))
+      |> assign(:type_errors, field_errors(assigns.editor.form, :transfer_type))
+      |> assign(:type_choices, type_choices())
+      |> assign(:scope_options, scope_options())
+      |> assign(:scope_help, scope_help(assigns.editor.scope))
+      |> assign(:draft_type, draft_type(assigns.editor))
+      |> assign(:draft_time, draft_min_time(assigns.editor))
+
+    ~H"""
+    <div id="transfer-editor" phx-hook="FormErrorFocus" class="p-4 sm:p-6">
+      <.button
+        id="transfer-back"
+        type="button"
+        variant="quiet"
+        size="sm"
+        class="-ml-2 min-h-11 text-primary underline underline-offset-4"
+        phx-click="cancel_editor"
+      >
+        ← Back to transfers
+      </.button>
+
+      <h2 class="mt-1 text-xl font-semibold">Create transfer</h2>
+      <p class="mt-1 text-sm text-base-content/70">{@version_name} · one direction</p>
+
+      <.callout
+        :if={@editor.error}
+        id="transfer-form-error"
+        kind="error"
+        title="Transfer not saved"
+      >
+        <p :if={in_seat_duplicate?(@editor.error)}>
+          A stay-on-board record already uses these stops and trips.
+        </p>
+        <.link
+          :if={in_seat_duplicate?(@editor.error)}
+          id="transfer-view-in-seat-link"
+          patch={@in_seat_path}
+          class="mt-1 inline-block min-h-11 py-1 font-semibold text-primary underline underline-offset-4"
+        >
+          View in-seat records
+        </.link>
+        <p :if={general_duplicate?(@editor.error)}>
+          A rule already exists for these stops and services. Edit it instead of creating a second rule.
+        </p>
+        <p :if={@editor.error == :busy}>
+          The server couldn't save your changes. Your entries are still here.
+        </p>
+        <.button
+          :if={@editor.error == :busy}
+          id="transfer-retry-save"
+          type="button"
+          variant="secondary"
+          size="sm"
+          class="mt-2 min-h-11"
+          phx-click="retry_save"
+        >
+          Retry saving
+        </.button>
+      </.callout>
+
+      <.form
+        for={@editor.form}
+        id="transfer-form"
+        phx-change="editor_change"
+        phx-submit="save"
+        class="mt-3"
+      >
+        <div class="border-t border-base-300 pt-4">
+          <h3 id="transfer-scope-heading" class="text-sm font-semibold">
+            1. Choose who this applies to
+          </h3>
+          <.input
+            id="transfer-scope"
+            name="scope"
+            type="select"
+            label="Rule scope"
+            value={scope_value(@editor.scope)}
+            options={@scope_options}
+            help={@scope_help}
+          />
+        </div>
+
+        <div class="mt-4 border-t border-base-300 pt-4">
+          <h3 class="text-sm font-semibold">2. Set the connection</h3>
+
+          <.connection_side
+            side={:from}
+            label="A · Arrive at"
+            editor={@editor}
+            errors={@from_stop_errors}
+          />
+          <.connection_side
+            side={:to}
+            label="B · Board at"
+            editor={@editor}
+            errors={@to_stop_errors}
+          />
+
+          <p class="mt-3 text-sm text-base-content/70">
+            A → B only. Add the reverse rule separately if riders need it.
+          </p>
+        </div>
+
+        <fieldset class="mt-4 border-t border-base-300 pt-4">
+          <legend class="text-sm font-semibold">3. What should riders know?</legend>
+
+          <label
+            :for={{value, label, help} <- @type_choices}
+            class="mt-2 flex min-h-11 cursor-pointer items-start gap-3 rounded-box border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+          >
+            <input
+              type="radio"
+              id={"transfer-type-#{value}"}
+              name={@editor.form[:transfer_type].name}
+              value={value}
+              checked={@draft_type == value}
+              class="radio radio-sm mt-1"
+            />
+            <span class="min-w-0">
+              <span class="block text-sm font-medium">{label}</span>
+              <small class="block text-sm text-base-content/70">{help}</small>
+            </span>
+          </label>
+
+          <p :for={message <- @type_errors} class="mt-1.5 flex items-center gap-2 text-sm text-error">
+            <.icon name="hero-exclamation-circle" class="size-5" />{message}
+          </p>
+
+          <div :if={@draft_type == 2} class="mt-3">
+            <.input
+              id="transfer-min-time"
+              field={@editor.form[:min_transfer_time]}
+              type="number"
+              min="0"
+              step="1"
+              inputmode="numeric"
+              label="Minimum time (seconds)"
+            />
+            <p class="text-sm text-base-content/70">
+              <span id="transfer-min-time-readout">
+                {min_time_label(@draft_time)} · include walking and a buffer.
+              </span>
+            </p>
+          </div>
+        </fieldset>
+
+        <p class="mt-4 text-sm text-base-content/70">
+          Looking for a stay-on-board connection? Those are managed on Blocks.
+        </p>
+
+        <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
+          <.button id="transfer-save" type="submit" class="min-h-11" phx-disable-with="Saving…">
+            Create transfer
+          </.button>
+          <.button
+            id="transfer-cancel"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="cancel_editor"
+          >
+            Cancel
+          </.button>
+          <span :if={@editor.dirty?} id="transfer-dirty" class="text-sm text-base-content/70">
+            Unsaved changes
+          </span>
+        </div>
+      </.form>
+    </div>
+    """
+  end
+
+  # One side of the connection: the stop search, the kind line of the chosen stop
+  # and the route and trip the scope allows. `LiveSelect` owns the text input and
+  # the hidden field, so the label points at the input it renders (its id is the
+  # form's field id plus `_text_input`), and the field's own error is rendered
+  # beside the search rather than by `<.input>`.
+  attr :side, :atom, required: true, values: [:from, :to]
+  attr :label, :string, required: true, doc: "the reference's side label, such as `A · Arrive at`"
+  attr :editor, :map, required: true, doc: "the page's editor draft"
+  attr :errors, :list, required: true, doc: "the stop field's inline errors for this side"
+
+  defp connection_side(assigns) do
+    side = assigns.side
+    field = assigns.editor.form[stop_field(side)]
+    stop = stop_option(assigns.editor, side)
+    scope = assigns.editor.scope
+
+    assigns =
+      assigns
+      |> assign(:component_id, "transfer-#{side}-stop")
+      |> assign(:input_id, "#{field.id}_text_input")
+      |> assign(:field, field)
+      |> assign(:stop_options, stop_option_list(stop))
+      |> assign(:hint, stop_hint(stop))
+      |> assign(:hint_id, "transfer-#{side}-stop-hint")
+      |> assign(:error_id, "transfer-#{side}-stop-error")
+      |> assign(:scope, scope)
+      |> assign(:route_field, assigns.editor.form[route_field(side)])
+      |> assign(:route_label, route_field_label(scope, side))
+      |> assign(:route_prompt, route_prompt(scope))
+      |> assign(:route_options, route_option_list(assigns.editor, side))
+      |> assign(:route_chosen?, not is_nil(draft_field(assigns.editor, "#{side}_route_id")))
+      |> assign(:trip_field, assigns.editor.form[trip_field(side)])
+      |> assign(:trip_label, trip_field_label(side))
+      |> assign(:trip_options, trip_option_list(assigns.editor, side))
+
+    ~H"""
+    <div class="mt-4">
+      <label for={@input_id} class="label mb-1 text-base">{@label}</label>
+      <.live_component
+        module={LiveSelectComponent}
+        id={@component_id}
+        field={@field}
+        options={@stop_options}
+        debounce={200}
+        update_min_len={1}
+        placeholder="Search stops or stations"
+        text_input_class="input input-bordered w-full min-h-11"
+        dropdown_class="bg-base-100 border border-base-300 shadow-lg mt-1 text-base-content"
+        option_class="px-4 py-2.5 border-b border-base-300 last:border-b-0"
+        active_option_class="bg-primary text-primary-content"
+        available_option_class="hover:bg-base-200 cursor-pointer"
+      >
+        <:option :let={option}>
+          <span class="font-medium">{option.label}</span>
+        </:option>
+      </.live_component>
+      <p id={@hint_id} class="mt-1.5 text-sm text-base-content/70">{@hint}</p>
+      <p :if={@errors != []} id={@error_id} class="mt-1.5 text-sm text-error">
+        {Enum.join(@errors, " ")}
+      </p>
+
+      <%!-- "All services at selected stops" renders no selector: the stop or
+      station is the whole rule. The other two scopes narrow the side to a route,
+      and "Specific trips or mixed selectors" narrows it once more to a trip of
+      that route. --%>
+      <.input
+        :if={@scope != :stops}
+        id={"transfer-#{@side}-route"}
+        field={@route_field}
+        type="select"
+        label={@route_label}
+        prompt={@route_prompt}
+        options={@route_options}
+      />
+
+      <.input
+        :if={@scope == :custom and @route_chosen?}
+        id={"transfer-#{@side}-trip"}
+        field={@trip_field}
+        type="select"
+        label={@trip_label}
+        prompt="Any trip"
+        options={@trip_options}
+      />
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the context pane's live preview of the draft.
+
+  It answers the same question the inspector answers for a stored rule — the
+  type, the connection the draft describes, and what the rule would mean for
+  riders — from the draft rather than from a row, so the operator sees the effect
+  of a change before saving. The rider meaning is the inspector's own sentence for
+  the draft's type; a draft that does not name both stops asks for them instead,
+  because a connection is what the preview is about.
+
+  ## Examples
+
+      <.draft_preview editor={@editor} />
+  """
+  attr :editor, :map, required: true, doc: "the page's editor draft"
+
+  def draft_preview(assigns) do
+    assigns =
+      assigns
+      |> assign(:transfer, draft_transfer(assigns.editor))
+      |> assign(:from, draft_endpoint(assigns.editor, :from))
+      |> assign(:to, draft_endpoint(assigns.editor, :to))
+      |> assign(:both_stops?, both_stops?(assigns.editor))
+
+    ~H"""
+    <div id="transfer-draft-preview" class="p-4 sm:p-6">
+      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+        Live preview
+      </p>
+      <h2 class="mt-1 text-xl font-semibold">{type_label(@transfer.transfer_type)}</h2>
+
+      <div class="mt-4 space-y-4">
+        <div class="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
+          <div class="min-w-0 border-l-4 border-primary pl-3">
+            <span class="block text-xs text-base-content/70">Arrive at</span>
+            <strong class="block text-sm font-semibold">{@from.name}</strong>
+            <span class="block text-xs text-base-content/70">{@from.selector}</span>
+          </div>
+          <span aria-hidden="true" class="pt-6 text-base-content/50">→</span>
+          <div class="min-w-0 border-l-4 border-info pl-3">
+            <span class="block text-xs text-base-content/70">Board at</span>
+            <strong class="block text-sm font-semibold">{@to.name}</strong>
+            <span class="block text-xs text-base-content/70">{@to.selector}</span>
+          </div>
+        </div>
+
+        <.callout kind="info" title="What this means for riders">
+          <.rider_meaning :if={@both_stops?} row={%{transfer: @transfer}} />
+          <p :if={not @both_stops?}>Choose both stops to preview the connection.</p>
+        </.callout>
+      </div>
+    </div>
+    """
+  end
+
+  defp scope_options, do: Enum.map(@scope_choices, fn {value, label, _help} -> {label, value} end)
+
+  # An unknown scope reads as the first choice, which is also the one the LiveView
+  # parses an unknown value to, so the select always shows what the draft applies.
+  defp scope_choice(scope) do
+    Enum.find(@scope_choices, hd(@scope_choices), &(elem(&1, 0) == to_string(scope)))
+  end
+
+  defp scope_help(scope) do
+    {_value, _label, help} = scope_choice(scope)
+    help
+  end
+
+  defp scope_value(scope) do
+    {value, _label, _help} = scope_choice(scope)
+    value
+  end
+
+  defp type_choices do
+    Enum.map(0..3, &{&1, type_label(&1), Map.fetch!(@type_help, &1)})
+  end
+
+  # Field errors reach the form only once the editor has been used: `to_form/2`
+  # answers a changeset without an action with no errors at all, and the submit
+  # path sets `:insert`, so an untouched draft never opens covered in red.
+  defp field_errors(form, field), do: Enum.map(form[field].errors, &translate_error/1)
+
+  # The draft's type and minimum time as the changeset would read them, so the
+  # readout and the preview answer the operator's keystrokes rather than the
+  # stored row.
+  defp draft_type(%{params: params}), do: integer(params["transfer_type"])
+  defp draft_min_time(%{params: params}), do: integer(params["min_transfer_time"])
+
+  defp integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {number, ""} -> number
+      _other -> nil
+    end
+  end
+
+  defp integer(value) when is_integer(value), do: value
+  defp integer(_value), do: nil
+
+  # The preview reads the draft the way the inspector reads a row: the two
+  # endpoints with the scope each side covers, and a transfer struct for the
+  # rider meaning's own labels.
+  defp draft_transfer(editor) do
+    %Transfer{
+      from_stop_id: draft_field(editor, "from_stop_id"),
+      to_stop_id: draft_field(editor, "to_stop_id"),
+      from_route_id: draft_field(editor, "from_route_id"),
+      to_route_id: draft_field(editor, "to_route_id"),
+      from_trip_id: draft_field(editor, "from_trip_id"),
+      to_trip_id: draft_field(editor, "to_trip_id"),
+      transfer_type: draft_type(editor),
+      min_transfer_time: draft_min_time(editor)
+    }
+  end
+
+  defp draft_field(editor, key) do
+    case editor.params[key] do
+      value when is_binary(value) -> blank_to_nil(value)
+      _value -> nil
+    end
+  end
+
+  defp draft_endpoint(editor, side) do
+    route_id = draft_field(editor, "#{side}_route_id")
+    trip_id = draft_field(editor, "#{side}_trip_id")
+
+    %{
+      name: draft_endpoint_name(editor, side),
+      selector: selector_label(draft_selector(editor, route_id, trip_id), side)
+    }
+  end
+
+  defp draft_endpoint_name(editor, side) do
+    case {stop_option(editor, side), draft_field(editor, "#{side}_stop_id")} do
+      {%{stop_name: name}, _stop_id} when is_binary(name) and name != "" -> name
+      {_stop, stop_id} when is_binary(stop_id) -> stop_id
+      _neither -> "Choose a stop"
+    end
+  end
+
+  defp draft_selector(_editor, _route_id, trip_id) when is_binary(trip_id) do
+    %{selector: {:trip, trip_id}}
+  end
+
+  defp draft_selector(editor, route_id, _trip_id) when is_binary(route_id) do
+    %{selector: {:route, route_id}, route: draft_route(editor, route_id)}
+  end
+
+  defp draft_selector(_editor, _route_id, _trip_id), do: %{selector: :any}
+
+  # The short name the route select shows, so the preview names the same route.
+  defp draft_route(editor, route_id) do
+    (editor.options.from_routes ++ editor.options.to_routes)
+    |> Enum.find(&(&1.route_id == route_id))
+  end
+
+  defp both_stops?(editor) do
+    not is_nil(draft_field(editor, "from_stop_id")) and
+      not is_nil(draft_field(editor, "to_stop_id"))
+  end
+
+  defp stop_field(:from), do: :from_stop_id
+  defp stop_field(:to), do: :to_stop_id
+
+  defp route_field(:from), do: :from_route_id
+  defp route_field(:to), do: :to_route_id
+
+  defp trip_field(:from), do: :from_trip_id
+  defp trip_field(:to), do: :to_trip_id
+
+  # "A route pair at selected stops" requires both routes, so each side's select
+  # is what the rule needs; the other two scopes may leave either one empty, and
+  # say so beside the label rather than in the prompt alone.
+  defp route_field_label(:custom, side), do: "#{side_word(side)} route (optional)"
+  defp route_field_label(_scope, side), do: "#{side_word(side)} route"
+
+  defp trip_field_label(side), do: "#{side_word(side)} trip (optional)"
+
+  defp side_word(:from), do: "Arriving"
+  defp side_word(:to), do: "Departing"
+
+  # A route the operator must choose reads as a requirement; a route they may
+  # leave out offers the empty choice as "Any route".
+  defp route_prompt(:custom), do: "Any route"
+  defp route_prompt(_scope), do: "Choose route"
+
+  @route_option_notes %{
+    not_serving: "doesn't serve this stop",
+    inactive: "inactive route",
+    missing: "not in this version"
+  }
+
+  @trip_option_notes %{
+    not_serving: "doesn't stop here",
+    other_route: "on another route",
+    missing: "not in this version"
+  }
+
+  defp route_option_list(editor, :from),
+    do: editor.options.from_routes |> Enum.map(&route_option/1)
+
+  defp route_option_list(editor, :to), do: editor.options.to_routes |> Enum.map(&route_option/1)
+
+  # "12 · Riverside", plus why a stored route is no longer one of the stop's own
+  # options, so a narrowed draft never shows a route without saying what is odd
+  # about it. The value the select submits is the route's own id.
+  defp route_option(route) do
+    label = with_note(route_display_name(route), @route_option_notes, Map.get(route, :note))
+    {label, route.route_id}
+  end
+
+  defp trip_option_list(editor, :from), do: editor.options.from_trips |> Enum.map(&trip_option/1)
+  defp trip_option_list(editor, :to), do: editor.options.to_trips |> Enum.map(&trip_option/1)
+
+  # "08:15 · Harbor · WKDY": the time the trip serves this side's coverage, its
+  # headsign and its service, in the reference's order, with the reason a stored
+  # trip is not among the route's own options when there is one (AC-XFER-029). The
+  # value the select submits is the trip's own id.
+  defp trip_option(trip) do
+    base =
+      [Map.get(trip, :time), Map.get(trip, :headsign), Map.get(trip, :service_id)]
+      |> Enum.map(&blank_to_nil/1)
+      |> Enum.reject(&is_nil/1)
+      |> case do
+        [] -> trip.trip_id
+        parts -> Enum.join(parts, " · ")
+      end
+
+    {with_note(base, @trip_option_notes, Map.get(trip, :note)), trip.trip_id}
+  end
+
+  defp with_note(label, _notes, nil), do: label
+  defp with_note(label, notes, note), do: label <> " — " <> Map.fetch!(notes, note)
+
+  defp stop_option(editor, side) do
+    case side do
+      :from -> editor.from_stop
+      :to -> editor.to_stop
+    end
+  end
+
+  # The one option a chosen stop renders: `LiveSelect` resolves the field's value
+  # to a label from the options it holds, so the draft's own stop travels with the
+  # field. Its search replaces this list. A draft without a stop has no option.
+  defp stop_option_list(nil), do: []
+
+  defp stop_option_list(%{stop_id: stop_id} = stop) do
+    [%{label: stop_label(stop), value: stop_id}]
+  end
+
+  @doc """
+  Names one stop option for the editor's stop search.
+
+  The stop's name where it has one, and its GTFS id where it does not, so an
+  option always names the stop the version holds rather than an editable text.
+
+  ## Examples
+
+      iex> stop_label(%{stop_name: "Central Station", stop_id: "CEN"})
+      "Central Station"
+  """
+  def stop_label(%{stop_name: name, stop_id: stop_id}) do
+    case blank_to_nil(name) do
+      nil -> stop_id
+      name -> name
+    end
+  end
+
+  defp stop_hint(nil), do: @stop_hint_unset
+
+  defp stop_hint(%{location_type: 1} = stop) do
+    case Map.get(stop, :child_count, 0) do
+      0 -> "Station"
+      count -> "Station · includes #{count} #{pluralize(count, "platform")}"
+    end
+  end
+
+  defp stop_hint(%{platform_code: code, parent_name: parent})
+       when is_binary(code) and is_binary(parent),
+       do: "Platform #{code} · #{parent}"
+
+  defp stop_hint(%{parent_name: parent}) when is_binary(parent), do: "Stop · #{parent}"
+
+  defp stop_hint(%{stop_name: name, stop_id: stop_id}) do
+    case blank_to_nil(name) do
+      nil -> stop_id
+      _name -> "Stop in this version."
+    end
+  end
+
+  # A duplicate names the colliding row's view: a type 4/5 record cannot be
+  # edited here (R1), and a collision whose row vanished is offered the general
+  # message, because that is where a second rule would be created.
+  defp in_seat_duplicate?({:duplicate, %{transfer_type: type}}) when type in 4..5, do: true
+  defp in_seat_duplicate?(_error), do: false
+
+  defp general_duplicate?({:duplicate, collision}) when not is_map(collision), do: true
+  defp general_duplicate?({:duplicate, %{transfer_type: type}}), do: type in 0..3
+  defp general_duplicate?(_error), do: false
 end
