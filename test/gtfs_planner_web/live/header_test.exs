@@ -192,7 +192,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       refute has_element?(view, "#main-navigation a[href$='/import']")
     end
 
-    test "Account settings lives in the account menu, not the task nav", %{conn: conn} do
+    test "Profile settings lives in the account menu, not the task nav", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -201,7 +201,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(
                view,
                "#app-header #user-menu-panel a[href='/users/settings']",
-               "Account settings"
+               "Profile settings"
              )
 
       refute has_element?(
@@ -379,7 +379,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
              )
     end
 
-    test "Account settings is active on settings and inactive on dashboard", %{conn: conn} do
+    test "Profile settings is active on settings and inactive on dashboard", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -388,7 +388,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(
                settings_view,
                "#app-header #user-menu-panel a[href='/users/settings'][aria-current='page']",
-               "Account settings"
+               "Profile settings"
              )
 
       {:ok, dash_view, _html} = live(conn, ~p"/")

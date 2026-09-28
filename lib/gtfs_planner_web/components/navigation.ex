@@ -229,7 +229,7 @@ defmodule GtfsPlannerWeb.Navigation do
           class={menu_item_class(path_family_active?(@current_path, ["users", "settings"]))}
           aria-current={path_family_active?(@current_path, ["users", "settings"]) && "page"}
         >
-          Account settings
+          Profile settings
         </.link>
         <.link href="/users/log_out" method="delete" role="menuitem" class={menu_item_class(false)}>
           Log out
