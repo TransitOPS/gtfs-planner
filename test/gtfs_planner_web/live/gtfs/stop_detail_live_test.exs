@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.TransfersFixtures
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
@@ -986,5 +987,98 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert has_element?(view, "#stop-unavailable")
       assert has_element?(view, "#stop-retry")
     end
+  end
+
+  describe "StopDetailLive - related transfers" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      transfer_network_fixture(organization.id, version.id)
+
+      %{
+        conn: log_in_user(conn, user, organization: organization),
+        organization: organization,
+        version: version
+      }
+    end
+
+    test "a station counts itself and its children; a platform counts only itself", ctx do
+      station_rule = rule!(ctx, %{from_stop_id: "CEN", to_stop_id: "MKT"})
+      platform_rule = rule!(ctx, %{from_stop_id: "CEN-A", to_stop_id: "HBR"})
+      bay_c_rule = rule!(ctx, %{from_stop_id: "CEN-C", to_stop_id: "MUS"})
+      entrance_rule = rule!(ctx, %{from_stop_id: "CEN-E", to_stop_id: "MKT"})
+      _other_rule = rule!(ctx, %{from_stop_id: "MKT", to_stop_id: "HBR"})
+
+      # The list's own stop filter matches the station and every stop whose parent
+      # it is, whatever the child's location type, so the count follows that
+      # predicate instead of inventing a narrower coverage of its own (CR-4, FH-11).
+      station_href = "/gtfs/#{ctx.version.id}/transfers?stop=CEN"
+
+      {:ok, station_view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/CEN")
+
+      assert has_element?(station_view, "#stop-transfers-link", "Transfers here (4)")
+      assert link_href(station_view, "#stop-transfers-link") == station_href
+
+      {:ok, station_list, _html} = live(ctx.conn, station_href)
+
+      assert Enum.sort(row_ids(station_list)) ==
+               Enum.sort(
+                 Enum.map(
+                   [station_rule, platform_rule, bay_c_rule, entrance_rule],
+                   &"transfers-#{&1.id}"
+                 )
+               )
+
+      {:ok, platform_view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/CEN-A")
+
+      assert has_element?(platform_view, "#stop-transfers-link", "Transfers here (1)")
+
+      {:ok, platform_list, _html} =
+        live(ctx.conn, link_href(platform_view, "#stop-transfers-link"))
+
+      assert row_ids(platform_list) == ["transfers-#{platform_rule.id}"]
+    end
+
+    test "a stop with no related rules reads zero and opens an empty list", ctx do
+      rule!(ctx, %{from_stop_id: "CEN-C", to_stop_id: "MUS"})
+
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/NOC")
+
+      assert has_element?(view, "#stop-transfers-link", "Transfers here (0)")
+
+      {:ok, list, _html} = live(ctx.conn, link_href(view, "#stop-transfers-link"))
+
+      assert row_ids(list) == []
+    end
+  end
+
+  defp rule!(ctx, attrs),
+    do:
+      transfer_fixture(ctx.organization.id, ctx.version.id, Map.put_new(attrs, :transfer_type, 0))
+
+  defp link_href(view, selector) do
+    view
+    |> element(selector)
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("a")
+    |> LazyHTML.attribute("href")
+    |> List.first()
+  end
+
+  defp row_ids(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("tbody#transfers tr")
+    |> Enum.map(fn row -> row |> LazyHTML.attribute("id") |> List.first() end)
   end
 end

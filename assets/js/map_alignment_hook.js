@@ -35,6 +35,7 @@
  *   #map-other-overlays-opacity  range input controlling other-level opacity
  */
 
+import { addEsriBasemap } from "./basemap_layers";
 import { createOtherLevelsLayers } from "./map_overlay_layers";
 import {
   normalizeDiagramPoint,
@@ -356,33 +357,7 @@ const MapAlignmentHook = {
       zoomSnap: 0.5,
     });
 
-    // Esri World Imagery: free aerial tiles, no API key. URL uses z/y/x
-    // (note: y before x). Goes direct from the browser — no credential to hide.
-    const imageryLayer = L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      {
-        keepBuffer: 8,
-        maxNativeZoom: 19,
-        maxZoom: 22,
-        updateWhenIdle: false,
-        updateWhenZooming: true,
-        attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
-      },
-    ).addTo(map);
-
-    // Transparent reference layer with roads and road names tuned to overlay
-    // on World_Imagery.
-    const roadsLayer = L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
-      {
-        keepBuffer: 8,
-        maxNativeZoom: 19,
-        maxZoom: 22,
-        updateWhenIdle: false,
-        updateWhenZooming: true,
-        attribution: "Roads © Esri",
-      },
-    ).addTo(map);
+    const [imageryLayer, roadsLayer] = addEsriBasemap(L, map);
 
     this.leafletMap = map;
     this._tileLayers = [imageryLayer, roadsLayer];

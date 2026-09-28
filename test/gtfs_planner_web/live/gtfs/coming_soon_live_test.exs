@@ -19,17 +19,9 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
     parent_station: nil
   }
 
-  # The four standalone placeholder destinations with the area bar each one must
+  # The three standalone placeholder destinations with the area bar each one must
   # render, the link it must mark current, and the tab count of that bar.
   @standalone_destinations [
-    %{
-      path: "/transfers",
-      title: "Transfers",
-      sections: 3,
-      bar: "#routes-tabs",
-      current: "/transfers",
-      tabs: 2
-    },
     %{
       path: "/runs",
       title: "Runs",
@@ -57,7 +49,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
   ]
 
   @placeholder_paths [
-    "/transfers",
     "/runs",
     "/rosters",
     "/flex",
@@ -302,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       selected_version_id = to_string(other_version.id)
 
-      for path <- ["/transfers", "/runs", "/rosters", "/flex"] do
+      for path <- ["/runs", "/rosters", "/flex"] do
         {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{path}")
 
         render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})

@@ -28,6 +28,8 @@ alias GtfsPlanner.Gtfs.FareAttribute
 alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
+alias GtfsPlanner.Gtfs.Stop
+alias GtfsPlanner.Gtfs.Transfer
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTest, WalkabilityTestRunResult}
@@ -3081,6 +3083,225 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: version #{schedules_version.name} with no calendars " <>
         "(#{schedules_version.id})"
+    )
+
+    # ── Transfer management fixtures (Routes › Transfers) ──
+    #
+    # A dedicated published version carries the transfer network so the shared
+    # Browser E2E Version keeps the route, stop and trip counts other specs assert
+    # on. Its `published_at` is backdated so it never becomes the organization's
+    # latest published default; the Transfers journeys reach it by this version id.
+    {:ok, transfers_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Transfers Version"})
+
+    transfers_version =
+      Repo.update!(
+        Ecto.Changeset.change(transfers_version,
+          published_at: ~U[2020-01-01 00:00:00.000000Z]
+        )
+      )
+
+    # The station BXF_CEN with its two platforms and an entrance, plus the three
+    # top-level stops the trips call at. Children go through the import changeset,
+    # the permissive path the import workflow uses for the same shape. An entrance
+    # (location_type 2) is deliberately present so station coverage has to exclude
+    # it.
+    create_transfer_stop = fn stop_id, stop_name, attrs ->
+      attrs =
+        Map.merge(
+          Map.new(attrs),
+          %{
+            stop_id: stop_id,
+            stop_name: stop_name,
+            organization_id: org.id,
+            gtfs_version_id: transfers_version.id
+          }
+        )
+
+      if attrs[:parent_station] do
+        %Stop{}
+        |> Stop.import_changeset(attrs)
+        |> Repo.insert!()
+      else
+        {:ok, stop} = Gtfs.create_stop(attrs)
+        stop
+      end
+    end
+
+    create_transfer_stop.("BXF_CEN", "Transfer Central Station",
+      location_type: 1,
+      stop_lat: Decimal.new("40.0390"),
+      stop_lon: Decimal.new("-75.1440")
+    )
+
+    create_transfer_stop.("BXF_CEN_A", "Transfer Central · Bay A",
+      parent_station: "BXF_CEN",
+      location_type: 0,
+      platform_code: "A",
+      stop_lat: Decimal.new("40.0391"),
+      stop_lon: Decimal.new("-75.1442")
+    )
+
+    create_transfer_stop.("BXF_CEN_C", "Transfer Central · Bay C",
+      parent_station: "BXF_CEN",
+      location_type: 0,
+      platform_code: "C",
+      stop_lat: Decimal.new("40.0392"),
+      stop_lon: Decimal.new("-75.1438")
+    )
+
+    create_transfer_stop.("BXF_CEN_E", "Transfer Central · Main entrance",
+      parent_station: "BXF_CEN",
+      location_type: 2,
+      stop_lat: Decimal.new("40.0393"),
+      stop_lon: Decimal.new("-75.1441")
+    )
+
+    create_transfer_stop.("BXF_MKT", "Transfer Market Street",
+      location_type: 0,
+      stop_lat: Decimal.new("40.0450"),
+      stop_lon: Decimal.new("-75.1500")
+    )
+
+    create_transfer_stop.("BXF_HBR", "Transfer Harbor",
+      location_type: 0,
+      stop_lat: Decimal.new("40.0330"),
+      stop_lon: Decimal.new("-75.1380")
+    )
+
+    create_transfer_stop.("BXF_MUS", "Transfer Museum",
+      location_type: 0,
+      stop_lat: Decimal.new("40.0420"),
+      stop_lon: Decimal.new("-75.1560")
+    )
+
+    [
+      {"BXF_12", "12", "Riverside"},
+      {"BXF_24", "24", "Harbor"},
+      {"BXF_6", "6", "Museum"}
+    ]
+    |> Enum.each(fn {route_id, short_name, long_name} ->
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: transfers_version.id,
+          route_id: route_id,
+          route_short_name: short_name,
+          route_long_name: long_name,
+          route_type: 3
+        })
+    end)
+
+    [
+      {"BXF_12_0815", "BXF_12", "Harbor",
+       [{"BXF_CEN_A", "08:15:00"}, {"BXF_MKT", "08:25:00"}, {"BXF_HBR", "08:40:00"}]},
+      {"BXF_12_1010", "BXF_12", "Harbor", [{"BXF_MKT", "10:10:00"}, {"BXF_HBR", "10:25:00"}]},
+      {"BXF_24_0840", "BXF_24", "Market Street",
+       [{"BXF_CEN_C", "08:40:00"}, {"BXF_HBR", "08:55:00"}, {"BXF_MKT", "09:10:00"}]},
+      {"BXF_24_0950", "BXF_24", "Market Street",
+       [{"BXF_CEN_A", "09:50:00"}, {"BXF_HBR", "10:05:00"}]},
+      {"BXF_6_0815", "BXF_6", "Central", [{"BXF_MUS", "08:15:00"}, {"BXF_CEN_A", "08:30:00"}]}
+    ]
+    |> Enum.each(fn {trip_id, route_id, headsign, stop_times} ->
+      {:ok, _trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: transfers_version.id,
+          route_id: route_id,
+          trip_id: trip_id,
+          service_id: "BXF_WKDY",
+          trip_headsign: headsign
+        })
+
+      stop_times
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{stop_id, time}, stop_sequence} ->
+        {:ok, _stop_time} =
+          Gtfs.create_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: transfers_version.id,
+            trip_id: trip_id,
+            stop_id: stop_id,
+            stop_sequence: stop_sequence,
+            arrival_time: time,
+            departure_time: time
+          })
+      end)
+    end)
+
+    # Eight general rules (types 0-3) and two in-seat rows (types 4 and 5),
+    # inserted through the import changeset: an ordinary imported shape, not an
+    # audited editor write. Rule 5 deliberately competes with rule 4 on the
+    # BXF_CEN_A / BXF_12_0815 → BXF_CEN_A / BXF_24_0950 witness, which rule 1 does
+    # not cover, so the Needs attention and Compare rules journeys have a real
+    # conflict; rule 8 names a route the version does not have, so it needs
+    # attention for a different reason.
+    [
+      %{
+        from_stop_id: "BXF_CEN_A",
+        to_stop_id: "BXF_CEN_C",
+        from_route_id: "BXF_12",
+        to_route_id: "BXF_24",
+        transfer_type: 2,
+        min_transfer_time: 180
+      },
+      %{
+        from_stop_id: "BXF_CEN_C",
+        to_stop_id: "BXF_CEN_A",
+        from_route_id: "BXF_24",
+        to_route_id: "BXF_12",
+        transfer_type: 2,
+        min_transfer_time: 240
+      },
+      %{from_stop_id: "BXF_CEN", to_stop_id: "BXF_CEN", transfer_type: 2, min_transfer_time: 300},
+      %{
+        from_stop_id: "BXF_CEN",
+        to_stop_id: "BXF_CEN",
+        from_route_id: "BXF_12",
+        transfer_type: 2,
+        min_transfer_time: 120
+      },
+      %{from_stop_id: "BXF_CEN", to_stop_id: "BXF_CEN", to_route_id: "BXF_24", transfer_type: 3},
+      %{
+        from_stop_id: "BXF_MKT",
+        to_stop_id: "BXF_MKT",
+        from_route_id: "BXF_12",
+        to_route_id: "BXF_24",
+        transfer_type: 1
+      },
+      %{from_stop_id: "BXF_MUS", to_stop_id: "BXF_HBR", transfer_type: 3},
+      %{
+        from_stop_id: "BXF_HBR",
+        to_stop_id: "BXF_HBR",
+        from_route_id: "BXF_GONE",
+        transfer_type: 0
+      },
+      %{
+        from_stop_id: "BXF_CEN",
+        to_stop_id: "BXF_CEN",
+        from_trip_id: "BXF_12_0815",
+        to_trip_id: "BXF_24_0840",
+        transfer_type: 4
+      },
+      %{
+        from_trip_id: "BXF_24_0840",
+        to_trip_id: "BXF_12_1010",
+        transfer_type: 5
+      }
+    ]
+    |> Enum.each(fn attrs ->
+      %Transfer{}
+      |> Transfer.changeset(
+        Map.merge(attrs, %{
+          organization_id: org.id,
+          gtfs_version_id: transfers_version.id
+        })
+      )
+      |> Repo.insert!()
+    end)
+
+    IO.puts(
+      "Browser seed: transfers version #{transfers_version.name} (#{transfers_version.id}) with 8 general rules and 2 in-seat rows"
     )
 
     # ── Feed details page (settings_agencies_feed.spec.js; EV-4, EV-5) ──

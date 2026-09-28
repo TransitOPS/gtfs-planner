@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.TransfersFixtures
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -238,6 +239,135 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
       assert Enum.any?(levels, fn entry -> entry.level.id == level.id end)
       assert {:ok, []} = regions.pathways
       assert {:ok, nil} = regions.editing_status
+    end
+  end
+
+  describe "transfer catalog through the production Repo adapter" do
+    setup %{organization: org, gtfs_version: version} do
+      TransfersFixtures.transfer_network_fixture(org.id, version.id)
+
+      :ok
+    end
+
+    test "load_transfer_catalog/3 returns the seeded general rules by default", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      general = [
+        transfer_fixture(org.id, version.id, %{
+          from_stop_id: "CEN-A",
+          to_stop_id: "CEN-C",
+          transfer_type: 0
+        }),
+        transfer_fixture(org.id, version.id, %{
+          from_stop_id: "CEN",
+          to_stop_id: "MKT",
+          from_route_id: "12",
+          transfer_type: 2,
+          min_transfer_time: 180
+        }),
+        transfer_fixture(org.id, version.id, %{
+          from_stop_id: "MKT",
+          to_stop_id: "HBR",
+          transfer_type: 3
+        })
+      ]
+
+      in_seat = [
+        transfer_fixture(org.id, version.id, %{
+          from_trip_id: "12-0815",
+          to_trip_id: "24-0840",
+          transfer_type: 4
+        }),
+        transfer_fixture(org.id, version.id, %{
+          from_stop_id: "HBR",
+          to_stop_id: "MKT",
+          from_trip_id: "24-0840",
+          to_trip_id: "12-1010",
+          transfer_type: 5
+        })
+      ]
+
+      assert {:ok, %{view: :general, rows: rows} = catalog} =
+               Gtfs.load_transfer_catalog(org.id, version.id, [])
+
+      assert Enum.sort(Enum.map(rows, & &1.id)) == Enum.sort(Enum.map(general, & &1.id))
+      assert catalog.counts.general == length(general)
+      assert catalog.counts.in_seat == length(in_seat)
+      assert catalog.total_count == length(general)
+    end
+
+    test "load_transfer_catalog/3 with view: :in_seat returns only type 4/5 rows", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _general =
+        transfer_fixture(org.id, version.id, %{
+          from_stop_id: "CEN-A",
+          to_stop_id: "CEN-C",
+          transfer_type: 0
+        })
+
+      in_seat = [
+        transfer_fixture(org.id, version.id, %{
+          from_trip_id: "12-0815",
+          to_trip_id: "24-0840",
+          transfer_type: 4
+        }),
+        transfer_fixture(org.id, version.id, %{
+          from_stop_id: "MKT",
+          to_stop_id: "HBR",
+          from_trip_id: "12-1010",
+          to_trip_id: "24-0920",
+          transfer_type: 5
+        })
+      ]
+
+      assert {:ok, catalog} = Gtfs.load_transfer_catalog(org.id, version.id, view: :in_seat)
+
+      assert catalog.view == :in_seat
+      assert Enum.all?(catalog.rows, &(&1.transfer.transfer_type in [4, 5]))
+
+      assert Enum.sort(Enum.map(catalog.rows, & &1.id)) ==
+               Enum.sort(Enum.map(in_seat, & &1.id))
+
+      assert catalog.counts == %{general: 1, in_seat: 2}
+    end
+
+    test "count_general_transfers/3 counts general rules naming a station or its children", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      transfer_fixture(org.id, version.id, %{from_stop_id: "CEN", to_stop_id: "MKT"})
+      transfer_fixture(org.id, version.id, %{from_stop_id: "CEN-A", to_stop_id: "HBR"})
+      transfer_fixture(org.id, version.id, %{from_stop_id: "MUS", to_stop_id: "CEN-C"})
+      transfer_fixture(org.id, version.id, %{from_stop_id: "MKT", to_stop_id: "HBR"})
+
+      transfer_fixture(org.id, version.id, %{
+        from_stop_id: "CEN-E",
+        to_stop_id: "MKT",
+        from_trip_id: "12-0815",
+        to_trip_id: "24-0840",
+        transfer_type: 5
+      })
+
+      assert Gtfs.count_general_transfers(org.id, version.id, stop: "CEN") == 3
+    end
+
+    test "catalog reads stay scoped to the requested version", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      transfer_fixture(org.id, version.id, %{from_stop_id: "CEN", to_stop_id: "MKT"})
+
+      other_version = gtfs_version_fixture(org.id)
+      transfer_fixture(org.id, other_version.id, %{from_stop_id: "CEN", to_stop_id: "HBR"})
+      transfer_fixture(org.id, other_version.id, %{from_stop_id: "MKT", to_stop_id: "CEN"})
+
+      assert {:ok, catalog} = Gtfs.load_transfer_catalog(org.id, version.id, [])
+      assert catalog.total_count == 1
+      assert Gtfs.count_general_transfers(org.id, version.id, stop: "CEN") == 1
+      assert Gtfs.count_general_transfers(org.id, other_version.id, stop: "CEN") == 2
     end
   end
 
