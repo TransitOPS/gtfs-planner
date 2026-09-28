@@ -464,6 +464,25 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Loads one coherent calendar screen snapshot through the configured catalog read adapter.
+
+  The snapshot carries every calendar row with its exceptions, derived periods and
+  grouped route usage, together with the single agency-local `today` and its `zone`
+  resolution, the global `horizon` and the version-wide service `gaps`. `opts` may
+  carry `:sort_by`/`:sort_dir`, and `:service_ids` limits only the returned `:rows`;
+  the global horizon and gaps are computed over the whole version before any filter.
+  A version holding a retained reversed weekly range reports `complete?: false` with
+  `:invalid_calendars` populated and `gaps: nil` rather than an asserted complete gap
+  set. A foreign, invalid or unpublished scope is `{:error, :not_found}` and a lost
+  database connection is `{:error, :unavailable}`.
+  """
+  @spec load_calendar_screen(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Calendars.screen()} | {:error, :not_found | :unavailable}
+  def load_calendar_screen(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_calendar_screen(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
   Fetches one calendar identity through the configured catalog read adapter.
 
   Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted

@@ -11,7 +11,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   agency-zone PostgreSQL localization. A retained weekly range the evaluator
   refuses - an imported reversed range - is classified as `:coverage_error` on its
   own summary instead of raising, so one malformed row cannot take down a
-  whole-version read.
+  whole-version read. `load_screen/3` composes those summaries with the version-wide
+  coverage facts for the list surface in one protected read and refuses to claim a
+  complete feed while such a row is present.
 
   Every interactive write resolves the actor's *current* active organization
   membership with the editor role, then locks the organization-scoped published
@@ -101,7 +103,19 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           last_active_date: Date.t() | nil,
           fingerprint: String.t(),
           warnings: [ServiceDates.warning()],
-          status: summary_status()
+          status: summary_status(),
+          exceptions: [CalendarDate.t()],
+          periods: ServiceDates.schedule_periods(),
+          routes: [%{route_id: String.t(), trip_count: non_neg_integer()}]
+        }
+  @type screen :: %{
+          rows: [summary()],
+          invalid_calendars: [coverage_error()],
+          today: Date.t(),
+          zone: DisplayClock.today_resolution(),
+          horizon: ServiceDates.interval() | nil,
+          gaps: [feed_gap()] | nil,
+          complete?: boolean()
         }
   @type payload :: %{
           calendar: Calendar.t() | nil,
@@ -167,6 +181,58 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     transact(fn ->
       lock_shared_published_version!(organization_id, version_id)
       build_summaries(organization_id, version_id, opts)
+    end)
+  end
+
+  @doc """
+  Loads one coherent calendar screen snapshot for the list surface.
+
+  Returns the calendar `:rows` together with the version-wide coverage facts that
+  belong to the same protected read: the single agency-local `:today` and its
+  `:zone` resolution, the global `:horizon` and the version-wide service `:gaps`,
+  plus `complete?` and `:invalid_calendars`.
+
+  Every row carries its exception rows, its derived `:periods` (weekly periods,
+  breaks, holidays, extra days, removed days) and its grouped route `:routes`, so
+  the list, the coverage axis and the detail inspector read one shape instead of
+  re-deriving dates. The read never writes.
+
+  `opts` supports `:sort_by`/`:sort_dir` with `list_calendars/3` semantics and
+  `:service_ids`, an exact-ID allowlist that limits `:rows` only: the global
+  horizon and gaps are computed over every identity in the version before that
+  filter is applied, so filtering a source list never changes them. The clock is
+  resolved once for the whole read, so a caller-supplied `:today` is not used.
+
+  A version holding a retained invalid weekly range cannot assert a complete feed:
+  `:invalid_calendars` names each identified error, `complete?` is `false` and
+  `:gaps` is `nil` instead of a gap set that silently ignores the unreadable
+  identity. Every readable identity keeps its exact dates, periods and usage, and
+  the horizon covers those evaluated dates only.
+
+  Returns `{:error, :not_found}` for a foreign, invalid or unpublished scope.
+  """
+  @spec load_screen(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, screen()} | {:error, :not_found}
+  def load_screen(organization_id, version_id, opts \\ []) when is_list(opts) do
+    transact(fn ->
+      lock_shared_published_version!(organization_id, version_id)
+      clock = DisplayClock.today(organization_id, version_id)
+
+      summaries =
+        build_summaries(organization_id, version_id, Keyword.put(opts, :today, clock.date))
+
+      active = summaries |> Enum.flat_map(& &1.active_dates) |> MapSet.new()
+      invalid_calendars = summaries |> Enum.map(& &1.coverage_error) |> Enum.reject(&is_nil/1)
+
+      %{
+        rows: filter_summaries(summaries, opts),
+        invalid_calendars: invalid_calendars,
+        today: clock.date,
+        zone: clock,
+        horizon: horizon(active),
+        gaps: if(invalid_calendars == [], do: missing_runs(active)),
+        complete?: invalid_calendars == []
+      }
     end)
   end
 
@@ -442,6 +508,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
     %{
       service_id: service_id,
+      exceptions: service_exceptions,
+      periods: derived.periods,
+      routes: service_usage.routes,
       name: attribute && attribute.service_description,
       kind: kind_for(calendar),
       calendar: calendar,
@@ -491,6 +560,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
     %{
       active_dates: active_dates,
+      periods: ServiceDates.periods(calendar, exceptions),
       warnings: warnings,
       status:
         summary_status(calendar, exceptions, active_dates, warnings, usage.trip_count, today)
@@ -503,6 +573,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp derived_dates(_errors, _calendar, _exceptions, usage, _today) do
     %{
       active_dates: [],
+      periods: empty_periods(),
       warnings: [],
       status: %{
         no_service?: false,
@@ -553,6 +624,33 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   end
 
   defp sort_name(%{service_id: service_id}), do: String.downcase(service_id)
+
+  # The source-list filter limits the returned rows only. The global horizon and
+  # gaps are computed over the whole version first, so a filtered view never
+  # changes them, and exact IDs are compared without trimming.
+  defp filter_summaries(summaries, opts) do
+    case Keyword.get(opts, :service_ids) do
+      service_ids when is_list(service_ids) ->
+        wanted = MapSet.new(service_ids)
+        Enum.filter(summaries, &MapSet.member?(wanted, &1.service_id))
+
+      _all_identities ->
+        summaries
+    end
+  end
+
+  defp horizon(active) do
+    case active |> MapSet.to_list() |> Enum.sort(Date) do
+      [] -> nil
+      dates -> %{first_date: List.first(dates), last_date: List.last(dates)}
+    end
+  end
+
+  # The empty weekly structure `ServiceDates.periods/2` returns for a calendar
+  # without a weekly row, without evaluating a retained reversed range.
+  defp empty_periods do
+    %{periods: [], breaks: [], holidays: [], extra_days: [], removed_days: []}
+  end
 
   defp resolve_today(organization_id, version_id, opts) do
     case Keyword.get(opts, :today) do
