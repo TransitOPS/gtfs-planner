@@ -189,6 +189,20 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyCreateTest do
       assert Enum.map(routes, &Repo.get!(Route, &1.id)) == before
     end
 
+    test "a whitespace-only route reference is not adopted as the new agency id", context do
+      # Route.changeset/2 trims, so only a raw write produces the padded rows the import
+      # path can leave behind.
+      route = route_fixture(context.organization.id, context.version.id, %{agency_id: nil})
+      force_agency_id!(Route, route.id, "   ")
+
+      assert {:ok, %Agency{agency_id: "metro_transit"}} =
+               FeedSettings.create_agency(context.audit, @valid_attrs)
+
+      # Blank under `btrim`, so the reference is not adopted as the agency id; the first
+      # agency claims the route instead.
+      assert Repo.get!(Route, route.id).agency_id == "metro_transit"
+    end
+
     test "more than one route reference falls back to the slug", context do
       routes =
         for agency_id <- ["A", "B", nil] do
@@ -242,6 +256,31 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyCreateTest do
       assert Enum.all?(routes, &(Repo.get!(Route, &1.id).agency_id == "NCT"))
       assert Repo.get!(FareAttribute, fare.id).agency_id == "NCT"
       assert Repo.get!(Attribution, attribution.id).agency_id == nil
+    end
+
+    test "the second agency fills whitespace-only route and fare references", context do
+      agency_fixture(context.organization.id, context.version.id, %{
+        agency_id: "NCT",
+        agency_name: "North County Transit",
+        agency_timezone: "America/New_York"
+      })
+
+      route = route_fixture(context.organization.id, context.version.id, %{agency_id: nil})
+      force_agency_id!(Route, route.id, "   ")
+
+      fare = fare_attribute!(context.organization, context.version, nil)
+      force_agency_id!(FareAttribute, fare.id, "   ")
+
+      assert {:ok, %Agency{agency_id: "other_transit"}} =
+               FeedSettings.create_agency(
+                 context.audit,
+                 Map.put(@valid_attrs, "agency_name", "Other Transit")
+               )
+
+      # Blank under `btrim` is the blank the second agency owns, even though neither
+      # reference is nil or the empty string.
+      assert Repo.get!(Route, route.id).agency_id == "NCT"
+      assert Repo.get!(FareAttribute, fare.id).agency_id == "NCT"
     end
 
     test "blank references are not filled once the version already has two agencies", context do
@@ -498,6 +537,13 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyCreateTest do
       actor_id: actor.id,
       actor_email: actor.email
     }
+  end
+
+  # The changesets trim every string field, so an import's padded or whitespace-only
+  # agency reference can only be reproduced with a raw write.
+  defp force_agency_id!(schema, id, agency_id) do
+    {1, _returned} =
+      Repo.update_all(from(row in schema, where: row.id == ^id), set: [agency_id: agency_id])
   end
 
   # The race test commits for real, so its fixtures are deleted by hand instead of being
