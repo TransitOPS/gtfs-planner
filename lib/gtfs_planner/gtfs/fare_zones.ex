@@ -36,6 +36,20 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   matches the exact stored ID, search treats `%` and `_` literally, and the order
   is `stop_name` with names missing last, then `stop_id`, so the list pages, the
   current match and the map points stay deterministic.
+
+  Reviewed bulk assignment is the three write functions `preview_assignment/4`,
+  `apply_assignment/3` and `undo_assignment/3`. A preview is a read that reports
+  each selected boardable stop's current and target zone; an apply writes the
+  reviewed changes in one transaction that first locks the organization's
+  published version row `FOR UPDATE`, so cooperating writers of one version
+  serialize and a pair that is not a published version of the organization
+  changes nothing (`:not_found`). Every change is fenced: the locked current zone
+  must still equal the reviewed `from`, otherwise nothing is written and the
+  changed stops are returned. `undo_assignment/3` takes exactly the `applied`
+  list of a successful apply, swaps its values back and restores them without
+  inventory validation, so a zone that left the inventory when its last stop
+  moved is restored byte-for-byte. Only boardable stops are assignable and only
+  a zone in the inventory can be an assignment target.
   """
 
   import Ecto.Query, warn: false
@@ -46,6 +60,9 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
+
+  @published_status "published"
 
   @type zone :: %{
           zone_id: String.t(),
@@ -111,6 +128,32 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   @type stop_point :: [Ecto.UUID.t() | String.t() | float() | nil]
 
   @type assignment_change :: %{id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil}
+
+  @type assignment_review :: %{
+          rows: [
+            %{
+              id: Ecto.UUID.t(),
+              stop_id: String.t(),
+              stop_name: String.t() | nil,
+              from: String.t() | nil,
+              to: String.t() | nil
+            }
+          ],
+          changes: [assignment_change()],
+          changed_count: non_neg_integer(),
+          added_count: non_neg_integer(),
+          moved_count: non_neg_integer(),
+          unchanged_count: non_neg_integer(),
+          unselected_sibling_count: non_neg_integer()
+        }
+
+  @type stale_stop :: %{
+          id: Ecto.UUID.t(),
+          stop_id: String.t(),
+          stop_name: String.t() | nil,
+          reviewed: String.t() | nil,
+          current: String.t() | nil
+        }
 
   @type checks :: %{
           stopless_referenced: [zone()],
@@ -348,6 +391,307 @@ defmodule GtfsPlanner.Gtfs.FareZones do
         zone_id,
         parent_station
       ]
+    end)
+  end
+
+  @doc """
+  Reviews assigning the selected boardable stops to a target zone.
+
+  `target` is the destination zone ID or nil to unassign; any other value must be
+  in the version's inventory (a declared record, a `stops.zone_id` of any
+  location type or a fare-rule reference) or the review fails `:unknown_zone`.
+  Every selected stop must be a boardable stop of this organization and version,
+  otherwise the review fails `:invalid_selection`.
+
+  `rows` lists every selected stop in the list order (`stop_name` with missing
+  names last, then `stop_id`) with its current (`from`) and target (`to`) zone.
+  `changes` holds only the rows whose zone changes, `changed_count` their number,
+  `added_count` the unassigned stops that gain the target, `moved_count` the
+  stops that move between two zones, and `unchanged_count` the stops already at
+  the target. `unselected_sibling_count` counts the version's unselected
+  boardable stops that share a non-nil `parent_station` with a selected stop, so
+  the review can disclose platforms of a selected one. A preview writes nothing.
+  """
+  @spec preview_assignment(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()], String.t() | nil) ::
+          {:ok, assignment_review()} | {:error, :invalid_selection | :unknown_zone}
+  def preview_assignment(organization_id, gtfs_version_id, stop_ids, target) do
+    stop_ids = Enum.uniq(stop_ids)
+
+    with :ok <- validate_target(organization_id, gtfs_version_id, target),
+         {:ok, stops} <- selected_stops(organization_id, gtfs_version_id, stop_ids) do
+      rows = Enum.map(stops, &assignment_row(&1, target))
+      changes = for %{from: from, to: to} = row <- rows, from != to, do: change_of(row)
+
+      {:ok,
+       %{
+         rows: rows,
+         changes: changes,
+         changed_count: length(changes),
+         added_count: Enum.count(changes, &is_nil(&1.from)),
+         moved_count: Enum.count(changes, &(not is_nil(&1.from) and not is_nil(&1.to))),
+         unchanged_count: length(rows) - length(changes),
+         unselected_sibling_count:
+           unselected_sibling_count(organization_id, gtfs_version_id, stops)
+       }}
+    end
+  end
+
+  @doc """
+  Writes exactly the reviewed assignment changes in one version-locked transaction.
+
+  Each change's `from` is the zone the review showed and `to` the target; a `to`
+  that is not nil must still be in the inventory (`:unknown_zone`), and every ID
+  must still be a boardable stop of this organization and version
+  (`:invalid_selection`, as for a duplicated foreign UUID). Inside one
+  transaction the published version row is locked `FOR UPDATE` and the selected
+  stops are locked and re-read: if any stop's current zone differs from its
+  reviewed `from`, the transaction rolls back with
+  `{:stale, [%{id, stop_id, stop_name, reviewed, current}]}` and nothing is
+  written. Otherwise one `update_all/3` per distinct target writes the exact
+  zone ID (nil for unassign) and `updated_at`, and the applied changes are
+  returned for `undo_assignment/3`. A pair that is not a published version of the
+  organization returns `:not_found` and changes nothing.
+  """
+  @spec apply_assignment(Ecto.UUID.t(), Ecto.UUID.t(), [assignment_change()]) ::
+          {:ok, %{applied: [assignment_change()]}}
+          | {:error, {:stale, [stale_stop()]} | :invalid_selection | :unknown_zone | :not_found}
+  def apply_assignment(organization_id, gtfs_version_id, changes) do
+    write_assignment(organization_id, gtfs_version_id, changes, validate_targets?: true)
+  end
+
+  @doc """
+  Restores the zones an `apply_assignment/3` replaced, under the same fence.
+
+  Call only with the exact `applied` list returned by a successful
+  `apply_assignment/3`: the values are swapped back and written with no inventory
+  validation, so a zone that left the inventory when its last stop moved, or was
+  unassigned, is restored byte-for-byte. The same transaction, version-row lock,
+  selection check and stale fence apply: if any stop changed after the save,
+  nothing is written and `{:error, {:stale, stops}}` is returned. `:not_found`
+  means the pair is not a published version of the organization.
+  """
+  @spec undo_assignment(Ecto.UUID.t(), Ecto.UUID.t(), [assignment_change()]) ::
+          {:ok, %{applied: [assignment_change()]}}
+          | {:error, {:stale, [stale_stop()]} | :invalid_selection | :not_found}
+  def undo_assignment(organization_id, gtfs_version_id, applied) do
+    changes = Enum.map(applied, &%{id: &1.id, from: &1.to, to: &1.from})
+    write_assignment(organization_id, gtfs_version_id, changes, validate_targets?: false)
+  end
+
+  defp write_assignment(organization_id, gtfs_version_id, changes, opts) do
+    changes = Enum.uniq_by(changes, & &1.id)
+
+    transact(organization_id, gtfs_version_id, fn ->
+      validate_targets(organization_id, gtfs_version_id, changes, opts)
+      locked_stops = lock_selected_stops(organization_id, gtfs_version_id, changes)
+      stale = stale_changes(locked_stops, changes)
+
+      if stale != [] do
+        Repo.rollback({:stale, stale})
+      end
+
+      write_zone_changes(organization_id, gtfs_version_id, changes)
+      %{applied: changes}
+    end)
+  end
+
+  # One transaction per write, opening with the organization's published version
+  # row locked `FOR UPDATE` (precedent: `Calendars.published_version_for_update/2`).
+  # That single row both validates the scope pair and serializes writers of this
+  # version's zone aggregate; a pair that cannot be a published version - a
+  # non-UUID argument included - rolls back `:not_found` without touching
+  # anything.
+  defp transact(organization_id, gtfs_version_id, fun) do
+    Repo.transaction(fn -> lock_version_and_run(organization_id, gtfs_version_id, fun) end)
+  end
+
+  defp lock_version_and_run(organization_id, gtfs_version_id, fun) do
+    version =
+      if uuid?(organization_id) and uuid?(gtfs_version_id),
+        do: published_version_for_update(organization_id, gtfs_version_id)
+
+    case version do
+      %GtfsVersion{} -> fun.()
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp published_version_for_update(organization_id, gtfs_version_id) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^gtfs_version_id and v.organization_id == ^organization_id and
+          v.publication_status == ^@published_status,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+  defp uuid?(_value), do: false
+
+  # A preview has no lock to roll back to, so it returns the target error instead.
+  defp validate_target(_organization_id, _gtfs_version_id, nil), do: :ok
+
+  defp validate_target(organization_id, gtfs_version_id, target) when is_binary(target) do
+    if zone_exists?(organization_id, gtfs_version_id, target),
+      do: :ok,
+      else: {:error, :unknown_zone}
+  end
+
+  defp validate_target(_organization_id, _gtfs_version_id, _target), do: {:error, :unknown_zone}
+
+  defp validate_targets(organization_id, gtfs_version_id, changes, validate_targets?: true) do
+    Enum.each(changes, &validate_target!(organization_id, gtfs_version_id, &1.to))
+  end
+
+  defp validate_targets(_organization_id, _gtfs_version_id, _changes, _opts), do: :ok
+
+  defp validate_target!(organization_id, gtfs_version_id, target) do
+    case validate_target(organization_id, gtfs_version_id, target) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # A target exists when any of the three inventory sources carries the exact ID,
+  # so a rule-referenced zone with no stops stays assignable.
+  defp zone_exists?(organization_id, gtfs_version_id, zone_id) do
+    declared_zone?(organization_id, gtfs_version_id, zone_id) or
+      stop_zone?(organization_id, gtfs_version_id, zone_id) or
+      rule_zone?(organization_id, gtfs_version_id, zone_id)
+  end
+
+  defp declared_zone?(organization_id, gtfs_version_id, zone_id) do
+    Repo.exists?(
+      from(z in FareZone,
+        where:
+          z.organization_id == ^organization_id and z.gtfs_version_id == ^gtfs_version_id and
+            z.zone_id == ^zone_id
+      )
+    )
+  end
+
+  defp stop_zone?(organization_id, gtfs_version_id, zone_id) do
+    Repo.exists?(
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.zone_id == ^zone_id
+      )
+    )
+  end
+
+  defp rule_zone?(organization_id, gtfs_version_id, zone_id) do
+    Repo.exists?(
+      from(r in FareRule,
+        where:
+          r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+            (r.origin_id == ^zone_id or r.destination_id == ^zone_id or r.contains_id == ^zone_id)
+      )
+    )
+  end
+
+  defp selected_stops(organization_id, gtfs_version_id, stop_ids) do
+    stops =
+      organization_id
+      |> boardable_query(gtfs_version_id)
+      |> where([s], s.id in ^stop_ids)
+      |> order_by([s], asc_nulls_last: s.stop_name, asc: s.stop_id)
+      |> select([s], %{
+        id: s.id,
+        stop_id: s.stop_id,
+        stop_name: s.stop_name,
+        parent_station: s.parent_station,
+        zone_id: s.zone_id
+      })
+      |> Repo.all()
+
+    if length(stops) == length(stop_ids), do: {:ok, stops}, else: {:error, :invalid_selection}
+  end
+
+  defp assignment_row(stop, target) do
+    %{
+      id: stop.id,
+      stop_id: stop.stop_id,
+      stop_name: stop.stop_name,
+      from: stop.zone_id,
+      to: target
+    }
+  end
+
+  defp change_of(%{id: id, from: from, to: to}), do: %{id: id, from: from, to: to}
+
+  defp unselected_sibling_count(organization_id, gtfs_version_id, stops) do
+    parent_stations =
+      stops |> Enum.map(& &1.parent_station) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    if parent_stations == [] do
+      0
+    else
+      selected_ids = Enum.map(stops, & &1.id)
+
+      organization_id
+      |> boardable_query(gtfs_version_id)
+      |> where([s], s.parent_station in ^parent_stations and s.id not in ^selected_ids)
+      |> Repo.aggregate(:count)
+    end
+  end
+
+  # The locked re-read is the fence: a stop missing from the scoped, boardable
+  # result is a selection of another organization, version or location type, and
+  # any stop whose locked zone differs from the reviewed value makes the whole
+  # call roll back before a single write.
+  defp lock_selected_stops(organization_id, gtfs_version_id, changes) do
+    ids = Enum.map(changes, & &1.id)
+
+    stops =
+      organization_id
+      |> boardable_query(gtfs_version_id)
+      |> where([s], s.id in ^ids)
+      |> select([s], %{
+        id: s.id,
+        stop_id: s.stop_id,
+        stop_name: s.stop_name,
+        zone_id: s.zone_id
+      })
+      |> lock("FOR UPDATE")
+      |> Repo.all()
+
+    if length(stops) != length(ids), do: Repo.rollback(:invalid_selection)
+    stops
+  end
+
+  defp stale_changes(stops, changes) do
+    current = Map.new(stops, &{&1.id, &1.zone_id})
+    stop_by_id = Map.new(stops, &{&1.id, &1})
+
+    changes
+    |> Enum.filter(fn change -> Map.get(current, change.id) != change.from end)
+    |> Enum.map(fn change ->
+      stop = Map.fetch!(stop_by_id, change.id)
+
+      %{
+        id: change.id,
+        stop_id: stop.stop_id,
+        stop_name: stop.stop_name,
+        reviewed: change.from,
+        current: Map.get(current, change.id)
+      }
+    end)
+  end
+
+  defp write_zone_changes(organization_id, gtfs_version_id, changes) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    changes
+    |> Enum.group_by(& &1.to)
+    |> Enum.each(fn {target, group} ->
+      ids = Enum.map(group, & &1.id)
+
+      organization_id
+      |> boardable_query(gtfs_version_id)
+      |> where([s], s.id in ^ids)
+      |> Repo.update_all(set: [zone_id: target, updated_at: now])
     end)
   end
 
