@@ -26,8 +26,14 @@ alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.FareAttribute
+alias GtfsPlanner.Gtfs.FareRule
+alias GtfsPlanner.Gtfs.FareZones
+alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
+alias GtfsPlanner.Gtfs.Stop
+alias GtfsPlanner.Gtfs.Transfer
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTest, WalkabilityTestRunResult}
@@ -1994,6 +2000,344 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: routes-only version #{routes_only_version.id} with ready export")
 
+    # ── Fare zones fixture versions ──
+    #
+    # Two published versions give the fare-zone workspace its data. "Browser
+    # Fare Zones Version" is a small, hand-placed town whose literal
+    # coordinates are load-bearing: eight boardable stops west of -71.10 (zone
+    # A Central), twelve east of -71.008 (zone B Eastbank), four unassigned
+    # stops, one boardable stop with no coordinates in Central, a station in
+    # Central with two located platforms carrying its zone, and the
+    # declared-but-empty D Airport. The box journey fits this map, drags over
+    # its left half and expects exactly the eight west stops, so every other
+    # point sits east of the fitted midpoint longitude.
+    #
+    # "Browser Fare Zones Scale Version" carries the 10,000 located boardable
+    # stops AC-35 measures in the browser, in five zones, inserted in five
+    # batches of 2,000.
+    #
+    # Zone metadata goes through `FareZones.create_zone/3` (CR-1 keeps that
+    # module `fare_zones`' only writer) and the route through
+    # `Gtfs.create_route/1`. Stop, fare and rule rows are fixture data inserted
+    # directly: no changeset casts `stops.zone_id`, and `FareRule.changeset/2`
+    # would trim the exact rule values. Every row carries one fixed seed
+    # timestamp and a literal ID or coordinate, so a reset and re-run
+    # reproduces the same rows.
+    #
+    # Both versions are created before the "latest default" restore below, so
+    # that restore still decides which version the organization opens by
+    # default: every fare-zone journey selects its version in the version
+    # panel, and no other browser spec sees a different default version.
+    # Creating them after the restore would make the choice depend on the
+    # database session's timezone offset against the app clock.
+    {:ok, fare_zones_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fare Zones Version"})
+
+    {:ok, fare_scale_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fare Zones Scale Version"})
+
+    fare_seed_at = ~U[2026-09-01 00:00:00.000000Z]
+    fare_coordinate = fn value -> Decimal.new(:erlang.float_to_binary(value, decimals: 3)) end
+
+    for {zone_id, name, color} <- [
+          {"A", "Central", "ocean"},
+          {"B", "Eastbank", "teal"},
+          {"D", "Airport", "ochre"}
+        ] do
+      {:ok, _declared_zone} =
+        FareZones.create_zone(org.id, fare_zones_version.id, %{
+          zone_id: zone_id,
+          name: name,
+          color: color
+        })
+    end
+
+    fare_stop = fn stop_id, stop_name, lat, lon, zone_id, attrs ->
+      Map.merge(
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: fare_zones_version.id,
+          stop_id: stop_id,
+          stop_name: stop_name,
+          stop_lat: lat && fare_coordinate.(lat),
+          stop_lon: lon && fare_coordinate.(lon),
+          location_type: 0,
+          zone_id: zone_id,
+          parent_station: nil,
+          platform_code: nil,
+          inserted_at: fare_seed_at,
+          updated_at: fare_seed_at
+        },
+        attrs
+      )
+    end
+
+    fare_west_stops =
+      for index <- 1..8 do
+        fare_stop.(
+          "BROWSER_FZ_WEST_#{index}",
+          "Central West #{index}",
+          42.300 + (index - 1) * 0.002,
+          -71.108 + (index - 1) * 0.001,
+          "A",
+          %{}
+        )
+      end
+
+    fare_east_stops =
+      for index <- 1..12 do
+        fare_stop.(
+          "BROWSER_FZ_EAST_#{index}",
+          "Riverside #{index}",
+          42.300 + (index - 1) * 0.002,
+          -71.019 + (index - 1) * 0.001,
+          "B",
+          %{}
+        )
+      end
+
+    fare_unassigned_stops =
+      for index <- 1..4 do
+        fare_stop.(
+          "BROWSER_FZ_UNASSIGNED_#{index}",
+          "Bayline #{index}",
+          42.330 + (index - 1) * 0.002,
+          -71.005 + (index - 1) * 0.001,
+          nil,
+          %{}
+        )
+      end
+
+    fare_station_stops = [
+      fare_stop.("BROWSER_FZ_STATION", "Central Union Station", 42.400, -71.030, "A", %{
+        location_type: 1
+      }),
+      fare_stop.("BROWSER_FZ_PLATFORM_1", "Central Union Platform 1", 42.400, -71.030, "A", %{
+        parent_station: "BROWSER_FZ_STATION",
+        platform_code: "1"
+      }),
+      fare_stop.("BROWSER_FZ_PLATFORM_2", "Central Union Platform 2", 42.400, -71.029, "A", %{
+        parent_station: "BROWSER_FZ_STATION",
+        platform_code: "2"
+      })
+    ]
+
+    fare_depot_stop = fare_stop.("BROWSER_FZ_DEPOT", "Central Depot", nil, nil, "A", %{})
+
+    fare_zone_stops =
+      fare_west_stops ++
+        fare_east_stops ++ fare_unassigned_stops ++ fare_station_stops ++ [fare_depot_stop]
+
+    {fare_zone_stop_count, nil} = Repo.insert_all(Stop, fare_zone_stops)
+
+    {2, nil} =
+      Repo.insert_all(
+        FareAttribute,
+        Enum.map([{"CITY", "2.50"}, {"CROSS", "3.75"}], fn {fare_id, price} ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: fare_zones_version.id,
+            fare_id: fare_id,
+            price: Decimal.new(price),
+            currency_type: "USD",
+            payment_method: 0,
+            inserted_at: fare_seed_at,
+            updated_at: fare_seed_at
+          }
+        end)
+      )
+
+    {:ok, _fare_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: fare_zones_version.id,
+        route_id: "BROWSER_FARE_ROUTE",
+        route_short_name: "FR",
+        route_long_name: "Browser Fare Route",
+        route_type: 3,
+        route_color: "0055AA"
+      })
+
+    # CITY A→A and CITY C→A (C has no stops and no record, so the Checks tab has
+    # a stopless reference), CROSS A→B, and CROSS through A + B (two rows of one
+    # rule). Four rule groups, five rows.
+    fare_rule_rows = [
+      {"CITY", nil, "A", "A", nil},
+      {"CROSS", nil, "A", "B", nil},
+      {"CROSS", nil, nil, nil, "A"},
+      {"CROSS", nil, nil, nil, "B"},
+      {"CITY", nil, "C", "A", nil}
+    ]
+
+    {5, nil} =
+      Repo.insert_all(
+        FareRule,
+        Enum.map(fare_rule_rows, fn {fare_id, route_id, origin_id, destination_id, contains_id} ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: fare_zones_version.id,
+            fare_id: fare_id,
+            route_id: route_id,
+            origin_id: origin_id,
+            destination_id: destination_id,
+            contains_id: contains_id,
+            inserted_at: fare_seed_at,
+            updated_at: fare_seed_at
+          }
+        end)
+      )
+
+    fare_scale_zones = ~w(A B C D E)
+
+    Enum.each(0..4, fn batch ->
+      rows =
+        for index <- (batch * 2_000)..(batch * 2_000 + 1_999) do
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: fare_scale_version.id,
+            stop_id:
+              "BROWSER_FZ_SCALE_" <> String.pad_leading(Integer.to_string(index + 1), 5, "0"),
+            stop_name: "Scale Stop #{index + 1}",
+            stop_lat: fare_coordinate.(42.000 + rem(index, 100) * 0.002),
+            stop_lon: fare_coordinate.(-71.000 - div(index, 100) * 0.002),
+            location_type: 0,
+            zone_id: Enum.at(fare_scale_zones, rem(index, 5)),
+            inserted_at: fare_seed_at,
+            updated_at: fare_seed_at
+          }
+        end
+
+      {2_000, nil} = Repo.insert_all(Stop, rows)
+    end)
+
+    # The seed is its own verifier: it reads both versions back through the
+    # production functions and fails loudly rather than printing counts a later
+    # UI step cannot rely on.
+    %{zones: fare_zone_list, unassigned_count: fare_unassigned, boardable_count: fare_boardable} =
+      FareZones.inventory(org.id, fare_zones_version.id)
+
+    %{stopless_referenced: fare_stopless, empty_declared: fare_empty_declared} =
+      FareZones.checks(org.id, fare_zones_version.id)
+
+    fare_points = FareZones.list_stop_points(org.id, fare_zones_version.id)
+    fare_rule_groups = FareZones.list_rule_groups(org.id, fare_zones_version.id)
+    fare_fares = FareZones.list_fares(org.id, fare_zones_version.id)
+
+    %{
+      zones: fare_scale_zone_list,
+      boardable_count: fare_scale_boardable,
+      unassigned_count: fare_scale_unassigned
+    } = FareZones.inventory(org.id, fare_scale_version.id)
+
+    fare_scale_points = FareZones.list_stop_points(org.id, fare_scale_version.id)
+
+    fare_lons = Enum.map(fare_points, fn point -> Enum.at(point, 4) end)
+    fare_midpoint = (Enum.min(fare_lons) + Enum.max(fare_lons)) / 2
+    fare_west_points = Enum.filter(fare_points, fn point -> Enum.at(point, 4) < fare_midpoint end)
+    fare_west_lon = fare_west_points |> Enum.map(&Enum.at(&1, 4)) |> Enum.max()
+    fare_east_lon = fare_lons |> Enum.filter(&(&1 > fare_midpoint)) |> Enum.min()
+    fare_gap = fare_east_lon - fare_west_lon
+
+    expect = fn
+      true, _message -> :ok
+      false, message -> raise "Browser seed fare-zone check failed: #{message}"
+    end
+
+    expect.(fare_zone_stop_count == 28, "expected 28 stop rows, got #{fare_zone_stop_count}")
+    expect.(fare_boardable == 27, "expected 27 boardable stops, got #{fare_boardable}")
+    expect.(length(fare_points) == 26, "expected 26 map points, got #{length(fare_points)}")
+    expect.(fare_unassigned == 4, "expected 4 unassigned stops, got #{fare_unassigned}")
+
+    expect.(
+      Enum.sort(Enum.map(fare_zone_list, &{&1.zone_id, &1.stop_count, &1.other_stop_count})) ==
+        Enum.sort([{"A", 11, 1}, {"B", 12, 0}, {"C", 0, 0}, {"D", 0, 0}]),
+      "unexpected zone counts: #{inspect(fare_zone_list)}"
+    )
+
+    expect.(Enum.map(fare_stopless, & &1.zone_id) == ["C"], "expected stopless C")
+    expect.(Enum.map(fare_empty_declared, & &1.zone_id) == ["D"], "expected empty declared D")
+
+    expect.(
+      Enum.sort(
+        Enum.map(fare_rule_groups, fn group ->
+          {group.fare_id, group.origin_id, group.destination_id, group.contains}
+        end)
+      ) ==
+        Enum.sort([
+          {"CITY", "A", "A", []},
+          {"CITY", "C", "A", []},
+          {"CROSS", "A", "B", []},
+          {"CROSS", nil, nil, ["A", "B"]}
+        ]),
+      "unexpected fare rule groups: #{inspect(fare_rule_groups)}"
+    )
+
+    expect.(
+      fare_fares == [
+        %{fare_id: "CITY", price: Decimal.new("2.50"), currency_type: "USD"},
+        %{fare_id: "CROSS", price: Decimal.new("3.75"), currency_type: "USD"}
+      ],
+      "unexpected fares: #{inspect(fare_fares)}"
+    )
+
+    expect.(length(fare_west_points) == 8, "expected 8 stops west of the midpoint")
+    expect.(fare_gap >= 0.02, "expected a longitude gap of at least 0.02, got #{fare_gap}")
+
+    expect.(
+      fare_scale_boardable == 10_000,
+      "unexpected scale boardable count: #{fare_scale_boardable}"
+    )
+
+    expect.(
+      Enum.sort(Enum.map(fare_scale_zone_list, &{&1.zone_id, &1.stop_count})) ==
+        Enum.sort([{"A", 2_000}, {"B", 2_000}, {"C", 2_000}, {"D", 2_000}, {"E", 2_000}]),
+      "unexpected scale zone counts: #{inspect(fare_scale_zone_list)}"
+    )
+
+    expect.(
+      length(fare_scale_points) == 10_000,
+      "expected 10,000 scale map points, got #{length(fare_scale_points)}"
+    )
+
+    expect.(fare_scale_unassigned == 0, "expected no unassigned scale stops")
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Version (#{fare_zones_version.id}) — " <>
+        "#{fare_boardable} boardable stops (#{length(fare_points)} with coordinates, " <>
+        "#{fare_boardable - length(fare_points)} without), #{fare_unassigned} unassigned, " <>
+        "#{length(fare_fares)} fares, #{length(fare_rule_groups)} fare rules in the version"
+    )
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Version geography — fitted midpoint longitude " <>
+        "#{Float.round(fare_midpoint, 4)}, #{length(fare_west_points)} stops west of it " <>
+        "(eastmost #{Float.round(fare_west_lon, 4)}), nearest east stop " <>
+        "#{Float.round(fare_east_lon, 4)}, gap #{Float.round(fare_gap, 4)} degrees"
+    )
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Version zones — " <>
+        Enum.map_join(fare_zone_list, ", ", fn zone ->
+          "#{zone.zone_id}=#{zone.name}:#{zone.stop_count}"
+        end) <>
+        "; stopless referenced " <>
+        Enum.map_join(fare_stopless, ",", & &1.zone_id) <>
+        "; empty declared " <> Enum.map_join(fare_empty_declared, ",", & &1.zone_id)
+    )
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Scale Version (#{fare_scale_version.id}) — " <>
+        "#{fare_scale_boardable} located boardable stops in " <>
+        "#{length(fare_scale_zone_list)} zones (" <>
+        Enum.map_join(fare_scale_zone_list, ", ", fn zone ->
+          "#{zone.zone_id}=#{zone.stop_count}"
+        end) <> ")"
+    )
+
     diagram_version
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
     |> Repo.update!()
@@ -2533,6 +2877,573 @@ case Accounts.register_first_admin(%{
         "(62-occurrence pattern, linked series, frequency, custom and after-midnight trips)"
     )
 
+    # ── Blocks browser journey (EV-28, step 29) ──
+    #
+    # A published "Browser Blocks Version" carries the Blocks page's own day types
+    # and records, isolated from every other scenario by its version and by its
+    # `BB_`/`BB-` names:
+    #
+    #   * two weekday calendars that share dates — "Weekday service" every weekday
+    #     and "School days" on Monday, Wednesday and Friday — plus a Saturday
+    #     calendar, so the derived day types are {SCHOOL, WEEK} (largest, the page's
+    #     default), {WEEK} alone and {SAT};
+    #   * 34 blocks on the largest day type: 21 ordinary two-trip blocks plus the
+    #     interlining, after-midnight, 5-minute, nested-overlap, short-layover,
+    #     120 m handoff, 340 m empty-move, matching-record, stale-record, cross-day
+    #     overlap, assignment-target and busiest blocks;
+    #   * 130 unassigned trips over two pool pages, including a frequency trip and a
+    #     trip whose endpoint times are missing;
+    #   * a trip that runs on both weekday day types and is assigned by the journey
+    #     to the block whose school-day trip it overlaps only on the larger day type;
+    #   * one matching and one stale type-4 transfer record.
+    blocks_version_name = "Browser Blocks Version"
+
+    {:ok, blocks_version} =
+      Versions.create_gtfs_version(org.id, %{name: blocks_version_name})
+
+    block_week_start = ~D[2026-09-07]
+    block_week_end = ~D[2026-10-30]
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, blocks_version.id, %{
+      service_id: "BB_WEEK",
+      name: "Weekday service",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, blocks_version.id, %{
+      service_id: "BB_SCHOOL",
+      name: "School days",
+      monday: 1,
+      tuesday: 0,
+      wednesday: 1,
+      thursday: 0,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, blocks_version.id, %{
+      service_id: "BB_SAT",
+      name: "Saturday service",
+      monday: 0,
+      tuesday: 0,
+      wednesday: 0,
+      thursday: 0,
+      friday: 0,
+      saturday: 1,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    # Every block-route handoff uses one of these stops, so a layover is a same-stop
+    # handoff unless a block deliberately moves the vehicle: BB_S6→BB_S7 is 120 m
+    # (a nearby handoff, no notice) and BB_S8→BB_S9 is 340 m (an empty move, the
+    # `:repositions` notice).
+    block_stops =
+      [
+        {"BB_S1", 40.7500, -73.9900},
+        {"BB_S2", 40.7550, -73.9850},
+        {"BB_S3", 40.7600, -73.9800},
+        {"BB_S4", 40.7650, -73.9750},
+        {"BB_S5", 40.7700, -73.9700},
+        {"BB_S6", 40.7800, -73.9600},
+        {"BB_S7", 40.7810782, -73.9600},
+        {"BB_S8", 40.7900, -73.9500},
+        {"BB_S9", 40.7930540, -73.9500}
+      ]
+      |> Map.new(fn {stop_id, lat, lon} ->
+        stop =
+          GtfsPlanner.GtfsFixtures.stop_fixture(org.id, blocks_version.id, %{
+            stop_id: stop_id,
+            stop_name: "Blocks stop #{stop_id}",
+            stop_lat: lat,
+            stop_lon: lon
+          })
+
+        {stop_id, stop}
+      end)
+
+    block_routes =
+      [{"BB_R1", "BR1", "Blocks Riverside"}, {"BB_R2", "BR2", "Blocks Central"}]
+      |> Map.new(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: blocks_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: "0055AA"
+          })
+
+        {route_id, route}
+      end)
+
+    # `HH:MM:SS` from seconds after midnight, so the block times stay readable and
+    # the after-midnight block is written as 24:30:00 instead of 00:30:00.
+    block_clock = fn secs ->
+      period = rem(secs, 86_400)
+
+      [div(period, 3600), div(rem(period, 3600), 60), rem(period, 60)]
+      |> Enum.map_join(":", &String.pad_leading(Integer.to_string(&1), 2, "0"))
+    end
+
+    block_trip = fn attrs ->
+      attrs = Map.new(attrs)
+      route_id = Map.fetch!(attrs, :route_id)
+
+      stop_times =
+        %{
+          first_stop: Map.get(attrs, :first_stop, "BB_S1"),
+          last_stop: Map.get(attrs, :last_stop, "BB_S1"),
+          first_arrival: "08:00:00",
+          last_arrival: "08:30:00"
+        }
+        |> Map.merge(
+          Map.take(attrs, [:first_arrival, :first_departure, :last_arrival, :last_departure])
+        )
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        blocks_version.id,
+        Map.fetch!(block_routes, route_id).route_id,
+        Map.merge(stop_times, %{
+          trip_id: Map.fetch!(attrs, :trip_id),
+          service_id: Map.get(attrs, :service_id, "BB_WEEK"),
+          block_id: Map.get(attrs, :block_id),
+          trip_headsign: Map.get(attrs, :trip_headsign, "Blocks journey")
+        })
+      )
+    end
+
+    # 21 ordinary blocks: two 15-minute trips 25 minutes apart, both handoffs at
+    # BB_S2, so the block has no findings. The first trip of the first block leaves
+    # at 05:00, which is the day's earliest departure and the axis floor.
+    for index <- 1..21 do
+      block_id = "BB-" <> String.pad_leading(Integer.to_string(index), 2, "0")
+      base = 300 + (index - 1) * 22
+
+      block_trip.(%{
+        trip_id: "BB_T#{index}A",
+        route_id: "BB_R1",
+        block_id: block_id,
+        first_arrival: block_clock.(base * 60),
+        last_arrival: block_clock.((base + 15) * 60),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+      block_trip.(%{
+        trip_id: "BB_T#{index}B",
+        route_id: "BB_R1",
+        block_id: block_id,
+        first_arrival: block_clock.((base + 40) * 60),
+        last_arrival: block_clock.((base + 55) * 60),
+        first_stop: "BB_S2",
+        last_stop: "BB_S1"
+      })
+    end
+
+    # BB-LONG carries the journey's known Zoom bar: three hours of a 21-hour axis,
+    # far above the bar's 26px floor, so Zoom doubles its rendered width exactly.
+    block_trip.(%{
+      trip_id: "BB_LONG",
+      route_id: "BB_R1",
+      block_id: "BB-LONG",
+      first_arrival: "05:15:00",
+      last_arrival: "08:15:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_LONG_2",
+      route_id: "BB_R1",
+      block_id: "BB-LONG",
+      first_arrival: "09:00:00",
+      last_arrival: "10:00:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S1"
+    })
+
+    # Interlining: one vehicle, two routes.
+    block_trip.(%{
+      trip_id: "BB_INTER_A",
+      route_id: "BB_R1",
+      block_id: "BB-INTER",
+      first_arrival: "06:00:00",
+      last_arrival: "06:40:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_INTER_B",
+      route_id: "BB_R2",
+      block_id: "BB-INTER",
+      first_arrival: "06:50:00",
+      last_arrival: "07:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    # After midnight: the last arrival is 25:30, so the End cell reads 01:30 +1d and
+    # the axis ceiling is 26:00.
+    block_trip.(%{
+      trip_id: "BB_MIDNIGHT_A",
+      route_id: "BB_R1",
+      block_id: "BB-MIDNIGHT",
+      first_arrival: "23:00:00",
+      last_arrival: "23:40:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_MIDNIGHT_B",
+      route_id: "BB_R1",
+      block_id: "BB-MIDNIGHT",
+      first_arrival: "24:30:00",
+      last_arrival: "25:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S1"
+    })
+
+    # A five-minute trip: its bar is under the 26px floor, so it stays 26px wide at
+    # both scales (the journey's Zoom bar is BB-LONG for that reason).
+    block_trip.(%{
+      trip_id: "BB_SHORT_HOP",
+      route_id: "BB_R1",
+      block_id: "BB-SHORT",
+      first_arrival: "06:00:00",
+      last_arrival: "06:05:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_SHORT_AFTER",
+      route_id: "BB_R1",
+      block_id: "BB-SHORT",
+      first_arrival: "10:00:00",
+      last_arrival: "10:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S1"
+    })
+
+    # Nested overlap: A overlaps B and C, and B overlaps C.
+    for {trip_id, start_sec, end_sec} <- [
+          {"BB_NEST_A", 28_800, 39_600},
+          {"BB_NEST_B", 32_400, 36_000},
+          {"BB_NEST_C", 34_200, 37_800}
+        ] do
+      block_trip.(%{
+        trip_id: trip_id,
+        route_id: "BB_R1",
+        block_id: "BB-NEST",
+        first_arrival: block_clock.(start_sec),
+        last_arrival: block_clock.(end_sec),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+    end
+
+    # A two-minute layover: below the default five-minute minimum, so the block
+    # carries a short-layover warning.
+    block_trip.(%{
+      trip_id: "BB_SL_A",
+      route_id: "BB_R1",
+      block_id: "BB-SHORTLAY",
+      first_arrival: "11:00:00",
+      last_arrival: "11:30:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_SL_B",
+      route_id: "BB_R1",
+      block_id: "BB-SHORTLAY",
+      first_arrival: "11:32:00",
+      last_arrival: "12:00:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    # A 120 m handoff: nearby, so the gap reads as a walk rather than a move.
+    block_trip.(%{
+      trip_id: "BB_HD_A",
+      route_id: "BB_R1",
+      block_id: "BB-HANDOFF",
+      first_arrival: "12:00:00",
+      last_arrival: "12:30:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S6"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_HD_B",
+      route_id: "BB_R1",
+      block_id: "BB-HANDOFF",
+      first_arrival: "12:45:00",
+      last_arrival: "13:15:00",
+      first_stop: "BB_S7",
+      last_stop: "BB_S2"
+    })
+
+    # A 340 m empty move: beyond 200 m, so the block carries the reposition notice.
+    block_trip.(%{
+      trip_id: "BB_MOVE_A",
+      route_id: "BB_R1",
+      block_id: "BB-MOVE",
+      first_arrival: "13:30:00",
+      last_arrival: "14:00:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S8"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_MOVE_B",
+      route_id: "BB_R1",
+      block_id: "BB-MOVE",
+      first_arrival: "14:15:00",
+      last_arrival: "14:45:00",
+      first_stop: "BB_S9",
+      last_stop: "BB_S2"
+    })
+
+    # A matching type-4 record: the consecutive pair of BB-MATCH, whose stored
+    # endpoint stops are the pair's own last and first stops.
+    match_a =
+      block_trip.(%{
+        trip_id: "BB_MATCH_A",
+        route_id: "BB_R1",
+        block_id: "BB-MATCH",
+        first_arrival: "07:00:00",
+        last_arrival: "07:30:00",
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+    match_b =
+      block_trip.(%{
+        trip_id: "BB_MATCH_B",
+        route_id: "BB_R1",
+        block_id: "BB-MATCH",
+        first_arrival: "07:45:00",
+        last_arrival: "08:15:00",
+        first_stop: "BB_S2",
+        last_stop: "BB_S3"
+      })
+
+    GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+      org.id,
+      blocks_version.id,
+      match_a,
+      match_b
+    )
+
+    # A stale type-4 record: BB_STALE_A→BB_STALE_C skips BB_STALE_B, so the record
+    # is not the block's next pair on either weekday day type.
+    stale_a =
+      block_trip.(%{
+        trip_id: "BB_STALE_A",
+        route_id: "BB_R1",
+        block_id: "BB-STALE",
+        first_arrival: "15:00:00",
+        last_arrival: "15:30:00",
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+    block_trip.(%{
+      trip_id: "BB_STALE_B",
+      route_id: "BB_R1",
+      block_id: "BB-STALE",
+      first_arrival: "15:40:00",
+      last_arrival: "16:10:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    stale_c =
+      block_trip.(%{
+        trip_id: "BB_STALE_C",
+        route_id: "BB_R1",
+        block_id: "BB-STALE",
+        first_arrival: "16:20:00",
+        last_arrival: "16:50:00",
+        first_stop: "BB_S3",
+        last_stop: "BB_S1"
+      })
+
+    GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+      org.id,
+      blocks_version.id,
+      stale_a,
+      stale_c
+    )
+
+    # A cross-day overlap: the Friday-only school trip overlaps the weekday trip,
+    # so the block has one error on {SCHOOL, WEEK} and none on {WEEK} alone.
+    block_trip.(%{
+      trip_id: "BB_XOVER_A",
+      route_id: "BB_R1",
+      block_id: "BB-XOVER",
+      first_arrival: "08:00:00",
+      last_arrival: "09:00:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_XOVER_B",
+      route_id: "BB_R2",
+      service_id: "BB_SCHOOL",
+      block_id: "BB-XOVER",
+      first_arrival: "08:30:00",
+      last_arrival: "09:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    # The journey's assignment target. On {WEEK} the block holds BB_TARGET_A alone
+    # and BB_SHARED fits beside it; on {SCHOOL, WEEK} the school trip BB_TARGET_B is
+    # there too and BB_SHARED overlaps it, so the review lists the second day type
+    # under “Also changes”.
+    block_trip.(%{
+      trip_id: "BB_TARGET_A",
+      route_id: "BB_R1",
+      block_id: "BB-TARGET",
+      first_arrival: "07:00:00",
+      last_arrival: "07:30:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S3"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_TARGET_B",
+      route_id: "BB_R2",
+      service_id: "BB_SCHOOL",
+      block_id: "BB-TARGET",
+      first_arrival: "10:00:00",
+      last_arrival: "11:00:00",
+      first_stop: "BB_S4",
+      last_stop: "BB_S5"
+    })
+
+    # The busiest block, so sorting by Trips moves it to the top of the page.
+    for slot <- 0..5 do
+      base = 1020 + slot * 40
+
+      block_trip.(%{
+        trip_id: "BB_BUSY_#{slot}",
+        route_id: "BB_R1",
+        block_id: "BB-BUSIEST",
+        first_arrival: block_clock.(base * 60),
+        last_arrival: block_clock.((base + 15) * 60),
+        first_stop: "BB_S1",
+        last_stop: "BB_S1"
+      })
+    end
+
+    # The third day type: two Saturday trips in their own block.
+    for {trip_id, from_sec} <- [{"BB_SAT_A", 36_000}, {"BB_SAT_B", 43_200}] do
+      block_trip.(%{
+        trip_id: trip_id,
+        route_id: "BB_R1",
+        service_id: "BB_SAT",
+        block_id: "BB-SAT",
+        first_arrival: block_clock.(from_sec),
+        last_arrival: block_clock.(from_sec + 1800),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+    end
+
+    # 127 ordinary unassigned trips every six minutes from 05:00, each five minutes
+    # long. With the frequency trip, the untimed trip and the journey's own
+    # BB_SHARED the pool holds exactly 130 trips over two pages: 100 and 30.
+    for index <- 1..127 do
+      base = 300 + (index - 1) * 6
+
+      block_trip.(%{
+        trip_id: "BB_POOL_" <> String.pad_leading(Integer.to_string(index), 3, "0"),
+        route_id: if(rem(index, 2) == 0, do: "BB_R2", else: "BB_R1"),
+        first_arrival: block_clock.(base * 60),
+        last_arrival: block_clock.((base + 5) * 60),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+    end
+
+    # The unassigned frequency trip: in the pool, never optional to assign.
+    block_frequency_trip =
+      block_trip.(%{
+        trip_id: "BB_POOL_FREQ",
+        route_id: "BB_R1",
+        first_arrival: "06:30:00",
+        last_arrival: "07:00:00",
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+    GtfsPlanner.GtfsFixtures.frequency_fixture(
+      org.id,
+      blocks_version.id,
+      block_frequency_trip.trip_id,
+      %{
+        start_time: "06:30:00",
+        end_time: "09:00:00",
+        headway_secs: 1200
+      }
+    )
+
+    # The unassigned trip with no usable endpoint times: it lists last in the pool.
+    block_trip.(%{
+      trip_id: "BB_POOL_UNTIMED",
+      route_id: "BB_R2",
+      first_arrival: nil,
+      first_departure: nil,
+      last_arrival: nil,
+      last_departure: nil,
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    # The trip the journey assigns: it runs on both weekday day types and is not
+    # the school trip, so it is the one whose overlap appears only on the larger
+    # day type.
+    block_trip.(%{
+      trip_id: "BB_SHARED",
+      route_id: "BB_R1",
+      first_arrival: "09:30:00",
+      last_arrival: "10:30:00",
+      first_stop: "BB_S3",
+      last_stop: "BB_S4"
+    })
+
+    blocks_day_trips =
+      Repo.aggregate(from(t in Gtfs.Trip, where: t.gtfs_version_id == ^blocks_version.id), :count)
+
+    IO.puts(
+      "Browser seed: version #{blocks_version.name} (#{blocks_version.id}) with 34 weekday blocks, " <>
+        "#{blocks_day_trips} trips, a frequency trip, an unplottable trip and two type-4 records " <>
+        "across #{map_size(block_stops)} stops and #{map_size(block_routes)} routes"
+    )
+
     {:ok, schedules_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Schedules No Calendars"})
 
@@ -2551,7 +3462,755 @@ case Accounts.register_first_admin(%{
         "(#{schedules_version.id})"
     )
 
+    # ── Transfer management fixtures (Routes › Transfers) ──
+    #
+    # A dedicated published version carries the transfer network so the shared
+    # Browser E2E Version keeps the route, stop and trip counts other specs assert
+    # on. Its `published_at` is backdated so it never becomes the organization's
+    # latest published default; the Transfers journeys reach it by this version id.
+    {:ok, transfers_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Transfers Version"})
+
+    transfers_version =
+      Repo.update!(
+        Ecto.Changeset.change(transfers_version,
+          published_at: ~U[2020-01-01 00:00:00.000000Z]
+        )
+      )
+
+    # The station BXF_CEN with its two platforms and an entrance, plus the three
+    # top-level stops the trips call at. Children go through the import changeset,
+    # the permissive path the import workflow uses for the same shape. An entrance
+    # (location_type 2) is deliberately present so station coverage has to exclude
+    # it.
+    create_transfer_stop = fn stop_id, stop_name, attrs ->
+      attrs =
+        Map.merge(
+          Map.new(attrs),
+          %{
+            stop_id: stop_id,
+            stop_name: stop_name,
+            organization_id: org.id,
+            gtfs_version_id: transfers_version.id
+          }
+        )
+
+      if attrs[:parent_station] do
+        %Stop{}
+        |> Stop.import_changeset(attrs)
+        |> Repo.insert!()
+      else
+        {:ok, stop} = Gtfs.create_stop(attrs)
+        stop
+      end
+    end
+
+    create_transfer_stop.("BXF_CEN", "Transfer Central Station",
+      location_type: 1,
+      stop_lat: Decimal.new("40.0390"),
+      stop_lon: Decimal.new("-75.1440")
+    )
+
+    create_transfer_stop.("BXF_CEN_A", "Transfer Central · Bay A",
+      parent_station: "BXF_CEN",
+      location_type: 0,
+      platform_code: "A",
+      stop_lat: Decimal.new("40.0391"),
+      stop_lon: Decimal.new("-75.1442")
+    )
+
+    create_transfer_stop.("BXF_CEN_C", "Transfer Central · Bay C",
+      parent_station: "BXF_CEN",
+      location_type: 0,
+      platform_code: "C",
+      stop_lat: Decimal.new("40.0392"),
+      stop_lon: Decimal.new("-75.1438")
+    )
+
+    create_transfer_stop.("BXF_CEN_E", "Transfer Central · Main entrance",
+      parent_station: "BXF_CEN",
+      location_type: 2,
+      stop_lat: Decimal.new("40.0393"),
+      stop_lon: Decimal.new("-75.1441")
+    )
+
+    create_transfer_stop.("BXF_MKT", "Transfer Market Street",
+      location_type: 0,
+      stop_lat: Decimal.new("40.0450"),
+      stop_lon: Decimal.new("-75.1500")
+    )
+
+    create_transfer_stop.("BXF_HBR", "Transfer Harbor",
+      location_type: 0,
+      stop_lat: Decimal.new("40.0330"),
+      stop_lon: Decimal.new("-75.1380")
+    )
+
+    create_transfer_stop.("BXF_MUS", "Transfer Museum",
+      location_type: 0,
+      stop_lat: Decimal.new("40.0420"),
+      stop_lon: Decimal.new("-75.1560")
+    )
+
+    [
+      {"BXF_12", "12", "Riverside"},
+      {"BXF_24", "24", "Harbor"},
+      {"BXF_6", "6", "Museum"}
+    ]
+    |> Enum.each(fn {route_id, short_name, long_name} ->
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: transfers_version.id,
+          route_id: route_id,
+          route_short_name: short_name,
+          route_long_name: long_name,
+          route_type: 3
+        })
+    end)
+
+    [
+      {"BXF_12_0815", "BXF_12", "Harbor",
+       [{"BXF_CEN_A", "08:15:00"}, {"BXF_MKT", "08:25:00"}, {"BXF_HBR", "08:40:00"}]},
+      {"BXF_12_1010", "BXF_12", "Harbor", [{"BXF_MKT", "10:10:00"}, {"BXF_HBR", "10:25:00"}]},
+      {"BXF_24_0840", "BXF_24", "Market Street",
+       [{"BXF_CEN_C", "08:40:00"}, {"BXF_HBR", "08:55:00"}, {"BXF_MKT", "09:10:00"}]},
+      {"BXF_24_0950", "BXF_24", "Market Street",
+       [{"BXF_CEN_A", "09:50:00"}, {"BXF_HBR", "10:05:00"}]},
+      {"BXF_6_0815", "BXF_6", "Central", [{"BXF_MUS", "08:15:00"}, {"BXF_CEN_A", "08:30:00"}]}
+    ]
+    |> Enum.each(fn {trip_id, route_id, headsign, stop_times} ->
+      {:ok, _trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: transfers_version.id,
+          route_id: route_id,
+          trip_id: trip_id,
+          service_id: "BXF_WKDY",
+          trip_headsign: headsign
+        })
+
+      stop_times
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{stop_id, time}, stop_sequence} ->
+        {:ok, _stop_time} =
+          Gtfs.create_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: transfers_version.id,
+            trip_id: trip_id,
+            stop_id: stop_id,
+            stop_sequence: stop_sequence,
+            arrival_time: time,
+            departure_time: time
+          })
+      end)
+    end)
+
+    # Eight general rules (types 0-3) and two in-seat rows (types 4 and 5),
+    # inserted through the import changeset: an ordinary imported shape, not an
+    # audited editor write. Rule 5 deliberately competes with rule 4 on the
+    # BXF_CEN_A / BXF_12_0815 → BXF_CEN_A / BXF_24_0950 witness, which rule 1 does
+    # not cover, so the Needs attention and Compare rules journeys have a real
+    # conflict; rule 8 names a route the version does not have, so it needs
+    # attention for a different reason.
+    [
+      %{
+        from_stop_id: "BXF_CEN_A",
+        to_stop_id: "BXF_CEN_C",
+        from_route_id: "BXF_12",
+        to_route_id: "BXF_24",
+        transfer_type: 2,
+        min_transfer_time: 180
+      },
+      %{
+        from_stop_id: "BXF_CEN_C",
+        to_stop_id: "BXF_CEN_A",
+        from_route_id: "BXF_24",
+        to_route_id: "BXF_12",
+        transfer_type: 2,
+        min_transfer_time: 240
+      },
+      %{from_stop_id: "BXF_CEN", to_stop_id: "BXF_CEN", transfer_type: 2, min_transfer_time: 300},
+      %{
+        from_stop_id: "BXF_CEN",
+        to_stop_id: "BXF_CEN",
+        from_route_id: "BXF_12",
+        transfer_type: 2,
+        min_transfer_time: 120
+      },
+      %{from_stop_id: "BXF_CEN", to_stop_id: "BXF_CEN", to_route_id: "BXF_24", transfer_type: 3},
+      %{
+        from_stop_id: "BXF_MKT",
+        to_stop_id: "BXF_MKT",
+        from_route_id: "BXF_12",
+        to_route_id: "BXF_24",
+        transfer_type: 1
+      },
+      %{from_stop_id: "BXF_MUS", to_stop_id: "BXF_HBR", transfer_type: 3},
+      %{
+        from_stop_id: "BXF_HBR",
+        to_stop_id: "BXF_HBR",
+        from_route_id: "BXF_GONE",
+        transfer_type: 0
+      },
+      %{
+        from_stop_id: "BXF_CEN",
+        to_stop_id: "BXF_CEN",
+        from_trip_id: "BXF_12_0815",
+        to_trip_id: "BXF_24_0840",
+        transfer_type: 4
+      },
+      %{
+        from_trip_id: "BXF_24_0840",
+        to_trip_id: "BXF_12_1010",
+        transfer_type: 5
+      }
+    ]
+    |> Enum.each(fn attrs ->
+      %Transfer{}
+      |> Transfer.changeset(
+        Map.merge(attrs, %{
+          organization_id: org.id,
+          gtfs_version_id: transfers_version.id
+        })
+      )
+      |> Repo.insert!()
+    end)
+
+    IO.puts(
+      "Browser seed: transfers version #{transfers_version.name} (#{transfers_version.id}) with 8 general rules and 2 in-seat rows"
+    )
+
+    # ── Feed details page (settings_agencies_feed.spec.js; EV-4, EV-5) ──
+    #
+    # Two published versions give the Feed details page its two states: one with a
+    # stored `feed_info` row, and one without. They are created last, so the
+    # version that was the organization's latest default before this block is
+    # re-stamped afterwards and the selection the other journeys start from does
+    # not move.
+    {:ok, feed_details_default_before} = Versions.get_latest_gtfs_version(org.id)
+
+    {:ok, feed_details_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Feed Details Version"})
+
+    # Inserted directly: this supplies scenario data, not an audited editor save.
+    Repo.insert!(%FeedInfo{
+      organization_id: org.id,
+      gtfs_version_id: feed_details_version.id,
+      feed_publisher_name: "Browser Regional Partnership",
+      feed_publisher_url: "https://example.test/data",
+      feed_lang: "en",
+      default_lang: "en",
+      feed_start_date: ~D[2026-09-01],
+      feed_end_date: ~D[2026-12-31],
+      feed_version: "2026-autumn",
+      feed_contact_email: "data@example.test",
+      feed_contact_url: "https://example.test/data/contact"
+    })
+
+    {:ok, feed_empty_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Feed Empty Version"})
+
+    feed_details_default_before
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: feed details version #{feed_details_version.id} with feed info, " <>
+        "empty version #{feed_empty_version.id}, default kept as #{feed_details_default_before.name}"
+    )
+
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
+
+    # ── Pattern alignment fixtures (spec 12, step 20 and every later visual step) ──
+    #
+    # One route holds the shell captures: A has four visits with one missing
+    # section, a stop pair shared with B and linked trips; B is drawn through
+    # the production review/apply composition as the seeded editor, so it has
+    # a shared path and an owned shape. LOOP is a drawn loop, IMPORTED carries
+    # linked trips on two imported shapes, LONG has 200 visits, GEN-1/GEN-2
+    # are missing (GEN-1 touches the 40.7500 stop), ACTIONS holds a drawn
+    # five-point section for the step 26 Simplify capture on its own stop
+    # pair (so shared-user counts on A/B never move), and the -B patterns are
+    # clean copies for the 320 px runs. Tile requests in later steps go
+    # through the existing /map/tiles proxy; no live Geoapify call happens here.
+    Enum.each(
+      [
+        {"AL_S1", "Align Central", "40.712800", "-74.006000"},
+        {"AL_S2", "Align Civic", "40.713800", "-74.005000"},
+        {"AL_S3", "Align Market", "40.714800", "-74.004000"},
+        {"AL_S4", "Align Harbor", "40.715800", "-74.003000"},
+        {"AL_S5", "Align Park", "40.716800", "-74.002000"},
+        {"AL_A1", "Actions North", "40.730000", "-73.990000"},
+        {"AL_A2", "Actions Central", "40.731000", "-73.989000"},
+        {"AL_A3", "Actions South", "40.732000", "-73.988000"},
+        {"AL_G1", "Gen Hilltop", "40.750000", "-73.980000"},
+        {"AL_G2", "Gen Valley", "40.751000", "-73.979000"}
+      ],
+      fn {stop_id, name, lat, lon} ->
+        {:ok, _stop} =
+          Gtfs.create_stop(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            stop_id: stop_id,
+            stop_name: name,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon),
+            location_type: 0
+          })
+      end
+    )
+
+    {:ok, align_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_ALIGN",
+        route_short_name: "AL",
+        route_long_name: "Browser Alignment",
+        route_type: 3
+      })
+
+    align_pattern = fn pattern_id ->
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: align_route.route_id,
+        route_pattern_id: pattern_id,
+        route_pattern_name: pattern_id,
+        direction_id: 0
+      })
+    end
+
+    align_occurrences = fn pattern, stop_ids ->
+      stop_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop_id, position} ->
+        GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(
+          pattern,
+          stop_id,
+          position
+        )
+      end)
+    end
+
+    align_timing = fn pattern, occurrences ->
+      timing =
+        GtfsPlanner.GtfsFixtures.timed_pattern_fixture(pattern, %{name: "Alignment"})
+
+      Enum.each(occurrences, fn occurrence ->
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, occurrence, %{
+          arrival_offset: 0,
+          departure_offset: 0
+        })
+      end)
+
+      timing
+    end
+
+    align_audit = %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: org.id,
+      gtfs_version_id: diagram_version.id,
+      station_stop_id: nil,
+      actor_id: editor.id,
+      actor_email: editor.email
+    }
+
+    align_draw = fn pattern, entries, scopes ->
+      pattern = Repo.reload!(pattern)
+
+      draft =
+        Enum.map(entries, fn {position, points} ->
+          section =
+            pattern
+            |> GtfsPlanner.Gtfs.Alignments.resolve()
+            |> Map.fetch!(:sections)
+            |> Enum.find(&(&1.position == position))
+
+          %{
+            "position" => section.position,
+            "from_occurrence_id" => section.from_occurrence_id,
+            "to_stop_id" => section.to_stop_id,
+            "op" => "set",
+            "points" => points,
+            "base" => %{
+              "segment_id" => section.revision.segment_id,
+              "lock_version" => section.revision.lock_version
+            }
+          }
+        end)
+
+      {:ok, review} = Gtfs.review_alignment_save(pattern.id, draft, align_audit)
+
+      needed =
+        for section <- review.sections,
+            section.action == :choose_scope,
+            into: %{},
+            do: {to_string(section.position), Map.fetch!(scopes, to_string(section.position))}
+
+      choices = %{"scopes" => needed}
+
+      choices =
+        if review.requires_confirmation?,
+          do: Map.put(choices, "confirm_replacements", true),
+          else: choices
+
+      {:ok, _result} =
+        Gtfs.apply_alignment_save(pattern.id, draft, choices, review.fingerprint, align_audit)
+    end
+
+    pattern_a = align_pattern.("BROWSER-ALIGN-A")
+    occurrences_a = align_occurrences.(pattern_a, ["AL_S1", "AL_S2", "AL_S3", "AL_S4"])
+    timing_a = align_timing.(pattern_a, occurrences_a)
+
+    pattern_b = align_pattern.("BROWSER-ALIGN-B")
+    occurrences_b = align_occurrences.(pattern_b, ["AL_S1", "AL_S2", "AL_S3"])
+    align_timing.(pattern_b, occurrences_b)
+
+    align_draw.(pattern_a, [{1, [[-74.005500, 40.713300]]}, {2, [[-74.004500, 40.714300]]}], %{
+      "1" => "shared",
+      "2" => "local"
+    })
+
+    align_draw.(pattern_b, [{1, [[-74.005600, 40.713200]]}, {2, [[-74.004600, 40.714100]]}], %{
+      "1" => "shared",
+      "2" => "shared"
+    })
+
+    # Step 26 needs a saved section with at least 4 anchor-to-anchor
+    # points for its Simplify capture. ACTIONS draws one on a fresh stop
+    # pair so the A/B shared-user counts never move.
+    pattern_actions = align_pattern.("BROWSER-ALIGN-ACTIONS")
+    align_occurrences.(pattern_actions, ["AL_A1", "AL_A2", "AL_A3"])
+
+    align_draw.(
+      pattern_actions,
+      [
+        {1, [[-73.989700, 40.730300], [-73.989500, 40.730500], [-73.989200, 40.730700]]},
+        {2, [[-73.988500, 40.731500]]}
+      ],
+      %{"1" => "shared", "2" => "local"}
+    )
+
+    {:ok, align_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: align_route.route_id,
+        trip_id: "BROWSER_ALIGN_T1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Alignment",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(align_trip, %{
+      route_pattern_id: "BROWSER-ALIGN-A",
+      timed_pattern_id: timing_a.id,
+      pattern_derivation_state: "linked"
+    })
+
+    ["AL_S1", "AL_S2", "AL_S3", "AL_S4"]
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, sequence} ->
+      {:ok, _stop_time} =
+        Gtfs.create_stop_time(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          trip_id: "BROWSER_ALIGN_T1",
+          stop_id: stop_id,
+          stop_sequence: sequence,
+          arrival_time: "08:0#{sequence}:00",
+          departure_time: "08:0#{sequence}:00"
+        })
+    end)
+
+    pattern_loop = align_pattern.("BROWSER-ALIGN-LOOP")
+    align_occurrences.(pattern_loop, ["AL_S1", "AL_S2", "AL_S3", "AL_S1", "AL_S2"])
+
+    align_draw.(
+      pattern_loop,
+      [
+        {1, [[-74.005500, 40.713300]]},
+        {2, [[-74.004500, 40.714300]]},
+        {3, [[-74.005000, 40.713500]]},
+        {4, [[-74.005600, 40.713200]]}
+      ],
+      %{"1" => "shared", "2" => "shared", "4" => "shared"}
+    )
+
+    pattern_imported = align_pattern.("BROWSER-ALIGN-IMPORTED")
+    occurrences_imported = align_occurrences.(pattern_imported, ["AL_S4", "AL_S5"])
+    timing_imported = align_timing.(pattern_imported, occurrences_imported)
+
+    for {shape_id, sequence, lat, lon, dist} <- [
+          {"IMP-ALIGN-1", 0, "40.715800", "-74.003000", "0"},
+          {"IMP-ALIGN-1", 1, "40.716800", "-74.002000", "812.4"},
+          {"IMP-ALIGN-2", 0, "40.715900", "-74.003100", "0"},
+          {"IMP-ALIGN-2", 1, "40.716900", "-74.002100", "900.0"}
+        ] do
+      %GtfsPlanner.Gtfs.Shape{}
+      |> GtfsPlanner.Gtfs.Shape.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: shape_id,
+        shape_pt_sequence: sequence,
+        shape_pt_lat: lat,
+        shape_pt_lon: lon,
+        shape_dist_traveled: dist
+      })
+      |> Repo.insert!()
+    end
+
+    for {trip_id, shape_id} <- [
+          {"BROWSER_ALIGN_IMP_T1", "IMP-ALIGN-1"},
+          {"BROWSER_ALIGN_IMP_T2", "IMP-ALIGN-2"}
+        ] do
+      {:ok, trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: align_route.route_id,
+          trip_id: trip_id,
+          service_id: "BROWSER_PATTERN_SERVICE",
+          trip_headsign: "Alignment Imported",
+          direction_id: 0,
+          shape_id: shape_id
+        })
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-ALIGN-IMPORTED",
+        timed_pattern_id: timing_imported.id,
+        pattern_derivation_state: "linked"
+      })
+    end
+
+    long_visits =
+      ["AL_S1", "AL_S2", "AL_S3", "AL_S4", "AL_S5"]
+      |> Stream.cycle()
+      |> Enum.take(200)
+
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-LONG"), long_visits)
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-GEN-1"), ["AL_G1", "AL_G2"])
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-GEN-2"), ["AL_S3", "AL_S4"])
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-A-B"), ["AL_S1", "AL_S2", "AL_S3", "AL_S4"])
+
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-LOOP-B"), [
+      "AL_S1",
+      "AL_S2",
+      "AL_S3",
+      "AL_S1",
+      "AL_S2"
+    ])
+
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-IMPORTED-B"), ["AL_S4", "AL_S5"])
+
+    # Step 29 needs a single-shape imported pattern whose shape sits ~500 m
+    # north of its stops, so dialog conversion flags its section for review.
+    pattern_imported_single = align_pattern.("BROWSER-ALIGN-IMPORTED-SINGLE")
+    occurrences_imported_single = align_occurrences.(pattern_imported_single, ["AL_S4", "AL_S5"])
+    timing_imported_single = align_timing.(pattern_imported_single, occurrences_imported_single)
+
+    for {shape_id, sequence, lat, lon, dist} <- [
+          {"IMP-ALIGN-3", 0, "40.720800", "-74.003000", "0"},
+          {"IMP-ALIGN-3", 1, "40.721300", "-74.002500", "70.0"},
+          {"IMP-ALIGN-3", 2, "40.721800", "-74.002000", "140.0"}
+        ] do
+      %GtfsPlanner.Gtfs.Shape{}
+      |> GtfsPlanner.Gtfs.Shape.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: shape_id,
+        shape_pt_sequence: sequence,
+        shape_pt_lat: lat,
+        shape_pt_lon: lon,
+        shape_dist_traveled: dist
+      })
+      |> Repo.insert!()
+    end
+
+    {:ok, imported_single_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: align_route.route_id,
+        trip_id: "BROWSER_ALIGN_IMP_T3",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Alignment Imported Single",
+        direction_id: 0,
+        shape_id: "IMP-ALIGN-3"
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(imported_single_trip, %{
+      route_pattern_id: "BROWSER-ALIGN-IMPORTED-SINGLE",
+      timed_pattern_id: timing_imported_single.id,
+      pattern_derivation_state: "linked"
+    })
+
+    IO.puts("Browser seed: pattern alignment fixtures (BROWSER_ALIGN with 12 patterns)")
+
+    # ── Agencies list page (settings_agencies_feed.spec.js; EV-16, EV-17) ──
+    #
+    # Two published versions give the Agencies list page its states: one with
+    # three agencies that share a timezone (5, 2 and 0 routes, so the count links,
+    # the name sort and the count sort all differ), and one whose two agencies use
+    # different timezones (the band, the warning callout and the "Needs review"
+    # rows). Both are created last, and the version that was the organization's
+    # latest default before them is re-stamped afterwards so the selection the
+    # other journeys start from does not move.
+    {:ok, agencies_default_before} = Versions.get_latest_gtfs_version(org.id)
+
+    {:ok, agencies_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Agencies Version"})
+
+    for {agency_id, name, host, route_count} <- [
+          {"NCT", "North Coast Transit", "northcoast.example", 5},
+          {"HBR", "Harbor Shuttle", "harbor.example", 2},
+          {"RCT", "Riverside Community Transport", "riverside.example", 0}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: agencies_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: "America/New_York"
+        })
+
+      for index <- 1..route_count//1 do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: agencies_version.id,
+            agency_id: agency_id,
+            route_id: "#{agency_id}_#{index}",
+            route_short_name: "#{index}",
+            route_long_name: "#{name} route #{index}",
+            route_type: 3
+          })
+      end
+    end
+
+    {:ok, mixed_timezone_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Mixed Timezone Version"})
+
+    for {agency_id, name, host, timezone} <- [
+          {"NCT", "North Coast Transit", "northcoast.example", "America/New_York"},
+          {"LFT", "Lakefront Transit", "lakefront.example", "America/Chicago"}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: mixed_timezone_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: timezone
+        })
+
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: mixed_timezone_version.id,
+          agency_id: agency_id,
+          route_id: "MIX_#{agency_id}",
+          route_short_name: agency_id,
+          route_long_name: "#{name} mixed-timezone route",
+          route_type: 3
+        })
+    end
+
+    # The empty agency list and the first-agency drawer need a version that has
+    # neither agencies nor routes, so nothing is backfilled and the create form
+    # is the one with the schedule timezone field (settings_agencies_feed.spec.js;
+    # EV-20, EV-21).
+    {:ok, no_agency_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser No Agency Version"})
+
+    # The delete flow needs one version where an agency with routes, the agency
+    # that receives them and an agency a fare attribute still names all exist at
+    # once (settings_agencies_feed.spec.js; EV-25). "Browser Alpha" holds the two
+    # routes that move, "Browser Beta" receives them, and "Browser Gamma" has no
+    # routes but is named by F-BROWSER, which the deletion has to refuse. The fare
+    # attribute has no editor in this package, so it is inserted directly: that
+    # supplies the reference the review reads, not an audited editor save.
+    {:ok, agency_delete_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Agency Delete Version"})
+
+    for {agency_id, name, host, route_count} <- [
+          {"ALPHA", "Browser Alpha", "alpha.example", 2},
+          {"BETA", "Browser Beta", "beta.example", 1},
+          {"GAMMA", "Browser Gamma", "gamma.example", 0}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: agency_delete_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: "America/New_York"
+        })
+
+      for index <- 1..route_count//1 do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: agency_delete_version.id,
+            agency_id: agency_id,
+            route_id: "#{agency_id}_#{index}",
+            route_short_name: "#{index}",
+            route_long_name: "#{name} route #{index}",
+            route_type: 3
+          })
+      end
+    end
+
+    Repo.insert!(%FareAttribute{
+      organization_id: org.id,
+      gtfs_version_id: agency_delete_version.id,
+      fare_id: "F-BROWSER",
+      price: Decimal.new("2.50"),
+      currency_type: "USD",
+      payment_method: 0,
+      agency_id: "GAMMA"
+    })
+
+    # The Routes onboarding needs a version with neither agencies nor routes, so
+    # the page renders the first-agency state, and a version with two routes that
+    # carry no agency, so it renders the assign-routes callout
+    # (settings_agencies_feed.spec.js; EV-29). The routes are created directly:
+    # this supplies the unassigned state the callout describes, not an editor save.
+    {:ok, onboarding_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Onboarding Version"})
+
+    {:ok, unassigned_routes_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Unassigned Routes Version"})
+
+    for index <- 1..2//1 do
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: unassigned_routes_version.id,
+          route_id: "UNASSIGNED_#{index}",
+          route_short_name: "#{index}",
+          route_long_name: "Unassigned browser route #{index}",
+          route_type: 3
+        })
+    end
+
+    agencies_default_before
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: agencies version #{agencies_version.id} (NCT 5, HBR 2, RCT 0 routes, " <>
+        "America/New_York), mixed timezone version #{mixed_timezone_version.id} " <>
+        "(America/New_York and America/Chicago), no-agency version #{no_agency_version.id} " <>
+        "(no agencies, no routes), agency delete version #{agency_delete_version.id} " <>
+        "(ALPHA 2 routes, BETA 1 route, GAMMA 0 routes with fare F-BROWSER), " <>
+        "onboarding version #{onboarding_version.id} (no agencies, no routes), " <>
+        "unassigned routes version #{unassigned_routes_version.id} (2 routes with no agency), " <>
+        "default kept as #{agencies_default_before.name}"
+    )
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"

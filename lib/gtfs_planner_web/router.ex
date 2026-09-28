@@ -135,8 +135,8 @@ defmodule GtfsPlannerWeb.Router do
       ] do
       # GTFS routes (viewer or editor roles required)
       live "/routes", Gtfs.RoutesLive, :index
-      # Transfers joins the routes area as a placeholder until that feature ships.
-      live "/transfers", Gtfs.ComingSoonLive, :transfers
+      # Transfers is the Routes area's second tab, beside the routes list.
+      live "/transfers", Gtfs.TransfersLive, :index
       live "/calendars", Gtfs.CalendarsLive, :index
       # Calendar detail carries its service ID as a query parameter, so imported
       # IDs containing slashes, percent signs, spaces or the words new/show can
@@ -154,24 +154,35 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
       live "/stops/:stop_id/evolutions", Gtfs.ComingSoonLive, :evolutions
+      live "/blocks", Gtfs.BlocksLive, :index
       # Operations placeholders. They group under the Operations area; the
       # organization-wide Garages and Fleet pages live in Settings, where the
       # version in the URL is navigation context and selects the stop IDs the
       # garage conflict notice compares.
-      live "/blocks", Gtfs.ComingSoonLive, :blocks
       live "/runs", Gtfs.ComingSoonLive, :runs
       live "/rosters", Gtfs.ComingSoonLive, :rosters
       # Flex has no area bar of its own in the architecture's groups.
       live "/flex", Gtfs.ComingSoonLive, :flex
       # Settings holds the version's rarely changed configuration, including its
-      # organization-level group. Garages and Fleet list organization-wide data
-      # under the All versions group; the version in their URL is navigation
-      # context, as the tables themselves ignore it. Their literal routes are
-      # declared ahead of the section route so they are never read as slugs, and
-      # there is no redirect from the Blocks paths they used before.
+      # organization-level group. Feed details and Agencies are version-scoped
+      # pages; Garages and Fleet list organization-wide data under the All
+      # versions group, where the version in their URL is navigation context, as
+      # the tables themselves ignore it. Their literal routes are declared ahead
+      # of the section route so they are never read as slugs, and there is no
+      # redirect from the Blocks paths they used before.
       live "/settings", Gtfs.SettingsLive, :index
+      live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
+      live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
+      # The Fare zones workspace owns the Fares section. Its three destinations
+      # are one LiveView with one action each, so the tab links patch between
+      # them and the Zones tab's query state survives a tab change. They are
+      # literal paths declared ahead of the section route, so neither "fares"
+      # nor its child segments can be read as a section slug.
+      live "/settings/fares", Gtfs.FaresLive, :zones
+      live "/settings/fares/rules", Gtfs.FaresLive, :rules
+      live "/settings/fares/checks", Gtfs.FaresLive, :checks
       live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index

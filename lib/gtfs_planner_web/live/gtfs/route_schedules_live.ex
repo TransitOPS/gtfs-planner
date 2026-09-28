@@ -39,7 +39,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @filter_keys ~w(service_id direction pattern stops)
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
-    trip_headsign trip_short_name block_id wheelchair_accessible bikes_allowed)
+    trip_headsign trip_short_name wheelchair_accessible bikes_allowed)
   @duplicate_offset_secs 1_800
   @default_departure "06:00"
   @default_every "30"
@@ -69,6 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:vehicle_change_from, nil)
      |> assign(:keep_vehicle_change, false)
      |> assign(:drawer, nil)
+     |> assign(:block_notice, nil)
      |> assign(:delete_dialog, nil)
      |> assign(:calendar_form, to_form(%{"service_id" => nil}))
      |> assign(:pattern_form, to_form(%{"pattern" => "all"}))
@@ -85,6 +86,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> assign(:selected_ids, MapSet.new())
       |> assign(:selected_count, 0)
       |> assign(:delete_dialog, nil)
+      |> assign(:block_notice, nil)
       |> clear_vehicle_change()
 
     if connected?(socket) do
@@ -190,7 +192,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
             return_focus_id: "schedules-add-trips"
           })
 
-        {:noreply, assign(socket, :drawer, refresh_drawer(socket, drawer))}
+        {:noreply,
+         socket
+         |> assign(:block_notice, nil)
+         |> assign(:drawer, refresh_drawer(socket, drawer))}
     end
   end
 
@@ -205,10 +210,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           new_drawer(socket, :edit, %{
             trip: row,
             values: edit_values(socket, row),
+            block_day_key: block_day_key(socket, row),
             return_focus_id: "trip-#{row.trip_id}-edit"
           })
 
-        {:noreply, assign(socket, :drawer, refresh_drawer(socket, drawer))}
+        {:noreply,
+         socket
+         |> assign(:block_notice, nil)
+         |> assign(:drawer, refresh_drawer(socket, drawer))}
     end
   end
 
@@ -226,7 +235,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
             return_focus_id: "trip-#{row.trip_id}-menu"
           })
 
-        {:noreply, assign(socket, :drawer, refresh_drawer(socket, drawer))}
+        {:noreply,
+         socket
+         |> assign(:block_notice, nil)
+         |> assign(:drawer, refresh_drawer(socket, drawer))}
     end
   end
 
@@ -659,7 +671,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                audit_context(socket)
              ) do
           {:ok, trip} ->
-            {:noreply, saved_trip(socket, drawer, trip)}
+            {:noreply, saved_trip(socket, drawer, trip, attrs)}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, drawer_changeset_error(socket, drawer, changeset)}
@@ -721,7 +733,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     )
   end
 
-  defp saved_trip(socket, drawer, trip) do
+  # A save that changed the block or that never touched it leaves the drawer without
+  # a notice: only a D2 clear and a block problem are worth saying out loud. The
+  # notice is computed before the reload so it describes the save that just
+  # happened, not the page the reload produced.
+  defp saved_trip(socket, drawer, trip, attrs) do
     moved? = trip.service_id != socket.assigns.filters.service_id
 
     message =
@@ -737,7 +753,101 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> put_flash(:info, message)
     |> assign(:drawer, nil)
     |> assign(:vehicle_change_from, current_vehicle_count(socket))
+    |> assign(:block_notice, block_notice(socket, drawer, trip, attrs))
     |> reload_or_fail()
+  end
+
+  # D2 clears the block inside the save; anything else keeps it. The two notices
+  # are alternatives: a trip that lost its block has no block problem left to
+  # report, and a trip that kept it is worth checking against its new times. A
+  # block with no current problem says nothing (AC-18).
+  defp block_notice(socket, drawer, trip, attrs) do
+    cond do
+      is_binary(drawer.trip.block_id) and is_nil(trip.block_id) ->
+        %{
+          kind: :block_cleared,
+          block_id: drawer.trip.block_id,
+          calendar_label: calendar_label(socket.assigns.payload.calendars, trip.service_id),
+          link: blocks_link(socket, trip)
+        }
+
+      is_binary(trip.block_id) and block_affecting_change?(drawer.trip, attrs) ->
+        case block_problems(socket, trip) do
+          [] ->
+            nil
+
+          problems ->
+            %{
+              kind: :block_problems,
+              block_id: trip.block_id,
+              problems: problems,
+              link: blocks_link(socket, trip)
+            }
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  # An unavailable check is not a save failure: the trip is saved, so a failed
+  # advisory read simply reports nothing rather than a problem that may not exist.
+  defp block_problems(socket, trip) do
+    case Gtfs.block_problems_for_trips(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           [trip.trip_id]
+         ) do
+      {:ok, problems} -> problems
+      {:error, _reason} -> []
+    end
+  end
+
+  # The drawer prefills the timing and the departure from the row, so an edit that
+  # changed neither submits the same values. Only a real change to the calendar, the
+  # timing or the start is worth re-checking the block for.
+  defp block_affecting_change?(row, attrs) do
+    attrs[:service_id] != row.service_id or attrs[:timed_pattern_id] != row.timed_pattern_id or
+      start_changed?(row, attrs[:start_time])
+  end
+
+  defp start_changed?(_row, nil), do: false
+
+  defp start_changed?(row, start_time) do
+    case parse_start_clock(start_time) do
+      {:ok, start_secs, _value} -> start_secs != row.start_secs
+      {:error, _field, _message} -> false
+    end
+  end
+
+  # The Blocks deep link names the day the trip is easiest to find in and the trip
+  # itself; a service with no active date has no day to open, so it gets no link.
+  defp blocks_link(socket, trip) do
+    case Gtfs.first_blocking_day_type_key(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           trip.service_id
+         ) do
+      {:ok, day_type_key} when is_binary(day_type_key) ->
+        schedule_blocks_path(
+          socket.assigns.current_gtfs_version.id,
+          %{"day" => day_type_key, "trip" => trip.trip_id}
+        )
+
+      _other ->
+        nil
+    end
+  end
+
+  defp block_day_key(socket, row) do
+    case Gtfs.first_blocking_day_type_key(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           row.service_id
+         ) do
+      {:ok, key} -> key
+      {:error, _reason} -> nil
+    end
   end
 
   defp deleted(socket, dialog, trips, transfers, ids) do
@@ -813,7 +923,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp field_input_id(:until), do: "trip-until"
   defp field_input_id(:trip_headsign), do: "trip-headsign"
   defp field_input_id(:trip_short_name), do: "trip-number"
-  defp field_input_id(:block_id), do: "trip-block"
   defp field_input_id(:wheelchair_accessible), do: "trip-access"
   defp field_input_id(:bikes_allowed), do: "trip-bikes"
   defp field_input_id(_field), do: nil
@@ -857,7 +966,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       service_id: values["service_id"],
       trip_headsign: values["trip_headsign"],
       trip_short_name: values["trip_short_name"],
-      block_id: values["block_id"],
       wheelchair_accessible: values["wheelchair_accessible"],
       bikes_allowed: values["bikes_allowed"]
     }
@@ -968,6 +1076,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       frequency?: is_map(row) and row.frequency?,
       frequency_label: is_map(row) && row.frequency_label,
       trip_id: row && row.trip_id,
+      block_day_key: Map.get(attrs, :block_day_key),
       route_label: route_label(socket.assigns.payload.route),
       preview: %{error: nil, target: nil, label: drawer_label(mode), meta: nil, range: nil}
     }
@@ -994,7 +1103,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "start_time" => clock(row.start_secs) || "",
       "trip_headsign" => row.trip_headsign || "",
       "trip_short_name" => row.trip_short_name || "",
-      "block_id" => row.block_id || "",
       "wheelchair_accessible" => integer_string(row.wheelchair_accessible),
       "bikes_allowed" => integer_string(row.bikes_allowed)
     }
@@ -1382,6 +1490,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  defp schedule_blocks_path(version_id, query) do
+    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(query)
+  end
+
   # --- presentation helpers --------------------------------------------------
 
   defp calendar_label(calendars, service_id) do
@@ -1513,6 +1625,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 stops={@filters.stops}
               />
 
+              <ScheduleComponents.block_notice :if={@block_notice} notice={@block_notice} />
+
               <%= cond do %>
                 <% @payload.calendars == [] -> %>
                   <ScheduleComponents.no_calendars calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"} />
@@ -1549,7 +1663,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 drawer={@drawer}
                 patterns={@payload.patterns}
                 calendars={@payload.calendars}
-                block_suggestions={@payload.block_suggestions}
+                blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
                 patterns_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
               />
 

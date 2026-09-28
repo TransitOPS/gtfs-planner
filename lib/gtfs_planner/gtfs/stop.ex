@@ -15,6 +15,11 @@ defmodule GtfsPlanner.Gtfs.Stop do
     field :location_type, :integer, default: 0
     field :wheelchair_boarding, :integer
     field :platform_code, :string
+
+    # Written only by the full importer (RowParser.stop_row_to_attrs/3) and
+    # GtfsPlanner.Gtfs.FareZones. It is never cast, so a partial station-data file,
+    # a stop form or a rollback cannot clear an assigned fare zone.
+    field :zone_id, :string
     field :diagram_coordinate, :map
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
@@ -47,6 +52,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
           location_type: integer(),
           wheelchair_boarding: integer() | nil,
           platform_code: String.t() | nil,
+          zone_id: String.t() | nil,
           diagram_coordinate: map() | nil,
           parent_station: String.t() | nil,
           level_id: String.t() | nil,

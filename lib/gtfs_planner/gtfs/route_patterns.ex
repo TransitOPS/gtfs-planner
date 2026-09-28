@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -684,6 +685,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       copy_timing_rows!(copied_timing, copied_occurrences, rows)
     end)
 
+    Alignments.copy_pattern_alignment!(
+      pattern,
+      copied,
+      pattern_occurrences(pattern),
+      copied_occurrences,
+      audit_context
+    )
+
     copied = load_pattern_for_audit!(copied.id)
     audit!(audit_context, :route_pattern, copied, "created", %{after: pattern_snapshot(copied)})
     %{pattern: copied, trips_updated: 0}
@@ -696,6 +705,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
       audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
       delete_pattern_children!(pattern.id)
+      Alignments.delete_owned_shape!(pattern)
       Repo.delete!(pattern)
       %{pattern: nil, trips_updated: 0}
     end
@@ -1345,6 +1355,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     update_trip_timestamps!(trips)
 
+    if not is_nil(pattern.shape_id) and
+         retained_structure_changed?(edit.old_occurrences, edit.new_occurrences) do
+      Alignments.clear_visit_distances!(pattern)
+    end
+
     if trips != [] or edit.added != [] or edit.removed != [] do
       Repo.update_all(from(p in RoutePattern, where: p.id == ^pattern.id),
         set: [updated_at: DateTime.utc_now()]
@@ -1352,6 +1367,41 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
 
     length(trips)
+  end
+
+  # R14: a structural edit that changes the relative order of retained visits,
+  # or a retained visit's stop, invalidates derived distances on a drawn pattern
+  # (stale values would export decreasing distances). Inserts and removals keep
+  # the remaining distances. `old_occurrences` are structs; `new_occurrences`
+  # are `%{id | key, stop_id}` entries in position order, where `:id` marks a
+  # retained visit.
+  defp retained_structure_changed?(old_occurrences, new_occurrences) do
+    old_by_id = Map.new(old_occurrences, &{&1.id, &1.stop_id})
+
+    new_retained_ids =
+      new_occurrences
+      |> Enum.filter(&Map.get(&1, :id))
+      |> Enum.map(&Map.get(&1, :id))
+
+    new_retained_set = MapSet.new(new_retained_ids)
+
+    old_retained_order =
+      old_occurrences
+      |> Enum.sort_by(& &1.position)
+      |> Enum.map(& &1.id)
+      |> Enum.filter(&MapSet.member?(new_retained_set, &1))
+
+    order_changed? = new_retained_ids != old_retained_order
+
+    stop_changed? =
+      Enum.any?(new_occurrences, fn entry ->
+        case Map.get(entry, :id) do
+          nil -> false
+          id -> Map.get(old_by_id, id) != Map.get(entry, :stop_id)
+        end
+      end)
+
+    order_changed? or stop_changed?
   end
 
   defp persist_occurrences!(pattern, old, new) do
@@ -1731,7 +1781,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       else: take_unused(count - 1, MapSet.put(used, candidate), candidate + 1, [candidate | acc])
   end
 
-  defp published_route(organization_id, version_id, route_id) do
+  @doc false
+  def published_route(organization_id, version_id, route_id) do
     query =
       from route in Route,
         join: version in GtfsVersion,

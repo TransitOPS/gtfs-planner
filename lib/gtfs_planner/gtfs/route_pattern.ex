@@ -19,6 +19,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
     field :representative_trip_id, :string
     field :canonical_route_pattern, :integer, default: 0
     field :active, :boolean, default: true
+    field :shape_id, :string
+    field :alignment_digest, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -44,6 +46,8 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
           representative_trip_id: String.t() | nil,
           canonical_route_pattern: integer(),
           active: boolean(),
+          shape_id: String.t() | nil,
+          alignment_digest: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }

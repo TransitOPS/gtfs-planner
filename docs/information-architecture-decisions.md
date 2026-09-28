@@ -347,6 +347,16 @@ zone dropdown on the stop edit form.
 **Found during review.** `stops` has no `zone_id`, so zones are lost on import. Meanwhile
 `fare_rules.txt` exports zone references that no stop carries.
 
+**Resolved.** AC-STOP-023 to AC-STOP-026 now describe this placement: the zone list with counts and
+its stop filter, creating a zone with a name, an ID and a map color, reviewed bulk assignment from
+the map or the list, unassignment, and the zone read-only on stop details. The requirement index
+lists fare zones as Live.
+
+**Resolved.** `stops` carries `zone_id` through import and export, so new versions keep their zone
+membership and `fare_rules.txt` references point at zones real stops carry. Versions imported before
+the column existed keep the old gap; the Checks tab reports it and re-importing the source feed is
+the recovery path.
+
 ## 11. GTFS-flex
 
 **First proposal.** Round-trip only, with an export switch and no authoring UI.
@@ -441,6 +451,7 @@ hours.
 - The list shows name, URL, timezone and route count. The route count links to the Routes list
   filtered by agency.
 - A version with one agency opens straight to its detail.
+  Changed 2026-09-27: a version with one agency keeps the list (package 13 prototype review).
 - A new agency must use the version's timezone. Changing the timezone changes it for every agency.
 - The last agency cannot be deleted.
 - Deleting an agency that has routes asks where to move them, then moves the routes and deletes

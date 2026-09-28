@@ -9,27 +9,10 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
   alias GtfsPlannerWeb.ComingSoon
 
   # Literal expectations transcribed from the finalized content table. They are
-  # written here rather than read back from the catalog under test.
+  # written here rather than read back from the catalog under test. Transfers,
+  # Blocks, Feed details, Agencies and Fares are absent: each destination ships
+  # as a working page, so it has no catalog entry.
   @catalog [
-    transfers: %{
-      title: "Transfers",
-      scope: :version,
-      summary:
-        "Tell trip planners where riders can change vehicles: between stops, routes or two specific trips.",
-      section_names: ["Transfer list", "New transfer", "In-seat transfers"]
-    },
-    blocks: %{
-      title: "Blocks",
-      scope: :version,
-      summary: "Plan which trips each vehicle runs in sequence, one day type at a time.",
-      section_names: [
-        "Timeline",
-        "Unassigned trips",
-        "Checks",
-        "Riders stay on board",
-        "Deadheads and relief points"
-      ]
-    },
     runs: %{
       title: "Runs",
       scope: :version,
@@ -56,35 +39,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
       section_names: ["Closures", "Access check"]
     },
-    alignment: %{
-      title: "Alignment",
-      scope: :version,
-      summary: "Draw the path this pattern travels between stops.",
-      section_names: [
-        "Segment status",
-        "Generate along streets",
-        "Edit points",
-        "Shared segments"
-      ]
-    },
-    feed_details: %{
-      title: "Feed details",
-      scope: :version,
-      summary: "Describe this version’s feed for data consumers.",
-      section_names: ["Publisher", "Languages", "Service dates", "Feed version", "Contact"]
-    },
-    agencies: %{
-      title: "Agencies",
-      scope: :version,
-      summary: "Manage the agencies that operate this version’s routes.",
-      section_names: ["Agency list", "One timezone", "Removing an agency"]
-    },
-    fares: %{
-      title: "Fares",
-      scope: :version,
-      summary: "Set up fare zones and the fare rules that use them.",
-      section_names: ["Zones", "Fare rules"]
-    },
     export_defaults: %{
       title: "Export defaults",
       scope: :all_versions,
@@ -101,7 +55,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 12
+      assert length(@catalog) == 6
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -114,18 +68,44 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       end)
     end
 
-    test "raises for a key outside the catalog" do
+    test "raises for the retired alignment key" do
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:alignment))
+      end
+    end
+
+    test "raises for a key outside the catalog, including the shipped Transfers key" do
       # `Function.identity/1` passes the value through while keeping it out of the
       # compiler's type checker, which would otherwise warn that the literal
       # cannot match the closed clause set. The call under test is unchanged.
+      for key <- [:transfers, :feed_details, :agencies, :unbuilt] do
+        assert_raise FunctionClauseError, fn ->
+          ComingSoon.feature(Function.identity(key))
+        end
+      end
+    end
+
+    test "no longer answers for Blocks, which has a page of its own" do
+      # Removing the placeholder entry is what keeps a stale `:blocks` lookup
+      # from rendering placeholder copy beside the real page.
+      # `Function.identity/1` hides the argument from the compiler, which would
+      # otherwise warn that `feature/1` has no clause for the literal atom.
       assert_raise FunctionClauseError, fn ->
-        ComingSoon.feature(Function.identity(:unbuilt))
+        ComingSoon.feature(Function.identity(:blocks))
+      end
+    end
+
+    test "no longer answers for Fares, whose workspace shipped" do
+      # The retired placeholder key must not resolve to plausible placeholder
+      # copy: the Setting overview lists Fares as an Available page instead.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:fares))
       end
     end
 
     test "does not convert a string into a catalog key" do
       assert_raise FunctionClauseError, fn ->
-        ComingSoon.feature(Function.identity("transfers"))
+        ComingSoon.feature(Function.identity("blocks"))
       end
     end
   end
@@ -146,14 +126,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders the caller's scope label verbatim" do
-      doc = render_doc(ComingSoon.feature(:blocks), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:runs), "This version: Fall 2026")
 
       assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
     end
 
     test "renders exactly one title element at the requested heading level" do
       for level <- [1, 2, 3] do
-        doc = render_doc(ComingSoon.feature(:transfers), "All versions", level)
+        doc = render_doc(ComingSoon.feature(:runs), "All versions", level)
 
         assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
         assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1

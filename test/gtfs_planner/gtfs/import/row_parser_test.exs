@@ -134,6 +134,44 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
     end
   end
 
+  describe "stop_row_to_attrs/3" do
+    test "keeps a zone_id byte-for-byte, including a leading space", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "stop_id" => "S1",
+        "stop_name" => "Stop 1",
+        "stop_lat" => "40.7",
+        "stop_lon" => "-74.0",
+        "zone_id" => " A"
+      }
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+      assert attrs.zone_id == " A"
+    end
+
+    test "stores an empty zone_id as nil", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"stop_id" => "S1", "zone_id" => ""}
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+      assert attrs.zone_id == nil
+    end
+
+    test "stores a missing zone_id key as nil", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"stop_id" => "S1"}
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+      assert attrs.zone_id == nil
+    end
+  end
+
   describe "stop_time_row_to_attrs/3" do
     test "converts valid stop_time row to attrs", %{
       organization_id: org_id,
@@ -389,13 +427,35 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
                RowParser.transfer_row_to_attrs(row, org_id, version_id)
     end
 
-    test "returns an error for an empty transfer_type", %{
+    test "reads an empty transfer_type as the spec default of 0", %{
       organization_id: org_id,
       gtfs_version_id: version_id
     } do
       row = %{"from_stop_id" => "S1", "to_stop_id" => "S2", "transfer_type" => ""}
 
-      assert {:error, "empty required field: transfer_type"} =
+      assert {:ok, attrs} = RowParser.transfer_row_to_attrs(row, org_id, version_id)
+      assert attrs.transfer_type == 0
+      assert attrs.from_stop_id == "S1"
+      assert attrs.to_stop_id == "S2"
+    end
+
+    test "reads a missing transfer_type column as the spec default of 0", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"from_stop_id" => "S1", "to_stop_id" => "S2"}
+
+      assert {:ok, attrs} = RowParser.transfer_row_to_attrs(row, org_id, version_id)
+      assert attrs.transfer_type == 0
+    end
+
+    test "still requires both stops on a defaulted row", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"from_stop_id" => "S1", "to_stop_id" => "", "transfer_type" => ""}
+
+      assert {:error, "empty required field: to_stop_id"} =
                RowParser.transfer_row_to_attrs(row, org_id, version_id)
     end
   end

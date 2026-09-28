@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.TransfersFixtures
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
@@ -315,5 +316,128 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       refute has_element?(schedules_view, "#schedules-deferred")
     end
+  end
+
+  describe "related transfers" do
+    setup :shared_setup
+
+    test "the details fact counts this route's general rules and opens the filtered list", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      transfer_network_fixture(organization.id, version.id)
+
+      route_rule =
+        transfer_fixture(organization.id, version.id, %{
+          from_stop_id: "MKT",
+          to_stop_id: "HBR",
+          from_route_id: "24",
+          transfer_type: 2,
+          min_transfer_time: 180
+        })
+
+      trip_rule =
+        transfer_fixture(organization.id, version.id, %{
+          from_stop_id: "CEN-A",
+          to_stop_id: "CEN-C",
+          from_trip_id: "24-0840",
+          transfer_type: 0
+        })
+
+      # Both of this in-seat row's trips run on route 24, and it is still not
+      # counted: related counts cover general rules only (CR-1, INV-1).
+      transfer_fixture(organization.id, version.id, %{
+        from_stop_id: "CEN",
+        to_stop_id: "CEN",
+        from_trip_id: "12-0815",
+        to_trip_id: "24-0840",
+        transfer_type: 4
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/24")
+
+      assert has_element?(view, "#route-transfers-link", "Transfers here (2)")
+
+      href = link_href(view, "#route-transfers-link")
+
+      assert href == "/gtfs/#{version.id}/transfers?route=24"
+
+      {:ok, list, _html} = live(conn, href)
+
+      assert Enum.sort(row_ids(list)) ==
+               Enum.sort(["transfers-#{route_rule.id}", "transfers-#{trip_rule.id}"])
+    end
+
+    test "a route with no rules reads zero and opens an empty list", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      transfer_network_fixture(organization.id, version.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/24")
+
+      assert has_element?(view, "#route-transfers-link", "Transfers here (0)")
+
+      {:ok, list, _html} = live(conn, link_href(view, "#route-transfers-link"))
+
+      assert row_ids(list) == []
+    end
+
+    test "retrying an unavailable route assigns the count as well", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      transfer_network_fixture(organization.id, version.id)
+
+      transfer_fixture(organization.id, version.id, %{
+        from_stop_id: "MKT",
+        to_stop_id: "HBR",
+        from_route_id: "24",
+        transfer_type: 0
+      })
+
+      substitute_read_adapter(%{})
+      call_count = :atomics.new(1, [])
+
+      stub(CatalogReadAdapterMock, :fetch_route, fn org, ver, route_id ->
+        # `live/2` runs `handle_params/3` once for the static render and once for
+        # the connected one, as the retry case above records.
+        if :atomics.add_get(call_count, 1, 1) <= 2 do
+          {:error, :unavailable}
+        else
+          CatalogReadAdapter.Repo.fetch_route(org, ver, route_id)
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/24")
+
+      assert has_element?(view, "#route-unavailable")
+      refute has_element?(view, "#route-transfers-link")
+
+      view |> element("#route-retry") |> render_click()
+
+      assert has_element?(view, "#route-transfers-link", "Transfers here (1)")
+    end
+  end
+
+  defp link_href(view, selector) do
+    view
+    |> element(selector)
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("a")
+    |> LazyHTML.attribute("href")
+    |> List.first()
+  end
+
+  defp row_ids(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("tbody#transfers tr")
+    |> Enum.map(fn row -> row |> LazyHTML.attribute("id") |> List.first() end)
   end
 end

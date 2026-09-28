@@ -46,11 +46,10 @@ const TASKS = [
   ["nav-gtfs", "GTFS", "export"],
 ];
 
-// The five allowlisted placeholder sections: tab id, page title, URL slug.
+// The two remaining allowlisted placeholder sections: tab id, page title, URL
+// slug. Feed details, Agencies and Fares left this list when their pages were
+// built; the journey asserts each of them separately below.
 const SETTINGS_SECTIONS = [
-  ["settings-tab-feed_details", "Feed details", "feed-details"],
-  ["settings-tab-agencies", "Agencies", "agencies"],
-  ["settings-tab-fares", "Fares", "fares"],
   ["settings-tab-export_defaults", "Export defaults", "export-defaults"],
   ["settings-tab-feed_url", "Published feed URL", "feed-url"],
 ];
@@ -227,13 +226,9 @@ for (const { width, height, label } of VIEWPORTS) {
       await expect(
         page.locator("#routes-tabs a[aria-current='page']"),
       ).toHaveText("Transfers");
+      await expect(page.locator("#transfers-page")).toBeVisible();
       await expect(page.locator("h1")).toHaveText("Transfers");
-      await expect(page.locator("#coming-soon-status")).toHaveText(
-        /Coming soon/,
-      );
-      await expect(
-        page.locator("#coming-soon form, #coming-soon button"),
-      ).toHaveCount(0);
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
       await expect(
         page.locator("#main-navigation #nav-routes"),
       ).toHaveAttribute("aria-current", "page");
@@ -313,7 +308,31 @@ for (const { width, height, label } of VIEWPORTS) {
       await capture(page, testInfo, `settings-${label}`);
       await expectNoPageOverflow(page);
 
-      // ── The five allowlisted sections render their shared body ──
+      // ── Feed details is a built page, not a placeholder ──
+      await page.locator("#settings-tab-feed_details").click();
+      await page.waitForURL(new RegExp(`/settings/feed-details$`));
+      await waitForLiveView(page);
+
+      await expect(page.locator("h1")).toHaveText("Feed details");
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+      await expect(
+        page.locator("#settings-nav a[aria-current='page']"),
+      ).toHaveText("Feed details");
+      await expectNoPageOverflow(page);
+
+      // ── Agencies is a built page, not a placeholder ──
+      await page.locator("#settings-tab-agencies").click();
+      await page.waitForURL(new RegExp(`/settings/agencies$`));
+      await waitForLiveView(page);
+
+      await expect(page.locator("h1")).toHaveText("Agencies");
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+      await expect(
+        page.locator("#settings-nav a[aria-current='page']"),
+      ).toHaveText("Agencies");
+      await expectNoPageOverflow(page);
+
+      // ── The two remaining allowlisted sections render their shared body ──
       for (const [tab, title, slug] of SETTINGS_SECTIONS) {
         await page.locator(`#${tab}`).click();
         await page.waitForURL(new RegExp(`/settings/${slug}$`));
@@ -332,6 +351,20 @@ for (const { width, height, label } of VIEWPORTS) {
       }
 
       await capture(page, testInfo, `settings-section-${label}`);
+
+      // ── Fares is an Available page: its Settings tab opens the workspace ──
+      await page.locator("#settings-tab-fares").click();
+      await page.waitForURL(/\/settings\/fares$/);
+      await waitForLiveView(page);
+      await expect(page.locator("h1")).toHaveText("Fare zones");
+      // The default seeded version carries no fare zone, so the workspace opens
+      // on its first-use state rather than the zones panel.
+      await expect(page.locator("#fare-zone-first-use")).toBeAttached();
+      await expect(page.locator("#coming-soon")).toHaveCount(0);
+      await expect(
+        page.locator("#settings-nav a[aria-current='page']"),
+      ).toHaveText("Fares");
+      await capture(page, testInfo, `settings-fares-${label}`);
 
       // ── The moved Garages and Fleet pages keep the Settings bar ──
       await page.locator("#settings-tab-garages").click();
@@ -382,10 +415,10 @@ for (const { width, height, label } of VIEWPORTS) {
       await waitForLiveView(page);
       await page.locator("#pattern-task-alignment").click();
       await expect(page).toHaveURL(/task=alignment/);
-      await expect(page.locator("#coming-soon")).toBeVisible();
+      await expect(page.locator("#alignment-task")).toBeVisible();
+      await expect(page.locator("#alignment-title")).toHaveText("Alignment");
 
       await expect(page.locator("h1")).toHaveCount(1);
-      await expect(page.locator("#coming-soon-title")).toHaveText("Alignment");
       await expect(
         page.locator("#main-navigation #nav-routes"),
       ).toHaveAttribute("aria-current", "page");

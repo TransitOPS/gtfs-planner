@@ -145,6 +145,59 @@ defmodule GtfsPlanner.Gtfs.DisplayClockTest do
     end
   end
 
+  describe "valid_zone?/1" do
+    test "accepts a zone name the catalog carries" do
+      assert DisplayClock.valid_zone?("America/New_York")
+    end
+
+    test "rejects an unknown name and a padded known name" do
+      refute DisplayClock.valid_zone?("Not/a_zone")
+      refute DisplayClock.valid_zone?(" America/New_York ")
+    end
+  end
+
+  describe "zone_names/0" do
+    test "includes America/New_York in sorted, unique order" do
+      names = DisplayClock.zone_names()
+
+      assert "America/New_York" in names
+      assert names == Enum.sort(names)
+      assert names == Enum.uniq(names)
+    end
+
+    test "drops the posix, right and localtime entries" do
+      # This server's catalog carries none of those names, so the catalog
+      # comparison below is what exercises the exclusion on this PostgreSQL.
+      refute Enum.any?(DisplayClock.zone_names(), &excluded_zone_name?/1)
+    end
+
+    test "equals the catalog minus the posix, right and localtime entries" do
+      %Postgrex.Result{rows: rows} = Repo.query!("SELECT name FROM pg_timezone_names")
+
+      expected =
+        rows
+        |> Enum.map(fn [name] -> name end)
+        |> Enum.reject(&excluded_zone_name?/1)
+        |> Enum.sort()
+
+      assert DisplayClock.zone_names() == expected
+    end
+
+    test "resolves each of the first twenty listed names for an agency using it", %{
+      organization_id: organization_id
+    } do
+      for name <- Enum.take(DisplayClock.zone_names(), 20) do
+        version = gtfs_version_fixture(organization_id)
+        agency_fixture(organization_id, version.id, %{agency_timezone: name})
+
+        assert DisplayClock.valid_zone?(name)
+
+        assert %{timezone: ^name, fallback?: false, fallback_reason: nil} =
+                 DisplayClock.resolve_zone(organization_id, version.id)
+      end
+    end
+  end
+
   describe "localize_many/2" do
     test "returns an empty list without querying for an empty collection", %{
       organization_id: organization_id,
@@ -305,6 +358,10 @@ defmodule GtfsPlanner.Gtfs.DisplayClockTest do
 
       assert "9:30 PM" == Gtfs.format_display_time(~N[2026-01-14 21:30:00])
     end
+  end
+
+  defp excluded_zone_name?(name) do
+    String.starts_with?(name, ["posix/", "right/"]) or name == "localtime"
   end
 
   defp insert_raw_agency(organization_id, gtfs_version_id, timezone) do

@@ -47,7 +47,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         {:noreply,
          socket
          |> assign(:route, route)
-         |> assign(:route_state, :ready)}
+         |> assign(:route_state, :ready)
+         |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, route))}
     end
   end
 
@@ -71,7 +72,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         {:noreply,
          socket
          |> assign(:route, route)
-         |> assign(:route_state, :ready)}
+         |> assign(:route_state, :ready)
+         |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, route))}
     end
   end
 
@@ -111,6 +113,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # The related-transfer count is a direct facade call, never the catalog adapter
+  # (CR-15): the details page's own read may be a substituted adapter, but the
+  # count is the same predicate the filtered list uses (CR-4).
+  defp related_transfers(organization_id, gtfs_version_id, route) do
+    Gtfs.count_general_transfers(organization_id, gtfs_version_id, route: route.route_id)
   end
 
   defp valid_external_url?(url) when is_binary(url) and url != "" do
@@ -243,6 +252,21 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                   <div>
                     <dt class="text-sm font-medium text-base-content/70">Active</dt>
                     <dd class="mt-1 text-base">{if @route.active, do: "Yes", else: "No"}</dd>
+                  </div>
+
+                  <div>
+                    <dt class="text-sm font-medium text-base-content/70">Transfers</dt>
+                    <dd class="mt-1 text-base">
+                      <.link
+                        id="route-transfers-link"
+                        navigate={
+                          ~p"/gtfs/#{@current_gtfs_version.id}/transfers?#{[route: @route.route_id]}"
+                        }
+                        class="link link-primary"
+                      >
+                        Transfers here ({@transfer_count})
+                      </.link>
+                    </dd>
                   </div>
                 </dl>
               </div>

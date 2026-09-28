@@ -1,7 +1,8 @@
 defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   @moduledoc """
   Operational read contract for the route and stop/station catalog and detail views,
-  and for the editable calendar list and detail reads.
+  for the editable calendar list and detail reads, for the version's transfer
+  catalog, and for the Fare zones workspace.
 
   Catalog reads must distinguish ready values, missing records, partial enrichment,
   and a database connection that is temporarily unavailable. Only a lost database
@@ -21,9 +22,28 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   `:gtfs_planner, :gtfs_catalog_read_adapter`, defaulting to the Repo adapter, so
   focused LiveView tests can substitute this application-owned behaviour without
   mocking `Repo` or Postgrex.
+
+  The blocking day read keeps its domain tagged results the same way: `{:ok, day}`
+  for a coherent scoped load, `{:error, :not_found}` for a foreign or unpublished
+  version and `{:error, {:unknown_day_type, day_types}}` for a key no day type has.
+  The Schedules block warning and the Blocks deep-link key are reads of the same
+  kind: a foreign or unpublished version is `{:error, :not_found}`, a lost
+  connection `{:error, :unavailable}`, and a service with no active date is the
+  in-band answer `{:ok, :none}` rather than an error.
   """
 
-  alias GtfsPlanner.Gtfs.{Calendars, Route, RoutePattern, Schedules, Stop}
+  alias GtfsPlanner.Gtfs.{
+    Blocking,
+    Calendars,
+    FareZones,
+    Route,
+    RoutePattern,
+    Schedules,
+    Stop,
+    Transfers
+  }
+
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
 
   @type unavailable :: {:error, :unavailable}
   @type route_page :: %{
@@ -42,6 +62,11 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
         }
   @type stop_region(value) :: {:ok, value} | unavailable()
   @type calendar_page :: [Calendars.summary()]
+  @type fare_workspace :: %{
+          inventory: FareZones.inventory(),
+          checks: FareZones.checks(),
+          stops: FareZones.stop_page()
+        }
 
   @callback load_route_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, route_page()} | unavailable()
@@ -68,10 +93,21 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               | {:error, :not_found | :unavailable}
   @callback load_route_schedule(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), Schedules.filters()) ::
               {:ok, Schedules.schedule()} | {:error, :not_found | :unavailable}
+  @callback load_blocking_day(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+              {:ok, Blocking.day()}
+              | {:error, {:unknown_day_type, [DayTypes.day_type()]} | :not_found | :unavailable}
+  @callback block_problems_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+              {:ok, [Blocking.problem()]} | {:error, :not_found | :unavailable}
+  @callback first_day_type_key(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+              {:ok, String.t() | :none} | {:error, :not_found | :unavailable}
   @callback load_stop_regions(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t()) :: %{
               child_stops: stop_region([Stop.t()]),
               levels: stop_region(list()),
               pathways: stop_region(list()),
               editing_status: stop_region(struct() | nil)
             }
+  @callback load_fare_workspace(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+              {:ok, fare_workspace()} | unavailable()
+  @callback load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+              {:ok, Transfers.catalog()} | unavailable()
 end

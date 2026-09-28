@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the twelve catalog keys only. Any other key raises, so a
+  `feature/1` answers for the six catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -33,47 +33,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
   content table in the information-architecture spec.
   """
   @spec feature(atom()) :: feature()
-  def feature(:transfers) do
-    %{
-      title: "Transfers",
-      scope: :version,
-      summary:
-        "Tell trip planners where riders can change vehicles: between stops, routes or two specific trips.",
-      sections: [
-        %{name: "Transfer list", text: "Review transfers in this version."},
-        %{
-          name: "New transfer",
-          text: "Choose a stop, route or trip pair, then set its type and minimum time."
-        },
-        %{
-          name: "In-seat transfers",
-          text: "Review connections where riders stay on board, set on Operations › Blocks."
-        }
-      ]
-    }
-  end
-
-  def feature(:blocks) do
-    %{
-      title: "Blocks",
-      scope: :version,
-      summary: "Plan which trips each vehicle runs in sequence, one day type at a time.",
-      sections: [
-        %{name: "Timeline", text: "Arrange trips into vehicle blocks."},
-        %{name: "Unassigned trips", text: "Find trips that still need a vehicle block."},
-        %{name: "Checks", text: "Find overlaps, short layovers and repositioning problems."},
-        %{
-          name: "Riders stay on board",
-          text: "Mark connections where riders can remain in the vehicle."
-        },
-        %{
-          name: "Deadheads and relief points",
-          text: "Plan non-service movements and operator changes."
-        }
-      ]
-    }
-  end
-
   def feature(:runs) do
     %{
       title: "Runs",
@@ -127,60 +86,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
       sections: [
         %{name: "Closures", text: "Set which pathways close and when."},
         %{name: "Access check", text: "Check station access during those closures."}
-      ]
-    }
-  end
-
-  def feature(:alignment) do
-    %{
-      title: "Alignment",
-      scope: :version,
-      summary: "Draw the path this pattern travels between stops.",
-      sections: [
-        %{name: "Segment status", text: "Find saved and missing segments between stop visits."},
-        %{name: "Generate along streets", text: "Generate a path between stops using streets."},
-        %{name: "Edit points", text: "Adjust the points along a segment."},
-        %{name: "Shared segments", text: "Review segments used by other patterns."}
-      ]
-    }
-  end
-
-  def feature(:feed_details) do
-    %{
-      title: "Feed details",
-      scope: :version,
-      summary: "Describe this version’s feed for data consumers.",
-      sections: [
-        %{name: "Publisher", text: "Name the feed publisher and website."},
-        %{name: "Languages", text: "Set the feed’s languages."},
-        %{name: "Service dates", text: "Describe the dates covered by the feed."},
-        %{name: "Feed version", text: "Identify the feed release."},
-        %{name: "Contact", text: "Provide contact details for feed questions."}
-      ]
-    }
-  end
-
-  def feature(:agencies) do
-    %{
-      title: "Agencies",
-      scope: :version,
-      summary: "Manage the agencies that operate this version’s routes.",
-      sections: [
-        %{name: "Agency list", text: "Review agencies and the routes they operate."},
-        %{name: "One timezone", text: "Keep agencies in the version on one timezone."},
-        %{name: "Removing an agency", text: "Move its routes before removing it."}
-      ]
-    }
-  end
-
-  def feature(:fares) do
-    %{
-      title: "Fares",
-      scope: :version,
-      summary: "Set up fare zones and the fare rules that use them.",
-      sections: [
-        %{name: "Zones", text: "Group stops into fare zones."},
-        %{name: "Fare rules", text: "Set fares by origin, destination and zones crossed."}
       ]
     }
   end

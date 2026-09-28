@@ -39,18 +39,47 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     (lighter + 0.05) / (darker + 0.05)
   end
 
+  # The normalized background and the foreground that reaches 4.5:1 against it,
+  # or `:error` when the feed's background is missing or unvalidated.
+  # `route_colors/1` and `route_badge/1` share this so a caller that paints its
+  # own surface and the badge itself can never disagree about a route's colours.
+  defp resolved_colors(route) do
+    case normalize_hex(Map.get(route, :route_color)) do
+      {:ok, norm_bg} ->
+        {:ok, norm_bg, resolve_foreground(norm_bg, Map.get(route, :route_text_color))}
+
+      :error ->
+        :error
+    end
+  end
+
+  @doc """
+  Returns a route's colours as a safe inline style and a fallback class.
+
+  The style carries the normalized background and the foreground that reaches
+  4.5:1 contrast against it, so a caller that paints its own surface (a timeline
+  trip bar) never interpolates an unvalidated feed value. An invalid or missing
+  background yields no style and the neutral `bg-base-300 text-base-content`
+  class instead, so colour stays decorative and never the only signal.
+  """
+  @spec route_colors(map()) :: {String.t() | nil, String.t() | nil}
+  def route_colors(route) do
+    case resolved_colors(route) do
+      {:ok, norm_bg, resolved_fg} ->
+        {"background-color: ##{norm_bg}; color: ##{resolved_fg}", nil}
+
+      :error ->
+        {nil, "bg-base-300 text-base-content"}
+    end
+  end
+
   attr :route, :map, required: true
   attr :class, :any, default: nil
 
   def route_badge(assigns) do
-    bg = Map.get(assigns.route, :route_color)
-    fg = Map.get(assigns.route, :route_text_color)
-
     {style, badge_class} =
-      case normalize_hex(bg) do
-        {:ok, norm_bg} ->
-          resolved_fg = resolve_foreground(norm_bg, fg)
-
+      case resolved_colors(assigns.route) do
+        {:ok, norm_bg, resolved_fg} ->
           # A near-white route color (FFD200 reads ~1.2:1 on white) needs an edge,
           # or the badge disappears into the page. Anything below the 3:1 WCAG
           # 1.4.11 floor for component graphics gets a subtle ring.

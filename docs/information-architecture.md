@@ -47,7 +47,7 @@ Org name                                        [Version ▾]   [Initials ▾]
 | Destination | Holds | Scope | Status |
 |---|---|---|---|
 | Home (`/`) | Organization tasks for the signed-in user | Organization | Live |
-| Routes | Route catalog, transfers, route and pattern pages | This version | Live; Transfers Proposed |
+| Routes | Route catalog, transfers, route and pattern pages | This version | Live |
 | Calendars | Service calendars | This version | Live |
 | Operations | Blocks · Runs · Rosters | This version | Planned; grouping Proposed |
 | Stops & stations | Stops, stations, floorplans, reports, closures | This version | Live |
@@ -143,7 +143,7 @@ flowchart LR
 ```
 Routes                              /gtfs/:version/routes
 ├── Routes (list)                   Live
-├── Transfers (list)                Proposed
+├── Transfers (list)                Live
 └── Route                           /routes/:route_id
     ├── Details                     Live (read-only) → Proposed (editable)
     ├── Patterns                    Live
@@ -159,7 +159,7 @@ badges; New route drawer.
   a new organization, the empty state and the New route drawer ask for agency name, website and
   timezone before the first route. Imported versions take their agency from `agency.txt`.
 
-**Routes › Transfers** (Proposed): a list for the whole version, beside the Routes list.
+**Routes › Transfers** (Live): a list for the whole version, beside the Routes list.
 - Columns: From, To, Type, Min time. Filters for type, stop and route, plus search.
 - "New transfer" asks for the scope first (stop pair, route pair or trip pair), then shows only
   that scope's fields.
@@ -286,8 +286,9 @@ Stops & stations                    /gtfs/:version/stops
 
 - **Evolutions** (Planned): scheduled pathway closures tied to a calendar and time window, with a
   connectivity check. Its calendar picker is read-only.
+- **Fare zone** (Live on Details): a stop shows its own zone as "Fare zone", and a station shows the
+  distinct zones of its boardable children as "Platform fare zones". Both link to Settings › Fares › Zones.
 - *Proposed on Details:*
-  - "Fare zone: N", linking to Settings › Fares › Zones.
   - "Transfers here (N)", linking to Routes › Transfers filtered to this station.
 
 ### Flex
@@ -367,7 +368,7 @@ Settings
 
 **Agencies:**
 - The list shows name, URL, timezone and route count. The route count links to the Routes list
-  filtered by agency. A version with one agency opens straight to its detail.
+  filtered by agency. A version with one agency shows the same list; the name opens its details.
 - A new agency defaults to the version's timezone and must match it. Changing the timezone changes
   it for every agency, with a confirmation naming them.
 - The last agency cannot be deleted; the action is disabled with the reason shown.
@@ -375,8 +376,8 @@ Settings
   them to …"), then moves the routes and deletes the agency in one step.
 
 **Fares › Zones:**
-- A zone list with stop counts, and a map of stops colored by zone.
-- Assign stops by selecting them on the map or in the list.
+- A zone list with stop counts, and a map of stops colored and labelled by zone.
+- Assign stops by selecting them on the map or in the list, then reviewing and saving the change.
 - Fare rules select zones for origin, destination and "contains".
 
 **Export defaults:**
@@ -404,7 +405,8 @@ Settings
 | Pattern › Details / Timings | Review trips | Review drawer; trips link to Schedules |
 | Route › Schedules trip | Block ID | Operations › Blocks for that day type |
 | Station › Details | Transfers here (N) | Routes › Transfers, filtered to the station |
-| Station › Details | Fare zone: N | Settings › Fares › Zones |
+| Stop › Details | Fare zone | Settings › Fares › Zones |
+| Station › Details | Platform fare zones | Settings › Fares › Zones |
 | Station › Evolutions | Calendar picker | Calendars (read-only) |
 | Settings › Agencies | Route count | Routes list filtered by agency |
 | Operations › Blocks empty state | No garages yet | Settings › Garages |
@@ -431,7 +433,6 @@ For that design, the mapping considered during this review was:
 
 | Placement | Missing today |
 |---|---|
-| Settings › Fares › Zones | `stops` has no `zone_id`, and export writes none. `fare_rules.txt` exports zone IDs that no stop carries. |
 | Route › Details › Deactivate route | `routes.active` exists and the list filters on it, but export ignores it. |
 | Flex | `booking_rules` is imported but not exported. `locations` stores points, not polygons. `stop_times` has no flex fields. |
 | GTFS › Export › Publish to feed URL | Export artifacts are private and expire after 24 hours; there is no stable public artifact. |
@@ -457,7 +458,6 @@ its feature is specified.
 |---|---|---|
 | [AC-TRIP-041, AC-TRIP-042](requirements/trips-requirements.md) | "In-seat transfers allowed" checkbox on the trip form | Riders stay on board choice on the block connection |
 | [AC-TRIP-038 to AC-TRIP-040](requirements/trips-requirements.md) | Weekday checkboxes on each trip | Service days come only from the trip's calendar |
-| [AC-STOP-023 to AC-STOP-026](requirements/stops-and-stations-requirements.md) | Zone list in a Stops "Stop Zones" sub-section; zone dropdown when editing a stop | Settings › Fares › Zones; stop details shows the zone read-only |
 | [AC-PAT-004](requirements/patterns-and-alignments-requirements.md) | A matrix of all patterns, grouped by direction | Compare page for two selected patterns |
 | [AC-CAL-031](requirements/calendars-and-service-periods-requirements.md) | Move trips from a source to a destination calendar; the source remains with zero trips | Combine drawer; it should keep the source calendars to match |
 
@@ -474,8 +474,8 @@ its feature is specified.
 | Trips and frequencies | [Trips](requirements/trips-requirements.md) | Route › Schedules | Planned / Proposed |
 | In-seat transfers | AC-TRIP-041, AC-TRIP-042 | Operations › Blocks › block drawer | Proposed |
 | Blocks | [Schedules and blocks](requirements/schedules-and-blocks-requirements.md) | Operations › Blocks | Planned |
-| Transfers | [Transfers](requirements/transfers-requirements.md) | Routes › Transfers | Proposed |
-| Fare zones | [Stops and stations](requirements/stops-and-stations-requirements.md) AC-STOP-023 to AC-STOP-026 | Settings › Fares › Zones | Proposed |
+| Transfers | [Transfers](requirements/transfers-requirements.md) | Routes › Transfers | Live |
+| Fare zones | [Stops and stations](requirements/stops-and-stations-requirements.md) AC-STOP-023 to AC-STOP-026 | Settings › Fares › Zones | Live |
 | Agencies and feed info | [System configuration](requirements/system-configuration-requirements.md) AC-CONFIG-001 to AC-CONFIG-017, AC-CONFIG-040 | Settings › Agencies, Feed details; Route › Details | Proposed |
 | Export settings | AC-CONFIG-030, AC-CONFIG-031 | Settings › Export defaults | Proposed |
 | Feed URL | AC-CONFIG-033 to AC-CONFIG-035 | Settings › Published feed URL; GTFS › Export › Publish | Proposed |

@@ -4,9 +4,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   It renders the route's Patterns list, the creation flow and the pattern
   Stops/Timings/Alignment/Details tasks from the scoped
-  `GtfsPlanner.Gtfs.RoutePatterns` reads. Alignment is still an unbuilt
-  destination, so its task renders the shared `GtfsPlannerWeb.ComingSoon` body
-  instead of a map editor. Every identifier used for a write comes from a loaded
+  `GtfsPlanner.Gtfs.RoutePatterns` reads. The Alignment task renders the
+  server-side workspace from `Gtfs.alignment_editor/4` (sections, statuses
+  and export state); map drawing and saving arrive in later steps. Every identifier used for a write comes from a loaded
   server record: the route and pattern are resolved from the URL inside the
   loaded organization/version scope, and a pattern or timing from another scope
   resolves to `not_found`. Access uses the existing editor guard, and a lost
@@ -19,8 +19,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.ComingSoon, only: [coming_soon: 1]
-
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -28,7 +26,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.ComingSoon
+  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -43,6 +42,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     retry_review apply_stop_review save_timing apply_timing_review
     refresh_timing_review retry_timing_review confirm_timing_dialog
     confirm_delete_timing copy_pattern confirm_delete_pattern
+    alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
+    alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
+    alignment_follow_streets confirm_bulk_generation
   )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
@@ -116,10 +118,45 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:pattern_delete_dialog, nil)
      |> assign(:offline?, false)
      |> assign(:applying?, false)
+     |> assign(:alignment, nil)
+     |> assign(
+       :alignment_state,
+       %{
+         dirty_positions: [],
+         selected: 1,
+         mode: "pan",
+         selected_point_count: 0,
+         point_count: 0,
+         can_undo: false,
+         can_redo: false,
+         flagged_positions: [],
+         review_positions: []
+       }
+     )
+     |> assign(:alignment_dialog, nil)
+     |> assign(:alignment_discard_dialog, nil)
+     |> assign(:alignment_delete_dialog, nil)
+     |> assign(:alignment_simplify_dialog, nil)
+     |> assign(:alignment_import_dialog, nil)
+     |> assign(:alignment_notice, nil)
+     |> assign(:alignment_pending, nil)
+     |> assign(:alignment_save_notice, nil)
+     |> assign(:alignment_forced_local, [])
+     |> assign(:alignment_editable, false)
+     |> assign(:alignment_generation, nil)
+     |> assign(:alignment_follow, nil)
+     |> assign(:alignment_generate_dialog, nil)
+     |> assign(:alignment_generate_notice, nil)
+     |> assign(:bulk_selected, nil)
+     |> assign(:bulk_dialog, nil)
+     |> assign(:bulk_result, nil)
+     |> assign(:alignment_bulk, nil)
+     |> assign(:alignment_suggestions, %{})
      |> assign(:details_params, @creation_defaults)
      |> assign(:details_baseline, nil)
      |> assign(:details_form, details_form(@creation_defaults, []))
      |> assign(:dirty?, false)
+     |> assign(:patterns_editable, false)
      |> assign(:impact_dialog, nil)
      |> assign(:pending_navigation, nil)
      |> assign(:details_stale?, false)
@@ -162,6 +199,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:blocked_dialog, nil)
     |> assign(:impact_dialog, nil)
     |> assign(:status_message, nil)
+    |> assign(:alignment_pending, nil)
+    |> assign(:alignment_save_notice, nil)
+    |> assign(:alignment_forced_local, [])
+    |> assign(:alignment_import_dialog, nil)
+    |> assign(:alignment_generate_dialog, nil)
+    |> assign(:alignment_generate_notice, nil)
+    |> assign(:alignment_generation, nil)
+    |> assign(:bulk_dialog, nil)
+    |> assign(:alignment_bulk, nil)
+    |> assign(:alignment_follow, nil)
+    |> cancel_async(:alignment_generation)
+    |> cancel_async(:alignment_follow)
+    |> cancel_async(:alignment_bulk)
   end
 
   @impl true
@@ -176,15 +226,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:pattern_id, pattern_id)
       |> assign(:task, resolve_task(action, params["task"]))
 
-    cond do
-      not connected?(socket) ->
-        {:noreply, assign(socket, :load_state, :loading)}
+    socket =
+      cond do
+        not connected?(socket) ->
+          assign(socket, :load_state, :loading)
 
-      reload_needed?(socket, pattern_id, timing_id) ->
-        {:noreply, load_screen(socket, timing_id)}
+        reload_needed?(socket, pattern_id, timing_id) ->
+          load_screen(socket, timing_id)
 
-      true ->
-        {:noreply, socket}
+        true ->
+          socket
+      end
+
+    case RoutePatternAlignmentEvents.ensure_loaded(socket) do
+      {:ok, socket} -> {:noreply, socket}
+      {:error, :not_found} -> {:noreply, not_found(socket)}
     end
   end
 
@@ -504,11 +560,235 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   def handle_event("switch_task", %{"task" => task}, socket) do
     resolved = resolve_task(socket.assigns.live_action, task)
 
+    if socket.assigns.task == :alignment and resolved != :alignment and
+         alignment_dirty?(socket) do
+      # An unsaved alignment draft blocks task switches the same way other
+      # editor guards do: stash the task path and reuse the existing
+      # discard dialog instead of patching away the draft.
+      {:noreply, assign(socket, :pending_navigation, task_path(socket, resolved))}
+    else
+      {:noreply,
+       socket
+       |> assign(:task, resolved)
+       |> assign(:error_message, nil)
+       |> push_patch(to: task_path(socket, resolved))}
+    end
+  end
+
+  @impl true
+  def handle_event("alignment_select_section", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.select_section(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_hook_ready", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.hook_ready(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_map_error", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.map_error(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_map_ok", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.map_ok(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_retry_tiles", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.retry_tiles(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_help", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, :help)}
+  end
+
+  @impl true
+  def handle_event("alignment_draft_state", params, socket) do
     {:noreply,
      socket
-     |> assign(:task, resolved)
-     |> assign(:error_message, nil)
-     |> push_patch(to: task_path(socket, resolved))}
+     |> RoutePatternAlignmentEvents.draft_state(params)
+     |> assign_dirty()}
+  end
+
+  @impl true
+  def handle_event("alignment_close_help", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.set_dialog(socket, nil)}
+  end
+
+  @impl true
+  def handle_event("alignment_close_dialog", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.close_dialogs(socket)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_discard", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_discard(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_discard", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_discard(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_delete", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_delete(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_delete", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_delete(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_simplify", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_simplify(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_simplify_tolerance", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.simplify_tolerance(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_simplify", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_simplify(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_import", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_import(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_import_choice", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.import_choice(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_import", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_import(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_simplify_result", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.simplify_result(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_action_notice", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.action_notice(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_save_requested", params, socket) do
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.save_requested(params)
+     |> assign_dirty()}
+  end
+
+  @impl true
+  def handle_event("alignment_save_choice", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.save_choice(socket, params)}
+  end
+
+  @impl true
+  def handle_event("confirm_alignment_save", params, socket) do
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.confirm_save(params)
+     |> assign_dirty()}
+  end
+
+  @impl true
+  def handle_event("alignment_cancel_save", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.cancel_save(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_conflict_load_latest", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.conflict_load_latest(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_conflict_keep_local", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.conflict_keep_local(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_reload", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.reload(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_generate_paths", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.generate(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_generate", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.generate(socket, Map.put(params, "confirmed", true))}
+  end
+
+  @impl true
+  def handle_event("alignment_cancel_generation", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.cancel_generation(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_follow_streets", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.follow_streets(socket, params)}
+  end
+
+  @impl true
+  def handle_event("toggle_bulk_select", params, socket) do
+    before = socket.assigns[:bulk_selected]
+
+    socket = RoutePatternAlignmentEvents.toggle_bulk_select(socket, params)
+
+    socket =
+      if socket.assigns[:bulk_selected] != before,
+        do: load_screen(socket),
+        else: socket
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("open_bulk", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_bulk(socket, params)}
+  end
+
+  @impl true
+  def handle_event("confirm_bulk_generation", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.confirm_bulk(socket, params)}
+  end
+
+  @impl true
+  def handle_event("cancel_bulk_generation", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.cancel_bulk(socket, params)}
+  end
+
+  @impl true
+  def handle_event("review_bulk_suggestions", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.review_suggestions(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_suggestions_applied", params, socket) do
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.suggestions_applied(params)
+     |> assign_dirty()}
+  end
+
+  @impl true
+  def handle_event("alignment_review_again", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.review_again(socket, params)}
   end
 
   @impl true
@@ -859,6 +1139,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("open_pattern_alignment", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_pattern_alignment(socket, params)}
+  end
+
+  @impl true
   def handle_event("back_to_patterns", _params, socket) do
     guard_navigation(socket, patterns_path(socket))
   end
@@ -897,6 +1182,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
     handle_version_switch(socket, version_id)
+  end
+
+  @impl true
+  def handle_async(:alignment_generation, result, socket) do
+    {:noreply,
+     RoutePatternAlignmentEvents.handle_generation_result(socket, :alignment_generation, result)}
+  end
+
+  @impl true
+  def handle_async(:alignment_follow, result, socket) do
+    {:noreply,
+     RoutePatternAlignmentEvents.handle_follow_result(socket, :alignment_follow, result)}
+  end
+
+  @impl true
+  # Only fresh results re-stream the rows (the badges live inside the
+  # streamed items): stale arrivals after a cancel or a revoked editor
+  # touch no database and reload nothing.
+  def handle_async(:alignment_bulk, result, socket) do
+    {socket, reload?} =
+      RoutePatternAlignmentEvents.handle_bulk_result(socket, :alignment_bulk, result)
+
+    socket = if reload?, do: load_screen(socket), else: socket
+
+    {:noreply, assign_dirty(socket)}
   end
 
   defp handle_version_switch(socket, version_id) do
@@ -1004,6 +1314,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 build_error={@build_error}
                 stale?={@stale?}
                 new_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+                editable?={@patterns_editable}
+                selected={@bulk_selected}
+                bulk_dialog={@bulk_dialog}
+                bulk_result={@bulk_result}
+                bulk_pending={@alignment_bulk != nil}
               />
             <% @load_state == :ready -> %>
               <%= if @pattern || @live_action == :new do %>
@@ -1085,13 +1400,35 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       busy?={@applying? or @offline?}
                     />
                   <% @task == :alignment -> %>
-                    <div class="mt-4">
-                      <.coming_soon
-                        feature={ComingSoon.feature(:alignment)}
-                        scope_label={"This version: #{@current_gtfs_version.name}"}
-                        heading_level={3}
+                    <%= if @alignment do %>
+                      <RoutePatternAlignmentComponents.alignment_task
+                        alignment={@alignment}
+                        state={@alignment_state}
+                        notice={@alignment_notice}
+                        dialog_open={@alignment_dialog == :help}
+                        editable?={@alignment_editable}
+                        offline?={@offline?}
+                        applying?={@applying?}
+                        pending={@alignment_pending}
+                        save_notice={@alignment_save_notice}
+                        version_name={@current_gtfs_version.name}
+                        organization_name={@current_organization.name}
+                        delete_dialog={@alignment_delete_dialog}
+                        discard_dialog={@alignment_discard_dialog}
+                        simplify_dialog={@alignment_simplify_dialog}
+                        import_dialog={@alignment_import_dialog}
+                        generation={@alignment_generation}
+                        generate_dialog={@alignment_generate_dialog}
+                        generate_notice={@alignment_generate_notice}
                       />
-                    </div>
+                    <% else %>
+                      <.skeleton
+                        id="alignment-loading"
+                        label="Loading alignment"
+                        rows={3}
+                        aria-busy="true"
+                      />
+                    <% end %>
                   <% true -> %>
                     <RoutePatternComponents.timings_task
                       timings={@timings}
@@ -1234,11 +1571,60 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:stop_choices, screen.stop_choices)
       |> assign(:load_state, :ready)
       |> assign(:stale?, false)
-      |> stream(:patterns, screen.patterns, reset: true)
+      |> then(fn socket ->
+        {rows, preselected} = with_alignment(socket, screen.patterns)
+
+        socket
+        |> stream(:patterns, rows, reset: true)
+        |> assign(:patterns_editable, editor_access?(socket))
+        |> preselect_bulk(preselected)
+      end)
       |> apply_detail(screen.detail, previous_pattern_id)
 
     assign_dirty(socket)
   end
+
+  # Route › Patterns shows every pattern's alignment status from one batched
+  # `Gtfs.route_alignment_summary/3` read (step 35, still 5 queries for any
+  # pattern count per step 34). Keyed by natural `route_pattern_id`; a
+  # pattern absent from the summary renders Not exported through
+  # `list_status/1`'s nil branch. The same read preselects the bulk
+  # selection (step 36, AC-41): patterns with missing sections start
+  # checked, and the selection stays sticky afterwards.
+  defp with_alignment(socket, summaries) do
+    summary =
+      Gtfs.route_alignment_summary(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        socket.assigns.route_id
+      )
+
+    rows =
+      Enum.map(summaries, fn summary_row ->
+        Map.put(summary_row, :alignment, Map.get(summary, summary_row.pattern.route_pattern_id))
+      end)
+
+    preselected =
+      rows
+      |> Enum.filter(fn row -> bulk_missing?(row.alignment) end)
+      |> Enum.map(fn row -> row.pattern.route_pattern_id end)
+
+    {rows, preselected}
+  end
+
+  # AC-41 preselects the patterns with missing sections. The selection is
+  # sticky: only the first load initializes it, later loads (saves,
+  # switches, bulk results) keep the operator's toggles.
+  defp preselect_bulk(socket, preselected) do
+    if is_nil(socket.assigns[:bulk_selected]) do
+      assign(socket, :bulk_selected, MapSet.new(preselected))
+    else
+      socket
+    end
+  end
+
+  defp bulk_missing?(%{missing: missing}) when missing > 0, do: true
+  defp bulk_missing?(_status), do: false
 
   defp apply_detail(socket, nil, _previous_pattern_id) do
     socket
@@ -2768,16 +3154,30 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         do: dirty?,
         else: details_dirty?(socket, socket.assigns.details_params)
 
-    dirty? =
-      dirty? or socket.assigns.stops_dirty? or
-        (socket.assigns.live_action == :new and socket.assigns.staged_occurrences != []) or
-        map_size(socket.assigns.timing_edits) > 0 or
-        map_size(socket.assigns.timing_headsign_edits) > 0
+    dirty? = dirty? or other_changes_dirty?(socket)
 
     if socket.assigns.dirty? == dirty? do
       socket
     else
       push_event(assign(socket, :dirty?, dirty?), "route_pattern_dirty", %{dirty: dirty?})
+    end
+  end
+
+  defp other_changes_dirty?(socket) do
+    socket.assigns.stops_dirty? or alignment_dirty?(socket) or
+      map_size(socket.assigns[:alignment_suggestions] || %{}) > 0 or
+      (socket.assigns.live_action == :new and socket.assigns.staged_occurrences != []) or
+      map_size(socket.assigns.timing_edits) > 0 or
+      map_size(socket.assigns.timing_headsign_edits) > 0
+  end
+
+  # An alignment draft is dirty while the hook reports dirty positions.
+  # Read defensively: sockets that never mounted the Alignment task still
+  # carry the mount-time `%{dirty_positions: []}` shape.
+  defp alignment_dirty?(socket) do
+    case socket.assigns[:alignment_state] do
+      %{dirty_positions: [_ | _]} -> true
+      _ -> false
     end
   end
 

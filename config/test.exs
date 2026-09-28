@@ -11,7 +11,13 @@ config :gtfs_planner, GtfsPlanner.Repo,
   hostname: "localhost",
   database: "gtfs_planner_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  # Two connections per scheduler is two on a single-scheduler host. The interleaving
+  # cases in `test/gtfs_planner/gtfs/blocking/concurrency_test.exs` hold one connection
+  # per holder, one per concurrent command and one for the shared sandbox owner, so a
+  # four-connection case has no margin at `2 * 2` and does not fit below it. Ecto offers
+  # no per-module pool size, and this 10 matches what `config/dev.exs` and
+  # `config/runtime.exs` already use.
+  pool_size: max(System.schedulers_online() * 2, 10)
 
 # Use a deterministic final-validator adapter for browser journeys while ordinary
 # ExUnit cases retain process-owned Mox expectations.
@@ -43,6 +49,22 @@ geocoding_module =
   end
 
 config :gtfs_planner, :geocoding_service, geocoding_module
+
+# Alignment street generation routes through the server-side Geoapify adapter in
+# ordinary ExUnit runs. Browser journeys drive generation in a real browser, where
+# no Req.Test stub exists, so they use the deterministic fake instead.
+street_routing_module =
+  if System.get_env("BROWSER_E2E") == "true" do
+    GtfsPlanner.BrowserStreetRouting
+  else
+    GtfsPlanner.StreetRouting.Geoapify
+  end
+
+config :gtfs_planner, :street_routing_service, street_routing_module
+
+# Route Req HTTP calls in the street routing adapter through Req.Test so
+# tests can stub upstream routing responses.
+config :gtfs_planner, :street_routing_req_plug, {Req.Test, GtfsPlanner.StreetRouting.Geoapify}
 
 # Route Req HTTP calls in the map tiles controller through Req.Test so
 # tests can stub upstream tile responses.

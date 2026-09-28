@@ -15,9 +15,13 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   stop rows. Station-detail regions resolve independently so one failing region
   does not erase the others. Calendar list and detail reads delegate to
   `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
-  preserving the domain's own `{:error, :not_found}`. The calendar list feed
+  preserving the domain's own `{:error, :not_found}`. A blocking day read delegates to
+  `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way, as do the
+  Schedules block warning and the first-day-type key. The calendar list feed
   status resolves the agency-local today once and reports the version-wide
-  service gaps with it. Nothing else is rescued, so
+  service gaps with it. The Fare zones workspace resolves its inventory, checks
+  and first stop page in one operational read, so a lost connection is reported
+  once for the whole workspace. Nothing else is rescued, so
   a malformed id, a bad query, or any other defect still raises rather than being
   reported as downtime.
   """
@@ -25,7 +29,18 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @behaviour GtfsPlanner.Gtfs.CatalogReadAdapter
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{Calendars, DisplayClock, Route, RoutePatterns, Schedules, Stop}
+
+  alias GtfsPlanner.Gtfs.{
+    Blocking,
+    Calendars,
+    DisplayClock,
+    FareZones,
+    Route,
+    RoutePatterns,
+    Schedules,
+    Stop,
+    Transfers
+  }
 
   @default_per_page 25
 
@@ -146,6 +161,40 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   end
 
   @impl true
+  def load_blocking_day(organization_id, gtfs_version_id, day_type_key) do
+    case run(fn -> Blocking.load_day(organization_id, gtfs_version_id, day_type_key) end) do
+      {:ok, {:ok, day}} -> {:ok, day}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def block_problems_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    case run(fn ->
+           Blocking.block_problems_for_trips(organization_id, gtfs_version_id, trip_ids)
+         end) do
+      {:ok, {:ok, problems}} -> {:ok, problems}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def first_day_type_key(organization_id, gtfs_version_id, service_id) do
+    case run(fn -> Blocking.first_day_type_key(organization_id, gtfs_version_id, service_id) end) do
+      {:ok, {:ok, key}} -> {:ok, key}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_transfer_catalog(organization_id, gtfs_version_id, opts) do
+    run(fn -> Transfers.load_catalog(organization_id, gtfs_version_id, opts) end)
+  end
+
+  @impl true
   def load_stop_regions(organization_id, gtfs_version_id, %Stop{} = station) do
     %{
       child_stops:
@@ -163,6 +212,17 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
           Gtfs.get_station_editing_status(organization_id, gtfs_version_id, station.id)
         end)
     }
+  end
+
+  @impl true
+  def load_fare_workspace(organization_id, gtfs_version_id, opts) do
+    run(fn ->
+      %{
+        inventory: FareZones.inventory(organization_id, gtfs_version_id),
+        checks: FareZones.checks(organization_id, gtfs_version_id),
+        stops: FareZones.list_stops(organization_id, gtfs_version_id, opts)
+      }
+    end)
   end
 
   defp primary_stop_page(organization_id, gtfs_version_id, opts, per_page) do
