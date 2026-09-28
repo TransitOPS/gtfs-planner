@@ -101,7 +101,7 @@ defmodule GtfsPlanner.Gtfs.Route do
       :gtfs_version_id
     ])
     |> trim_string_fields()
-    |> validate_route_fields()
+    |> validate_route_fields(:import)
     |> route_constraints()
   end
 
@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Gtfs.Route do
     |> trim_string_fields()
     |> normalize_changed_blank_colors()
     |> apply_text_mode(text_mode)
-    |> validate_route_fields()
+    |> validate_route_fields(:editor)
     |> validate_route_url()
     |> route_constraints()
   end
@@ -153,7 +153,7 @@ defmodule GtfsPlanner.Gtfs.Route do
 
   # Private validation functions
 
-  defp validate_route_fields(changeset) do
+  defp validate_route_fields(changeset, name_rule) do
     # The route text columns are varchar(255), and Postgres counts code points.
     changeset
     |> then(fn changeset ->
@@ -164,7 +164,7 @@ defmodule GtfsPlanner.Gtfs.Route do
       )
     end)
     |> validate_required([:route_id, :route_type, :organization_id, :gtfs_version_id])
-    |> validate_route_name()
+    |> validate_route_name(name_rule)
     |> validate_inclusion(:route_type, @route_types)
     |> validate_inclusion(:continuous_pickup, 0..3)
     |> validate_inclusion(:continuous_drop_off, 0..3)
@@ -182,19 +182,37 @@ defmodule GtfsPlanner.Gtfs.Route do
     |> foreign_key_constraint(:organization_id)
   end
 
-  defp validate_route_name(changeset) do
+  # Import rule, identical to the base revision: both names nil fails. A
+  # trimmed-but-blank imported name still counts as present so feed rows insert.
+  defp validate_route_name(changeset, :import) do
+    route_short_name = get_field(changeset, :route_short_name)
+    route_long_name = get_field(changeset, :route_long_name)
+
+    if is_nil(route_short_name) && is_nil(route_long_name) do
+      missing_route_name_error(changeset)
+    else
+      changeset
+    end
+  end
+
+  # Editor rule (R1): at least one name must be non-blank.
+  defp validate_route_name(changeset, :editor) do
     route_short_name = get_field(changeset, :route_short_name)
     route_long_name = get_field(changeset, :route_long_name)
 
     if blank_value?(route_short_name) && blank_value?(route_long_name) do
-      add_error(
-        changeset,
-        :route_short_name,
-        "at least one of route_short_name or route_long_name must be present"
-      )
+      missing_route_name_error(changeset)
     else
       changeset
     end
+  end
+
+  defp missing_route_name_error(changeset) do
+    add_error(
+      changeset,
+      :route_short_name,
+      "at least one of route_short_name or route_long_name must be present"
+    )
   end
 
   defp validate_hex_color(changeset, field) do
@@ -271,10 +289,32 @@ defmodule GtfsPlanner.Gtfs.Route do
     add_error(changeset, :text_mode, "must be automatic or custom")
   end
 
+  # No-op safety (R4/AC-3): resolve automatic text only when a color field
+  # changed, and store it only when the computed hex differs from the current
+  # value, so an unrelated save leaves changes empty and touches neither
+  # route_text_color nor updated_at.
   defp apply_text_mode(changeset, :automatic) do
+    if color_change?(changeset), do: put_auto_text_color(changeset), else: changeset
+  end
+
+  defp color_change?(changeset) do
+    not is_nil(get_change(changeset, :route_color)) or
+      not is_nil(get_change(changeset, :route_text_color))
+  end
+
+  defp put_auto_text_color(changeset) do
     case changed_or_current_hex(changeset, :route_color) do
-      {:ok, background} -> put_change(changeset, :route_text_color, auto_text_color(background))
-      :error -> changeset
+      {:ok, background} ->
+        auto = auto_text_color(background)
+
+        if auto == get_field(changeset, :route_text_color) do
+          changeset
+        else
+          put_change(changeset, :route_text_color, auto)
+        end
+
+      :error ->
+        changeset
     end
   end
 
