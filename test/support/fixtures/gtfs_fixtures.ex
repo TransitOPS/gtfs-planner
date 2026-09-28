@@ -573,21 +573,52 @@ defmodule GtfsPlanner.GtfsFixtures do
   Generate a closure fixture.
 
   Scope is assigned on the struct, exactly as the production context will do it.
-  `pathway_id` must reference an existing pathway in the same organization and
-  version (see `pathway_fixture/5`), because the closure table carries a
-  composite pathway reference.
+  Omitting `pathway_id` or `service_id` provisions the referenced rows first —
+  a pathway between two fresh stops and a weekly calendar — so the composite
+  pathway reference and the native-calendar rule are satisfied by the defaults.
+  Pass an existing `pathway_id` (see `pathway_fixture/5`) to attach the closure
+  to a specific pathway.
   """
   def pathway_evolution_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
-    attrs =
-      Enum.into(attrs, %{
-        pathway_id: "pathway_#{System.unique_integer([:positive])}",
-        service_id: "calendar_#{System.unique_integer([:positive])}",
-        start_time: "23:00",
-        end_time: "26:00"
-      })
+    attrs = Enum.into(attrs, %{})
+    attrs = provision_evolution_pathway(organization_id, gtfs_version_id, attrs)
+    attrs = provision_evolution_service(organization_id, gtfs_version_id, attrs)
+
+    attrs = Enum.into(attrs, %{start_time: "23:00", end_time: "26:00"})
 
     %PathwayEvolution{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
     |> PathwayEvolution.changeset(attrs)
     |> Repo.insert!()
+  end
+
+  defp provision_evolution_pathway(organization_id, gtfs_version_id, attrs) do
+    if Map.has_key?(attrs, :pathway_id) do
+      attrs
+    else
+      unique = System.unique_integer([:positive])
+      from_stop = stop_fixture(organization_id, gtfs_version_id, %{stop_id: "pev_from_#{unique}"})
+      to_stop = stop_fixture(organization_id, gtfs_version_id, %{stop_id: "pev_to_#{unique}"})
+
+      pathway =
+        pathway_fixture(
+          organization_id,
+          gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id,
+          %{pathway_id: "pev_pathway_#{unique}"}
+        )
+
+      Map.put(attrs, :pathway_id, pathway.pathway_id)
+    end
+  end
+
+  defp provision_evolution_service(organization_id, gtfs_version_id, attrs) do
+    if Map.has_key?(attrs, :service_id) do
+      attrs
+    else
+      service_id = "calendar_#{System.unique_integer([:positive])}"
+      calendar_fixture(organization_id, gtfs_version_id, %{service_id: service_id})
+      Map.put(attrs, :service_id, service_id)
+    end
   end
 end

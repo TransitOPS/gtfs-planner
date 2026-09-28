@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.PathwayEvolutions
   alias GtfsPlanner.Gtfs.RecentChanges
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
@@ -3261,6 +3262,31 @@ defmodule GtfsPlanner.Gtfs do
         {:error, :not_found}
     end
   end
+
+  @doc """
+  Lists one published station's scheduled pathway closures beside its station snapshot.
+
+  A closure is included when its pathway has either endpoint among the station's
+  descendant stops, boarding areas included, and every pathway mode is eligible.
+  Each closure row carries its fingerprint, exact snapshot pathway and native
+  calendar option. Unknown, non-station, unpublished or foreign targets return
+  `{:error, :not_found}`.
+  """
+  def station_closures(organization_id, gtfs_version_id, stop_id),
+    do: PathwayEvolutions.station_closures(organization_id, gtfs_version_id, stop_id)
+
+  @doc """
+  Lists the native calendar choices for closures in one published organization/version.
+
+  Metadata-only (attributes-only) services are excluded; dates-only and unnamed
+  native services are included with their exact identifiers.
+  """
+  def closure_calendars(organization_id, gtfs_version_id),
+    do: PathwayEvolutions.closure_calendars(organization_id, gtfs_version_id)
+
+  @doc "Returns the count of scheduled closures for a published organization and GTFS version."
+  def count_closures(organization_id, gtfs_version_id),
+    do: PathwayEvolutions.count_closures(organization_id, gtfs_version_id)
 
   @doc """
   Returns a unique stop_id within an organization and GTFS version.
