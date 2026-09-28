@@ -191,8 +191,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
 
     test "trigger is secondary beside the first-use import action", %{
       conn: conn,
+      organization: organization,
       version: version
     } do
+      # A version with an agency but no routes keeps the first-use empty state;
+      # step 21 replaced only the no-agency branch with the onboarding.
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       assert has_element?(view, "#new-route-trigger.btn-outline")
@@ -672,7 +680,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       assert scoped_route_count(organization, version) == 0
     end
 
-    test "with no agencies the save asks for one and inserts nothing", %{
+    test "with no agencies the trigger opens the agency setup instead", %{
       conn: conn,
       organization: organization,
       version: version
@@ -681,36 +689,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
 
       open_drawer(view)
 
-      refute has_element?(view, "#route_agency_id")
+      # A version with no agency cannot create a route, so the header's Create
+      # route opens the agency setup rather than an empty route drawer (AC-24).
+      # `#routes-agency-onboarding` covers the same request from the onboarding.
+      assert has_element?(view, "#routes-agency-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#routes-agency-form")
+      assert has_element?(view, "#routes-agency-form_agency_timezone")
+      refute has_element?(view, "#new-route-form")
 
-      view
-      |> form("#new-route-form",
-        route: %{route_id: "NONE1", route_type: "3", route_short_name: "N"}
-      )
-      |> render_submit()
+      # A crafted save with no route form behind it inserts nothing.
+      render_submit(view, "save_new_route", %{
+        "route" => %{"route_id" => "NONE1", "route_type" => "3", "route_short_name" => "N"}
+      })
 
-      assert has_element?(view, "#new-route-agency-required")
-
-      assert has_element?(
-               view,
-               "#new-route-agency-required",
-               "Add the agency that operates this route in Settings › Agencies"
-             )
-
-      assert has_element?(view, "#new-route-agency-required", "Nothing was saved.")
-
-      assert has_element?(
-               view,
-               "#new-route-agency-settings[href='/gtfs/#{version.id}/settings/agencies']"
-             )
-
-      # The refusal is brought into view: the editor clicked Create route at the
-      # bottom of the drawer, and the callout renders above the form.
-      assert_push_event(view, "focus_scoped_target", %{id: "new-route-agency-required"})
-
-      # The drawer stays open so the editor can finish the draft after setting
-      # the agency up.
-      assert has_element?(view, "#new-route-drawer-overlay[data-open='true']")
       assert scoped_route_count(organization, version) == 0
     end
   end

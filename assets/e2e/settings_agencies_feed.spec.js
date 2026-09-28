@@ -106,6 +106,21 @@ const NEW_ROUTE_CAPTURE_DIR =
     ".specs/13-agencies-and-feed-details/evidence/visual/routes-new-route",
   );
 
+// The Routes onboarding's two versions (EV-29; step 21). Nothing else reads
+// them: "Browser Onboarding Version" starts with neither agencies nor routes,
+// and "Browser Unassigned Routes Version" holds two routes that carry no
+// agency.
+const ONBOARDING_VERSION = "Browser Onboarding Version";
+const UNASSIGNED_ROUTES_VERSION = "Browser Unassigned Routes Version";
+
+// The Routes onboarding block's own evidence folder (EV-29).
+const ONBOARDING_CAPTURE_DIR =
+  process.env.ROUTES_ONBOARDING_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/routes-onboarding",
+  );
+
 // The delete block's own evidence folder (EV-25).
 const DELETE_CAPTURE_DIR =
   process.env.AGENCIES_DELETE_CAPTURE_DIR ||
@@ -163,6 +178,18 @@ async function captureIn(page, testInfo, captureDir, name) {
 
 async function capture(page, testInfo, name) {
   await captureIn(page, testInfo, CAPTURE_DIR, name);
+}
+
+// `ds-drawer-slide-in` (assets/css/app.css) moves the panel 100% of its width
+// over 300ms with a forwards fill, so a capture taken while it runs shows a
+// drawer still hanging off the right edge. Settle the panel's own animations
+// first, the way `admin_design_contracts.spec.js` does.
+async function settleDrawer(page, selector) {
+  await page
+    .locator(selector)
+    .evaluate((el) =>
+      Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
+    );
 }
 
 // One definition-list row's label and value, in the order the page renders them.
@@ -1404,5 +1431,176 @@ test.describe("@routes-new-route", () => {
     await expect(
       page.getByRole("link", { name: "View 3 routes for Harbor Shuttle" }),
     ).toBeVisible();
+  });
+});
+
+// The first-agency onboarding on the Routes page: set up the version's first
+// agency, create the first route with it selected, and assign existing
+// unassigned routes to a new agency (EV-29; step 21).
+//
+// Declared last: it mutates only the two versions seeded for it ("Browser
+// Onboarding Version" and "Browser Unassigned Routes Version"), which no other
+// block reads, and the suite runs one worker with no retries (CR-10). Both
+// journeys need `mise run prepare:browser` to have reset and seeded the
+// database, because both create the only agency their version gets: a repeat
+// run against a database that was not reset starts from a version that already
+// has one.
+//
+// Captures land in this block's own evidence folder as
+// `onboarding-{1280,375}.png`, `agency-drawer-{1280,375}.png`,
+// `new-route-drawer-{1280,375}.png`, `first-route-created-1280.png`,
+// `no-agency-callout-{1280,375}.png` and `assigned-1280.png`.
+test.describe("@routes-onboarding", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("sets up the first agency, creates its first route, and assigns existing routes", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    // ── Who operates this service? ──
+    const versionId = await versionId(page, ONBOARDING_VERSION);
+    await page.goto(`/gtfs/${versionId}/routes`);
+    await page.waitForSelector("#routes-agency-onboarding");
+    await waitForLiveView(page);
+
+    const onboarding = page.locator("#routes-agency-onboarding");
+
+    await expect(onboarding).toContainText("Before your first route");
+    await expect(onboarding).toContainText("Who operates this service?");
+    await expect(onboarding).toContainText(
+      "Journey planners need an agency name, website, and timezone.",
+    );
+    await expect(page.locator("#routes-onboarding-import")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/import`,
+    );
+    // The agency is the primary action here, so Create route steps back.
+    await expect(page.locator("#new-route-trigger")).toHaveClass(/btn-outline/);
+    await expect(page.locator("#routes-first-use-empty")).toHaveCount(0);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "onboarding-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    // The filter panel fills the first screen at this width, so the capture has
+    // to bring the onboarding itself into view to record the changed state.
+    await page.locator("#routes-agency-onboarding").scrollIntoViewIfNeeded();
+    await expect(page.locator("#routes-set-up-agency")).toBeInViewport();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "onboarding-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    // ── Set up your agency, with the first agency's own timezone field ──
+    await page.click("#routes-set-up-agency");
+
+    const agencyOverlay = page.locator("#routes-agency-drawer-overlay");
+
+    await expect(agencyOverlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#routes-agency-drawer-title")).toHaveText(
+      "Set up your agency",
+    );
+    await expect(page.locator("#routes-agency-form_agency_timezone")).toBeVisible();
+    await expect(page.locator("#routes-agency-drawer-scope")).toContainText(
+      "Browser Onboarding Version",
+    );
+    await settleDrawer(page, "#routes-agency-drawer");
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "agency-drawer-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#routes-agency-form_agency_timezone")).toBeVisible();
+    await expect(page.locator("#routes-agency-save")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "agency-drawer-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await page.fill("#routes-agency-form_agency_name", "Browser Onboarding Transit");
+    await page.fill("#routes-agency-form_agency_url", "https://onboarding.example");
+    await page.fill("#routes-agency-form_agency_timezone", "America/Chicago");
+    await page.click("#routes-agency-save");
+
+    await expect(agencyOverlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText(
+      "Browser Onboarding Transit created.",
+    );
+
+    // ── The New route drawer, already set to the agency just created ──
+    const routeOverlay = page.locator("#new-route-drawer-overlay");
+
+    await expect(routeOverlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#route_agency_id")).toHaveValue(
+      "browser_onboarding_transit",
+    );
+    await expect(page.locator('#route_agency_id option[value=""]')).toHaveCount(0);
+    await settleDrawer(page, "#new-route-drawer");
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "new-route-drawer-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#route_agency_id")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "new-route-drawer-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await page.fill("#route_route_id", "E2E-1");
+    await page.fill("#route_route_long_name", "Onboarding journey route");
+    await page.selectOption("#route_route_type", { label: "Bus" });
+    await page.click("#new-route-submit");
+
+    await expect(routeOverlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText("Route E2E-1 created.");
+    await expect(page.locator("#routes")).toContainText("E2E-1");
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "first-route-created-1280");
+
+    // ── N imported routes need a provider ──
+    const unassignedId = await versionId(page, UNASSIGNED_ROUTES_VERSION);
+    await page.goto(`/gtfs/${unassignedId}/routes`);
+    await page.waitForSelector("#routes-no-agency");
+    await waitForLiveView(page);
+
+    const callout = page.locator("#routes-no-agency");
+
+    await expect(callout).toContainText("These routes have no agency");
+    await expect(callout).toContainText(
+      "Set up the agency that operates them. Creating it assigns it to all 2 routes.",
+    );
+    await expect(page.locator("#routes tr")).toHaveCount(2);
+    await expect(page.locator("#routes-agency-onboarding")).toHaveCount(0);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "no-agency-callout-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await page.locator("#routes-no-agency").scrollIntoViewIfNeeded();
+    await expect(page.locator("#routes-set-up-agency")).toBeInViewport();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "no-agency-callout-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await page.click("#routes-set-up-agency");
+    await expect(agencyOverlay).toHaveAttribute("data-open", "true");
+    await page.fill("#routes-agency-form_agency_name", "Browser Assigned Transit");
+    await page.fill("#routes-agency-form_agency_url", "https://assigned.example");
+    await page.fill("#routes-agency-form_agency_timezone", "America/Chicago");
+    await page.click("#routes-agency-save");
+
+    await expect(agencyOverlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText(
+      "Browser Assigned Transit created. 2 routes now use it.",
+    );
+    // The routes were assigned in place: the callout is gone, the catalog is
+    // unchanged and no route drawer opened (AC-25).
+    await expect(page.locator("#routes-no-agency")).toHaveCount(0);
+    await expect(routeOverlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#routes tr")).toHaveCount(2);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "assigned-1280");
   });
 });

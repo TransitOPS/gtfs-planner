@@ -2685,6 +2685,29 @@ case Accounts.register_first_admin(%{
       agency_id: "GAMMA"
     })
 
+    # The Routes onboarding needs a version with neither agencies nor routes, so
+    # the page renders the first-agency state, and a version with two routes that
+    # carry no agency, so it renders the assign-routes callout
+    # (settings_agencies_feed.spec.js; EV-29). The routes are created directly:
+    # this supplies the unassigned state the callout describes, not an editor save.
+    {:ok, onboarding_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Onboarding Version"})
+
+    {:ok, unassigned_routes_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Unassigned Routes Version"})
+
+    for index <- 1..2//1 do
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: unassigned_routes_version.id,
+          route_id: "UNASSIGNED_#{index}",
+          route_short_name: "#{index}",
+          route_long_name: "Unassigned browser route #{index}",
+          route_type: 3
+        })
+    end
+
     agencies_default_before
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
     |> Repo.update!()
@@ -2695,6 +2718,8 @@ case Accounts.register_first_admin(%{
         "(America/New_York and America/Chicago), no-agency version #{no_agency_version.id} " <>
         "(no agencies, no routes), agency delete version #{agency_delete_version.id} " <>
         "(ALPHA 2 routes, BETA 1 route, GAMMA 0 routes with fare F-BROWSER), " <>
+        "onboarding version #{onboarding_version.id} (no agencies, no routes), " <>
+        "unassigned routes version #{unassigned_routes_version.id} (2 routes with no agency), " <>
         "default kept as #{agencies_default_before.name}"
     )
 
