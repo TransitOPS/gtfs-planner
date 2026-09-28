@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   @exception_words %{added: "Service added", removed: "Service removed"}
   @date_format "%b %-d, %Y"
   @month_day_format "%a, %b %-d, %Y"
+  @short_date_format "%b %-d"
 
   @doc "Formats one civil date for calendar surfaces."
   def format_date(%Date{} = date), do: Elixir.Calendar.strftime(date, @date_format)
@@ -1258,27 +1259,33 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   @doc """
-  States the conflict dates a review still needs a decision for.
+  Renders the explicit conflict decisions a reviewed combination still needs.
 
-  Each conflict is a date one selected calendar deliberately stops on while another runs it, and
-  the domain groups only civil-adjacent dates whose running and removing calendars are identical.
-  The label names the exact dates, the calendars on each side and the missing choice; a decided
-  review renders no unresolved group. The review owns the grouping and the IDs, so nothing here
-  re-derives which calendars run on a date.
+  One fieldset per conflict group states the exact dates, the calendars that deliberately have
+  those dates off and the calendars that run them, and offers the two domain decisions as
+  labelled radios whose values are the allowlisted `run` and `no_service`. Nothing is defaulted:
+  an unanswered group has no checked option, the groups a refused submit still needs are marked,
+  and each option names the trips the review says it affects.
+
+  The groups come from the review's own conflicts and the trip counts from the review's own
+  effects, so no date and no client total is re-derived here. The marked groups are the first
+  invalid controls in the form, which is what the scoped `FormErrorFocus` hook focuses (AC-7,
+  AC-22).
   """
   attr :id, :string, required: true
   attr :review, :map, required: true
   attr :rows, :list, required: true
-  attr :today, :any, default: nil
+  attr :decisions, :map, required: true
+  attr :attempted?, :boolean, default: false
 
-  def combination_conflict_labels(assigns) do
+  def combination_decisions(assigns) do
     assigns =
       assigns
-      |> assign(:groups, conflict_groups(assigns.review, assigns.rows))
       |> assign(:date_count, length(assigns.review.conflicts))
+      |> assign(:items, decision_items(assigns))
 
     ~H"""
-    <section :if={@groups != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
+    <section :if={@items != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
       <h3 id={@id <> "-heading"} class="text-base font-semibold">
         Choose what happens on {plural(@date_count, "date")}
       </h3>
@@ -1286,28 +1293,79 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         One calendar has these dates off while another runs them. A combined calendar can't do
         both, so every trip follows your choice.
       </p>
-      <ul class="mt-3 grid gap-2">
-        <li
-          :for={group <- @groups}
-          id={@id <> "-" <> group.key}
-          class="min-w-0 rounded-box border border-warning bg-warning/10 px-4 py-3"
+      <div class="mt-3 grid gap-3">
+        <fieldset
+          :for={item <- @items}
+          id={@id <> "-" <> item.group.key}
+          data-conflict-date={item.group.raw_key}
+          data-conflict-unanswered={to_string(item.unanswered?)}
+          aria-describedby={item.marked? && @id <> "-" <> item.group.key <> "-error"}
+          class={[
+            "min-w-0 rounded-box border bg-warning/10 px-4 pt-2 pb-4",
+            if(item.marked?, do: "border-2 border-error", else: "border-warning")
+          ]}
         >
-          <p class="font-medium">{group.label}</p>
-          <p class="mt-0.5 text-sm">
-            {group.removing_names} {if length(group.removing_ids) == 1,
+          <legend class="px-1 text-sm font-semibold">{item.group.label}</legend>
+          <p class="text-sm">
+            {item.group.removing_names} {if length(item.group.removing_ids) == 1,
               do: "has no service",
-              else: "have no service"}. {group.running_names} {if length(group.running_ids) == 1,
-              do: "runs",
-              else: "run"}.
+              else: "have no service"}. {item.group.running_names} {if length(item.group.running_ids) ==
+                                                                         1,
+                                                                       do: "runs",
+                                                                       else: "run"}.
           </p>
-          <p class="mt-1 text-sm font-medium text-warning">
-            Needs your choice: the combined calendar either runs the date for every trip or has
-            no service.
+          <div class="mt-3 grid gap-2 sm:grid-cols-2">
+            <label
+              :for={option <- item.options}
+              class="flex min-h-14 cursor-pointer items-start gap-2.5 rounded-box border border-base-300 bg-base-100 px-3 py-2 has-[:checked]:border-secondary has-[:checked]:bg-secondary/5"
+            >
+              <input
+                type="radio"
+                id={@id <> "-" <> item.group.key <> "-" <> option.value}
+                name={"combine[decisions][" <> item.group.raw_key <> "]"}
+                value={option.value}
+                checked={item.choice == option.value}
+                aria-invalid={option.invalid? && "true"}
+                aria-label={"#{option.title} on #{item.group.short_label}"}
+                class="radio radio-sm mt-0.5 scroll-mb-44 accent-secondary"
+              />
+              <span class="min-w-0">
+                <span class="block text-sm font-semibold">{option.title}</span>
+                <span class="block text-sm text-base-content/70">{option.hint}</span>
+              </span>
+            </label>
+          </div>
+          <p
+            :if={item.marked?}
+            id={@id <> "-" <> item.group.key <> "-error"}
+            class="mt-2 flex items-center gap-1.5 text-sm font-semibold text-error"
+          >
+            <.icon name="hero-exclamation-circle" class="size-4" />
+            Choose what happens on {item.group.short_label}.
           </p>
-        </li>
-      </ul>
+        </fieldset>
+      </div>
     </section>
     """
+  end
+
+  @doc """
+  Names the conflict groups a reviewed combination is still missing a decision for.
+
+  The LiveView shows these in its announced summary and uses their absence as the only signal
+  that a review is complete, so the labels and the review's own group keys have one owner. An
+  answered group never appears, and no client-supplied date can enter: the exact dates come from
+  the review's conflicts, and the command expands a group against them on the server.
+  """
+  def unanswered_conflict_labels(conflicts, decisions)
+      when is_list(conflicts) and is_map(decisions) do
+    conflicts
+    |> Enum.group_by(& &1.group_key)
+    |> Enum.sort_by(fn {key, _entries} -> key end)
+    |> Enum.reject(fn {key, _entries} -> Map.has_key?(decisions, key) end)
+    |> Enum.map(fn {key, entries} ->
+      %{key: key, label: conflict_label(conflict_dates(entries))}
+    end)
   end
 
   @doc """
@@ -1601,12 +1659,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   defp conflict_group(key, entries, rows) do
-    dates = entries |> Enum.map(& &1.date) |> Enum.sort(Date)
+    dates = conflict_dates(entries)
     first = hd(entries)
 
     %{
+      raw_key: key,
       key: URI.encode_www_form(key),
       label: conflict_label(dates),
+      short_label: conflict_short_label(dates),
       removing_ids: first.removing_ids,
       running_ids: first.running_ids,
       removing_names: service_id_names(first.removing_ids, rows),
@@ -1614,10 +1674,88 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     }
   end
 
+  # One rendered decision per conflict group: the group's own facts, the answer the reviewer has
+  # already given, and the two options with the consequence the review's effects support. The
+  # first option of a group the refused submit still needs is the group's invalid control, which
+  # is also the control the scoped focus hook lands on (AC-22).
+  defp decision_items(assigns) do
+    assigns.review
+    |> conflict_groups(assigns.rows)
+    |> Enum.map(fn group ->
+      choice = Map.get(assigns.decisions, group.raw_key)
+      unanswered? = is_nil(choice)
+      marked? = unanswered? and assigns.attempted?
+
+      %{
+        group: group,
+        choice: choice,
+        unanswered?: unanswered?,
+        marked?: marked?,
+        options: [
+          %{
+            value: "no_service",
+            title: "No service",
+            invalid?: marked?,
+            hint: conflict_option_hint("no_service", group.running_ids, assigns)
+          },
+          %{
+            value: "run",
+            title: "Run all trips",
+            invalid?: false,
+            hint: conflict_option_hint("run", group.removing_ids, assigns)
+          }
+        ]
+      }
+    end)
+  end
+
+  # "No service" stops these dates for the calendars that run them; "Run all trips" runs them for
+  # the calendars that deliberately have them off. Both counts are the review's own trip counts,
+  # and a calendar with no trips contributes no line at all.
+  defp conflict_option_hint("no_service", service_ids, assigns),
+    do: conflict_consequence(service_ids, assigns, "stops running", "stop running")
+
+  defp conflict_option_hint("run", service_ids, assigns),
+    do: conflict_consequence(service_ids, assigns, "also runs", "also run")
+
+  defp conflict_consequence(service_ids, assigns, one, many) do
+    lines =
+      service_ids
+      |> Enum.map(&{reviewed_trip_count(&1, assigns), &1})
+      |> Enum.reject(fn {count, _service_id} -> count == 0 end)
+      |> Enum.map(fn {count, service_id} ->
+        "#{plural(count, "trip")} from #{row_name(assigns.rows, service_id)} " <>
+          "#{if count == 1, do: one, else: many}."
+      end)
+
+    case lines do
+      [] -> "No trips change."
+      lines -> Enum.join(lines, " ")
+    end
+  end
+
+  defp reviewed_trip_count(service_id, assigns) do
+    case Enum.find(assigns.review.effects, &(&1.service_id == service_id)) do
+      %{trip_count: count} -> count
+      nil -> 0
+    end
+  end
+
+  defp conflict_dates(entries), do: entries |> Enum.map(& &1.date) |> Enum.sort(Date)
+
   defp conflict_label([date]), do: format_date(date)
 
   defp conflict_label([first | _rest] = dates) do
     "#{format_date(first)} – #{format_date(List.last(dates))} · #{plural(length(dates), "date")}"
+  end
+
+  # The marked group and the announced summary name the dates the group's own label already
+  # carries in full, so the short form keeps them on one line.
+  defp conflict_short_label([date]), do: Elixir.Calendar.strftime(date, @short_date_format)
+
+  defp conflict_short_label([first | _rest] = dates) do
+    "#{Elixir.Calendar.strftime(first, @short_date_format)} – " <>
+      Elixir.Calendar.strftime(List.last(dates), @short_date_format)
   end
 
   # The conflict carries exact service IDs; the loaded rows supply their display names.

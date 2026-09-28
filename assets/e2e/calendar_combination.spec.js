@@ -230,7 +230,7 @@ test.describe("calendar combination", () => {
     ).toHaveText(tripsBefore);
   });
 
-  test("labels an undecided conflict and offers Close when nothing changes", async ({
+  test("offers the conflict decisions with no default and offers Close when nothing changes", async ({
     page,
   }) => {
     await openCalendars(page);
@@ -240,15 +240,21 @@ test.describe("calendar combination", () => {
     await expect(page.locator("#calendar-combine-result")).toContainText(
       "Almost ready.",
     );
-    await expect(page.locator("#calendar-combine-conflicts")).toContainText(
-      "Oct 7, 2026",
+
+    // One fieldset per exact conflict group, both decisions offered as labelled radios and
+    // nothing checked until the reviewer chooses (AC-7, AC-22).
+    const conflict = page.locator(
+      "#calendar-combine-decisions [data-conflict-date]",
     );
-    await expect(page.locator("#calendar-combine-conflicts")).toContainText(
-      "Holiday weekdays has no service",
-    );
-    await expect(page.locator("#calendar-combine-conflicts")).toContainText(
-      "Needs your choice",
-    );
+    await expect(conflict).toHaveCount(1);
+    await expect(conflict).toContainText("Holiday weekdays has no service");
+    await expect(conflict).toContainText("Weekday service runs");
+    await expect(conflict.locator("input[type=radio]")).toHaveCount(2);
+    await expect(conflict.locator("input[type=radio]:checked")).toHaveCount(0);
+    await expect(
+      conflict.locator('input[value="no_service"]'),
+    ).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#calendar-combine-errors")).toHaveCount(0);
     await expect(
       page.locator("#calendar-combine-result-upcoming"),
     ).toContainText("after your choice");
@@ -265,7 +271,115 @@ test.describe("calendar combination", () => {
       "Nothing to combine.",
     );
     await expect(page.locator("#calendar-combine-close")).toBeVisible();
+    await expect(page.locator("#calendar-combine-apply")).toHaveCount(0);
     await expect(page.locator("#calendar-combine-impacts")).toHaveCount(0);
+  });
+
+  test("refuses an unanswered conflict, then re-reviews each choice", async ({
+    page,
+  }) => {
+    await openCalendars(page);
+    await openReview(page, ["COMBINE_WEEKDAY", "COMBINE_HOLIDAY"]);
+
+    const conflict = page.locator(
+      "#calendar-combine-decisions [data-conflict-date]",
+    );
+    const iso = await conflict.getAttribute("data-conflict-date");
+    // The summary names the date in full; the marked group states the short form its own legend
+    // already carries in full.
+    const label = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(`${iso}T00:00:00Z`));
+    const shortLabel = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+    }).format(new Date(`${iso}T00:00:00Z`));
+
+    // Both options name the trips they affect; neither is defaulted.
+    await expect(conflict).toContainText("No service");
+    await expect(conflict).toContainText("Run all trips");
+    await expect(conflict).toContainText(
+      "2 trips from Weekday service stop running.",
+    );
+    await expect(conflict).toContainText("No trips change.");
+
+    // The submission stays available and refuses: it announces the missing choice, marks the group
+    // and focuses that group's first option instead of combining anything.
+    await page.locator("#calendar-combine-apply").click();
+    await expect(page.locator("#calendar-combine-errors")).toContainText(
+      "Calendars not combined yet.",
+    );
+    await expect(page.locator("#calendar-combine-errors")).toContainText(label);
+    await expect(conflict).toHaveAttribute("data-conflict-unanswered", "true");
+    await expect(conflict).toContainText(
+      `Choose what happens on ${shortLabel}.`,
+    );
+
+    const invalid = conflict.locator(
+      'input[value="no_service"][aria-invalid="true"]',
+    );
+    await expect(invalid).toHaveCount(1);
+    await expect(invalid).toBeFocused();
+
+    // No service drops exactly that date from the destination's own trips.
+    await conflict.locator('input[value="no_service"]').click();
+    await expect(conflict.locator('input[value="no_service"]')).toBeChecked();
+    await expect(page.locator("#calendar-combine-effects")).toContainText(
+      `Stop running on ${label}`,
+    );
+    await expect(page.locator("#calendar-combine-errors")).toHaveCount(0);
+
+    // Running the date is the opposite decision: the destination keeps running it, and a source
+    // whose trips are already zero changes nothing at all.
+    await conflict.locator('input[value="run"]').click();
+    await expect(conflict.locator('input[value="run"]')).toBeChecked();
+    await expect(page.locator("#calendar-combine-effects")).not.toContainText(
+      "Stop running on",
+    );
+    await expect(page.locator("#calendar-combine-result")).toContainText(
+      "Nothing changes.",
+    );
+
+    // Keeping the other calendar discards the answer instead of carrying it into a review whose
+    // conflict belongs to different calendars (AC-22).
+    await page
+      .locator(
+        "#calendar-combine-destination-option-COMBINE_HOLIDAY input[type=radio]",
+      )
+      .click();
+    await expect(
+      page.locator(
+        "#calendar-combine-destination-option-COMBINE_HOLIDAY input[type=radio]",
+      ),
+    ).toBeChecked();
+    await expect(conflict.locator("input[type=radio]:checked")).toHaveCount(0);
+
+    await closeReview(page);
+    await clearSelection(page);
+  });
+
+  test("warns when a moving calendar would gain many upcoming dates", async ({
+    page,
+  }) => {
+    await openCalendars(page);
+    await openReview(page, ["COMBINE_SAT", "COMBINE_WEEKDAY", "COMBINE_SUN"]);
+
+    const moving = page.locator("#calendar-combine-effects-COMBINE_WEEKDAY");
+    await expect(moving).toContainText("Also run on");
+    await expect(moving).toContainText(
+      "If these trips should keep their own dates, don't combine.",
+    );
+    await expect(page.locator("#calendar-combine-effects")).toContainText(
+      "don't combine",
+    );
+
+    const staying = page.locator("#calendar-combine-effects-COMBINE_SAT");
+    await expect(staying).not.toContainText("don't combine");
+
+    await closeReview(page);
+    await clearSelection(page);
   });
 
   test("keeps the selection surface reachable and overflow-free at narrow widths", async ({

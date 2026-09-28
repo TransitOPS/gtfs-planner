@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   ]
   @date_change_mode_keys Enum.map(@date_change_modes, &elem(&1, 1))
   @sort_keys ~w(name period)
+  @combine_decision_values ~w(run no_service)
   @sort_dirs ~w(asc desc)
   @range_keys ~w(whole near all)
   @range_options [
@@ -347,12 +348,32 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   @impl true
   def handle_event(
+        "combine_change",
+        %{"combine" => %{"destination_id" => destination_id} = params},
+        socket
+      )
+      when is_binary(destination_id) do
+    {:noreply, change_combination(socket, destination_id, submitted_decisions(params))}
+  end
+
+  def handle_event("combine_change", _params, socket), do: {:noreply, socket}
+
+  # The submission stays available while a conflict is unanswered, so it is the reviewer's
+  # confirmation and not a disabled control: it either refuses with the missing choices or lets the
+  # apply path run a complete review (AC-22).
+  @impl true
+  def handle_event("combine_apply", _params, socket) do
+    {:noreply, apply_combination(socket)}
+  end
+
+  @impl true
+  def handle_event(
         "combine_destination",
         %{"combine" => %{"destination_id" => destination_id}},
         socket
       )
       when is_binary(destination_id) do
-    {:noreply, change_combine_destination(socket, destination_id)}
+    {:noreply, change_combination(socket, destination_id, %{})}
   end
 
   def handle_event("combine_destination", _params, socket), do: {:noreply, socket}
@@ -593,15 +614,41 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> Map.fetch!(:service_id)
   end
 
-  defp change_combine_destination(socket, destination_id) do
-    if Enum.any?(socket.assigns.combine_rows, &(&1.service_id == destination_id)) do
-      review_combination(socket, socket.assigns.combine_rows, destination_id)
-    else
-      socket
+  # One form event carries both the kept calendar and the answered conflicts. Changing the kept
+  # calendar discards every answer, because the conflicts themselves are recomputed against the new
+  # destination (AC-22); a new answer re-reviews against the current conflicts and the domain's own
+  # group keys, so a forged or outdated key is refused rather than expanded (INV-3).
+  defp change_combination(socket, destination_id, decisions) do
+    rows = socket.assigns.combine_rows
+    same_destination? = destination_id == socket.assigns.combine_destination_id
+
+    cond do
+      not Enum.any?(rows, &(&1.service_id == destination_id)) -> socket
+      same_destination? and decisions == socket.assigns.combine_decisions -> socket
+      same_destination? -> review_combination(socket, rows, destination_id, decisions)
+      true -> review_combination(socket, rows, destination_id, %{})
     end
   end
 
-  defp review_combination(socket, rows, destination_id) do
+  # Only the two domain decisions can enter the submitted map: an unknown value or a group the
+  # current review does not carry is dropped here and refused again by
+  # `Combination.expand_group_choices/2`, so no client-supplied key or date is trusted.
+  defp submitted_decisions(params) do
+    case params["decisions"] do
+      decisions when is_map(decisions) ->
+        for {key, value} <- decisions,
+            is_binary(key),
+            is_binary(value),
+            value in @combine_decision_values,
+            into: %{},
+            do: {key, value}
+
+      _other ->
+        %{}
+    end
+  end
+
+  defp review_combination(socket, rows, destination_id, decisions \\ %{}) do
     sources =
       rows
       |> Enum.map(& &1.service_id)
@@ -610,27 +657,109 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
     fingerprints = Map.new(rows, &{&1.service_id, &1.fingerprint})
 
-    case Gtfs.review_calendar_change(
-           {:combine, destination_id, sources, %{}},
-           fingerprints,
-           audit_context(socket)
-         ) do
-      {:ok, review} ->
-        socket
-        |> assign(:combine_open?, true)
-        |> assign(:combine_error, nil)
-        |> assign(:combine_destination_id, destination_id)
-        |> assign(:combine_review, review)
-        |> assign(:combine_rows, rows)
-        |> assign(:combine_stored, stored_destination(review, rows, destination_id))
-        |> assign(:combine_form, combine_form(destination_id))
-        |> assign(:combine_return_focus_id, "calendar-combine-open")
+    case expand_combination_decisions(socket, destination_id, decisions) do
+      {:ok, decision_dates} ->
+        case Gtfs.review_calendar_change(
+               {:combine, destination_id, sources, decision_dates},
+               fingerprints,
+               audit_context(socket)
+             ) do
+          {:ok, review} ->
+            socket
+            |> assign(:combine_open?, true)
+            |> assign(:combine_error, nil)
+            |> assign(:combine_destination_id, destination_id)
+            |> assign(:combine_review, review)
+            |> assign(:combine_rows, rows)
+            |> assign(:combine_stored, stored_destination(review, rows, destination_id))
+            |> assign(:combine_form, combine_form(destination_id))
+            |> assign(:combine_decisions, decisions)
+            |> assign(:combine_decision_dates, decision_dates)
+            |> assign_combination_choice_error()
+            |> assign(:combine_return_focus_id, "calendar-combine-open")
 
-      {:error, reason} ->
+          {:error, reason} ->
+            socket
+            |> drop_combination()
+            |> assign(:combine_error, combine_error_message(reason))
+        end
+
+      :error ->
         socket
-        |> drop_combination()
-        |> assign(:combine_error, combine_error_message(reason))
     end
+  end
+
+  # The drawer decides group keys; the domain expands them against the current review's own
+  # conflicts into exact ISO-8601 dates, and the review command receives only that expansion. An
+  # answer for a group the current review does not carry is refused instead of being guessed at.
+  defp expand_combination_decisions(_socket, _destination_id, decisions)
+       when map_size(decisions) == 0,
+       do: {:ok, %{}}
+
+  defp expand_combination_decisions(socket, destination_id, decisions) do
+    review = socket.assigns.combine_review
+
+    if is_map(review) and socket.assigns.combine_destination_id == destination_id do
+      Combination.expand_group_choices(review.conflicts, decisions)
+    else
+      :error
+    end
+  end
+
+  # The announced summary follows the current review: after a refused submit it names the groups
+  # that are still unanswered and it shrinks as the reviewer answers them. Before the first
+  # submission the drawer states the groups as facts without claiming an error, and a complete
+  # review clears the summary and marks nothing (AC-22).
+  defp assign_combination_choice_error(socket) do
+    if socket.assigns.combine_attempted? do
+      assign(socket, :combine_choice_error, combination_choice_error(socket))
+    else
+      assign(socket, :combine_choice_error, nil)
+    end
+  end
+
+  defp combination_choice_error(socket) do
+    case socket.assigns.combine_review do
+      %{conflicts: conflicts} ->
+        case CalendarComponents.unanswered_conflict_labels(
+               conflicts,
+               socket.assigns.combine_decisions
+             ) do
+          [] -> nil
+          groups -> "Choose what happens on #{labels_and(Enum.map(groups, & &1.label))}."
+        end
+
+      _closed ->
+        nil
+    end
+  end
+
+  defp labels_and([]), do: ""
+  defp labels_and([label]), do: label
+
+  defp labels_and(labels),
+    do: Enum.join(Enum.drop(labels, -1), ", ") <> " and " <> List.last(labels)
+
+  # The one submission path. A review whose conflicts are unanswered never reaches
+  # `apply_calendar_change/3` and never invents a token: the summary names the missing choices, the
+  # marked groups are visually marked, and focus moves to the first unresolved option through the
+  # page's existing scoped focus hook (AC-22). Handing a complete review to the write command is the
+  # apply path's own job, so nothing here calls it.
+  defp apply_combination(socket) do
+    case combination_choice_error(socket) do
+      nil -> socket
+      message -> require_combination_choices(socket, message)
+    end
+  end
+
+  defp require_combination_choices(socket, message) do
+    socket
+    |> assign(:combine_attempted?, true)
+    |> assign(:combine_choice_error, message)
+    |> push_event("focus_form_error", %{
+      form_id: "calendar-combine-form",
+      fallback_id: "calendar-combine-errors"
+    })
   end
 
   # The review's own result dates reach the destination's native rows through the same public
@@ -669,6 +798,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:combine_rows, [])
     |> assign(:combine_stored, nil)
     |> assign(:combine_form, combine_form(nil))
+    |> assign(:combine_decisions, %{})
+    |> assign(:combine_decision_dates, %{})
+    |> assign(:combine_attempted?, false)
+    |> assign(:combine_choice_error, nil)
     |> assign(:combine_return_focus_id, nil)
   end
 
@@ -1965,7 +2098,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
           :if={@combine_review != nil}
           for={@combine_form}
           id="calendar-combine-form"
-          phx-change="combine_destination"
+          phx-hook="FormErrorFocus"
+          phx-change="combine_change"
+          phx-submit="combine_apply"
           class="space-y-8"
         >
           <p id="calendar-combine-subtitle" class="text-sm text-base-content/70">
@@ -1980,6 +2115,21 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
           >
             {@combine_error}
           </p>
+
+          <%!-- The refused submission is announced as one summary and carried by the same focus
+          hook the rest of the page uses: the first unresolved option is the form's first invalid
+          control, so the hook lands on it and the group it belongs to states the same choice. --%>
+          <.callout
+            :if={@combine_choice_error}
+            id="calendar-combine-errors"
+            tabindex="-1"
+            class="focus:outline-none"
+            kind="error"
+            title="Calendars not combined yet."
+            role="alert"
+          >
+            {@combine_choice_error}
+          </.callout>
 
           <CalendarComponents.combination_controls
             id="calendar-combine-destination"
@@ -2000,11 +2150,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             version_id={@current_gtfs_version.id}
           />
 
-          <CalendarComponents.combination_conflict_labels
-            id="calendar-combine-conflicts"
+          <CalendarComponents.combination_decisions
+            id="calendar-combine-decisions"
             review={@combine_review}
             rows={@combine_rows}
-            today={@today}
+            decisions={@combine_decisions}
+            attempted?={@combine_attempted?}
           />
 
           <CalendarComponents.combination_effects
@@ -2026,16 +2177,27 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             <p id="calendar-combine-footer-note" class="text-sm text-base-content/70">
               {combination_footer_note(@combine_review)}
             </p>
-            <.button
-              id="calendar-combine-close"
-              type="button"
-              phx-click="close_combine"
-              variant="secondary"
-              size="sm"
-              class="min-h-11"
-            >
-              Close
-            </.button>
+            <div class="flex flex-wrap items-center gap-3">
+              <.button
+                id="calendar-combine-close"
+                type="button"
+                phx-click="close_combine"
+                variant="secondary"
+                size="sm"
+                class="min-h-11"
+              >
+                Close
+              </.button>
+              <.button
+                :if={not CalendarComponents.combination_nothing?(@combine_review)}
+                id="calendar-combine-apply"
+                type="submit"
+                size="sm"
+                class="min-h-11 min-w-[196px]"
+              >
+                Combine {length(@combine_rows)} calendars
+              </.button>
+            </div>
           </div>
         </.form>
       </.drawer>

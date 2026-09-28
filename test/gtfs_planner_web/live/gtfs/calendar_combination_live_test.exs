@@ -11,9 +11,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   transfer rows.
 
   Covered here: exact-ID selection and its pruning rules, the deterministic most-trips default
-  destination, the no-op review, the unavailable state when a retained range cannot be read, and
-  the fact that opening or re-reviewing writes nothing. The conflict decisions, submission and
-  recovery states are owned by later steps and their tests.
+  destination, the no-op review, the unavailable state when a retained range cannot be read, the
+  fact that opening or re-reviewing writes nothing, and the explicit conflict decisions - their
+  fieldsets, the refused submission, the consequences each choice produces and the seasonal
+  expansion warning. Submission recovery and the applied result are owned by a later step.
 
   The prepared focused command is deferred to branch review:
   `MIX_ENV=test MIX_TEST_PARTITION=_calendar17 mix test test/gtfs_planner_web/live/gtfs/calendar_combination_live_test.exs`.
@@ -28,14 +29,25 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
   import Ecto.Query
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
+  alias GtfsPlannerWeb.Gtfs.CalendarComponents
 
   setup do
     organization = organization_fixture()
@@ -154,6 +166,114 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
        [{~T[18:00:00], first_stop}, {~T[19:00:00], second_stop}]}
     ]
 
+    add_trips(organization, version, route, trips)
+
+    transfer_fixture(organization.id, version.id, %{
+      from_trip_id: "COMBINE_DEST_1",
+      to_trip_id: "COMBINE_FALL_1",
+      from_stop_id: second_stop.stop_id,
+      to_stop_id: second_stop.stop_id,
+      transfer_type: 4
+    })
+
+    %{today: today, route: route, first_stop: first_stop, second_stop: second_stop}
+  end
+
+  defp description("COMBINE_DEST"), do: "Saturday service"
+  defp description("COMBINE_FALL"), do: "Fall shuttle"
+  defp description("COMBINE_SUN"), do: "Sunday shuttle"
+  defp description("COMBINE_MON"), do: "Monday shuttle"
+  defp description(other), do: other
+
+  # The domain's only conflict shape: two weekly calendars with the same mask where one
+  # deliberately removes a regular weekday the other runs. Both sides carry trips, so each option
+  # names the trips it affects, and the removal is the exact date the choice decides.
+  defp conflict_scenario(organization, version) do
+    %{route: route, first_stop: first_stop, second_stop: second_stop, today: today} =
+      combination_scenario(organization, version)
+
+    for {service_id, description} <- [
+          {"CONFLICT_OFF", "Holiday weekdays"},
+          {"CONFLICT_RUN", "Weekday service"}
+        ] do
+      calendar_fixture(organization.id, version.id, %{
+        service_id: service_id,
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        start_date: Date.add(today, -20),
+        end_date: Date.add(today, 20)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: service_id,
+        service_description: description
+      })
+    end
+
+    removal =
+      Enum.find(Date.range(Date.add(today, 7), Date.add(today, 21)), &(Date.day_of_week(&1) == 3))
+
+    calendar_date_fixture(organization.id, version.id, %{
+      service_id: "CONFLICT_OFF",
+      date: removal,
+      exception_type: 2
+    })
+
+    add_trips(organization, version, route, [
+      {"CONFLICT_OFF", "CONFLICT_OFF_1", nil,
+       [{~T[06:00:00], first_stop}, {~T[07:00:00], second_stop}]},
+      {"CONFLICT_OFF", "CONFLICT_OFF_2", nil,
+       [{~T[07:30:00], first_stop}, {~T[08:30:00], second_stop}]},
+      {"CONFLICT_RUN", "CONFLICT_RUN_1", nil,
+       [{~T[09:00:00], first_stop}, {~T[10:00:00], second_stop}]},
+      {"CONFLICT_RUN", "CONFLICT_RUN_2", nil,
+       [{~T[10:30:00], first_stop}, {~T[11:30:00], second_stop}]}
+    ])
+
+    %{removal: removal, today: today}
+  end
+
+  # A moving calendar whose trips would gain far more than the domain's seasonal threshold of
+  # upcoming dates: the review has to say so instead of quietly running a seasonal shuttle all year.
+  defp seasonal_scenario(organization, version) do
+    %{route: route, first_stop: first_stop, second_stop: second_stop, today: today} =
+      combination_scenario(organization, version)
+
+    for {service_id, days, description, start_offset, end_offset} <- [
+          {"SEASON_DEST", %{monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1},
+           "Weekday service", -30, 60},
+          {"SEASON_SAT", %{saturday: 1}, "Saturday shuttle", -10, 10}
+        ] do
+      calendar_fixture(
+        organization.id,
+        version.id,
+        Map.merge(days, %{
+          service_id: service_id,
+          start_date: Date.add(today, start_offset),
+          end_date: Date.add(today, end_offset)
+        })
+      )
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: service_id,
+        service_description: description
+      })
+    end
+
+    add_trips(organization, version, route, [
+      {"SEASON_DEST", "SEASON_DEST_1", nil,
+       [{~T[06:00:00], first_stop}, {~T[07:00:00], second_stop}]},
+      {"SEASON_DEST", "SEASON_DEST_2", nil,
+       [{~T[07:30:00], first_stop}, {~T[08:30:00], second_stop}]},
+      {"SEASON_SAT", "SEASON_SAT_1", nil,
+       [{~T[09:00:00], first_stop}, {~T[10:00:00], second_stop}]}
+    ])
+  end
+
+  defp add_trips(organization, version, route, trips) do
     for {service_id, trip_id, block_id, times} <- trips do
       trip =
         trip_fixture(organization.id, version.id, route.route_id, %{
@@ -172,23 +292,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
         })
       end)
     end
-
-    transfer_fixture(organization.id, version.id, %{
-      from_trip_id: "COMBINE_DEST_1",
-      to_trip_id: "COMBINE_FALL_1",
-      from_stop_id: second_stop.stop_id,
-      to_stop_id: second_stop.stop_id,
-      transfer_type: 4
-    })
-
-    %{today: today, route: route, first_stop: first_stop, second_stop: second_stop}
   end
-
-  defp description("COMBINE_DEST"), do: "Saturday service"
-  defp description("COMBINE_FALL"), do: "Fall shuttle"
-  defp description("COMBINE_SUN"), do: "Sunday shuttle"
-  defp description("COMBINE_MON"), do: "Monday shuttle"
-  defp description(other), do: other
 
   defp row_counts(version) do
     %{
@@ -260,7 +364,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       assert has_element?(view, "#calendar-combine-result-moved")
       assert html =~ "Nothing changes until you combine."
       assert has_element?(view, "#calendar-combine-close")
-      refute has_element?(view, "#calendar-combine-conflicts")
+      refute has_element?(view, "#calendar-combine-decisions")
 
       assert row_counts(version) == before
     end
@@ -383,6 +487,166 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
       render_click(view, "open_combine", %{})
       refute has_element?(view, "#calendar-combine-form")
+    end
+  end
+
+  describe "conflict decisions" do
+    test "refuses an unanswered conflict, names the missing choice and mutates nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      %{removal: removal} = conflict_scenario(organization, version)
+      conn = editor(conn, user, organization)
+      expected = Calendar.strftime(removal, "%b %-d, %Y")
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "CONFLICT_OFF"})
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "CONFLICT_RUN"})
+      render_click(view, "open_combine", %{})
+
+      group = URI.encode_www_form(Date.to_iso8601(removal))
+      fieldset = "#calendar-combine-decisions-#{group}"
+
+      # The exact conflict date is the group, and both decisions are offered with no default, so
+      # the reviewer has to make the choice the domain requires.
+      assert has_element?(view, fieldset)
+      assert has_element?(view, "[data-conflict-date='#{Date.to_iso8601(removal)}']")
+      assert has_element?(view, "#{fieldset}-no_service")
+      assert has_element?(view, "#{fieldset}-run")
+      refute has_element?(view, "#{fieldset}-no_service[checked]")
+      refute has_element?(view, "#{fieldset}-run[checked]")
+
+      decisions = render(element(view, "#calendar-combine-decisions"))
+      assert decisions =~ expected
+      assert decisions =~ "No service"
+      assert decisions =~ "Run all trips"
+      assert decisions =~ "Holiday weekdays has no service"
+      assert decisions =~ "Weekday service runs"
+      refute has_element?(view, "#calendar-combine-errors")
+
+      before = row_counts(version)
+
+      html =
+        render_submit(view, "combine_apply", %{
+          "combine" => %{"destination_id" => "CONFLICT_OFF"}
+        })
+
+      # The submission stays available and refuses instead of dispatching an incomplete review: the
+      # summary names the missing choice, the group is marked, and its first option is the form's
+      # invalid control - which is what the scoped focus hook lands on.
+      assert html =~ "Calendars not combined yet."
+      assert has_element?(view, "#calendar-combine-errors[role='alert']")
+      assert has_element?(view, "#{fieldset}-error")
+      assert has_element?(view, "#{fieldset}-no_service[aria-invalid='true']")
+      assert html =~ "Choose what happens on #{expected}."
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "calendar-combine-form",
+        fallback_id: "calendar-combine-errors"
+      })
+
+      assert row_counts(version) == before
+    end
+
+    test "changes the exact consequences with the choice and clears them with the destination", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      %{removal: removal} = conflict_scenario(organization, version)
+      conn = editor(conn, user, organization)
+      expected = Calendar.strftime(removal, "%b %-d, %Y")
+      iso = Date.to_iso8601(removal)
+      group = URI.encode_www_form(iso)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "CONFLICT_OFF"})
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "CONFLICT_RUN"})
+      render_click(view, "open_combine", %{})
+
+      assert has_element?(
+               view,
+               "#calendar-combine-destination-option-CONFLICT_OFF input[checked]"
+             )
+
+      before = row_counts(version)
+
+      run_html =
+        render_change(view, "combine_change", %{
+          "combine" => %{"destination_id" => "CONFLICT_OFF", "decisions" => %{iso => "run"}}
+        })
+
+      assert has_element?(view, "#calendar-combine-decisions-#{group}-run[checked]")
+      refute has_element?(view, "#calendar-combine-decisions-#{group}-no_service[checked]")
+      # Running the date keeps every trip on its own dates, so nothing loses a date.
+      assert run_html =~ "Also run on #{expected}"
+      refute run_html =~ "Stop running on"
+
+      no_service_html =
+        render_change(view, "combine_change", %{
+          "combine" => %{
+            "destination_id" => "CONFLICT_OFF",
+            "decisions" => %{iso => "no_service"}
+          }
+        })
+
+      assert has_element?(view, "#calendar-combine-decisions-#{group}-no_service[checked]")
+      # No service removes exactly that date from the moving trips, which is the other half of the
+      # choice the reviewer is making.
+      assert no_service_html =~ "Stop running on #{expected}"
+      refute no_service_html =~ "Also run on"
+
+      # Keeping another calendar discards the previous answer instead of carrying it into a review
+      # whose conflict now belongs to different calendars.
+      render_change(view, "combine_change", %{
+        "combine" => %{"destination_id" => "CONFLICT_RUN", "decisions" => %{iso => "no_service"}}
+      })
+
+      assert has_element?(
+               view,
+               "#calendar-combine-destination-option-CONFLICT_RUN input[checked]"
+             )
+
+      refute has_element?(view, "#calendar-combine-decisions-#{group}-no_service[checked]")
+      refute has_element?(view, "#calendar-combine-decisions-#{group}-run[checked]")
+
+      assert row_counts(version) == before
+    end
+
+    test "warns when a moving calendar would gain more than fourteen upcoming dates", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      seasonal_scenario(organization, version)
+      conn = editor(conn, user, organization)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "SEASON_DEST"})
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "SEASON_SAT"})
+      render_click(view, "open_combine", %{})
+
+      assert has_element?(view, "#calendar-combine-destination-option-SEASON_DEST input[checked]")
+      refute has_element?(view, "#calendar-combine-decisions")
+
+      moving = render(element(view, "#calendar-combine-effects-SEASON_SAT"))
+      assert moving =~ "Also run on"
+      assert moving =~ "If these trips should keep their own dates, don't combine."
+
+      # The warning is about the dates a calendar's trips would gain, so the calendar that stays
+      # does not carry it.
+      staying = render(element(view, "#calendar-combine-effects-SEASON_DEST"))
+      refute staying =~ "don't combine"
     end
   end
 
