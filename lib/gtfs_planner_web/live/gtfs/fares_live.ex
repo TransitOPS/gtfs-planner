@@ -96,6 +96,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   `map_unavailable` replaces the frame with the reference's copy and its two ways
   out, and Retry map renders the hook again, where the next mount hydrates from a
   fresh reply rather than from deltas it never received (CR-8, AC-29).
+
+  The Fare rules tab reads the version's rules with
+  `Gtfs.FareZones.list_rule_groups/2` and streams them as one card per UI rule, so
+  the grouping the domain decided is what the page renders and a reload replaces
+  the list rather than the tab. Only that tab renders the list, so only that tab
+  reads it.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -110,6 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       map_legend: 1,
       map_unavailable: 1,
       saved_callout: 1,
+      rules_tab: 1,
       selection_bar: 1,
       stage_header: 1,
       stop_list: 1,
@@ -183,7 +190,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:map_mounted?, false)
      |> assign(:map_filter, nil)
      |> assign(:map_snapshot_after_load, false)
-     |> stream(:stops, [])}
+     |> assign(:rule_groups, [])
+     |> stream(:stops, [])
+     |> stream(:rule_groups, [], dom_id: &rule_dom_id/1)}
   end
 
   @impl true
@@ -600,7 +609,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
             />
           </section>
         </div>
-        <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2"></div>
+        <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2">
+          <.rules_tab
+            rule_groups={@streams.rule_groups}
+            rule_count={length(@rule_groups)}
+            zones={@inventory.zones}
+          />
+        </div>
         <div :if={@live_action == :checks} id="fare-checks-panel" class="mt-2"></div>
       <% end %>
 
@@ -694,6 +709,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> stream(:stops, stop_page.entries, reset: true)
         |> assign(:load_state, :ready)
         |> resolve_zone_filter(inventory)
+        |> stream_rule_groups()
         |> sync_map_filter()
         |> push_pending_map_snapshot()
 
@@ -707,6 +723,33 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> unmount_map()
     end
   end
+
+  # The Fare rules tab's list, read on that tab alone: the load that resolves the
+  # tab is the same load every later reload repeats, so the stream always holds a
+  # complete read of the version's rules. The loaded list stays beside the stream
+  # for the tab's own count and for the rule drawer's later lookups.
+  defp stream_rule_groups(socket) do
+    rules = loaded_rule_groups(socket)
+
+    socket
+    |> assign(:rule_groups, rules)
+    |> stream(:rule_groups, rules, reset: true, dom_id: &rule_dom_id/1)
+  end
+
+  defp loaded_rule_groups(%{assigns: %{live_action: :rules}} = socket) do
+    FareZones.list_rule_groups(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id
+    )
+  end
+
+  defp loaded_rule_groups(_socket), do: []
+
+  # A rule's DOM ID is its first row's own ID, never a zone ID: the sorted rows
+  # are the group's, and no two groups share a row. A card's inner elements are
+  # named from it, so a rule with an imported ID such as " A" or "A&B 1" still
+  # has one stable DOM handle.
+  defp rule_dom_id(group), do: "fare-rule-" <> Enum.min(Enum.map(group.rows, & &1.id))
 
   # The filter the map dims by is a delta, so it is pushed when it actually
   # changed: a search or a page patch reloads the workspace without touching it.

@@ -1028,3 +1028,79 @@ test("zones map", async ({ page, context }, testInfo) => {
   await captureReference(page, testInfo, "?state=ready", "ref-zones");
   await captureReference(page, testInfo, "?state=map-error", "ref-zones-map-error");
 });
+
+// ── fare rules ────────────────────────────────────────────────────────────
+
+// The Fare rules tab's list: one card per UI rule, its fare, its journey, its
+// route and the warning for a rule that references a zone with no boardable
+// stops. The seeded "Browser Fare Zones Version" carries four rules from five
+// rows: CITY A→A, CITY C→A (C has no stops and no record, so its rule is the
+// warned one), CROSS A→B, and CROSS through A + B (two contains rows, one rule).
+// Fares CITY $2.50 and CROSS $3.75 both exist; no rule uses the version's route,
+// so every card reads "All routes".
+test("rules list", async ({ page }, testInfo) => {
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+  await openFares(page, "rules");
+
+  await expect(page.locator("#fares-tab-rules")).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#fare-rules-intro")).toContainText(
+    "Define the journey, then choose the fare.",
+  );
+  await expect(page.locator("#fare-rules-intro")).toContainText(
+    "Use existing fares. Prices and payment settings are managed separately.",
+  );
+
+  const cards = page.locator("#fare-rule-list article");
+
+  // Five rows, four rules: the two contains rows never become a card of their own.
+  await expect(cards).toHaveCount(4);
+
+  const withinZone = cards.filter({ hasText: "From Central → Central" });
+
+  await expect(withinZone).toHaveCount(1);
+  await expect(withinZone).toContainText("CITY · $2.50");
+  await expect(withinZone).toContainText("All routes · One direction · within the same zone");
+  await expect(withinZone.locator("[id$='-stopless']")).toHaveCount(0);
+
+  const stopless = cards.filter({ hasText: "From C → Central" });
+
+  await expect(stopless).toHaveCount(1);
+  await expect(stopless).toContainText("CITY · $2.50");
+  await expect(stopless.locator("[id$='-stopless']")).toHaveText("Zone used without stops");
+
+  const oneWay = cards.filter({ hasText: "From Central → Eastbank" });
+
+  await expect(oneWay).toHaveCount(1);
+  await expect(oneWay).toContainText("CROSS · $3.75");
+  await expect(oneWay).toContainText("All routes · One direction");
+  await expect(oneWay.locator("[id$='-stopless']")).toHaveCount(0);
+
+  // The through-zone rule names every zone the journey must visit on its own
+  // journey line, and no other card carries the warning badge.
+  const through = cards.filter({ hasText: "Through Central + Eastbank" });
+
+  await expect(through).toHaveCount(1);
+  await expect(through).toContainText("CROSS · $3.75");
+  await expect(through).toContainText("Any journey · Through Central + Eastbank");
+  await expect(through).toContainText("All routes · Every listed zone must be visited");
+
+  await expect(page.locator("[id$='-stopless']")).toHaveCount(1);
+
+  await expect(page.locator("#fare-rules-note")).toContainText(
+    "“Any origin” and “Any destination” leave that end of the journey unrestricted. A reverse journey needs its own rule.",
+  );
+
+  await capture(page, testInfo, "rules-1440", { fullPage: false });
+
+  await page.setViewportSize(NARROW);
+
+  await expect(cards).toHaveCount(4);
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  await capture(page, testInfo, "rules-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  await captureReference(page, testInfo, "?tab=rules", "ref-rules");
+});

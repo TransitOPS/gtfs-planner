@@ -53,8 +53,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   reference's copy and its two ways out when the map cannot load, because the stop
   list below is always a complete alternative.
 
-  The Fare rules and Checks bodies are added beside these components by the
-  following steps.
+  The Fare rules tab reads the version's rules as one card per UI rule, in the
+  grouping the domain decided: a rule stored as several `fare_rules` rows is one
+  card, and two rules that share a fare and route but differ in their journey or
+  their through zones are two. Each card's journey line names the zones the
+  inventory names, and a rule that references a zone with no boardable stops is
+  marked, so a reference that can be kept but not created is visible where the
+  rule is read.
+
+  The Checks body is added beside these components by a following step.
   """
 
   # The review lists at most this many rows; AC-25 asks for the first 100 and a
@@ -865,6 +872,120 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   end
 
   @doc """
+  Renders the Fare rules tab: the intro callout, one card per rule and the empty
+  state.
+
+  Each card is one UI rule - the whole set of `fare_rules` rows sharing its fare,
+  route, origin, destination and through-zone shape - so a rule stored as two
+  `contains_id` rows renders once with both zones on its journey line, and two
+  rules that differ in any of those fields render as two cards. Nothing here
+  regroups, splits or merges what `FareZones.list_rule_groups/2` read, and the
+  cards arrive as a stream, so a later reload replaces the list rather than the
+  surrounding tab.
+
+  The empty state is the tab's only zero state: the Fare rules tab lists every
+  rule the version has and nothing filters it, so "no rules yet" is what a
+  version with no rows reads, whether or not it also has zones.
+
+  ## Examples
+
+      <.rules_tab
+        rule_groups={@streams.rule_groups}
+        rule_count={length(@rule_groups)}
+        zones={@inventory.zones}
+      />
+  """
+  attr :rule_groups, :any, required: true, doc: "the `:rule_groups` stream"
+  attr :rule_count, :integer, required: true, doc: "how many rules the load read"
+
+  attr :zones, :list,
+    required: true,
+    doc: "the inventory's zones, for the names and stop counts the cards read"
+
+  def rules_tab(assigns) do
+    assigns = assign(assigns, :zone_lookup, Map.new(assigns.zones, &{&1.zone_id, &1}))
+
+    ~H"""
+    <div id="fare-rules-tab">
+      <.callout id="fare-rules-intro" kind="info" title="Define the journey, then choose the fare.">
+        <p>Use existing fares. Prices and payment settings are managed separately.</p>
+      </.callout>
+
+      <.empty_state
+        :if={@rule_count == 0}
+        id="fare-rules-empty"
+        title="No fare rules yet"
+        class="mt-4"
+      >
+        <p>Add a rule to charge a fare for journeys between zones.</p>
+      </.empty_state>
+
+      <div :if={@rule_count > 0} id="fare-rule-list" phx-update="stream" class="mt-4 space-y-3.5">
+        <.rule_card
+          :for={{dom_id, rule} <- @rule_groups}
+          id={dom_id}
+          rule={rule}
+          zone_lookup={@zone_lookup}
+        />
+      </div>
+
+      <p id="fare-rules-note" class="mt-4 text-sm text-base-content/70">
+        “Any origin” and “Any destination” leave that end of the journey unrestricted. A reverse journey needs its own rule.
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one fare rule as the reference's card: its fare, its journey and its route.
+
+  The journey is the card's prominent line and reads the way the rule applies -
+  "From Central → Eastbank", "From Central · Any destination", "Any origin →
+  Eastbank" or "Any journey" - followed by the zones the journey must visit
+  ("Through Central + Eastbank"). Zone names are the inventory's, so a zone no
+  record declares reads as its exact stored ID and no name is trimmed here.
+
+  The subline names the route and then how the journey reads: one-way, confined
+  to a single zone, or required to visit every listed zone. A rule that
+  references a zone with no boardable stops carries the warning badge, because an
+  imported reference is kept while a new one cannot be created.
+
+  ## Examples
+
+      <.rule_card id={dom_id} rule={rule} zone_lookup={@zone_lookup} />
+  """
+  attr :id, :string, required: true, doc: "the stream's DOM ID, from the rule's own rows"
+  attr :rule, :map, required: true, doc: "one `FareZones.list_rule_groups/2` group"
+  attr :zone_lookup, :map, required: true, doc: "the inventory's zones by exact stored ID"
+
+  def rule_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:fare_text, rule_fare_text(assigns.rule))
+      |> assign(:journey_text, rule_journey_text(assigns.rule, assigns.zone_lookup))
+      |> assign(:route_text, rule_route_line(assigns.rule))
+      |> assign(:stopless?, rule_stopless?(assigns.rule, assigns.zone_lookup))
+
+    ~H"""
+    <article id={@id} class="min-w-0 rounded-box border border-base-300 p-4">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <p id={"#{@id}-fare"} class="text-sm font-semibold">{@fare_text}</p>
+        <.status_badge
+          :if={@stopless?}
+          id={"#{@id}-stopless"}
+          status={:warning}
+          label="Zone used without stops"
+        />
+      </div>
+
+      <p id={"#{@id}-journey"} class="mt-2 break-words text-xl font-semibold">{@journey_text}</p>
+
+      <p id={"#{@id}-route"} class="mt-1.5 text-sm text-base-content/70">{@route_text}</p>
+    </article>
+    """
+  end
+
+  @doc """
   Renders the assignment review: the AC-9 report of what a save would change.
 
   The dialog is where a selection becomes a write, and it states the whole
@@ -1512,4 +1633,104 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   defp sibling_platforms_copy(1), do: "1 sibling platform is not selected."
   defp sibling_platforms_copy(count), do: "#{count} sibling platforms are not selected."
+
+  # GTFS `currency_type` is an ISO 4217 code. The symbols an operator reads are
+  # the ones the reference shows; an unmapped code keeps its own code, because a
+  # guessed symbol would misstate the amount.
+  @currency_symbols %{"USD" => "$", "EUR" => "€", "GBP" => "£"}
+
+  # The fare's own line: the fare ID with the price its `fare_attributes` row
+  # holds. A rule whose fare has no row says so rather than showing a price that
+  # no fare in the version has.
+  defp rule_fare_text(%{fare: %{price: price, currency_type: currency_type}, fare_id: fare_id}) do
+    "#{fare_id} · #{rule_price(price, currency_type)}"
+  end
+
+  defp rule_fare_text(%{fare_id: fare_id}), do: "Unknown fare #{fare_id}"
+
+  defp rule_price(price, currency_type) do
+    case Map.fetch(@currency_symbols, currency_type) do
+      {:ok, symbol} -> symbol <> Decimal.to_string(price)
+      :error -> currency_type <> " " <> Decimal.to_string(price)
+    end
+  end
+
+  # The journey line: which end of the journey the rule restricts, then the zones
+  # it must visit. Both ends unrestricted is its own sentence rather than two
+  # "Any" halves.
+  defp rule_journey_text(rule, zone_lookup) do
+    ends = rule_ends_text(rule.origin_id, rule.destination_id, zone_lookup)
+
+    case rule.contains do
+      [] -> ends
+      contains -> ends <> " · Through " <> rule_zone_names(contains, zone_lookup)
+    end
+  end
+
+  defp rule_ends_text(nil, nil, _zone_lookup), do: "Any journey"
+
+  defp rule_ends_text(nil, destination_id, zone_lookup),
+    do: "Any origin → " <> rule_zone_name(zone_lookup, destination_id)
+
+  defp rule_ends_text(origin_id, nil, zone_lookup),
+    do: "From " <> rule_zone_name(zone_lookup, origin_id) <> " · Any destination"
+
+  defp rule_ends_text(origin_id, destination_id, zone_lookup) do
+    "From " <>
+      rule_zone_name(zone_lookup, origin_id) <>
+      " → " <> rule_zone_name(zone_lookup, destination_id)
+  end
+
+  # The route's own text, then how the journey reads. A route with neither name
+  # falls back to its ID, so the line never states an empty route; the direction
+  # clause is the reference's, and names the through-zone requirement when there
+  # is one.
+  defp rule_route_line(rule) do
+    rule_route_text(rule) <> " · " <> rule_direction_text(rule)
+  end
+
+  defp rule_route_text(%{route: nil, route_id: nil}), do: "All routes"
+  defp rule_route_text(%{route: nil, route_id: route_id}), do: "Unknown route #{route_id}"
+
+  defp rule_route_text(%{route: route, route_id: route_id}) do
+    case Enum.reject([route.short_name, route.long_name], &(&1 in [nil, ""])) do
+      [] -> route_id
+      names -> Enum.join(names, " · ")
+    end
+  end
+
+  defp rule_direction_text(%{contains: contains}) when contains != [],
+    do: "Every listed zone must be visited"
+
+  defp rule_direction_text(%{origin_id: origin_id, destination_id: destination_id})
+       when not is_nil(origin_id) and origin_id == destination_id,
+       do: "One direction · within the same zone"
+
+  defp rule_direction_text(_rule), do: "One direction"
+
+  # A referenced zone with no boardable stops: the rule keeps the reference, so
+  # the card says which rule is affected instead of hiding it. Every referenced
+  # zone is in the inventory, which reads its IDs from the rules themselves.
+  defp rule_stopless?(rule, zone_lookup) do
+    rule
+    |> rule_referenced_zones()
+    |> Enum.any?(&match?(%{stop_count: 0}, Map.get(zone_lookup, &1)))
+  end
+
+  defp rule_referenced_zones(rule) do
+    Enum.reject([rule.origin_id, rule.destination_id], &is_nil/1) ++ rule.contains
+  end
+
+  # An undeclared zone is named by its exact stored ID, so a name is never
+  # trimmed, re-cased or invented here.
+  defp rule_zone_names(zone_ids, zone_lookup) do
+    Enum.map_join(zone_ids, " + ", &rule_zone_name(zone_lookup, &1))
+  end
+
+  defp rule_zone_name(zone_lookup, zone_id) do
+    case Map.get(zone_lookup, zone_id) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _zone -> zone_id
+    end
+  end
 end
