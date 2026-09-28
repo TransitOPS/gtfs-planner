@@ -50,10 +50,13 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Gtfs.Calendars.Combination
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -90,11 +93,15 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | {:remove_exceptions, String.t(), [Date.t()]}
           | {:date_change, [Date.t()], [String.t()], [String.t()]}
           | {:combine, String.t(), [String.t()], %{String.t() => :run | :no_service}}
+  @type closure_path :: %{pathway_id: String.t(), station_stop_ids: [String.t()]}
   @type calendar_usage :: %{
           optional(:service_id) => String.t(),
           trip_count: non_neg_integer(),
           route_ids: [String.t()],
-          routes: [%{route_id: String.t(), trip_count: non_neg_integer()}]
+          routes: [%{route_id: String.t(), trip_count: non_neg_integer()}],
+          closure_count: non_neg_integer(),
+          pathway_ids: [String.t()],
+          closure_paths: [closure_path()]
         }
   @type summary_status :: %{
           no_service?: boolean(),
@@ -113,6 +120,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           attributes: CalendarAttribute.t() | nil,
           trip_count: non_neg_integer(),
           coverage_error: coverage_error() | nil,
+          closure_count: non_neg_integer(),
+          pathway_ids: [String.t()],
+          closure_paths: [closure_path()],
           active_dates: [Date.t()],
           first_active_date: Date.t() | nil,
           last_active_date: Date.t() | nil,
@@ -156,6 +166,8 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | :native_service_required
           | :reversed_range
           | {:in_use, non_neg_integer(), [String.t()]}
+          | {:closures_in_use, calendar_usage()}
+          | {:closure_reference_lost, calendar_usage()}
   @type write_error :: Ecto.Changeset.t() | error()
   @type feed_gap :: %{first_date: Date.t(), last_date: Date.t()}
   @type review_result :: %{
@@ -320,12 +332,15 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   def get_calendar(_organization_id, _version_id, _service_id), do: {:error, :not_found}
 
   @doc """
-  Returns the scoped trip usage of one calendar identity grouped by route.
+  Returns the scoped trip and closure usage of one calendar identity grouped by route.
 
-  The result carries the total `trip_count`, the sorted distinct `route_ids` and
-  one `%{route_id: ..., trip_count: ...}` entry per route, which is what the
-  detail view and the blocked-delete explanation need. Usage of other versions or
-  organizations is never included.
+  The result carries the total `trip_count`, the sorted distinct `route_ids`, one
+  `%{route_id: ..., trip_count: ...}` entry per route, plus the existence-only
+  closure usage: `closure_count`, the sorted distinct `pathway_ids` and one
+  `closure_paths` entry per pathway with its owning `station_stop_ids` resolved
+  from scoped endpoint ancestry. This is what the detail view and the
+  blocked-delete explanation need. Usage of other versions or organizations is
+  never included.
   """
   @spec calendar_usage(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, calendar_usage()} | {:error, :not_found}
@@ -447,9 +462,12 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   nil entries are refused before a review token exists. The retained sources are
   compared with the current rows, then the command is planned: validation errors
   return the owning changeset, an in-use conversion or delete returns
-  `{:in_use, trip_count, route_ids}`, a single-calendar command on a calendar whose range
-  ends before it starts returns `:reversed_range` unless it is a delete or a save that
-  supplies a new range, and otherwise the result carries the reviewed
+  `{:in_use, trip_count, route_ids}`, a delete blocked only by scheduled closures
+  returns `{:closures_in_use, usage}`, a plan that would drop the last native row of a
+  closure-referenced service returns `{:closure_reference_lost, usage}`, a
+  single-calendar command on a calendar whose range ends before it starts returns
+  `:reversed_range` unless it is a delete or a save that supplies a new range, and
+  otherwise the result carries the reviewed
   `changes`, projected `warnings`, the `affected_service_ids` that would change, the
   projected `active_date_count` and a command-bound `fingerprint` that
   `apply_calendar_change/3` requires. The shared version lock is released before the
@@ -996,7 +1014,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     calendars = calendar_rows(organization_id, version_id)
     attributes = attribute_rows(organization_id, version_id)
     exceptions = exception_rows(organization_id, version_id)
-    usage = trip_usage_rows(organization_id, version_id)
+    usage = usage_rows(organization_id, version_id)
     today = resolve_today(organization_id, version_id, opts)
 
     organization_id
@@ -1060,6 +1078,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       calendar: calendar,
       attributes: attribute,
       trip_count: service_usage.trip_count,
+      closure_count: service_usage.closure_count,
+      pathway_ids: service_usage.pathway_ids,
+      closure_paths: service_usage.closure_paths,
       coverage_error: List.first(input_errors),
       active_dates: derived.active_dates,
       first_active_date: List.first(derived.active_dates),
@@ -1352,6 +1373,22 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     )
     |> Repo.all()
     |> usage_from_grouped_rows()
+    |> Map.merge(one_closure_usage(organization_id, version_id, service_id))
+  end
+
+  # Trip and closure usage merge into one per-service map so list summaries,
+  # one_usage/3 and the source fingerprint always describe the same counts.
+  defp usage_rows(organization_id, version_id) do
+    trips = trip_usage_rows(organization_id, version_id)
+    closures = closure_usage_rows(organization_id, version_id)
+
+    for service_id <- Enum.uniq(Map.keys(trips) ++ Map.keys(closures)), into: %{} do
+      {service_id,
+       Map.merge(
+         Map.get(trips, service_id, empty_trip_usage()),
+         Map.get(closures, service_id, empty_closure_usage())
+       )}
+    end
   end
 
   defp usage_from_grouped_rows(rows) do
@@ -1366,7 +1403,134 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp route_usage({route_id, trip_count}), do: %{route_id: route_id, trip_count: trip_count}
 
-  defp empty_usage, do: %{trip_count: 0, route_ids: [], routes: []}
+  defp empty_trip_usage, do: %{trip_count: 0, route_ids: [], routes: []}
+
+  defp empty_closure_usage, do: %{closure_count: 0, pathway_ids: [], closure_paths: []}
+
+  defp empty_usage, do: Map.merge(empty_trip_usage(), empty_closure_usage())
+
+  # Closure usage is existence-only reference data: one count per closure row,
+  # the exact distinct pathway IDs and one closure_paths entry per pathway whose
+  # owning stations come from scoped endpoint ancestry. Usage of other versions
+  # or organizations is never included.
+  defp one_closure_usage(organization_id, version_id, service_id) do
+    pathway_ids =
+      Repo.all(
+        from(e in PathwayEvolution,
+          where:
+            e.organization_id == ^organization_id and e.gtfs_version_id == ^version_id and
+              e.service_id == ^service_id,
+          select: e.pathway_id
+        )
+      )
+
+    closure_usage(
+      length(pathway_ids),
+      pathway_ids,
+      pathway_station_ids(organization_id, version_id, Enum.uniq(pathway_ids))
+    )
+  end
+
+  defp closure_usage_rows(organization_id, version_id) do
+    rows =
+      Repo.all(
+        from(e in PathwayEvolution,
+          where: e.organization_id == ^organization_id and e.gtfs_version_id == ^version_id,
+          select: {e.service_id, e.pathway_id}
+        )
+      )
+
+    stations =
+      pathway_station_ids(organization_id, version_id, Enum.uniq(Enum.map(rows, &elem(&1, 1))))
+
+    rows
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {service_id, pathway_ids} ->
+      {service_id, closure_usage(length(pathway_ids), pathway_ids, stations)}
+    end)
+  end
+
+  defp closure_usage(count, pathway_ids, station_ids_by_pathway) do
+    sorted = pathway_ids |> Enum.uniq() |> Enum.sort()
+
+    %{
+      closure_count: count,
+      pathway_ids: sorted,
+      closure_paths:
+        Enum.map(sorted, fn pathway_id ->
+          %{
+            pathway_id: pathway_id,
+            station_stop_ids: Map.get(station_ids_by_pathway, pathway_id, [])
+          }
+        end)
+    }
+  end
+
+  defp pathway_station_ids(_organization_id, _version_id, []), do: %{}
+
+  defp pathway_station_ids(organization_id, version_id, pathway_ids) do
+    endpoints =
+      Repo.all(
+        from(p in Pathway,
+          where:
+            p.organization_id == ^organization_id and p.gtfs_version_id == ^version_id and
+              p.pathway_id in ^pathway_ids,
+          select: {p.pathway_id, p.from_stop_id, p.to_stop_id}
+        )
+      )
+
+    station_ids_by_stop =
+      endpoints
+      |> Enum.flat_map(fn {_pathway_id, from_stop_id, to_stop_id} ->
+        [from_stop_id, to_stop_id]
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Map.new(&{&1, endpoint_station_ids(organization_id, version_id, &1)})
+
+    Map.new(endpoints, fn {pathway_id, from_stop_id, to_stop_id} ->
+      station_ids =
+        [from_stop_id, to_stop_id]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.flat_map(&Map.get(station_ids_by_stop, &1, []))
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      {pathway_id, station_ids}
+    end)
+  end
+
+  # Owning stations come from the station row at the top of each endpoint's
+  # parent_station chain, boarding areas included. An endpoint without a
+  # station ancestor contributes no link rather than an invented one.
+  defp endpoint_station_ids(organization_id, version_id, stop_id, depth \\ 0)
+
+  defp endpoint_station_ids(_organization_id, _version_id, _stop_id, depth) when depth > 4,
+    do: []
+
+  defp endpoint_station_ids(organization_id, version_id, stop_id, depth) do
+    case one_stop(organization_id, version_id, stop_id) do
+      %Stop{location_type: 1} ->
+        [stop_id]
+
+      %Stop{parent_station: parent_station}
+      when is_binary(parent_station) and parent_station != "" ->
+        endpoint_station_ids(organization_id, version_id, parent_station, depth + 1)
+
+      _other ->
+        []
+    end
+  end
+
+  defp one_stop(organization_id, version_id, stop_id) do
+    Repo.one(
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id and
+            s.stop_id == ^stop_id
+      )
+    )
+  end
 
   defp kind_for(nil), do: :dates_only
   defp kind_for(%Calendar{}), do: :weekly
@@ -2231,8 +2395,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp review!(normalized, source_fingerprints, audit_context) do
     sources = loaded_sources!(command_targets(normalized), source_fingerprints, audit_context)
 
-    case plan_all(normalized, sources, audit_context) do
-      {:ok, plans} -> review_result(normalized, sources, plans)
+    with {:ok, plans} <- plan_all(normalized, sources, audit_context),
+         :ok <- validate_plan_references(plans, audit_context) do
+      review_result(normalized, sources, plans)
+    else
       {:error, reason} -> Repo.rollback(reason)
     end
   end
@@ -2265,10 +2431,34 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       Repo.rollback(:stale_review)
     end
 
-    case plan_all(normalized, sources, audit_context) do
-      {:ok, plans} -> apply_plans!(normalized, sources, plans, audit_context)
+    with {:ok, plans} <- plan_all(normalized, sources, audit_context),
+         :ok <- validate_plan_references(plans, audit_context) do
+      apply_plans!(normalized, sources, plans, audit_context)
+    else
       {:error, reason} -> Repo.rollback(reason)
     end
+  end
+
+  # Existence-only reference integrity: while closures reference a service it
+  # keeps at least one native row. Every projected plan (including each side of
+  # a multi-service date change) must retain a weekly row or an exception row;
+  # a projection with neither is refused. A projection that keeps native rows
+  # but empties active dates is disclosed through the existing warnings instead.
+  defp validate_plan_references(plans, audit_context) do
+    Enum.reduce_while(plans, :ok, fn {service_id, plan}, :ok ->
+      if is_nil(plan.projected_calendar) and plan.projected_exceptions == [] do
+        usage =
+          one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
+
+        if usage.closure_count > 0 do
+          {:halt, {:error, {:closure_reference_lost, usage}}}
+        else
+          {:cont, :ok}
+        end
+      else
+        {:cont, :ok}
+      end
+    end)
   end
 
   defp loaded_sources!(targets, source_fingerprints, audit_context) do
@@ -2343,10 +2533,15 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     source = Map.fetch!(sources, service_id)
     usage = one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
 
-    if usage.trip_count > 0 do
-      {:error, {:in_use, usage.trip_count, usage.route_ids}}
-    else
-      {:ok, %{service_id => delete_plan(service_id, source)}}
+    cond do
+      usage.trip_count > 0 ->
+        {:error, {:in_use, usage.trip_count, usage.route_ids}}
+
+      usage.closure_count > 0 ->
+        {:error, {:closures_in_use, usage}}
+
+      true ->
+        {:ok, %{service_id => delete_plan(service_id, source)}}
     end
   end
 
@@ -3518,7 +3713,12 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       weekly: calendar_snapshot(calendar),
       attributes: attribute_snapshot(attributes),
       dates: exception_pairs(exceptions),
-      usage: %{trip_count: usage.trip_count, route_ids: usage.route_ids}
+      usage: %{
+        trip_count: usage.trip_count,
+        route_ids: usage.route_ids,
+        closure_count: usage.closure_count,
+        pathway_ids: usage.pathway_ids
+      }
     })
   end
 
