@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Alignments do
   @moduledoc """
-  Resolves a pattern's visit-pair sections and export status.
+  Resolves a pattern's visit-pair sections and export status, and lists the
+  patterns that use a stop pair for save scoping.
 
   A section is the consecutive visit pair (visit *i*, visit *i+1*), addressed
   by `position = i` and identified by `(from_occurrence_id, to_stop_id)`
@@ -16,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
@@ -56,6 +58,18 @@ defmodule GtfsPlanner.Gtfs.Alignments do
           sections: [section()],
           status: status(),
           digest: String.t() | nil
+        }
+
+  @type pair_user :: %{
+          pattern_id: Ecto.UUID.t(),
+          route_pattern_id: String.t(),
+          route_id: String.t(),
+          route_label: String.t(),
+          pattern_label: String.t(),
+          visit_positions: [pos_integer()],
+          custom_positions: [pos_integer()],
+          owns_shape?: boolean(),
+          linked_trip_count: non_neg_integer()
         }
 
   @doc """
@@ -114,6 +128,111 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
         %{pattern: pattern, visits: visits, sections: sections, status: status, digest: nil}
     end
+  end
+
+  @doc """
+  Lists every pattern in the version that visits `from_stop_id` immediately
+  followed by `to_stop_id`.
+
+  A visit position lands in `custom_positions` when an applicable override
+  covers it (INV-6 identity: the override's stored `from_stop_id` still equals
+  the visit's stop); otherwise it lands in `visit_positions`. Sorted by
+  `route_id`, then `route_pattern_id`. Scoped to one organization and version
+  (INV-2). The R6 save-scope reader consumed by `review_save/3`.
+  """
+  @spec pair_users(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) :: [pair_user()]
+  def pair_users(organization_id, gtfs_version_id, from_stop_id, to_stop_id) do
+    stops_with_next =
+      from(rs in RoutePatternStop,
+        where:
+          rs.organization_id == ^organization_id and
+            rs.gtfs_version_id == ^gtfs_version_id,
+        select: %{
+          id: rs.id,
+          route_pattern_id: rs.route_pattern_id,
+          position: rs.position,
+          stop_id: rs.stop_id,
+          next_stop_id:
+            type(
+              fragment(
+                "LEAD(?) OVER (PARTITION BY ? ORDER BY ?)",
+                rs.stop_id,
+                rs.route_pattern_id,
+                rs.position
+              ),
+              :string
+            )
+        }
+      )
+
+    rows =
+      from(q in subquery(stops_with_next),
+        join: rp in RoutePattern,
+        on:
+          rp.id == q.route_pattern_id and
+            rp.organization_id == ^organization_id and
+            rp.gtfs_version_id == ^gtfs_version_id,
+        left_join: r in Route,
+        on:
+          r.organization_id == ^organization_id and
+            r.gtfs_version_id == ^gtfs_version_id and
+            r.route_id == rp.route_id,
+        left_join: seg in AlignmentSegment,
+        on:
+          seg.organization_id == ^organization_id and
+            seg.gtfs_version_id == ^gtfs_version_id and
+            seg.from_occurrence_id == q.id and
+            seg.from_stop_id == ^from_stop_id and
+            seg.to_stop_id == ^to_stop_id,
+        where: q.stop_id == ^from_stop_id and q.next_stop_id == ^to_stop_id,
+        order_by: [asc: rp.route_id, asc: rp.route_pattern_id, asc: q.position],
+        select: %{
+          pattern_id: rp.id,
+          route_pattern_id: rp.route_pattern_id,
+          route_id: rp.route_id,
+          route_short_name: r.route_short_name,
+          pattern_name: rp.route_pattern_name,
+          shape_id: rp.shape_id,
+          position: q.position,
+          segment_id: seg.id
+        }
+      )
+      |> Repo.all()
+
+    trip_counts =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and
+            t.gtfs_version_id == ^gtfs_version_id and
+            t.pattern_derivation_state == "linked",
+        group_by: [t.route_id, t.route_pattern_id],
+        select: {t.route_id, t.route_pattern_id, count(t.id)}
+      )
+      |> Repo.all()
+      |> Map.new(fn {route_id, route_pattern_id, count} ->
+        {{route_id, route_pattern_id}, count}
+      end)
+
+    rows
+    |> Enum.group_by(fn row -> row.pattern_id end)
+    |> Enum.map(fn {_pattern_id, grouped} ->
+      first = hd(grouped)
+
+      {plain, custom} = Enum.split_with(grouped, fn row -> is_nil(row.segment_id) end)
+
+      %{
+        pattern_id: first.pattern_id,
+        route_pattern_id: first.route_pattern_id,
+        route_id: first.route_id,
+        route_label: first.route_short_name || first.route_id,
+        pattern_label: first.pattern_name || first.route_pattern_id,
+        visit_positions: Enum.map(plain, fn row -> row.position end),
+        custom_positions: Enum.map(custom, fn row -> row.position end),
+        owns_shape?: present?(first.shape_id),
+        linked_trip_count: Map.get(trip_counts, {first.route_id, first.route_pattern_id}, 0)
+      }
+    end)
+    |> Enum.sort_by(fn user -> {user.route_id, user.route_pattern_id} end)
   end
 
   defp load_visits(%RoutePattern{} = pattern) do
