@@ -41,12 +41,14 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
     FareZones,
     Route,
     RoutePattern,
+    Routes,
     Schedules,
     Stop,
     Transfers
   }
 
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
+>>>>>>> 635dc67b (feat(gtfs): load the scoped route editor workspace (spec 16, step 5))
 
   @type unavailable :: {:error, :unavailable}
   @type route_page :: %{
@@ -71,6 +73,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
           stops: FareZones.stop_page()
         }
   @type calendar_screen :: Calendars.screen()
+  @type route_editor :: Routes.editor_workspace()
+>>>>>>> 635dc67b (feat(gtfs): load the scoped route editor workspace (spec 16, step 5))
 
   @callback load_route_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, route_page()} | unavailable()
@@ -80,6 +84,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               | unavailable()
   @callback fetch_route(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, Route.t()} | {:error, :not_found | :unavailable}
+  @callback load_route_editor(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+              {:ok, route_editor()} | {:error, :not_found | :unavailable}
   @callback load_route_patterns(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, [RoutePattern.t()]} | unavailable()
   @callback load_route_pattern_screen(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::

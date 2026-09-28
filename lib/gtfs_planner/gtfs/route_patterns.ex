@@ -1774,7 +1774,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       else: take_unused(count - 1, MapSet.put(used, candidate), candidate + 1, [candidate | acc])
   end
 
-  @doc false
+  @doc """
+  Returns the scoped route when its version is published.
+
+  A route outside the organization/version scope, or a route whose version is
+  not published, is `{:error, :not_found}` so foreign and unpublished reads can
+  never leak scoped data.
+  """
   def published_route(organization_id, version_id, route_id) do
     query =
       from route in Route,

@@ -203,6 +203,22 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Loads the route editor workspace for one published route through the
+  configured catalog read adapter.
+
+  The workspace carries the scoped route, its trusted edit source, scoped
+  agency options, route mode counts, warning candidates and the route's last
+  audit entry (`nil` reports unknown/imported attribution). A foreign or
+  unpublished scope is `{:error, :not_found}`; a lost database connection is
+  `{:error, :unavailable}`.
+  """
+  @spec load_route_editor(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, map()} | {:error, :not_found | :unavailable}
+  def load_route_editor(organization_id, gtfs_version_id, route_id) do
+    catalog_read_adapter().load_route_editor(organization_id, gtfs_version_id, route_id)
+  end
+
+  @doc """
   Fetches a single stop by its GTFS `stop_id` for the station detail surface
   through the configured catalog read adapter.
 
