@@ -65,6 +65,19 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   two zones nor duplicate a rule row. `change_zone/2` is the drawer's form
   changeset and makes the same byte-for-byte decision, so a form validates what
   the write will do.
+
+  `delete_zone/5` removes a zone inside the same version-locked transaction. It
+  refuses a zone that left the inventory (`:not_found`), a request whose expected
+  stop and rule counts no longer match the inventory (`{:stale, zone}` with the
+  current entry), a zone fare rules use with no replacement
+  (`:replacement_required`) and a replacement that is the zone itself or outside
+  the inventory (`:invalid_replacement`); each refusal writes nothing. Otherwise
+  the zone's stops of every location type move to the replacement (nil unassigns
+  them), every fare-rule row that mentions the zone in `origin_id`,
+  `destination_id` or `contains_id` is rewritten with the exact replacement value
+  and reinserted under a new ID, a rewritten row identical to an unaffected row
+  or to an earlier kept rewritten row is dropped, and the metadata record is
+  removed - so no row keeps the deleted ID and no group is left orphaned.
   """
 
   import Ecto.Query, warn: false
@@ -578,6 +591,68 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
+  @doc """
+  Deletes a zone, moving its stops and fare-rule references to a replacement.
+
+  The zone must still be in the version's inventory, otherwise the call rolls
+  back `:not_found` and writes nothing. `expected` holds the boardable `stop_count`
+  and `rule_count` the delete dialog showed: if either differs from the current
+  inventory entry, the call rolls back `{:stale, zone}` with that entry, so a stop
+  or rule the user never saw at confirm time cannot move unnoticed. A zone fare
+  rules reference needs a `replacement`, otherwise `:replacement_required`.
+  `replacement` may be nil only then, clearing the zone of every unreferenced
+  stop; otherwise it must be another ID in the inventory or the call rolls back
+  `:invalid_replacement`.
+
+  Inside one version-locked transaction the zone's stops of every location type
+  move to the exact replacement ID (nil unassigns them), every fare-rule row that
+  mentions the zone in `origin_id`, `destination_id` or `contains_id` is rewritten
+  with the exact replacement value and reinserted with a new ID, a rewritten row
+  that would be identical to an unaffected row or to an earlier kept rewritten
+  row is dropped, and the zone's metadata record is removed. Every other row keeps
+  its bytes and timestamps, so no row references the deleted ID and no fare-rule
+  group is destroyed or left orphaned. The result counts the stops whose zone
+  changed, the rewritten rows kept and the affected rows dropped as duplicates. A
+  pair that is not a published version of the organization returns `:not_found`
+  and writes nothing.
+  """
+  @spec delete_zone(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          String.t() | nil,
+          %{stop_count: non_neg_integer(), rule_count: non_neg_integer()}
+        ) ::
+          {:ok,
+           %{
+             moved_stops: non_neg_integer(),
+             rewritten_rows: non_neg_integer(),
+             removed_duplicate_rows: non_neg_integer()
+           }}
+          | {:error, :not_found | :replacement_required | :invalid_replacement | {:stale, zone()}}
+  def delete_zone(organization_id, gtfs_version_id, zone_id, replacement, expected) do
+    transact(organization_id, gtfs_version_id, fn ->
+      zone = inventory_zone(organization_id, gtfs_version_id, zone_id)
+
+      cond do
+        is_nil(zone) ->
+          Repo.rollback(:not_found)
+
+        stale_zone?(zone, expected) ->
+          Repo.rollback({:stale, zone})
+
+        zone.rule_count > 0 and is_nil(replacement) ->
+          Repo.rollback(:replacement_required)
+
+        not valid_replacement?(organization_id, gtfs_version_id, zone_id, replacement) ->
+          Repo.rollback(:invalid_replacement)
+
+        true ->
+          delete_zone_write(organization_id, gtfs_version_id, zone_id, replacement)
+      end
+    end)
+  end
+
   defp write_assignment(organization_id, gtfs_version_id, changes, opts) do
     changes = Enum.uniq_by(changes, & &1.id)
 
@@ -926,19 +1001,156 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     result = if record, do: Repo.update(changeset), else: Repo.insert(changeset)
 
     case result do
-      {:ok, _zone} -> zone_map(organization_id, gtfs_version_id, zone_id)
+      {:ok, _zone} -> inventory_zone(organization_id, gtfs_version_id, zone_id)
       {:error, changeset} -> Repo.rollback(changeset)
     end
   end
 
-  # The write in this transaction put the ID in the inventory, so the lookup
-  # always resolves; name, color and counts come from the same projection the
-  # workspace reads.
-  defp zone_map(organization_id, gtfs_version_id, zone_id) do
+  # The inventory entry of one zone, or nil when the ID is not in the inventory.
+  # A caller inside a write that just put the ID in the inventory always
+  # resolves; `delete_zone/5` uses the nil result as its `:not_found` check, and
+  # so does the stale fence's comparison against the counts the dialog showed.
+  defp inventory_zone(organization_id, gtfs_version_id, zone_id) do
     organization_id
     |> inventory(gtfs_version_id)
     |> Map.fetch!(:zones)
     |> Enum.find(&(&1.zone_id == zone_id))
+  end
+
+  defp stale_zone?(zone, expected) do
+    zone.stop_count != expected.stop_count or zone.rule_count != expected.rule_count
+  end
+
+  # nil is the unreferenced-zone unassign case, checked before this runs. Any
+  # other replacement must be a different zone the inventory carries; a
+  # non-string value can never be a zone ID and is refused rather than compared.
+  defp valid_replacement?(_organization_id, _gtfs_version_id, _zone_id, nil), do: true
+
+  defp valid_replacement?(organization_id, gtfs_version_id, zone_id, replacement)
+       when is_binary(replacement) do
+    replacement != zone_id and zone_exists?(organization_id, gtfs_version_id, replacement)
+  end
+
+  defp valid_replacement?(_organization_id, _gtfs_version_id, _zone_id, _other), do: false
+
+  # A deletion rebuilds the affected fare rules in memory: read the version's
+  # rows once, rewrite the ones that mention the zone, drop the rewritten
+  # duplicates, delete the affected rows and insert the survivors with new IDs.
+  # The planning envelope is a few thousand fare-rules rows per version, which is
+  # why one in-memory pass is enough. If a version ever exceeds it, replace this
+  # with set-based SQL: one UPDATE over the three zone columns, then a DELETE of
+  # the rows the seven-column unique index would reject.
+  defp delete_zone_write(organization_id, gtfs_version_id, zone_id, replacement) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {moved_stops, nil} =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.zone_id == ^zone_id
+      )
+      |> Repo.update_all(set: [zone_id: replacement, updated_at: now])
+
+    {affected, unaffected} =
+      organization_id
+      |> list_rows(gtfs_version_id)
+      |> Enum.split_with(&references_zone?(&1, zone_id))
+
+    {kept, removed_duplicate_rows} =
+      deduplicate_rule_rows(affected, unaffected, zone_id, replacement)
+
+    delete_rule_rows(organization_id, gtfs_version_id, Enum.map(affected, & &1.id))
+    insert_rule_rows(organization_id, gtfs_version_id, kept, now)
+    delete_zone_record(organization_id, gtfs_version_id, zone_id)
+
+    %{
+      moved_stops: moved_stops,
+      rewritten_rows: length(kept),
+      removed_duplicate_rows: removed_duplicate_rows
+    }
+  end
+
+  defp references_zone?(row, zone_id) do
+    row.origin_id == zone_id or row.destination_id == zone_id or row.contains_id == zone_id
+  end
+
+  # A rewritten row is dropped only when the five-field tuple it would become is
+  # already present, so a legitimate row is never removed and only identical
+  # rows merge.
+  defp deduplicate_rule_rows(affected, unaffected, zone_id, replacement) do
+    seen = MapSet.new(unaffected, &rule_values/1)
+
+    {kept, _seen} =
+      Enum.reduce(affected, {[], seen}, fn row, {kept, seen} ->
+        rewritten = rewrite_rule_row(row, zone_id, replacement)
+        values = rule_values(rewritten)
+
+        if MapSet.member?(seen, values) do
+          {kept, seen}
+        else
+          {[rewritten | kept], MapSet.put(seen, values)}
+        end
+      end)
+
+    kept = Enum.reverse(kept)
+    {kept, length(affected) - length(kept)}
+  end
+
+  defp rewrite_rule_row(row, zone_id, replacement) do
+    %{
+      row
+      | origin_id: replace_zone(row.origin_id, zone_id, replacement),
+        destination_id: replace_zone(row.destination_id, zone_id, replacement),
+        contains_id: replace_zone(row.contains_id, zone_id, replacement)
+    }
+  end
+
+  defp replace_zone(value, zone_id, replacement) do
+    if value == zone_id, do: replacement, else: value
+  end
+
+  defp rule_values(row) do
+    {row.fare_id, row.route_id, row.origin_id, row.destination_id, row.contains_id}
+  end
+
+  defp delete_rule_rows(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp delete_rule_rows(organization_id, gtfs_version_id, ids) do
+    organization_id
+    |> rule_scope(gtfs_version_id)
+    |> where([r], r.id in ^ids)
+    |> Repo.delete_all()
+  end
+
+  defp insert_rule_rows(_organization_id, _gtfs_version_id, [], _now), do: :ok
+
+  defp insert_rule_rows(organization_id, gtfs_version_id, rows, now) do
+    rows =
+      Enum.map(rows, fn row ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          fare_id: row.fare_id,
+          route_id: row.route_id,
+          origin_id: row.origin_id,
+          destination_id: row.destination_id,
+          contains_id: row.contains_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    Repo.insert_all(FareRule, rows)
+  end
+
+  defp delete_zone_record(organization_id, gtfs_version_id, zone_id) do
+    from(z in FareZone,
+      where:
+        z.organization_id == ^organization_id and z.gtfs_version_id == ^gtfs_version_id and
+          z.zone_id == ^zone_id
+    )
+    |> Repo.delete_all()
   end
 
   defp boardable_query(organization_id, gtfs_version_id) do
