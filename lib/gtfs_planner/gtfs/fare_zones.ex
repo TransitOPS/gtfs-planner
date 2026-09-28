@@ -30,6 +30,12 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   `other_stop_count` the remaining location types. `checks/2` derives the Checks
   tab's rows from that inventory and `zone_names/3` resolves display names for a
   list of zone IDs.
+
+  The workspace's stop reads — `list_stops/3`, `matching_stop_ids/3` and
+  `list_stop_points/2` — cover the version's boardable stops only. A zone filter
+  matches the exact stored ID, search treats `%` and `_` literally, and the order
+  is `stop_name` with names missing last, then `stop_id`, so the list pages, the
+  current match and the map points stay deterministic.
   """
 
   import Ecto.Query, warn: false
@@ -83,6 +89,26 @@ defmodule GtfsPlanner.Gtfs.FareZones do
         }
 
   @type stop_filter :: :all | :unassigned | {:zone, String.t()}
+
+  @type stop_entry :: %{
+          id: Ecto.UUID.t(),
+          stop_id: String.t(),
+          stop_name: String.t() | nil,
+          parent_station: String.t() | nil,
+          platform_code: String.t() | nil,
+          zone_id: String.t() | nil,
+          located?: boolean()
+        }
+
+  @type stop_page :: %{
+          entries: [stop_entry()],
+          total_count: non_neg_integer(),
+          page: pos_integer(),
+          per_page: pos_integer(),
+          without_location_count: non_neg_integer()
+        }
+
+  @type stop_point :: [Ecto.UUID.t() | String.t() | float() | nil]
 
   @type assignment_change :: %{id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil}
 
@@ -198,6 +224,172 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       |> Map.new()
 
     Map.new(zone_ids, fn zone_id -> {zone_id, Map.get(names, zone_id, zone_id)} end)
+  end
+
+  @default_page 1
+  @default_per_page 100
+
+  @doc """
+  Lists one page of the version's boardable stops for the workspace list.
+
+  `:filter` is `:all`, `:unassigned` (boardable stops without a zone) or
+  `{:zone, id}`, which matches the stored zone ID byte-for-byte, so `" A"` never
+  returns `"A"`. `:q` searches stop name and stop ID case-insensitively with `%`
+  and `_` matched literally, so `50%` finds `Gate 50%` and not `Gate 500`, and
+  `a_b` does not find `axb`; a nil or empty `:q` searches nothing.
+
+  Entries are ordered by `stop_name` with names missing last, then by `stop_id`,
+  so page boundaries do not depend on the database. `total_count` counts the
+  stops the filter and search match, and `page` is clamped into `1..last_page`:
+  a page past the end returns the last page, and an empty result is page 1.
+  `without_location_count` counts the stops the filter alone matches that miss
+  `stop_lat` or `stop_lon`, ignoring `:q`, for the workspace's "N without map
+  location" caption. An entry carries `located?: false` when either coordinate
+  is missing.
+
+  A pair that is not a version of the organization returns an empty page.
+  """
+  @spec list_stops(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: stop_page()
+  def list_stops(organization_id, gtfs_version_id, opts \\ []) do
+    filter = Keyword.get(opts, :filter, :all)
+    per_page = Keyword.get(opts, :per_page, @default_per_page)
+
+    matched =
+      organization_id
+      |> boardable_query(gtfs_version_id)
+      |> apply_filter(filter)
+      |> apply_search(Keyword.get(opts, :q))
+
+    total_count = count_stops(matched)
+    page = clamp_page(Keyword.get(opts, :page, @default_page), total_count, per_page)
+
+    entries =
+      matched
+      |> order_by([s], asc_nulls_last: s.stop_name, asc: s.stop_id)
+      |> limit(^per_page)
+      |> offset(^((page - 1) * per_page))
+      |> select([s], %{
+        id: s.id,
+        stop_id: s.stop_id,
+        stop_name: s.stop_name,
+        parent_station: s.parent_station,
+        platform_code: s.platform_code,
+        zone_id: s.zone_id,
+        located?: not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      })
+      |> Repo.all()
+
+    %{
+      entries: entries,
+      total_count: total_count,
+      page: page,
+      per_page: per_page,
+      without_location_count:
+        count_stops(unlocated_stops(organization_id, gtfs_version_id, filter))
+    }
+  end
+
+  @doc """
+  Lists the IDs of every boardable stop a filter and search match.
+
+  The result is the whole set `list_stops/3` pages through, in the same order
+  (`stop_name` with missing names last, then `stop_id`), so a caller can hold it
+  as the current match and offer "select all matching". `:ids` restricts the
+  result to the given stop UUIDs: UUIDs of another organization or version and
+  UUIDs of non-boardable stops are dropped, so one call validates a client
+  selection. An empty `:ids` list matches nothing.
+  """
+  @spec matching_stop_ids(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: [Ecto.UUID.t()]
+  def matching_stop_ids(organization_id, gtfs_version_id, opts \\ []) do
+    organization_id
+    |> boardable_query(gtfs_version_id)
+    |> apply_filter(Keyword.get(opts, :filter, :all))
+    |> apply_search(Keyword.get(opts, :q))
+    |> restrict_to_ids(Keyword.get(opts, :ids))
+    |> order_by([s], asc_nulls_last: s.stop_name, asc: s.stop_id)
+    |> select([s], s.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists the map points of the version's located boardable stops.
+
+  Each point is the list `[id, stop_id, stop_name, lat, lon, zone_id,
+  parent_station]`, ordered by `stop_id`, so the whole payload encodes directly
+  as the map hook's JSON. Only `location_type` 0 stops with both `stop_lat` and
+  `stop_lon` appear, and the coordinates are floats. The zone ID is the exact
+  stored string.
+
+  A pair that is not a version of the organization returns an empty list.
+  """
+  @spec list_stop_points(Ecto.UUID.t(), Ecto.UUID.t()) :: [stop_point()]
+  def list_stop_points(organization_id, gtfs_version_id) do
+    organization_id
+    |> boardable_query(gtfs_version_id)
+    |> where([s], not is_nil(s.stop_lat) and not is_nil(s.stop_lon))
+    |> order_by([s], asc: s.stop_id)
+    |> select([s], {
+      s.id,
+      s.stop_id,
+      s.stop_name,
+      s.stop_lat,
+      s.stop_lon,
+      s.zone_id,
+      s.parent_station
+    })
+    |> Repo.all()
+    |> Enum.map(fn {id, stop_id, stop_name, lat, lon, zone_id, parent_station} ->
+      [
+        id,
+        stop_id,
+        stop_name,
+        Decimal.to_float(lat),
+        Decimal.to_float(lon),
+        zone_id,
+        parent_station
+      ]
+    end)
+  end
+
+  defp boardable_query(organization_id, gtfs_version_id) do
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.location_type == 0
+    )
+  end
+
+  defp apply_filter(query, :all), do: query
+  defp apply_filter(query, :unassigned), do: where(query, [s], is_nil(s.zone_id))
+
+  defp apply_filter(query, {:zone, zone_id}) do
+    where(query, [s], s.zone_id == ^zone_id)
+  end
+
+  defp apply_search(query, nil), do: query
+  defp apply_search(query, ""), do: query
+
+  defp apply_search(query, q) when is_binary(q) do
+    pattern = "%" <> GtfsPlanner.Gtfs.escape_like_pattern(q) <> "%"
+    where(query, [s], ilike(s.stop_name, ^pattern) or ilike(s.stop_id, ^pattern))
+  end
+
+  defp restrict_to_ids(query, nil), do: query
+  defp restrict_to_ids(query, []), do: where(query, [s], false)
+  defp restrict_to_ids(query, ids), do: where(query, [s], s.id in ^ids)
+
+  defp unlocated_stops(organization_id, gtfs_version_id, filter) do
+    organization_id
+    |> boardable_query(gtfs_version_id)
+    |> apply_filter(filter)
+    |> where([s], is_nil(s.stop_lat) or is_nil(s.stop_lon))
+  end
+
+  defp count_stops(query), do: Repo.aggregate(query, :count)
+
+  defp clamp_page(page, total_count, per_page) do
+    last_page = max(div(total_count + per_page - 1, per_page), 1)
+    page |> max(1) |> min(last_page)
   end
 
   defp list_rows(organization_id, gtfs_version_id) do

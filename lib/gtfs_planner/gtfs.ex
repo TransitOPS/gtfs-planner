@@ -2902,7 +2902,8 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp escape_like_pattern(value) when is_binary(value) do
+  @doc false
+  def escape_like_pattern(value) when is_binary(value) do
     value
     |> String.replace("\\", "\\\\")
     |> String.replace("%", "\\%")
