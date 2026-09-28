@@ -12,6 +12,14 @@ import { test, expect } from "@playwright/test";
 import { mkdirSync } from "fs";
 import { bodyFitsViewport } from "./browser_helpers";
 
+// A 404 or corrupt SVG still lays out a box, so require a decoded image.
+async function expectImageLoaded(locator) {
+  await expect(locator).toBeVisible();
+  expect(
+    await locator.evaluate((el) => el.complete && el.naturalWidth > 0),
+  ).toBe(true);
+}
+
 const PLANNER_EDITOR = {
   email: "diagram-test@gtfs-planner.test",
   password: "DiagramTest123!",
@@ -93,7 +101,7 @@ for (const account of [PLANNER_EDITOR, PATHWAYS_EDITOR]) {
         "src",
         account.logo,
       );
-      await expect(page.locator("#app-brand-logo")).toBeVisible();
+      await expectImageLoaded(page.locator("#app-brand-logo"));
 
       if (viewport === DESKTOP) {
         const planner = account === PLANNER_EDITOR;
@@ -132,12 +140,10 @@ for (const viewport of LOGIN_VIEWPORTS) {
     await page.setViewportSize(viewport);
     await page.goto("/users/log_in");
 
-    await expect(
-      page.locator('#auth-brands img[alt="GTFS Planner"]'),
-    ).toBeVisible();
-    await expect(
+    await expectImageLoaded(page.locator('#auth-brands img[alt="GTFS Planner"]'));
+    await expectImageLoaded(
       page.locator('#auth-brands img[alt="Pathways Studio"]'),
-    ).toBeVisible();
+    );
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await page.screenshot({
