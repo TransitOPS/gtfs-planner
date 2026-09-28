@@ -11,10 +11,10 @@ import { bodyFitsViewport } from "./browser_helpers";
  * /gtfs/:version/routes and /gtfs/:version/routes/:route_id.
  *
  * Step 21 mounted `identity_fields/1` and `color_fields/1` in the real Create
- * route drawer at /gtfs/:version/routes, so the create cases below run against
- * that production surface. The Route > Details cases stay skipped until step 22
- * renders the same controls at /gtfs/:version/routes/:route_id; no temporary
- * endpoint or preview route was added to unblock them.
+ * route drawer at /gtfs/:version/routes, and step 22 mounted the same controls
+ * in the real Route > Details workspace at
+ * /gtfs/:version/routes/:route_id, so both groups of cases below run against
+ * production surfaces. No temporary endpoint or preview route was added.
  *
  * The component's stable control ids, which both mounting steps inherit:
  *   #<prefix>-identity                 the shared region
@@ -41,7 +41,7 @@ const DETAILS_ROUTE = "BROWSER_PATTERNS_READY";
  * › Details share, and `assets/js/route_details_editor.js` keeps the readout
  * live while the operator types. Like the identity controls above, this step
  * builds the component and its contract; steps 21 and 22 mount it, so the cases
- * below are complete but skipped and name the step that owns each mount.
+ * below now run against the Details workspace step 22 rendered.
  *
  * The control ids this step publishes, which both mounting steps inherit:
  *   #<prefix>-color-fields / #<prefix>-color-picker / #<prefix>-color
@@ -52,12 +52,6 @@ const DETAILS_ROUTE = "BROWSER_PATTERNS_READY";
  *   #<prefix>-contrast-verdict-text / #<prefix>-contrast-ratio
  *   #<prefix>-contrast-advice / #<prefix>-use-automatic
  */
-
-function pendingUntil(owner) {
-  return {
-    reason: `${owner} mounts RouteFormComponents.identity_fields/1; no production URL renders it before then`,
-  };
-}
 
 async function logIn(page, user = CREATE_USER) {
   await page.goto("/users/log_in");
@@ -146,8 +140,6 @@ test.describe("Route identity controls", () => {
   test("identity fields on route Details show the saved values in the same controls", async ({
     page,
   }) => {
-    test.skip(pendingUntil("step 22"));
-
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
@@ -298,8 +290,6 @@ test.describe("Route color field", () => {
   test("colors on route Details keep an imported custom text color across an unrelated edit", async ({
     page,
   }) => {
-    test.skip(pendingUntil("step 22"));
-
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
@@ -332,6 +322,107 @@ test.describe("Route color field", () => {
       .locator("[id]")
       .evaluateAll((nodes) => nodes.map((n) => n.id));
     expect(new Set(ids).size).toBe(ids.length);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+});
+
+/**
+ * Route > Details workspace (spec 16, step 22).
+ *
+ * `GtfsPlannerWeb.Gtfs.RouteDetailLive` mounts the step-5 workspace read through
+ * `Gtfs.load_route_editor/3` -> the default catalog adapter and renders the
+ * reference's Details composition: the saved-identity header, Name and
+ * appearance, Rider information, and a collapsed Additional details disclosure
+ * that still states its values. The map column is reserved for step 30 and the
+ * sticky save bar for step 23, so this step claims the form region only.
+ *
+ * Stable ids this step publishes:
+ *   #route-details-workspace / #route-details-form
+ *   #route-details-header / #route-details-badge / #route-details-heading
+ *   #route-details-mode-label / #route-details-saved-identity
+ *   #route-details-rider / #route-details-desc / #route-details-url
+ *   #route-details-additional / #route-details-additional-summary
+ *   #route-details-sort / #route-details-pickup / #route-details-dropoff
+ *   #route-details-network / #route-details-route-id
+ *   #route-details-map-region (reserved for step 30)
+ */
+test.describe("Route details workspace", () => {
+  test("details workspace states the saved values, the read-only route ID and the last-saved actor", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    // Saved identity, not a draft: the heading, the badge, the mode chip and the
+    // attribution line all describe the stored route.
+    await expect(page.locator("#route-details-heading")).not.toBeEmpty();
+    await expect(page.locator("#route-details-badge")).toBeVisible();
+    await expect(page.locator("#route-details-mode-label")).not.toBeEmpty();
+
+    const identity = page.locator("#route-details-saved-identity");
+    await expect(identity).toContainText(`Route ID ${DETAILS_ROUTE}`);
+    await expect(identity).toContainText("Last saved");
+
+    // The natural ID is creation-only (R1): it is stated, never editable.
+    await expect(page.locator("#route-details-route-id")).toHaveText(
+      DETAILS_ROUTE,
+    );
+    await expect(page.locator('input[name="route[route_id]"]')).toHaveCount(0);
+
+    // Additional details starts collapsed and still summarizes its values.
+    const additional = page.locator("#route-details-additional");
+    await expect(additional).not.toHaveAttribute("open", /.*/);
+    await expect(
+      page.locator("#route-details-additional-summary"),
+    ).toContainText("Display order");
+    await expect(
+      page.locator("#route-details-additional-summary"),
+    ).toContainText(`Route ID ${DETAILS_ROUTE}`);
+
+    // Opening it is a keyboard-operable disclosure with labelled controls.
+    await page.locator("#route-details-additional summary").click();
+    await expect(additional).toHaveAttribute("open", /.*/);
+    await expect(page.locator("label[for='route-details-sort']")).toBeVisible();
+    await expect(page.locator("#route-details-sort")).toBeVisible();
+    await expect(
+      page.locator("label[for='route-details-pickup']"),
+    ).toBeVisible();
+    await expect(
+      page.locator("label[for='route-details-dropoff']"),
+    ).toBeVisible();
+    await expect(
+      page.locator("label[for='route-details-network']"),
+    ).toBeVisible();
+
+    // The map column is reserved here; step 30 fills it.
+    await expect(page.locator("#route-details-map-region")).toBeAttached();
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test("details stacks at 375px with readable fields and the later actions still reachable", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    await expect(page.locator("#route-details-form")).toBeVisible();
+    await expect(page.locator("#route-details-heading")).toBeVisible();
+    await expect(page.locator("#route-details-short")).toBeVisible();
+    await expect(page.locator("#route-details-desc")).toBeVisible();
+
+    // The disclosure's summary is a 44px standalone target at every width.
+    const summary = await page
+      .locator("#route-details-additional summary")
+      .boundingBox();
+    expect(summary.height).toBeGreaterThanOrEqual(44);
+
+    // The transfer action below the form stays reachable at 375px.
+    await expect(page.locator("#route-transfers-link")).toBeVisible();
 
     expect(await bodyFitsViewport(page)).toBe(true);
   });
