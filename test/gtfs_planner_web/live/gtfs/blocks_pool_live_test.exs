@@ -25,6 +25,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
   # The pool holds one page of 100 trips, like the block pages (Pages / URL state).
   @page_size 100
 
+  @weekend %{
+    monday: 0,
+    tuesday: 0,
+    wednesday: 0,
+    thursday: 0,
+    friday: 0,
+    saturday: 1,
+    sunday: 0
+  }
+
   defp editor_scope(_context) do
     organization = organization_fixture()
     user = user_fixture()
@@ -53,11 +63,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
     log_in_user(context.conn, context.user, organization: context.organization)
   end
 
-  defp calendar(context, service_id, name) do
-    calendar_service_fixture(context.organization.id, context.version.id, %{
-      service_id: service_id,
-      name: name
-    })
+  defp calendar(context, service_id, name, attrs \\ %{}) do
+    calendar_service_fixture(
+      context.organization.id,
+      context.version.id,
+      Map.merge(Map.new(attrs), %{service_id: service_id, name: name})
+    )
   end
 
   defp trip(context, attrs) do
@@ -133,6 +144,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
 
   defp element_count(view, selector) do
     view |> doc() |> LazyHTML.query(selector) |> Enum.count()
+  end
+
+  # The day-type select's option values, so the day form can be driven by label
+  # the way a reader drives it.
+  defp day_key(view, label) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#blocks-day option")
+    |> Enum.find_value(fn option ->
+      if String.starts_with?(LazyHTML.text(option) |> String.trim(), label) do
+        LazyHTML.attribute(option, "value") |> List.first()
+      end
+    end)
   end
 
   defp block_table_id(block_id),
@@ -291,6 +316,40 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
 
       assert has_element?(view, "#blocks-pool-empty", "All trips have a block")
       refute has_element?(view, "#blocks-pool-filtered-empty")
+    end
+
+    test "switching day type re-streams the pool with the new day's trips",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      calendar(context, "SAT", "Saturday", @weekend)
+      trip(context, %{trip_id: "wk_pool_a", first: "08:00:00", last: "09:00:00"})
+      trip(context, %{trip_id: "wk_pool_b", first: "08:10:00", last: "09:10:00"})
+
+      trip(context, %{
+        trip_id: "sat_pool",
+        service_id: "SAT",
+        first: "10:00:00",
+        last: "11:00:00"
+      })
+
+      conn = editor_conn(context)
+      base = blocks_path(version.id)
+      {:ok, view, _html} = live(conn, base <> "?panel=pool")
+
+      # The Weekday day type is the default (more dates), so the pool starts on it.
+      assert has_element?(view, "#panel-pool", "Unassigned · 2")
+      assert pool_trip_ids(view) == ["wk_pool_a", "wk_pool_b"]
+
+      saturday = day_key(view, "Saturday")
+      assert saturday
+
+      view |> element("#blocks-day-form") |> render_change(%{"day" => saturday})
+
+      assert_patch(view, base <> "?day=#{saturday}&panel=pool")
+
+      # The pool is re-streamed, not reused: the new day's own rows and count.
+      assert has_element?(view, "#panel-pool", "Unassigned · 1")
+      assert pool_trip_ids(view) == ["sat_pool"]
     end
 
     test "with no blocks the panel shows the guidance and still lists the pool",

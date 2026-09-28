@@ -159,6 +159,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(socket, %{pool_page: page_number(page)})
   end
 
+  # The row checkbox is inert until step 26 owns the cross-page selection state.
+  def handle_event("toggle_trip", _params, socket), do: {:noreply, socket}
+
+  # “Select this page” selects the whole page in step 26's bulk selection.
+  def handle_event("select_page", _params, socket), do: {:noreply, socket}
+
+  # “Assign trip” opens step 25's assignment form from the row.
+  def handle_event("open_assign", _params, socket), do: {:noreply, socket}
+
   def handle_event("open_drawer", %{"key" => key}, socket) do
     case key do
       "unassigned" ->
@@ -347,7 +356,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:day, day)
         |> assign(:loaded_day_key, {:key, state.day})
         |> assign(:load_state, day_state(day))
+        # Neither key holds the day, so a reload clears both. The pool's key is
+        # unchanged by a day-type switch, so without this it would keep the
+        # previous day's rows under the new day's pager, counts and peak.
         |> assign(:timeline_key, nil)
+        |> assign(:pool_key, nil)
         |> assign_derived(day)
         |> assign_page_rows()
 

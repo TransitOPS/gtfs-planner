@@ -753,7 +753,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <%!-- The reference puts “Select this page” beside the pool's tabs and
           in the List view's head, where the controls are large. --%>
           <button
-            :if={select_page?(@state, @counts)}
+            :if={select_page?(@state, @counts, @pool_visible_count)}
             id="blocks-select-page"
             type="button"
             phx-click="select_page"
@@ -875,12 +875,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   # The pool and the List view carry the reference's “Select this page” control
   # where their records are; the timeline has no selection column, so it does
-  # not offer it.
-  defp select_page?(%{panel: :pool}, _counts), do: true
+  # not offer it. An empty page has nothing to select, so neither empty state
+  # shows the control.
+  defp select_page?(%{panel: :pool}, _counts, pool_visible_count), do: pool_visible_count > 0
 
-  defp select_page?(%{panel: :blocks, view: :list}, counts), do: counts.blocks > 0
+  defp select_page?(%{panel: :blocks, view: :list}, counts, _pool_visible_count),
+    do: counts.blocks > 0
 
-  defp select_page?(_state, _counts), do: false
+  defp select_page?(_state, _counts, _pool_visible_count), do: false
 
   @doc """
   Renders the List view: one trip table per streamed block.
@@ -1167,7 +1169,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp select_trip(assigns) do
     ~H"""
     <label
-      class="grid min-h-11 min-w-7 place-items-center"
+      class="grid min-h-11 min-w-11 place-items-center"
       for={"select-" <> dom_token(@trip.trip_id)}
     >
       <input
