@@ -6150,6 +6150,10 @@ defmodule GtfsPlanner.Gtfs do
       when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
       do: []
 
+  # Route audit entries are history records: generic rollback never applies to
+  # them, so no route field is reversible.
+  def reversible_fields_for(type) when type in [:route, "route"], do: []
+
   def reversible_fields_for(:calendar), do: reversible_fields_for("calendar")
   def reversible_fields_for("calendar"), do: []
 
@@ -6180,6 +6184,7 @@ defmodule GtfsPlanner.Gtfs do
 
   def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
       when type in [
+             "route",
              "route_pattern",
              "timed_pattern",
              "route_pattern_build",
@@ -6204,6 +6209,7 @@ defmodule GtfsPlanner.Gtfs do
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   def rollback_target_snapshot(%ChangeLog{entity_type: type})
       when type in [
+             "route",
              "route_pattern",
              "timed_pattern",
              "route_pattern_build",
@@ -6371,6 +6377,12 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot("route_pattern", %RoutePattern{} = pattern),
     do: snapshot_route_pattern(pattern)
 
+  # A route's audit identity is its UUID plus its GTFS `route_id`; the snapshot
+  # captures the persisted editor-owned fields so history and replay see the
+  # route state at record time.
+  defp build_snapshot(type, %Route{} = route) when type in [:route, "route"],
+    do: snapshot_route(route)
+
   defp build_snapshot(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing),
     do: snapshot_timed_pattern(timing)
 
@@ -6467,6 +6479,24 @@ defmodule GtfsPlanner.Gtfs do
     %{level_name: level.level_name, level_index: level.level_index}
   end
 
+  defp snapshot_route(route) do
+    %{
+      route_short_name: route.route_short_name,
+      route_long_name: route.route_long_name,
+      route_type: route.route_type,
+      agency_id: route.agency_id,
+      route_desc: route.route_desc,
+      route_url: route.route_url,
+      route_color: route.route_color,
+      route_text_color: route.route_text_color,
+      route_sort_order: route.route_sort_order,
+      continuous_pickup: route.continuous_pickup,
+      continuous_drop_off: route.continuous_drop_off,
+      network_id: route.network_id,
+      active: route.active
+    }
+  end
+
   defp snapshot_route_pattern(pattern),
     do: RoutePatterns.audit_snapshot(pattern)
 
@@ -6496,6 +6526,9 @@ defmodule GtfsPlanner.Gtfs do
 
   defp entity_external_id_for(:route_pattern, %RoutePattern{} = pattern, _attrs),
     do: pattern.route_pattern_id
+
+  defp entity_external_id_for(type, %Route{} = route, _attrs) when type in [:route, "route"],
+    do: route.route_id
 
   defp entity_external_id_for(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing, attrs) do
     pattern_natural_id =
@@ -6567,6 +6600,10 @@ defmodule GtfsPlanner.Gtfs do
   # Calendar diffs are already explicit aggregate before/after snapshots.
   defp audited_attrs_for(type, attrs) when type in [:calendar, "calendar"], do: attrs
 
+  # Route diffs are explicit before/after snapshots plus command provenance; no
+  # route column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs) when type in [:route, "route"], do: attrs
+
   # A trip update carries the explicit before/after snapshots, its operation scope and - for a
   # reviewed calendar combination - the one optional combination envelope; no trip column is diffed
   # field-by-field. The per-trip `affected_trip_ids` list is deliberately unused by a combination,
@@ -6608,6 +6645,19 @@ defmodule GtfsPlanner.Gtfs do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_calendar_operation(attrs)
+  end
+
+  # Routes, like calendars and trips, diff two explicit before/after snapshots.
+  # The log carries the shared operation id, creation-attempt provenance and
+  # affected identity/count metadata so create replay and reviewed deletion can
+  # be reconstructed from the retained entry.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:route, "route"] and action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+    |> put_route_operation(attrs)
   end
 
   # Trips, like calendars, diff two explicit aggregate snapshots. The log carries
@@ -6729,6 +6779,28 @@ defmodule GtfsPlanner.Gtfs do
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
       end
     end)
+  end
+
+  # A route command records its shared operation id, creation-attempt provenance
+  # and affected identity/count metadata alongside the before/after snapshots, so
+  # one log per route can be reconstructed into the whole command.
+  defp put_route_operation(changed, attrs) do
+    Enum.reduce(
+      [
+        :operation_id,
+        :creation_attempt_id,
+        :request_digest,
+        :affected_identities,
+        :affected_counts
+      ],
+      changed,
+      fn key, acc ->
+        case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
+          nil -> acc
+          value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
+        end
+      end
+    )
   end
 
   @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
