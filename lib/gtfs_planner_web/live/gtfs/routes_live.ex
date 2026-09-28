@@ -748,7 +748,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                     <div class="flex items-center gap-2">
                       <span class="text-strong">{route_display_name(route)}</span>
                       <span
-                        :if={not route.active}
+                        :if={route.active == false}
                         class="inline-flex items-center rounded-badge bg-canvas px-1.5 text-[13px] font-[650] text-muted"
                       >
                         Inactive
@@ -799,7 +799,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                   </span>
                   <span class="block truncate text-[13px] text-muted">
                     {Route.route_type_label(route.route_type)}
-                    <span :if={not route.active}> · Inactive</span>
+                    <span :if={route.active == false}> · Inactive</span>
                   </span>
                 </span>
                 <.icon name="hero-chevron-right" class="size-5 shrink-0 text-subtle" />

@@ -429,6 +429,130 @@ test.describe("Route details workspace", () => {
 });
 
 /**
+ * Route > Details draft preview (spec 16, step 23).
+ *
+ * `RouteDetailLive` re-validates every form change through the same
+ * `Route.editor_changeset/3` a save will use, previews the valid draft in the
+ * header and names the changed fields in the sticky save bar; the
+ * `RouteDetailsEditor` hook repaints the heading badge locally and wires
+ * Ctrl/Cmd+S to the form's ordinary submit. The cases below drive the real
+ * Details form: nothing is persisted here, because step 24 owns the save.
+ *
+ * Stable ids this step publishes:
+ *   #route-details-save-bar / #route-details-save-bar-text / #route-save
+ *   #route-details-discard / #route-details-unsaved-preview
+ */
+test.describe("Route details draft preview", () => {
+  test("a draft preview repaints the heading badge and names the changed fields", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    const routeUrl = `/gtfs/${version}/routes/${DETAILS_ROUTE}`;
+    await page.goto(routeUrl);
+
+    const badge = page.locator("#route-details-badge > span");
+    const bar = page.locator("#route-details-save-bar");
+    const color = page.locator("#route-details-color");
+    const savedColor = await color.inputValue();
+    const savedBadge = await badge.evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    );
+
+    // A saved row is not a draft: no bar, no chip, and the saved identity.
+    await expect(bar).toBeHidden();
+    await expect(page.locator("#route-details-unsaved-preview")).toHaveCount(0);
+
+    // The colour the operator types reaches the route's own badge at once, with
+    // no request: the picker feedback stays local (AC-19).
+    let requests = 0;
+    page.on("request", () => (requests += 1));
+
+    await color.fill("5BC5F2");
+
+    await expect
+      .poll(() => badge.evaluate((el) => getComputedStyle(el).backgroundColor))
+      .toBe("rgb(91, 197, 242)");
+    expect(requests).toBe(0);
+    expect(savedBadge).not.toBe("rgb(91, 197, 242)");
+
+    // The server then acknowledges the draft: the chip marks the header as a
+    // preview and the bar names the fields a save would change.
+    await color.blur();
+    await expect(page.locator("#route-details-unsaved-preview")).toBeVisible();
+    await expect(bar).toBeVisible();
+    await expect(page.locator("#route-details-save-bar-text")).toContainText(
+      "Unsaved: Route color",
+    );
+    await expect(page.locator("#route-details-save-bar-text")).toContainText(
+      "Ctrl+S saves",
+    );
+    await expect(page.locator("#route-save")).toBeEnabled();
+
+    // Cancel restores the saved values and the saved identity, and the row is
+    // still the saved one after a reload.
+    await page.locator("#route-details-discard").click();
+
+    await expect(color).toHaveValue(savedColor);
+    await expect
+      .poll(() => badge.evaluate((el) => getComputedStyle(el).backgroundColor))
+      .toBe(savedBadge);
+    await expect(bar).toBeHidden();
+    await expect(page.locator("#route-details-unsaved-preview")).toHaveCount(0);
+
+    await page.goto(routeUrl);
+    await expect(color).toHaveValue(savedColor);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test("the draft preview shortcut emits one normal submit and stays put when nothing changed", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    const routeUrl = `/gtfs/${version}/routes/${DETAILS_ROUTE}`;
+    await page.goto(routeUrl);
+
+    // Count the form's own submit events, wherever they come from.
+    await page.evaluate(() => {
+      window.__routeSubmits = 0;
+      document.addEventListener(
+        "submit",
+        () => {
+          window.__routeSubmits += 1;
+        },
+        true,
+      );
+    });
+
+    // Nothing differs from the saved row, so the shortcut has nothing to submit.
+    await page.keyboard.press("Control+s");
+    await expect(page.locator("#route-details-save-bar")).toBeHidden();
+    expect(await page.evaluate(() => window.__routeSubmits)).toBe(0);
+
+    await page.locator("#route-details-long").fill("Preview rename");
+    await page.locator("#route-details-long").blur();
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    // Ctrl+S is one normal submit of the same draft, not a second save path.
+    await page.keyboard.press("Control+s");
+    await expect.poll(() => page.evaluate(() => window.__routeSubmits)).toBe(1);
+    await expect(page.locator("#route-details-form")).toBeVisible();
+
+    // The draft survives on screen and the saved row is untouched: this step
+    // emits the submit, step 24 persists.
+    await expect(page.locator("#route-details-long")).toHaveValue(
+      "Preview rename",
+    );
+    await page.goto(routeUrl);
+    await expect(page.locator("#route-details-long")).not.toHaveValue(
+      "Preview rename",
+    );
+  });
+});
+
+/**
  * Create route drawer (spec 16, step 21).
  *
  * `GtfsPlannerWeb.Gtfs.RoutesLive` composes the shared identity and color
