@@ -256,8 +256,9 @@ As a schedule editor, I want to see trip headsign and departure time when select
 **AC-XFER-001: Transfer list displays required columns**
 - Given I navigate to the Transfers section
 - When the transfer list loads
-- Then I see columns for: From Stop, To Stop, From Route, To Route, Transfer Type, and Min Transfer Time
-- And the list displays all transfers in the current dataset
+- Then I see columns for: From, To, Type, and Min time
+- And each From and To names the stop or station it applies to, with the rule's route or trip scope as subtext
+- And the list shows the current view's rules, 50 to a page
 
 **AC-XFER-002: Transfer list is sortable**
 - Given I am viewing the transfer list

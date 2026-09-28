@@ -387,6 +387,17 @@ body {
   outline-offset: -2px;
 }
 
+/* ── Transfer rules list ── */
+
+/* The selected transfer rule takes the reference's own treatment: the theme's
+   base-200 tint with a left accent. The row button's `aria-current` is the state,
+   so the row is tinted because that button is the current one; the highlight is
+   never a second copy of the selection that could disagree with it. */
+#transfers tr:has(button[aria-current="true"]) {
+  background-color: var(--color-base-200);
+  box-shadow: inset 3px 0 var(--color-primary);
+}
+
 /* Custom override for LiveSelect input text color to ensure theme compatibility */
 .live-select-input {
   color: oklch(var(--bc)); /* Use DaisyUI's base content color for light mode */
