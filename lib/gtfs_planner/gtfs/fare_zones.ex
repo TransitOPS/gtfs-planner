@@ -78,6 +78,17 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   and reinserted under a new ID, a rewritten row identical to an unaffected row
   or to an earlier kept rewritten row is dropped, and the metadata record is
   removed - so no row keeps the deleted ID and no group is left orphaned.
+
+  The rule drawer's reads are `list_fares/2` and `list_rule_routes/2`, and its
+  form is `change_rule_group/2`. `save_rule_group/4` writes one reviewed rule
+  inside the same version-locked transaction: it fences the review against the
+  version's current rows under the reviewed key, refuses a fare, route or zone
+  outside the version, refuses a new reference to a stopless zone and a key
+  another rule already holds, then deletes exactly the reviewed rows and inserts
+  one row per contains zone (or one row without a `contains_id`) with the exact
+  chosen values. `delete_rule_group/3` removes exactly the reviewed rows under
+  the same fence. So a rule edit can neither merge two rules, orphan a row, trim
+  an ID nor overwrite a review the user never saw.
   """
 
   import Ecto.Query, warn: false
@@ -91,6 +102,23 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
+
+  @rule_key_message "A rule with this fare, route, start and end already exists. Edit that rule instead."
+  @stopless_zone_message "This zone has no stops yet. Assign stops before using it in a fare rule."
+  @unknown_fare_message "This fare is not in this version. Choose another."
+  @unknown_route_message "This route is not in this version. Choose another."
+  @unknown_zone_message "This zone is not in this version. Choose another."
+
+  # The drawer's form fields. `contains` is a list of zones the journey must
+  # visit; the four scalars are strings, where an empty string means "any".
+  @rule_group_fields %{
+    fare_id: :string,
+    route_id: :string,
+    origin_id: :string,
+    destination_id: :string,
+    contains: {:array, :string}
+  }
+  @rule_group_field_names Map.keys(@rule_group_fields)
 
   @type zone :: %{
           zone_id: String.t(),
@@ -653,6 +681,122 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
+  @doc """
+  Lists the version's fare attributes for the rule drawer's fare options.
+
+  Each entry is `%{fare_id, price, currency_type}`, ordered by `fare_id`. A pair
+  that is not a version of the organization returns an empty list.
+  """
+  @spec list_fares(Ecto.UUID.t(), Ecto.UUID.t()) :: [
+          %{fare_id: String.t(), price: Decimal.t(), currency_type: String.t()}
+        ]
+  def list_fares(organization_id, gtfs_version_id) do
+    from(a in FareAttribute,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id,
+      order_by: a.fare_id,
+      select: %{fare_id: a.fare_id, price: a.price, currency_type: a.currency_type}
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists the version's routes for the rule drawer's route options.
+
+  Each entry is `%{route_id, short_name, long_name}`, ordered by `route_id`. A
+  pair that is not a version of the organization returns an empty list.
+  """
+  @spec list_rule_routes(Ecto.UUID.t(), Ecto.UUID.t()) :: [
+          %{route_id: String.t(), short_name: String.t() | nil, long_name: String.t() | nil}
+        ]
+  def list_rule_routes(organization_id, gtfs_version_id) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      order_by: r.route_id,
+      select: %{
+        route_id: r.route_id,
+        short_name: r.route_short_name,
+        long_name: r.route_long_name
+      }
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  The rule drawer's schemaless changeset for a create or an edit form.
+
+  `nil` starts a new rule; a reviewed group seeds the form with its current fare,
+  route, origin, destination and contains zones, so an untouched field keeps the
+  values the drawer showed. An empty string in a fare, route, origin or
+  destination becomes nil, which is how the drawer's "Any origin", "Any
+  destination" and "All routes" arrive; `contains` is deduplicated, empty entries
+  dropped and a nil or empty list kept empty. `fare_id` is required. The same
+  changeset seeds `save_rule_group/4`, so the form checks what the save will do;
+  the save adds its own field errors for the values only the database can settle.
+  """
+  @spec change_rule_group(rule_group() | nil, map()) :: Ecto.Changeset.t()
+  def change_rule_group(reviewed, attrs) do
+    {rule_group_data(reviewed), @rule_group_fields}
+    |> Ecto.Changeset.cast(attrs, @rule_group_field_names)
+    |> Ecto.Changeset.update_change(:fare_id, &empty_to_nil/1)
+    |> Ecto.Changeset.update_change(:route_id, &empty_to_nil/1)
+    |> Ecto.Changeset.update_change(:origin_id, &empty_to_nil/1)
+    |> Ecto.Changeset.update_change(:destination_id, &empty_to_nil/1)
+    |> Ecto.Changeset.update_change(:contains, &contains_list/1)
+    |> Ecto.Changeset.validate_required([:fare_id])
+  end
+
+  @doc """
+  Saves one reviewed rule group, replacing exactly its rows.
+
+  `reviewed` is the group the drawer showed, or nil for a new rule. When it is
+  given, the version's rows under its key must still be exactly `reviewed.rows`
+  (IDs and the five values), otherwise the call rolls back `:stale` and writes
+  nothing - a rule another editor renamed a zone in, extended with a member,
+  moved to another key or removed cannot be overwritten from a review the user
+  never saw again.
+
+  A save is refused with a changeset whose field errors the drawer renders: a
+  fare that is not in `fare_attributes` and is not the rule's current fare, a
+  route that is not in `routes` and is not the rule's current route, a zone that
+  is not in the version's inventory, a zone with no boardable stops that the
+  reviewed rule did not already reference, and a key another rule holds - so a
+  save can neither create a reference it cannot serve nor merge two rules into
+  one. Otherwise the reviewed rows are deleted and one row is inserted per
+  contains zone, or one row without a `contains_id`, carrying the exact chosen
+  values (never through `FareRule.changeset/2`, which trims), and the saved group
+  is returned. A pair that is not a published version of the organization returns
+  `:not_found` and writes nothing.
+  """
+  @spec save_rule_group(Ecto.UUID.t(), Ecto.UUID.t(), rule_group() | nil, map()) ::
+          {:ok, rule_group()} | {:error, Ecto.Changeset.t()} | {:error, :stale | :not_found}
+  def save_rule_group(organization_id, gtfs_version_id, reviewed, attrs) do
+    transact(organization_id, gtfs_version_id, fn ->
+      save_rule_group_write(organization_id, gtfs_version_id, reviewed, attrs)
+    end)
+  end
+
+  @doc """
+  Removes one reviewed rule group, deleting exactly its rows.
+
+  `reviewed` is the group the drawer showed, fenced exactly as `save_rule_group/4`
+  fences a save: the version's rows under its key must still be `reviewed.rows`
+  (IDs and the five values), otherwise the call rolls back `:stale` and writes
+  nothing. Otherwise the reviewed rows are deleted and their count returned; the
+  fare attribute is untouched. A pair that is not a published version of the
+  organization returns `:not_found` and writes nothing.
+  """
+  @spec delete_rule_group(Ecto.UUID.t(), Ecto.UUID.t(), rule_group()) ::
+          {:ok, non_neg_integer()} | {:error, :stale | :not_found}
+  def delete_rule_group(organization_id, gtfs_version_id, reviewed) do
+    transact(organization_id, gtfs_version_id, fn ->
+      if stale_rule_review?(list_rows(organization_id, gtfs_version_id), reviewed) do
+        Repo.rollback(:stale)
+      else
+        delete_rule_rows(organization_id, gtfs_version_id, reviewed_row_ids(reviewed))
+      end
+    end)
+  end
+
   defp write_assignment(organization_id, gtfs_version_id, changes, opts) do
     changes = Enum.uniq_by(changes, & &1.id)
 
@@ -1113,13 +1257,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     {row.fare_id, row.route_id, row.origin_id, row.destination_id, row.contains_id}
   end
 
-  defp delete_rule_rows(_organization_id, _gtfs_version_id, []), do: :ok
-
   defp delete_rule_rows(organization_id, gtfs_version_id, ids) do
-    organization_id
-    |> rule_scope(gtfs_version_id)
-    |> where([r], r.id in ^ids)
-    |> Repo.delete_all()
+    {deleted, nil} =
+      organization_id
+      |> rule_scope(gtfs_version_id)
+      |> where([r], r.id in ^ids)
+      |> Repo.delete_all()
+
+    deleted
   end
 
   defp insert_rule_rows(_organization_id, _gtfs_version_id, [], _now), do: :ok
@@ -1151,6 +1296,231 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           z.zone_id == ^zone_id
     )
     |> Repo.delete_all()
+  end
+
+  # The stale fence compares the version's rows under the reviewed key as a set
+  # of ID plus the five values. A member added to the key, a renamed zone that
+  # moved the rows to another key, a deleted row and a replaced rule all leave a
+  # different set, so a review the user never saw again never overwrites rows.
+  defp stale_rule_review?(current_rows, reviewed) do
+    key = reviewed.key
+
+    current_rows
+    |> Enum.filter(&(group_key(&1) == key))
+    |> rule_row_set()
+    |> Kernel.!=(rule_row_set(reviewed.rows))
+  end
+
+  defp rule_row_set(rows), do: MapSet.new(rows, &rule_row_values/1)
+
+  defp rule_row_values(row) do
+    {row.id, row.fare_id, row.route_id, row.origin_id, row.destination_id, row.contains_id}
+  end
+
+  defp reviewed_row_ids(nil), do: []
+  defp reviewed_row_ids(reviewed), do: Enum.map(reviewed.rows, & &1.id)
+
+  defp save_rule_group_write(organization_id, gtfs_version_id, reviewed, attrs) do
+    current_rows = list_rows(organization_id, gtfs_version_id)
+
+    if reviewed != nil and stale_rule_review?(current_rows, reviewed) do
+      Repo.rollback(:stale)
+    end
+
+    changeset =
+      change_rule_group(reviewed, attrs)
+      |> validate_rule_group(organization_id, gtfs_version_id, reviewed, current_rows)
+
+    case Ecto.Changeset.apply_action(changeset, :validate) do
+      {:ok, data} ->
+        delete_rule_rows(organization_id, gtfs_version_id, reviewed_row_ids(reviewed))
+        insert_saved_rule_rows(organization_id, gtfs_version_id, data)
+        saved_rule_group(organization_id, gtfs_version_id, rule_group_key(data))
+
+      {:error, changeset} ->
+        Repo.rollback(changeset)
+    end
+  end
+
+  # Only a format-valid form reaches the database checks, so a blank fare keeps
+  # its single "can't be blank" error instead of a second message about a version
+  # catalog the user never got to choose from.
+  defp validate_rule_group(changeset, organization_id, gtfs_version_id, reviewed, current_rows) do
+    if changeset.valid? do
+      data = Ecto.Changeset.apply_changes(changeset)
+
+      changeset
+      |> validate_rule_fare(organization_id, gtfs_version_id, reviewed, data)
+      |> validate_rule_route(organization_id, gtfs_version_id, reviewed, data)
+      |> validate_rule_zones(organization_id, gtfs_version_id, reviewed, data)
+      |> validate_rule_key(current_rows, reviewed, data)
+    else
+      changeset
+    end
+  end
+
+  defp validate_rule_fare(changeset, organization_id, gtfs_version_id, reviewed, data) do
+    known? =
+      organization_id
+      |> list_fares(gtfs_version_id)
+      |> MapSet.new(& &1.fare_id)
+      |> MapSet.member?(data.fare_id)
+
+    # The rule's own fare stays usable even when `fare_attributes` has no row for
+    # it, so an imported rule with an unknown fare remains editable.
+    if known? or data.fare_id == reviewed_value(reviewed, :fare_id) do
+      changeset
+    else
+      Ecto.Changeset.add_error(changeset, :fare_id, @unknown_fare_message)
+    end
+  end
+
+  defp validate_rule_route(changeset, organization_id, gtfs_version_id, reviewed, data) do
+    known? =
+      organization_id
+      |> list_rule_routes(gtfs_version_id)
+      |> Enum.any?(&(&1.route_id == data.route_id))
+
+    cond do
+      is_nil(data.route_id) -> changeset
+      known? -> changeset
+      data.route_id == reviewed_value(reviewed, :route_id) -> changeset
+      true -> Ecto.Changeset.add_error(changeset, :route_id, @unknown_route_message)
+    end
+  end
+
+  # Every chosen zone must be one the version's inventory carries, and a zone the
+  # reviewed rule did not already reference must have a boardable stop, so a rule
+  # cannot gain a reference the fare could never serve. A reference the rule
+  # already had may stay, so an imported rule that cites a stopless zone remains
+  # editable. Each error lands on the field the user chose it in.
+  defp validate_rule_zones(changeset, organization_id, gtfs_version_id, reviewed, data) do
+    zones = Map.new(inventory(organization_id, gtfs_version_id).zones, &{&1.zone_id, &1})
+    kept = reviewed_zone_ids(reviewed)
+
+    data
+    |> rule_zone_selections()
+    |> Enum.reduce(changeset, fn {field, zone_id}, changeset ->
+      cond do
+        is_nil(zone_id) ->
+          changeset
+
+        not Map.has_key?(zones, zone_id) ->
+          Ecto.Changeset.add_error(changeset, field, @unknown_zone_message)
+
+        not MapSet.member?(kept, zone_id) and Map.fetch!(zones, zone_id).stop_count == 0 ->
+          Ecto.Changeset.add_error(changeset, field, @stopless_zone_message)
+
+        true ->
+          changeset
+      end
+    end)
+  end
+
+  # A group's key is its fare, route, origin, destination and whether it has
+  # contains rows, so a key another group holds is the projected key the save
+  # would merge into. The reviewed rule's own key is allowed: that is an edit in
+  # place (its contains content may change freely).
+  defp validate_rule_key(changeset, current_rows, reviewed, data) do
+    key = rule_group_key(data)
+
+    if key != reviewed_value(reviewed, :key) and
+         MapSet.member?(MapSet.new(current_rows, &group_key/1), key) do
+      Ecto.Changeset.add_error(changeset, :fare_id, @rule_key_message)
+    else
+      changeset
+    end
+  end
+
+  defp reviewed_value(nil, _field), do: nil
+  defp reviewed_value(reviewed, field), do: Map.get(reviewed, field)
+
+  defp rule_zone_selections(data) do
+    [{:origin_id, data.origin_id}, {:destination_id, data.destination_id}] ++
+      Enum.map(contains_list(data.contains), &{:contains, &1})
+  end
+
+  # The zones the reviewed rule already referenced: a save may keep them even
+  # when they have no boardable stops, so an imported rule stays editable.
+  defp reviewed_zone_ids(nil), do: MapSet.new()
+
+  defp reviewed_zone_ids(reviewed) do
+    [
+      Map.get(reviewed, :origin_id),
+      Map.get(reviewed, :destination_id) | contains_list(Map.get(reviewed, :contains))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  defp rule_group_data(nil) do
+    %{fare_id: nil, route_id: nil, origin_id: nil, destination_id: nil, contains: []}
+  end
+
+  defp rule_group_data(reviewed) do
+    %{
+      fare_id: Map.get(reviewed, :fare_id),
+      route_id: Map.get(reviewed, :route_id),
+      origin_id: Map.get(reviewed, :origin_id),
+      destination_id: Map.get(reviewed, :destination_id),
+      contains: contains_list(Map.get(reviewed, :contains))
+    }
+  end
+
+  # One row per contains zone, or one row without a `contains_id` when the
+  # journey has no through-zone requirement. The rows carry the chosen values
+  # exactly as the form sent them; nothing here trims or normalizes them.
+  defp insert_saved_rule_rows(organization_id, gtfs_version_id, data) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    base = %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      fare_id: data.fare_id,
+      route_id: data.route_id,
+      origin_id: data.origin_id,
+      destination_id: data.destination_id,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    rows =
+      Enum.map(contains_ids(data), fn contains_id ->
+        Map.merge(base, %{id: Ecto.UUID.generate(), contains_id: contains_id})
+      end)
+
+    Repo.insert_all(FareRule, rows)
+  end
+
+  defp contains_ids(data) do
+    case contains_list(data.contains) do
+      [] -> [nil]
+      contains -> contains
+    end
+  end
+
+  defp rule_group_key(data) do
+    {data.fare_id, data.route_id, data.origin_id, data.destination_id,
+     contains_list(data.contains) != []}
+  end
+
+  defp empty_to_nil(""), do: nil
+  defp empty_to_nil(value), do: value
+
+  defp contains_list(values) when is_list(values) do
+    values |> Enum.reject(&(&1 in [nil, ""])) |> Enum.uniq()
+  end
+
+  defp contains_list(_values), do: []
+
+  # The projection of the rows just written must carry their key, so a missing
+  # group is a defect rather than a caller error; `Map.fetch!/2` fails loudly
+  # inside the transaction instead of returning a group-shaped nil.
+  defp saved_rule_group(organization_id, gtfs_version_id, key) do
+    organization_id
+    |> list_rule_groups(gtfs_version_id)
+    |> Map.new(&{&1.key, &1})
+    |> Map.fetch!(key)
   end
 
   defp boardable_query(organization_id, gtfs_version_id) do
