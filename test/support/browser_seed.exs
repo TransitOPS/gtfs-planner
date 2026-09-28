@@ -2496,6 +2496,573 @@ case Accounts.register_first_admin(%{
         "(62-occurrence pattern, linked series, frequency, custom and after-midnight trips)"
     )
 
+    # ── Blocks browser journey (EV-28, step 29) ──
+    #
+    # A published "Browser Blocks Version" carries the Blocks page's own day types
+    # and records, isolated from every other scenario by its version and by its
+    # `BB_`/`BB-` names:
+    #
+    #   * two weekday calendars that share dates — "Weekday service" every weekday
+    #     and "School days" on Monday, Wednesday and Friday — plus a Saturday
+    #     calendar, so the derived day types are {SCHOOL, WEEK} (largest, the page's
+    #     default), {WEEK} alone and {SAT};
+    #   * 34 blocks on the largest day type: 21 ordinary two-trip blocks plus the
+    #     interlining, after-midnight, 5-minute, nested-overlap, short-layover,
+    #     120 m handoff, 340 m empty-move, matching-record, stale-record, cross-day
+    #     overlap, assignment-target and busiest blocks;
+    #   * 130 unassigned trips over two pool pages, including a frequency trip and a
+    #     trip whose endpoint times are missing;
+    #   * a trip that runs on both weekday day types and is assigned by the journey
+    #     to the block whose school-day trip it overlaps only on the larger day type;
+    #   * one matching and one stale type-4 transfer record.
+    blocks_version_name = "Browser Blocks Version"
+
+    {:ok, blocks_version} =
+      Versions.create_gtfs_version(org.id, %{name: blocks_version_name})
+
+    block_week_start = ~D[2026-09-07]
+    block_week_end = ~D[2026-10-30]
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, blocks_version.id, %{
+      service_id: "BB_WEEK",
+      name: "Weekday service",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, blocks_version.id, %{
+      service_id: "BB_SCHOOL",
+      name: "School days",
+      monday: 1,
+      tuesday: 0,
+      wednesday: 1,
+      thursday: 0,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, blocks_version.id, %{
+      service_id: "BB_SAT",
+      name: "Saturday service",
+      monday: 0,
+      tuesday: 0,
+      wednesday: 0,
+      thursday: 0,
+      friday: 0,
+      saturday: 1,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    # Every block-route handoff uses one of these stops, so a layover is a same-stop
+    # handoff unless a block deliberately moves the vehicle: BB_S6→BB_S7 is 120 m
+    # (a nearby handoff, no notice) and BB_S8→BB_S9 is 340 m (an empty move, the
+    # `:repositions` notice).
+    block_stops =
+      [
+        {"BB_S1", 40.7500, -73.9900},
+        {"BB_S2", 40.7550, -73.9850},
+        {"BB_S3", 40.7600, -73.9800},
+        {"BB_S4", 40.7650, -73.9750},
+        {"BB_S5", 40.7700, -73.9700},
+        {"BB_S6", 40.7800, -73.9600},
+        {"BB_S7", 40.7810782, -73.9600},
+        {"BB_S8", 40.7900, -73.9500},
+        {"BB_S9", 40.7930540, -73.9500}
+      ]
+      |> Map.new(fn {stop_id, lat, lon} ->
+        stop =
+          GtfsPlanner.GtfsFixtures.stop_fixture(org.id, blocks_version.id, %{
+            stop_id: stop_id,
+            stop_name: "Blocks stop #{stop_id}",
+            stop_lat: lat,
+            stop_lon: lon
+          })
+
+        {stop_id, stop}
+      end)
+
+    block_routes =
+      [{"BB_R1", "BR1", "Blocks Riverside"}, {"BB_R2", "BR2", "Blocks Central"}]
+      |> Map.new(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: blocks_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: "0055AA"
+          })
+
+        {route_id, route}
+      end)
+
+    # `HH:MM:SS` from seconds after midnight, so the block times stay readable and
+    # the after-midnight block is written as 24:30:00 instead of 00:30:00.
+    block_clock = fn secs ->
+      period = rem(secs, 86_400)
+
+      [div(period, 3600), div(rem(period, 3600), 60), rem(period, 60)]
+      |> Enum.map_join(":", &String.pad_leading(Integer.to_string(&1), 2, "0"))
+    end
+
+    block_trip = fn attrs ->
+      attrs = Map.new(attrs)
+      route_id = Map.fetch!(attrs, :route_id)
+
+      stop_times =
+        %{
+          first_stop: Map.get(attrs, :first_stop, "BB_S1"),
+          last_stop: Map.get(attrs, :last_stop, "BB_S1"),
+          first_arrival: "08:00:00",
+          last_arrival: "08:30:00"
+        }
+        |> Map.merge(
+          Map.take(attrs, [:first_arrival, :first_departure, :last_arrival, :last_departure])
+        )
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        blocks_version.id,
+        Map.fetch!(block_routes, route_id).route_id,
+        Map.merge(stop_times, %{
+          trip_id: Map.fetch!(attrs, :trip_id),
+          service_id: Map.get(attrs, :service_id, "BB_WEEK"),
+          block_id: Map.get(attrs, :block_id),
+          trip_headsign: Map.get(attrs, :trip_headsign, "Blocks journey")
+        })
+      )
+    end
+
+    # 21 ordinary blocks: two 15-minute trips 25 minutes apart, both handoffs at
+    # BB_S2, so the block has no findings. The first trip of the first block leaves
+    # at 05:00, which is the day's earliest departure and the axis floor.
+    for index <- 1..21 do
+      block_id = "BB-" <> String.pad_leading(Integer.to_string(index), 2, "0")
+      base = 300 + (index - 1) * 22
+
+      block_trip.(%{
+        trip_id: "BB_T#{index}A",
+        route_id: "BB_R1",
+        block_id: block_id,
+        first_arrival: block_clock.(base * 60),
+        last_arrival: block_clock.((base + 15) * 60),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+      block_trip.(%{
+        trip_id: "BB_T#{index}B",
+        route_id: "BB_R1",
+        block_id: block_id,
+        first_arrival: block_clock.((base + 40) * 60),
+        last_arrival: block_clock.((base + 55) * 60),
+        first_stop: "BB_S2",
+        last_stop: "BB_S1"
+      })
+    end
+
+    # BB-LONG carries the journey's known Zoom bar: three hours of a 21-hour axis,
+    # far above the bar's 26px floor, so Zoom doubles its rendered width exactly.
+    block_trip.(%{
+      trip_id: "BB_LONG",
+      route_id: "BB_R1",
+      block_id: "BB-LONG",
+      first_arrival: "05:15:00",
+      last_arrival: "08:15:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_LONG_2",
+      route_id: "BB_R1",
+      block_id: "BB-LONG",
+      first_arrival: "09:00:00",
+      last_arrival: "10:00:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S1"
+    })
+
+    # Interlining: one vehicle, two routes.
+    block_trip.(%{
+      trip_id: "BB_INTER_A",
+      route_id: "BB_R1",
+      block_id: "BB-INTER",
+      first_arrival: "06:00:00",
+      last_arrival: "06:40:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_INTER_B",
+      route_id: "BB_R2",
+      block_id: "BB-INTER",
+      first_arrival: "06:50:00",
+      last_arrival: "07:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    # After midnight: the last arrival is 25:30, so the End cell reads 01:30 +1d and
+    # the axis ceiling is 26:00.
+    block_trip.(%{
+      trip_id: "BB_MIDNIGHT_A",
+      route_id: "BB_R1",
+      block_id: "BB-MIDNIGHT",
+      first_arrival: "23:00:00",
+      last_arrival: "23:40:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_MIDNIGHT_B",
+      route_id: "BB_R1",
+      block_id: "BB-MIDNIGHT",
+      first_arrival: "24:30:00",
+      last_arrival: "25:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S1"
+    })
+
+    # A five-minute trip: its bar is under the 26px floor, so it stays 26px wide at
+    # both scales (the journey's Zoom bar is BB-LONG for that reason).
+    block_trip.(%{
+      trip_id: "BB_SHORT_HOP",
+      route_id: "BB_R1",
+      block_id: "BB-SHORT",
+      first_arrival: "06:00:00",
+      last_arrival: "06:05:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_SHORT_AFTER",
+      route_id: "BB_R1",
+      block_id: "BB-SHORT",
+      first_arrival: "10:00:00",
+      last_arrival: "10:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S1"
+    })
+
+    # Nested overlap: A overlaps B and C, and B overlaps C.
+    for {trip_id, start_sec, end_sec} <- [
+          {"BB_NEST_A", 28_800, 39_600},
+          {"BB_NEST_B", 32_400, 36_000},
+          {"BB_NEST_C", 34_200, 37_800}
+        ] do
+      block_trip.(%{
+        trip_id: trip_id,
+        route_id: "BB_R1",
+        block_id: "BB-NEST",
+        first_arrival: block_clock.(start_sec),
+        last_arrival: block_clock.(end_sec),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+    end
+
+    # A two-minute layover: below the default five-minute minimum, so the block
+    # carries a short-layover warning.
+    block_trip.(%{
+      trip_id: "BB_SL_A",
+      route_id: "BB_R1",
+      block_id: "BB-SHORTLAY",
+      first_arrival: "11:00:00",
+      last_arrival: "11:30:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_SL_B",
+      route_id: "BB_R1",
+      block_id: "BB-SHORTLAY",
+      first_arrival: "11:32:00",
+      last_arrival: "12:00:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    # A 120 m handoff: nearby, so the gap reads as a walk rather than a move.
+    block_trip.(%{
+      trip_id: "BB_HD_A",
+      route_id: "BB_R1",
+      block_id: "BB-HANDOFF",
+      first_arrival: "12:00:00",
+      last_arrival: "12:30:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S6"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_HD_B",
+      route_id: "BB_R1",
+      block_id: "BB-HANDOFF",
+      first_arrival: "12:45:00",
+      last_arrival: "13:15:00",
+      first_stop: "BB_S7",
+      last_stop: "BB_S2"
+    })
+
+    # A 340 m empty move: beyond 200 m, so the block carries the reposition notice.
+    block_trip.(%{
+      trip_id: "BB_MOVE_A",
+      route_id: "BB_R1",
+      block_id: "BB-MOVE",
+      first_arrival: "13:30:00",
+      last_arrival: "14:00:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S8"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_MOVE_B",
+      route_id: "BB_R1",
+      block_id: "BB-MOVE",
+      first_arrival: "14:15:00",
+      last_arrival: "14:45:00",
+      first_stop: "BB_S9",
+      last_stop: "BB_S2"
+    })
+
+    # A matching type-4 record: the consecutive pair of BB-MATCH, whose stored
+    # endpoint stops are the pair's own last and first stops.
+    match_a =
+      block_trip.(%{
+        trip_id: "BB_MATCH_A",
+        route_id: "BB_R1",
+        block_id: "BB-MATCH",
+        first_arrival: "07:00:00",
+        last_arrival: "07:30:00",
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+    match_b =
+      block_trip.(%{
+        trip_id: "BB_MATCH_B",
+        route_id: "BB_R1",
+        block_id: "BB-MATCH",
+        first_arrival: "07:45:00",
+        last_arrival: "08:15:00",
+        first_stop: "BB_S2",
+        last_stop: "BB_S3"
+      })
+
+    GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+      org.id,
+      blocks_version.id,
+      match_a,
+      match_b
+    )
+
+    # A stale type-4 record: BB_STALE_A→BB_STALE_C skips BB_STALE_B, so the record
+    # is not the block's next pair on either weekday day type.
+    stale_a =
+      block_trip.(%{
+        trip_id: "BB_STALE_A",
+        route_id: "BB_R1",
+        block_id: "BB-STALE",
+        first_arrival: "15:00:00",
+        last_arrival: "15:30:00",
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+    block_trip.(%{
+      trip_id: "BB_STALE_B",
+      route_id: "BB_R1",
+      block_id: "BB-STALE",
+      first_arrival: "15:40:00",
+      last_arrival: "16:10:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    stale_c =
+      block_trip.(%{
+        trip_id: "BB_STALE_C",
+        route_id: "BB_R1",
+        block_id: "BB-STALE",
+        first_arrival: "16:20:00",
+        last_arrival: "16:50:00",
+        first_stop: "BB_S3",
+        last_stop: "BB_S1"
+      })
+
+    GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+      org.id,
+      blocks_version.id,
+      stale_a,
+      stale_c
+    )
+
+    # A cross-day overlap: the Friday-only school trip overlaps the weekday trip,
+    # so the block has one error on {SCHOOL, WEEK} and none on {WEEK} alone.
+    block_trip.(%{
+      trip_id: "BB_XOVER_A",
+      route_id: "BB_R1",
+      block_id: "BB-XOVER",
+      first_arrival: "08:00:00",
+      last_arrival: "09:00:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_XOVER_B",
+      route_id: "BB_R2",
+      service_id: "BB_SCHOOL",
+      block_id: "BB-XOVER",
+      first_arrival: "08:30:00",
+      last_arrival: "09:30:00",
+      first_stop: "BB_S2",
+      last_stop: "BB_S3"
+    })
+
+    # The journey's assignment target. On {WEEK} the block holds BB_TARGET_A alone
+    # and BB_SHARED fits beside it; on {SCHOOL, WEEK} the school trip BB_TARGET_B is
+    # there too and BB_SHARED overlaps it, so the review lists the second day type
+    # under “Also changes”.
+    block_trip.(%{
+      trip_id: "BB_TARGET_A",
+      route_id: "BB_R1",
+      block_id: "BB-TARGET",
+      first_arrival: "07:00:00",
+      last_arrival: "07:30:00",
+      first_stop: "BB_S1",
+      last_stop: "BB_S3"
+    })
+
+    block_trip.(%{
+      trip_id: "BB_TARGET_B",
+      route_id: "BB_R2",
+      service_id: "BB_SCHOOL",
+      block_id: "BB-TARGET",
+      first_arrival: "10:00:00",
+      last_arrival: "11:00:00",
+      first_stop: "BB_S4",
+      last_stop: "BB_S5"
+    })
+
+    # The busiest block, so sorting by Trips moves it to the top of the page.
+    for slot <- 0..5 do
+      base = 1020 + slot * 40
+
+      block_trip.(%{
+        trip_id: "BB_BUSY_#{slot}",
+        route_id: "BB_R1",
+        block_id: "BB-BUSIEST",
+        first_arrival: block_clock.(base * 60),
+        last_arrival: block_clock.((base + 15) * 60),
+        first_stop: "BB_S1",
+        last_stop: "BB_S1"
+      })
+    end
+
+    # The third day type: two Saturday trips in their own block.
+    for {trip_id, from_sec} <- [{"BB_SAT_A", 36_000}, {"BB_SAT_B", 43_200}] do
+      block_trip.(%{
+        trip_id: trip_id,
+        route_id: "BB_R1",
+        service_id: "BB_SAT",
+        block_id: "BB-SAT",
+        first_arrival: block_clock.(from_sec),
+        last_arrival: block_clock.(from_sec + 1800),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+    end
+
+    # 127 ordinary unassigned trips every six minutes from 05:00, each five minutes
+    # long. With the frequency trip, the untimed trip and the journey's own
+    # BB_SHARED the pool holds exactly 130 trips over two pages: 100 and 30.
+    for index <- 1..127 do
+      base = 300 + (index - 1) * 6
+
+      block_trip.(%{
+        trip_id: "BB_POOL_" <> String.pad_leading(Integer.to_string(index), 3, "0"),
+        route_id: if(rem(index, 2) == 0, do: "BB_R2", else: "BB_R1"),
+        first_arrival: block_clock.(base * 60),
+        last_arrival: block_clock.((base + 5) * 60),
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+    end
+
+    # The unassigned frequency trip: in the pool, never optional to assign.
+    block_frequency_trip =
+      block_trip.(%{
+        trip_id: "BB_POOL_FREQ",
+        route_id: "BB_R1",
+        first_arrival: "06:30:00",
+        last_arrival: "07:00:00",
+        first_stop: "BB_S1",
+        last_stop: "BB_S2"
+      })
+
+    GtfsPlanner.GtfsFixtures.frequency_fixture(
+      org.id,
+      blocks_version.id,
+      block_frequency_trip.trip_id,
+      %{
+        start_time: "06:30:00",
+        end_time: "09:00:00",
+        headway_secs: 1200
+      }
+    )
+
+    # The unassigned trip with no usable endpoint times: it lists last in the pool.
+    block_trip.(%{
+      trip_id: "BB_POOL_UNTIMED",
+      route_id: "BB_R2",
+      first_arrival: nil,
+      first_departure: nil,
+      last_arrival: nil,
+      last_departure: nil,
+      first_stop: "BB_S1",
+      last_stop: "BB_S2"
+    })
+
+    # The trip the journey assigns: it runs on both weekday day types and is not
+    # the school trip, so it is the one whose overlap appears only on the larger
+    # day type.
+    block_trip.(%{
+      trip_id: "BB_SHARED",
+      route_id: "BB_R1",
+      first_arrival: "09:30:00",
+      last_arrival: "10:30:00",
+      first_stop: "BB_S3",
+      last_stop: "BB_S4"
+    })
+
+    blocks_day_trips =
+      Repo.aggregate(from(t in Gtfs.Trip, where: t.gtfs_version_id == ^blocks_version.id), :count)
+
+    IO.puts(
+      "Browser seed: version #{blocks_version.name} (#{blocks_version.id}) with 34 weekday blocks, " <>
+        "#{blocks_day_trips} trips, a frequency trip, an unplottable trip and two type-4 records " <>
+        "across #{map_size(block_stops)} stops and #{map_size(block_routes)} routes"
+    )
+
     {:ok, schedules_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Schedules No Calendars"})
 
