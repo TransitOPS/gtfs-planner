@@ -30,10 +30,11 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   page of them is returned with the requested rule selected when it is present.
 
   Both views are read-only here: in-seat rows carry no attention reasons and no
-  competitors. The module's one write, `create_general/2`, creates a types 0–3
-  rule only and never touches a type 4/5 row (R1). The filtered page is a display
-  set, never a write or delete scope, and `count_general/3` counts a detail page's
-  related rules with the same stop and route predicates this listing uses.
+  competitors. The module's two writes, `create_general/2` and `update_general/4`,
+  reach a types 0–3 rule only and never touch a type 4/5 row (R1). The filtered page
+  is a display set, never a write or delete scope, and `count_general/3` counts a
+  detail page's related rules with the same stop and route predicates this listing
+  uses.
 
   The editor's option queries read the same scope: `search_stops/3` matches a
   case-insensitive substring of the stop name, ID or platform code among the stops
@@ -53,13 +54,16 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   and answers at most 200 drawable stops with `truncated?`; and `version_extent/2`
   returns the version's own bounding box, or nil when no stop has coordinates.
 
-  `create_general/2` creates one general rule in this module's own retry loop over
-  the configured `ReviewedApplyTransaction` module: the editor changeset's
-  references are checked against the version's stops, routes and trips inside the
-  write transaction (R2/R4), one `"transfer"` change log is written with the row in
-  the same transaction (R9), and a unique-key failure is reported after the
-  rollback as `{:duplicate, %{id, transfer_type} | nil}` (R5). Serialization
-  failures and deadlocks retry up to three attempts before `:busy` (R8).
+  `create_general/2` creates and `update_general/4` changes one general rule in
+  this module's own retry loop over the configured `ReviewedApplyTransaction`
+  module: the editor changeset's references are checked against the version's stops,
+  routes and trips inside the write transaction (R2/R4), one `"transfer"` change log
+  is written with the row in the same transaction (R9), and a unique-key failure is
+  reported after the rollback as `{:duplicate, %{id, transfer_type} | nil}` (R5).
+  Serialization failures and deadlocks retry up to three attempts before `:busy`
+  (R8). The update loads its target through an id-scoped types 0–3 query, refuses a
+  mismatched, missing or unparseable `expected_updated_at` as `:stale`, and returns
+  the row untouched with no audit log when the submitted values change nothing.
   """
 
   import Ecto.Changeset
@@ -542,6 +546,38 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   @spec create_general(map(), AuditContext.t()) :: {:ok, Transfer.t()} | {:error, write_error()}
   def create_general(attrs, %AuditContext{} = audit) when is_map(attrs) do
     case run_write(fn -> create_general_transaction(attrs, audit) end) do
+      {:error, %Ecto.Changeset{} = changeset} -> duplicate_result(changeset, audit)
+      result -> result
+    end
+  end
+
+  @doc """
+  Changes one existing general (types 0–3) transfer rule in the audit context's version.
+
+  The target is loaded through a query scoped to the organization, the version and
+  `transfer_type in 0..3`, so an unknown or malformed ID, another version's or
+  organization's row and a type 4/5 row are all `:not_found` and change nothing
+  (R1/R10). The write proceeds only when `expected_updated_at` — the stored
+  `DateTime` or its ISO 8601 string — matches the loaded row; a different, missing or
+  unparseable value is `:stale` with no write (R8).
+
+  The changeset is applied to the loaded row, so the organization and version cannot
+  change and a type 4/5 row is already out of reach. Submitting the row's current
+  values returns `{:ok, row}` unchanged, with no update and no audit log.
+  `Transfer.editor_changeset/2` records no change for a value equal to the stored one
+  and stores nil for every non-2 type, so the check is on the changeset's changes.
+  Otherwise the changeset's references are validated inside the write transaction
+  (R2/R4) and the row is audited with one `"updated"` `"transfer"` change log whose
+  `before` and `after` are the eight GTFS columns on either side of the write (R9).
+  A key collision returns `{:error, {:duplicate, %{id, transfer_type} | nil}}` through
+  the same post-rollback lookup `create_general/2` uses (R5), and serialization
+  failures and deadlocks retry up to three attempts before `:busy` (R8).
+  """
+  @spec update_general(Ecto.UUID.t(), map(), DateTime.t() | String.t() | nil, AuditContext.t()) ::
+          {:ok, Transfer.t()} | {:error, write_error()}
+  def update_general(id, attrs, expected_updated_at, %AuditContext{} = audit)
+      when is_map(attrs) do
+    case run_write(fn -> update_general_transaction(id, attrs, expected_updated_at, audit) end) do
       {:error, %Ecto.Changeset{} = changeset} -> duplicate_result(changeset, audit)
       result -> result
     end
@@ -1672,6 +1708,100 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       {:error, changeset} -> Repo.rollback(changeset)
     end
   end
+
+  # The id-scoped load an update target goes through: another organization's or
+  # version's row and a type 4/5 row are indistinguishable from an unknown ID, so
+  # none of them can be written through this module (R1/R10).
+  defp scoped_general(organization_id, gtfs_version_id, transfer_id) do
+    from(t in Transfer,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.id == ^transfer_id and t.transfer_type in ^@general_types
+    )
+  end
+
+  defp update_general_transaction(id, attrs, expected_updated_at, audit) do
+    case load_general(audit, id) do
+      {:ok, transfer} ->
+        if stale?(transfer, expected_updated_at),
+          do: Repo.rollback(:stale),
+          else: save_updated_transfer(transfer, attrs, audit)
+
+      :error ->
+        Repo.rollback(:not_found)
+    end
+  end
+
+  defp load_general(audit, id) do
+    with {:ok, transfer_id} <- Ecto.UUID.cast(id),
+         %Transfer{} = transfer <-
+           Repo.one(scoped_general(audit.organization_id, audit.gtfs_version_id, transfer_id)) do
+      {:ok, transfer}
+    else
+      _error -> :error
+    end
+  end
+
+  # A valid changeset with no changes is a no-op: the loaded row comes back with its
+  # stored `updated_at`, no UPDATE runs and no audit log is written (R8).
+  defp save_updated_transfer(transfer, attrs, audit) do
+    case Transfer.editor_changeset(transfer, attrs) do
+      %Ecto.Changeset{valid?: false} = changeset ->
+        Repo.rollback(changeset)
+
+      %Ecto.Changeset{changes: changes} when changes == %{} ->
+        transfer
+
+      changeset ->
+        changeset
+        |> validate_references(audit.organization_id, audit.gtfs_version_id)
+        |> persist_updated_transfer(transfer, audit)
+    end
+  end
+
+  defp persist_updated_transfer(%Ecto.Changeset{valid?: false} = changeset, _transfer, _audit),
+    do: Repo.rollback(changeset)
+
+  defp persist_updated_transfer(changeset, transfer, audit) do
+    before_snapshot = Transfer.audit_snapshot(transfer)
+
+    case Repo.update(changeset) do
+      {:ok, updated} -> audit_updated_transfer(updated, before_snapshot, audit)
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp audit_updated_transfer(transfer, before_snapshot, audit) do
+    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, "updated", %{
+           before: before_snapshot,
+           after: Transfer.audit_snapshot(transfer),
+           operation_id: Ecto.UUID.generate(),
+           affected_transfer_ids: [transfer.id]
+         }) do
+      {:ok, _log} -> transfer
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  # R8: the caller's expected timestamp may be the stored DateTime or its ISO 8601
+  # form; anything missing or unparseable is stale, so an update is never blind.
+  defp stale?(transfer, expected_updated_at) do
+    case normalize_timestamp(expected_updated_at) do
+      %DateTime{} = expected -> DateTime.compare(transfer.updated_at, expected) != :eq
+      nil -> true
+    end
+  end
+
+  defp normalize_timestamp(%DateTime{} = value), do: value
+
+  defp normalize_timestamp(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _error -> nil
+    end
+  end
+
+  defp normalize_timestamp(_value), do: nil
 
   # CR-3: the unique-constraint failure already rolled the transaction back, so the
   # colliding row is read in a fresh query. The error lands on `:organization_id`

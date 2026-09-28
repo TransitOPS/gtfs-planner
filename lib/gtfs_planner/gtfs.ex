@@ -387,6 +387,32 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Changes one existing general (types 0–3) transfer rule through
+  `GtfsPlanner.Gtfs.Transfers.update_general/4`.
+
+  The organization and version come from the context (R10). The target is loaded
+  through an id-scoped types 0–3 query, so an unknown or malformed ID, another
+  version's row and a type 4/5 row are `:not_found` (R1). `expected_updated_at` —
+  the stored `DateTime` or its ISO 8601 string — must match the loaded row,
+  otherwise `{:error, :stale}` is returned with no write; submitting the row's
+  current values returns the row unchanged with no audit log. A real change is
+  validated against the version's stops, routes and trips in the write transaction
+  (R2/R4) and audited with one `"updated"` `"transfer"` change log carrying the
+  before and after snapshots (R9). A key collision is
+  `{:error, {:duplicate, %{id, transfer_type} | nil}}` (R5), and serialization
+  failures and deadlocks retry up to three attempts before `:busy` (R8).
+  """
+  @spec update_general_transfer(
+          Ecto.UUID.t(),
+          map(),
+          DateTime.t() | String.t() | nil,
+          AuditContext.t()
+        ) :: {:ok, Transfer.t()} | {:error, Transfers.write_error()}
+  def update_general_transfer(id, attrs, expected_updated_at, %AuditContext{} = audit) do
+    Transfers.update_general(id, attrs, expected_updated_at, audit)
+  end
+
+  @doc """
   Fetches one calendar identity through the configured catalog read adapter.
 
   Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted
