@@ -13,11 +13,15 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   and assembles blocks, the pool, findings, counts, the peak and the timeline axis.
   Every trip of the day type appears exactly once, in the block named by its
   `block_id` or in the pool (R2, AC-2).
+
+  The day also carries every type 4/5 record naming one of its trips, evaluated by
+  the shared `Blocking.InSeat` rule over every day type both of the record's trips
+  run in, not only the selected one (R6, AC-7, INV-2).
   """
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs.Blocking.{Checks, DayTypes, Queries, Summary}
+  alias GtfsPlanner.Gtfs.Blocking.{Checks, DayTypes, InSeat, Queries, Summary}
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Trip
@@ -37,8 +41,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           findings: [Checks.finding()]
         }
 
-  # The in-seat entries of `in_seat` are added in a later step; the read returns
-  # an empty map today, so the key is typed loosely until then.
+  @type in_seat_entry :: %{row: Queries.in_seat_row(), state: InSeat.state()}
+
   @type day :: %{
           day_types: [DayTypes.day_type()],
           day_type: DayTypes.day_type() | nil,
@@ -48,7 +52,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           pool: [Queries.trip_row()],
           unplottable: [Queries.trip_row()],
           findings: [Checks.finding()],
-          in_seat: %{Ecto.UUID.t() => [map()]},
+          # by each named trip in the day type
+          in_seat: %{Ecto.UUID.t() => [in_seat_entry()]},
           counts: %{
             blocks: non_neg_integer(),
             trips: non_neg_integer(),
@@ -180,7 +185,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   defp read_day(organization_id, gtfs_version_id, day_type_key) do
-    day_types = organization_id |> load_calendars!(gtfs_version_id) |> DayTypes.derive()
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
     day_type = resolve_day_type!(day_types, day_type_key)
     trips = day_trips(organization_id, gtfs_version_id, day_type)
     settings = get_settings(organization_id, gtfs_version_id)
@@ -193,7 +199,17 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       mixed_timezones?: Queries.mixed_timezones?(organization_id, gtfs_version_id)
     }
 
-    Map.merge(day, assemble(trips, settings.min_layover_minutes))
+    Map.merge(
+      day,
+      assemble(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        DayTypes.service_dates(calendars),
+        trips,
+        settings.min_layover_minutes
+      )
+    )
   end
 
   defp day_trips(_organization_id, _gtfs_version_id, nil), do: []
@@ -231,21 +247,48 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Repo.one(query) || Repo.rollback(:not_found)
   end
 
-  defp assemble(trips, min_layover_minutes) do
+  defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, min_layover) do
     {pool_trips, blocked_trips} = Enum.split_with(trips, &is_nil(&1.block_id))
+
+    in_seat =
+      in_seat_context(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        service_dates,
+        trips
+      )
+
+    states = Enum.map(in_seat.rows, &{&1, InSeat.state(&1, in_seat.context)})
+
+    in_seat_findings =
+      states
+      |> Enum.map(fn {row, state} -> InSeat.finding(row, state, in_seat.context) end)
+      |> Enum.reject(&is_nil/1)
+
+    in_seat_by_block =
+      in_seat_findings
+      |> Enum.filter(&is_binary(&1.block_id))
+      |> Enum.group_by(& &1.block_id)
 
     blocks =
       blocked_trips
       |> Enum.group_by(& &1.block_id)
       |> Enum.map(fn {block_id, block_trips} ->
-        build_block(block_id, block_trips, min_layover_minutes)
+        build_block(
+          block_id,
+          block_trips,
+          min_layover,
+          Map.get(in_seat_by_block, block_id, [])
+        )
       end)
       |> Enum.sort_by(&Summary.natural_key(&1.summary.block_id))
 
     pool = order_pool(pool_trips)
 
     findings =
-      (Enum.flat_map(blocks, & &1.findings) ++ pool_notices(pool_trips, min_layover_minutes))
+      (Enum.flat_map(blocks, & &1.findings) ++
+         pool_notices(pool_trips, min_layover) ++ in_seat_findings)
       |> Enum.uniq_by(&Checks.finding_key/1)
 
     summaries = Enum.map(blocks, & &1.summary)
@@ -256,7 +299,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       pool: pool,
       unplottable: Enum.sort_by(Enum.reject(trips, & &1.plottable?), & &1.trip_id),
       findings: findings,
-      in_seat: %{},
+      in_seat: in_seat_entries(states, trips),
       counts: %{
         blocks: length(blocks),
         trips: length(trips),
@@ -275,8 +318,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
   end
 
-  defp build_block(block_id, trips, min_layover_minutes) do
-    findings = Checks.block_findings(block_id, trips, min_layover_minutes)
+  defp build_block(block_id, trips, min_layover_minutes, in_seat_findings) do
+    findings =
+      (Checks.block_findings(block_id, trips, min_layover_minutes) ++ in_seat_findings)
+      |> Enum.uniq_by(&Checks.finding_key/1)
 
     %{
       summary: Summary.block_summary(block_id, trips, findings),
@@ -284,6 +329,154 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       gaps: Checks.gaps(Checks.sequence(trips)),
       findings: findings
     }
+  end
+
+  # One entry per named trip the day type holds, under that trip's UUID, in the
+  # reading order of the records (AC-7). A record whose other trip runs elsewhere
+  # is listed under the trip that is here; a record naming a trip the version does
+  # not hold is listed under the trip that is.
+  defp in_seat_entries(states, trips) do
+    uuid_by_trip_id = Map.new(trips, &{&1.trip_id, &1.id})
+
+    states
+    |> Enum.flat_map(fn {row, state} ->
+      entry = %{row: row, state: state}
+
+      [row.from_trip_id, row.to_trip_id]
+      |> Enum.uniq()
+      |> Enum.flat_map(&named_entry(&1, entry, uuid_by_trip_id))
+    end)
+    |> Enum.reduce(%{}, fn {uuid, entry}, acc -> Map.update(acc, uuid, [entry], &[entry | &1]) end)
+    |> Map.new(fn {uuid, entries} -> {uuid, Enum.reverse(entries)} end)
+  end
+
+  defp named_entry(trip_id, entry, uuid_by_trip_id) do
+    case Map.fetch(uuid_by_trip_id, trip_id) do
+      {:ok, uuid} -> [{uuid, entry}]
+      :error -> []
+    end
+  end
+
+  # The in-seat context of the given trips: the type 4/5 records naming any of
+  # them, the trips those records name, and the orders R6 needs. One query per kind
+  # answers whatever the number of trips or records; nothing is queried per record
+  # or per block (AC-3). The day types are the caller's, so a caller can restrict
+  # the evaluation to the day types it is responsible for (step 12). Every record
+  # whose two trips are both blocked is evaluated, whether or not the two share one
+  # block ID: only the rule can decide that a cross-block pair is not next.
+  defp in_seat_context(organization_id, gtfs_version_id, day_types, service_dates, trips) do
+    rows =
+      Queries.in_seat_rows(organization_id, gtfs_version_id, Enum.map(trips, & &1.trip_id))
+
+    trips = named_trips(organization_id, gtfs_version_id, rows, trips)
+    evaluated = both_service_day_types(day_types, rows, trips)
+    block_rows = block_rows(organization_id, gtfs_version_id, evaluated, rows, trips)
+
+    %{
+      rows: rows,
+      context: %{
+        trips: trips,
+        service_dates: service_dates,
+        day_types: evaluated,
+        sequences: sequences(evaluated, block_rows)
+      }
+    }
+  end
+
+  # The trips a record names are read once for the whole set, and only those the
+  # caller did not already hand over. A trip the version does not hold is simply
+  # absent, which the rule reports as `:trip_missing`.
+  defp named_trips(organization_id, gtfs_version_id, rows, trips) do
+    trips = Map.new(trips, &{&1.trip_id, &1})
+
+    missing =
+      rows
+      |> Enum.flat_map(&[&1.from_trip_id, &1.to_trip_id])
+      |> Enum.uniq()
+      |> Enum.reject(&Map.has_key?(trips, &1))
+
+    Enum.reduce(
+      Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, missing}),
+      trips,
+      &Map.put(&2, &1.trip_id, &1)
+    )
+  end
+
+  # R6 evaluates every day type both of a record's trips run in, so the context is
+  # every day type containing both services of a record whose two trips are
+  # blocked. The two trips need not share one block ID: whether the second follows
+  # the first in one block is exactly what the rule decides, and withholding the
+  # day type here would suppress the check and report a cross-block pair as valid.
+  # A pair with an unblocked trip has nothing to evaluate, because the rule reports
+  # `:no_block` before it reaches the day types.
+  defp both_service_day_types(day_types, rows, trips) do
+    rows
+    |> Enum.flat_map(fn row ->
+      case blocked_trips(row, trips) do
+        nil ->
+          []
+
+        {from, to} ->
+          day_types
+          |> DayTypes.containing(from.service_id)
+          |> Enum.filter(&(to.service_id in &1.service_ids))
+      end
+    end)
+    |> Enum.uniq_by(& &1.key)
+  end
+
+  # The two trips of a record when both are in hand and each names a block, and
+  # `nil` otherwise: a missing trip or an unblocked pair has no order to read.
+  defp blocked_trips(row, trips) do
+    case Map.get(trips, row.from_trip_id) do
+      %{block_id: block_id} = from when is_binary(block_id) ->
+        case Map.get(trips, row.to_trip_id) do
+          %{block_id: to_block_id} = to when is_binary(to_block_id) -> {from, to}
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  # The trips of both blocks the admitted records name, within the evaluated day
+  # types' services: the rows R6 orders. Both block IDs are read so every evaluated
+  # `{day key, block}` pair has its order, including the block of a cross-block
+  # pair's second trip. Filtering by the services rather than by the dates and
+  # collecting the IDs first keeps this one query.
+  defp block_rows(organization_id, gtfs_version_id, day_types, rows, trips) do
+    block_ids =
+      rows
+      |> Enum.flat_map(fn row ->
+        case blocked_trips(row, trips) do
+          nil -> []
+          {from, to} -> [from.block_id, to.block_id]
+        end
+      end)
+      |> Enum.uniq()
+
+    service_ids = day_types |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+
+    Queries.trip_rows(organization_id, gtfs_version_id, {:blocks, block_ids, service_ids})
+  end
+
+  # `Checks.sequence/1` is the same order the rule reads, keyed by day type and
+  # block ID for `{day key, block}`.
+  defp sequences(day_types, block_rows) do
+    block_ids = block_rows |> Enum.map(& &1.block_id) |> Enum.uniq()
+
+    for day_type <- day_types,
+        block_id <- block_ids,
+        into: %{} do
+      order =
+        block_rows
+        |> Enum.filter(&(&1.block_id == block_id and &1.service_id in day_type.service_ids))
+        |> Checks.sequence()
+        |> Enum.map(& &1.id)
+
+      {{day_type.key, block_id}, order}
+    end
   end
 
   # A block lists its trips in service order first, then the trips the sequence

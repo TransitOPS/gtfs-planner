@@ -8,7 +8,11 @@ defmodule GtfsPlanner.BlockingFixtures do
   version or a second day type beside its own.
   """
 
+  import Ecto.Query
   import GtfsPlanner.GtfsFixtures
+
+  alias GtfsPlanner.Gtfs.{StopTime, Transfer, Trip}
+  alias GtfsPlanner.Repo
 
   @weekly_keys [
     :monday,
@@ -125,6 +129,48 @@ defmodule GtfsPlanner.BlockingFixtures do
       Map.fetch!(attrs, :trip_id),
       Map.drop(attrs, [:trip_id])
     )
+  end
+
+  @doc """
+  Creates a type 4 in-seat transfer record between two trips and returns it.
+
+  `from_stop_id` is the stored last stop of `from_trip` and `to_stop_id` the stored
+  first stop of `to_trip`, so both stops are set and a record created this way
+  matches R6's stop comparison. The row is inserted through
+  `GtfsPlanner.Gtfs.Transfer.changeset/2`, the same path an import uses, with the
+  trips identifying the pair.
+
+  Both trips are `GtfsPlanner.Gtfs.Trip` structs as `blocked_trip_fixture/4`
+  returns them; a caller that needs a stopless or type 5 record uses
+  `GtfsFixtures.transfer_fixture/3`.
+  """
+  @spec in_seat_transfer_fixture(Ecto.UUID.t(), Ecto.UUID.t(), Trip.t(), Trip.t()) :: Transfer.t()
+  def in_seat_transfer_fixture(organization_id, gtfs_version_id, from_trip, to_trip) do
+    %Transfer{}
+    |> Transfer.changeset(%{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      from_trip_id: from_trip.trip_id,
+      to_trip_id: to_trip.trip_id,
+      from_stop_id: trip_endpoint_stop_id(organization_id, gtfs_version_id, from_trip, :desc),
+      to_stop_id: trip_endpoint_stop_id(organization_id, gtfs_version_id, to_trip, :asc),
+      transfer_type: 4
+    })
+    |> Repo.insert!()
+  end
+
+  # A trip's endpoint stop as stored: the largest stop sequence for the earlier
+  # trip's last stop and the smallest for the later trip's first stop.
+  defp trip_endpoint_stop_id(organization_id, gtfs_version_id, trip, direction) do
+    from(st in StopTime,
+      where:
+        st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
+          st.trip_id == ^trip.trip_id,
+      order_by: [{^direction, st.stop_sequence}],
+      limit: 1,
+      select: st.stop_id
+    )
+    |> Repo.one()
   end
 
   defp endpoint_stop_id(organization_id, gtfs_version_id, attrs, key) do

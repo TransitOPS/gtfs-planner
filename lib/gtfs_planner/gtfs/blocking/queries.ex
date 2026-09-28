@@ -20,7 +20,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs.{Agency, Frequency, GtfsTime, Route, Stop, StopTime, Trip}
+  alias GtfsPlanner.Gtfs.{Agency, Frequency, GtfsTime, Route, Stop, StopTime, Transfer, Trip}
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Repo
 
@@ -43,6 +43,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
           | {:uuids, [Ecto.UUID.t()]}
           | {:trip_ids, [String.t()]}
           | {:blocks, [String.t()], [String.t()]}
+
+  @type in_seat_row :: %{
+          id: Ecto.UUID.t(),
+          from_trip_id: String.t(),
+          to_trip_id: String.t(),
+          transfer_type: 4 | 5,
+          from_stop_id: String.t() | nil,
+          to_stop_id: String.t() | nil
+        }
 
   @doc """
   Loads one filter's trips with both endpoints, their stops and their frequency flag.
@@ -112,6 +121,38 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
     )
     |> Repo.all()
     |> Map.new(&{&1.route_id, &1})
+  end
+
+  @doc """
+  Loads the type 4/5 transfer records naming any of `trip_ids`.
+
+  A record is returned when either of its two trips is among the natural IDs,
+  so a pair is read once for both named trips and a record whose other trip runs
+  outside the day type is included (AC-7). One query answers whatever the number
+  of records or trips, and `order_by` makes the reading order stable: the records
+  are ordered by their two trip IDs and their UUID.
+
+  Rows are not joined to the trips they name: a record whose trip is absent from
+  the version is returned like any other, so the rule can report it as missing.
+  """
+  @spec in_seat_rows(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: [in_seat_row()]
+  def in_seat_rows(organization_id, gtfs_version_id, trip_ids) do
+    from(t in Transfer,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.transfer_type in [4, 5] and
+          (t.from_trip_id in ^trip_ids or t.to_trip_id in ^trip_ids),
+      order_by: [asc: t.from_trip_id, asc: t.to_trip_id, asc: t.id],
+      select: %{
+        id: t.id,
+        from_trip_id: t.from_trip_id,
+        to_trip_id: t.to_trip_id,
+        transfer_type: t.transfer_type,
+        from_stop_id: t.from_stop_id,
+        to_stop_id: t.to_stop_id
+      }
+    )
+    |> Repo.all()
   end
 
   @doc """
