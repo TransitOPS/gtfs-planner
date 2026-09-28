@@ -859,8 +859,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   defp validate_target(_organization_id, _gtfs_version_id, _target), do: {:error, :unknown_zone}
 
+  # One check per distinct target: a select-all review sends thousands of changes
+  # that share a single target, and each check is up to three queries.
   defp validate_targets(organization_id, gtfs_version_id, changes, validate_targets?: true) do
-    Enum.each(changes, &validate_target!(organization_id, gtfs_version_id, &1.to))
+    changes
+    |> Enum.map(& &1.to)
+    |> Enum.uniq()
+    |> Enum.each(&validate_target!(organization_id, gtfs_version_id, &1))
   end
 
   defp validate_targets(_organization_id, _gtfs_version_id, _changes, _opts), do: :ok
