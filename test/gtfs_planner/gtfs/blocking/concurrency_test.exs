@@ -507,17 +507,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConcurrencyTest do
   # lock, which is deterministic; the test polls it instead of sleeping on a guess.
   # The bound mirrors `schedules_test.exs`'s `wait_until_locked/2`: 500 attempts of
   # 10 ms, so 5 s.
+  #
+  # The poll reads on this process's own sandbox connection (`async: false` gives it a
+  # shared owner connection) instead of checking one out: the case already holds one
+  # connection in its holder and one in each blocked apply, and a further checkout
+  # would demand a pool connection a host with few schedulers does not have, turning
+  # the poll into a `pool_timeout` error instead of an assertion.
   defp wait_until_locked(pid, attempts \\ @lock_wait_attempts) do
-    waiting =
-      unboxed(fn ->
-        {:ok, %{rows: [[waiting]]}} =
-          Repo.query(
-            "select count(*) from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'",
-            [pid]
-          )
-
-        waiting
-      end)
+    {:ok, %{rows: [[waiting]]}} =
+      Repo.query(
+        "select count(*) from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'",
+        [pid]
+      )
 
     cond do
       waiting > 0 ->
