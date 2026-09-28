@@ -15,14 +15,28 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   use ExUnit.Case, async: false
 
   import Ecto.Query
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
@@ -236,6 +250,79 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
                unboxed(fn ->
                  Repo.get!(GtfsVersion, scope.staging_version.id)
                end)
+    end
+  end
+
+  describe "schedule callers" do
+    test "a schedule caller completes while another session holds the version share lock",
+         %{supervisor: supervisor} do
+      scope = seed_schedule_scope("share")
+      on_exit(fn -> cleanup_schedule_scope(scope) end)
+
+      # Another session already holds the organization's version row `FOR SHARE`, exactly as a
+      # concurrent calendar read or schedule writer does while it works.
+      {share_holder, _holder_backend} = hold_shared_version(scope, supervisor)
+
+      # The real schedule caller takes the same share lock first, then the route, pattern, trip and
+      # stop-time locks. An upgraded (exclusive) version lock would refuse this second holder, so a
+      # bounded lock timeout turns any upgrade into a loud failure instead of a hang.
+      assert {:ok, %{trips: [created]}} =
+               unboxed(fn ->
+                 Repo.transaction(fn ->
+                   Repo.query!("SET LOCAL lock_timeout = '3s'")
+
+                   {:ok, result} =
+                     Gtfs.create_trips(scope.route_id, create_attrs(scope), scope.audit)
+
+                   result
+                 end)
+               end)
+
+      # The other session held its share lock for the whole call.
+      assert Process.alive?(share_holder.pid)
+
+      assert created.trip_id == "#{scope.route_id}-0-#{scope.service}-0700"
+      assert unboxed(fn -> trip_ids(scope) end) == [created.trip_id]
+
+      assert unboxed(fn -> stop_time_clocks(scope, created.trip_id) end) == [
+               {"A", "07:00:00", "07:00:00"},
+               {"B", "07:05:00", "07:05:30"}
+             ]
+
+      send(share_holder.pid, :release)
+      assert Task.await(share_holder, @collect_timeout) == {:error, :released}
+    end
+
+    test "a schedule caller waiting on the route row holds only the shared version lock",
+         %{supervisor: supervisor} do
+      scope = seed_schedule_scope("route-wait")
+      on_exit(fn -> cleanup_schedule_scope(scope) end)
+
+      {route_holder, route_backend} = hold_route_row(scope, supervisor)
+
+      {caller, caller_backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.create_trips(scope.route_id, create_attrs(scope), scope.audit)
+        end)
+
+      send(caller.pid, :go)
+
+      # The caller reached the route lock, which it can only do after the version boundary.
+      assert_blocked_by(caller_backend, route_backend)
+
+      # A concurrent share request still succeeds while it waits on the route...
+      assert {:ok, %GtfsVersion{}} = share_lock_version(scope)
+
+      # ...and an exclusive request is refused, so the waiting caller does hold the version row,
+      # in share mode rather than in an upgraded exclusive one.
+      assert {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}} =
+               exclusive_lock_version(scope)
+
+      send(route_holder.pid, :release)
+      assert Task.await(route_holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %{trips: [created]}} = Task.await(caller, @collect_timeout)
+      assert created.trip_id == "#{scope.route_id}-0-#{scope.service}-0700"
     end
   end
 
@@ -484,4 +571,199 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   end
 
   defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
+
+  # -- Schedule caller fixtures and lock probes -------------------------------
+
+  # One committed schedule scope: an organization with its published version, one route, one
+  # calendar identity the caller references, and one two-stop pattern with a timing whose offsets
+  # the caller materializes.
+  defp seed_schedule_scope(suffix) do
+    unboxed(fn ->
+      unique = "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive])}"
+
+      organization =
+        organization_fixture(%{alias: "input-writer-schedule-#{suffix}-#{unique}"})
+
+      version = gtfs_version_fixture(organization.id)
+      route_id = "sc#{System.unique_integer([:positive])}"
+      route = route_fixture(organization.id, version.id, %{route_id: route_id})
+      service = "svc_#{unique}"
+      calendar_fixture(organization.id, version.id, %{service_id: service})
+
+      actor = user_fixture()
+
+      audit = %AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+
+      bundle =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route_id,
+          route_pattern_id: "SC-#{unique}",
+          direction_id: 0,
+          stops: [{"A", 0, 0, 1}, {"B", 300, 330, 1}]
+        })
+
+      %{
+        organization: organization,
+        version: version,
+        route: route,
+        route_id: route_id,
+        service: service,
+        actor: actor,
+        audit: audit,
+        bundle: bundle
+      }
+    end)
+  end
+
+  defp create_attrs(scope) do
+    %{
+      pattern_id: scope.bundle.pattern.id,
+      timed_pattern_id: scope.bundle.timing.id,
+      service_id: scope.service,
+      start_time: "07:00:00",
+      repeat: nil
+    }
+  end
+
+  defp stop_time_clocks(scope, trip_id) do
+    unboxed(fn ->
+      Repo.all(
+        from(st in StopTime,
+          where: st.organization_id == ^scope.organization.id and st.trip_id == ^trip_id,
+          order_by: [asc: st.stop_sequence, asc: st.id],
+          select: {st.stop_id, st.arrival_time, st.departure_time}
+        )
+      )
+    end)
+  end
+
+  defp hold_shared_version(scope, supervisor) do
+    parent = self()
+
+    holder =
+      Task.Supervisor.async_nolink(supervisor, fn -> hold_shared_until_released(scope, parent) end)
+
+    assert_receive {:version_shared, holder_pid, holder_backend}, @contention_timeout
+    assert holder_pid == holder.pid
+    {holder, holder_backend}
+  end
+
+  defp hold_shared_until_released(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Versions.lock_for_input_write!(scope.organization.id, scope.version.id)
+        send(parent, {:version_shared, self(), backend_pid()})
+
+        receive do
+          :release -> Repo.rollback(:released)
+        end
+      end)
+    end)
+  end
+
+  defp hold_route_row(scope, supervisor) do
+    parent = self()
+
+    holder =
+      Task.Supervisor.async_nolink(supervisor, fn -> hold_route_until_released(scope, parent) end)
+
+    assert_receive {:route_held, holder_pid, holder_backend}, @contention_timeout
+    assert holder_pid == holder.pid
+    {holder, holder_backend}
+  end
+
+  defp hold_route_until_released(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.one(from(r in Route, where: r.id == ^scope.route.id, lock: "FOR UPDATE"))
+        send(parent, {:route_held, self(), backend_pid()})
+
+        receive do
+          :release -> Repo.rollback(:released)
+        end
+      end)
+    end)
+  end
+
+  defp share_lock_version(scope) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.query!("SET LOCAL lock_timeout = '3s'")
+
+        Repo.one(
+          from(v in GtfsVersion,
+            where: v.id == ^scope.version.id and v.organization_id == ^scope.organization.id,
+            lock: "FOR SHARE"
+          )
+        )
+      end)
+    end)
+  end
+
+  # The probe reports the refusal whether the adapter returns the error tuple or re-raises it.
+  defp exclusive_lock_version(scope) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.query!("SET LOCAL lock_timeout = '1s'")
+
+        Repo.one(
+          from(v in GtfsVersion,
+            where: v.id == ^scope.version.id and v.organization_id == ^scope.organization.id,
+            lock: "FOR UPDATE"
+          )
+        )
+      end)
+    end)
+  rescue
+    error in Postgrex.Error -> {:error, error}
+  end
+
+  defp cleanup_schedule_scope(scope) do
+    unboxed(fn ->
+      organization_id = scope.organization.id
+
+      Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
+      Repo.delete_all(from(st in StopTime, where: st.organization_id == ^organization_id))
+      Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
+
+      Repo.delete_all(
+        from(r in TimedPatternStop,
+          where:
+            r.timed_pattern_id in subquery(
+              from(t in TimedPattern, where: t.organization_id == ^organization_id, select: t.id)
+            )
+        )
+      )
+
+      Repo.delete_all(from(t in TimedPattern, where: t.organization_id == ^organization_id))
+      Repo.delete_all(from(o in RoutePatternStop, where: o.organization_id == ^organization_id))
+      Repo.delete_all(from(p in RoutePattern, where: p.organization_id == ^organization_id))
+
+      Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id == ^organization_id))
+
+      Repo.delete_all(from(d in CalendarDate, where: d.organization_id == ^organization_id))
+      Repo.delete_all(from(c in Calendar, where: c.organization_id == ^organization_id))
+      Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
+
+      Repo.delete_all(
+        from(m in UserOrgMembership,
+          where: m.organization_id == ^organization_id or m.user_id == ^scope.actor.id
+        )
+      )
+
+      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      Repo.delete_all(from(u in User, where: u.id == ^scope.actor.id))
+      Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+
+      refute Repo.exists?(from(o in Organization, where: o.id == ^organization_id))
+      refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      refute Repo.exists?(from(l in ChangeLog, where: l.organization_id == ^organization_id))
+      :ok
+    end)
+  end
 end
