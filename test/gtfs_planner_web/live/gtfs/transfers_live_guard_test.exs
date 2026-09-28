@@ -181,6 +181,16 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
         assert has_element?(view, "#transfer-editor")
       end
 
+      # A payload the hook never sends — a path that is not a string, or no path
+      # at all — is refused like the off-site paths above instead of raising out
+      # of the event handler.
+      for payload <- [%{"path" => 42}, %{"path" => %{"href" => "/x"}}, %{}] do
+        render_hook(view, "transfer_depart", payload)
+
+        assert has_element?(view, "#transfer-discard-dialog[data-open='false']")
+        assert has_element?(view, "#transfer-editor")
+      end
+
       # A refused path leaves the departure for the operator to ask for again.
       render_hook(view, "transfer_depart", %{"path" => "/gtfs/#{ctx.version.id}/routes"})
 

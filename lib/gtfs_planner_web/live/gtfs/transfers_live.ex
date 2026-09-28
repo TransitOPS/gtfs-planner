@@ -420,15 +420,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   # The client half of the guard: the `DraftGuard` hook intercepts a same-origin
   # link click while the draft is dirty and sends the path here instead of
-  # navigating. A path this page did not author is refused (R10).
+  # navigating. A path this page did not author is refused (R10); so is a
+  # payload the hook never sends, which must not raise out of the handler.
   @impl true
-  def handle_event("transfer_depart", %{"path" => path}, socket) do
+  def handle_event("transfer_depart", %{"path" => path}, socket) when is_binary(path) do
     if String.starts_with?(path, "/") and not String.starts_with?(path, "//") do
       guard(socket, {:navigate, path})
     else
       {:noreply, socket}
     end
   end
+
+  def handle_event("transfer_depart", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("discard_changes", _params, socket) do
