@@ -982,6 +982,19 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.set_route_active(route_id, active, source, audit_context)
 
   @doc """
+  Builds the complete reviewed route deletion impact summary (R5).
+
+  See `GtfsPlanner.Gtfs.Routes.review_route_deletion/2` for the review,
+  category, retained-resource and error contract. The review enumerates only
+  the categories computable from landed rows (seam `S-3`): imported and
+  unowned shapes are named as retained, and malformed cross-route timing
+  ownership blocks the review before any apply decision.
+  """
+  @spec review_route_deletion(String.t(), AuditContext.t()) :: {:ok, map()} | {:error, term()}
+  def review_route_deletion(route_id, %AuditContext{} = audit_context),
+    do: Routes.review_route_deletion(route_id, audit_context)
+
+  @doc """
   Returns a list of distinct route types for an organization and GTFS version.
 
   ## Examples

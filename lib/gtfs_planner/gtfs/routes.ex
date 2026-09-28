@@ -58,6 +58,17 @@ defmodule GtfsPlanner.Gtfs.Routes do
   transactional audit. Only explicit `false` is inactive: a desired state that
   is already effective (including NULL requested as `true`) is a no-op that
   never backfills, and Undo/reactivation must arrive with a fresh source.
+
+  `review_route_deletion/2` builds the R5 deletion review over one consistent
+  serializable snapshot: every affected category carries its stable key, count,
+  sorted scoped identities, an ordered semantic-content digest and a label, and
+  the retained summary names the imported shapes, shared stops, calendars and
+  agency that survive. The fingerprint binds command, scope, route UUID and the
+  ordered identities plus semantic values, so equal totals with changed
+  contents still change it. Malformed cross-route timing ownership blocks the
+  review atomically. `deletion_review_changes/2` is the pure comparison of a
+  previous and a fresh category list; it returns the stable `count_changed` and
+  `contents_changed` category markers in deterministic category order.
   """
 
   import Ecto.Changeset, only: [add_error: 3]
@@ -67,11 +78,24 @@ defmodule GtfsPlanner.Gtfs.Routes do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Attribution
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RouteNetwork
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Translation
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -475,6 +499,100 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   def set_route_active(_route_id, _active, _source, _audit), do: {:error, :invalid_input}
+
+  @typedoc "One reviewed deletion category: stable key, count, sorted scoped identities, ordered semantic-content digest and label."
+  @type deletion_category :: %{
+          key: String.t(),
+          label: String.t(),
+          count: non_neg_integer(),
+          identities: [String.t()],
+          digest: String.t()
+        }
+
+  @typedoc "One retained-resource summary entry: stable key, count, sorted identities and label."
+  @type retained_resource :: %{
+          key: String.t(),
+          label: String.t(),
+          count: non_neg_integer(),
+          identities: [String.t()]
+        }
+
+  @type deletion_review :: %{
+          fingerprint: String.t(),
+          route_uuid: Ecto.UUID.t(),
+          categories: [deletion_category()],
+          retained: [retained_resource()],
+          empty?: boolean()
+        }
+
+  @doc """
+  Builds the complete R5 deletion review for one scoped route (AC-13).
+
+  One serializable transaction provides the consistent snapshot. Every
+  affected set is enumerated with its scoped identities and an ordered
+  semantic-content digest that covers the row values (never timestamps alone,
+  because `update_all` writers preserve them); stop-time vectors are streamed
+  into an incremental hash instead of accumulating in memory. Zero-pattern
+  routes still enumerate their explicit relationships (transfers, fare rules,
+  attributions, network links and translations), and the retained summary
+  names the affected imported shapes and other shared resources that survive.
+
+  Malformed cross-route timing ownership (a trip whose linked timing belongs to
+  another route's pattern, or a timing row spanning two routes' patterns)
+  blocks the review atomically with `:malformed_cross_route_timing`. A foreign
+  or unpublished scope is `:not_found` without counts; a denied actor is
+  `:forbidden`.
+  """
+  @spec review_route_deletion(String.t(), AuditContext.t()) ::
+          {:ok, deletion_review()}
+          | {:error,
+             :not_found | :forbidden | :busy | :invalid_input | :malformed_cross_route_timing}
+  def review_route_deletion(route_id, %AuditContext{} = audit) when is_binary(route_id) do
+    run_command_transaction(fn ->
+      :ok = authorize_editor!(audit)
+      _version = lock_published_version!(audit, false)
+
+      case scoped_route(route_id, audit) do
+        nil -> Repo.rollback(:not_found)
+        route -> build_deletion_review(route, audit)
+      end
+    end)
+  end
+
+  def review_route_deletion(_route_id, _audit), do: {:error, :invalid_input}
+
+  @doc """
+  Compares a previous and a fresh deletion-review category list (R5/AC-13).
+
+  Returns one entry per changed category, in the fresh list's deterministic
+  order, carrying the stable `:count_changed` and `:contents_changed` markers:
+  a count difference is `:count_changed`, and any semantic-content digest
+  difference is `:contents_changed`, so equal totals with changed contents are
+  still explained. Unchanged categories are omitted.
+  """
+  @spec deletion_review_changes([map()], [map()]) ::
+          [%{key: String.t(), label: String.t(), markers: [atom()]}]
+  def deletion_review_changes(previous_categories, categories)
+      when is_list(previous_categories) and is_list(categories) do
+    previous = Map.new(previous_categories, &{&1.key, &1})
+
+    Enum.flat_map(categories, fn category ->
+      markers = change_markers(Map.get(previous, category.key), category)
+
+      if markers == [],
+        do: [],
+        else: [%{key: category.key, label: category.label, markers: markers}]
+    end)
+  end
+
+  defp change_markers(nil, _category), do: [:count_changed, :contents_changed]
+
+  defp change_markers(previous, category) do
+    Enum.concat([
+      if(previous.count != category.count, do: [:count_changed], else: []),
+      if(previous.digest != category.digest, do: [:contents_changed], else: [])
+    ])
+  end
 
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
@@ -1451,5 +1569,418 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # user input never mints atoms and forged keys never become fields.
   defp known_key(key) do
     Enum.find(@known_keys, key, fn known -> Atom.to_string(known) == key end)
+  end
+
+  # --- deletion review internals ---------------------------------------------
+
+  defp scoped_route(route_id, audit) do
+    Repo.one(
+      from(route in Route,
+        where:
+          route.organization_id == ^audit.organization_id and
+            route.gtfs_version_id == ^audit.gtfs_version_id and
+            route.route_id == ^route_id
+      )
+    )
+  end
+
+  # The R5 consistent snapshot: one serializable transaction enumerates every
+  # affected set in a fixed category order. Identity lists are sorted and each
+  # digest hashes the category's semantic row values in a deterministic order.
+  defp build_deletion_review(route, audit) do
+    org_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    route_id = route.route_id
+
+    :ok = check_cross_route_timing!(org_id, version_id, route_id)
+
+    pattern_ids =
+      Repo.all(
+        from(p in RoutePattern,
+          where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
+          where: p.route_id == ^route_id,
+          select: p.id
+        )
+      )
+
+    timing_ids =
+      if pattern_ids == [] do
+        []
+      else
+        Repo.all(
+          from(tp in TimedPattern,
+            where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
+            where: tp.route_pattern_id in ^pattern_ids,
+            select: tp.id
+          )
+        )
+      end
+
+    trip_ids =
+      Repo.all(
+        from(t in Trip,
+          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+          where: t.route_id == ^route_id,
+          select: t.trip_id
+        )
+      )
+
+    attribution_ids =
+      Repo.all(
+        from(a in Attribution,
+          where: a.organization_id == ^org_id and a.gtfs_version_id == ^version_id,
+          where: a.route_id == ^route_id or a.trip_id in ^trip_ids,
+          where: not is_nil(a.attribution_id),
+          select: a.attribution_id
+        )
+      )
+
+    categories = [
+      route_category(route),
+      stream_category(
+        from(p in RoutePattern,
+          where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
+          where: p.route_id == ^route_id,
+          order_by: [p.route_pattern_id, p.id]
+        ),
+        "patterns",
+        "Route patterns",
+        &{&1.route_pattern_id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(rps in RoutePatternStop,
+          where: rps.organization_id == ^org_id and rps.gtfs_version_id == ^version_id,
+          where: rps.route_pattern_id in ^pattern_ids,
+          order_by: [rps.route_pattern_id, rps.position, rps.id]
+        ),
+        "pattern_stops",
+        "Pattern stops",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(tp in TimedPattern,
+          where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
+          where: tp.route_pattern_id in ^pattern_ids,
+          order_by: [tp.id]
+        ),
+        "timed_patterns",
+        "Timed patterns",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(tps in TimedPatternStop,
+          where: tps.timed_pattern_id in ^timing_ids,
+          order_by: [tps.id]
+        ),
+        "timed_pattern_stops",
+        "Timing rows",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(t in Trip,
+          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+          where: t.route_id == ^route_id,
+          order_by: [t.trip_id, t.id]
+        ),
+        "trips",
+        "Trips",
+        &{&1.trip_id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(st in StopTime,
+          where: st.organization_id == ^org_id and st.gtfs_version_id == ^version_id,
+          where: st.trip_id in ^trip_ids,
+          order_by: [st.trip_id, st.stop_sequence, st.id]
+        ),
+        "stop_times",
+        "Stop times",
+        &{"#{&1.trip_id}:#{&1.stop_sequence}", semantic_content(&1)}
+      ),
+      stream_category(
+        from(f in Frequency,
+          where: f.organization_id == ^org_id and f.gtfs_version_id == ^version_id,
+          where: f.trip_id in ^trip_ids,
+          order_by: [f.trip_id, f.start_time, f.id]
+        ),
+        "frequencies",
+        "Frequencies",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(t in Trip,
+          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+          where: t.route_id == ^route_id,
+          where: not is_nil(t.block_id),
+          distinct: true,
+          order_by: [t.block_id],
+          select: t.block_id
+        ),
+        "blocks",
+        "Block IDs affected",
+        &{&1, &1}
+      ),
+      stream_category(
+        from(tr in Transfer,
+          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
+          where:
+            tr.from_route_id == ^route_id or tr.to_route_id == ^route_id or
+              tr.from_trip_id in ^trip_ids or tr.to_trip_id in ^trip_ids,
+          order_by: [tr.id]
+        ),
+        "transfers",
+        "Transfers",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(fr in FareRule,
+          where: fr.organization_id == ^org_id and fr.gtfs_version_id == ^version_id,
+          where: fr.route_id == ^route_id,
+          order_by: [fr.id]
+        ),
+        "fare_rules",
+        "Fare rules",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(a in Attribution,
+          where: a.organization_id == ^org_id and a.gtfs_version_id == ^version_id,
+          where: a.route_id == ^route_id or a.trip_id in ^trip_ids,
+          order_by: [a.id]
+        ),
+        "attributions",
+        "Attributions",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(rn in RouteNetwork,
+          where: rn.organization_id == ^org_id and rn.gtfs_version_id == ^version_id,
+          where: rn.route_id == ^route_id,
+          order_by: [rn.id]
+        ),
+        "route_networks",
+        "Route network links",
+        &{&1.id, semantic_content(&1)}
+      ),
+      stream_category(
+        from(tr in Translation,
+          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
+          where:
+            (tr.table_name == "routes" and tr.record_id == ^route_id) or
+              (tr.table_name == "trips" and tr.record_id in ^trip_ids) or
+              (tr.table_name == "stop_times" and tr.record_id in ^trip_ids) or
+              (tr.table_name == "attributions" and tr.record_id in ^attribution_ids),
+          order_by: [tr.id]
+        ),
+        "translations",
+        "Translations",
+        &{&1.id, semantic_content(&1)}
+      )
+    ]
+
+    retained = retained_summary(route, org_id, version_id, trip_ids)
+
+    %{
+      fingerprint: deletion_fingerprint(route, categories, retained),
+      route_uuid: route.id,
+      categories: categories,
+      retained: retained,
+      empty?: Enum.all?(categories, &(&1.key == "route" or &1.count == 0))
+    }
+  end
+
+  defp route_category(route) do
+    %{
+      key: "route",
+      label: "Route",
+      count: 1,
+      identities: [route.route_id],
+      digest:
+        Base.encode16(
+          :crypto.hash(:sha256, [route.route_id, "\t", semantic_content(route), "\n"]),
+          case: :lower
+        )
+    }
+  end
+
+  # Streams one affected set in a deterministic order and folds each semantic
+  # row into an incremental SHA-256, so stop-time vectors never accumulate in
+  # memory; only compact identity strings do.
+  defp stream_category(query, key, label, row_fun) do
+    {hash, identities, count} =
+      query
+      |> Repo.stream(max_rows: 1_000)
+      |> Enum.reduce({:crypto.hash_init(:sha256), [], 0}, fn row, {hash, ids, seen} ->
+        {identity, content} = row_fun.(row)
+        {:crypto.hash_update(hash, [identity, "\t", content, "\n"]), [identity | ids], seen + 1}
+      end)
+
+    %{
+      key: key,
+      label: label,
+      count: count,
+      identities: Enum.sort(identities),
+      digest: Base.encode16(:crypto.hash_final(hash), case: :lower)
+    }
+  end
+
+  # Semantic row content for review digests: every persisted value except
+  # scope and timestamps (update_all writers can preserve updated_at), keyed
+  # deterministically so equal rows hash equally.
+  defp semantic_content(row) do
+    row
+    |> Map.from_struct()
+    |> Map.drop([:__meta__, :organization_id, :gtfs_version_id, :inserted_at, :updated_at])
+    |> Enum.reject(fn {_key, value} -> match?(%Ecto.Association.NotLoaded{}, value) end)
+    |> Enum.sort_by(fn {key, _value} -> key end)
+    |> Enum.map_join("\u0001", fn {key, value} -> "#{key}=#{semantic_value(value)}" end)
+  end
+
+  defp semantic_value(nil), do: "nil"
+  defp semantic_value(value) when is_binary(value), do: value
+  defp semantic_value(value) when is_number(value) or is_boolean(value), do: to_string(value)
+  defp semantic_value(value), do: inspect(value)
+
+  # The retained-resource summary (seam S-3): imported shapes referenced by the
+  # removed trips are retained and named, alongside the shared stops, calendars
+  # and agency the cascade never touches.
+  defp retained_summary(route, org_id, version_id, trip_ids) do
+    route_id = route.route_id
+
+    referenced_shape_ids =
+      Repo.all(
+        from(t in Trip,
+          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+          where: t.route_id == ^route_id,
+          where: not is_nil(t.shape_id),
+          distinct: true,
+          select: t.shape_id
+        )
+      )
+
+    imported_shape_ids =
+      Repo.all(
+        from(s in Shape,
+          where: s.organization_id == ^org_id and s.gtfs_version_id == ^version_id,
+          where: s.shape_id in ^referenced_shape_ids,
+          distinct: true,
+          order_by: [s.shape_id],
+          select: s.shape_id
+        )
+      )
+
+    stop_ids =
+      Repo.all(
+        from(st in StopTime,
+          where: st.organization_id == ^org_id and st.gtfs_version_id == ^version_id,
+          where: st.trip_id in ^trip_ids,
+          where: not is_nil(st.stop_id),
+          distinct: true,
+          order_by: [st.stop_id],
+          select: st.stop_id
+        )
+      )
+
+    service_ids =
+      Repo.all(
+        from(t in Trip,
+          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+          where: t.route_id == ^route_id,
+          where: not is_nil(t.service_id),
+          distinct: true,
+          order_by: [t.service_id],
+          select: t.service_id
+        )
+      )
+
+    agency_ids = if route.agency_id, do: [route.agency_id], else: []
+
+    [
+      retained_entry("shapes", "Imported shapes retained", imported_shape_ids),
+      retained_entry("stops", "Shared stops retained", stop_ids),
+      retained_entry("calendars", "Calendars retained", service_ids),
+      retained_entry("agencies", "Agencies retained", agency_ids)
+    ]
+  end
+
+  defp retained_entry(key, label, identities) do
+    %{
+      key: key,
+      label: label,
+      count: length(identities),
+      identities: Enum.sort(identities)
+    }
+  end
+
+  defp deletion_fingerprint(route, categories, retained) do
+    category_lines =
+      Enum.map(categories, fn category ->
+        Enum.join(
+          [
+            category.key,
+            Integer.to_string(category.count),
+            Enum.join(category.identities, "\u0001"),
+            category.digest
+          ],
+          "\t"
+        )
+      end)
+
+    retained_lines =
+      Enum.map(retained, fn entry ->
+        Enum.join(
+          [entry.key, Integer.to_string(entry.count), Enum.join(entry.identities, "\u0001")],
+          "\t"
+        )
+      end)
+
+    ["review_route_deletion", route.organization_id, route.gtfs_version_id, route.id]
+    |> Enum.concat(category_lines)
+    |> Enum.concat(retained_lines)
+    |> Enum.join("\n")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  # Malformed cross-route timing ownership blocks the review atomically (AC-31):
+  # a trip whose linked timing belongs to another route's pattern, or a timing
+  # row whose occurrence belongs to another route's pattern, cannot be removed
+  # by one route's cascade without touching the other route's rows.
+  defp check_cross_route_timing!(org_id, version_id, route_id) do
+    trip_timing_crossing =
+      Repo.exists?(
+        from(t in Trip,
+          join: tp in TimedPattern,
+          on: tp.id == t.timed_pattern_id,
+          join: p in RoutePattern,
+          on: p.id == tp.route_pattern_id,
+          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+          where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
+          where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
+          where: t.route_id != p.route_id,
+          where: t.route_id == ^route_id or p.route_id == ^route_id
+        )
+      )
+
+    timing_rows_crossing =
+      Repo.exists?(
+        from(tps in TimedPatternStop,
+          join: tp in TimedPattern,
+          on: tp.id == tps.timed_pattern_id,
+          join: owning in RoutePattern,
+          on: owning.id == tp.route_pattern_id,
+          join: rps in RoutePatternStop,
+          on: rps.id == tps.route_pattern_stop_id,
+          join: visited in RoutePattern,
+          on: visited.id == rps.route_pattern_id,
+          where: owning.organization_id == ^org_id and owning.gtfs_version_id == ^version_id,
+          where: visited.organization_id == ^org_id and visited.gtfs_version_id == ^version_id,
+          where: owning.route_id != visited.route_id,
+          where: owning.route_id == ^route_id or visited.route_id == ^route_id
+        )
+      )
+
+    if trip_timing_crossing or timing_rows_crossing,
+      do: Repo.rollback(:malformed_cross_route_timing),
+      else: :ok
   end
 end
