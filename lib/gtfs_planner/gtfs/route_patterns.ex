@@ -706,7 +706,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     else
       snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
       audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
-      delete_pattern_children!(pattern.id)
+      _children = delete_pattern_children!([pattern.id])
       Alignments.delete_owned_shape!(pattern)
       Repo.delete!(pattern)
       %{pattern: nil, trips_updated: 0}
@@ -788,20 +788,33 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     %{pattern: pattern, trips_updated: trips_updated}
   end
 
-  defp delete_pattern_children!(pattern_id) do
+  # FK-safe order: timing rows reference both timings and occurrences, so they
+  # leave first. The set-based list form is shared by single pattern delete and
+  # the reviewed route cascade (R5); callers own the pattern row deletion.
+  defp delete_pattern_children!(pattern_ids) when is_list(pattern_ids) do
     timing_ids =
       from(timing in TimedPattern,
-        where: timing.route_pattern_id == ^pattern_id,
+        where: timing.route_pattern_id in ^pattern_ids,
         select: timing.id
       )
       |> Repo.all()
 
-    Repo.delete_all(from(row in TimedPatternStop, where: row.timed_pattern_id in ^timing_ids))
-    Repo.delete_all(from(timing in TimedPattern, where: timing.id in ^timing_ids))
+    {timing_rows, nil} =
+      Repo.delete_all(from(row in TimedPatternStop, where: row.timed_pattern_id in ^timing_ids))
 
-    Repo.delete_all(
-      from(occurrence in RoutePatternStop, where: occurrence.route_pattern_id == ^pattern_id)
-    )
+    {timings, nil} =
+      Repo.delete_all(from(timing in TimedPattern, where: timing.id in ^timing_ids))
+
+    {occurrences, nil} =
+      Repo.delete_all(
+        from(occurrence in RoutePatternStop, where: occurrence.route_pattern_id in ^pattern_ids)
+      )
+
+    %{
+      timed_pattern_stops: timing_rows,
+      timed_patterns: timings,
+      pattern_stops: occurrences
+    }
   end
 
   # R5 M1's bounded retry convention: a serialization failure (40001) or
@@ -1835,6 +1848,61 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       nil ->
         Repo.rollback(:not_found)
     end
+  end
+
+  @doc """
+  Locks every pattern of a locked route `FOR UPDATE` in stable UUID order.
+
+  Call only inside `Repo.transaction/1`, after `lock_published_route!/2`. The
+  R5 route-cascade lock order is version, route, sorted patterns, sorted trips;
+  taking the whole set in one ordered statement keeps opposing lifecycle
+  writers deadlock-free.
+  """
+  def lock_route_patterns!(%Route{} = route) do
+    from(pattern in RoutePattern,
+      where:
+        pattern.organization_id == ^route.organization_id and
+          pattern.gtfs_version_id == ^route.gtfs_version_id and
+          pattern.route_id == ^route.route_id,
+      order_by: [asc: pattern.id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Removes one route's owned patterns and descendants for the reviewed route
+  cascade (R5), auditing each pattern with the existing single-delete
+  semantics under one shared operation id.
+
+  Call only inside the reviewed route-deletion transaction, after the route
+  and its sorted patterns are locked and the deletion review has been
+  recomputed and accepted. The patterns are removed in FK-safe set-based
+  order (timing rows, timings, occurrences, patterns) and never through the
+  public per-pattern delete. Returns the removed row counts keyed like the
+  review categories so the caller can check them against the review.
+  """
+  def cascade_delete_patterns!(patterns, operation_id, %AuditContext{} = audit_context)
+      when is_list(patterns) and is_binary(operation_id) do
+    Enum.each(patterns, fn pattern ->
+      snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
+
+      audit!(audit_context, :route_pattern, pattern, "deleted", %{
+        before: snapshot,
+        operation_id: operation_id
+      })
+    end)
+
+    pattern_ids = Enum.map(patterns, & &1.id)
+    children = delete_pattern_children!(pattern_ids)
+    {removed, nil} = Repo.delete_all(from(p in RoutePattern, where: p.id in ^pattern_ids))
+
+    %{
+      patterns: removed,
+      pattern_stops: children.pattern_stops,
+      timed_patterns: children.timed_patterns,
+      timed_pattern_stops: children.timed_pattern_stops
+    }
   end
 
   @doc """

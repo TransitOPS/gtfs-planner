@@ -995,6 +995,20 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.review_route_deletion(route_id, audit_context)
 
   @doc """
+  Applies the reviewed route deletion cascade (R5).
+
+  See `GtfsPlanner.Gtfs.Routes.delete_route/4` for the fingerprint,
+  acknowledgement, cascade, checked-summary and error contract. The reviewed
+  cascade covers only categories computable from landed rows (seam `S-3`):
+  imported and unowned shapes and other shared records are retained, and
+  alignment-owned geometry cleanup joins when package 12 lands.
+  """
+  @spec delete_route(String.t(), String.t(), boolean(), AuditContext.t()) ::
+          {:ok, map()} | {:error, term()}
+  def delete_route(route_id, review_fingerprint, acknowledged, %AuditContext{} = audit_context),
+    do: Routes.delete_route(route_id, review_fingerprint, acknowledged, audit_context)
+
+  @doc """
   Returns a list of distinct route types for an organization and GTFS version.
 
   ## Examples
@@ -6837,9 +6851,11 @@ defmodule GtfsPlanner.Gtfs do
     %{"before" => nil, "after" => normalize_value(after_snapshot)}
   end
 
-  defp build_changed_fields(entity_type, "deleted", snapshot, _attrs)
+  defp build_changed_fields(entity_type, "deleted", snapshot, attrs)
        when entity_type in @structured_audit_entity_types and not is_nil(snapshot),
-       do: %{"before" => normalize_value(snapshot), "after" => nil}
+       do:
+         %{"before" => normalize_value(snapshot), "after" => nil}
+         |> put_shared_operation(attrs)
 
   defp build_changed_fields(entity_type, "updated", _snapshot, attrs)
        when entity_type in [:route_pattern_build, "route_pattern_build"] do
@@ -6854,6 +6870,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
+
+  # A reviewed bulk deletion shares one operation id across its route, trip and
+  # pattern logs, so structured deleted entries carry it when provided. Logs
+  # without an operation id keep their previous shape unchanged.
+  defp put_shared_operation(changed, attrs) do
+    case Map.get(attrs, :operation_id, Map.get(attrs, "operation_id")) do
+      nil -> changed
+      value -> Map.put(changed, "operation_id", normalize_value(value))
+    end
+  end
 
   defp route_after_snapshot("created", attrs, snapshot),
     do: Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
