@@ -270,6 +270,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       view |> element("#transfer-inspector-edit") |> render_click()
 
       change_draft(view, ["transfer", "min_transfer_time"], :stops, %{
+        "from_stop_id" => "CEN-A",
+        "to_stop_id" => "CEN-C",
+        "transfer_type" => "2",
         "min_transfer_time" => "240"
       })
 
@@ -278,7 +281,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert text_of(doc(view), "#transfer-min-time-readout") ==
                "4m · include walking and a buffer."
 
-      save_draft(view, :stops, %{"min_transfer_time" => "240"})
+      save_draft(view, :stops, %{
+        "from_stop_id" => "CEN-A",
+        "to_stop_id" => "CEN-C",
+        "transfer_type" => "2",
+        "min_transfer_time" => "240"
+      })
 
       assert has_element?(view, "#flash-info", "Transfer saved in #{ctx.version.name}.")
       refute has_element?(view, "#transfer-editor")
@@ -371,7 +379,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert {:ok, _deleted} =
                Gtfs.delete_general_transfer(rule.id, rule.updated_at, audit(ctx))
 
-      change_draft(view, ["transfer", "transfer_type"], :stops, %{"transfer_type" => "1"})
+      change_draft(view, ["transfer", "transfer_type"], :stops, %{
+        "from_stop_id" => "CEN-A",
+        "to_stop_id" => "CEN-C",
+        "transfer_type" => "1"
+      })
 
       save_draft(view, :stops, %{
         "from_stop_id" => "CEN-A",
@@ -536,8 +548,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert has_element?(view, "#transfer-editor")
       assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer"
       assert has_element?(view, "#transfer-type-3[checked]")
-      assert has_element?(view, "#transfer-scope option[value='stops'][selected]")
-      assert has_element?(view, "#transfer_to_route_id option[value='24'][selected]")
+      assert has_element?(view, "#transfer-scope option[value='routes'][selected]")
+      assert has_element?(view, "#transfer-to-route option[value='24'][selected]")
       refute has_element?(view, "#transfer-min-time")
     end
   end
