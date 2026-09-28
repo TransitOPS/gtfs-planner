@@ -51,7 +51,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
   describe "opening and validating" do
     setup :editor_scope
 
-    test "Create route opens the drawer with the route form", %{conn: conn, version: version} do
+    test "Create route opens the drawer with the route form", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -226,7 +235,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       assert has_element?(view, "#new-route-trigger.btn-primary")
     end
 
-    test "closing clears the entered values", %{conn: conn, version: version} do
+    test "closing clears the entered values", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -254,7 +272,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       refute has_element?(view, "#route_route_type-error")
     end
 
-    test "validation shows the error for a used blank field", %{conn: conn, version: version} do
+    test "validation shows the error for a used blank field", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -410,6 +437,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       organization: organization,
       version: version
     } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -600,6 +632,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       version: version,
       user: user
     } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
@@ -625,6 +662,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       version: version,
       user: user
     } do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "A1",
+        agency_name: "Alpha Transit"
+      })
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
       open_drawer(view)
