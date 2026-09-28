@@ -51,6 +51,9 @@
  * - `alignment:suggestions` (step 32) applies server-routed legs as dirty
  *   `set` drafts with a review flag, one undo entry per section; stop
  *   anchors stay fixed, failures push nothing.
+ * - `alignment:follow_result` (step 33) replaces exactly the echoed
+ *   selected run with the routed interior points, one undo entry; stop
+ *   anchors stay fixed, failures push nothing.
  * - The first `tileerror` pushes `alignment_map_error` exactly once; a
  *   later `tileload` pushes `alignment_map_ok`. `alignment:retry_tiles`
  *   rebuilds the tile layer so a new failure episode reports again.
@@ -235,6 +238,12 @@ const PatternAlignment = {
     // drafts with a review flag (CR-9: drafts only, Save stays the commit).
     this.handleEvent("alignment:suggestions", (payload) =>
       this._applySuggestions(payload),
+    );
+    // Step 33 follow streets: the server routes between the selected
+    // run's neighbours; the hook replaces exactly that run (CR-9: drafts
+    // only, Save stays the commit).
+    this.handleEvent("alignment:follow_result", (payload) =>
+      this._applyFollowResult(payload),
     );
     this.handleEvent("alignment:simplify", (payload) =>
       this._simplifySection(payload),
@@ -1316,6 +1325,7 @@ const PatternAlignment = {
     }
     const interior = this._effectiveInterior(this._selected);
     const selected = this._selectedPoints;
+    const followRun = this._followRun();
     const rows = interior
       .map(
         (_, index) => `
@@ -1332,6 +1342,7 @@ const PatternAlignment = {
       <div class="pa-point-actions">
         <button type="button" class="btn btn-outline min-h-11" data-add-midpoint data-pa-list-focus="midpoint">Add midpoint</button>
         <button type="button" class="btn btn-outline min-h-11" data-delete-points data-pa-list-focus="delete"${selected.size === 0 ? " disabled" : ""}>Delete points (${selected.size})</button>
+        <button type="button" class="btn btn-outline min-h-11" data-follow-streets data-pa-list-focus="follow"${followRun ? "" : ' disabled title="Select neighbouring points to follow streets"'}>Follow streets</button>
       </div>`;
     list.querySelectorAll("[data-point-check]").forEach((box) =>
       box.addEventListener("change", () =>
@@ -1349,6 +1360,9 @@ const PatternAlignment = {
     list
       .querySelector("[data-delete-points]")
       ?.addEventListener("click", () => this._deleteSelected());
+    list
+      .querySelector("[data-follow-streets]")
+      ?.addEventListener("click", () => this._followStreets());
     if (focusKey) {
       // The invoking control may be gone or disabled now (deleted row,
       // emptied selection): fall back to Add midpoint, never the void.
@@ -1495,6 +1509,104 @@ const PatternAlignment = {
     }
     this._selectedPoints = new Set();
     this._commit(position, next);
+  },
+
+  // --- Follow streets (step 33) ----------------------------------------
+  //
+  // The point-list selection names 0-based interior indexes. Follow
+  // streets routes between the neighbours of one contiguous run: the
+  // adjacent interior points, or the stop anchors when the run touches
+  // an end (anchors are never handles, so they never move). A
+  // non-contiguous selection disables the action with its reason as the
+  // title. The server echoes the run bounds back in
+  // `alignment:follow_result`; the hook replaces exactly that run with
+  // one undo entry, and the draft still saves only through Save (CR-9).
+
+  // The selected contiguous run as `{start, end}` interior indexes, or
+  // null when the selection is empty, out of range or non-contiguous.
+  _followRun() {
+    if (this._selectedPoints.size === 0) return null;
+    const interior = this._effectiveInterior(this._selected);
+    const sorted = [...this._selectedPoints].sort((a, b) => a - b);
+    if (sorted.some((index) => index < 0 || index >= interior.length)) {
+      return null;
+    }
+    if (sorted[sorted.length - 1] - sorted[0] + 1 !== sorted.length) {
+      return null;
+    }
+    return { start: sorted[0], end: sorted[sorted.length - 1] };
+  },
+
+  _followStreets() {
+    if (this._mode !== "edit" || !this._editableSection(this._selected)) {
+      return;
+    }
+    const run = this._followRun();
+    if (!run) return;
+    const position = this._selected;
+    const interior = this._effectiveInterior(position);
+    const anchors = this._sectionAnchors(position);
+    if (!anchors) return;
+    const from =
+      run.start === 0
+        ? [anchors.from.lon, anchors.from.lat]
+        : [...interior[run.start - 1]];
+    const to =
+      run.end === interior.length - 1
+        ? [anchors.to.lon, anchors.to.lat]
+        : [...interior[run.end + 1]];
+    this.pushEvent("alignment_follow_streets", {
+      position,
+      start_index: run.start,
+      end_index: run.end,
+      from,
+      to,
+    });
+  },
+
+  // Replaces exactly the echoed run with the routed interior points.
+  // Misshapen payloads, unknown sections and out-of-range bounds push
+  // nothing and change nothing; an empty routed leg is a no-op.
+  _applyFollowResult(payload) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const position = payload ? payload.position : null;
+    const start = payload ? payload.start_index : null;
+    const end = payload ? payload.end_index : null;
+    const points = payload ? payload.points : null;
+    if (!Number.isInteger(position) || !this._sectionLayers.has(position)) {
+      return;
+    }
+    if (
+      !this._editableSection(position) ||
+      !Number.isInteger(start) ||
+      !Number.isInteger(end) ||
+      start < 0 ||
+      end < start
+    ) {
+      return;
+    }
+    if (!Array.isArray(points)) return;
+    const routed = points.filter(
+      (point) =>
+        Array.isArray(point) &&
+        point.length === 2 &&
+        point.every((coord) => typeof coord === "number" && Number.isFinite(coord)),
+    );
+    if (routed.length === 0) return;
+    const interior = this._effectiveInterior(position);
+    if (end >= interior.length) return;
+    const next = [
+      ...interior.slice(0, start),
+      ...routed.map(([lon, lat]) => [lon, lat]),
+      ...interior.slice(end + 1),
+    ];
+    if (!this._commit(position, next)) return;
+    if (position === this._selected) {
+      this._selectedPoints = new Set();
+      this._paintHandleSelection();
+      this.pushDraftState();
+    }
   },
 
   // --- Section actions (step 26) ----------------------------------------

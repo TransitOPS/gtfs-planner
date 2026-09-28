@@ -233,3 +233,81 @@ test.describe("generation", () => {
     expect(problems).toEqual([]);
   });
 });
+
+/**
+ * Follow streets (spec 12, step 33).
+ *
+ * `test.describe("follow streets")` opens the ACTIONS pattern (section 1
+ * holds three saved interior points on its own stop pair), selects two
+ * neighbouring points in the keyboard list and captures the selection
+ * actions with Follow streets enabled. Clicking it routes between the
+ * run's neighbours through BrowserStreetRouting — no live Geoapify calls
+ * — and replaces exactly that run as an unsaved draft (CR-9: nothing here
+ * saves, so the pattern stays saved and every viewport reuses it).
+ */
+test.describe("follow streets", () => {
+  const FOLLOW_PATTERN = "BROWSER-ALIGN-ACTIONS";
+
+  async function selectNeighbourRun(page) {
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    await page.locator("#alignment-point-list-toggle").click();
+    await expect(
+      page.locator("#alignment-point-list .pa-point-row"),
+    ).toHaveCount(3);
+    await page.locator('#alignment-point-list [data-point-check="0"]').check();
+    await page.locator('#alignment-point-list [data-point-check="1"]').check();
+  }
+
+  test("routes between the selected neighbours at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, versionId, FOLLOW_PATTERN);
+    await selectNeighbourRun(page);
+
+    // Two neighbouring points enable Follow streets; nothing routes until
+    // the action runs.
+    const follow = page.locator("#alignment-point-list [data-follow-streets]");
+    await expect(follow).toBeEnabled();
+    await expect(follow).toContainText("Follow streets");
+    await expect(page.locator("#alignment-point-list")).toContainText(
+      "Delete points (2)",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "follow-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // Follow streets replaces exactly the selected run with the routed
+    // leg: the section turns Unsaved and Undo enables.
+    await follow.click();
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+    await expect(
+      page.locator("#alignment-map-root [data-pa-undo]"),
+    ).toBeEnabled({ timeout: 15000 });
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "follow-result-1440");
+
+    // A phone-width run starts from a fresh load (drafts never persist),
+    // so the enabled action captures cleanly at 320 px too.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openAlignment(page, versionId, FOLLOW_PATTERN);
+    await selectNeighbourRun(page);
+    await expect(
+      page.locator("#alignment-point-list [data-follow-streets]"),
+    ).toBeEnabled();
+    await captureFullPage(page, "follow-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});

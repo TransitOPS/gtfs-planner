@@ -44,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     confirm_delete_timing copy_pattern confirm_delete_pattern
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
+    alignment_follow_streets
   )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
@@ -143,6 +144,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_forced_local, [])
      |> assign(:alignment_editable, false)
      |> assign(:alignment_generation, nil)
+     |> assign(:alignment_follow, nil)
      |> assign(:alignment_generate_dialog, nil)
      |> assign(:alignment_generate_notice, nil)
      |> assign(:details_params, @creation_defaults)
@@ -198,7 +200,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:alignment_generate_dialog, nil)
     |> assign(:alignment_generate_notice, nil)
     |> assign(:alignment_generation, nil)
+    |> assign(:alignment_follow, nil)
     |> cancel_async(:alignment_generation)
+    |> cancel_async(:alignment_follow)
   end
 
   @impl true
@@ -727,6 +731,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_follow_streets", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.follow_streets(socket, params)}
+  end
+
+  @impl true
   def handle_event("alignment_review_again", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.review_again(socket, params)}
   end
@@ -1123,6 +1132,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   def handle_async(:alignment_generation, result, socket) do
     {:noreply,
      RoutePatternAlignmentEvents.handle_generation_result(socket, :alignment_generation, result)}
+  end
+
+  @impl true
+  def handle_async(:alignment_follow, result, socket) do
+    {:noreply,
+     RoutePatternAlignmentEvents.handle_follow_result(socket, :alignment_follow, result)}
   end
 
   defp handle_version_switch(socket, version_id) do

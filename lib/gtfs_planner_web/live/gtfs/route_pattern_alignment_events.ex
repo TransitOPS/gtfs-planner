@@ -730,6 +730,190 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     end
   end
 
+  @follow_key :alignment_follow
+
+  @doc """
+  Routes street geometry between two selected neighbours (step 33).
+
+  The hook pushes the selected run's 0-based interior indexes with the
+  neighbouring `[lon, lat]` points (`from`/`to`: the adjacent interior
+  points, or the stop anchors when the run touches an end). The position
+  is validated against the loaded alignment model, the indexes against
+  the section's interior length, and the coordinates against finite range
+  before any routing call — forged values push nothing and route nothing.
+  Runs under `start_async` like step 32's generation, so the map stays
+  interactive; the result lands as `alignment:follow_result` and failures
+  reuse the generation notice. Nothing is written (CR-9).
+  """
+  def follow_streets(socket, params) when is_map(params) do
+    cond do
+      not editable?(socket) ->
+        socket
+
+      not is_nil(socket.assigns[:alignment_follow]) ->
+        socket
+
+      true ->
+        case follow_request(socket, params) do
+          {:ok, request} -> start_follow(socket, request)
+          :invalid -> socket
+        end
+    end
+  end
+
+  def follow_streets(socket, _params), do: socket
+
+  @doc """
+  Handles the async follow-streets result (step 33).
+
+  A cleared token (superseded flight), a pattern mismatch (the user
+  switched patterns while routing) or a revoked editor drops the result
+  with no push, mirroring `handle_generation_result/3`. Success pushes
+  `alignment:follow_result` with the echoed run bounds and the routed
+  interior points; `:no_route` shows the no-path notice naming the
+  section, every other failure the unavailable notice. Nothing is
+  written (CR-9).
+  """
+  def handle_follow_result(socket, _key, {:ok, {:ok, points}}) do
+    case follow_context(socket) do
+      {:ok, follow} -> apply_follow_result(socket, follow, points)
+      :stale -> Component.assign(socket, :alignment_follow, nil)
+    end
+  end
+
+  def handle_follow_result(socket, _key, {:ok, {:error, reason}}) do
+    case follow_context(socket) do
+      {:ok, %{position: position}} ->
+        fail_follow(socket, %{position => reason})
+
+      :stale ->
+        Component.assign(socket, :alignment_follow, nil)
+    end
+  end
+
+  def handle_follow_result(socket, _key, _result) do
+    case follow_context(socket) do
+      {:ok, %{position: position}} ->
+        fail_follow(socket, %{position => :unavailable})
+
+      :stale ->
+        Component.assign(socket, :alignment_follow, nil)
+    end
+  end
+
+  defp follow_request(socket, params) do
+    with {:position, position} <- follow_position(socket, params),
+         {:ok, start_index} <- follow_index(params, "start_index"),
+         {:ok, end_index} <- follow_index(params, "end_index"),
+         true <- start_index <= end_index,
+         %{points: points} <- follow_section(socket, position),
+         true <- end_index < length(points),
+         {:ok, from} <- follow_endpoint(params, "from"),
+         {:ok, to} <- follow_endpoint(params, "to") do
+      {:ok,
+       %{position: position, start_index: start_index, end_index: end_index, from: from, to: to}}
+    else
+      _ -> :invalid
+    end
+  end
+
+  defp follow_position(socket, params) do
+    raw = params["position"] || params[:position]
+
+    case parse_position(raw) do
+      {position, ""} ->
+        case follow_section(socket, position) do
+          nil -> :invalid
+          _section -> {:position, position}
+        end
+
+      _ ->
+        :invalid
+    end
+  end
+
+  defp follow_section(socket, position) do
+    case socket.assigns[:alignment] do
+      %{sections: sections} -> Enum.find(sections, &(&1.position == position))
+      _ -> nil
+    end
+  end
+
+  defp follow_index(params, key) do
+    case params[key] || params[String.to_atom(key)] do
+      value when is_integer(value) and value >= 0 -> {:ok, value}
+      _ -> :invalid
+    end
+  end
+
+  # Coordinates arrive as `[lon, lat]` lists from the hook's push; the
+  # range check here mirrors `Alignments.suggest_between/2` so invalid
+  # values are rejected before any routing call (and before `start_async`
+  # even spawns).
+  defp follow_endpoint(params, key) do
+    case params[key] || params[String.to_atom(key)] do
+      [lon, lat]
+      when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and
+             lat >= -90 and lat <= 90 and lon == lon and lat == lat ->
+        {:ok, [lon * 1.0, lat * 1.0]}
+
+      _ ->
+        :invalid
+    end
+  end
+
+  defp start_follow(socket, request) do
+    %{from: from, to: to} = request
+    route_pattern_id = socket.assigns.pattern.route_pattern_id
+
+    follow =
+      Map.merge(request, %{
+        token: :erlang.make_ref(),
+        pattern_id: route_pattern_id
+      })
+
+    socket
+    |> Component.assign(:alignment_follow, follow)
+    |> Component.assign(:alignment_generate_notice, nil)
+    |> Phoenix.LiveView.start_async(@follow_key, fn ->
+      Gtfs.suggest_alignment_between(from, to)
+    end)
+  end
+
+  # A result is live only while its follow is still current, on the same
+  # pattern, for an editor. Anything else is stale.
+  defp follow_context(socket) do
+    with %{pattern_id: pattern_id} <- socket.assigns[:alignment_follow],
+         %{route_pattern_id: current} <- socket.assigns[:pattern],
+         true <- pattern_id == current,
+         true <- editable?(socket) do
+      {:ok, socket.assigns[:alignment_follow]}
+    else
+      _ -> :stale
+    end
+  end
+
+  defp apply_follow_result(socket, follow, points) when is_list(points) do
+    socket
+    |> Component.assign(:alignment_follow, nil)
+    |> Phoenix.LiveView.push_event("alignment:follow_result", %{
+      position: follow.position,
+      start_index: follow.start_index,
+      end_index: follow.end_index,
+      points: points
+    })
+  end
+
+  defp apply_follow_result(socket, %{position: position}, _points) do
+    fail_follow(socket, %{position => :invalid_response})
+  end
+
+  defp fail_follow(socket, failed) do
+    socket
+    |> Component.assign(:alignment_follow, nil)
+    |> Component.assign(:alignment_generate_notice, generate_notice(socket, failed))
+  end
+
   @doc """
   Reviews the hook's dirty sections for saving (step 28).
 
@@ -1231,6 +1415,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_generate_notice, nil)
          |> Component.assign(:alignment_generation, nil)
          |> Phoenix.LiveView.cancel_async(:alignment_generation)
+         |> Component.assign(:alignment_follow, nil)
+         |> Phoenix.LiveView.cancel_async(:alignment_follow)
          |> Component.assign(:alignment_pending, nil)
          |> Component.assign(:alignment_save_notice, nil)
          |> Component.assign(:alignment_forced_local, [])}

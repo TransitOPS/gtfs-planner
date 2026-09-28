@@ -1240,6 +1240,46 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp leg_interior(leg) when is_list(leg), do: Enum.slice(leg, 1..-2//1)
 
   @doc """
+  Routes one street leg between two `[lon, lat]` endpoints (step 33).
+
+  Both endpoints are validated (finite numbers, lon in -180..180, lat in
+  -90..90) before any routing call, so a forged coordinate never spends a
+  Geoapify credit. Returns the leg's interior points only — the endpoints
+  stay fixed (R5, INV-1) — or `{:error, reason}` with the adapter's bare
+  atom. Nothing is written (CR-9).
+  """
+  @spec suggest_between([float()], [float()]) :: {:ok, [[float()]]} | {:error, atom()}
+  def suggest_between(from, to) do
+    with {:ok, {lat1, lon1}} <- endpoint_latlon(from),
+         {:ok, {lat2, lon2}} <- endpoint_latlon(to) do
+      case StreetRouting.route([{lat1, lon1}, {lat2, lon2}]) do
+        {:ok, [leg]} -> {:ok, leg_interior(leg)}
+        {:ok, _legs} -> {:error, :invalid_response}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  defp endpoint_latlon([lon, lat])
+       when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and
+              lat >= -90 and lat <= 90 do
+    if finite_number?(lon) and finite_number?(lat) do
+      {:ok, {lat * 1.0, lon * 1.0}}
+    else
+      {:error, :invalid_coordinates}
+    end
+  end
+
+  defp endpoint_latlon(_point), do: {:error, :invalid_coordinates}
+
+  # Erlang floats can be NaN/inf only through exotic ports, but a forged
+  # hook payload is just JSON numbers: reject the non-finite ones here so
+  # they never reach the adapter.
+  defp finite_number?(value) when is_float(value), do: value == value
+  defp finite_number?(value) when is_integer(value), do: true
+  defp finite_number?(_value), do: false
+
+  @doc """
   Returns the JSON-ready hook model for an `editor/4` result.
 
   Converts Decimals to floats and atoms to strings, keeps `[lon, lat]` axis

@@ -974,6 +974,10 @@ defmodule GtfsPlanner.Gtfs do
           positions
         )
 
+  @doc "Routes one street leg between two `[lon, lat]` endpoints without writing."
+  def suggest_alignment_between(from, to),
+    do: Alignments.suggest_between(from, to)
+
   @doc "Reviews an alignment save, computing scope actions, affected patterns and a fingerprint without writing."
   def review_alignment_save(pattern_id, draft_params, %AuditContext{} = audit_context),
     do: Alignments.review_save(pattern_id, draft_params, audit_context)
