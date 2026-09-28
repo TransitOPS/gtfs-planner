@@ -5,8 +5,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   The page shell is one bordered workspace split into the version's general
   rules on the left and the selected connection's context on the right. This
   module renders the list pane's search and filter toolbar, its table of general
-  rules, its load failure, first-use and filtered-empty states, the context pane
-  before a connection is chosen, and the labels and reason text the rules
+  rules, its load failure, first-use and filtered-empty states, the selected
+  rule's inspector, the compare view for the rules it competes with, the context
+  pane before a connection is chosen, and the labels and reason text the rules
   display.
 
   The states reuse the shared callout and empty state rather than the visual
@@ -16,6 +17,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   authority for the components, the theme tokens and the accessibility posture.
   A rule's state is always carried by text as well as color, the min-time column
   is tabular, and every row control is a full-height button.
+
+  The inspector reads the catalog's selected row and its competitors, so every
+  sentence it renders — the rider meaning, the station-coverage count, the
+  competing-rule count, the attention reasons and the GTFS values — comes from
+  the annotated data rather than from the reference's sample rules. Data terms
+  stay in the context and their wording stays here (CR-14).
   """
 
   use GtfsPlannerWeb, :html
@@ -583,6 +590,367 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     </div>
     """
   end
+
+  @doc """
+  Renders the context pane's inspector for the selected general rule.
+
+  The pane answers what a rule does: the type, the two endpoints with the scope
+  each side covers, what the rule means for riders, which direction it applies
+  in, whether a station endpoint makes it station-wide, which equal-priority
+  rules compete with it for the same trips, its attention reasons as text, and
+  the stored GTFS values behind the summary. Every reason the catalog annotates
+  reaches the operator as words, so no state is carried by color alone.
+
+  The direction line reads "Applies in this direction only." because rules are
+  one-directional (R7); the reverse link appears only when the catalog found an
+  exact mirror of the six key fields in the same view, and the sentence stands in
+  its place when there is none. A station endpoint's coverage line counts the
+  child platforms the rule covers, so an operator can see why a more specific
+  route or trip rule may override it.
+
+  Edit, reverse-create and delete controls are added by later steps; this renders
+  the read-only inspector, the compare trigger and the related links.
+
+  ## Examples
+
+      <.inspector
+        row={@selected}
+        competitors={@competitors}
+        compare_open?={@compare_open?}
+        version_id={@current_gtfs_version.id}
+      />
+  """
+  attr :row, :map, required: true, doc: "the catalog's selected `row()`"
+
+  attr :competitors, :list,
+    required: true,
+    doc: "the selected row's competing rows, in the catalog's own order"
+
+  attr :compare_open?, :boolean,
+    required: true,
+    doc: "whether the compare view is open"
+
+  attr :version_id, :string,
+    required: true,
+    doc: "the version the stop and route links belong to"
+
+  def inspector(assigns) do
+    assigns =
+      assigns
+      |> assign(:attention, attention_reasons(assigns.row))
+      |> assign(:competitor_count, competitor_count(assigns.row))
+      |> assign(:coverage, coverage_endpoints(assigns.row))
+      |> assign(:detail_lines, detail_lines(assigns.row.transfer))
+      |> assign(:from_route_id, route_id(assigns.row.from))
+      |> assign(:to_route_id, route_id(assigns.row.to))
+
+    ~H"""
+    <div id="transfer-inspector" class="p-4 sm:p-6">
+      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">Transfer rule</p>
+      <h2 class="mt-1 text-xl font-semibold">{type_label(@row.transfer.transfer_type)}</h2>
+
+      <%!-- One spaced column: the shared callout does not accept a `class`, so the
+      rhythm between the journey, the callouts and the disclosure lives here. --%>
+      <div class="mt-4 space-y-4">
+        <div class="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
+          <div class="min-w-0 border-l-4 border-primary pl-3">
+            <span class="block text-xs text-base-content/70">Arrive at</span>
+            <strong class="block text-sm font-semibold">{endpoint_name(@row.from)}</strong>
+            <span class="block text-xs text-base-content/70">
+              {selector_label(@row.from, :from)}
+            </span>
+          </div>
+          <span aria-hidden="true" class="pt-6 text-base-content/50">→</span>
+          <div class="min-w-0 border-l-4 border-info pl-3">
+            <span class="block text-xs text-base-content/70">Board at</span>
+            <strong class="block text-sm font-semibold">{endpoint_name(@row.to)}</strong>
+            <span class="block text-xs text-base-content/70">{selector_label(@row.to, :to)}</span>
+          </div>
+        </div>
+
+        <.callout kind="info" title="What this means for riders">
+          <.rider_meaning row={@row} />
+        </.callout>
+
+        <div class="flex flex-wrap items-center gap-2 text-sm text-base-content/70">
+          <span>Applies in this direction only.</span>
+          <.button
+            :if={@row.reverse_id}
+            id="transfer-inspector-reverse-inspect"
+            type="button"
+            variant="quiet"
+            size="sm"
+            class="min-h-11 text-primary underline underline-offset-4"
+            phx-click="inspect_reverse"
+          >
+            Inspect reverse rule
+          </.button>
+          <span :if={is_nil(@row.reverse_id)}>The reverse connection is not changed.</span>
+        </div>
+
+        <.callout
+          :if={@coverage != []}
+          id="transfer-inspector-coverage"
+          kind="info"
+          title="Station-wide coverage"
+        >
+          <p :for={endpoint <- @coverage}>{coverage_sentence(endpoint)}</p>
+        </.callout>
+
+        <.callout
+          :if={@competitor_count > 0}
+          id="transfer-inspector-overlap"
+          kind="warning"
+          title="Rules disagree for the same journey"
+        >
+          <p>{overlap_sentence(@competitor_count)}</p>
+          <.button
+            id="transfer-inspector-compare"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="mt-2 min-h-11"
+            phx-click="open_compare"
+          >
+            Compare rules
+          </.button>
+        </.callout>
+
+        <.callout
+          :if={@attention != []}
+          id="transfer-inspector-attention"
+          kind="warning"
+          title="Needs attention"
+        >
+          <ul class="list-disc space-y-1 pl-5">
+            <li :for={reason <- @attention}>{attention_text(reason)}</li>
+          </ul>
+        </.callout>
+
+        <details id="transfer-inspector-details" class="border-t border-base-300 pt-4">
+          <summary class="cursor-pointer text-sm font-medium">Rule scope &amp; GTFS details</summary>
+          <div class="mt-2 space-y-1 text-sm text-base-content/70">
+            <p>{specificity_label(@row)} · type {@row.transfer.transfer_type}</p>
+            <p :for={{field, value} <- @detail_lines}>{field}: {value}</p>
+            <p class="pt-1">
+              Specific trip and route selectors narrow this rule. Equally specific overlapping rules need review.
+            </p>
+          </div>
+        </details>
+
+        <div class="flex flex-wrap gap-4">
+          <.link
+            :if={@row.from.stop_id}
+            id="transfer-inspector-stop-link"
+            navigate={~p"/gtfs/#{@version_id}/stops/#{@row.from.stop_id}"}
+            class="min-h-11 py-1 text-sm font-semibold text-primary underline underline-offset-4"
+          >
+            View {endpoint_name(@row.from)}
+          </.link>
+          <.link
+            :if={@from_route_id}
+            id="transfer-inspector-route-link-from"
+            navigate={~p"/gtfs/#{@version_id}/routes/#{@from_route_id}"}
+            class="min-h-11 py-1 text-sm font-semibold text-primary underline underline-offset-4"
+          >
+            View route {route_label(@row.from)}
+          </.link>
+          <.link
+            :if={@to_route_id}
+            id="transfer-inspector-route-link-to"
+            navigate={~p"/gtfs/#{@version_id}/routes/#{@to_route_id}"}
+            class="min-h-11 py-1 text-sm font-semibold text-primary underline underline-offset-4"
+          >
+            View route {route_label(@row.to)}
+          </.link>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  @rider_meaning_text %{
+    0 => "This is a recommended connection point. It does not promise that a vehicle will wait.",
+    1 =>
+      "The departing vehicle is expected to wait for the arriving service so riders can connect.",
+    3 => "Journey planners should not offer this connection.",
+    4 => "Riders may stay on the vehicle as it continues on the next trip.",
+    5 => "Riders must get off and board again for the next trip."
+  }
+
+  @doc """
+  Writes what a rule means for riders, in the reference's wording (prototype
+  `riderMeaning`).
+
+  A minimum-time rule with a stored time names it, so the sentence carries the
+  rule's own number; without one it asks for the time the type requires. The
+  sentence is a paragraph of the inspector's rider callout, which supplies the
+  surrounding surface.
+
+  ## Examples
+
+      <.rider_meaning row={@row} />
+  """
+  attr :row, :map, required: true, doc: "the catalog's `row()` to explain"
+
+  def rider_meaning(assigns) do
+    transfer = assigns.row.transfer
+
+    assigns =
+      assigns
+      |> assign(:type, transfer.transfer_type)
+      |> assign(:min_time, transfer.min_transfer_time)
+      |> assign(:text, Map.get(@rider_meaning_text, transfer.transfer_type, ""))
+
+    ~H"""
+    <p :if={@type == 2 and not is_nil(@min_time)}>
+      Allow at least <strong>{min_time_label(@min_time)}</strong>
+      between arrival and departure, including walking and a buffer.
+    </p>
+    <p :if={@type == 2 and is_nil(@min_time)}>Set a minimum time for this rule.</p>
+    <p :if={@type != 2}>{@text}</p>
+    """
+  end
+
+  @doc """
+  Names how narrow a rule's selectors are, from the rank the catalog computed.
+
+  A rule that names a trip on either side applies to specific trips; a rule that
+  names only routes is route-specific; a rule with no selectors is the stop or
+  station default that other rules override.
+
+  ## Examples
+
+      iex> specificity_label(%{rank: 4})
+      "Route-specific"
+  """
+  def specificity_label(%{rank: rank}) when rank in 1..3, do: "Trip-specific"
+  def specificity_label(%{rank: rank}) when rank in 4..5, do: "Route-specific"
+  def specificity_label(_row), do: "Stop / station default"
+
+  @doc """
+  Renders the compare view for a rule that competes with equal-priority rules.
+
+  It lists the selected rule and every competitor with the effect each one has —
+  its type and minimum time — and the two scopes that make them equally specific,
+  so the operator can see why neither takes precedence. Choosing the intended
+  behavior is an edit, which later steps add; this dialog is informational and
+  closes back to the trigger that opened it.
+
+  ## Examples
+
+      <.compare_dialog :if={@compare_open?} row={@selected} competitors={@competitors} />
+  """
+  attr :row, :map, required: true, doc: "the selected rule's `row()`"
+  attr :competitors, :list, required: true, doc: "the competing rows"
+
+  def compare_dialog(assigns) do
+    assigns = assign(assigns, :rules, [assigns.row | assigns.competitors])
+
+    ~H"""
+    <.confirm_dialog
+      id="transfer-compare-dialog"
+      open={true}
+      size="lg"
+      single_action={true}
+      title="Rules that match the same connection"
+      confirm_label="Close"
+      cancel_label="Close"
+      pending_label="Closing…"
+      on_confirm="close_compare"
+      on_cancel="close_compare"
+      described_by="transfer-compare-dialog-body"
+      return_focus_id="transfer-inspector-compare"
+    >
+      <p>
+        These rules apply to some of the same trip pairs with equal priority, so neither takes precedence. Choose the intended behavior, then narrow or remove the competing rule.
+      </p>
+      <div class="mt-3 border border-base-300 p-3">
+        <p :for={rule <- @rules} class="py-1">
+          <strong class="block">
+            {type_label(rule.transfer.transfer_type)} · {min_time_label(
+              rule.transfer.min_transfer_time
+            )}
+          </strong>
+          <span class="block">{endpoint_name(rule.from)} → {endpoint_name(rule.to)}</span>
+          <span class="block text-base-content/70">
+            {selector_label(rule.from, :from)} → {selector_label(rule.to, :to)}
+          </span>
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  # The competition reason is the overlap callout's own; every other reason
+  # renders in the attention list, as text (R11).
+  defp attention_reasons(%{attention: attention}) do
+    Enum.reject(attention, &match?({:competes, _}, &1))
+  end
+
+  defp competitor_count(%{attention: attention}) do
+    Enum.find_value(attention, 0, fn
+      {:competes, count} -> count
+      _reason -> nil
+    end)
+  end
+
+  # A rule that names a station covers the station and its child platforms, so a
+  # more specific route or trip rule can override it. A station named on both
+  # sides is one coverage fact, not two.
+  defp coverage_endpoints(row) do
+    [row.from, row.to]
+    |> Enum.filter(&(&1.child_count > 0))
+    |> Enum.uniq_by(& &1.stop_id)
+  end
+
+  defp coverage_sentence(endpoint) do
+    count = endpoint.child_count
+
+    "#{endpoint_name(endpoint)} includes all #{count} #{pluralize(count, "child platform")}. " <>
+      "More specific route or trip rules can override this rule for matching journeys."
+  end
+
+  defp overlap_sentence(1) do
+    "1 other rule of equal priority matches some of the same trips. " <>
+      "Review them before deciding which should apply."
+  end
+
+  defp overlap_sentence(count) do
+    "#{count} other rules of equal priority match some of the same trips. " <>
+      "Review them before deciding which should apply."
+  end
+
+  # The eight stored GTFS columns behind the rule, in the reference's order: the
+  # two stops always name what the rule stores, the selectors and the minimum
+  # time only when the rule has one.
+  defp detail_lines(transfer) do
+    [
+      {"from_stop_id", transfer.from_stop_id || "not set"},
+      {"to_stop_id", transfer.to_stop_id || "not set"},
+      {"from_route_id", transfer.from_route_id},
+      {"to_route_id", transfer.to_route_id},
+      {"from_trip_id", transfer.from_trip_id},
+      {"to_trip_id", transfer.to_trip_id},
+      {"min_transfer_time", min_time_detail(transfer)}
+    ]
+    |> Enum.reject(fn {_field, value} -> is_nil(value) end)
+  end
+
+  defp min_time_detail(%{transfer_type: 2, min_transfer_time: nil}), do: "required seconds"
+  defp min_time_detail(%{transfer_type: 2, min_transfer_time: seconds}), do: "#{seconds} seconds"
+  defp min_time_detail(_transfer), do: nil
+
+  # A rule's route link needs a route the version still holds: a selector whose
+  # route is gone has an attention reason instead of a link to nothing.
+  defp route_id(%{route: %{route_id: route_id}}), do: route_id
+  defp route_id(_endpoint), do: nil
+
+  defp route_label(%{route: %{route_id: route_id} = route}) do
+    route_short_name(route) || route_id
+  end
+
+  defp route_label(_endpoint), do: nil
 
   @doc """
   Renders the context pane before any connection is chosen.

@@ -25,6 +25,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   own empty state rather than first use. The connection map arrives with its own
   step.
 
+  The context pane renders the selected rule's inspector from the same catalog
+  load that produced the list: the selected row and the general rows that compete
+  with it. "Inspect reverse rule" patches the rule to the row's exact mirror and
+  drops the filters and the page, because the mirror has to be in the list the
+  page shows; "Compare rules" opens the compare view over the same two assigns
+  without reloading, and a new load closes it. Every read stays scoped to the
+  socket's organization and version, and nothing here mutates a row (R1).
+
   Version switching keeps the action and accepts only a published version of the
   current organization. A foreign, staging or absent version leaves both the
   socket and the client's selection untouched, as on the other GTFS pages.
@@ -64,6 +72,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:per_page, 50)
      |> assign(:total_count, 0)
      |> assign(:selected_id, nil)
+     |> assign(:selected, nil)
+     |> assign(:competitors, [])
+     |> assign(:compare_open?, false)
      |> assign(:rule, nil)
      |> assign(:page_rows, %{})
      |> assign(:page_ids, nil)
@@ -136,6 +147,28 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   def handle_event("clear_filters", _params, socket) do
     # The bare list is the unfiltered URL; a view param would be kept here.
     {:noreply, push_patch(socket, to: transfers_target(socket.assigns.current_gtfs_version.id))}
+  end
+
+  @impl true
+  def handle_event("inspect_reverse", _params, socket) do
+    case reverse_rule(socket) do
+      nil -> {:noreply, socket}
+      reverse_id -> {:noreply, push_patch(socket, to: reverse_path(socket, reverse_id))}
+    end
+  end
+
+  @impl true
+  def handle_event("open_compare", _params, socket) do
+    if socket.assigns.competitors == [] do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, :compare_open?, true)}
+    end
+  end
+
+  @impl true
+  def handle_event("close_compare", _params, socket) do
+    {:noreply, assign(socket, :compare_open?, false)}
   end
 
   @impl true
@@ -215,7 +248,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
             </div>
           </:list>
           <:context>
-            <.context_empty />
+            <.inspector
+              :if={@selected}
+              row={@selected}
+              competitors={@competitors}
+              compare_open?={@compare_open?}
+              version_id={@current_gtfs_version.id}
+            />
+            <.context_empty :if={is_nil(@selected)} />
+            <.compare_dialog
+              :if={@compare_open?}
+              row={@selected}
+              competitors={@competitors}
+            />
           </:context>
         </.workspace>
       </div>
@@ -261,6 +306,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           |> assign(:per_page, catalog.per_page)
           |> assign(:total_count, catalog.total_count)
           |> assign(:selected_id, selection && selection.id)
+          |> assign(:selected, selection)
+          |> assign(:competitors, catalog.competitors)
+          |> assign(:compare_open?, false)
           |> assign(:rule, canonical_rule(rule, selection))
           |> assign(:catalog, catalog)
           |> assign(:catalog_state, :ready)
@@ -281,6 +329,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
          |> assign(:catalog, nil)
          |> assign(:catalog_state, :unavailable)
          |> assign(:selected_id, nil)
+         |> assign(:selected, nil)
+         |> assign(:competitors, [])
+         |> assign(:compare_open?, false)
          |> assign(:page_rows, %{})
          |> assign(:page_ids, nil)
          |> stream(:transfers, [], reset: true)}
@@ -333,6 +384,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp canonical_rule(nil, _selection), do: nil
   defp canonical_rule(rule, %{id: id}) when id == rule, do: rule
   defp canonical_rule(_rule, _selection), do: nil
+
+  # The mirror the catalog resolved inside this view, or nil when the selected
+  # rule has none. A control that is only rendered with a mirror still guards
+  # against a stale payload.
+  defp reverse_rule(%{assigns: %{selected: %{reverse_id: reverse_id}}}), do: reverse_id
+  defp reverse_rule(_socket), do: nil
+
+  # The mirror has to be in the list the page shows, so its selection drops the
+  # filters and returns to the first page with the rule named; the sort and the
+  # direction are the operator's, not the filter's.
+  defp reverse_path(socket, reverse_id) do
+    list_path(socket, filters: @empty_filters, page: 1, rule: reverse_id)
+  end
 
   defp canonical_params(assigns) do
     assigns
