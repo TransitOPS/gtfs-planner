@@ -8,7 +8,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   are each one visible identity, and `kind` is `:weekly` only when a weekly row
   exists. Summaries reuse `Calendars.ServiceDates` for effective dates and
   warnings, and resolve the warning date through `Gtfs.DisplayClock`'s
-  agency-zone PostgreSQL localization.
+  agency-zone PostgreSQL localization. A retained weekly range the evaluator
+  refuses - an imported reversed range - is classified as `:coverage_error` on its
+  own summary instead of raising, so one malformed row cannot take down a
+  whole-version read.
 
   Every interactive write resolves the actor's *current* active organization
   membership with the editor role, then locks the organization-scoped published
@@ -61,6 +64,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @weekly_day_fields ~w(monday tuesday wednesday thursday friday saturday sunday)a
   @weekly_fields @weekly_day_fields ++ [:start_date, :end_date]
   @type kind :: :weekly | :dates_only
+  @type coverage_error :: %{service_id: String.t(), reason: :reversed_range}
   @type command ::
           {:delete, String.t()}
           | {:save, String.t(), map()}
@@ -91,6 +95,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           calendar: Calendar.t() | nil,
           attributes: CalendarAttribute.t() | nil,
           trip_count: non_neg_integer(),
+          coverage_error: coverage_error() | nil,
           active_dates: [Date.t()],
           first_active_date: Date.t() | nil,
           last_active_date: Date.t() | nil,
@@ -144,6 +149,11 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   dates-only calendars and out-of-range additions), `ends_soon?`/`ended?` and
   `days_remaining` come from the same warning pass, and `used_by_trips?` reads the
   grouped usage count.
+
+  A weekly row whose range ends before it starts is accepted by the import and
+  refused by the date evaluator, so it is reported as `:coverage_error` with no
+  derived dates instead of raising: the identity, name, kind and grouped usage stay
+  readable, and its status asserts no date fact, including no empty service.
 
   `opts`: `:today` as above, `:sort_by` (`:name` default or `:period`) and
   `:sort_dir` (`:asc` default or `:desc`). Period order uses the first effective
@@ -425,8 +435,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     attribute = Map.get(attributes, service_id)
     service_exceptions = Map.get(exceptions, service_id, [])
     service_usage = Map.get(usage, service_id, empty_usage())
-    active_dates = ServiceDates.active_dates(calendar, service_exceptions)
-    warnings = ServiceDates.warnings(calendar, service_exceptions, today)
+    input_errors = retained_input_errors(calendar, service_exceptions)
+
+    derived =
+      derived_dates(input_errors, calendar, service_exceptions, service_usage, today)
 
     %{
       service_id: service_id,
@@ -435,9 +447,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       calendar: calendar,
       attributes: attribute,
       trip_count: service_usage.trip_count,
-      active_dates: active_dates,
-      first_active_date: List.first(active_dates),
-      last_active_date: List.last(active_dates),
+      coverage_error: List.first(input_errors),
+      active_dates: derived.active_dates,
+      first_active_date: List.first(derived.active_dates),
+      last_active_date: List.last(derived.active_dates),
       fingerprint:
         source_fingerprint(
           organization_id,
@@ -448,16 +461,58 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           service_exceptions,
           service_usage
         ),
+      warnings: derived.warnings,
+      status: derived.status
+    }
+  end
+
+  # A retained input the import accepts and the date evaluator refuses is
+  # identified here rather than raised, so one malformed row cannot take down a
+  # whole-version read. The import parser and the scoped date uniqueness constraint
+  # already exclude exception-side malformed states, so only the reachable weekly
+  # range is checked and no arbitrary `ArgumentError` is rescued.
+  defp retained_input_errors(
+         %Calendar{start_date: start_date, end_date: end_date} = calendar,
+         _exceptions
+       )
+       when is_struct(start_date, Date) and is_struct(end_date, Date) do
+    if Date.compare(end_date, start_date) == :lt do
+      [%{service_id: calendar.service_id, reason: :reversed_range}]
+    else
+      []
+    end
+  end
+
+  defp retained_input_errors(_calendar, _exceptions), do: []
+
+  defp derived_dates([], calendar, exceptions, usage, today) do
+    active_dates = ServiceDates.active_dates(calendar, exceptions)
+    warnings = ServiceDates.warnings(calendar, exceptions, today)
+
+    %{
+      active_dates: active_dates,
       warnings: warnings,
       status:
-        summary_status(
-          calendar,
-          service_exceptions,
-          active_dates,
-          warnings,
-          service_usage.trip_count,
-          today
-        )
+        summary_status(calendar, exceptions, active_dates, warnings, usage.trip_count, today)
+    }
+  end
+
+  # An identified invalid input keeps identity, name and usage but asserts no
+  # derived date fact: `no_service?: false` stops the defect reading as empty
+  # service, and the remaining flags stay unasserted rather than invented.
+  defp derived_dates(_errors, _calendar, _exceptions, usage, _today) do
+    %{
+      active_dates: [],
+      warnings: [],
+      status: %{
+        no_service?: false,
+        ended?: false,
+        ends_soon?: false,
+        days_remaining: nil,
+        active_today?: false,
+        active_period?: false,
+        used_by_trips?: usage.trip_count > 0
+      }
     }
   end
 
