@@ -10,6 +10,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -565,6 +566,28 @@ defmodule GtfsPlanner.GtfsFixtures do
 
     %CalendarAttribute{}
     |> CalendarAttribute.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc """
+  Generate a closure fixture.
+
+  Scope is assigned on the struct, exactly as the production context will do it.
+  `pathway_id` must reference an existing pathway in the same organization and
+  version (see `pathway_fixture/5`), because the closure table carries a
+  composite pathway reference.
+  """
+  def pathway_evolution_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    attrs =
+      Enum.into(attrs, %{
+        pathway_id: "pathway_#{System.unique_integer([:positive])}",
+        service_id: "calendar_#{System.unique_integer([:positive])}",
+        start_time: "23:00",
+        end_time: "26:00"
+      })
+
+    %PathwayEvolution{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+    |> PathwayEvolution.changeset(attrs)
     |> Repo.insert!()
   end
 end
