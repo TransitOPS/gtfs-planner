@@ -272,6 +272,181 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  # The draft preview and the dirty save bar. Every case drives the real
+  # `#route-details-form` the browser drives, with the default catalog adapter:
+  # the draft is validated through `Route.editor_changeset/3`, the header shows
+  # the valid draft, and nothing here writes (R7, C-2, INV-6).
+  describe "details draft preview" do
+    setup :shared_setup
+
+    test "a changed color previews in the heading badge without saving, and cancel restores the saved row",
+         %{
+           conn: conn,
+           organization: organization,
+           gtfs_version: version
+         } do
+      route =
+        details_route(organization.id, version.id, %{
+          route_color: "0B6E4F",
+          route_text_color: "FFFFFF"
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # A freshly loaded page is not a draft: no bar, no chip, saved identity.
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+      refute has_element?(view, "#route-details-unsaved-preview")
+      assert render(view) =~ "background-color: #0B6E4F"
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_color: "5BC5F2"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      # The draft colour is the header's, the save bar names what a save would
+      # change, and the chip says the header is describing a draft. The browser
+      # always submits the checked text-mode radio, so Automatic also re-derives
+      # the text color and the bar names both fields.
+      assert render(view) =~ "background-color: #5BC5F2"
+      assert has_element?(view, "#route-details-unsaved-preview", "Unsaved preview")
+      refute has_element?(view, "#route-details-save-bar[hidden]")
+      assert has_element?(view, "#route-details-save-bar-text", "Unsaved: Route color")
+      assert has_element?(view, "#route-details-save-bar-text", "Text color")
+      assert has_element?(view, "#route-details-save-bar-text", "Ctrl+S saves")
+
+      # A preview is not a save: the row still holds the saved colour and has
+      # not been touched (AC-19, AC-21).
+      assert saved_route(route).route_color == "0B6E4F"
+      assert saved_route(route).updated_at == route.updated_at
+
+      # Cancel restores the saved values, the saved identity and the clean bar.
+      view |> element("#route-details-discard") |> render_click()
+
+      assert render(view) =~ "background-color: #0B6E4F"
+      refute has_element?(view, "#route-details-unsaved-preview")
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+      assert has_element?(view, "input#route-details-color[value='0B6E4F']")
+      assert has_element?(view, "input#route-details-text[value='FFFFFF']")
+      assert saved_route(route).route_color == "0B6E4F"
+      assert saved_route(route).updated_at == route.updated_at
+    end
+
+    test "a change that matches the saved row again leaves the save bar hidden", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        details_route(organization.id, version.id, %{
+          route_color: "0B6E4F",
+          route_text_color: "FFFFFF"
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_color: "5BC5F2"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      refute has_element?(view, "#route-details-save-bar[hidden]")
+
+      # Typing the saved values back is not a draft any more, so the bar and the
+      # chip go away instead of claiming unsaved work (AC-21).
+      view
+      |> form("#route-details-form", %{
+        route: %{route_color: "0B6E4F", route_text_color: "FFFFFF"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+      refute has_element?(view, "#route-details-unsaved-preview")
+      assert render(view) =~ "background-color: #0B6E4F"
+    end
+
+    test "a submitted draft is validated, kept on screen and writes nothing", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Renamed preview"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      # The submitted draft is the header's and the form's, the bar still names
+      # it as unsaved, and the row is unchanged.
+      assert has_element?(view, "input#route-details-long[value='Renamed preview']")
+      assert has_element?(view, "#route-details-heading", "Renamed preview")
+      assert has_element?(view, "#route-details-save-bar-text", "Route name")
+      refute has_element?(view, "#route-details-save-bar[hidden]")
+      assert saved_route(route).route_long_name == "Details long name"
+      assert saved_route(route).updated_at == route.updated_at
+    end
+
+    test "an invalid draft color keeps the input and its error, and never reaches the badge", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        details_route(organization.id, version.id, %{
+          route_color: "0B6E4F",
+          route_text_color: "FFFFFF"
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_color: "ZZZ"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      # The rejected value stays where the operator typed it, with its own
+      # message, and the badge keeps the neutral surface `route_badge/1` renders
+      # for a value the application cannot draw (R7, AC-2).
+      assert has_element?(view, "input#route-details-color[value='ZZZ']")
+      assert has_element?(view, "#route-details-color-error", "hex color code")
+      assert has_element?(view, "#route-details-badge span.bg-canvas")
+      refute render(view) =~ "background-color: #ZZZ"
+      assert saved_route(route).route_color == "0B6E4F"
+      assert saved_route(route).updated_at == route.updated_at
+    end
+  end
+
+  defp details_route(organization_id, gtfs_version_id, overrides) do
+    route_fixture(
+      organization_id,
+      gtfs_version_id,
+      Map.merge(
+        %{
+          route_id: "PREVIEW1",
+          route_short_name: "P1",
+          route_long_name: "Details long name",
+          route_type: 3,
+          route_color: "0B6E4F",
+          route_text_color: "FFFFFF"
+        },
+        overrides
+      )
+    )
+  end
+
+  defp saved_route(route), do: Repo.get!(GtfsPlanner.Gtfs.Route, route.id)
+
   describe "route not found and unavailable" do
     setup :shared_setup
 
