@@ -117,8 +117,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       assert has_element?(view, "#fare-zone-row-2-count", "2")
 
       # " A" and "A" are two zones with two rows: no path trims an existing ID.
-      assert has_element?(view, "#fare-zone-row-1 strong", " A")
-      assert has_element?(view, "#fare-zone-row-1 small", "ID  A")
+      # `has_element?/3` compares whitespace-normalized text, so the padded ID is
+      # read from the rendered nodes themselves: the bytes have to still be there,
+      # and the row beside it keeps its own unpadded ID.
+      assert untrimmed_texts(view, "#fare-zone-row-1 strong, #fare-zone-row-1 small") == [
+               " A",
+               "ID  A"
+             ]
+
+      assert untrimmed_texts(view, "#fare-zone-row-2 strong, #fare-zone-row-2 small") == [
+               "Central",
+               "ID A"
+             ]
+
       assert has_element?(view, "#fare-zone-row-1-count", "1")
 
       # A declared zone with no stops, and a rule-referenced zone with none.
@@ -342,6 +353,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       |> LazyHTML.attribute("href")
 
     href
+  end
+
+  # The untrimmed text of the given nodes. `has_element?/3` compares
+  # whitespace-normalized text, so a byte-exact stored ID has to be read here.
+  defp untrimmed_texts(view, selector) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> Enum.map(&LazyHTML.text/1)
   end
 
   defp insert_stops(organization, version, stops) do

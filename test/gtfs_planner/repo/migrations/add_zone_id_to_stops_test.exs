@@ -87,7 +87,9 @@ defmodule GtfsPlanner.Repo.Migrations.AddZoneIdToStopsTest do
       Migrator.down(Repo, @migration_version, Migration, prefix: schema, log: false)
 
       refute "zone_id" in table_columns(schema, "stops")
-      assert Enum.sort(table_columns(schema, "stops")) == @stand_in_columns
+      # Both sides are sorted: the assertion is about the same set of columns,
+      # and `information_schema` does not promise an order.
+      assert Enum.sort(table_columns(schema, "stops")) == Enum.sort(@stand_in_columns)
       refute index_exists?(schema, @index)
       assert stand_in_rows(schema) == rows
     end
