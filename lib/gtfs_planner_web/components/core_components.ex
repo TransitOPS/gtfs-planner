@@ -557,9 +557,18 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
     attr :sort_event, :string, doc: "event name that makes the header a sort button"
     attr :sort_key, :string, doc: "value sent as phx-value-key with the sort event"
+
+    attr :axis, :boolean, doc: "renders the :axis slot in this column's second header cell"
   end
 
   slot :action, doc: "the slot for showing user actions in the last table column"
+
+  slot :axis,
+    doc: """
+    an optional second header row, for a scale shared by the column's cells. It is
+    rendered in the column whose `:col` declares `axis: true`; the remaining cells
+    of the row stay empty so the shared scale keeps the column's own geometry.
+    """
 
   def table(assigns) do
     assigns =
@@ -609,6 +618,17 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <th :if={@action != []}>
               <span class="sr-only">{gettext("Actions")}</span>
             </th>
+          </tr>
+          <tr :if={@axis != []} class="ds-table-axis-row">
+            <td
+              :for={col <- @col}
+              class={[col[:axis] && "ds-table-axis-cell", col[:align] == "right" && "text-right"]}
+            >
+              <%= if col[:axis] do %>
+                {render_slot(@axis)}
+              <% end %>
+            </td>
+            <td :if={@action != []}></td>
           </tr>
         </thead>
         <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>

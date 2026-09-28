@@ -166,6 +166,23 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverage do
     %{first_date: if(recent?, do: recent_start, else: first_date), last_date: last_date}
   end
 
+  @doc """
+  Reports whether the feed's own month-aligned span is long enough for `:whole` to
+  disclose a recent window instead of every year.
+
+  The list surface reads this to decide whether `:all` has years to restore, so the
+  24-month rule stays here rather than being restated in a template.
+  """
+  @spec long_history?(Calendars.screen()) :: boolean()
+  def long_history?(%{horizon: nil}), do: false
+
+  def long_history?(%{horizon: horizon}) do
+    long_history?(
+      Date.beginning_of_month(horizon.first_date),
+      Date.end_of_month(horizon.last_date)
+    )
+  end
+
   defp long_history?(first_date, last_date) do
     months = (last_date.year - first_date.year) * 12 + (last_date.month - first_date.month) + 1
 

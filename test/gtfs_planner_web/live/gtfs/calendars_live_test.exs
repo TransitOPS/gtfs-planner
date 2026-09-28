@@ -100,6 +100,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     |> Enum.map(&LazyHTML.text/1)
   end
 
+  # The axis is a header row and the bars live in the body, so a text extraction over
+  # the whole page cannot tell them apart; these read one element's text instead.
+  defp text_of(html, selector) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> Enum.map(&LazyHTML.text/1)
+  end
+
+  # The break and the single day off have to land on regular service days whatever
+  # weekday the suite runs, so every fixture date is derived from next week's Monday.
+  defp next_monday(today), do: Date.add(today, rem(8 - Date.day_of_week(today), 7) + 7)
+
   defp postgres_local_today(timezone) do
     %{rows: [[%Date{} = date]]} = Repo.query!("SELECT (now() AT TIME ZONE $1)::date", [timezone])
 
@@ -119,14 +132,43 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     Enum.find(summaries, &(&1.service_id == service_id))
   end
 
-  defp stub_catalog(result_fn) do
-    stub(CatalogReadAdapterMock, :load_calendar_catalog, fn _org, _version, opts ->
-      result_fn.(opts)
+  # The route reads one screen snapshot, so the adapter seam supplies that shape. A
+  # plain row list is wrapped in a screen built from those rows, which keeps the
+  # existing cases readable while the seam matches the production read.
+  defp stub_screen(result_fn) do
+    stub(CatalogReadAdapterMock, :load_calendar_screen, fn _org, _version, _opts ->
+      case result_fn.() do
+        {:ok, %{rows: _rows} = screen} -> {:ok, screen}
+        {:ok, rows} -> {:ok, screen(rows)}
+        error -> error
+      end
     end)
+  end
 
-    stub(CatalogReadAdapterMock, :load_calendar_feed_status, fn _org, _version ->
-      {:ok, %{today: @fixed_today, gaps: []}}
-    end)
+  defp screen(rows, overrides \\ %{}) do
+    Map.merge(
+      %{
+        rows: rows,
+        invalid_calendars: [],
+        today: @fixed_today,
+        zone: %{date: @fixed_today, fallback?: false, fallback_reason: nil},
+        horizon: horizon(rows),
+        gaps: [],
+        complete?: true
+      },
+      overrides
+    )
+  end
+
+  defp horizon(rows) do
+    first = rows |> Enum.map(& &1.first_active_date) |> Enum.reject(&is_nil/1)
+
+    if first == [] do
+      nil
+    else
+      last = rows |> Enum.map(& &1.last_active_date) |> Enum.reject(&is_nil/1)
+      %{first_date: Enum.min(first, Date), last_date: Enum.max(last, Date)}
+    end
   end
 
   describe "authenticated scoped list through the real Repo adapter" do
@@ -507,6 +549,267 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     end
   end
 
+  describe "coverage axis through the real Repo adapter" do
+    setup :use_real_adapter
+
+    test "the ordinary route draws the axis, the exact-date captions and the legend", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+      monday = next_monday(today)
+
+      # Three consecutive removed regular days are a break; one removed day is a day
+      # off; a Saturday addition is an added date. Every date is derived from next
+      # week's Monday, so the derived counts hold whatever weekday the suite runs.
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "COVER_WEEK",
+        start_date: Date.add(today, -28),
+        end_date: Date.add(today, 28)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "COVER_WEEK",
+        service_description: "Covered weekdays"
+      })
+
+      for removed <- [monday, Date.add(monday, 1), Date.add(monday, 2)] do
+        calendar_date_fixture(organization.id, version.id, %{
+          service_id: "COVER_WEEK",
+          date: removed,
+          exception_type: 2
+        })
+      end
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "COVER_WEEK",
+        date: Date.add(monday, 14),
+        exception_type: 2
+      })
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "COVER_WEEK",
+        date: Date.add(monday, 5),
+        exception_type: 1
+      })
+
+      # A dates-only identity keeps one exact date and is its own row.
+      only_date = Date.add(today, 2)
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "COVER_DATES",
+        date: only_date,
+        exception_type: 1
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "COVER_DATES",
+        service_description: "Covered dates"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      html = loaded(view)
+
+      # The range control is a labelled keyboard group whose default is the whole feed.
+      assert has_element?(view, "#calendar-coverage-range[role=group]")
+      assert has_element?(view, "#calendar-coverage-range-whole[aria-current=true]")
+      refute has_element?(view, "#calendar-coverage-range-near[aria-current=true]")
+
+      # One axis serves every row, and every row carries its own bar on it.
+      assert has_element?(view, "#calendar-coverage-axis")
+      assert has_element?(view, "[data-calendar-coverage='COVER_WEEK']")
+      assert has_element?(view, "[data-calendar-coverage='COVER_DATES']")
+
+      # The axis names its months in text and marks today.
+      assert html =~ "calendar-coverage-tick-label"
+      assert has_element?(view, "#calendar-coverage-axis .calendar-coverage-today")
+
+      # The caption states the exact dates and the derived counts, so the bar is never
+      # the only carrier of a fact.
+      assert html =~ "Covered weekdays"
+      assert html =~ "1 break"
+      assert html =~ "1 day off"
+      assert html =~ "1 added date"
+      assert html =~ "1 date · #{Calendar.strftime(only_date, "%b %-d, %Y")}"
+
+      for word <- [
+            "Regular service",
+            "Day off",
+            "Break",
+            "Added date",
+            "No service on any calendar",
+            "Today"
+          ] do
+        assert has_element?(view, "#calendar-coverage-legend", word)
+      end
+    end
+
+    test "the timeline range is allowlisted URL state and the disclosed long history offers a way back",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "LONG_WEEK",
+        start_date: Date.add(today, -3_200),
+        end_date: Date.add(today, 400)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "LONG_WEEK",
+        service_description: "Nine year weekdays"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      whole = loaded(view)
+
+      # A history longer than 24 months opens on the disclosed recent window, keeps the
+      # row's exact dates and offers every year.
+      assert has_element?(view, "#calendar-coverage-window")
+      assert whole =~ "Timeline starts"
+      assert whole =~ "is hidden"
+      assert has_element?(view, "#calendar-coverage-show-all")
+      assert whole =~ "#{Calendar.strftime(Date.add(today, -3_200), "%b %-d, %Y")}"
+
+      # Every year is the same axis without the window, and it can be restored.
+      all = render_patch(view, list_path(version, %{"range" => "all"}))
+      assert has_element?(view, "#calendar-coverage-restore")
+      assert all =~ "Every year of this version is shown"
+      refute has_element?(view, "#calendar-coverage-show-all")
+
+      # The near view is the third allowlisted value; anything else is the default.
+      near = render_patch(view, list_path(version, %{"range" => "near"}))
+      assert has_element?(view, "#calendar-coverage-range-near[aria-current=true]")
+      assert near =~ "calendar-coverage-axis"
+
+      assert render_patch(view, list_path(version, %{"range" => "later"})) =~
+               "calendar-coverage-range-whole"
+
+      assert has_element?(view, "#calendar-coverage-range-whole[aria-current=true]")
+    end
+
+    test "an unreadable imported range names its identity and repair action without asserting no service",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "READABLE",
+        start_date: Date.add(today, -30),
+        end_date: Date.add(today, 30)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "READABLE",
+        service_description: "Readable weekdays"
+      })
+
+      # The import accepts this row and the date evaluator refuses it.
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "REVERSED",
+        start_date: Date.add(today, 60),
+        end_date: Date.add(today, -60)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "REVERSED",
+        service_description: "Reversed imported range"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      html = loaded(view)
+
+      # The repair state names the identity and the one action that fixes it.
+      assert has_element?(view, "#calendar-coverage-invalid")
+      assert has_element?(view, "[data-calendar-coverage-repair='REVERSED']")
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-invalid-repair[href='/gtfs/#{version.id}/import']"
+             )
+
+      assert html =~ "REVERSED"
+      assert html =~ "Range needs repair"
+
+      # The unreadable row asserts no date fact, and the version claims no complete
+      # gap set (the read reports gaps as nil rather than an empty list).
+      refute html =~ "No service dates"
+      refute has_element?(view, "#calendars-feed-gap")
+
+      # The readable identity keeps its aligned bar beside the repair state.
+      assert has_element?(view, "[data-calendar-coverage='READABLE']")
+      assert html =~ "Readable weekdays"
+    end
+
+    test "filtering rows leaves the shared axis and the version-wide gaps unchanged", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+
+      # Two identities with a real gap between them, so the gap callout exists.
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "ALPHA",
+        start_date: Date.add(today, -40),
+        end_date: Date.add(today, -10)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "ALPHA",
+        service_description: "Alpha weekdays"
+      })
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "BETA",
+        start_date: Date.add(today, 10),
+        end_date: Date.add(today, 40)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "BETA",
+        service_description: "Beta weekdays"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      full = loaded(view)
+      assert full =~ "calendars-feed-gap"
+
+      filtered = render_patch(view, list_path(version, %{"search" => "alpha"}))
+
+      # One row is shown and the result count says so, while the version-wide facts
+      # come from the unfiltered read.
+      assert filtered =~ "1 of 2 calendars"
+      assert text_of(filtered, "#calendars-list tr") |> length() == 1
+
+      assert text_of(full, "#calendar-coverage-axis") ==
+               text_of(filtered, "#calendar-coverage-axis")
+
+      assert text_of(full, "#calendars-feed-gap") == text_of(filtered, "#calendars-feed-gap")
+
+      # The range is a view of the same snapshot, not a filter: it survives a filter
+      # change and the filter survives a range change.
+      narrowed = render_patch(view, list_path(version, %{"search" => "alpha", "range" => "near"}))
+      assert narrowed =~ "1 of 2 calendars"
+      assert has_element?(view, "#calendar-coverage-range-near[aria-current=true]")
+    end
+  end
+
   describe "states through the adapter seam" do
     setup :use_mock_adapter
 
@@ -520,7 +823,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
 
       summary = real_summary(organization, version, "WKD", "Weekday service")
 
-      stub_catalog(fn _opts -> {:ok, [summary]} end)
+      stub_screen(fn _opts -> {:ok, [summary]} end)
 
       {:ok, view, static_html} = live(conn, list_path(version))
 
@@ -554,7 +857,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, []} end)
+      stub_screen(fn _opts -> {:ok, []} end)
 
       {:ok, view, _html} = live(conn, list_path(version))
 
@@ -565,7 +868,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       refute empty =~ "Calendars couldn’t be loaded"
 
       # A connection outage through the adapter seam is never an empty list.
-      stub_catalog(fn _opts -> {:error, :unavailable} end)
+      stub_screen(fn _opts -> {:error, :unavailable} end)
 
       assert render_click(view, "refresh") =~ "calendars-refreshing"
 
@@ -577,7 +880,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
 
       # Retry recovers through the same seam.
       summary = real_summary(organization, version, "WKD", "Weekday service")
-      stub_catalog(fn _opts -> {:ok, [summary]} end)
+      stub_screen(fn _opts -> {:ok, [summary]} end)
 
       assert render_click(view, "retry") =~ "calendars-loading"
       assert loaded(view) =~ "Weekday service"
@@ -591,7 +894,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:error, :not_found} end)
+      stub_screen(fn _opts -> {:error, :not_found} end)
 
       {:ok, view, _html} = live(conn, list_path(version))
       html = loaded(view)

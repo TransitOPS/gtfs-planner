@@ -4,15 +4,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   The list is a read-only view over the scoped union read model: identities come
   from the weekly, exception and metadata tables through
-  `Gtfs.load_calendar_catalog/3`, grouped trip usage and agency-local date
-  summaries come from the same domain read, and the version-wide service gaps
-  come from `Gtfs.load_calendar_feed_status/2`. Search, status and sort are URL
-  state with allowlists, so reload and back navigation reproduce the list.
+  `Gtfs.load_calendar_screen/3`, one protected snapshot that also carries the
+  agency-local date, the version-wide horizon and gaps, and every row's derived
+  periods, exceptions and grouped trip usage. The Service dates column draws each
+  row's effective dates on one shared axis (`GtfsPlannerWeb.Gtfs.CalendarCoverage`),
+  so two calendars can be compared instead of only being described. Search, status,
+  sort and the timeline range are URL state with allowlists, so reload and back
+  navigation reproduce the list.
 
   States stay distinct: the first paint of a slow load renders the skeleton, a
   failed read renders the retry callout (never an empty list), an explicit refresh
-  keeps the loaded rows while it reports progress, and only a successful read with
-  no identities renders the first-use empty state.
+  keeps the loaded rows while it reports progress, only a successful read with
+  no identities renders the first-use empty state, and a version holding an
+  unreadable imported range keeps its valid rows while the repair callout names the
+  identity and the read asserts no complete gap set (AC-5).
 
   The cross-calendar drawer changes the service on one date, a range or several
   selected dates for more than one calendar at once. It keeps one source snapshot
@@ -31,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
+  alias GtfsPlannerWeb.Gtfs.CalendarCoverage
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -51,6 +57,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   @date_change_mode_keys Enum.map(@date_change_modes, &elem(&1, 1))
   @sort_keys ~w(name period)
   @sort_dirs ~w(asc desc)
+  @range_keys ~w(whole near all)
+  @range_options [
+    %{value: "whole", label: "Whole feed"},
+    %{value: "near", label: "Next 3 months"}
+  ]
   @week_days [
     {"Mon", :monday},
     {"Tue", :tuesday},
@@ -67,6 +78,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      socket
      |> assign(:page_title, "Calendars")
      |> assign(:status_options, @status_options)
+     |> assign(:range_options, @range_options)
      |> assign(:calendars_state, :loading)
      |> assign(:all_calendars, [])
      |> assign(:calendars, [])
@@ -74,11 +86,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      |> assign(:zone, nil)
      |> assign(:today, nil)
      |> assign(:gaps, [])
+     |> assign(:screen, nil)
+     |> assign(:coverage, nil)
+     |> assign(:invalid_calendars, [])
+     |> assign(:long_history?, false)
      |> assign(:calendars_empty?, false)
      |> assign(:filtered_empty?, false)
      |> assign(:constraints?, false)
      |> assign(:search, "")
      |> assign(:status, "all")
+     |> assign(:range, "whole")
      |> assign(:sort_by, "name")
      |> assign(:sort_dir, "asc")
      |> assign(:date_change_status, nil)
@@ -97,6 +114,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       socket
       |> assign(:search, params["search"] || "")
       |> assign(:status, allowlisted(params["status"], @status_keys, "all"))
+      |> assign(:range, allowlisted(params["range"], @range_keys, "whole"))
       |> assign(:sort_by, allowlisted(params["sort_by"], @sort_keys, "name"))
       |> assign(:sort_dir, allowlisted(params["sort_dir"], @sort_dirs, "asc"))
       |> assign_filter_form()
@@ -114,7 +132,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   @impl true
   def handle_event("filters", params, socket) do
-    {:noreply, push_patch(socket, to: calendars_path(socket, to_query(socket, params)))}
+    {:noreply,
+     push_patch(socket, to: calendars_path(socket.assigns, to_query(socket.assigns, params)))}
   end
 
   @impl true
@@ -123,12 +142,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     sort_dir = next_sort_dir(socket.assigns.sort_by, socket.assigns.sort_dir, sort_by)
 
     {:noreply,
-     push_patch(socket, to: calendars_path(socket, to_query(socket, %{}, sort_by, sort_dir)))}
+     push_patch(socket,
+       to: calendars_path(socket.assigns, to_query(socket.assigns, %{}, sort_by, sort_dir))
+     )}
   end
 
   @impl true
   def handle_event("clear_filters", _params, socket) do
-    {:noreply, push_patch(socket, to: calendars_path(socket, %{}))}
+    {:noreply, push_patch(socket, to: calendars_path(socket.assigns, %{}))}
   end
 
   @impl true
@@ -150,7 +171,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      {:noreply, push_navigate(socket, to: calendars_path(socket, %{}, nil, nil, version_id))}
+      {:noreply, push_navigate(socket, to: calendars_path(socket.assigns, %{}, version_id))}
     else
       {:noreply, socket}
     end
@@ -162,7 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
     if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: calendars_path(socket, %{}, nil, nil, version_id))}
+      {:noreply, push_navigate(socket, to: calendars_path(socket.assigns, %{}, version_id))}
     else
       {:noreply, socket}
     end
@@ -274,16 +295,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       sort_dir: String.to_existing_atom(socket.assigns.sort_dir)
     ]
 
-    with {:ok, summaries} <- Gtfs.load_calendar_catalog(organization_id, version_id, opts),
-         {:ok, feed_status} <- Gtfs.load_calendar_feed_status(organization_id, version_id) do
-      socket
-      |> assign(:all_calendars, summaries)
-      |> assign(:zone, Map.get(feed_status, :zone))
-      |> assign(:today, feed_status.today)
-      |> assign(:gaps, feed_status.gaps)
-      |> assign(:calendars_state, :ready)
-      |> assign_rows()
-    else
+    case Gtfs.load_calendar_screen(organization_id, version_id, opts) do
+      {:ok, screen} ->
+        socket
+        |> assign(:screen, screen)
+        |> assign(:all_calendars, screen.rows)
+        |> assign(:zone, screen.zone)
+        |> assign(:today, screen.today)
+        |> assign(:gaps, screen.gaps)
+        |> assign(:invalid_calendars, screen.invalid_calendars)
+        |> assign(:long_history?, CalendarCoverage.long_history?(screen))
+        |> assign_coverage()
+        |> assign(:calendars_state, :ready)
+        |> assign_rows()
+
       {:error, :unavailable} ->
         unavailable(socket)
 
@@ -294,9 +319,24 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         |> assign(:calendars, [])
         |> assign(:calendars_empty?, false)
         |> assign(:filtered_empty?, false)
+        |> clear_coverage()
         |> stream(:calendars, [], reset: true)
     end
   end
+
+  # The axis is pure geometry over the snapshot, so a range change re-reads nothing
+  # beyond the ordinary load and the domain dates are never narrowed by the axis.
+  defp assign_coverage(socket) do
+    assign(
+      socket,
+      :coverage,
+      CalendarCoverage.project(socket.assigns.screen, range_atom(socket.assigns.range))
+    )
+  end
+
+  defp range_atom("near"), do: :near
+  defp range_atom("all"), do: :all
+  defp range_atom(_range), do: :whole
 
   # A failed read is never an empty list: the rows and their counts are dropped
   # and the retry callout takes their place.
@@ -310,7 +350,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:zone, nil)
     |> assign(:today, nil)
     |> assign(:gaps, [])
+    |> clear_coverage()
     |> stream(:calendars, [], reset: true)
+  end
+
+  defp clear_coverage(socket) do
+    socket
+    |> assign(:screen, nil)
+    |> assign(:coverage, nil)
+    |> assign(:invalid_calendars, [])
+    |> assign(:long_history?, false)
   end
 
   defp assign_rows(socket) do
@@ -751,16 +800,22 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     )
   end
 
-  defp to_query(socket, params, sort_by \\ nil, sort_dir \\ nil) do
+  defp to_query(assigns, params, sort_by \\ nil, sort_dir \\ nil) do
     %{}
-    |> put_param("search", params["search"] || socket.assigns.search, "")
-    |> put_param("status", params["status"] || socket.assigns.status, "all")
-    |> put_param("sort_by", sort_by || socket.assigns.sort_by, "name")
-    |> put_param("sort_dir", sort_dir || socket.assigns.sort_dir, "asc")
+    |> put_param("search", params["search"] || assigns.search, "")
+    |> put_param("status", params["status"] || assigns.status, "all")
+    |> put_param("range", params["range"] || assigns.range, "whole")
+    |> put_param("sort_by", sort_by || assigns.sort_by, "name")
+    |> put_param("sort_dir", sort_dir || assigns.sort_dir, "asc")
   end
 
-  defp calendars_path(socket, query, _sort_by \\ nil, _sort_dir \\ nil, version_id \\ nil) do
-    version_id = version_id || socket.assigns.current_gtfs_version.id
+  # The timeline range is a view of the same snapshot, not a filter, so it survives
+  # a filter change and the filter state survives a range change.
+  defp range_path(assigns, range),
+    do: calendars_path(assigns, to_query(assigns, %{"range" => range}))
+
+  defp calendars_path(assigns, query, version_id \\ nil) do
+    version_id = version_id || assigns.current_gtfs_version.id
 
     case URI.encode_query(query) do
       "" -> "/gtfs/#{version_id}/calendars"
@@ -801,13 +856,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       [] -> "No weekly days"
       other -> Enum.join(other, ", ")
     end
-  end
-
-  defp service_dates(%{first_active_date: nil}), do: "No service dates"
-  defp service_dates(%{first_active_date: date, last_active_date: date}), do: format_date(date)
-
-  defp service_dates(%{first_active_date: first, last_active_date: last}) do
-    "#{format_date(first)} – #{format_date(last)}"
   end
 
   defp format_date(date), do: Calendar.strftime(date, "%b %-d, %Y")
@@ -995,6 +1043,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       </div>
 
       <div :if={@calendars_state in [:ready, :refreshing]} class="mt-6 space-y-4">
+        <CalendarComponents.coverage_invalid
+          invalid={@invalid_calendars}
+          version_id={@current_gtfs_version.id}
+        />
+
         <p
           :if={@calendars_state == :refreshing}
           id="calendars-refreshing"
@@ -1027,11 +1080,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             </span>
           </div>
 
-          <div
-            :if={@gaps != []}
-            id="calendars-feed-gap"
-            class="mt-4"
-          >
+          <div :if={is_list(@gaps) and @gaps != []} id="calendars-feed-gap" class="mt-4">
             <.callout kind="warning" title={"No service on any calendar: #{gap_label(hd(@gaps))}"}>
               This may be intentional. If trips should run, add service for that date.
               <span :if={length(@gaps) > 1} class="block mt-1 text-sm">
@@ -1075,6 +1124,28 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               label="Show calendars"
               options={@status_options}
             />
+          </div>
+          <div class="grid gap-1.5">
+            <span id="calendar-coverage-range-label" class="text-sm font-medium">Timeline</span>
+            <div
+              id="calendar-coverage-range"
+              role="group"
+              aria-labelledby="calendar-coverage-range-label"
+              class="calendar-coverage-range"
+            >
+              <.link
+                :for={option <- @range_options}
+                id={"calendar-coverage-range-#{option.value}"}
+                patch={range_path(assigns, option.value)}
+                aria-current={
+                  if @range == option.value or (@range == "all" and option.value == "whole"),
+                    do: "true"
+                }
+                class="calendar-coverage-range-option"
+              >
+                {option.label}
+              </.link>
+            </div>
           </div>
           <div class="flex items-center gap-3">
             <.button id="calendar-refresh" phx-click="refresh" variant="secondary" size="sm">
@@ -1126,6 +1197,38 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         </div>
 
         <div
+          :if={
+            @coverage != nil and
+              ((@range == "whole" and @coverage.clipped?) or (@range == "all" and @long_history?))
+          }
+          id="calendar-coverage-window"
+          class="flex flex-wrap items-center gap-x-2 text-sm text-base-content/70"
+        >
+          <span :if={@range == "whole"}>
+            Timeline starts {format_date(@coverage.first_date)}; earlier service since {format_date(
+              @screen.horizon.first_date
+            )} is hidden.
+          </span>
+          <span :if={@range == "all"}>Every year of this version is shown.</span>
+          <.link
+            :if={@range == "whole"}
+            id="calendar-coverage-show-all"
+            patch={range_path(assigns, "all")}
+            class="link link-primary"
+          >
+            Show all years
+          </.link>
+          <.link
+            :if={@range == "all"}
+            id="calendar-coverage-restore"
+            patch={range_path(assigns, "whole")}
+            class="link link-primary"
+          >
+            Restore recent range
+          </.link>
+        </div>
+
+        <div
           :if={@calendars != []}
           id="calendars-results"
           class="bg-base-100 border border-base-300 rounded-box"
@@ -1140,6 +1243,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             >
               <.link
                 navigate={detail_path(assigns, summary)}
+                data-calendar-link={summary.service_id}
                 class="link link-primary font-semibold"
               >
                 {summary.name || "Untitled calendar"}
@@ -1157,8 +1261,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               sort_key="period"
               sort_event="sort"
               sort={column_sort_state(@sort_by, @sort_dir, "period")}
+              axis={true}
             >
-              {service_dates(summary)}
+              <CalendarComponents.coverage_repair
+                :if={summary.coverage_error}
+                row={summary}
+                version_id={@current_gtfs_version.id}
+              />
+              <CalendarComponents.coverage_bar
+                :if={is_nil(summary.coverage_error)}
+                row={summary}
+                coverage={@coverage.rows[summary.service_id]}
+                axis={@coverage}
+              />
             </:col>
             <:col :let={{_id, summary}} label="Trips" align="right">
               <span class="tabular-nums">{summary.trip_count}</span>
@@ -1167,7 +1282,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               <% {tone, word} = badge(summary) %>
               <.status_badge status={tone} label={word} />
             </:col>
+            <:axis>
+              <CalendarComponents.coverage_axis axis={@coverage} />
+            </:axis>
           </.table>
+          <CalendarComponents.coverage_legend />
         </div>
 
         <p :if={not @calendars_empty?} class="text-sm text-base-content/70">

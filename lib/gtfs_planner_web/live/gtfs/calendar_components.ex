@@ -14,6 +14,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   use GtfsPlannerWeb, :html
 
+  @tick_label_target 12
+  @year_only_months 36
+
   @symbols %{service: "●", removed: "×", added: "+", none: "–"}
   @state_words %{
     service: "Regular service",
@@ -412,6 +415,388 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     </div>
     """
   end
+
+  ## Coverage presentation
+
+  @doc """
+  Renders the shared coverage axis under the Service dates column.
+
+  Every tick is a month boundary with a fractional `position`, so this function only
+  formats percentages; the geometry stays in `GtfsPlannerWeb.Gtfs.CalendarCoverage`.
+  Labels thin out by available width through CSS container breakpoints: a short axis
+  keeps all of them, a long one always shows January and the window start and then
+  every fourth, second and finally every month as the column widens. The axis is a
+  scale, not a second copy of the data, so it exposes one description instead of
+  reading thirteen month names.
+  """
+  attr :id, :string, default: "calendar-coverage-axis"
+  attr :axis, :map, required: true
+
+  def coverage_axis(assigns) do
+    assigns =
+      assigns
+      |> assign(:ticks, tick_rows(assigns.axis.ticks))
+      |> assign(:label, axis_label(assigns.axis))
+
+    ~H"""
+    <div id={@id} class="calendar-coverage-axis" role="img" aria-label={@label}>
+      <span
+        :for={band <- @axis.gap_bands}
+        class={["calendar-coverage-band", "calendar-coverage-band--axis"]}
+        style={band_style(band)}
+      >
+      </span>
+      <span
+        :for={tick <- @ticks}
+        class="calendar-coverage-tick"
+        data-density={tick.density}
+        style={"left: #{pct(tick.position)}"}
+      >
+        <span :if={tick.lined?} class="calendar-coverage-tick-line"></span>
+        <span
+          :if={tick.labelled?}
+          class={["calendar-coverage-tick-label", tick.year? && "font-semibold"]}
+        >
+          {tick_label(tick)}
+        </span>
+      </span>
+      <span
+        :if={@axis.today_position}
+        class="calendar-coverage-today"
+        style={"left: #{pct(@axis.today_position)}"}
+      >
+        Today
+      </span>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one row's coverage bar with its exact-date caption.
+
+  `coverage` is the row's projection from `CalendarCoverage.project/2` and `axis`
+  carries the scale every row shares, so the bar is drawn on the same axis as the
+  header. The lane is decoration: the caption below it states the exact first and
+  last date and the break, day-off and added-date counts in text, so no fact exists
+  only as a colour or a position.
+  """
+  attr :row, :map, required: true
+  attr :coverage, :map, required: true
+  attr :axis, :map, required: true
+
+  def coverage_bar(assigns) do
+    ~H"""
+    <div data-calendar-coverage={@row.service_id} class="calendar-coverage">
+      <div class="calendar-coverage-lane" aria-hidden="true">
+        <span
+          :if={@axis.today_position}
+          class="calendar-coverage-past"
+          style={"width: #{pct(@axis.today_position)}"}
+        >
+        </span>
+        <span
+          :for={band <- @axis.gap_bands}
+          class="calendar-coverage-band"
+          style={band_style(band)}
+        >
+        </span>
+        <span
+          :for={mark <- @coverage.marks}
+          class={["calendar-coverage-mark", mark_class(mark)]}
+          style={mark_style(mark)}
+          title={mark_title(mark)}
+        >
+        </span>
+        <span
+          :if={@axis.today_position}
+          class="calendar-coverage-today-line"
+          style={"left: #{pct(@axis.today_position)}"}
+        >
+        </span>
+        <span
+          :if={@coverage.offscreen}
+          class={["calendar-coverage-outside", outside_class(@coverage.offscreen)]}
+        >
+          <.icon name={outside_icon(@coverage.offscreen)} class="size-3.5" />
+          {outside_label(@coverage.offscreen)}
+        </span>
+      </div>
+      <p class="calendar-coverage-caption">{coverage_caption(@row)}</p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the repair state for one identity whose retained dates cannot be read.
+
+  The row keeps its identity, name and usage, and states the reason and the repair
+  action instead of drawing a bar: an unreadable range must never read as "no
+  service". The invalid clause of the domain read never evaluates the dates, so this
+  branch also never routes the identity into the detail read.
+  """
+  attr :row, :map, required: true
+  attr :version_id, :any, required: true
+
+  def coverage_repair(assigns) do
+    ~H"""
+    <div data-calendar-coverage-repair={@row.service_id} class="calendar-coverage-repair">
+      <span class="font-medium text-warning">Range needs repair</span>
+      <p class="mt-0.5">
+        <code class="font-mono">{@row.service_id}</code>
+        {reason_text(@row.coverage_error.reason)}
+      </p>
+      <.link
+        id={"calendar-coverage-repair-#{URI.encode_www_form(@row.service_id)}"}
+        navigate={"/gtfs/#{@version_id}/import"}
+        class="link link-primary mt-0.5 inline-block"
+      >
+        Import the feed again
+      </.link>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the repair callout for every identity the read could not evaluate.
+
+  The callout names each service ID and the one repair action, and states that the
+  version asserts no complete gap set while an identity is unreadable (AC-5).
+  """
+  attr :id, :string, default: "calendar-coverage-invalid"
+  attr :invalid, :list, required: true
+  attr :version_id, :any, required: true
+
+  def coverage_invalid(assigns) do
+    ~H"""
+    <div :if={@invalid != []} id={@id} class="mt-4">
+      <.callout kind="warning" title={invalid_title(length(@invalid))}>
+        These rows stay listed with their names and trip usage. Their dates were never
+        evaluated, so this version asserts no complete set of service gaps until the feed
+        is imported again.
+        <ul class="mt-2 space-y-1">
+          <li :for={error <- @invalid}>
+            <code class="font-mono">{error.service_id}</code> — {reason_text(error.reason)}
+          </li>
+        </ul>
+        <.link
+          id="calendar-coverage-invalid-repair"
+          navigate={"/gtfs/#{@version_id}/import"}
+          class="link link-primary mt-2 inline-block"
+        >
+          Import the feed again
+        </.link>
+      </.callout>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the legend for the axis, the bars and the gap bands.
+
+  Every swatch carries its word as text, so the encoding is readable without the
+  colours, and the words are the same ones the caption uses.
+  """
+  attr :id, :string, default: "calendar-coverage-legend"
+
+  def coverage_legend(assigns) do
+    ~H"""
+    <ul id={@id} class="calendar-coverage-legend" aria-label="Coverage legend">
+      <li :for={{kind, word} <- legend_items()} id={@id <> "-" <> kind}>
+        <span class={["calendar-coverage-swatch", "calendar-coverage-swatch--#{kind}"]}></span>
+        <span>{word}</span>
+      </li>
+    </ul>
+    """
+  end
+
+  @doc """
+  Describes one row's coverage for the caption under its bar.
+
+  A weekly row states its period, then its breaks, single days off and added dates; a
+  specific-dates row states how many dates it runs and their span. An identity whose
+  range could not be read has no caption at all, because it has no evaluated dates.
+  """
+  def coverage_caption(%{coverage_error: %{}}), do: nil
+  def coverage_caption(%{active_dates: []}), do: "No service dates"
+
+  def coverage_caption(%{kind: :dates_only} = row) do
+    "#{plural(length(row.active_dates), "date")} · #{span_label(row)}"
+  end
+
+  def coverage_caption(row) do
+    [
+      span_label(row),
+      plural(length(row.periods.breaks), "break"),
+      plural(length(row.periods.holidays), "day off", "days off"),
+      plural(length(row.periods.extra_days), "added date")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp span_label(%{first_active_date: date, last_active_date: date}), do: format_date(date)
+
+  defp span_label(row),
+    do: "#{format_date(row.first_active_date)} – #{format_date(row.last_active_date)}"
+
+  defp plural(0, _one, _many), do: nil
+  defp plural(1, one, _many), do: "1 #{one}"
+  defp plural(count, one, many), do: "#{count} #{many || one <> "s"}"
+
+  defp plural(count, one), do: plural(count, one, nil)
+
+  defp invalid_title(1), do: "1 calendar has a date range that cannot be read"
+  defp invalid_title(count), do: "#{count} calendars have a date range that cannot be read"
+
+  defp reason_text(:reversed_range), do: "the weekly range ends before it starts."
+  defp reason_text(_reason), do: "the stored dates could not be read."
+
+  defp legend_items do
+    [
+      {"service", "Regular service"},
+      {"removed", "Day off"},
+      {"break", "Break"},
+      {"added", "Added date"},
+      {"gap", "No service on any calendar"},
+      {"today", "Today"}
+    ]
+  end
+
+  # -- Coverage geometry ------------------------------------------------------
+
+  defp pct(value) when is_float(value),
+    do: "#{:erlang.float_to_binary(value * 100, decimals: 4)}%"
+
+  defp pct(value) when is_integer(value), do: "#{value}%"
+
+  defp band_style(band), do: "left: #{pct(band.left)}; width: #{pct(band.width)}"
+
+  # A one-day lane would collapse to a hairline, so every bar keeps a 3 px floor the
+  # same way the packaged reference does. A single day also gives up 1 px of its lane,
+  # which is what separates the day cells of the near range instead of one solid bar.
+  defp mark_style(mark) do
+    width =
+      if Date.compare(mark.first_date, mark.last_date) == :eq do
+        "calc(#{pct(mark.width)} - 1px)"
+      else
+        pct(mark.width)
+      end
+
+    "left: #{pct(mark.left)}; width: #{width}; min-width: 3px"
+  end
+
+  defp mark_class(%{mixed?: true} = mark),
+    do: [mark_class(%{mark | mixed?: false}), "is-approximate"]
+
+  defp mark_class(%{type: type}), do: "calendar-coverage-mark--#{type}"
+
+  defp mark_title(mark) do
+    kind =
+      case mark.type do
+        :service -> "regular service"
+        :added -> "added date"
+        :removed -> "day off"
+        :break -> "break"
+      end
+
+    exact = if mark.mixed?, do: "approximately, in this compression: ", else: ""
+
+    case Date.compare(mark.first_date, mark.last_date) do
+      :eq ->
+        "#{format_date(mark.first_date)}: #{kind}"
+
+      _other ->
+        "#{exact}#{format_date(mark.first_date)} – #{format_date(mark.last_date)}: #{kind}"
+    end
+  end
+
+  defp outside_class(:before), do: "calendar-coverage-outside--before"
+  defp outside_class(:after), do: "calendar-coverage-outside--after"
+
+  defp outside_label(:before), do: "Before this range"
+  defp outside_label(:after), do: "After this range"
+
+  defp outside_icon(:before), do: "hero-chevron-left"
+  defp outside_icon(:after), do: "hero-chevron-right"
+
+  # A label needs about 36 px, so labels thin by rank rather than by a fixed month
+  # count: January and the window start always show, then roughly a twelfth of the
+  # months, then half, then all as the column widens. An axis longer than three years
+  # names its years only, the same rule the packaged reference uses for a long feed.
+  defp tick_rows(ticks) when length(ticks) > @year_only_months do
+    Enum.map(ticks, fn tick ->
+      tick
+      |> Map.merge(%{density: "core", labelled?: core_tick?(tick)})
+      |> line_for_label()
+    end)
+  end
+
+  defp tick_rows(ticks) do
+    case length(ticks) do
+      count when count <= 6 ->
+        Enum.map(ticks, &short_tick/1)
+
+      count ->
+        stride =
+          max(1, ceil_div(count - Enum.count(ticks, &core_tick?/1), @tick_label_target))
+
+        {rows, _rank} = Enum.reduce(ticks, {[], 0}, &rank_tick(&1, &2, stride))
+
+        Enum.reverse(rows)
+    end
+  end
+
+  defp short_tick(tick),
+    do: tick |> Map.merge(%{density: "core", labelled?: true}) |> line_for_label()
+
+  defp rank_tick(tick, {rows, rank}, stride) do
+    if core_tick?(tick) do
+      {[short_tick(tick) | rows], rank}
+    else
+      row =
+        tick
+        |> Map.merge(%{density: density(rank, stride), labelled?: rem(rank, stride) == 0})
+        |> line_for_label()
+
+      {[row | rows], rank + 1}
+    end
+  end
+
+  defp core_tick?(%{year?: true}), do: true
+  defp core_tick?(%{line?: false}), do: true
+  defp core_tick?(_tick), do: false
+
+  # A month line is drawn only where its label is. An unlabelled tick would otherwise
+  # comb a long axis into a texture that competes with the labels, which is what a
+  # nine-year feed looked like before this rule.
+  defp line_for_label(tick), do: Map.put(tick, :lined?, tick.labelled? and tick.line?)
+
+  defp density(rank, stride) do
+    cond do
+      rem(rank, 4 * stride) == 0 -> "quarter"
+      rem(rank, 2 * stride) == 0 -> "half"
+      true -> "full"
+    end
+  end
+
+  defp ceil_div(value, divisor), do: div(value + divisor - 1, divisor)
+
+  defp tick_label(%{line?: false} = tick),
+    do: "#{Elixir.Calendar.strftime(tick.date, "%b")} #{tick.date.year}"
+
+  defp tick_label(%{year?: true} = tick), do: "#{tick.date.year}"
+  defp tick_label(tick), do: Elixir.Calendar.strftime(tick.date, "%b")
+
+  defp axis_label(%{first_date: nil}), do: "No service dates to plot on this axis."
+
+  defp axis_label(axis) do
+    gaps = Enum.map(axis.gap_bands, &gap_days/1) |> Enum.sum()
+
+    "Coverage timeline, #{format_date(axis.first_date)} to #{format_date(axis.last_date)}." <>
+      if(gaps == 0, do: "", else: " #{plural(gaps, "day")} with no service on any calendar.")
+  end
+
+  defp gap_days(band), do: Date.diff(band.last_date, band.first_date) + 1
 
   ## Period helpers
 

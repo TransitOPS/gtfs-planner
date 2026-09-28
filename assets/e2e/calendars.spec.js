@@ -55,9 +55,11 @@ async function expectRows(page, names, timeout = 8000) {
   await expect(page.locator("#calendars-list tr")).toHaveCount(names.length);
 }
 
+// Row identity comes from the semantic detail link, not a column position: the
+// Service dates column now carries a whole coverage bar and its caption.
 async function rowNames(page) {
   const names = await page
-    .locator("#calendars-list tr td:first-child a")
+    .locator("#calendars-list [data-calendar-link]")
     .allTextContents();
 
   return names.map((name) => name.trim());
@@ -124,26 +126,20 @@ test.describe("calendar list", () => {
       const dailyRow = page.locator("#calendars-list tr", {
         hasText: "Every day service",
       });
-      await expect(dailyRow.locator("td").nth(3)).toHaveText("3");
+      await expect(dailyRow.locator('td[data-label="Trips"]')).toHaveText("3");
       await expect(
         page
           .locator("#calendars-list tr", { hasText: "School days" })
-          .locator("td")
-          .nth(3),
+          .locator('td[data-label="Trips"]'),
       ).toHaveText("2");
       await expect(
         page
           .locator("#calendars-list tr", { hasText: "Legacy service" })
-          .locator("td")
-          .nth(3),
+          .locator('td[data-label="Trips"]'),
       ).toHaveText("1");
 
       // Detail links keep URI-encoded service IDs.
-      const oddLink = page
-        .locator("#calendars-list tr", { hasText: "Odd service id" })
-        .locator("td")
-        .first()
-        .locator("a");
+      const oddLink = page.locator('#calendars-list [data-calendar-link="svc/odd name"]');
       await expect(oddLink).toHaveAttribute(
         "href",
         /service_id=svc%2Fodd\+name/,
@@ -303,6 +299,186 @@ test.describe("calendar list", () => {
     await expect(page.locator("#calendars-create")).toHaveAttribute(
       "href",
       `/gtfs/${versionId}/calendars/new`,
+    );
+  });
+});
+
+// ---- Calendar coverage axis (step 4) ---------------------------------------
+
+// Reads the geometry the shared axis and the row bars must agree on, so the two are
+// one scale rather than two drawings that happen to sit above each other.
+async function coverageGeometry(page) {
+  return page.evaluate(() => {
+    const axis = document.querySelector("#calendar-coverage-axis");
+    const lane = document.querySelector(
+      '[data-calendar-coverage="CAL_DAILY"] .calendar-coverage-lane',
+    );
+    if (!axis || !lane) throw new Error("coverage axis or row lane is missing");
+    const a = axis.getBoundingClientRect();
+    const l = lane.getBoundingClientRect();
+    return {
+      axisLeft: a.left,
+      axisWidth: a.width,
+      laneLeft: l.left,
+      laneWidth: l.width,
+      tickLabels: Array.from(
+        axis.querySelectorAll(".calendar-coverage-tick-label"),
+      ).map((label) => label.textContent.trim()),
+    };
+  });
+}
+
+test.describe("calendar coverage", () => {
+  test("draws one shared axis, exact-date captions and the legend at every supported width", async ({
+    page,
+  }) => {
+    const versionId = await openCalendars(page);
+
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 1024, height: 900 },
+      { width: 390, height: 844 },
+      { width: 320, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/gtfs/${versionId}/calendars`);
+      await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+      await page.waitForSelector("#calendar-coverage-axis");
+
+      // One axis for the whole table, one bar for every row, and the five columns stay
+      // the reference's five: the axis row's cells are not header cells.
+      await expect(page.locator("#calendar-coverage-axis")).toHaveCount(1);
+      await expect(page.locator("[data-calendar-coverage]")).toHaveCount(6);
+      await expect(
+        page.locator("#calendars-list-container thead th"),
+      ).toHaveText([/Calendar/, "Regular days", /Service dates/, "Trips", "Status"]);
+
+      // The range control is a labelled group whose default is the whole feed.
+      await expect(page.locator("#calendar-coverage-range")).toHaveAttribute(
+        "role",
+        "group",
+      );
+      await expect(page.locator("#calendar-coverage-range-whole")).toHaveAttribute(
+        "aria-current",
+        "true",
+      );
+
+      // The axis and the bars are one scale: same left edge, same width.
+      const geometry = await coverageGeometry(page);
+      expect(Math.abs(geometry.axisLeft - geometry.laneLeft)).toBeLessThan(1);
+      expect(Math.abs(geometry.axisWidth - geometry.laneWidth)).toBeLessThan(1);
+      expect(geometry.tickLabels.length).toBeGreaterThan(0);
+
+      // The caption states the exact dates and counts in text. Dates and counts stay
+      // weekday-independent, so the assertions hold whatever day the suite runs.
+      const captions = await page
+        .locator("[data-calendar-coverage] .calendar-coverage-caption")
+        .allTextContents();
+
+      await expect(
+        page.locator(
+          '[data-calendar-coverage="CAL_META"] .calendar-coverage-caption',
+        ),
+      ).toHaveText("No service dates");
+      await expect(
+        page.locator(
+          '[data-calendar-coverage="svc/odd name"] .calendar-coverage-caption',
+        ),
+      ).toHaveText(/^1 date · [A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+      await expect(
+        page.locator(
+          '[data-calendar-coverage="CAL_LEGACY"] .calendar-coverage-caption',
+        ),
+      ).toHaveText(/^[A-Z][a-z]{2} \d{1,2}, \d{4} – [A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+      await expect(
+        page.locator(
+          '[data-calendar-coverage="CAL_SCHOOL"] .calendar-coverage-caption',
+        ),
+      ).toHaveText(/(break|day off)/);
+      expect(captions.join(" | ")).not.toContain("undefined");
+
+      // The legend names every state in words.
+      const legend = page.locator("#calendar-coverage-legend");
+      for (const word of [
+        "Regular service",
+        "Day off",
+        "Break",
+        "Added date",
+        "No service on any calendar",
+        "Today",
+      ]) {
+        await expect(legend).toContainText(word);
+      }
+
+      // The wrapped layout stays inside the viewport at every supported width.
+      const overflows = await page.evaluate(
+        () => document.body.scrollWidth > window.innerWidth + 1,
+      );
+      expect(overflows).toBe(false);
+    }
+  });
+
+  test("switches the timeline range through the URL and keeps the existing gap review entry", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const versionId = await openCalendars(page);
+
+    // The whole feed draws period bars: a few marks per row.
+    const wholeMarks = await page
+      .locator('[data-calendar-coverage="CAL_DAILY"] .calendar-coverage-mark')
+      .count();
+
+    // The group is keyboard reachable links, so the range is ordinary URL state.
+    await page.click("#calendar-coverage-range-near");
+    await expect(page).toHaveURL(/range=near/);
+    await expect(page.locator("#calendar-coverage-range-near")).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect(page.locator("#calendar-coverage-range-whole")).not.toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    // The near range draws one day cell per served day, on the same shared axis.
+    await expect
+      .poll(
+        async () =>
+          page
+            .locator('[data-calendar-coverage="CAL_DAILY"] .calendar-coverage-mark')
+            .count(),
+        { timeout: 5000 },
+      )
+      .toBeGreaterThan(Math.max(wholeMarks, 30));
+
+    const geometry = await coverageGeometry(page);
+    expect(Math.abs(geometry.axisLeft - geometry.laneLeft)).toBeLessThan(1);
+    expect(Math.abs(geometry.axisWidth - geometry.laneWidth)).toBeLessThan(1);
+
+    // Reloading the range URL reproduces the view, and the version-wide gap callout
+    // with its date-change entry survives the range change.
+    await page.reload();
+    await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+    await expect(page.locator("#calendar-coverage-range-near")).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect(page.locator("#calendars-feed-gap")).toBeVisible();
+
+    await page.click("#calendars-feed-gap-review");
+    await waitForDrawerReady(page);
+    await expect(page.locator("#calendar-date-change-drawer")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
+    await expect(page.locator("#calendars-feed-gap-review")).toBeFocused();
+
+    // Back to the whole feed through the same control.
+    await page.click("#calendar-coverage-range-whole");
+    await expect(page).not.toHaveURL(/range=near/);
+    await expect(page.locator("#calendar-coverage-range-whole")).toHaveAttribute(
+      "aria-current",
+      "true",
     );
   });
 });
@@ -820,7 +996,7 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
 test("browser Back and Forward require explicit discard and cancellation retains the draft", async ({page}) => {
   const versionId = await openCalendars(page);
   const listUrl = page.url();
-  await page.locator("#calendars-list tr", {hasText: "School days"}).locator("td a").first().click();
+  await page.locator("#calendars-list [data-calendar-link='School days']").click();
   await waitForEditorReady(page);
   const editorUrl = page.url();
   await page.fill("#calendar-name", "History draft");
