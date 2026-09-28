@@ -490,10 +490,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     if short == [], do: field_errors(form[:route_long_name]), else: short
   end
 
-  # `CoreComponents.input/1` only surfaces a field's errors once the form has
-  # actually used that input, so a draft nobody typed into never shows a stale
-  # message. The shared controls keep the same rule.
-  defp field_errors(%Phoenix.HTML.FormField{} = field) do
+  @doc """
+  Returns a form field's translated errors, honoring `used_input?/1`.
+
+  Public because a mounting surface that renders its own control outside this
+  module (the create drawer's identifier override) has to apply the same rule
+  as the shared controls rather than inventing a second one.
+  """
+  def field_errors(%Phoenix.HTML.FormField{} = field) do
+    # `CoreComponents.input/1` only surfaces a field's errors once the form has
+    # actually used that input, so a draft nobody typed into never shows a stale
+    # message. The shared controls keep the same rule.
     if Phoenix.Component.used_input?(field) do
       Enum.map(field.errors, &translate_error/1)
     else

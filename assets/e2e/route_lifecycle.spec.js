@@ -10,11 +10,11 @@ import { bodyFitsViewport } from "./browser_helpers";
  * drawer) and 22 (Route › Details) are the steps that mount it at
  * /gtfs/:version/routes and /gtfs/:version/routes/:route_id.
  *
- * Until one of those steps mounts the component there is no production URL
- * that renders it, and this step must not add a temporary endpoint or a second
- * route to preview a prerequisite. The cases below are therefore complete but
- * skipped: step 21 deletes the `test.skip` on the create cases, step 22 deletes
- * it on the details cases. They assert only the contract this step publishes.
+ * Step 21 mounted `identity_fields/1` and `color_fields/1` in the real Create
+ * route drawer at /gtfs/:version/routes, so the create cases below run against
+ * that production surface. The Route > Details cases stay skipped until step 22
+ * renders the same controls at /gtfs/:version/routes/:route_id; no temporary
+ * endpoint or preview route was added to unblock them.
  *
  * The component's stable control ids, which both mounting steps inherit:
  *   #<prefix>-identity                 the shared region
@@ -83,11 +83,9 @@ async function versionId(page) {
 }
 
 test.describe("Route identity controls", () => {
-  test("identity fields in the create drawer are labelled, optional and reachable", async ({
+  test("create drawer identity fields are labelled, optional and reachable", async ({
     page,
   }) => {
-    test.skip(pendingUntil("step 21"));
-
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
     await page.locator("#new-route-trigger").click();
@@ -181,11 +179,9 @@ test.describe("Route identity controls", () => {
     expect(await bodyFitsViewport(page)).toBe(true);
   });
 
-  test("identity error state announces the shared at-least-one-name rule without saving", async ({
+  test("create identity error state announces the shared at-least-one-name rule without saving", async ({
     page,
   }) => {
-    test.skip(pendingUntil("step 21"));
-
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
     await page.locator("#new-route-trigger").click();
@@ -215,11 +211,9 @@ test.describe("Route identity controls", () => {
 });
 
 test.describe("Route color field", () => {
-  test("colors picker and hex stay in step in the create drawer without a round trip", async ({
+  test("create drawer colors picker and hex stay in step without a round trip", async ({
     page,
   }) => {
-    test.skip(pendingUntil("step 21"));
-
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
     await page.locator("#new-route-trigger").click();
@@ -270,11 +264,9 @@ test.describe("Route color field", () => {
     expect(await bodyFitsViewport(page)).toBe(true);
   });
 
-  test("colors low contrast stays saveable and the automatic fix is a focusable button", async ({
+  test("create low contrast stays saveable and the automatic fix is a focusable button", async ({
     page,
   }) => {
-    test.skip(pendingUntil("step 21"));
-
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
     await page.locator("#new-route-trigger").click();
@@ -342,5 +334,123 @@ test.describe("Route color field", () => {
     expect(new Set(ids).size).toBe(ids.length);
 
     expect(await bodyFitsViewport(page)).toBe(true);
+  });
+});
+
+/**
+ * Create route drawer (spec 16, step 21).
+ *
+ * `GtfsPlannerWeb.Gtfs.RoutesLive` composes the shared identity and color
+ * controls (steps 18 and 20) into the 520px Create route drawer and saves
+ * through the concrete audited command:
+ * `handle_event("open_new_route"/"save_new_route")` -> `Gtfs.create_editor_route/3`
+ * -> `GtfsPlanner.Gtfs.Routes.create_editor_route/3` -> `ReviewedApplyTransaction.Repo`
+ * / `Repo`. The server issues the signed creation attempt when the drawer opens;
+ * the browser only ever carries it.
+ *
+ * Stable ids this step publishes:
+ *   #new-route-trigger / #new-route-drawer / -overlay   the drawer and its trigger
+ *   #new-route-preview / #new-route-preview-name        the live draft preview
+ *   #new-route-identity-fields / #new-route-id-value    the generated identifier
+ *   #new-route-id-reason / #new-route-id-edit           the reason and the override
+ *   #new-route-id-manual / #new-route-id-error          the manual override
+ *   #new-route-unsaved / #new-route-discard             draft and discard confirm
+ *   #new-route-failure                                  a refused create
+ *   #new-route-submit / #new-route-cancel               the drawer's actions
+ */
+test.describe("Create route drawer", () => {
+  test("create drawer opens at 520px with a preview and a generated identifier", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes`);
+
+    // The ordinary list trigger is the only entrypoint; nothing else opens it.
+    const trigger = page.locator("#new-route-trigger");
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+
+    const overlay = page.locator("#new-route-drawer-overlay");
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#new-route-drawer")).toHaveClass(/520px/);
+    await expect(page.locator("#new-route-drawer-title")).toHaveText(
+      "Create route",
+    );
+
+    // The header preview reads the draft alone and never a saved row.
+    await expect(page.locator("#new-route-preview-name")).toHaveText(
+      "Name appears here",
+    );
+
+    // A clean opening is not a draft, so nothing is marked unsaved.
+    await expect(page.locator("#new-route-unsaved")).toHaveCount(0);
+
+    // The identifier block shows what the command will allocate, with the
+    // reason, and offers the manual override (R1: creation-only natural ID).
+    await expect(page.locator("#new-route-id-value")).toBeVisible();
+    await expect(page.locator("#new-route-id-reason")).toBeVisible();
+    await expect(page.locator("#new-route-id-edit")).toBeVisible();
+    await expect(page.locator("#new-route-id-manual")).toHaveCount(0);
+
+    // A clean cancel closes without asking, and writes nothing.
+    await page.locator("#new-route-cancel").click();
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#new-route-discard")).toHaveCount(0);
+  });
+
+  test("create drawer previews the generated id, saves through the audited command and opens the saved route", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes`);
+    await page.locator("#new-route-trigger").click();
+
+    const number = `E2E-${Date.now().toString().slice(-6)}`;
+
+    await page.locator("#new-route-short").fill(number);
+    await page
+      .locator("#new-route-long")
+      .fill("Create drawer regression route");
+    await page.locator("#new-route-mode-3").check();
+    await page.locator("#new-route-color").fill("0055A4");
+
+    // The preview is the domain's own inference, and the drawer is now a draft.
+    await expect(page.locator("#new-route-unsaved")).toBeVisible();
+    const previewed = (
+      await page.locator("#new-route-id-value").innerText()
+    ).trim();
+    expect(previewed.length).toBeGreaterThan(0);
+    await expect(page.locator("#new-route-preview-name")).toHaveText(
+      "Create drawer regression route",
+    );
+
+    // A changed draft asks before it is discarded; keeping it costs nothing.
+    await page.locator("#new-route-cancel").click();
+    await expect(page.locator("#new-route-discard")).toBeVisible();
+    await page.locator("#new-route-discard-cancel").click();
+    await expect(page.locator("#new-route-form")).toBeVisible();
+
+    await page.locator("#new-route-submit").click();
+
+    // Success navigates to the saved route's own Details, and the heading is
+    // the value that was persisted, not the preview.
+    await page.waitForURL(/\/gtfs\/[^/]+\/routes\/[^/]+\?created=1$/);
+    const savedId = decodeURIComponent(
+      page.url().split("/routes/")[1].split("?")[0],
+    );
+    expect(savedId.length).toBeGreaterThan(0);
+    await expect(page.locator("#route-details-heading")).toHaveText(
+      "Create drawer regression route",
+    );
+    await expect(page.locator("#route-details-workspace")).toHaveAttribute(
+      "data-focus-on-mount",
+      "route-details-heading",
+    );
+
+    // The saved identifier is what the list shows afterwards.
+    await page.goto(`/gtfs/${version}/routes?search=${savedId}`);
+    await expect(page.locator("#routes a").first()).toContainText(savedId);
   });
 });
