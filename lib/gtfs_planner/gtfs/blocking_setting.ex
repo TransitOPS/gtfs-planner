@@ -1,9 +1,12 @@
 defmodule GtfsPlanner.Gtfs.BlockingSetting do
   @moduledoc """
-  Schema for the per-version minimum layover used by the Blocks page.
+  Schema for the per-version blocking settings used by the Blocks page.
 
   One row is stored per organization and GTFS version; a version with no row
-  uses the default of 5 minutes.
+  uses the defaults (5 minutes minimum layover, no block-length or piece limits,
+  any interlining, 30 km/h estimated deadhead speed at 1.3 circuity). The
+  changeset still validates only `min_layover_minutes`; the remaining settings
+  are widened with their changeset in a later step.
   """
 
   use Ecto.Schema
@@ -14,6 +17,14 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
 
   schema "blocking_settings" do
     field :min_layover_minutes, :integer, default: 5
+    field :max_block_minutes, :integer
+    field :pull_out_buffer_minutes, :integer, default: 0
+    field :interlining, Ecto.Enum, values: [:any, :same_stop, :none], default: :any
+    field :deadhead_speed_kmh, :integer, default: 30
+    field :deadhead_circuity, :decimal, default: Decimal.new("1.3")
+    field :max_piece_minutes, :integer
+
+    belongs_to :default_garage, GtfsPlanner.Operations.Garage
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -28,6 +39,13 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
           min_layover_minutes: integer(),
+          max_block_minutes: integer() | nil,
+          pull_out_buffer_minutes: integer(),
+          interlining: :any | :same_stop | :none,
+          default_garage_id: Ecto.UUID.t() | nil,
+          deadhead_speed_kmh: integer(),
+          deadhead_circuity: Decimal.t(),
+          max_piece_minutes: integer() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
