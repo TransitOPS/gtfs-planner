@@ -11,6 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.ProductSurfaces
   require Logger
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -49,7 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     ExportRuns.reconcile_expired(organization_id)
     ExportRuns.cleanup_expired(organization_id)
 
-    export_type = export_type_from_param(params["type"])
+    export_type = resolve_export_type(params["type"], socket.assigns.current_organization)
 
     {:noreply,
      socket
@@ -387,7 +388,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   />
                   <span class="text-sm font-medium">Pathways export</span>
                 </label>
-                <label class="flex min-h-11 items-center gap-2 border border-base-300 px-3 py-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                <label
+                  :if={ProductSurfaces.visible?(@current_organization, :operations_export)}
+                  class="flex min-h-11 items-center gap-2 border border-base-300 px-3 py-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+                >
                   <input
                     type="radio"
                     id="export-type-operations"
@@ -404,7 +408,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
           <%!-- The callout owns no spacing class: `core_components` spreads global
           attributes onto its own class, so the margin lives on a wrapper. --%>
-          <div :if={@export_type == :operations} class="mt-5">
+          <div
+            :if={
+              @export_type == :operations and
+                ProductSurfaces.visible?(@current_organization, :operations_export)
+            }
+            class="mt-5"
+          >
             <.callout
               id="operations-export-note"
               kind="info"
@@ -827,6 +837,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp export_type_from_param("pathways"), do: :pathways
   defp export_type_from_param("operations"), do: :operations
   defp export_type_from_param(_type), do: :full
+
+  # ProductSurfaces alone decides visibility (INV-1): a Pathways organization
+  # never selects the operations export, so its query param falls back to full.
+  defp resolve_export_type(type_param, organization) do
+    case export_type_from_param(type_param) do
+      :operations ->
+        if ProductSurfaces.visible?(organization, :operations_export),
+          do: :operations,
+          else: :full
+
+      export_type ->
+        export_type
+    end
+  end
 
   defp mobility_result_count_items(summary) do
     [

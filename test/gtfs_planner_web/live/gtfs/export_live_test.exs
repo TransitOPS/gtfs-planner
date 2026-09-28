@@ -259,6 +259,72 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     end
   end
 
+  describe "operations export visibility (ProductSurfaces)" do
+    defp pathways_org_with_version(roles) do
+      organization = organization_fixture(%{product: :pathways})
+      member = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: member.id,
+        organization_id: organization.id,
+        roles: roles
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      %{organization: organization, member: member, version: version}
+    end
+
+    test "a Pathways organization hides the operations option and its note",
+         %{conn: conn} do
+      %{organization: organization, member: editor, version: version} =
+        pathways_org_with_version(["pathways_studio_editor"])
+
+      conn = log_in_user(conn, editor, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      refute has_element?(view, "#export-type-operations")
+      refute has_element?(view, "#operations-export-note")
+      assert has_element?(view, "#export-type-full[checked]")
+    end
+
+    test "a Pathways ?export_type=operations URL falls back to the full export",
+         %{conn: conn} do
+      %{organization: organization, member: editor, version: version} =
+        pathways_org_with_version(["pathways_studio_editor"])
+
+      conn = log_in_user(conn, editor, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export?type=operations")
+
+      assert has_element?(view, "#export-type-full[checked]")
+      refute has_element?(view, "#export-type-operations")
+      refute has_element?(view, "#operations-export-note")
+    end
+
+    test "a Planner organization keeps the operations option and param", %{conn: conn} do
+      organization = organization_fixture(%{product: :planner})
+      member = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: member.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, member, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      assert has_element?(view, "#export-type-operations")
+      refute has_element?(view, "#export-type-operations[checked]")
+
+      {:ok, operations_view, _html} =
+        live(conn, "/gtfs/#{version.id}/export?type=operations")
+
+      assert has_element?(operations_view, "#export-type-operations[checked]")
+      assert has_element?(operations_view, "#operations-export-note")
+    end
+  end
+
   describe "GTFS area navigation" do
     test "mounts the GTFS tabs with Export current above the unchanged page", %{
       conn: conn,
