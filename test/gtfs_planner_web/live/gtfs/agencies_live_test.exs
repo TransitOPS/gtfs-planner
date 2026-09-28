@@ -90,7 +90,17 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
     |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
   end
 
-  defp names(doc), do: Enum.map(rows(doc), &(&1 |> cell_lines("Agency") |> hd()))
+  # The Agency cell carries the name on the button that opens the row (step 18)
+  # and the website host as the line under it.
+  defp names(doc) do
+    Enum.map(rows(doc), fn row ->
+      row
+      |> LazyHTML.query("td[data-label='Agency'] button")
+      |> LazyHTML.text()
+      |> String.trim()
+    end)
+  end
+
   defp hosts(doc), do: Enum.map(rows(doc), &(&1 |> cell_lines("Agency") |> List.last()))
 
   defp header_sorts(doc) do

@@ -45,6 +45,18 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   discard question on every close route and the shared `unsaved_guard/1` hook on
   reload (AC-6).
 
+  Editing is that drawer over one stored row. Each name in the list is a button
+  that loads its row with the scoped `FeedSettings.get_agency/3` and keeps the
+  `updated_at` it loaded in the socket, never in a hidden field (CR-1, CR-9);
+  the drawer shows the prototype's read-only identity box where the ID would be
+  edited, the version zone as a note instead of a second zone field, and saves
+  through `FeedSettings.update_agency/4`. A save another editor beat is a
+  conflict rather than a silent overwrite: the draft stays on screen with "Load
+  latest", and once the latest row and its token are loaded the next save
+  replaces their values (AC-15, AC-16). A row that is gone — deleted, foreign or
+  from another version — flashes "This agency no longer exists." and opens
+  nothing (AC-28).
+
   Access follows the other Settings pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
   guard itself because a session alone grants no GTFS access. Version switching
@@ -77,6 +89,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # markup spells the same ids, so the hook and the failure path agree.
   @agency_form_id "agency-form"
   @agency_form_error_id "agency-form-error"
+  # One sentence for both ways an edit can lose its row — deleted since the list
+  # was read, or a UUID from another organization or version (AC-28).
+  @agency_missing_error "This agency no longer exists."
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -98,6 +113,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
      |> assign(:agency_drawer, nil)
      |> assign(:agency_form, nil)
      |> assign(:agency_baseline, nil)
+     |> assign(:agency_loaded_updated_at, nil)
+     |> assign(:agency_conflict?, false)
+     |> assign(:agency_conflict_reloaded?, false)
      |> assign(:agency_dirty?, false)
      |> assign(:agency_confirm_discard?, false)
      |> assign(:return_focus_id, nil)
@@ -178,6 +196,15 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     end
   end
 
+  # Every agency name in the list opens the row it names. The load is the same
+  # scoped read the list uses (CR-1), so a UUID from another organization or
+  # version opens nothing and says so instead of showing a form that could not be
+  # saved (AC-28).
+  @impl true
+  def handle_event("open_edit", params, socket) do
+    {:noreply, open_edit_drawer(socket, params["id"], params["opener_id"])}
+  end
+
   # Validation on change goes through `FeedSettings.change_agency/2`, the same
   # changeset the save uses, so a change the save would refuse is visible beside
   # its field as the editor types it (R9, AC-12).
@@ -190,9 +217,19 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   def handle_event("validate_agency", _params, socket), do: {:noreply, socket}
 
-  # The one write path of the drawer: the context authorizes the actor, locks the
-  # published version, resolves the zone, chooses the ID and runs the backfill in
-  # one transaction (R1, R2, R6, R10, INV-2, INV-5).
+  # The edit drawer's save is the same form event as the create drawer's, so the
+  # open drawer decides which context call the one write path makes.
+  @impl true
+  def handle_event(
+        "save_agency",
+        %{"agency" => params},
+        %{assigns: %{agency_drawer: :edit}} = socket
+      ),
+      do: {:noreply, update_edited_agency(socket, params)}
+
+  # The one write path of the create drawer: the context authorizes the actor,
+  # locks the published version, resolves the zone, chooses the ID and runs the
+  # backfill in one transaction (R1, R2, R6, R10, INV-2, INV-5).
   @impl true
   def handle_event("save_agency", %{"agency" => params}, socket) do
     case FeedSettings.create_agency(audit_context(socket), params) do
@@ -239,6 +276,11 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   end
 
   def handle_event("save_agency", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("load_latest_agency", _params, socket) do
+    {:noreply, reload_edited_agency(socket)}
+  end
 
   # Every route out of the create drawer — Cancel, the close button and, through
   # the `OverlayDialog` hook's dismiss control, Escape and the backdrop — lands on
@@ -452,7 +494,16 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                 sort_event="sort"
                 sort={column_sort_state(@sort_by, @sort_dir, :name)}
               >
-                <div class="font-semibold">{row.agency.agency_name}</div>
+                <button
+                  id={"agency-open-#{row.agency.id}"}
+                  type="button"
+                  phx-click="open_edit"
+                  phx-value-id={row.agency.id}
+                  phx-value-opener_id={"agency-open-#{row.agency.id}"}
+                  class="inline-block min-h-11 text-left font-semibold break-words text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                >
+                  {row.agency.agency_name}
+                </button>
                 <div class="mt-1 text-xs break-words text-base-content/70">
                   {website_host(row.agency.agency_url)}
                 </div>
@@ -545,9 +596,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       <.agency_drawer
         mode={@agency_drawer}
         form={@agency_form}
+        agency={@agency_baseline}
         first_agency?={@health.agency_count == 0}
         zone={zone_name(@health.zone)}
         zone_names={@zone_names}
+        conflict?={@agency_conflict?}
+        conflict_reloaded?={@agency_conflict_reloaded?}
         dirty?={@agency_dirty?}
         return_focus_id={@return_focus_id}
         version={@current_gtfs_version}
@@ -574,7 +628,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         confirm_variant="danger"
         described_by="agency-discard-body"
       >
-        <p>Your entries will be lost. No agency is created.</p>
+        <p>{agency_discard_body(@agency_drawer)}</p>
       </.confirm_dialog>
     </Layouts.app>
     """
@@ -808,16 +862,22 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     """
   end
 
-  # The create drawer is the prototype's agency form: Agency identity, then
-  # Rider contact, in one surface whose fields step 18's edit drawer reuses
-  # unchanged. Only the first agency carries the schedule timezone field — a
-  # later agency shows the zone the version already holds and takes it on save
-  # (R2, AC-12) — and the footer's one write is `create_agency/2`.
+  # The create and edit drawers are the prototype's agency form: Agency
+  # identity, then Rider contact, in one surface whose fields step 18's edit mode
+  # reuses unchanged. Only the create form of a version's first agency carries
+  # the schedule timezone field — a later agency shows the zone the version
+  # already holds and takes it on save, and the edit form shows that zone as a
+  # note because a second zone is what the timezone flow exists to prevent
+  # (R2, AC-12, AC-15). The edit mode adds the prototype's identity box above the
+  # fields and names the stored row in the title.
   attr :mode, :any, required: true
   attr :form, :any, required: true
+  attr :agency, :any, default: nil
   attr :first_agency?, :boolean, required: true
   attr :zone, :string, default: nil
   attr :zone_names, :list, required: true
+  attr :conflict?, :boolean, required: true
+  attr :conflict_reloaded?, :boolean, required: true
   attr :dirty?, :boolean, required: true
   attr :return_focus_id, :string, default: nil
   attr :version, :any, required: true
@@ -829,7 +889,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       id="agency-drawer"
       open={@mode != nil}
       on_close="close_agency_drawer"
-      title={agency_drawer_title(@mode)}
+      title={agency_drawer_title(@mode, @agency)}
       return_focus_id={@return_focus_id}
     >
       <:header_actions>
@@ -850,7 +910,21 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         </p>
 
         <p class="mt-2 text-sm text-base-content/70">
-          Use the public name riders recognize. Optional fields are marked.
+          {agency_drawer_intro(@mode)}
+        </p>
+
+        <%!--
+          The prototype's identity box. The GTFS agency ID is derived from the
+          name and preserved across imports and exports, so the edit form shows
+          it as a fact and submits no field for it (R1).
+        --%>
+        <p
+          :if={@agency}
+          id="agency-identity"
+          class="mt-4 rounded-box bg-base-200 px-4 py-3 text-xs text-base-content/70"
+        >
+          Agency ID <strong class="text-base-content">{@agency.agency_id}</strong>
+          · Preserved in imports and exports
         </p>
 
         <.form
@@ -865,10 +939,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
             :if={save_failed?(@form)}
             id="agency-form-error"
             kind="error"
-            title="Nothing was created. Check the highlighted fields."
+            title={save_failed_title(@mode)}
             tabindex="-1"
             class="mb-4"
           />
+
+          <.conflict_callout :if={@conflict?} reloaded?={@conflict_reloaded?} />
 
           <.agency_form_fields
             form={@form}
@@ -888,13 +964,48 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
               Cancel
             </.button>
 
-            <.button id="agency-save" type="submit" class="min-h-11" phx-disable-with="Creating…">
-              Create agency
+            <.button
+              id="agency-save"
+              type="submit"
+              class="min-h-11"
+              phx-disable-with={agency_pending_label(@mode)}
+            >
+              {agency_submit_label(@mode)}
             </.button>
           </div>
         </.form>
       </div>
     </.drawer>
+    """
+  end
+
+  # A conflicting save keeps the draft and the entries the editor typed and
+  # names the two ways forward: reloading the base now, or, once reloaded,
+  # saving again over it. It is the Feed details drawer's pattern over one
+  # agency row (AC-16).
+  attr :reloaded?, :boolean, required: true
+
+  defp conflict_callout(assigns) do
+    ~H"""
+    <.callout
+      id="agency-conflict"
+      kind={if @reloaded?, do: "info", else: "error"}
+      title={conflict_title(@reloaded?)}
+      class="mb-4"
+    >
+      <p>{conflict_body(@reloaded?)}</p>
+
+      <.button
+        :if={!@reloaded?}
+        id="agency-load-latest"
+        type="button"
+        variant="secondary"
+        class="mt-3 min-h-11"
+        phx-click="load_latest_agency"
+      >
+        Load latest
+      </.button>
+    </.callout>
     """
   end
 
@@ -1042,6 +1153,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     first_agency? = socket.assigns.health.agency_count == 0
 
     socket
+    |> clear_agency_edit_state()
     |> assign(:agency_baseline, baseline)
     |> assign(:agency_drawer, :create)
     |> assign(:agency_confirm_discard?, false)
@@ -1049,6 +1161,119 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     |> assign(:return_focus_id, opener_id)
     |> assign_agency_draft(FeedSettings.change_agency(baseline, %{}))
   end
+
+  # Opening the edit drawer reads the row through the scoped context read and
+  # keeps the `updated_at` it loaded in the socket, never in the form (CR-1,
+  # CR-9). A row that is gone, foreign or malformed opens nothing: the page
+  # behind the drawer is the version as it now is, and the flash says why.
+  defp open_edit_drawer(socket, id, opener_id) do
+    case FeedSettings.get_agency(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           id
+         ) do
+      nil ->
+        put_flash(socket, :error, @agency_missing_error)
+
+      agency ->
+        socket
+        |> assign(:agency_baseline, agency)
+        |> assign(:agency_drawer, :edit)
+        |> assign(:agency_loaded_updated_at, agency.updated_at)
+        |> assign(:agency_confirm_discard?, false)
+        |> assign(:agency_conflict?, false)
+        |> assign(:agency_conflict_reloaded?, false)
+        |> assign(:zone_names, [])
+        |> assign(:return_focus_id, opener_id)
+        |> assign_agency_draft(FeedSettings.change_agency(agency, %{}))
+    end
+  end
+
+  # The one write path of the edit drawer: the context authorizes the actor,
+  # share-locks the published version, loads the scoped row under its own lock
+  # and compares the token the drawer loaded, in one transaction (R8, R10,
+  # INV-2, INV-5). A token that no longer matches is reported as the conflict it
+  # is, with the draft and the entries kept and nothing written (AC-16).
+  defp update_edited_agency(socket, params) do
+    case FeedSettings.update_agency(
+           audit_context(socket),
+           socket.assigns.agency_baseline.id,
+           params,
+           socket.assigns.agency_loaded_updated_at
+         ) do
+      {:ok, _agency} ->
+        socket
+        |> close_agency()
+        |> load_agencies()
+        |> put_flash(:info, "Changes saved.")
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        socket
+        |> assign_agency_draft(changeset)
+        |> push_event("focus_form_error", %{
+          form_id: @agency_form_id,
+          fallback_id: @agency_form_error_id
+        })
+
+      {:error, :stale} ->
+        changeset = FeedSettings.change_agency(socket.assigns.agency_baseline, params)
+
+        socket
+        |> assign_agency_draft(changeset)
+        |> assign(:agency_conflict?, true)
+        |> assign(:agency_conflict_reloaded?, false)
+
+      {:error, :forbidden} ->
+        socket
+        |> close_agency()
+        |> put_flash(:error, "You no longer have editor access to this organization.")
+
+      # The row can be deleted by another editor while this drawer is open, and
+      # the scoped load reports that as the same `:not_found` a foreign id gets:
+      # nothing is written and the page reloads without the row (AC-28).
+      {:error, :not_found} ->
+        socket
+        |> close_agency()
+        |> load_agencies()
+        |> put_flash(:error, @agency_missing_error)
+    end
+  end
+
+  # Reloading the base keeps the draft the editor typed and the token the next
+  # save compares against, so saving again replaces what the other editor stored
+  # instead of reporting the same conflict a second time (AC-16).
+  defp reload_edited_agency(socket) do
+    baseline = socket.assigns.agency_baseline
+
+    case FeedSettings.get_agency(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           baseline && baseline.id
+         ) do
+      nil ->
+        socket
+        |> close_agency()
+        |> load_agencies()
+        |> put_flash(:error, @agency_missing_error)
+
+      latest ->
+        changeset = FeedSettings.change_agency(latest, agency_draft_params(socket))
+
+        socket
+        |> assign(:agency_baseline, latest)
+        |> assign(:agency_loaded_updated_at, latest.updated_at)
+        |> assign_agency_draft(changeset)
+        |> assign(:agency_conflict?, true)
+        |> assign(:agency_conflict_reloaded?, true)
+    end
+  end
+
+  # The values the editor has typed, read back from the form they were typed in,
+  # so reloading the base replaces the stored row and not the draft.
+  defp agency_draft_params(%{assigns: %{agency_form: %Phoenix.HTML.Form{} = form}}),
+    do: form.source.params || %{}
+
+  defp agency_draft_params(_socket), do: %{}
 
   # The form, the action it reports and the dirty state always move together, so
   # one helper binds them: a handler cannot show a draft the guard would ignore,
@@ -1078,6 +1303,17 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     |> assign(:agency_dirty?, false)
     |> assign(:agency_confirm_discard?, false)
     |> assign(:zone_names, [])
+    |> clear_agency_edit_state()
+  end
+
+  # The edit-only state — the loaded `updated_at` token (CR-9) and the conflict
+  # callout — never survives into a closed drawer or a create form that has no
+  # stored row behind it.
+  defp clear_agency_edit_state(socket) do
+    socket
+    |> assign(:agency_loaded_updated_at, nil)
+    |> assign(:agency_conflict?, false)
+    |> assign(:agency_conflict_reloaded?, false)
   end
 
   # A failed save is the only state that earns the view-level banner. Validation
@@ -1088,9 +1324,35 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   defp save_failed?(_form), do: false
 
-  # Step 18's edit mode names the agency it edits; the create drawer this step
-  # owns has one title, so the clause stays total over the mode.
-  defp agency_drawer_title(_mode), do: "Create agency"
+  # The edit drawer is titled with the stored name, which is what the list row
+  # the editor clicked showed (AC-15); the create drawer has one title.
+  defp agency_drawer_title(:edit, %Agency{agency_name: name}), do: name
+  defp agency_drawer_title(_mode, _agency), do: "Create agency"
+
+  defp agency_drawer_intro(:edit),
+    do: "Keep the details riders see in journey planners up to date. Optional fields are marked."
+
+  defp agency_drawer_intro(_mode),
+    do: "Use the public name riders recognize. Optional fields are marked."
+
+  defp save_failed_title(:edit), do: "Nothing was saved. Check the highlighted fields."
+  defp save_failed_title(_mode), do: "Nothing was created. Check the highlighted fields."
+
+  defp agency_submit_label(:edit), do: "Save changes"
+  defp agency_submit_label(_mode), do: "Create agency"
+
+  defp agency_pending_label(:edit), do: "Saving…"
+  defp agency_pending_label(_mode), do: "Creating…"
+
+  defp agency_discard_body(:edit),
+    do: "Your entries will be lost. The stored agency stays unchanged."
+
+  defp agency_discard_body(_mode), do: "Your entries will be lost. No agency is created."
+
+  defp conflict_title(false), do: "Another editor changed this agency"
+  defp conflict_title(true), do: "Latest agency loaded"
+  defp conflict_body(false), do: "Nothing was saved. Your entries are kept."
+  defp conflict_body(true), do: "Save again to replace their changes."
 
   defp zone_name({:ok, zone}), do: zone
   defp zone_name({:unresolved, _reason}), do: nil

@@ -80,6 +80,14 @@ const CREATE_CAPTURE_DIR =
     ".specs/13-agencies-and-feed-details/evidence/visual/agencies-create",
   );
 
+// The edit drawer block's own evidence folder (EV-23).
+const EDIT_CAPTURE_DIR =
+  process.env.AGENCIES_EDIT_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/agencies-edit",
+  );
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -1042,5 +1050,101 @@ test.describe("@agencies-create", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-later-saved-1280");
+  });
+});
+
+// Settings › Agencies edit drawer (EV-22, EV-23; step 18).
+//
+// The drawer a list row's name opens: the read-only identity box, the version
+// zone note, the stored values and the save. The journey edits Harbor Shuttle's
+// phone on "Browser Agencies Version" and captures the drawer at both required
+// viewports, then the saved state.
+//
+// Declared last on purpose: it mutates the seeded version the `@agencies-list`
+// block reads earlier in the same file, and the suite runs one worker with no
+// retries, so the declared order is the seeding order (CR-10). Only the phone
+// changes, so the earlier name, host, zone and route-count readings stay true.
+//
+// Captures land in this block's own evidence folder as `edit-drawer-{1280,375}.png`
+// and `edit-saved-1280.png`.
+test.describe("@agencies-edit", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("edits an agency's phone in its drawer", async ({ page }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const agenciesId = await versionId(page, AGENCIES_VERSION);
+    await page.goto(`/gtfs/${agenciesId}/settings/agencies`);
+    await page.waitForSelector("#agencies");
+    await waitForLiveView(page);
+
+    // The name is the row's own button, so the journey opens the agency it names
+    // rather than the row at an index.
+    const row = page.locator("#agencies tr").filter({ hasText: "Harbor Shuttle" });
+    const open = row.locator("button[id^='agency-open-']");
+
+    await expect(open).toHaveText("Harbor Shuttle");
+    await open.click();
+
+    const overlay = page.locator("#agency-drawer-overlay");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-drawer-title")).toHaveText("Harbor Shuttle");
+    await expect(page.locator("#agency-identity")).toContainText("Agency ID");
+    await expect(page.locator("#agency-identity")).toContainText("HBR");
+    await expect(page.locator("#agency-identity")).toContainText(
+      "Preserved in imports and exports",
+    );
+
+    // The version zone is a note, not a second zone field, and the ID is a fact
+    // rather than an input (AC-15).
+    await expect(page.locator("#agency-form_agency_timezone")).toHaveCount(0);
+    await expect(page.locator("#agency-zone-callout")).toContainText(
+      "America/New_York",
+    );
+    await expect(page.locator("#agency-form_agency_name")).toHaveValue(
+      "Harbor Shuttle",
+    );
+    await expect(page.locator("#agency-form_agency_url")).toHaveValue(
+      "https://harbor.example",
+    );
+    await expect(page.locator("#agency-save")).toHaveText("Save changes");
+    await expect(page.locator("#agency-cancel")).toHaveText("Cancel");
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, EDIT_CAPTURE_DIR, "edit-drawer-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#agency-save")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, EDIT_CAPTURE_DIR, "edit-drawer-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await page.fill("#agency-form_agency_phone", "(212) 555-RIDE");
+    await watchPendingState(page, "#agency-save");
+    await page.click("#agency-save");
+
+    const pendingStates = await readPendingStates(page);
+
+    expect(
+      pendingStates.some((state) => state.disabled && state.text === "Saving…"),
+    ).toBe(true);
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText("Changes saved.");
+
+    // Reopening reads the stored row back, so the phone the journey typed is the
+    // one the page now holds.
+    await row.locator("button[id^='agency-open-']").click();
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-form_agency_phone")).toHaveValue(
+      "(212) 555-RIDE",
+    );
+    await expect(page.locator("#agency-unsaved")).toHaveCount(0);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, EDIT_CAPTURE_DIR, "edit-saved-1280");
   });
 });
