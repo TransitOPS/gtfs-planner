@@ -1931,7 +1931,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     affected_ids = Enum.map(rows, & &1.id)
     snapshots = Map.new(rows, &{&1.id, Transfer.audit_snapshot(&1)})
 
-    {count, _deleted} = Repo.delete_all(from(t in Transfer, where: t.id in ^affected_ids))
+    {count, _deleted} =
+      Repo.delete_all(
+        scoped_general_ids(audit.organization_id, audit.gtfs_version_id, affected_ids)
+      )
 
     Enum.each(rows, fn row ->
       audit_deleted_transfer(
@@ -1947,8 +1950,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   # R8: the bulk input is the caller's exact target list. The shape is checked before
-  # the transaction so a malformed request cannot open one, and grouping by id turns
-  # a repeated id into one target or a conflicting-timestamp `:stale`.
+  # the transaction so a malformed request cannot open one. Grouping by the canonical
+  # UUID turns a repeated id into one target or a conflicting-timestamp `:stale`, and
+  # makes two case variants of one id one target instead of a silent last-write-wins
+  # collapse.
   defp delete_targets(pairs) when is_list(pairs) and pairs != [] do
     Enum.reduce_while(pairs, {:ok, %{}}, &accumulate_delete_target/2)
   end
@@ -1970,12 +1975,22 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   defp delete_target({id, timestamp}) when is_binary(id) and is_binary(timestamp),
-    do: {:ok, id, normalize_timestamp(timestamp)}
+    do: {:ok, canonical_id(id), normalize_timestamp(timestamp)}
 
   defp delete_target({id, %DateTime{} = timestamp}) when is_binary(id),
-    do: {:ok, id, timestamp}
+    do: {:ok, canonical_id(id), timestamp}
 
   defp delete_target(_pair), do: :error
+
+  # A caller may spell a UUID in any case; grouping on the canonical form keeps two
+  # spellings of one id in a single target. An id that is not a UUID cannot match any
+  # row, so it keeps its raw form and fails later in `cast_targets/1` with `:not_found`.
+  defp canonical_id(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
 
   defp put_delete_target(targets, id, timestamp) do
     case Map.fetch(targets, id) do

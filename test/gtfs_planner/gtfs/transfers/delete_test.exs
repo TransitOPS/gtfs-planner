@@ -275,6 +275,32 @@ defmodule GtfsPlanner.Gtfs.Transfers.DeleteTest do
       assert transfer_logs(ctx) == []
     end
 
+    test "refuses case variants of one id with two different timestamps", ctx do
+      row = rule(ctx, %{transfer_type: 2, min_transfer_time: 180})
+      variant = String.upcase(row.id)
+      assert variant != row.id
+
+      pairs = [
+        {row.id, row.updated_at},
+        {variant, DateTime.add(row.updated_at, 1, :second)}
+      ]
+
+      assert {:error, :stale} = delete_many(pairs, ctx)
+      assert Repo.get!(Transfer, row.id) == row
+      assert transfer_logs(ctx) == []
+    end
+
+    test "treats case variants of one id with the same timestamp as one target", ctx do
+      row = rule(ctx, %{transfer_type: 2, min_transfer_time: 180})
+
+      pairs = [{row.id, row.updated_at}, {String.upcase(row.id), row.updated_at}]
+
+      assert {:ok, 1} = delete_many(pairs, ctx)
+      assert Repo.get(Transfer, row.id) == nil
+      assert [log] = transfer_logs(ctx)
+      assert log.changed_fields["affected_transfer_ids"] == [row.id]
+    end
+
     test "treats a repeated id with the same timestamp as one target", ctx do
       row = rule(ctx, %{transfer_type: 2, min_transfer_time: 180})
 
