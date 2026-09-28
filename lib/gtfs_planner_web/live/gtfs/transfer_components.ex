@@ -23,6 +23,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   competing-rule count, the attention reasons and the GTFS values — comes from
   the annotated data rather than from the reference's sample rules. Data terms
   stay in the context and their wording stays here (CR-14).
+
+  The page lists one of two views of the version. The view chips above the
+  toolbar count the whole version's general rules and in-seat records, and the
+  in-seat view renders read-only: the table keeps the same columns with a footer
+  that says so, the toolbar drops the Needs attention checkbox because in-seat
+  rows carry no reasons, a version without in-seat records states where they are
+  managed, and the inspector names the record, its rider meaning and the Blocks
+  handoff instead of the general inspector's coverage, overlap and action
+  controls. Nothing here creates, changes or deletes a type 4/5 row (R1).
   """
 
   use GtfsPlannerWeb, :html
@@ -93,6 +102,68 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   @doc """
+  Renders the list pane's two view chips.
+
+  The chips are the page's view switcher: the left one lists the version's
+  general rules and the right one its in-seat records, each with the count the
+  catalog loaded for the whole version rather than for the current filter, so an
+  operator sees what a view holds before switching to it. Because type 4/5 rows
+  are authored on Blocks, the in-seat chip says so where the operator chooses
+  it.
+
+  The pressed chip states `aria-pressed` and changes both its border and its
+  weight, so which view is listed never rests on color alone.
+
+  ## Examples
+
+      <.view_chips view={@view} counts={@catalog.counts} />
+  """
+  attr :view, :atom, required: true, values: [:general, :in_seat]
+  attr :counts, :map, required: true, doc: "the catalog's `counts` for the whole version"
+
+  def view_chips(assigns) do
+    ~H"""
+    <div
+      role="group"
+      aria-label="Transfer views"
+      class="flex flex-wrap gap-2 border-b border-base-300 px-4 py-3"
+    >
+      <button
+        id="transfers-view-general"
+        type="button"
+        aria-pressed={to_string(@view == :general)}
+        phx-click="switch_view"
+        phx-value-view="general"
+        class={view_chip_classes(@view == :general)}
+      >
+        General rules ({@counts.general})
+      </button>
+      <button
+        id="transfers-view-in-seat"
+        type="button"
+        aria-pressed={to_string(@view == :in_seat)}
+        phx-click="switch_view"
+        phx-value-view="in_seat"
+        class={view_chip_classes(@view == :in_seat)}
+      >
+        In-seat ({@counts.in_seat}) · managed on Blocks
+      </button>
+    </div>
+    """
+  end
+
+  # One chip shape, pressed or not: daisyUI's button with a chip's own border
+  # and weight. Both states carry the border and the weight change, so the
+  # pressed chip is legible without its color.
+  defp view_chip_classes(true) do
+    "btn h-auto min-h-11 border-primary bg-primary/10 font-semibold text-primary hover:bg-primary/20"
+  end
+
+  defp view_chip_classes(false) do
+    "btn h-auto min-h-11 border-control-border bg-base-100 font-medium text-base-content/70 hover:border-primary"
+  end
+
+  @doc """
   Renders the list pane's toolbar: the connection search and the filter
   disclosure.
 
@@ -108,6 +179,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   The disclosure is a control the operator opens, as the reference has it: the
   URL says which filters apply and the button says how many, so a filtered deep
   link is legible before it is opened.
+
+  The in-seat view drops the Needs attention checkbox: in-seat rows carry no
+  attention reasons, so the control could only ever empty the list. The reference
+  shows it there, but the catalog cannot answer it.
 
   ## Examples
 
@@ -131,6 +206,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     doc: "how many of the three selects currently apply"
 
   attr :filters_open?, :boolean, required: true, doc: "whether the filter disclosure is open"
+
+  attr :in_seat?, :boolean,
+    required: true,
+    doc: "whether the listed view is the read-only in-seat view"
 
   def list_toolbar(assigns) do
     ~H"""
@@ -194,6 +273,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
         <div class="mt-3 flex flex-wrap items-center gap-4">
           <.input
+            :if={not @in_seat?}
             field={@filter_form[:attention]}
             type="checkbox"
             id="transfer-filter-attention"
@@ -217,6 +297,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp filter_button_label(0), do: "Filters"
   defp filter_button_label(count), do: "Filters (#{count})"
+
+  defp count_label(count, true), do: "#{count} in-seat #{pluralize(count, "record")}"
+  defp count_label(count, false), do: "#{count} #{pluralize(count, "rule")}"
+
+  # The footer names what the list can do with a row: general rows drive the
+  # context pane, in-seat rows are read-only here and kept in export.
+  defp table_footer(true), do: "Read-only here. All records are retained in export."
+  defp table_footer(false), do: "Select a connection to see its map and rider impact."
+
+  # The page count names the same rows the count bar does.
+  defp pagination_entity(true), do: "in-seat records"
+  defp pagination_entity(false), do: "rules"
 
   defp stop_filter_options(stops) do
     Enum.map(stops, fn stop -> {stop.name || stop.stop_id, stop.stop_id} end)
@@ -247,18 +339,23 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   It sits between the toolbar and the rows and stays above the filtered-empty
   state, so an emptied list reads "0 rules" instead of losing its count with its
-  rows.
+  rows. The count names the rows the view holds — general rules or in-seat
+  records — as the reference's count bar does.
 
   ## Examples
 
-      <.rule_count total_count={0} />
+      <.rule_count total_count={0} in_seat?={false} />
   """
   attr :total_count, :integer, required: true
+
+  attr :in_seat?, :boolean,
+    required: true,
+    doc: "whether the count names in-seat records instead of rules"
 
   def rule_count(assigns) do
     ~H"""
     <div class="flex min-h-12 items-center justify-between gap-4 border-b border-base-300 px-4 py-2 text-sm text-base-content/70">
-      <span id="transfers-count" role="status">{@total_count} rules</span>
+      <span id="transfers-count" role="status">{count_label(@total_count, @in_seat?)}</span>
       <span id="transfers-direction-hint">One direction per rule</span>
     </div>
     """
@@ -278,6 +375,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   the URL: the caller passes the selected id and the current sort, and a row
   button renders its own highlight from them.
 
+  The in-seat view lists the same columns read-only: the attention badge cannot
+  appear (the catalog annotates in-seat rows with no reasons) and the footer
+  says the records are retained in export rather than offering the selection a
+  map preview. The reference's own per-row state text and badges have no
+  production data yet; the column keeps the reference's "Type" heading.
+
   ## Examples
 
       <.rules_table
@@ -288,6 +391,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         page={@page}
         per_page={@per_page}
         total_count={@total_count}
+        in_seat?={false}
       />
   """
   attr :rows, :any, required: true, doc: "the `:transfers` stream"
@@ -297,6 +401,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   attr :page, :integer, required: true
   attr :per_page, :integer, required: true
   attr :total_count, :integer, required: true
+
+  attr :in_seat?, :boolean,
+    required: true,
+    doc: "whether the rows are the read-only in-seat records"
 
   def rules_table(assigns) do
     ~H"""
@@ -327,7 +435,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
               </span>
             </button>
             <span
-              :if={row.attention != []}
+              :if={not @in_seat? and row.attention != []}
               id={"transfer-attention-#{row.id}"}
               class="badge badge-warning badge-sm mt-1"
             >
@@ -342,16 +450,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           sort_event="sort"
           sort={column_sort_state(@sort_by, @sort_dir, :to)}
         >
-          <button
-            type="button"
-            phx-click="select_rule"
-            phx-value-id={row.id}
-            aria-label={"Inspect rule #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
-            class="block w-full min-h-11 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-          >
-            <span class="block truncate font-semibold">{endpoint_name(row.to)}</span>
-            <span class="block text-xs text-base-content/70">{selector_label(row.to, :to)}</span>
-          </button>
+          <%!-- The same wrapper as the From cell, so the stacked layout puts both
+          endpoint values on the right rather than beside their label. --%>
+          <div>
+            <button
+              type="button"
+              phx-click="select_rule"
+              phx-value-id={row.id}
+              aria-label={"Inspect rule #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
+              class="block w-full min-h-11 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+            >
+              <span class="block truncate font-semibold">{endpoint_name(row.to)}</span>
+              <span class="block text-xs text-base-content/70">{selector_label(row.to, :to)}</span>
+            </button>
+          </div>
         </:col>
         <:col
           :let={{_dom_id, row}}
@@ -374,11 +486,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         </:col>
       </.table>
 
-      <p class="px-4 py-3 text-sm text-base-content/70">
-        Select a connection to see its map and rider impact.
-      </p>
+      <p class="px-4 py-3 text-sm text-base-content/70">{table_footer(@in_seat?)}</p>
 
-      <.pagination page={@page} per_page={@per_page} total={@total_count} entity="rules" />
+      <.pagination
+        page={@page}
+        per_page={@per_page}
+        total={@total_count}
+        entity={pagination_entity(@in_seat?)}
+      />
     </div>
     """
   end
@@ -558,6 +673,27 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   @doc """
+  Renders the in-seat view's empty state for a version without in-seat records.
+
+  It offers no action, because type 4/5 rows are authored and removed on Blocks:
+  there is nothing to create from here. The view chips above it stay reachable,
+  so an operator can return to the general rules.
+
+  ## Examples
+
+      <.in_seat_empty />
+  """
+  def in_seat_empty(assigns) do
+    ~H"""
+    <div id="transfers-in-seat-empty" class="p-4 sm:p-6">
+      <.empty_state title="No in-seat records">
+        Stay-on-board connections are managed on Blocks.
+      </.empty_state>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the list pane's filtered-empty state.
 
   The version has general rules, but the search and filters hide all of them, so
@@ -611,6 +747,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   Edit, reverse-create and delete controls are added by later steps; this renders
   the read-only inspector, the compare trigger and the related links.
 
+  The in-seat variant answers the same question for a record this page does not
+  own: the eyebrow names the record, the heading and rider meaning come from the
+  same labels, and a note says the record is managed on Blocks. The reverse
+  control, the station-coverage and overlap callouts, the attention list and the
+  related links are general-rule features — an in-seat record has no action here
+  (R1).
+
   ## Examples
 
       <.inspector
@@ -618,6 +761,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         competitors={@competitors}
         compare_open?={@compare_open?}
         version_id={@current_gtfs_version.id}
+        in_seat?={false}
       />
   """
   attr :row, :map, required: true, doc: "the catalog's selected `row()`"
@@ -634,6 +778,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     required: true,
     doc: "the version the stop and route links belong to"
 
+  attr :in_seat?, :boolean,
+    required: true,
+    doc: "whether the selected row is a read-only in-seat record"
+
   def inspector(assigns) do
     assigns =
       assigns
@@ -646,7 +794,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
     ~H"""
     <div id="transfer-inspector" class="p-4 sm:p-6">
-      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">Transfer rule</p>
+      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+        {inspector_eyebrow(@in_seat?)}
+      </p>
       <h2 class="mt-1 text-xl font-semibold">{type_label(@row.transfer.transfer_type)}</h2>
 
       <%!-- One spaced column: the shared callout does not accept a `class`, so the
@@ -675,7 +825,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         <div class="flex flex-wrap items-center gap-2 text-sm text-base-content/70">
           <span>Applies in this direction only.</span>
           <.button
-            :if={@row.reverse_id}
+            :if={not @in_seat? and @row.reverse_id}
             id="transfer-inspector-reverse-inspect"
             type="button"
             variant="quiet"
@@ -685,11 +835,22 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           >
             Inspect reverse rule
           </.button>
-          <span :if={is_nil(@row.reverse_id)}>The reverse connection is not changed.</span>
+          <span :if={not @in_seat? and is_nil(@row.reverse_id)}>
+            The reverse connection is not changed.
+          </span>
         </div>
 
         <.callout
-          :if={@coverage != []}
+          :if={@in_seat?}
+          id="transfer-inspector-blocks-note"
+          kind="info"
+          title="Managed on Blocks."
+        >
+          <p>Changes to stay-on-board records are made there.</p>
+        </.callout>
+
+        <.callout
+          :if={not @in_seat? and @coverage != []}
           id="transfer-inspector-coverage"
           kind="info"
           title="Station-wide coverage"
@@ -698,7 +859,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         </.callout>
 
         <.callout
-          :if={@competitor_count > 0}
+          :if={not @in_seat? and @competitor_count > 0}
           id="transfer-inspector-overlap"
           kind="warning"
           title="Rules disagree for the same journey"
@@ -717,7 +878,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         </.callout>
 
         <.callout
-          :if={@attention != []}
+          :if={not @in_seat? and @attention != []}
           id="transfer-inspector-attention"
           kind="warning"
           title="Needs attention"
@@ -738,7 +899,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           </div>
         </details>
 
-        <div class="flex flex-wrap gap-4">
+        <div :if={not @in_seat?} class="flex flex-wrap gap-4">
           <.link
             :if={@row.from.stop_id}
             id="transfer-inspector-stop-link"
@@ -768,6 +929,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     </div>
     """
   end
+
+  # The eyebrow names which of the two views' rows the inspector is showing: an
+  # in-seat record is displayed here but owned by Blocks.
+  defp inspector_eyebrow(true), do: "In-seat record"
+  defp inspector_eyebrow(false), do: "Transfer rule"
 
   @rider_meaning_text %{
     0 => "This is a recommended connection point. It does not promise that a vehicle will wait.",

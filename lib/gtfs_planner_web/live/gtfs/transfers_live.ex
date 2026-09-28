@@ -25,6 +25,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   own empty state rather than first use. The connection map arrives with its own
   step.
 
+  The page holds two views of the same version. `@view` is `:general` (types 0–3,
+  the default) or `:in_seat` (types 4 and 5), it lives in the URL as `view=in_seat`
+  and only when it is the in-seat view, and the chips switch between them by
+  dropping the filters, the page and the selected rule, because a filter and a
+  selection belong to the view they were chosen in. The valid `type` values and
+  the Needs attention flag follow the view: a type outside the view's range and an
+  attention flag in the in-seat view are dropped rather than answered with an
+  empty list. The in-seat view is read-only (R1): no control it renders reaches a
+  write, and the later steps that add the create button, the row checkboxes, the
+  editor and the delete flow read `@view` and render in the general view only.
+
   The context pane renders the selected rule's inspector from the same catalog
   load that produced the list: the selected row and the general rows that compete
   with it. "Inspect reverse rule" patches the rule to the row's exact mirror and
@@ -51,11 +62,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # direction is dropped rather than turned into an atom.
   @sort_keys %{"from" => :from, "to" => :to, "type" => :type, "min_time" => :min_time}
   @sort_dirs %{"asc" => :asc, "desc" => :desc}
-  @owned_params ~w(q stop route type attention sort_by sort_dir page rule)
+  @owned_params ~w(view q stop route type attention sort_by sort_dir page rule)
 
-  # A type filter is read only inside the current view's range; the in-seat range
-  # arrives with that view.
+  # A type filter is read only inside the current view's range: the general view
+  # lists types 0–3, the in-seat view the read-only types 4 and 5.
   @general_types 0..3
+  @in_seat_types 4..5
 
   @empty_filters %{q: nil, stop: nil, route: nil, type: nil, attention: false}
 
@@ -66,6 +78,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:page_title, "Transfers")
      |> assign(:catalog_state, :ready)
      |> assign(:catalog, nil)
+     |> assign(:view, :general)
      |> assign(:sort_by, :from)
      |> assign(:sort_dir, :asc)
      |> assign(:page, 1)
@@ -126,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   @impl true
   def handle_event("filter", params, socket) do
-    filters = merge_filters(socket.assigns.filters, params)
+    filters = merge_filters(socket.assigns.filters, params, socket.assigns.view)
 
     {:noreply, push_patch(socket, to: list_path(socket, filters: filters, page: 1, rule: nil))}
   end
@@ -145,8 +158,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   @impl true
   def handle_event("clear_filters", _params, socket) do
-    # The bare list is the unfiltered URL; a view param would be kept here.
-    {:noreply, push_patch(socket, to: transfers_target(socket.assigns.current_gtfs_version.id))}
+    # The bare list of the current view: the view param stays, every filter, the
+    # page and the selection are dropped.
+    {:noreply, push_patch(socket, to: list_path(socket, clear_overrides()))}
+  end
+
+  @impl true
+  def handle_event("switch_view", %{"view" => value}, socket) do
+    # The chips switch the list to a view whose rows are a different set, so the
+    # filters, the page and the selected rule are left behind with the old view.
+    {:noreply,
+     push_patch(socket,
+       to: list_path(socket, view: parse_view(value), filters: @empty_filters, page: 1, rule: nil)
+     )}
   end
 
   @impl true
@@ -224,27 +248,33 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         <.workspace>
           <:list>
             <.load_failure :if={@catalog_state == :unavailable} />
-            <.first_use :if={first_use?(@catalog_state, @catalog)} />
-            <div :if={rules?(@catalog_state, @catalog)}>
-              <.list_toolbar
-                search_form={@search_form}
-                filter_form={@filter_form}
-                filter_options={@catalog.filter_options}
-                filter_count={filter_count(@filters)}
-                filters_open?={@filters_open?}
-              />
-              <.rule_count total_count={@total_count} />
-              <.no_results :if={@total_count == 0} />
-              <.rules_table
-                :if={@total_count > 0}
-                rows={@streams.transfers}
-                selected_id={@selected_id}
-                sort_by={@sort_by}
-                sort_dir={@sort_dir}
-                page={@page}
-                per_page={@per_page}
-                total_count={@total_count}
-              />
+            <div :if={@catalog_state == :ready}>
+              <.view_chips view={@view} counts={@catalog.counts} />
+              <.first_use :if={first_use?(@catalog, @view)} />
+              <div :if={list?(@catalog, @view)}>
+                <.list_toolbar
+                  search_form={@search_form}
+                  filter_form={@filter_form}
+                  filter_options={@catalog.filter_options}
+                  filter_count={filter_count(@filters)}
+                  filters_open?={@filters_open?}
+                  in_seat?={@view == :in_seat}
+                />
+                <.rule_count total_count={@total_count} in_seat?={@view == :in_seat} />
+                <.no_results :if={@total_count == 0} />
+                <.rules_table
+                  :if={@total_count > 0}
+                  rows={@streams.transfers}
+                  selected_id={@selected_id}
+                  sort_by={@sort_by}
+                  sort_dir={@sort_dir}
+                  page={@page}
+                  per_page={@per_page}
+                  total_count={@total_count}
+                  in_seat?={@view == :in_seat}
+                />
+              </div>
+              <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
             </div>
           </:list>
           <:context>
@@ -254,6 +284,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
               competitors={@competitors}
               compare_open?={@compare_open?}
               version_id={@current_gtfs_version.id}
+              in_seat?={@view == :in_seat}
             />
             <.context_empty :if={is_nil(@selected)} />
             <.compare_dialog
@@ -274,13 +305,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp load_catalog(socket, url_params) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
-    filters = parse_filters(url_params)
+    view = parse_view(url_params["view"])
+    filters = parse_filters(url_params, view)
     sort_by = Map.get(@sort_keys, url_params["sort_by"]) || :from
     sort_dir = Map.get(@sort_dirs, url_params["sort_dir"]) || :asc
     page = parse_page(url_params["page"])
     rule = parse_rule(url_params["rule"])
 
     opts = [
+      view: view,
       search: filters.q,
       stop: filters.stop,
       route: filters.route,
@@ -311,6 +344,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           |> assign(:compare_open?, false)
           |> assign(:rule, canonical_rule(rule, selection))
           |> assign(:catalog, catalog)
+          |> assign(:view, view)
           |> assign(:catalog_state, :ready)
           |> stream_rows(catalog, previous_selected_id)
 
@@ -326,6 +360,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
          |> assign_filters(filters)
          |> assign(:sort_by, sort_by)
          |> assign(:sort_dir, sort_dir)
+         |> assign(:view, view)
          |> assign(:catalog, nil)
          |> assign(:catalog_state, :unavailable)
          |> assign(:selected_id, nil)
@@ -409,7 +444,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     ~p"/gtfs/#{version_id}/transfers?#{list_params(socket.assigns, overrides)}"
   end
 
+  # "Clear filters" returns the current view's bare list: the default sort, the
+  # first page and no selected rule, exactly as the unfiltered URL reads.
+  defp clear_overrides do
+    [filters: @empty_filters, sort_by: :from, sort_dir: :asc, page: 1, rule: nil]
+  end
+
   defp list_params(assigns, overrides) do
+    view = Keyword.get(overrides, :view, assigns.view)
     filters = Keyword.get(overrides, :filters, assigns.filters)
     sort_by = Keyword.get(overrides, :sort_by, assigns.sort_by)
     sort_dir = Keyword.get(overrides, :sort_dir, assigns.sort_dir)
@@ -417,11 +459,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     rule = Keyword.get(overrides, :rule, assigns.rule)
 
     []
+    |> view_params(view)
     |> filter_params(filters)
     |> sort_params(sort_by, sort_dir)
     |> page_params(page)
     |> rule_params(rule)
   end
+
+  # The general view is the page's plain list, so only the in-seat view names
+  # itself in the URL; an unknown view value canonicalizes back to the plain list.
+  defp view_params(params, :in_seat), do: params ++ [view: "in_seat"]
+  defp view_params(params, _view), do: params
 
   # The filters the URL carries, in the page contract's order. `attention` is
   # written as its own flag rather than the form's "true", so the parsed value and
@@ -477,25 +525,28 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # The filters arrive as untrusted URL params or form values. A blank or absent
   # value means "no filter"; a repeated param (a list) is not a value at all, so
   # every parser has a catch-all and nothing reaches the catalog unvalidated.
-  defp parse_filters(url_params) do
+  defp parse_view("in_seat"), do: :in_seat
+  defp parse_view(_value), do: :general
+
+  defp parse_filters(url_params, view) do
     %{
       q: parse_string(Map.get(url_params, "q")),
       stop: parse_string(Map.get(url_params, "stop")),
       route: parse_string(Map.get(url_params, "route")),
-      type: parse_type(Map.get(url_params, "type")),
-      attention: Map.get(url_params, "attention") == "1"
+      type: parse_type(Map.get(url_params, "type"), view),
+      attention: view == :general and Map.get(url_params, "attention") == "1"
     }
   end
 
   # The filter form owns the three selects and the checkbox; the search term is
   # the other form's, and survives a filter change.
-  defp merge_filters(filters, params) do
+  defp merge_filters(filters, params, view) do
     %{
       filters
       | stop: parse_string(Map.get(params, "stop")),
         route: parse_string(Map.get(params, "route")),
-        type: parse_type(Map.get(params, "type")),
-        attention: parse_checkbox(Map.get(params, "attention"))
+        type: parse_type(Map.get(params, "type"), view),
+        attention: view == :general and parse_checkbox(Map.get(params, "attention"))
     }
   end
 
@@ -524,14 +575,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   defp parse_string(_value), do: nil
 
-  defp parse_type(value) when is_binary(value) do
+  # A type is a filter only inside the range of the view being listed: 4 in the
+  # general view is dropped rather than answered with an empty list, and the
+  # in-seat view accepts only its own two types.
+  defp parse_type(value, view) when is_binary(value) do
     case Integer.parse(value) do
-      {type, ""} when type in @general_types -> type
+      {type, ""} -> if valid_type?(type, view), do: type, else: nil
       _other -> nil
     end
   end
 
-  defp parse_type(_value), do: nil
+  defp parse_type(_value, _view), do: nil
+
+  defp valid_type?(type, :in_seat), do: type in @in_seat_types
+  defp valid_type?(type, _view), do: type in @general_types
 
   # `<.input type="checkbox">` renders a hidden "false" beside the checked
   # "true", so one form change arrives as both values for the one name; the box
@@ -544,15 +601,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     Enum.count([filters.stop, filters.route, filters.type], &(&1 != nil))
   end
 
-  # A version with general rules lists them, whether or not a filter hides them
+  # The list is the current view's own rows, whether or not a filter hides them
   # (that case renders the filtered-empty state inside the same list).
-  defp rules?(:ready, %{counts: %{general: general}}), do: general > 0
-  defp rules?(_catalog_state, _catalog), do: false
+  defp list?(%{counts: counts}, :general), do: counts.general > 0
+  defp list?(%{counts: counts}, :in_seat), do: counts.in_seat > 0
 
   # First use is a version with no general rules at all, including one whose only
   # rows are in-seat records, whose mutations belong to Blocks.
-  defp first_use?(:ready, %{counts: %{general: 0}}), do: true
-  defp first_use?(_catalog_state, _catalog), do: false
+  defp first_use?(%{counts: %{general: 0}}, :general), do: true
+  defp first_use?(_catalog, _view), do: false
+
+  # A version with general rules but no in-seat records says where those records
+  # are managed instead of offering a first-use action of its own.
+  defp in_seat_empty?(%{counts: %{in_seat: 0}}, :in_seat), do: true
+  defp in_seat_empty?(_catalog, _view), do: false
 
   defp transfers_target(version_id), do: ~p"/gtfs/#{version_id}/transfers"
 end
