@@ -16,7 +16,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
@@ -980,4 +982,450 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     |> Repo.all()
     |> Enum.any?(fn shape_id -> is_binary(shape_id) and shape_id != "" end)
   end
+
+  @type review_section :: %{
+          position: pos_integer(),
+          op: :set | :delete | :use_shared,
+          action:
+            :write_override | :write_shared | :choose_scope | :delete_override | :delete_shared,
+          from_name: String.t(),
+          to_name: String.t(),
+          affected: [pair_user()],
+          custom_unchanged: [pair_user()],
+          shared_rematerialize: [
+            %{
+              route_pattern_id: String.t(),
+              pattern_label: String.t(),
+              route_label: String.t(),
+              trips: non_neg_integer()
+            }
+          ],
+          shared_blockers: [blocker()]
+        }
+
+  @type review :: %{
+          fingerprint: String.t(),
+          sections: [review_section()],
+          origin: %{complete?: boolean(), plan: shape_plan() | nil},
+          replaced_shapes: [
+            %{shape_id: String.t(), trip_count: pos_integer(), action: :adopted | :deleted}
+          ],
+          requires_confirmation?: boolean(),
+          blockers: [blocker()]
+        }
+
+  @doc """
+  Reviews an alignment save without writing.
+
+  Loads the pattern in its published route scope (INV-2), resolves it,
+  normalizes the browser draft (`Draft.normalize/2`), rejects stale bases
+  with `{:conflict, current_sections}` and stale identities with
+  `:stale_stops` (R7), derives per-section R6 scope actions via
+  `pair_users/4`, plans the origin shape when the save completes the pattern
+  (R10/R11/R13), lists shared rematerializations with their blockers (R8),
+  and fingerprints the whole review for step 12's `:stale_review` check.
+  Read-only; step 12 owns the apply. Consumed by
+  `RoutePatternAlignmentEvents` (step 28) through `Gtfs.review_alignment_save/3`.
+  """
+  @spec review_save(Ecto.UUID.t(), [map()], AuditContext.t()) ::
+          {:ok, review()}
+          | {:error,
+             :not_found
+             | :stale_stops
+             | :invalid_input
+             | {:conflict, [section()]}
+             | {:invalid_draft, atom()}}
+  def review_save(pattern_id, draft_params, %AuditContext{} = audit_context)
+      when is_binary(pattern_id) do
+    Repo.transaction(fn ->
+      unless Keyword.get(Repo.config(), :pool) == Ecto.Adapters.SQL.Sandbox do
+        Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+      end
+
+      case compute_review(pattern_id, draft_params, audit_context) do
+        {:ok, review} -> {:ok, review}
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_review_transaction()
+  end
+
+  def review_save(_, _, _), do: {:error, :invalid_input}
+
+  defp compute_review(pattern_id, draft_params, %AuditContext{} = audit_context) do
+    with {:ok, route_id} <- review_route_id(pattern_id, audit_context),
+         {:ok, _route} <-
+           RoutePatterns.published_route(
+             audit_context.organization_id,
+             audit_context.gtfs_version_id,
+             route_id
+           ),
+         %RoutePattern{} = pattern <- scoped_review_pattern(pattern_id, audit_context) do
+      resolved = resolve(pattern)
+
+      case Draft.normalize(draft_params, resolved) do
+        {:error, reason} -> {:error, reason}
+        {:ok, ops} -> build_review(pattern, resolved, ops, audit_context)
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp review_route_id(pattern_id, audit_context) do
+    case Repo.one(
+           from(p in RoutePattern,
+             where:
+               p.organization_id == ^audit_context.organization_id and
+                 p.gtfs_version_id == ^audit_context.gtfs_version_id and
+                 p.id == ^pattern_id,
+             select: p.route_id
+           )
+         ) do
+      nil -> {:error, :not_found}
+      route_id -> {:ok, route_id}
+    end
+  end
+
+  defp scoped_review_pattern(pattern_id, audit_context) do
+    Repo.one(
+      from(p in RoutePattern,
+        where:
+          p.organization_id == ^audit_context.organization_id and
+            p.gtfs_version_id == ^audit_context.gtfs_version_id and
+            p.id == ^pattern_id
+      )
+    )
+  end
+
+  defp unwrap_review_transaction({:ok, {:ok, value}}), do: {:ok, value}
+  defp unwrap_review_transaction({:ok, {:error, reason}}), do: {:error, reason}
+  defp unwrap_review_transaction({:error, reason}), do: {:error, reason}
+
+  defp build_review(pattern, resolved, ops, audit_context) do
+    sections_by_position = Map.new(resolved.sections, &{&1.position, &1})
+
+    case check_review_bases(ops, sections_by_position) do
+      {:error, _} = error ->
+        error
+
+      :ok ->
+        org = audit_context.organization_id
+        ver = audit_context.gtfs_version_id
+        visits_by_position = Map.new(resolved.visits, &{&1.position, &1})
+        users_by_pair = review_users_by_pair(org, ver, ops, sections_by_position)
+        fallbacks = review_override_fallbacks(org, ver, ops, sections_by_position)
+
+        review_sections =
+          Enum.map(ops, fn op ->
+            section = Map.fetch!(sections_by_position, op.position)
+
+            build_review_section(
+              op,
+              section,
+              visits_by_position,
+              users_by_pair,
+              pattern,
+              audit_context
+            )
+          end)
+
+        after_sections = apply_review_ops(resolved.sections, ops, fallbacks)
+        complete? = Enum.all?(after_sections, &(&1.kind not in [:missing, :blocked]))
+        plan = if complete?, do: shape_plan(pattern, length(resolved.visits)), else: nil
+        blockers = if plan, do: plan.blockers, else: []
+
+        replaced =
+          if plan do
+            Enum.map(plan.replaced, fn entry ->
+              %{shape_id: entry.shape_id, trip_count: entry.trip_count, action: entry.action}
+            end)
+          else
+            []
+          end
+
+        {:ok,
+         %{
+           fingerprint:
+             review_fingerprint(pattern, resolved, ops, sections_by_position, review_sections, plan),
+           sections: review_sections,
+           origin: %{complete?: complete?, plan: plan},
+           replaced_shapes: replaced,
+           requires_confirmation?: replaced != [],
+           blockers: blockers
+         }}
+    end
+  end
+
+  defp check_review_bases(ops, sections_by_position) do
+    conflicted =
+      Enum.filter(ops, fn op ->
+        op.base != Map.fetch!(sections_by_position, op.position).revision
+      end)
+
+    if conflicted == [] do
+      :ok
+    else
+      {:error,
+       {:conflict, Enum.map(conflicted, &Map.fetch!(sections_by_position, &1.position))}}
+    end
+  end
+
+  # "Other users" for a shared write is every pair_user plain visit except
+  # this pattern's own position, including this pattern's other visits of the
+  # same pair (R6). Patterns holding an override at the pair never change.
+  defp split_review_users(users, origin_pattern_id, position) do
+    affected =
+      users
+      |> Enum.map(fn user ->
+        if user.pattern_id == origin_pattern_id do
+          %{user | visit_positions: Enum.reject(user.visit_positions, &(&1 == position))}
+        else
+          user
+        end
+      end)
+      |> Enum.filter(&(&1.visit_positions != []))
+
+    {affected, Enum.filter(users, &(&1.custom_positions != []))}
+  end
+
+  defp review_users_by_pair(org, ver, ops, sections_by_position) do
+    ops
+    |> Enum.filter(fn op ->
+      section = Map.fetch!(sections_by_position, op.position)
+      (op.op == :set and section.kind in [:missing, :shared]) or
+        (op.op == :delete and section.kind == :shared)
+    end)
+    |> Enum.map(fn op ->
+      section = Map.fetch!(sections_by_position, op.position)
+      {section.from_stop_id, section.to_stop_id}
+    end)
+    |> Enum.uniq()
+    |> Map.new(fn {from, to} = pair -> {pair, pair_users(org, ver, from, to)} end)
+  end
+
+  defp review_override_fallbacks(org, ver, ops, sections_by_position) do
+    pairs =
+      ops
+      |> Enum.filter(fn op ->
+        section = Map.fetch!(sections_by_position, op.position)
+        op.op in [:delete, :use_shared] and section.kind == :override
+      end)
+      |> Enum.map(fn op ->
+        section = Map.fetch!(sections_by_position, op.position)
+        {section.from_stop_id, section.to_stop_id}
+      end)
+      |> Enum.uniq()
+
+    review_shared_points(org, ver, pairs)
+  end
+
+  defp review_shared_points(_org, _ver, []), do: %{}
+
+  defp review_shared_points(org, ver, pairs) do
+    froms = pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    tos = pairs |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    wanted = MapSet.new(pairs)
+
+    from(seg in AlignmentSegment,
+      where:
+        seg.organization_id == ^org and
+          seg.gtfs_version_id == ^ver and is_nil(seg.from_occurrence_id) and
+          seg.from_stop_id in ^froms and seg.to_stop_id in ^tos
+    )
+    |> Repo.all()
+    |> Enum.filter(fn seg -> MapSet.member?(wanted, {seg.from_stop_id, seg.to_stop_id}) end)
+    |> Map.new(fn seg -> {{seg.from_stop_id, seg.to_stop_id}, seg.points || []} end)
+  end
+
+  defp build_review_section(op, section, visits_by_position, users_by_pair, pattern, audit_context) do
+    base = %{
+      position: op.position,
+      op: op.op,
+      from_name: Map.fetch!(visits_by_position, op.position).name,
+      to_name: Map.fetch!(visits_by_position, op.position + 1).name,
+      affected: [],
+      custom_unchanged: [],
+      shared_rematerialize: [],
+      shared_blockers: []
+    }
+
+    case {op.op, section.kind} do
+      {:set, :override} ->
+        Map.put(base, :action, :write_override)
+
+      {:delete, :override} ->
+        Map.put(base, :action, :delete_override)
+
+      {:use_shared, :override} ->
+        Map.put(base, :action, :delete_override)
+
+      {:set, kind} when kind in [:missing, :shared] ->
+        users = Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, [])
+        {affected, custom} = split_review_users(users, pattern.id, op.position)
+        action = if affected == [], do: :write_shared, else: :choose_scope
+        {rematerialize, shared_blockers} = shared_review_effects(op, section, affected, pattern, audit_context)
+
+        base
+        |> Map.put(:action, action)
+        |> Map.merge(%{affected: affected, custom_unchanged: custom, shared_rematerialize: rematerialize, shared_blockers: shared_blockers})
+
+      {:delete, :shared} ->
+        users = Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, [])
+        {affected, custom} = split_review_users(users, pattern.id, op.position)
+        {rematerialize, shared_blockers} = shared_review_effects(op, section, affected, pattern, audit_context)
+
+        base
+        |> Map.put(:action, :delete_shared)
+        |> Map.merge(%{affected: affected, custom_unchanged: custom, shared_rematerialize: rematerialize, shared_blockers: shared_blockers})
+    end
+  end
+
+  # A shared write or delete re-materializes only affected patterns that
+  # already own a shape and are complete with the proposed geometry
+  # substituted (R8). Patterns on imported shapes keep them until their own
+  # save. The origin pattern materializes as the origin, never here.
+  defp shared_review_effects(op, section, affected, origin_pattern, audit_context) do
+    affected
+    |> Enum.filter(&(&1.owns_shape? and &1.pattern_id != origin_pattern.id))
+    |> Enum.reduce({[], []}, fn user, {rematerialize, blockers} ->
+      case rematerialize_review_candidate(user, section, op, audit_context) do
+        nil -> {rematerialize, blockers}
+        {entry, user_blockers} -> {[entry | rematerialize], blockers ++ user_blockers}
+      end
+    end)
+    |> then(fn {rematerialize, blockers} -> {Enum.reverse(rematerialize), blockers} end)
+  end
+
+  defp rematerialize_review_candidate(user, section, op, audit_context) do
+    with %RoutePattern{} = pattern <-
+           scoped_review_pattern(user.pattern_id, audit_context),
+         resolved <- resolve(pattern) do
+      substituted = substitute_review_shared(resolved.sections, section, op)
+
+      if Enum.all?(substituted, &(&1.kind not in [:missing, :blocked])) do
+        plan = shape_plan(pattern, length(resolved.visits))
+
+        entry = %{
+          route_pattern_id: user.route_pattern_id,
+          pattern_label: user.pattern_label,
+          route_label: user.route_label,
+          trips: user.linked_trip_count
+        }
+
+        {entry, plan.blockers}
+      else
+        nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp substitute_review_shared(sections, changed, op) do
+    Enum.map(sections, fn section ->
+      if section.from_stop_id == changed.from_stop_id and section.to_stop_id == changed.to_stop_id and
+           section.kind in [:shared, :missing] do
+        case op.op do
+          :set -> %{section | kind: :shared, blocked_reason: nil, points: op.points}
+          :delete -> %{section | kind: :missing, blocked_reason: nil, points: []}
+        end
+      else
+        section
+      end
+    end)
+  end
+
+  # Applies the drafted ops to the resolved sections in memory to decide
+  # whether the origin pattern completes. A `:set` always resolves; a
+  # `:delete` or `:use_shared` on an override falls back to the shared path
+  # or to missing; a `:delete` on shared is missing.
+  defp apply_review_ops(sections, ops, fallbacks) do
+    ops_by_position = Map.new(ops, &{&1.position, &1})
+
+    Enum.map(sections, fn section ->
+      case Map.get(ops_by_position, section.position) do
+        nil ->
+          section
+
+        %{op: :set} = op ->
+          if section.kind == :override do
+            %{section | kind: :override, blocked_reason: nil, points: op.points}
+          else
+            %{section | kind: :shared, blocked_reason: nil, points: op.points}
+          end
+
+        %{op: op} when op in [:delete, :use_shared] ->
+          if section.kind == :override do
+            case Map.get(fallbacks, {section.from_stop_id, section.to_stop_id}) do
+              nil -> %{section | kind: :missing, blocked_reason: nil, points: []}
+              points -> %{section | kind: :shared, blocked_reason: nil, points: points}
+            end
+          else
+            %{section | kind: :missing, blocked_reason: nil, points: []}
+          end
+      end
+    end)
+  end
+
+  defp review_fingerprint(pattern, resolved, ops, sections_by_position, review_sections, plan) do
+    plan_part =
+      if plan do
+        {plan.shape_id, plan.mode, Enum.map(plan.replaced, & &1.shape_id)}
+      else
+        nil
+      end
+
+    rematerialized =
+      review_sections
+      |> Enum.flat_map(fn section ->
+        Enum.map(section.shared_rematerialize, fn entry ->
+          {entry.route_pattern_id, entry.pattern_label, entry.route_label, entry.trips}
+        end)
+      end)
+      |> Enum.sort()
+      |> Enum.uniq()
+
+    term = {
+      pattern.id,
+      Enum.map(resolved.visits, &{&1.occurrence_id, &1.stop_id, &1.position}),
+      Enum.map(
+        ops,
+        &{&1.position, &1.op, &1.points, &1.base.segment_id, &1.base.lock_version,
+         &1.from_occurrence_id, &1.to_stop_id}
+      ),
+      Enum.map(ops, fn op ->
+        revision = Map.fetch!(sections_by_position, op.position).revision
+        {op.position, revision.segment_id, revision.lock_version}
+      end),
+      Enum.map(review_sections, fn section ->
+        {section.position, section.action,
+         Enum.map(section.affected, &{&1.pattern_id, &1.visit_positions, &1.custom_positions, &1.owns_shape?}),
+         Enum.map(section.custom_unchanged, &{&1.pattern_id, &1.visit_positions, &1.custom_positions, &1.owns_shape?})}
+      end),
+      plan_part,
+      rematerialized
+    }
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(review_canonical(term), [:deterministic]))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp review_canonical(%Decimal{} = value), do: {:decimal, Decimal.to_string(value, :normal)}
+  defp review_canonical(%_{} = value), do: value |> Map.from_struct() |> review_canonical()
+
+  defp review_canonical(value) when is_map(value) and not is_struct(value) do
+    value
+    |> Enum.map(fn {key, val} -> {to_string(key), review_canonical(val)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  defp review_canonical(value) when is_list(value), do: Enum.map(value, &review_canonical/1)
+
+  defp review_canonical(value) when is_tuple(value) do
+    value |> Tuple.to_list() |> Enum.map(&review_canonical/1) |> List.to_tuple()
+  end
+
+  defp review_canonical(value), do: value
 end
