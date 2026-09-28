@@ -685,6 +685,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       copy_timing_rows!(copied_timing, copied_occurrences, rows)
     end)
 
+    Alignments.copy_pattern_alignment!(
+      pattern,
+      copied,
+      pattern_occurrences(pattern),
+      copied_occurrences,
+      audit_context
+    )
+
     copied = load_pattern_for_audit!(copied.id)
     audit!(audit_context, :route_pattern, copied, "created", %{after: pattern_snapshot(copied)})
     %{pattern: copied, trips_updated: 0}

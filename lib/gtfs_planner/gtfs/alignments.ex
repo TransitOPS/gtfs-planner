@@ -876,6 +876,93 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     :ok
   end
 
+  @doc """
+  Copies a pattern's alignment state onto its 01 copy, in the caller's transaction.
+
+  Copies each source override segment onto the copied occurrence at the same
+  position (scope fields from the copy; shared paths stay shared because they
+  resolve by stop pair in the same version), auditing each insert as an
+  `alignment_segment` "created" entry (R2, INV-6). When the source owns a
+  shape (`shape_id` set), resolves the copy and, when every section resolves,
+  allocates the copy its own shape id (the copy has no linked trips, so
+  `shape_plan/2` allocates per step 9) and materializes it; incomplete copies
+  and nil-shape sources keep `shape_id` nil with no shape rows (INV-3, INV-5).
+  Called by `RoutePatterns` `:copy` (CR-1); every read and write filters by
+  organization and version (INV-2, R1).
+  """
+  @spec copy_pattern_alignment!(
+          RoutePattern.t(),
+          RoutePattern.t(),
+          [RoutePatternStop.t()],
+          [RoutePatternStop.t()],
+          AuditContext.t()
+        ) :: :ok
+  def copy_pattern_alignment!(
+        %RoutePattern{} = source,
+        %RoutePattern{} = copy,
+        source_occurrences,
+        copied_occurrences,
+        %AuditContext{} = audit_context
+      ) do
+    copied_by_position = Map.new(copied_occurrences, &{&1.position, &1})
+
+    source
+    |> copy_source_overrides(Enum.map(source_occurrences, & &1.id))
+    |> Enum.each(fn segment ->
+      with %RoutePatternStop{position: position} <-
+             Enum.find(source_occurrences, &(&1.id == segment.from_occurrence_id)),
+           %RoutePatternStop{} = copied_occurrence <- Map.get(copied_by_position, position) do
+        %AlignmentSegment{
+          organization_id: copy.organization_id,
+          gtfs_version_id: copy.gtfs_version_id,
+          from_stop_id: segment.from_stop_id,
+          to_stop_id: segment.to_stop_id,
+          from_occurrence_id: copied_occurrence.id
+        }
+        |> AlignmentSegment.changeset(%{points: segment.points || []})
+        |> Repo.insert()
+        |> case do
+          {:ok, inserted} ->
+            audit!(audit_context, :alignment_segment, inserted, "created", %{
+              before: nil,
+              after: apply_segment_after(inserted)
+            })
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+      else
+        # A source row without a position-matched copy visit carries no
+        # section on the copy; shared geometry still resolves by stop pair.
+        _ -> :ok
+      end
+    end)
+
+    if present?(source.shape_id) do
+      resolved = resolve(copy)
+
+      if resolved.status.missing == 0 and resolved.status.blocked == 0 do
+        plan = shape_plan(copy, length(copied_occurrences))
+        materialize_pattern!(copy, resolved, plan, audit_context)
+      end
+    end
+
+    :ok
+  end
+
+  defp copy_source_overrides(_source, []), do: []
+
+  defp copy_source_overrides(%RoutePattern{} = source, source_ids) do
+    from(seg in AlignmentSegment,
+      where:
+        seg.organization_id == ^source.organization_id and
+          seg.gtfs_version_id == ^source.gtfs_version_id and
+          seg.from_occurrence_id in ^source_ids,
+      order_by: [asc: seg.to_stop_id]
+    )
+    |> Repo.all()
+  end
+
   @type imported_shape :: %{
           shape_id: String.t(),
           trip_count: non_neg_integer(),
