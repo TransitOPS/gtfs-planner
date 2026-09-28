@@ -234,8 +234,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
       refute has_element?(view, "#feed-details-summary")
       refute has_element?(view, "#coming-soon-status")
 
-      # No action button is offered until the drawer step adds one.
-      refute has_element?(view, "#feed-details-empty button")
+      # The drawer's opener is the only action this state offers (step 7).
+      assert has_element?(view, "#feed-details-set", "Set feed details")
+      refute has_element?(view, "#feed-details-edit")
 
       assert Repo.aggregate(from(f in FeedInfo, where: f.gtfs_version_id == ^version.id), :count) ==
                0

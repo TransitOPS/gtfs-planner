@@ -40,6 +40,11 @@ const CAPTURE_DIR =
   process.env.FEED_DETAILS_CAPTURE_DIR ||
   resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/feed-page");
 
+// The drawer block's own evidence folder (EV-7).
+const EDITOR_CAPTURE_DIR =
+  process.env.FEED_EDITOR_CAPTURE_DIR ||
+  resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/feed-editor");
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -78,11 +83,15 @@ async function waitForLiveView(page) {
   });
 }
 
-async function capture(page, testInfo, name) {
+async function captureIn(page, testInfo, captureDir, name) {
   await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
 
-  mkdirSync(CAPTURE_DIR, { recursive: true });
-  await page.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`) });
+  mkdirSync(captureDir, { recursive: true });
+  await page.screenshot({ path: resolve(captureDir, `${name}.png`) });
+}
+
+async function capture(page, testInfo, name) {
+  await captureIn(page, testInfo, CAPTURE_DIR, name);
 }
 
 // One definition-list row's label and value, in the order the page renders them.
@@ -199,9 +208,10 @@ test.describe("@feed-page", () => {
         await expect(page.locator("#feed-details-summary")).toHaveCount(0);
         await expect(page.locator("#coming-soon-status")).toHaveCount(0);
 
-        // The drawer that creates the row arrives in a later step, so no action
-        // is offered yet.
-        await expect(page.locator("#feed-details-empty button")).toHaveCount(0);
+        // Step 7's drawer adds the opener to this state.
+        await expect(page.locator("#feed-details-set")).toHaveText(
+          "Set feed details",
+        );
 
         expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -229,5 +239,95 @@ test.describe("@feed-page", () => {
     );
     await expect(entry).toContainText("Available");
     await expect(entry).not.toContainText("Coming soon");
+  });
+});
+
+// Settings › Feed details drawer (EV-7; step 7).
+//
+// One journey on the version this block owns: open the creating drawer, capture
+// it at both required widths, save a value the editor changeset refuses, correct
+// it, and save again into the summary. The drawer stays open through the failed
+// save, so the second capture shows the corrected drawer rather than a saved
+// page.
+test.describe("@feed-editor", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("sets feed details, corrects a URL error, saves, and captures the drawer", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const emptyId = await versionId(page, EMPTY_VERSION);
+    await page.goto(`/gtfs/${emptyId}/settings/feed-details`);
+    await page.waitForSelector("#feed-details-empty");
+    await waitForLiveView(page);
+
+    await page.click("#feed-details-set");
+
+    const overlay = page.locator("#feed-details-drawer-overlay");
+    const drawer = page.locator("#feed-details-drawer");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#feed-details-drawer-title")).toHaveText(
+      "Set feed details",
+    );
+    await expect(drawer).toContainText(
+      "Describe the publisher and validity of this entire dataset. Optional fields are marked.",
+    );
+    await expect(drawer.locator("legend")).toHaveText([
+      "Publisher",
+      "Validity and version",
+      "Technical contact",
+    ]);
+    await expect(page.locator("#feed-details-use-date-label")).toHaveText(
+      "Use date label",
+    );
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, EDITOR_CAPTURE_DIR, "feed-drawer-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await expect(
+      page.locator("#feed-details-form button[type='submit']"),
+    ).toBeVisible();
+    await captureIn(page, testInfo, EDITOR_CAPTURE_DIR, "feed-drawer-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    // A field the editor has not touched stays quiet while the touched one
+    // reports itself: the client marks untouched inputs as unused.
+    await page.fill("#feed_info_feed_publisher_url", "www.example.com");
+    await expect(page.locator("#feed_info_feed_publisher_url-error")).toContainText(
+      "must be a full web address",
+    );
+    await expect(page.locator("#feed_info_feed_publisher_name-error")).toHaveCount(0);
+    await expect(page.locator("#feed-details-form-error")).toHaveCount(0);
+
+    await page.fill("#feed_info_feed_publisher_name", "Browser Regional Partnership");
+    await page.selectOption("#feed_info_feed_lang", "en");
+    await page.locator("#feed-details-form button[type='submit']").click();
+
+    // The refused value marks its own field and writes nothing.
+    await expect(page.locator("#feed_info_feed_publisher_url-error")).toContainText(
+      "must be a full web address",
+    );
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#feed-details-form-error")).toContainText(
+      "Nothing was saved. Check the highlighted fields.",
+    );
+
+    await page.fill("#feed_info_feed_publisher_url", "https://example.test/data");
+    await page.locator("#feed-details-form button[type='submit']").click();
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#feed-details-summary")).toBeVisible();
+    await expect(page.locator("#feed-details-publisher dl")).toContainText(
+      "Browser Regional Partnership",
+    );
+    await expect(page.locator("#flash-info")).toContainText(
+      "Feed details saved.",
+    );
+    await expect(page.locator("#feed-details-edit")).toBeVisible();
   });
 });

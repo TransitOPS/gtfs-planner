@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   @moduledoc """
-  Reads one version's feed information.
+  Reads and edits one version's feed information.
 
   Feed details describe the whole dataset a data consumer receives, so the page
   shows the publisher, the validity dates, the feed release and the technical
@@ -9,13 +9,18 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   state instead, and mounting it writes nothing: the row appears only when the
   editor saves one (AC-2).
 
-  The read goes through `GtfsPlanner.Gtfs.FeedSettings.get_feed_info/2`, which is
-  scoped to the organization and version (CR-1). This LiveView never calls the
-  unscoped `Gtfs.get_feed_info/1`, and it holds no write path of its own.
+  Reading and writing both go through `GtfsPlanner.Gtfs.FeedSettings`, which is
+  scoped to the organization and version and re-authorizes the actor inside the
+  write transaction (CR-1). This LiveView never calls the unscoped
+  `Gtfs.get_feed_info/1` and makes no `Repo` call of its own.
 
-  The drawer that creates and edits the row belongs to the steps that follow;
-  this page renders the header, the summary, the aside notes and the empty state
-  only, so the prototype's Edit and Set actions are absent rather than inert.
+  The Edit and Set drawer holds the same nine fields in the prototype's three
+  sections, validates them on change, and saves through
+  `FeedSettings.save_feed_info/3` (AC-3, AC-4). The `updated_at` the drawer opened
+  with is kept in socket assigns and sent back as the save token, so a concurrent
+  change reports a conflict instead of overwriting it, and the draft stays in the
+  form (AC-7, CR-9). "Use date label" is an explicit action that reads
+  `GtfsPlanner.Gtfs.DisplayClock.today/2`, never an automatic fill (AC-5).
 
   Access follows the other Settings pages through the `:gtfs_routes` session, and
   version switching keeps the section: only a published version of the current
@@ -25,6 +30,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.Gtfs.FeedSettingsComponents, only: [language_select: 1]
+
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.LanguageCodes
   alias GtfsPlanner.Versions
@@ -34,6 +43,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   @summary_subtitle "Publisher information for this version—not the contact details riders use."
   @empty_subtitle "Tell journey planners who publishes this dataset and when its information is valid."
+  # The form ids the save handler hands to the `FormErrorFocus` hook; the drawer
+  # markup spells the same ids, so the hook and the failure path agree.
+  @form_id "feed-details-form"
+  @form_error_id "feed-details-form-error"
   @not_set "Not set"
 
   @impl true
@@ -41,12 +54,24 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     {:ok,
      socket
      |> assign(:page_title, "Feed details")
-     |> assign(:feed_info, nil)}
+     |> assign(:feed_info, nil)
+     |> assign(:loaded_token, nil)
+     |> assign(:form, feed_details_form(nil, %{}))
+     |> assign(:drawer_open?, false)
+     |> assign(:conflict?, false)
+     |> assign(:conflict_reloaded?, false)
+     |> assign(:return_focus_id, nil)
+     |> assign(:date_label, date_label(socket))}
   end
 
   @impl true
   def handle_params(_params, _uri, socket) do
-    {:noreply, assign(socket, :feed_info, load_feed_info(socket))}
+    feed_info = load_feed_info(socket)
+
+    {:noreply,
+     socket
+     |> assign(:feed_info, feed_info)
+     |> assign(:loaded_token, token(feed_info))}
   end
 
   # A selection of this page's own version is nothing to do: the switcher hook
@@ -84,6 +109,110 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     end
   end
 
+  # Opening the drawer re-reads the row so the form and its save token describe
+  # the stored state as of the moment the editor starts (AC-7, CR-9). The opener
+  # id comes from the clicked control and survives the close, so the
+  # `OverlayDialog` hook can return focus.
+  @impl true
+  def handle_event("open_editor", params, socket) do
+    feed_info = load_feed_info(socket)
+
+    {:noreply,
+     socket
+     |> assign(:feed_info, feed_info)
+     |> assign(:loaded_token, token(feed_info))
+     |> assign(:form, feed_details_form(feed_info, %{}))
+     |> assign(:conflict?, false)
+     |> assign(:conflict_reloaded?, false)
+     |> assign(:return_focus_id, params["opener_id"])
+     |> assign(:date_label, date_label(socket))
+     |> assign(:drawer_open?, true)}
+  end
+
+  @impl true
+  def handle_event("close_editor", _params, socket) do
+    {:noreply, close_editor(socket)}
+  end
+
+  @impl true
+  def handle_event("validate", %{"feed_info" => params}, socket) do
+    {:noreply,
+     assign(socket, :form, validated_feed_details_form(socket.assigns.feed_info, params))}
+  end
+
+  # The suggestion the button applies is the label the drawer prints, so the two
+  # cannot disagree across a long-lived session; the draft the editor has already
+  # typed replaces only the field the button owns (R12).
+  @impl true
+  def handle_event("use_date_label", _params, socket) do
+    params = Map.put(draft_params(socket), "feed_version", socket.assigns.date_label)
+
+    {:noreply,
+     assign(socket, :form, validated_feed_details_form(socket.assigns.feed_info, params))}
+  end
+
+  @impl true
+  def handle_event("save", %{"feed_info" => params}, socket) do
+    case FeedSettings.save_feed_info(audit_context(socket), params, socket.assigns.loaded_token) do
+      {:ok, feed_info} ->
+        {:noreply,
+         socket
+         |> assign(:feed_info, feed_info)
+         |> assign(:loaded_token, token(feed_info))
+         |> close_editor()
+         |> put_flash(:info, "Feed details saved.")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:form, to_form(changeset, as: :feed_info))
+         |> push_event("focus_form_error", %{
+           form_id: @form_id,
+           fallback_id: @form_error_id
+         })}
+
+      {:error, :stale} ->
+        # The base moved while the drawer was open: keep the draft, keep the
+        # values the editor typed, and write nothing (AC-7).
+        {:noreply,
+         socket
+         |> assign(:form, feed_details_form(socket.assigns.feed_info, params))
+         |> assign(:conflict?, true)
+         |> assign(:conflict_reloaded?, false)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> close_editor()
+         |> put_flash(:error, "You no longer have editor access to this organization.")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> close_editor()
+         |> put_flash(:error, "This version is no longer available.")
+         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+    end
+  end
+
+  def handle_event("save", _params, socket), do: {:noreply, socket}
+
+  # Reloading the base keeps the draft the editor typed and the token the next
+  # save compares against, so the following save replaces what the other editor
+  # stored instead of reporting the same conflict again (AC-7).
+  @impl true
+  def handle_event("load_latest", _params, socket) do
+    feed_info = load_feed_info(socket)
+
+    {:noreply,
+     socket
+     |> assign(:feed_info, feed_info)
+     |> assign(:loaded_token, token(feed_info))
+     |> assign(:form, feed_details_form(feed_info, draft_params(socket)))
+     |> assign(:conflict?, true)
+     |> assign(:conflict_reloaded?, true)}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -103,6 +232,16 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       <.header>
         Feed details
         <:subtitle>{subtitle(@feed_info)}</:subtitle>
+        <:actions :if={@feed_info}>
+          <.button
+            id="feed-details-edit"
+            class="min-h-11"
+            phx-click="open_editor"
+            phx-value-opener_id="feed-details-edit"
+          >
+            Edit feed details
+          </.button>
+        </:actions>
       </.header>
 
       <.feed_summary
@@ -119,8 +258,223 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       >
         Add the publisher, website, and language. Dates and technical contacts help others use your
         data with confidence.
+        <:action>
+          <.button
+            id="feed-details-set"
+            class="min-h-11"
+            phx-click="open_editor"
+            phx-value-opener_id="feed-details-set"
+          >
+            Set feed details
+          </.button>
+        </:action>
       </.empty_state>
+
+      <.feed_details_drawer
+        open={@drawer_open?}
+        feed_info={@feed_info}
+        form={@form}
+        conflict?={@conflict?}
+        conflict_reloaded?={@conflict_reloaded?}
+        return_focus_id={@return_focus_id}
+        date_label={@date_label}
+        version={@current_gtfs_version}
+        organization={@current_organization}
+      />
     </Layouts.app>
+    """
+  end
+
+  # The drawer holds the prototype's three sections in its order: Publisher, then
+  # Validity and version, then Technical contact. Fieldsets with visible legends
+  # give the sections their names for keyboard and pointer users alike (CR-8).
+  attr :open, :boolean, required: true
+  attr :feed_info, :any, required: true
+  attr :form, :any, required: true
+  attr :conflict?, :boolean, required: true
+  attr :conflict_reloaded?, :boolean, required: true
+  attr :return_focus_id, :string, default: nil
+  attr :date_label, :string, required: true
+  attr :version, :any, required: true
+  attr :organization, :any, required: true
+
+  defp feed_details_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="feed-details-drawer"
+      open={@open}
+      on_close="close_editor"
+      title={drawer_title(@feed_info)}
+      return_focus_id={@return_focus_id}
+    >
+      <div id="feed-details-form-panel" phx-hook="FormErrorFocus">
+        <p id="feed-details-drawer-scope" class="text-xs text-base-content/70">
+          {scope_line(@version, @organization)}
+        </p>
+
+        <p class="mt-2 text-sm text-base-content/70">
+          Describe the publisher and validity of this entire dataset. Optional fields are marked.
+        </p>
+
+        <.form
+          for={@form}
+          id="feed-details-form"
+          novalidate
+          phx-change="validate"
+          phx-submit="save"
+          class="mt-4"
+        >
+          <.callout
+            :if={save_failed?(@form)}
+            id="feed-details-form-error"
+            kind="error"
+            title="Nothing was saved. Check the highlighted fields."
+            tabindex="-1"
+            class="mb-4"
+          />
+
+          <.conflict_callout :if={@conflict?} reloaded?={@conflict_reloaded?} />
+
+          <fieldset class="mt-6 border-t border-base-300 pt-5 first:mt-0 first:border-t-0 first:pt-0">
+            <legend class="pr-4 text-base font-semibold text-base-content">Publisher</legend>
+
+            <div class="mt-4">
+              <.input field={@form[:feed_publisher_name]} type="text" label="Publisher name" />
+              <.input field={@form[:feed_publisher_url]} type="url" label="Publisher website" />
+
+              <.language_select
+                field={@form[:feed_lang]}
+                label="Feed language"
+                include_mul
+                help="Choose Multilingual when the original dataset uses more than one language."
+              />
+
+              <.callout
+                :if={@form[:feed_lang].value == "mul"}
+                id="feed-details-mul-note"
+                kind="info"
+                title="Include translations with this feed"
+                class="mb-4"
+              >
+                Use the translations file for each language in the original data. Selecting
+                Multilingual does not create translations.
+              </.callout>
+
+              <.language_select
+                field={@form[:default_lang]}
+                label="Default language"
+                optional
+                help="Used when the rider’s language is unknown."
+              />
+            </div>
+          </fieldset>
+
+          <fieldset class="mt-6 border-t border-base-300 pt-5">
+            <legend class="pr-4 text-base font-semibold text-base-content">
+              Validity and version
+            </legend>
+
+            <div class="mt-4">
+              <.input field={@form[:feed_start_date]} type="date" label="Valid from (optional)" />
+
+              <.input
+                field={@form[:feed_end_date]}
+                type="date"
+                label="Valid through (optional)"
+                help="The last day covered by the published schedule information."
+              />
+
+              <.input
+                field={@form[:feed_version]}
+                type="text"
+                label="Feed version (optional)"
+                help="A label data consumers can use to recognize this release."
+              />
+
+              <div class="flex justify-end">
+                <.button
+                  id="feed-details-use-date-label"
+                  type="button"
+                  variant="quiet"
+                  class="min-h-11"
+                  phx-click="use_date_label"
+                >
+                  Use date label
+                </.button>
+              </div>
+
+              <p class="text-sm text-base-content/70">
+                Suggested label: {@date_label}. You can use your own naming scheme.
+              </p>
+            </div>
+          </fieldset>
+
+          <fieldset class="mt-6 border-t border-base-300 pt-5">
+            <legend class="pr-4 text-base font-semibold text-base-content">
+              Technical contact
+            </legend>
+
+            <div class="mt-4">
+              <.input
+                field={@form[:feed_contact_email]}
+                type="email"
+                label="Contact email (optional)"
+                help="For questions about the data, not rider support."
+              />
+
+              <.input
+                field={@form[:feed_contact_url]}
+                type="url"
+                label="Contact website (optional)"
+              />
+            </div>
+          </fieldset>
+
+          <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+            <.button
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_editor"
+            >
+              Cancel
+            </.button>
+
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+              {submit_label(@feed_info)}
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # A conflicting save keeps the draft visible and names the two ways forward:
+  # reloading the base now, or, once reloaded, saving again over it (AC-7).
+  attr :reloaded?, :boolean, required: true
+
+  defp conflict_callout(assigns) do
+    ~H"""
+    <.callout
+      id="feed-details-conflict"
+      kind={if @reloaded?, do: "info", else: "error"}
+      title={conflict_title(@reloaded?)}
+      class="mb-4"
+    >
+      <p>{conflict_body(@reloaded?)}</p>
+
+      <.button
+        :if={!@reloaded?}
+        id="feed-details-load-latest"
+        type="button"
+        variant="secondary"
+        class="mt-3 min-h-11"
+        phx-click="load_latest"
+      >
+        Load latest
+      </.button>
+    </.callout>
     """
   end
 
@@ -214,11 +568,83 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     """
   end
 
+  defp close_editor(socket) do
+    socket
+    |> assign(:drawer_open?, false)
+    |> assign(:conflict?, false)
+    |> assign(:conflict_reloaded?, false)
+  end
+
+  defp feed_details_form(feed_info, attrs) do
+    feed_info
+    |> FeedSettings.change_feed_info(attrs)
+    |> to_form(as: :feed_info)
+  end
+
+  # `action: :validate` marks the round trip as a keystroke, so `used_input?/1`
+  # shows an error beside the field the editor has touched and the save-failure
+  # callout stays for saves only.
+  defp validated_feed_details_form(feed_info, attrs) do
+    feed_info
+    |> FeedSettings.change_feed_info(attrs)
+    |> Map.put(:action, :validate)
+    |> to_form(as: :feed_info)
+  end
+
+  defp draft_params(socket), do: socket.assigns.form.source.params || %{}
+
   defp load_feed_info(socket) do
     FeedSettings.get_feed_info(
       socket.assigns.current_organization.id,
       socket.assigns.current_gtfs_version.id
     )
+  end
+
+  defp token(nil), do: nil
+  defp token(%{updated_at: updated_at}), do: updated_at
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
+  # The suggested label is the version's current date resolved the way the rest
+  # of the app resolves it, and it is never written without the editor asking
+  # (AC-5, R12).
+  defp date_label(socket) do
+    socket.assigns.current_organization.id
+    |> DisplayClock.today(socket.assigns.current_gtfs_version.id)
+    |> Map.fetch!(:date)
+    |> Date.to_iso8601()
+  end
+
+  # A failed save is the only state that earns the view-level banner. Validation
+  # on change marks its own fields and must not shout about a save never attempted.
+  defp save_failed?(%Phoenix.HTML.Form{source: %Ecto.Changeset{action: action, errors: errors}})
+       when action in [:update, :insert] and errors != [],
+       do: true
+
+  defp save_failed?(_form), do: false
+
+  defp drawer_title(nil), do: "Set feed details"
+  defp drawer_title(_feed_info), do: "Edit feed details"
+
+  defp submit_label(nil), do: "Save feed details"
+  defp submit_label(_feed_info), do: "Save changes"
+
+  defp conflict_title(false), do: "Another editor changed these details"
+  defp conflict_title(true), do: "Latest details loaded"
+  defp conflict_body(false), do: "Nothing was saved. Your entries are kept."
+  defp conflict_body(true), do: "Save again to replace their changes."
+
+  defp scope_line(version, organization) do
+    [version.name, organization.name]
+    |> Enum.reject(&(is_nil(&1) or String.trim(&1) == ""))
+    |> Enum.join(" · ")
   end
 
   defp subtitle(nil), do: @empty_subtitle
@@ -244,5 +670,6 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   defp date(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
 
   defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
+  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
   defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 end
