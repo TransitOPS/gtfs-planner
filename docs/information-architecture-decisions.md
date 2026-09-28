@@ -441,6 +441,7 @@ hours.
 - The list shows name, URL, timezone and route count. The route count links to the Routes list
   filtered by agency.
 - A version with one agency opens straight to its detail.
+  Changed 2026-09-27: a version with one agency keeps the list (package 13 prototype review).
 - A new agency must use the version's timezone. Changing the timezone changes it for every agency.
 - The last agency cannot be deleted.
 - Deleting an agency that has routes asks where to move them, then moves the routes and deletes

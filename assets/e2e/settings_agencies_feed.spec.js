@@ -6,7 +6,7 @@
 // and empty states at both required viewports and captures them.
 //
 // Later steps add their own tagged blocks (`@feed-editor`, `@feed-drafts`,
-// `@agencies`) to this file, so the shared helpers live at the top.
+// `@agencies-list`) to this file, so the shared helpers live at the top.
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -50,6 +50,16 @@ const DRAFT_CAPTURE_DIR =
   process.env.FEED_DRAFTS_CAPTURE_DIR ||
   resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/feed-drafts");
 
+// The two versions `test/support/browser_seed.exs` gives the Agencies list its
+// states: three agencies that share a timezone, and two that disagree.
+const AGENCIES_VERSION = "Browser Agencies Version";
+const MIXED_TIMEZONE_VERSION = "Browser Mixed Timezone Version";
+
+// The Agencies list block's own evidence folder (EV-17).
+const AGENCIES_CAPTURE_DIR =
+  process.env.AGENCIES_CAPTURE_DIR ||
+  resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/agencies-list");
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -75,7 +85,9 @@ async function versionId(page, name) {
 }
 
 // A click that lands before the LiveView joins is dropped, so an action waits
-// for the mounted view first.
+// for the mounted view first. `liveSocket.main` is the view bound to this page,
+// and its `isConnected()` is the channel's `canPush()`: true only once the view
+// has joined, unlike the socket's own flag, which is true before that.
 async function waitForLiveView(page) {
   await page.waitForSelector("[data-phx-main]", { state: "attached" });
   await page.waitForFunction(() => {
@@ -83,7 +95,7 @@ async function waitForLiveView(page) {
     return Boolean(
       main &&
       !main.hasAttribute("data-phx-pending") &&
-      window.liveSocket?.isConnected(),
+      window.liveSocket?.main?.isConnected?.(),
     );
   });
 }
@@ -458,5 +470,187 @@ test.describe("@feed-drafts", () => {
     await expect(page.locator("#feed-details-publisher dl")).not.toContainText(
       "draft",
     );
+  });
+});
+
+// Settings › Agencies list (EV-16, EV-17; step 15).
+//
+// The list page the Settings › Agencies tab now opens instead of its Coming soon
+// placeholder. Read-only journeys over the two versions the seed gives this block:
+// "Browser Agencies Version" (Harbor Shuttle 2, North Coast Transit 5, Riverside
+// Community Transport 0 routes, all America/New_York) and "Browser Mixed Timezone
+// Version" (America/New_York and America/Chicago). Captures land in this block's
+// own evidence folder as `agencies-1280.png`, `agencies-375.png` and
+// `agencies-mixed-1280.png`.
+test.describe("@agencies-list", () => {
+  for (const viewport of VIEWPORTS) {
+    test.describe(`Agencies at ${viewport.width}x${viewport.height}`, () => {
+      test.use({ viewport: { width: viewport.width, height: viewport.height } });
+
+      test("lists the agencies, hosts, zones and route counts", async ({
+        page,
+      }, testInfo) => {
+        await logIn(page);
+        await waitForLiveView(page);
+
+        const agenciesId = await versionId(page, AGENCIES_VERSION);
+        await page.goto(`/gtfs/${agenciesId}/settings/agencies`);
+        await page.waitForSelector("#agencies");
+        await waitForLiveView(page);
+
+        // The literal route wins over the section route, so this is the list page.
+        await expect(page.locator("h1")).toHaveText("Agencies");
+        await expect(page.locator("h1 + p")).toHaveText(
+          "Manage the public identity and contact details of your transit providers.",
+        );
+        await expect(
+          page.locator("#settings-nav a[aria-current='page']"),
+        ).toHaveText("Agencies");
+        await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+        await expect(page.locator("#agencies-empty")).toHaveCount(0);
+
+        const rows = page.locator("#agencies tr");
+        await expect(rows).toHaveCount(3);
+
+        const cells = await rows.evaluateAll((elements) =>
+          elements.map((row) =>
+            Array.from(row.querySelectorAll("td")).map((cell) =>
+              cell.innerText.replace(/\s+/g, " ").trim(),
+            ),
+          ),
+        );
+
+        expect(cells.map((row) => row[0])).toEqual([
+          "Harbor Shuttle harbor.example",
+          "North Coast Transit northcoast.example",
+          "Riverside Community Transport riverside.example",
+        ]);
+        expect(cells.map((row) => row[1])).toEqual([
+          "America/New_York",
+          "America/New_York",
+          "America/New_York",
+        ]);
+        expect(cells.map((row) => row[2])).toEqual(["2 →", "5 →", "0 →"]);
+
+        // One timezone for the version, so no callout and no row needs review.
+        await expect(page.locator("#agencies-timezone-band")).toContainText(
+          "One timezone for this version",
+        );
+        await expect(page.locator("#agencies-timezone-band")).toContainText(
+          "America/New_York · Used by all agencies and their schedules.",
+        );
+        await expect(page.locator("#agencies-timezone-callout")).toHaveCount(0);
+
+        await expect(
+          page.getByRole("link", { name: "View 5 routes for North Coast Transit" }),
+        ).toHaveAttribute("href", `/gtfs/${agenciesId}/routes?agency_id=NCT`);
+
+        expect(await bodyFitsViewport(page)).toBe(true);
+
+        await captureIn(
+          page,
+          testInfo,
+          AGENCIES_CAPTURE_DIR,
+          `agencies-${viewport.file}`,
+        );
+      });
+    });
+  }
+
+  test.describe("sorting and count links", () => {
+    test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+    test("sorts by route count and follows a count link to the filtered list", async ({
+      page,
+    }) => {
+      await logIn(page);
+      await waitForLiveView(page);
+
+      const agenciesId = await versionId(page, AGENCIES_VERSION);
+      await page.goto(`/gtfs/${agenciesId}/settings/agencies`);
+      await page.waitForSelector("#agencies");
+      await waitForLiveView(page);
+
+      const routesHeader = page
+        .locator("#agencies-container thead th")
+        .nth(2);
+      const firstRow = page.locator("#agencies tr").first();
+
+      await expect(routesHeader).toHaveAttribute("aria-sort", "none");
+
+      await routesHeader.getByRole("button").click();
+      await expect(routesHeader).toHaveAttribute("aria-sort", "ascending");
+      await expect(firstRow).toContainText("Riverside Community Transport");
+
+      await routesHeader.getByRole("button").click();
+      await expect(routesHeader).toHaveAttribute("aria-sort", "descending");
+      await expect(firstRow).toContainText("North Coast Transit");
+
+      await page
+        .getByRole("link", { name: "View 5 routes for North Coast Transit" })
+        .click();
+      await page.waitForURL(new RegExp(`/gtfs/${agenciesId}/routes\\?agency_id=NCT$`));
+      await waitForLiveView(page);
+
+      // The link really filters: only the five North Coast Transit routes remain.
+      await expect(page.locator("#routes tr")).toHaveCount(5);
+      await expect(
+        page.locator("#routes tr td[data-label='Route ID']").first(),
+      ).toContainText("NCT_");
+    });
+  });
+
+  test.describe("mixed timezones", () => {
+    test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+    test("names the disagreement, flags the rows and captures the state", async ({
+      page,
+    }, testInfo) => {
+      await logIn(page);
+      await waitForLiveView(page);
+
+      const mixedId = await versionId(page, MIXED_TIMEZONE_VERSION);
+      await page.goto(`/gtfs/${mixedId}/settings/agencies`);
+      await page.waitForSelector("#agencies");
+      await waitForLiveView(page);
+
+      const callout = page.locator("#agencies-timezone-callout");
+
+      await expect(callout).toContainText("Agencies use different timezones");
+      await expect(callout).toContainText(
+        "Choose one timezone for this version. Calendars use UTC until then.",
+      );
+      await expect(page.locator("#agencies-timezone-band")).toContainText(
+        "Needs review",
+      );
+
+      // The list keeps both agencies, each with its own zone and a row flag.
+      const rows = page.locator("#agencies tr");
+      await expect(rows).toHaveCount(2);
+
+      await expect(rows.nth(0)).toContainText("Lakefront Transit");
+      await expect(rows.nth(0).locator("td[data-label='Timezone']")).toContainText(
+        "America/Chicago",
+      );
+      await expect(rows.nth(1)).toContainText("North Coast Transit");
+      await expect(rows.nth(1).locator("td[data-label='Timezone']")).toContainText(
+        "America/New_York",
+      );
+
+      for (const index of [0, 1]) {
+        await expect(
+          rows.nth(index).locator("td[data-label='Timezone']"),
+        ).toContainText("Needs review");
+      }
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await captureIn(
+        page,
+        testInfo,
+        AGENCIES_CAPTURE_DIR,
+        "agencies-mixed-1280",
+      );
+    });
   });
 });

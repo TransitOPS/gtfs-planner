@@ -164,13 +164,15 @@ defmodule GtfsPlannerWeb.Router do
       # Flex has no area bar of its own in the architecture's groups.
       live "/flex", Gtfs.ComingSoonLive, :flex
       # Settings holds the version's rarely changed configuration, including its
-      # organization-level group. Garages and Fleet list organization-wide data
-      # under the All versions group; the version in their URL is navigation
-      # context, as the tables themselves ignore it. Their literal routes are
-      # declared ahead of the section route so they are never read as slugs, and
-      # there is no redirect from the Blocks paths they used before.
+      # organization-level group. Feed details and Agencies are version-scoped
+      # pages; Garages and Fleet list organization-wide data under the All
+      # versions group, where the version in their URL is navigation context, as
+      # the tables themselves ignore it. Their literal routes are declared ahead
+      # of the section route so they are never read as slugs, and there is no
+      # redirect from the Blocks paths they used before.
       live "/settings", Gtfs.SettingsLive, :index
       live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
+      live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
       live "/settings/:section", Gtfs.SettingsLive, :section

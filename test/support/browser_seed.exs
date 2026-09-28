@@ -2556,6 +2556,88 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
+    # ── Agencies list page (settings_agencies_feed.spec.js; EV-16, EV-17) ──
+    #
+    # Two published versions give the Agencies list page its states: one with
+    # three agencies that share a timezone (5, 2 and 0 routes, so the count links,
+    # the name sort and the count sort all differ), and one whose two agencies use
+    # different timezones (the band, the warning callout and the "Needs review"
+    # rows). Both are created last, and the version that was the organization's
+    # latest default before them is re-stamped afterwards so the selection the
+    # other journeys start from does not move.
+    {:ok, agencies_default_before} = Versions.get_latest_gtfs_version(org.id)
+
+    {:ok, agencies_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Agencies Version"})
+
+    for {agency_id, name, host, route_count} <- [
+          {"NCT", "North Coast Transit", "northcoast.example", 5},
+          {"HBR", "Harbor Shuttle", "harbor.example", 2},
+          {"RCT", "Riverside Community Transport", "riverside.example", 0}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: agencies_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: "America/New_York"
+        })
+
+      for index <- 1..route_count//1 do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: agencies_version.id,
+            agency_id: agency_id,
+            route_id: "#{agency_id}_#{index}",
+            route_short_name: "#{index}",
+            route_long_name: "#{name} route #{index}",
+            route_type: 3
+          })
+      end
+    end
+
+    {:ok, mixed_timezone_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Mixed Timezone Version"})
+
+    for {agency_id, name, host, timezone} <- [
+          {"NCT", "North Coast Transit", "northcoast.example", "America/New_York"},
+          {"LFT", "Lakefront Transit", "lakefront.example", "America/Chicago"}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: mixed_timezone_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: timezone
+        })
+
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: mixed_timezone_version.id,
+          agency_id: agency_id,
+          route_id: "MIX_#{agency_id}",
+          route_short_name: agency_id,
+          route_long_name: "#{name} mixed-timezone route",
+          route_type: 3
+        })
+    end
+
+    agencies_default_before
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: agencies version #{agencies_version.id} (NCT 5, HBR 2, RCT 0 routes, " <>
+        "America/New_York), mixed timezone version #{mixed_timezone_version.id} " <>
+        "(America/New_York and America/Chicago), default kept as #{agencies_default_before.name}"
+    )
+
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
 end

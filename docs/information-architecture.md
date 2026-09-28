@@ -367,7 +367,7 @@ Settings
 
 **Agencies:**
 - The list shows name, URL, timezone and route count. The route count links to the Routes list
-  filtered by agency. A version with one agency opens straight to its detail.
+  filtered by agency. A version with one agency shows the same list; the name opens its details.
 - A new agency defaults to the version's timezone and must match it. Changing the timezone changes
   it for every agency, with a confirmation naming them.
 - The last agency cannot be deleted; the action is disabled with the reason shown.
