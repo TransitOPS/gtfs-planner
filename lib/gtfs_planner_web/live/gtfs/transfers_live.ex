@@ -59,6 +59,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   editor can only ever create a type 0–3 rule of this organization and version,
   and every refusal keeps the draft on screen.
 
+  The same editor serves an existing rule. `:edit` mode holds the catalog row it
+  opened with, so the draft carries the row's stored values — including a stored
+  selector the version no longer offers, which the option lists keep with the
+  reason it is not one of the stop's own choices — and saving sends that row's own
+  `updated_at` through `Gtfs.update_general_transfer/4`, which refuses a rule that
+  changed in the meantime with the reload path instead of overwriting it. "Create
+  reverse rule" opens the same editor as an unsaved create draft with the six key
+  fields mirrored, and the duplicate callout's "Open existing rule" and the
+  compare view's "Edit rule" name another rule in the URL and open its editor
+  after the load, through `@open_editor_for`.
+
   Version switching keeps the action and accepts only a published version of the
   current organization. A foreign, staging or absent version leaves both the
   socket and the client's selection untouched, as on the other GTFS pages.
@@ -133,6 +144,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:checked, %{})
      |> assign(:delete_dialog, nil)
      |> assign(:editor, nil)
+     |> assign(:open_editor_for, nil)
      |> assign_filters(@empty_filters)
      |> stream(:transfers, [])}
   end
@@ -146,7 +158,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       |> assign(:url_params, url_params)
       |> assign(:in_seat_path, in_seat_path(socket))
 
-    load_catalog(socket, url_params)
+    {:noreply, socket} = load_catalog(socket, url_params)
+
+    {:noreply, open_pending_editor(socket)}
   end
 
   @impl true
@@ -302,6 +316,60 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   @impl true
+  def handle_event("open_edit", params, socket) do
+    case editable_row(socket, Map.get(params, "id")) do
+      nil -> {:noreply, socket}
+      row -> {:noreply, assign(socket, :editor, edit_editor(socket, row))}
+    end
+  end
+
+  @impl true
+  def handle_event("reverse_draft", _params, socket) do
+    case {socket.assigns.view, socket.assigns.editor, socket.assigns.selected} do
+      {:general, nil, %{transfer: %{transfer_type: type}} = row} when type in @general_types ->
+        {:noreply, assign(socket, :editor, reverse_editor(socket, row))}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("open_existing", params, socket) do
+    id = Map.get(params, "id")
+
+    case socket.assigns.editor do
+      %{error: {:duplicate, %{id: ^id}}} -> open_rule(socket, id)
+      _editor -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("compare_edit", params, socket) do
+    id = Map.get(params, "id")
+
+    if socket.assigns.compare_open? and known_rule_id?(socket, id) do
+      open_rule(socket, id)
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("reload_rule", _params, socket) do
+    case socket.assigns.editor do
+      %{mode: :edit, row: %{id: id}} ->
+        {:noreply,
+         socket
+         |> assign(:open_editor_for, id)
+         |> push_patch(to: list_path(socket, rule: id))}
+
+      _editor ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("editor_change", params, socket) do
     case socket.assigns.editor do
       nil -> {:noreply, socket}
@@ -392,6 +460,166 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   defp empty_options, do: %{from_routes: [], to_routes: [], from_trips: [], to_trips: []}
+
+  # The editor opens on a stored rule with the values the row holds: the eight
+  # GTFS fields, the scope those selectors imply, the two stops the version
+  # resolves (or the row's own endpoint when the stored stop is gone) and the
+  # option lists, which keep a stored selector with the reason it is not among the
+  # stop's own options (AC-19).
+  defp edit_editor(socket, row) do
+    params = edit_params(row.transfer)
+
+    editor = %{
+      mode: :edit,
+      row: row,
+      scope: draft_scope(params),
+      params: params,
+      form: editor_form(socket, params, nil),
+      from_stop: edit_stop(socket, row.from),
+      to_stop: edit_stop(socket, row.to),
+      options: empty_options(),
+      initial: params,
+      dirty?: false,
+      error: nil
+    }
+
+    refresh_options(socket, editor)
+  end
+
+  # "Create reverse rule" opens the same editor a new rule gets, with the six key
+  # fields mirrored and the effect copied. Nothing is written until save, and the
+  # draft already differs from the one a new rule starts with (R7).
+  defp reverse_editor(socket, row) do
+    transfer = row.transfer
+
+    params = %{
+      "from_stop_id" => stored_value(transfer.to_stop_id),
+      "to_stop_id" => stored_value(transfer.from_stop_id),
+      "from_route_id" => stored_value(transfer.to_route_id),
+      "to_route_id" => stored_value(transfer.from_route_id),
+      "from_trip_id" => stored_value(transfer.to_trip_id),
+      "to_trip_id" => stored_value(transfer.from_trip_id),
+      "transfer_type" => stored_value(transfer.transfer_type),
+      "min_transfer_time" => stored_value(transfer.min_transfer_time)
+    }
+
+    editor = %{
+      mode: :create,
+      scope: draft_scope(params),
+      params: params,
+      form: editor_form(socket, params, nil),
+      from_stop: edit_stop(socket, row.to),
+      to_stop: edit_stop(socket, row.from),
+      options: empty_options(),
+      initial: blank_params(),
+      dirty?: params != blank_params(),
+      error: nil
+    }
+
+    refresh_options(socket, editor)
+  end
+
+  # The stored rule as the draft's eight fields, the way a form reads them. The
+  # selectors are kept exactly as stored, including the ones the version no longer
+  # offers (AC-19).
+  defp edit_params(transfer) do
+    %{
+      "from_stop_id" => stored_value(transfer.from_stop_id),
+      "to_stop_id" => stored_value(transfer.to_stop_id),
+      "from_route_id" => stored_value(transfer.from_route_id),
+      "to_route_id" => stored_value(transfer.to_route_id),
+      "from_trip_id" => stored_value(transfer.from_trip_id),
+      "to_trip_id" => stored_value(transfer.to_trip_id),
+      "transfer_type" => stored_value(transfer.transfer_type),
+      "min_transfer_time" => stored_value(transfer.min_transfer_time)
+    }
+  end
+
+  # The scope a rule's own selectors imply: a trip narrows further than a route,
+  # and a rule with neither is the stop pair it names.
+  defp draft_scope(params) do
+    cond do
+      draft_present?(params, "from_trip_id") or draft_present?(params, "to_trip_id") -> :custom
+      draft_present?(params, "from_route_id") or draft_present?(params, "to_route_id") -> :routes
+      true -> :stops
+    end
+  end
+
+  defp draft_present?(params, key), do: parse_string(Map.get(params, key)) != nil
+
+  defp stored_value(nil), do: ""
+  defp stored_value(value) when is_binary(value), do: value
+  defp stored_value(value), do: to_string(value)
+
+  # A stored stop resolves through the page's own version, exactly as a chosen one
+  # does; when the version no longer holds it, the row's endpoint still has to show
+  # as the field's value, so the field carries a minimal option built from it.
+  defp edit_stop(_socket, nil), do: nil
+  defp edit_stop(_socket, %{stop_id: nil}), do: nil
+
+  defp edit_stop(socket, endpoint) do
+    case Gtfs.fetch_transfer_stop(organization_id(socket), version_id(socket), endpoint.stop_id) do
+      {:ok, stop} -> stop
+      :error -> missing_stop_option(endpoint)
+    end
+  end
+
+  defp missing_stop_option(endpoint) do
+    %{
+      stop_id: endpoint.stop_id,
+      stop_name: endpoint.name,
+      location_type: endpoint.location_type,
+      platform_code: endpoint.platform_code,
+      parent_name: nil,
+      child_count: endpoint.child_count,
+      lat: nil,
+      lon: nil
+    }
+  end
+
+  # Only a general rule the page has loaded can be opened for editing: an id of
+  # the other view, another page, version or organization is not a row here, so a
+  # crafted event cannot load a rule the list is not showing (CR-1, CR-6).
+  defp editable_row(socket, id) when is_binary(id) do
+    if socket.assigns.view == :general and is_nil(socket.assigns.editor) do
+      Map.get(socket.assigns.page_rows, id)
+    end
+  end
+
+  defp editable_row(_socket, _id), do: nil
+
+  # `@open_editor_for` names the rule whose editor a patch should open. It opens
+  # only once the load has made that rule the selection, so the editor always
+  # describes a row the page is showing, and the assign is spent either way.
+  defp open_pending_editor(%{assigns: %{open_editor_for: id}} = socket) when is_binary(id) do
+    socket = assign(socket, :open_editor_for, nil)
+
+    case socket.assigns.selected do
+      %{id: ^id} = row -> assign(socket, :editor, edit_editor(socket, row))
+      _row -> socket
+    end
+  end
+
+  defp open_pending_editor(socket), do: socket
+
+  # Another rule's editor is reached by naming it in the URL: the patch clears the
+  # filters, the page and the checked rules, the load selects the rule, and
+  # `handle_params/3` opens it.
+  defp open_rule(socket, id) do
+    socket
+    |> clear_checked()
+    |> assign(:editor, nil)
+    |> assign(:compare_open?, false)
+    |> assign(:open_editor_for, id)
+    |> push_patch(
+      to: list_path(socket, view: :general, filters: @empty_filters, page: 1, rule: id)
+    )
+  end
+
+  # The rules the compare view lists: the selected rule and its competitors.
+  defp known_rule_id?(socket, id) do
+    id in [socket.assigns.selected_id | Enum.map(socket.assigns.competitors, & &1.id)]
+  end
 
   defp editor_form(socket, params, action) do
     Transfer.editor_changeset(editor_base(socket), params)
@@ -532,7 +760,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # answered, each from this version's selectable stops (R2), so the widget's list
   # holds nothing the page could not store.
   defp search_stops(socket, params) do
-    with %{editor: %{mode: :create}, view: :general} <- socket.assigns,
+    with %{editor: %{mode: mode}, view: :general} when mode in [:create, :edit] <-
+           socket.assigns,
          id when is_binary(id) <- Map.get(params, "id"),
          true <- Map.has_key?(@stop_component_sides, id),
          text when is_binary(text) <- Map.get(params, "text") do
@@ -575,23 +804,23 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     editor = %{editor | scope: scope, params: draft, dirty?: draft != editor.initial}
 
     case route_pair_errors(draft, scope) do
-      [] -> create_rule(socket, editor, submitted)
+      [] -> save_rule(socket, editor, submitted)
       errors -> refuse_route_pair(socket, editor, submitted, errors)
     end
   end
 
+  defp save_rule(socket, %{mode: :edit} = editor, submitted),
+    do: update_rule(socket, editor, submitted)
+
+  defp save_rule(socket, editor, submitted), do: create_rule(socket, editor, submitted)
+
   defp create_rule(socket, editor, submitted) do
     case Gtfs.create_general_transfer(submitted, audit_context(socket)) do
       {:ok, transfer} ->
-        socket
-        |> assign(:editor, nil)
-        |> put_flash(:info, "Transfer saved in #{socket.assigns.current_gtfs_version.name}.")
-        |> push_patch(to: list_path(socket, rule: transfer.id))
+        saved(socket, transfer)
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        socket
-        |> put_editor(%{editor | form: form_for(changeset, :insert), error: nil})
-        |> push_event("focus_form_error", %{form_id: "transfer-form"})
+        refused(socket, editor, changeset)
 
       {:error, {:duplicate, collision}} ->
         put_editor(socket, %{editor | error: {:duplicate, collision}})
@@ -602,6 +831,61 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       {:error, _reason} ->
         put_editor(socket, %{editor | error: :busy})
     end
+  end
+
+  # An edit writes the row the editor opened with, carrying the `updated_at` that
+  # row had then, so a rule that changed in the meantime is refused instead of
+  # overwritten (R8).
+  defp update_rule(socket, editor, submitted) do
+    case Gtfs.update_general_transfer(
+           editor.row.id,
+           submitted,
+           editor.row.transfer.updated_at,
+           audit_context(socket)
+         ) do
+      {:ok, transfer} ->
+        saved(socket, transfer)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        refused(socket, editor, changeset)
+
+      {:error, {:duplicate, collision}} ->
+        put_editor(socket, %{editor | error: {:duplicate, collision}})
+
+      # The row moved on while the editor was open: the draft is kept, because the
+      # operator's entries are not what is wrong, and the reload path leads to the
+      # stored values.
+      {:error, :stale} ->
+        put_editor(socket, %{editor | error: :stale})
+
+      {:error, :not_found} ->
+        rule_gone(socket)
+
+      {:error, _reason} ->
+        put_editor(socket, %{editor | error: :busy})
+    end
+  end
+
+  defp saved(socket, transfer) do
+    socket
+    |> assign(:editor, nil)
+    |> put_flash(:info, "Transfer saved in #{socket.assigns.current_gtfs_version.name}.")
+    |> push_patch(to: list_path(socket, rule: transfer.id))
+  end
+
+  defp refused(socket, editor, changeset) do
+    socket
+    |> put_editor(%{editor | form: form_for(changeset, :insert), error: nil})
+    |> push_event("focus_form_error", %{form_id: "transfer-form"})
+  end
+
+  # A rule another writer deleted while the editor was open: the draft has nothing
+  # left to write, so the editor closes and the list loads again without it.
+  defp rule_gone(socket) do
+    socket
+    |> assign(:editor, nil)
+    |> put_flash(:info, "This rule is no longer in this version.")
+    |> push_patch(to: list_path(socket, rule: nil))
   end
 
   # "A route pair at selected stops" is a requirement of the scope rather than of a
@@ -666,13 +950,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     end
   end
 
-  # The editor replaces the general view's list pane. It is a general-view surface,
-  # so a draft still open when the page patches to the other view waits behind the
-  # general chip instead of rendering over the in-seat rows.
-  defp editor_open?(%{mode: :create}, :general), do: true
+  # The editor replaces the general view's list pane in both modes. It is a
+  # general-view surface, so a draft still open when the page patches to the other
+  # view waits behind the general chip instead of rendering over the in-seat rows.
+  defp editor_open?(nil, _view), do: false
+  defp editor_open?(_editor, :general), do: true
   defp editor_open?(_editor, _view), do: false
 
-  defp list_mode?(%{mode: :create}, :general), do: false
+  defp list_mode?(nil, _view), do: true
+  defp list_mode?(_editor, :general), do: false
   defp list_mode?(_editor, _view), do: true
 
   # Where a type 4/5 collision points (R1): the bare in-seat list of this version.

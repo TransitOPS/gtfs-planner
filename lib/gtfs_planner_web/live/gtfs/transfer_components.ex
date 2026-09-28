@@ -871,7 +871,21 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
         {inspector_eyebrow(@in_seat?)}
       </p>
-      <h2 class="mt-1 text-xl font-semibold">{type_label(@row.transfer.transfer_type)}</h2>
+      <div class="mt-1 flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-xl font-semibold">{type_label(@row.transfer.transfer_type)}</h2>
+        <.button
+          :if={not @in_seat?}
+          id="transfer-inspector-edit"
+          type="button"
+          variant="secondary"
+          size="sm"
+          class="min-h-11"
+          phx-click="open_edit"
+          phx-value-id={@row.id}
+        >
+          Edit transfer
+        </.button>
+      </div>
 
       <%!-- One spaced column: the shared callout does not accept a `class`, so the
       rhythm between the journey, the callouts and the disclosure lives here. --%>
@@ -1005,6 +1019,16 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           class="mt-4 flex flex-wrap items-center gap-4 border-t border-base-300 pt-4"
         >
           <.button
+            id="transfer-inspector-reverse-create"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="min-h-11"
+            phx-click="reverse_draft"
+          >
+            Create reverse rule
+          </.button>
+          <.button
             id="transfer-inspector-delete"
             type="button"
             variant="danger"
@@ -1088,10 +1112,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   Renders the compare view for a rule that competes with equal-priority rules.
 
   It lists the selected rule and every competitor with the effect each one has —
-  its type and minimum time — and the two scopes that make them equally specific,
-  so the operator can see why neither takes precedence. Choosing the intended
-  behavior is an edit, which later steps add; this dialog is informational and
-  closes back to the trigger that opened it.
+  its type and minimum time — each with an "Edit rule" action that opens that
+  rule's own editor, so the operator can see why neither takes precedence and then
+  correct the one that should change.
 
   ## Examples
 
@@ -1121,18 +1144,34 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       <p>
         These rules apply to some of the same trip pairs with equal priority, so neither takes precedence. Choose the intended behavior, then narrow or remove the competing rule.
       </p>
-      <div class="mt-3 border border-base-300 p-3">
-        <p :for={rule <- @rules} class="py-1">
-          <strong class="block">
-            {type_label(rule.transfer.transfer_type)} · {min_time_label(
-              rule.transfer.min_transfer_time
-            )}
-          </strong>
-          <span class="block">{endpoint_name(rule.from)} → {endpoint_name(rule.to)}</span>
-          <span class="block text-base-content/70">
-            {selector_label(rule.from, :from)} → {selector_label(rule.to, :to)}
-          </span>
-        </p>
+      <div class="mt-3 divide-y divide-base-300 border border-base-300 p-3">
+        <div
+          :for={rule <- @rules}
+          class="flex flex-wrap items-start justify-between gap-2 py-2 first:pt-0 last:pb-0"
+        >
+          <p class="min-w-0">
+            <strong class="block">
+              {type_label(rule.transfer.transfer_type)} · {min_time_label(
+                rule.transfer.min_transfer_time
+              )}
+            </strong>
+            <span class="block">{endpoint_name(rule.from)} → {endpoint_name(rule.to)}</span>
+            <span class="block text-base-content/70">
+              {selector_label(rule.from, :from)} → {selector_label(rule.to, :to)}
+            </span>
+          </p>
+          <.button
+            id={"transfer-compare-edit-#{rule.id}"}
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="min-h-11"
+            phx-click="compare_edit"
+            phx-value-id={rule.id}
+          >
+            Edit rule
+          </.button>
+        </div>
       </div>
     </.confirm_dialog>
     """
@@ -1352,12 +1391,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   and this component renders whatever the draft holds.
 
   A `nil` `error` renders nothing; a duplicate names the colliding row's view — a
-  general rule can be edited, a type 4/5 record cannot (R1) — and the busy notice
-  keeps the draft and offers the retry. Field errors are the form's own, so the
-  stop fields carry theirs beside the LiveSelect, which owns the input.
+  general rule can be edited, which the duplicate's "Open existing rule" does, and
+  a type 4/5 record cannot (R1) — the stale notice keeps the draft and offers the
+  reload, and the busy notice keeps the draft and offers the retry. Field errors
+  are the form's own, so the stop fields carry theirs beside the LiveSelect, which
+  owns the input.
 
   The editor is a general-view surface: the page renders it for the general view
-  only, and its one write is the save.
+  only, in the create and the edit mode, and its one write is the save.
 
   ## Examples
 
@@ -1385,9 +1426,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       |> assign(:scope_help, scope_help(assigns.editor.scope))
       |> assign(:draft_type, draft_type(assigns.editor))
       |> assign(:draft_time, draft_min_time(assigns.editor))
+      |> assign(:open_existing_id, open_existing_id(assigns.editor.error))
 
     ~H"""
-    <div id="transfer-editor" phx-hook="FormErrorFocus" class="p-4 sm:p-6">
+    <div
+      id="transfer-editor"
+      phx-hook="FormErrorFocus"
+      data-focus-on-mount="transfer-editor-title"
+      class="p-4 sm:p-6"
+    >
       <.button
         id="transfer-back"
         type="button"
@@ -1399,11 +1446,36 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         ← Back to transfers
       </.button>
 
-      <h2 class="mt-1 text-xl font-semibold">Create transfer</h2>
+      <h2 id="transfer-editor-title" tabindex="-1" class="mt-1 text-xl font-semibold">
+        {editor_title(@editor)}
+      </h2>
       <p class="mt-1 text-sm text-base-content/70">{@version_name} · one direction</p>
 
+      <%!-- A rule that moved on while the editor was open: the draft the operator
+      entered is kept, and the reload path is the way back to the stored values. --%>
       <.callout
-        :if={@editor.error}
+        :if={@editor.error == :stale}
+        id="transfer-stale"
+        kind="warning"
+        title="Rule changed"
+      >
+        <p>
+          This rule changed since you opened it. Your entries are still here; reload the rule to continue.
+        </p>
+        <.button
+          id="transfer-reload-rule"
+          type="button"
+          variant="secondary"
+          size="sm"
+          class="mt-2 min-h-11"
+          phx-click="reload_rule"
+        >
+          Reload rule
+        </.button>
+      </.callout>
+
+      <.callout
+        :if={not is_nil(@editor.error) and @editor.error != :stale}
         id="transfer-form-error"
         kind="error"
         title="Transfer not saved"
@@ -1422,6 +1494,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         <p :if={general_duplicate?(@editor.error)}>
           A rule already exists for these stops and services. Edit it instead of creating a second rule.
         </p>
+        <.button
+          :if={@open_existing_id}
+          id="transfer-open-existing"
+          type="button"
+          variant="secondary"
+          size="sm"
+          class="mt-2 min-h-11"
+          phx-click="open_existing"
+          phx-value-id={@open_existing_id}
+        >
+          Open existing rule
+        </.button>
         <p :if={@editor.error == :busy}>
           The server couldn't save your changes. Your entries are still here.
         </p>
@@ -1530,7 +1614,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
         <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
           <.button id="transfer-save" type="submit" class="min-h-11" phx-disable-with="Saving…">
-            Create transfer
+            {save_label(@editor)}
           </.button>
           <.button
             id="transfer-cancel"
@@ -1549,6 +1633,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     </div>
     """
   end
+
+  # A duplicate that names a general rule is one the operator can edit here; a
+  # collision whose row vanished, or a type 4/5 record, offers no such action.
+  defp open_existing_id({:duplicate, %{id: id}}), do: id
+  defp open_existing_id(_error), do: nil
+
+  defp editor_title(%{mode: :edit}), do: "Edit transfer"
+  defp editor_title(_editor), do: "Create transfer"
+
+  defp save_label(%{mode: :edit}), do: "Save changes"
+  defp save_label(_editor), do: "Create transfer"
 
   # One side of the connection: the stop search, the kind line of the chosen stop
   # and the route and trip the scope allows. `LiveSelect` owns the text input and
@@ -1581,6 +1676,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       |> assign(:route_prompt, route_prompt(scope))
       |> assign(:route_options, route_option_list(assigns.editor, side))
       |> assign(:route_chosen?, not is_nil(draft_field(assigns.editor, "#{side}_route_id")))
+      |> assign(:trip_chosen?, not is_nil(draft_field(assigns.editor, "#{side}_trip_id")))
       |> assign(:trip_field, assigns.editor.form[trip_field(side)])
       |> assign(:trip_label, trip_field_label(side))
       |> assign(:trip_options, trip_option_list(assigns.editor, side))
@@ -1625,8 +1721,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         options={@route_options}
       />
 
+      <%!-- A stored rule may name a trip without a route (an imported rank-3
+      selector), so the trip select also shows when the draft already holds one;
+      a draft that has neither waits for its route, as the reference does. --%>
       <.input
-        :if={@scope == :custom and @route_chosen?}
+        :if={@scope == :custom and (@route_chosen? or @trip_chosen?)}
         id={"transfer-#{@side}-trip"}
         field={@trip_field}
         type="select"
