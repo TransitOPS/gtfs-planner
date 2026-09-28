@@ -9,8 +9,9 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
   alias GtfsPlannerWeb.ComingSoon
 
   # Literal expectations transcribed from the finalized content table. They are
-  # written here rather than read back from the catalog under test. Transfers and
-  # Blocks are absent: both ship as working pages, so neither has a catalog entry.
+  # written here rather than read back from the catalog under test. Transfers,
+  # Blocks, Feed details, Agencies and Fares are absent: each destination ships
+  # as a working page, so it has no catalog entry.
   @catalog [
     runs: %{
       title: "Runs",
@@ -49,12 +50,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Shared segments"
       ]
     },
-    fares: %{
-      title: "Fares",
-      scope: :version,
-      summary: "Set up fare zones and the fare rules that use them.",
-      section_names: ["Zones", "Fare rules"]
-    },
     export_defaults: %{
       title: "Export defaults",
       scope: :all_versions,
@@ -71,7 +66,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 8
+      assert length(@catalog) == 7
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -88,7 +83,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       # `Function.identity/1` passes the value through while keeping it out of the
       # compiler's type checker, which would otherwise warn that the literal
       # cannot match the closed clause set. The call under test is unchanged.
-      for key <- [:transfers, :unbuilt] do
+      for key <- [:transfers, :feed_details, :agencies, :unbuilt] do
         assert_raise FunctionClauseError, fn ->
           ComingSoon.feature(Function.identity(key))
         end
@@ -102,6 +97,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       # otherwise warn that `feature/1` has no clause for the literal atom.
       assert_raise FunctionClauseError, fn ->
         ComingSoon.feature(Function.identity(:blocks))
+      end
+    end
+
+    test "no longer answers for Fares, whose workspace shipped" do
+      # The retired placeholder key must not resolve to plausible placeholder
+      # copy: the Setting overview lists Fares as an Available page instead.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:fares))
       end
     end
 

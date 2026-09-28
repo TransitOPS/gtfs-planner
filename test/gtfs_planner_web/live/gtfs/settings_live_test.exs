@@ -10,10 +10,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ComingSoon
 
-  # The three allowlisted placeholder sections, their catalog key and the scope
-  # the catalog declares for them.
+  # The two allowlisted placeholder sections, their catalog key and the scope
+  # the catalog declares for them. Feed details, Agencies and Fares left this
+  # list as their pages shipped; they are built pages now and are asserted as
+  # Available entries.
   @placeholder_sections [
-    %{slug: "fares", key: :fares, scope: :version},
     %{slug: "export-defaults", key: :export_defaults, scope: :all_versions},
     %{slug: "feed-url", key: :feed_url, scope: :all_versions}
   ]
@@ -132,7 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       refute text_of(doc, "#settings-entry-agencies") =~ "Coming soon"
 
-      assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"), "Coming soon")
+      assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"), "Available")
 
       assert_entry(
         doc,
@@ -167,6 +168,26 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         assert text_of(doc, "#settings-entry-#{key} a") == feature.title
         assert text_of(doc, "#settings-entry-#{key} p") == feature.summary
       end
+    end
+
+    test "the Fares entry carries the built page's copy and links to its workspace",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, settings_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      # The reference copy the Coming soon entry used to carry, now owned by the
+      # overview entry, and the slug destination `/settings/fares` unchanged.
+      assert text_of(doc, "#settings-entry-fares p") ==
+               "Set up fare zones and the fare rules that use them."
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-entry-fares a"), "href") ==
+               [section_path(version.id, "fares")]
+
+      # No placeholder body renders inside a built entry.
+      assert Enum.empty?(LazyHTML.query(doc, "#settings-entry-fares #coming-soon"))
+      refute has_element?(view, "#settings-entry-fares #coming-soon-status")
     end
 
     test "an editor who is also an organization admin sees the Organization group last",
@@ -252,6 +273,31 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
         assert to == settings_path(version.id)
       end
+    end
+  end
+
+  describe "fares placement" do
+    setup :editor_setup
+
+    test "the Fares destination renders the workspace, not the Coming soon body",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, section_path(version.id, "fares"))
+      doc = LazyHTML.from_fragment(render(view))
+
+      # The literal route resolves before `/settings/:section`, so this is the
+      # workspace shell with the Settings bar's Fares tab current.
+      assert text_of(doc, "h1") == "Fare zones"
+      assert has_element?(view, "#fare-zones-panel")
+      refute has_element?(view, "#coming-soon")
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(doc, "#settings-nav a[aria-current='page']"),
+               "href"
+             ) == [section_path(version.id, "fares")]
+
+      assert Enum.count(LazyHTML.query(doc, "#settings-nav a[aria-current='page']")) == 1
     end
   end
 

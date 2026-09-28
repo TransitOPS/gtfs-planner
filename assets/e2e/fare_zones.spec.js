@@ -25,7 +25,8 @@ const EDITOR = {
 
 const VERSION_NAME = "Browser Fare Zones Version";
 
-const DESKTOP = { width: 1440, height: 1000 };
+const DESKTOP = { width: 1440, height: 1000, label: "desktop" };
+const NARROW = { width: 320, height: 800, label: "narrow" };
 
 // A 1×1 transparent PNG. Every tile request is answered locally so the workspace
 // never depends on the Geoapify plan or on network access.
@@ -162,4 +163,55 @@ test("shell", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?tab=rules", "ref-rules");
   await captureReference(page, testInfo, "?tab=checks", "ref-checks");
+});
+
+// ── settings entry ────────────────────────────────────────────────────────
+
+// Ordinary entry through Settings: the overview lists Fares as an Available
+// page linking to the workspace, and that entry opens it. Fares stopped being a
+// Coming soon destination in step 15, so the placeholder body must be gone.
+test("settings entry", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await faresVersionId(page);
+
+  for (const viewport of [DESKTOP, NARROW]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/gtfs/${versionId}/settings`);
+    await waitForLiveView(page);
+
+    const entry = page.locator("#settings-entry-fares");
+    const entryLink = entry.locator("a");
+
+    await expect(entryLink).toHaveText("Fares");
+    await expect(entryLink).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/settings/fares`,
+    );
+    await expect(entry).toContainText("Available");
+    await expect(entry).not.toContainText("Coming soon");
+    await expect(entry.locator("#coming-soon-status")).toHaveCount(0);
+    await expect(entryLink).toBeVisible();
+
+    await entryLink.focus();
+    await expect(entryLink).toBeFocused();
+    await capture(page, testInfo, `settings-entry-${viewport.label}-focus`, {
+      fullPage: false,
+    });
+
+    await entryLink.click();
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/fares$`));
+    await waitForLiveView(page);
+
+    await expect(page.locator("h1")).toHaveText("Fare zones");
+    await expect(page.locator("#fare-zones-panel")).toBeAttached();
+    await expect(page.locator("#coming-soon")).toHaveCount(0);
+    await expect(page.locator("#settings-tab-fares")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await capture(page, testInfo, `settings-entry-${viewport.label}`);
+  }
 });

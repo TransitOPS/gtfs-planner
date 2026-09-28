@@ -46,11 +46,10 @@ const TASKS = [
   ["nav-gtfs", "GTFS", "export"],
 ];
 
-// The three allowlisted placeholder sections: tab id, page title, URL slug. Feed
-// details and Agencies left this list when their pages were built; the journey
-// asserts each of them separately below.
+// The two remaining allowlisted placeholder sections: tab id, page title, URL
+// slug. Feed details, Agencies and Fares left this list when their pages were
+// built; the journey asserts each of them separately below.
 const SETTINGS_SECTIONS = [
-  ["settings-tab-fares", "Fares", "fares"],
   ["settings-tab-export_defaults", "Export defaults", "export-defaults"],
   ["settings-tab-feed_url", "Published feed URL", "feed-url"],
 ];
@@ -333,7 +332,7 @@ for (const { width, height, label } of VIEWPORTS) {
       ).toHaveText("Agencies");
       await expectNoPageOverflow(page);
 
-      // ── The three remaining allowlisted sections render their shared body ──
+      // ── The two remaining allowlisted sections render their shared body ──
       for (const [tab, title, slug] of SETTINGS_SECTIONS) {
         await page.locator(`#${tab}`).click();
         await page.waitForURL(new RegExp(`/settings/${slug}$`));
@@ -352,6 +351,18 @@ for (const { width, height, label } of VIEWPORTS) {
       }
 
       await capture(page, testInfo, `settings-section-${label}`);
+
+      // ── Fares is an Available page: its Settings tab opens the workspace ──
+      await page.locator("#settings-tab-fares").click();
+      await page.waitForURL(/\/settings\/fares$/);
+      await waitForLiveView(page);
+      await expect(page.locator("h1")).toHaveText("Fare zones");
+      await expect(page.locator("#fare-zones-panel")).toBeAttached();
+      await expect(page.locator("#coming-soon")).toHaveCount(0);
+      await expect(
+        page.locator("#settings-nav a[aria-current='page']"),
+      ).toHaveText("Fares");
+      await capture(page, testInfo, `settings-fares-${label}`);
 
       // ── The moved Garages and Fleet pages keep the Settings bar ──
       await page.locator("#settings-tab-garages").click();
