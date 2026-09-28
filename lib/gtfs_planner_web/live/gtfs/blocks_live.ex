@@ -1290,19 +1290,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp put_form_params(assign, params) do
-    values = Map.get(params, "assign", %{})
+    values =
+      case Map.get(params, "assign") do
+        %{} = values -> values
+        _ -> %{}
+      end
 
     %{
       assign
-      | search: Map.get(values, "search", assign.search),
+      | search: block_action_string(Map.get(values, "search"), assign.search),
         target: destination_target(Map.get(values, "destination"), assign.target)
     }
   end
 
-  defp destination_target(nil, current), do: current
   defp destination_target("new", _current), do: :new
   defp destination_target("none", _current), do: :none
-  defp destination_target(block_id, _current), do: block_id
+  defp destination_target(block_id, _current) when is_binary(block_id), do: block_id
+  defp destination_target(_value, current), do: current
 
   defp command(%{target: nil}), do: {:error, "Choose a destination block."}
   defp command(%{target: :new, trip_ids: ids}), do: {:ok, {:assign, ids, :new}}

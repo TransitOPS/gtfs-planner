@@ -1001,7 +1001,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   defp validate_block_id(block_id) do
     trimmed = String.trim(block_id)
 
-    if trimmed == "" or String.length(trimmed) > 255 do
+    # varchar(255) counts code points, not graphemes.
+    if trimmed == "" or length(String.codepoints(trimmed)) > 255 do
       {:error, :invalid_block_id}
     else
       {:ok, trimmed}
@@ -1306,7 +1307,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   rescue
     error in [Postgrex.Error, Ecto.ConstraintError, DBConnection.ConnectionError] ->
-      Repo.rollback({:audit_failed, error})
+      # A serialization failure or deadlock goes to the transaction retry instead.
+      if retryable?(error),
+        do: reraise(error, __STACKTRACE__),
+        else: Repo.rollback({:audit_failed, error})
   end
 
   # The audit snapshot is built from the stored rows rather than the day read's trip
