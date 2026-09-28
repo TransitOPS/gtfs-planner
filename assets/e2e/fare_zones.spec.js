@@ -1104,3 +1104,141 @@ test("rules list", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?tab=rules", "ref-rules");
 });
+
+// The fare rule drawer and removal. The drawer is opened from the CROSS A→B card
+// the rules list case reads, its fields and plain-language summary are checked
+// against the seeded zones and fares, the removal confirm is captured, and a new
+// rule is created and removed again so the seeded version ends where it started.
+// A version with no fare_attributes shows the disabled `Add fare rule` with its
+// reason (AC-30), which is the one state the seeded fare-zones version cannot
+// show.
+test("rule drawer", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  // ── no fares ──
+  const noFaresVersionId = await versionIdByName(page, "Browser E2E Version");
+
+  await page.goto(`/gtfs/${noFaresVersionId}/settings/fares/rules`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#add-fare-rule")).toBeDisabled();
+  await expect(page.locator("#add-fare-rule-reason")).toHaveText(
+    "This version has no fares. Import fare_attributes.txt to add fares.",
+  );
+
+  // ── edit drawer ──
+  await openFares(page, "rules");
+
+  const cards = page.locator("#fare-rule-list article");
+  const oneWay = cards.filter({ hasText: "From Central → Eastbank" });
+
+  await expect(oneWay).toHaveCount(1);
+  await oneWay.locator("[id$='-edit']").click();
+
+  const drawer = page.locator("#fare-rule-drawer");
+
+  await expect(drawer).toBeVisible();
+  await expect(page.locator("#fare-rule-drawer-overlay")).toHaveAttribute("data-open", "true");
+  await expect(page.locator("#fare-rule-drawer-title")).toHaveText("Edit fare rule");
+
+  // Every field the reference puts in the dialog, in its own order and words.
+  await expect(page.locator("#fare-rule-fare")).toHaveValue("CROSS");
+  await expect(page.locator("#fare-rule-fare-help")).toHaveText(
+    "Existing fares in this version. Prices are shown for context.",
+  );
+  await expect(page.locator("#fare-rule-origin")).toHaveValue("A");
+  await expect(page.locator("#fare-rule-destination")).toHaveValue("B");
+  await expect(page.locator("#fare-rule-route")).toHaveValue("");
+  await expect(page.locator("#fare-rule-contains legend")).toContainText(
+    "Must visit these zones",
+  );
+  await expect(page.locator("#fare-rule-contains-help")).toHaveText(
+    "The journey must visit every checked zone. Leave all unchecked for no through-zone requirement.",
+  );
+  await expect(page.locator("#fare-rule-summary")).toHaveText(
+    "Use CROSS · $3.75 for journeys from Central to Eastbank on all routes.",
+  );
+  await expect(drawer).toContainText(
+    "Start and end zones are directional. To charge the same fare in reverse, add a second rule with those zones swapped.",
+  );
+  await expect(page.locator("#fare-rule-remove")).toHaveText("Remove this rule…");
+  await expect(page.locator("#fare-rule-form button[type='submit']")).toHaveText("Save fare rule");
+
+  // The two journey selects sit side by side at this width, one per column.
+  const originBox = await page.locator("#fare-rule-origin").boundingBox();
+  const destinationBox = await page.locator("#fare-rule-destination").boundingBox();
+
+  expect(destinationBox.x).toBeGreaterThan(originBox.x + originBox.width);
+
+  await capture(page, testInfo, "rule-drawer-1440", { fullPage: false });
+
+  await page.setViewportSize(NARROW);
+
+  await expect(drawer).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  const narrowOrigin = await page.locator("#fare-rule-origin").boundingBox();
+  const narrowDestination = await page.locator("#fare-rule-destination").boundingBox();
+
+  // Below `sm` the two selects stack instead of shrinking side by side.
+  expect(narrowDestination.y).toBeGreaterThan(narrowOrigin.y + narrowOrigin.height - 1);
+
+  await capture(page, testInfo, "rule-drawer-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // ── removal confirm ──
+  await page.locator("#fare-rule-remove").click();
+
+  await expect(page.locator("#fare-rule-remove-dialog")).toBeVisible();
+  await expect(page.locator("#fare-rule-remove-dialog-title")).toHaveText(
+    "Remove this fare rule?",
+  );
+  await expect(page.locator("#fare-rule-remove-consequence")).toHaveText(
+    "The fare itself will remain. Journeys covered by this rule may no longer receive that fare.",
+  );
+  await expect(page.locator("#fare-rule-remove-dialog-confirm")).toHaveText("Remove rule");
+  await expect(page.locator("#fare-rule-remove-dialog-cancel")).toHaveText("Keep rule");
+
+  await capture(page, testInfo, "rule-remove", { fullPage: false });
+
+  await page.locator("#fare-rule-remove-dialog-cancel").click();
+  await expect(page.locator("#fare-rule-remove-dialog")).toHaveCount(0);
+  await page.locator("#fare-rule-drawer-close").click();
+  await expect(page.locator("#fare-rule-drawer-overlay")).toHaveAttribute("data-open", "false");
+
+  // ── create and remove, ending where the case started ──
+  await page.locator("#add-fare-rule").click();
+  await expect(page.locator("#fare-rule-drawer-title")).toHaveText("Add a fare rule");
+
+  await page.selectOption("#fare-rule-origin", "A");
+  await page.selectOption("#fare-rule-destination", "B");
+  await expect(page.locator("#fare-rule-summary")).toHaveText(
+    "Use CITY · $2.50 for journeys from Central to Eastbank on all routes.",
+  );
+
+  await capture(page, testInfo, "rule-drawer-create", { fullPage: false });
+
+  await page.locator("#fare-rule-form button[type='submit']").click();
+
+  await expect(page.locator("#fare-rule-drawer-overlay")).toHaveAttribute("data-open", "false");
+  await expect(page.locator("#fare-zone-notice")).toHaveText("Fare rule saved.");
+  await expect(cards).toHaveCount(5);
+
+  // The new CITY rule is the only card that is both a CITY fare and the
+  // Central → Eastbank journey the form chose.
+  const created = cards
+    .filter({ hasText: "CITY · $2.50" })
+    .filter({ hasText: "From Central → Eastbank" });
+
+  await expect(created).toHaveCount(1);
+  await created.locator("[id$='-edit']").click();
+  await page.locator("#fare-rule-remove").click();
+  await page.locator("#fare-rule-remove-dialog-confirm").click();
+
+  await expect(page.locator("#fare-zone-notice")).toHaveText("Fare rule removed.");
+  await expect(cards).toHaveCount(4);
+
+  await captureReference(page, testInfo, "?dialog=rule", "ref-rule");
+});

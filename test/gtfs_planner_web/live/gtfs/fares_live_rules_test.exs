@@ -271,7 +271,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       assert MapSet.new(ids) == MapSet.new(Map.values(cards))
 
       panel_ids = LazyHTML.attribute(LazyHTML.query(doc, "#fare-rules-panel [id]"), "id")
-      inner_pattern = ~r/\Afare-rule-[0-9a-fA-F-]{36}-(fare|journey|route|stopless)\z/
+      inner_pattern = ~r/\Afare-rule-[0-9a-fA-F-]{36}-(fare|journey|route|stopless|edit)\z/
 
       assert panel_ids != []
 

@@ -61,6 +61,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   marked, so a reference that can be kept but not created is visible where the
   rule is read.
 
+  The rule drawer is the create and edit surface for a rule, and it edits the
+  group the page read rather than a key the browser sent. Its selects offer only
+  what this version carries - the fares with their prices, the routes, and the
+  zones with their IDs - plus, for an existing rule, the fare or route it already
+  names when that row is gone, so an imported rule stays editable. A zone with no
+  boardable stops says so in its own option, and a new reference to one is what
+  the save refuses. The plain-language summary is derived from the form's own
+  current values, so it follows every change, including one that validation will
+  later reject. Nothing about a rejected save, a rule another editor changed or a
+  vanished version closes the drawer or discards what the operator chose; the
+  stale state offers Reload rule, which reloads the rule the drawer was opened
+  on. Removal is the drawer's destructive exit: a danger confirm states that the
+  fare itself remains, and only that rule's rows are deleted.
+
   The Checks body is added beside these components by a following step.
   """
 
@@ -950,6 +964,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   references a zone with no boardable stops carries the warning badge, because an
   imported reference is kept while a new one cannot be created.
 
+  "Edit rule" opens the drawer on this rule: it sends the card's own DOM ID, and
+  the LiveView resolves that ID back to the group it streamed, so the reviewed
+  rows come from the page's read rather than from anything the browser said about
+  the rule (INV-4).
+
   ## Examples
 
       <.rule_card id={dom_id} rule={rule} zone_lookup={@zone_lookup} />
@@ -981,7 +1000,306 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       <p id={"#{@id}-journey"} class="mt-2 break-words text-xl font-semibold">{@journey_text}</p>
 
       <p id={"#{@id}-route"} class="mt-1.5 text-sm text-base-content/70">{@route_text}</p>
+
+      <div class="mt-3">
+        <.button
+          id={"#{@id}-edit"}
+          variant="secondary"
+          size="sm"
+          class="min-h-11"
+          phx-click="open_rule_drawer"
+          phx-value-rule_id={@id}
+          phx-value-opener_id={"#{@id}-edit"}
+        >
+          Edit rule
+        </.button>
+      </div>
     </article>
+    """
+  end
+
+  @doc """
+  Renders the rule drawer: the fare, journey, route and through-zone fields, the
+  plain-language summary and the destructive exit.
+
+  The form is `FareZones.change_rule_group/2`'s changeset for the reviewed group
+  (or nil for a new rule), so it validates what the write will validate and an
+  untouched field is not a change. Each select offers this version's own catalog:
+  fares with the price their row holds, zones as "Name · ID" with "· no stops"
+  when the zone has no boardable stop, and routes with their names. An existing
+  rule whose fare or route has no row keeps that value as its own option, so an
+  imported rule stays editable without inventing a fare the version does not
+  carry.
+
+  The summary is read from the form's current values, so it states what the
+  fields say now; a rejected save keeps the chosen values and its field errors
+  beside the fields they belong to, and neither a stale rule nor a failed save
+  closes the drawer.
+
+  ## Examples
+
+      <.rule_drawer
+        open={@rule_drawer_open}
+        reviewed={@reviewed_rule}
+        form={@rule_form}
+        fares={@fares}
+        routes={@rule_routes}
+        zones={@inventory.zones}
+      />
+  """
+  attr :open, :boolean, default: false
+  attr :reviewed, :map, default: nil, doc: "the group being edited, or nil to create"
+  attr :form, :any, required: true, doc: "`FareZones.change_rule_group/2`'s form"
+  attr :fares, :list, required: true, doc: "`FareZones.list_fares/2`"
+  attr :routes, :list, required: true, doc: "`FareZones.list_rule_routes/2`"
+  attr :zones, :list, required: true, doc: "the inventory's zones"
+  attr :error, :string, default: nil, doc: "a drawer-level reason the save did not happen"
+
+  attr :stale, :boolean,
+    default: false,
+    doc: "the reviewed rule changed under the drawer, so the save was refused"
+
+  attr :return_focus_id, :string, default: nil
+
+  def rule_drawer(assigns) do
+    zone_lookup = Map.new(assigns.zones, &{&1.zone_id, &1})
+
+    assigns =
+      assigns
+      |> assign(:editing?, not is_nil(assigns.reviewed))
+      |> assign(
+        :title,
+        if(assigns.reviewed, do: "Edit fare rule", else: "Add a fare rule")
+      )
+      |> assign(:zone_lookup, zone_lookup)
+      |> assign(:fare_options, fare_options(assigns.fares, assigns.reviewed))
+      |> assign(:zone_options, zone_options(assigns.zones))
+      |> assign(:contains_options, contains_options(assigns.zones))
+      |> assign(:route_options, route_options(assigns.routes, assigns.reviewed))
+      |> assign(:contains_name, assigns.form[:contains].name <> "[]")
+      |> assign(
+        :contains_errors,
+        if(Phoenix.Component.used_input?(assigns.form[:contains]),
+          do: Enum.map(assigns.form[:contains].errors, &translate_error/1),
+          else: []
+        )
+      )
+      |> assign(
+        :summary,
+        rule_summary(assigns.form, zone_lookup, assigns.fares, assigns.routes, assigns.reviewed)
+      )
+
+    ~H"""
+    <.drawer
+      id="fare-rule-drawer"
+      open={@open}
+      on_close="close_rule_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+    >
+      <div id="fare-rule-drawer-content" phx-hook="FormErrorFocus">
+        <.callout
+          :if={@stale}
+          id="fare-rule-stale"
+          kind="warning"
+          title="This rule changed since you opened it."
+          role="alert"
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        >
+          <p>Reload the rule to keep editing what it says now.</p>
+          <.button
+            id="fare-rule-reload"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="mt-2 min-h-11"
+            phx-click="reload_rule"
+          >
+            Reload rule
+          </.button>
+        </.callout>
+
+        <div :if={@error} class="mb-4">
+          <.callout
+            id="fare-rule-drawer-error"
+            kind="error"
+            title={@error}
+            role="alert"
+            tabindex="-1"
+            phx-mounted={JS.focus()}
+          />
+        </div>
+
+        <.form
+          for={@form}
+          id="fare-rule-form"
+          as={:rule}
+          novalidate
+          phx-change="validate_rule"
+          phx-submit="save_rule"
+          class="space-y-1"
+        >
+          <.input
+            id="fare-rule-fare"
+            field={@form[:fare_id]}
+            type="select"
+            label="Use this fare"
+            options={@fare_options}
+            help="Existing fares in this version. Prices are shown for context."
+          />
+
+          <div class="grid gap-x-4 sm:grid-cols-2">
+            <.input
+              id="fare-rule-origin"
+              field={@form[:origin_id]}
+              type="select"
+              label="Journey starts in"
+              options={@zone_options}
+              prompt="Any origin"
+            />
+
+            <.input
+              id="fare-rule-destination"
+              field={@form[:destination_id]}
+              type="select"
+              label="Journey ends in"
+              options={@zone_options}
+              prompt="Any destination"
+            />
+          </div>
+
+          <.input
+            id="fare-rule-route"
+            field={@form[:route_id]}
+            type="select"
+            label="On route"
+            options={@route_options}
+            prompt="All routes"
+          />
+
+          <%!-- A checkbox row per zone, named by its own position rather than by a
+          zone ID (CR-7). The hidden empty value keeps `contains` in the form
+          even when every box is unchecked, so clearing the through zones is a
+          change the form can see. --%>
+          <fieldset id="fare-rule-contains" class="fieldset mb-2 min-w-0">
+            <legend class="label text-base mb-1">
+              Must visit these zones <span class="font-normal text-base-content/70">(optional)</span>
+            </legend>
+            <p id="fare-rule-contains-help" class="mb-2 text-sm text-base-content/70">
+              The journey must visit every checked zone. Leave all unchecked for no through-zone requirement.
+            </p>
+            <input type="hidden" name={@contains_name} value="" />
+            <div class="flex flex-wrap gap-x-4">
+              <label
+                :for={option <- @contains_options}
+                class="flex min-h-11 items-center gap-2 text-sm"
+              >
+                <input
+                  type="checkbox"
+                  id={option.id}
+                  name={@contains_name}
+                  value={option.zone_id}
+                  checked={option.zone_id in @form[:contains].value}
+                  class="checkbox"
+                />
+                {option.label}
+              </label>
+            </div>
+            <p
+              :if={@contains_errors != []}
+              id="fare-rule-contains-error"
+              class="mt-1.5 flex flex-col gap-1 text-sm text-error"
+            >
+              <span :for={message <- @contains_errors}>{message}</span>
+            </p>
+          </fieldset>
+
+          <div class="my-4 rounded-box bg-base-200 p-4">
+            <p class="font-semibold">In plain language</p>
+            <p id="fare-rule-summary" class="mt-1 text-sm text-base-content/70" aria-live="polite">
+              {@summary}
+            </p>
+          </div>
+
+          <p class="text-sm text-base-content/70">
+            Start and end zones are directional. To charge the same fare in reverse, add a second rule with those zones swapped.
+          </p>
+
+          <div :if={@editing?} class="pt-2">
+            <.button
+              id="fare-rule-remove"
+              type="button"
+              variant="quiet"
+              class="min-h-11 text-error"
+              phx-click="open_remove_rule"
+            >
+              Remove this rule…
+            </.button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3 pt-3">
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+              Save fare rule
+            </.button>
+            <.button type="button" variant="quiet" class="min-h-11" phx-click="close_rule_drawer">
+              Cancel
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the confirm dialog that removes one fare rule.
+
+  The dialog states what removal does and does not do before anything is written:
+  the fare attribute stays, and journeys this rule covered may lose it. A refused
+  removal - a rule another editor changed, or a pair that is no longer a published
+  version - keeps the dialog open with its reason, and the drawer behind it is
+  untouched, so nothing the operator chose is discarded (AC-20, AC-26).
+
+  ## Examples
+
+      <.remove_rule_dialog :if={@remove_rule} remove={@remove_rule} />
+  """
+  attr :remove, :map, required: true, doc: "`%{rule: reviewed group, error: reason | nil}`"
+  attr :return_focus_id, :string, default: nil
+
+  def remove_rule_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="fare-rule-remove-dialog"
+      open={true}
+      title="Remove this fare rule?"
+      confirm_label="Remove rule"
+      pending_label="Removing…"
+      on_confirm="remove_rule"
+      on_cancel="cancel_remove_rule"
+      cancel_label="Keep rule"
+      confirm_variant="danger"
+      return_focus_id={@return_focus_id}
+      described_by="fare-rule-remove-dialog-body"
+    >
+      <div id="fare-rule-remove-body" class="space-y-3">
+        <p id="fare-rule-remove-consequence">
+          The fare itself will remain. Journeys covered by this rule may no longer receive that fare.
+        </p>
+
+        <.callout
+          :if={@remove.error}
+          id="fare-rule-remove-error"
+          kind="warning"
+          title={@remove.error}
+          role="alert"
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        />
+      </div>
+    </.confirm_dialog>
     """
   end
 
@@ -1733,4 +2051,147 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       _zone -> zone_id
     end
   end
+
+  # The drawer's fare options: this version's fares with their own prices, and
+  # an edited rule's unknown fare as its own option so the rule stays editable
+  # without inventing a fare the version does not carry.
+  defp fare_options(fares, reviewed) do
+    options = Enum.map(fares, &{fare_option_label(&1), &1.fare_id})
+
+    case unknown_value(reviewed, :fare_id, fares, & &1.fare_id) do
+      nil -> options
+      fare_id -> [{"Unknown fare #{fare_id}", fare_id} | options]
+    end
+  end
+
+  defp fare_option_label(%{} = fare) do
+    fare.fare_id <> " · " <> rule_price(fare.price, fare.currency_type)
+  end
+
+  # The drawer's zone options, in the inventory's own byte order: "Name · ID",
+  # with "· no stops" on a zone that has no boardable stop, which is the
+  # reference a save refuses to add and an imported rule may already keep.
+  defp zone_options(zones), do: Enum.map(zones, &{zone_option_label(&1), &1.zone_id})
+
+  # The through-zone checkbox rows, named by their own position in the
+  # inventory's byte order rather than by a zone ID (CR-7).
+  defp contains_options(zones) do
+    zones
+    |> Enum.with_index()
+    |> Enum.map(fn {zone, index} ->
+      %{
+        id: "fare-rule-contains-#{index}",
+        zone_id: zone.zone_id,
+        label: zone_option_label(zone)
+      }
+    end)
+  end
+
+  defp zone_option_label(%{stop_count: 0} = zone), do: zone_option_text(zone) <> " · no stops"
+  defp zone_option_label(zone), do: zone_option_text(zone)
+
+  defp zone_option_text(%{zone_id: zone_id, name: name}) when is_binary(name) and name != "",
+    do: "#{name} · #{zone_id}"
+
+  defp zone_option_text(%{zone_id: zone_id}), do: zone_id
+
+  # The drawer's route options: "All routes" is the select's empty value, and an
+  # edited rule's unknown route keeps its own option for the same reason a fare
+  # does.
+  defp route_options(routes, reviewed) do
+    options =
+      Enum.map(routes, &{rule_route_text(%{route: &1, route_id: &1.route_id}), &1.route_id})
+
+    case unknown_value(reviewed, :route_id, routes, & &1.route_id) do
+      nil -> options
+      route_id -> [{"Unknown route #{route_id}", route_id} | options]
+    end
+  end
+
+  # The value an edited rule already carries that the version's catalog does not,
+  # or nil when the value is absent or the catalog carries it.
+  defp unknown_value(reviewed, field, catalog, key_fun) do
+    value = reviewed && Map.get(reviewed, field)
+
+    if is_binary(value) and not Enum.any?(catalog, &(key_fun.(&1) == value)) do
+      value
+    end
+  end
+
+  # The plain-language summary, read from the form's current values rather than
+  # from a saved rule, so it follows a change that validation has not seen yet.
+  # A select's empty value and an unchecked checkbox row arrive as empty strings
+  # (`[""]` for the through zones), which is "any" and "no through zones" here,
+  # so they are normalized before the sentence is built.
+  defp rule_summary(form, zone_lookup, fares, routes, reviewed) do
+    "Use " <>
+      fare_summary(summary_value(form[:fare_id].value), fares, reviewed) <>
+      " for journeys from " <>
+      rule_summary_zone(summary_value(form[:origin_id].value), zone_lookup) <>
+      " to " <>
+      rule_summary_zone(summary_value(form[:destination_id].value), zone_lookup) <>
+      " on " <>
+      route_summary(summary_value(form[:route_id].value), routes, reviewed) <>
+      rule_summary_visits(summary_contains(form[:contains].value), zone_lookup) <>
+      "."
+  end
+
+  defp summary_value(value) when value in [nil, ""], do: nil
+  defp summary_value(value), do: value
+
+  defp summary_contains(values) when is_list(values), do: Enum.reject(values, &(&1 in [nil, ""]))
+  defp summary_contains(_values), do: []
+
+  # The fare keeps the card's own text, so the summary and the card never
+  # describe the same fare two ways.
+  defp fare_summary(fare_id, _fares, _reviewed) when is_nil(fare_id), do: "the selected fare"
+
+  defp fare_summary(fare_id, fares, reviewed) do
+    case Enum.find(fares, &(&1.fare_id == fare_id)) do
+      nil ->
+        if(reviewed_value(reviewed, :fare_id) == fare_id,
+          do: "Unknown fare #{fare_id}",
+          else: fare_id
+        )
+
+      fare ->
+        fare_option_label(fare)
+    end
+  end
+
+  defp rule_summary_zone(nil, _zone_lookup), do: "any zone"
+  defp rule_summary_zone(zone_id, zone_lookup), do: rule_zone_name(zone_lookup, zone_id)
+
+  defp route_summary(nil, _routes, _reviewed), do: "all routes"
+
+  defp route_summary(route_id, routes, reviewed) do
+    case Enum.find(routes, &(&1.route_id == route_id)) do
+      nil ->
+        if(reviewed_value(reviewed, :route_id) == route_id,
+          do: "route #{route_id}",
+          else: route_id
+        )
+
+      route ->
+        rule_route_text(%{route: route, route_id: route.route_id})
+    end
+  end
+
+  defp rule_summary_visits([], _zone_lookup), do: ""
+
+  defp rule_summary_visits(contains, zone_lookup) do
+    ", visiting " <>
+      (contains |> Enum.map(&rule_zone_name(zone_lookup, &1)) |> natural_join())
+  end
+
+  defp natural_join([one]), do: one
+  defp natural_join([one, two]), do: "#{one} and #{two}"
+
+  defp natural_join(names) do
+    [last | rest] = Enum.reverse(names)
+    Enum.join(Enum.reverse(rest), ", ") <> " and " <> last
+  end
+
+  defp reviewed_value(nil, _field), do: nil
+  defp reviewed_value(reviewed, field), do: Map.get(reviewed, field)
 end
