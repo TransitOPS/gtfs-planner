@@ -183,6 +183,11 @@ const FareZoneMap = {
     this._mode = "select";
     this._state = STATE_INITIALIZING;
     this._dragStart = null;
+    // A completed box gesture can end over a marker, and the browser reports
+    // that release as a click on it too. The flag is set by the box path and
+    // consumed by the first marker click, so a box selection is never also a
+    // one-stop toggle (AC-28); the next pointerdown clears it either way.
+    this._suppressMarkerClick = false;
     this._tileErrorPushed = false;
     this._controls = [];
     this._labelPane = null;
@@ -414,6 +419,10 @@ const FareZoneMap = {
       });
       marker.on("click", () => {
         if (this._mode !== "select") return;
+        if (this._suppressMarkerClick) {
+          this._suppressMarkerClick = false;
+          return;
+        }
         this.pushEvent("toggle_stop", { id: record.id });
       });
 
@@ -581,6 +590,9 @@ const FareZoneMap = {
   _bindPointer() {
     this._onPointerDown = (event) => {
       if (this._mode !== "select" || event.button !== 0 || !this._map) return;
+      // A new gesture is its own click: nothing from the previous box is left
+      // to suppress.
+      this._suppressMarkerClick = false;
       this._dragStart = this._map.mouseEventToContainerPoint(event);
       window.addEventListener("pointermove", this._onPointerMove);
       window.addEventListener("pointerup", this._onPointerUp);
@@ -610,6 +622,10 @@ const FareZoneMap = {
       // Project the container corners before comparing: the box is a
       // geographic rectangle, not a rectangle of screen pixels.
       const bounds = [this._toLatLon(start), this._toLatLon(end)];
+      // The box owns this gesture: the stop under the cursor is one of the ids
+      // the box just reported, so the click that follows the release must not
+      // toggle it out of the selection the box made (AC-28).
+      this._suppressMarkerClick = true;
       this.pushEvent("select_stops", {
         ids: idsInBounds(this._points, bounds),
       });

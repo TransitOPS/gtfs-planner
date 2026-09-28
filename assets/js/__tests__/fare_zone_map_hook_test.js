@@ -667,6 +667,43 @@ describe("FareZoneMap box selection", () => {
     expect(pushed("select_stops")[0].payload).toEqual({ ids: ["stop-in"] });
   });
 
+  it("keeps the stop under a completed box in the selection instead of toggling it", () => {
+    const stub = createLeafletStub();
+    window.L = stub;
+
+    const { canvas, map, pushed } = mount({ reply: dragReply });
+
+    // The box covers 0.1-0.3 on both axes, so it takes in stop-in. A browser
+    // reports the release as a click on the marker the pointer ended over as
+    // well, which is the second event below.
+    drag(canvas, { x: 100, y: 100 }, { x: 300, y: 300 });
+
+    expect(pushed("select_stops")).toHaveLength(1);
+    expect(pushed("select_stops")[0].payload).toEqual({ ids: ["stop-in"] });
+
+    pointMarkersOn(map)[0].fire("click");
+
+    // `select_stops` unions and `toggle_stop` deletes, so the marker's own
+    // event would silently drop the stop the box had just selected (AC-28).
+    expect(pushed("toggle_stop")).toHaveLength(0);
+    expect(pushed("select_stops")).toHaveLength(1);
+
+    // The suppression is one gesture only: the next click starts with its own
+    // pointerdown and toggles the marker as it always did.
+    canvas.dispatchEvent(
+      new MouseEvent("pointerdown", {
+        clientX: 100,
+        clientY: 100,
+        button: 0,
+        bubbles: true,
+      }),
+    );
+    pointMarkersOn(map)[0].fire("click");
+
+    expect(pushed("toggle_stop")).toHaveLength(1);
+    expect(pushed("toggle_stop")[0].payload).toEqual({ id: "stop-in" });
+  });
+
   it("ignores a pointer drag shorter than the threshold", () => {
     const stub = createLeafletStub();
     window.L = stub;
