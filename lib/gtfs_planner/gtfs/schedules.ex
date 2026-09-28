@@ -27,7 +27,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   before writing, enforces the custom-compatibility and frequency rules at the
   context boundary, and writes one `"trip"` audit log per affected trip. A bulk
   deletion validates the whole list before deleting anything and removes
-  stop_times, frequencies and trip-scoped transfers before the trips.
+  stop_times, frequencies and trip-scoped transfers before the trips. A calendar
+  change on a blocked trip additionally joins the block guarantee: it takes
+  `Blocking.lock_blocking!/1` in the rule-table order and clears the block in the
+  same update when the new dates would put the trip on another vehicle's work
+  (R9, D2, INV-1).
 
   Every result is scoped: a foreign, invalid or unpublished organization,
   version or route rolls back to `{:error, :not_found}`.
@@ -37,6 +41,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
@@ -101,7 +106,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           sections: [Timetable.section()],
           unlinked_trip_count: non_neg_integer(),
           summary: summary(),
-          block_suggestions: [String.t()],
           direction_labels: %{0 => String.t(), 1 => String.t()}
         }
 
@@ -134,7 +138,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           optional(:service_id) => String.t() | nil,
           optional(:trip_headsign) => String.t() | nil,
           optional(:trip_short_name) => String.t() | nil,
-          optional(:block_id) => String.t() | nil,
           optional(:wheelchair_accessible) => 0..2 | nil,
           optional(:bikes_allowed) => 0..2 | nil
         }
@@ -222,10 +225,16 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   Edits one trip in place, keeping its `trip_id`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
-  `:trip_headsign`, `:trip_short_name`, `:block_id`, `:wheelchair_accessible` and
+  `:trip_headsign`, `:trip_short_name`, `:wheelchair_accessible` and
   `:bikes_allowed`. The metadata fields go through a changeset that casts only
-  those five fields and validates the two 0..2 enums. `direction_id` and
-  `route_pattern_id` are never editable, and `trip_id` never changes.
+  those four fields and validates the two 0..2 enums. A block is read-only here:
+  block membership changes on the Blocks page, so a submitted `:block_id` is
+  ignored and leaves the stored block untouched. A calendar change is the one
+  exception: it takes the version's blocking advisory lock and clears the block in
+  the same update when the trip would join another vehicle's work on its new dates
+  (R9, D2), so one audit entry records the calendar and the block change together.
+  `direction_id` and `route_pattern_id` are never editable, and `trip_id` never
+  changes.
 
   `expected_updated_at` (a `DateTime` or an ISO 8601 string) must equal the
   locked trip's `updated_at`, otherwise nothing is written and `:stale` is
@@ -261,11 +270,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `attrs` carries `:start_time` and `:timed_pattern_id` (a timing of the source
   trip's pattern; required, because a custom source has no timing of its own).
   The new trip copies `service_id`, `trip_headsign`, `trip_short_name`,
-  `block_id`, `wheelchair_accessible`, `bikes_allowed` and `shape_id`, takes the
-  pattern's direction, gets a freshly allocated trip ID and newly materialized
-  stop times with no copied `shape_dist_traveled`, and is audited as created. A
-  frequency source is refused with `:frequency_trip` and the source trip itself
-  is never written.
+  `wheelchair_accessible`, `bikes_allowed` and `shape_id`, gets no block, takes
+  the pattern's direction, gets a freshly allocated trip ID and newly
+  materialized stop times with no copied `shape_dist_traveled`, and is audited as
+  created. A frequency source is refused with `:frequency_trip` and the source
+  trip itself is never written.
   """
   @spec duplicate_trip(String.t(), Ecto.UUID.t(), duplicate_attrs(), AuditContext.t()) ::
           {:ok, Trip.t()} | {:error, Ecto.Changeset.t() | update_error()}
@@ -320,6 +329,40 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   def count_trip_transfers(organization_id, version_id, trip_ids) when is_list(trip_ids) do
     trip_transfers_query(organization_id, version_id, trip_ids)
     |> Repo.aggregate(:count)
+  end
+
+  @doc """
+  Builds the audit snapshot of many trips in three scoped queries.
+
+  Returns `%{trip.id => snapshot}` with the same snapshot shape the trip edit path
+  records, so a caller that audits many trips in one write reuses the stored shape
+  instead of duplicating it (CR-5). Stop times, frequencies and timing names load
+  for every given trip at once, scoped to `organization_id` and `version_id`; stop
+  times are included only for a trip whose `pattern_derivation_state` is not
+  `"linked"`, exactly as `edit_snapshot/3` decides, and `start_time` is the first
+  stop time's departure.
+  """
+  @spec trip_audit_snapshots(Ecto.UUID.t(), Ecto.UUID.t(), [Trip.t()]) :: %{
+          Ecto.UUID.t() => map()
+        }
+  def trip_audit_snapshots(organization_id, version_id, trips) when is_list(trips) do
+    stop_times_by_trip = load_stop_times(organization_id, version_id, trips)
+    frequencies_by_trip = load_frequencies(organization_id, version_id, trips)
+    timing_names = timing_names(organization_id, version_id, trips)
+
+    Map.new(trips, fn trip ->
+      stop_times = Map.get(stop_times_by_trip, trip.trip_id, [])
+
+      {trip.id,
+       trip_snapshot(
+         trip,
+         Map.get(timing_names, trip.timed_pattern_id),
+         first_departure_secs(stop_times),
+         stop_times,
+         ordered_frequencies(frequencies_by_trip, trip.trip_id),
+         trip.pattern_derivation_state != "linked"
+       )}
+    end)
   end
 
   @doc """
@@ -413,7 +456,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       sections: sections,
       unlinked_trip_count: unlinked_trip_count(trips, patterns),
       summary: summary(trip_data, direction),
-      block_suggestions: block_suggestions(trips, direction),
       direction_labels: direction_labels(trips)
     }
   end
@@ -773,15 +815,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         ),
       incomplete_trip_count: length(trip_data) - length(complete)
     }
-  end
-
-  defp block_suggestions(trips, direction) do
-    trips
-    |> Enum.filter(&(&1.direction_id == direction))
-    |> Enum.map(& &1.block_id)
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> Enum.uniq()
-    |> Enum.sort()
   end
 
   defp direction_labels(trips) do
@@ -1185,9 +1218,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # Every trip writer locks in the rule-table order: the target calendar's version
-  # row `FOR SHARE`, the route `FOR UPDATE`, the trip's pattern `FOR UPDATE` and
-  # then the trip row `FOR UPDATE` by UUID. Timing rows load after the route lock,
-  # so a retime always materializes the committed timing.
+  # row `FOR SHARE`, the route `FOR UPDATE`, the trip's pattern `FOR UPDATE`, the
+  # version's blocking advisory lock when the request changes the calendar, and then
+  # the trip row `FOR UPDATE` by UUID (INV-1). Timing rows load after the route
+  # lock, so a retime always materializes the committed timing.
   defp do_update_trip(route_id, trip_id, attrs, requested_start, expected_updated_at, audit) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
@@ -1203,6 +1237,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, target_service)
     route = RoutePatterns.lock_published_route!(audit, route_id)
     pattern = lock_trip_pattern!(route, current.route_pattern_id)
+
+    # A calendar change can clear the block, so it joins the block guarantee: the
+    # advisory lock is taken after the pattern lock and before the trip row lock.
+    if target_service != current.service_id, do: Blocking.lock_blocking!(version_id)
+
     trip = lock_trip!(organization_id, version_id, route.route_id, trip_id)
 
     if stale?(trip, expected_updated_at) or trip.route_pattern_id != current.route_pattern_id,
@@ -1263,9 +1302,29 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp put_service_change(changeset, request, trip) do
-    if is_binary(request.service) and request.service != trip.service_id,
-      do: Ecto.Changeset.change(changeset, service_id: request.service),
-      else: changeset
+    if is_binary(request.service) and request.service != trip.service_id do
+      changeset
+      |> Ecto.Changeset.change(service_id: request.service)
+      |> clear_conflicting_block(trip, request.service)
+    else
+      changeset
+    end
+  end
+
+  # D2/R9: a calendar change that would put the trip on dates where its block runs
+  # another vehicle's work clears the block in the same update, so `persist_trip_edit!/5`
+  # writes both changes at once and its `before`/`after` snapshots record them together
+  # (AC-17). An unblocked trip has nothing to clear and reads no calendars.
+  defp clear_conflicting_block(changeset, trip, service_id) do
+    if is_binary(trip.block_id) and
+         not Blocking.calendar_change_keeps_block?(
+           trip.organization_id,
+           trip.gtfs_version_id,
+           trip,
+           service_id
+         ),
+       do: Ecto.Changeset.change(changeset, block_id: nil),
+       else: changeset
   end
 
   # Frequency service has no editable start or timing. A linked trip retimes
@@ -1385,12 +1444,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     )
   end
 
-  # The edit changeset casts only the five editable metadata fields; linkage,
+  # The edit changeset casts only the four editable metadata fields; linkage,
   # calendar and times are application-owned and set from loaded records (CR-4).
+  # `block_id` is deliberately absent: Schedules shows blocks read-only and the
+  # Blocks page is the only block editor (D1, INV-5).
   @metadata_fields [
     :trip_headsign,
     :trip_short_name,
-    :block_id,
     :wheelchair_accessible,
     :bikes_allowed
   ]
@@ -1459,7 +1519,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # The copy takes the pattern's direction and natural ID and the source trip's
-  # service and rider-facing metadata, including its shape.
+  # service and rider-facing metadata, including its shape, but never its block:
+  # a duplicate is unblocked until it is assigned on the Blocks page (D1).
   defp duplicate_trip_attrs(trip, route, pattern, timing, trip_id) do
     %{
       trip_id: trip_id,
@@ -1468,7 +1529,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       direction_id: pattern.direction_id,
       trip_headsign: trip.trip_headsign,
       trip_short_name: trip.trip_short_name,
-      block_id: trip.block_id,
+      block_id: nil,
       wheelchair_accessible: trip.wheelchair_accessible,
       bikes_allowed: trip.bikes_allowed,
       shape_id: trip.shape_id,
@@ -1699,6 +1760,34 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       select: t.name
     )
     |> Repo.one()
+  end
+
+  defp timing_names(_organization_id, _version_id, []), do: %{}
+
+  defp timing_names(organization_id, version_id, trips) do
+    timed_pattern_ids =
+      trips
+      |> Enum.map(& &1.timed_pattern_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    from(t in TimedPattern,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          t.id in ^timed_pattern_ids,
+      select: {t.id, t.name}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # `load_frequencies/3` orders a batch by trip and start time; sorting one trip's
+  # windows by start time then id restores `trip_frequencies/3`'s order, so the
+  # batch snapshot and the snapshot an edit records compare equal.
+  defp ordered_frequencies(frequencies_by_trip, trip_id) do
+    frequencies_by_trip
+    |> Map.get(trip_id, [])
+    |> Enum.sort_by(&{&1.start_time, &1.id})
   end
 
   # The requested start is optional; when present it must parse before any lock

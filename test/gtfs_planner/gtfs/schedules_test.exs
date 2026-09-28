@@ -689,7 +689,9 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
 
       assert payload.direction_labels[0] == "To Downtown"
       assert payload.direction_labels[1] == "Direction 1"
-      assert payload.block_suggestions == []
+
+      # Schedules no longer suggests blocks: the payload carries no suggestions.
+      refute Map.has_key?(payload, :block_suggestions)
     end
   end
 

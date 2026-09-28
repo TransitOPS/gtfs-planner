@@ -71,7 +71,8 @@
    that do not collide with daisyUI (`primary`, `base-*`) or this theme's
    `brand`/`control-border`. The classes these generate are used by
    `#app-header` and its two menus, and — since the routes-list redesign
-   (2026-09-28) — by page work surfaces that follow the same design system.
+   (2026-09-28) — by page work surfaces that follow the same design system;
+   the Blocks page reads the same values inside its own `#blocks-page` scope.
    Page content that has not yet moved over keeps the daisyUI palette above.
    Values come from the design system's application theme, as recorded in
    `.specs/00-information-architecture/evidence/header-nav/header-tokens.css`
@@ -224,6 +225,293 @@ body {
 #app-header :is(a, button, summary):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
+}
+
+/* ── Blocks page theme ──
+   The Blocks page adopts the design system's fonts, ink and action colour from
+   `.specs/05-basic-gtfs-blocking/refereneces/gtfs-blocking-prototype.html`,
+   scoped to `#blocks-page` so the header and every other page keep the daisyUI
+   palette (proposal *Theme*, design-critique S1, AC-30). `--color-primary` is
+   the token daisyUI's filled controls read, so a primary button inside the page
+   paints #C81870 (5.5:1 for white text); unlayered rules beat the layered
+   daisyUI theme, so no `!important` is needed. Headings follow the prototype's
+   `h1,h2` rule and the subtitle its `.title p` rule: 28px/600 Gabarito in the
+   ink colour over 13px muted. */
+#blocks-page {
+  --color-primary: var(--color-action);
+  font-family: var(--font-ds);
+  color: var(--color-strong);
+}
+
+#blocks-page :is(h1, h2) {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+#blocks-page header p {
+  margin-top: 3px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+#blocks-page :is(a, button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* ── Blocks timeline ──
+   The timeline is a table of 36px rows inside one scroll container, so the
+   header row stays put while the rows scroll and the block columns stay put
+   while the track scrolls sideways (AC-22). The six block columns have fixed
+   widths, which is what lets each header and body cell stick at its own offset.
+   The track keeps at least 480px in the whole-day scale so the axis stays
+   legible; Zoom in doubles it, and the table's own `width` calc keeps the
+   doubled track exactly twice the whole-day one (200% - the block columns), so
+   the overflow stays inside `#blocks-timeline-scroll` and never reaches the
+   page. The chrome above the timeline is ~430px, which leaves 15 rows at
+   1440x1000 and 13 at 1280x900. */
+#blocks-page {
+  --blocks-meta-block: 86px;
+  --blocks-meta-trips: 46px;
+  --blocks-meta-start: 56px;
+  --blocks-meta-end: 80px;
+  --blocks-meta-hours: 46px;
+  --blocks-meta-status: 110px;
+  --blocks-meta-width: calc(
+    var(--blocks-meta-block) + var(--blocks-meta-trips) + var(--blocks-meta-start) +
+      var(--blocks-meta-end) + var(--blocks-meta-hours) + var(--blocks-meta-status)
+  );
+  --blocks-meta-offset-2: var(--blocks-meta-block);
+  --blocks-meta-offset-3: calc(var(--blocks-meta-offset-2) + var(--blocks-meta-trips));
+  --blocks-meta-offset-4: calc(var(--blocks-meta-offset-3) + var(--blocks-meta-start));
+  --blocks-meta-offset-5: calc(var(--blocks-meta-offset-4) + var(--blocks-meta-end));
+  --blocks-meta-offset-6: calc(var(--blocks-meta-offset-5) + var(--blocks-meta-hours));
+  --blocks-track-min: 480px;
+  --blocks-timeline-max-height: calc(100vh - 430px);
+}
+
+#blocks-timeline-scroll {
+  overflow: auto;
+  max-height: var(--blocks-timeline-max-height);
+}
+
+#blocks-timeline {
+  width: 100%;
+  min-width: calc(var(--blocks-meta-width) + var(--blocks-track-min));
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+#blocks-timeline[data-scale="zoom"] {
+  width: calc(200% - var(--blocks-meta-width));
+  min-width: calc(var(--blocks-meta-width) + 2 * var(--blocks-track-min));
+}
+
+#blocks-timeline .blocks-col-block { width: var(--blocks-meta-block); }
+#blocks-timeline .blocks-col-trips { width: var(--blocks-meta-trips); }
+#blocks-timeline .blocks-col-start { width: var(--blocks-meta-start); }
+#blocks-timeline .blocks-col-end { width: var(--blocks-meta-end); }
+#blocks-timeline .blocks-col-hours { width: var(--blocks-meta-hours); }
+#blocks-timeline .blocks-col-status { width: var(--blocks-meta-status); }
+
+/* Sticky header row, above the sticky block columns. */
+#blocks-timeline thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 36px;
+  padding: 0 8px;
+  background: var(--color-canvas);
+  border-bottom: 1px solid var(--color-base-300);
+  font-weight: 600;
+  color: var(--color-muted);
+  text-align: left;
+}
+
+/* Sticky block columns: each takes the row's own background so the track never
+   shows through a column that has scrolled over it. */
+#blocks-timeline .blocks-meta {
+  position: sticky;
+  z-index: 2;
+  background: inherit;
+}
+
+#blocks-timeline .blocks-meta-block { left: 0; }
+#blocks-timeline .blocks-meta-trips { left: var(--blocks-meta-offset-2); }
+#blocks-timeline .blocks-meta-start { left: var(--blocks-meta-offset-3); }
+#blocks-timeline .blocks-meta-end { left: var(--blocks-meta-offset-4); }
+#blocks-timeline .blocks-meta-hours { left: var(--blocks-meta-offset-5); }
+#blocks-timeline .blocks-meta-status { left: var(--blocks-meta-offset-6); }
+
+#blocks-timeline thead th.blocks-meta {
+  z-index: 5;
+  background: var(--color-canvas);
+}
+
+#blocks-timeline tbody tr {
+  height: 36px;
+  background: var(--color-base-100);
+}
+
+#blocks-timeline tbody tr:hover {
+  background: var(--color-base-200);
+}
+
+#blocks-timeline tbody td {
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-base-300);
+}
+
+#blocks-timeline tbody tr:last-child td { border-bottom: 0; }
+
+#blocks-timeline .blocks-meta-trips,
+#blocks-timeline .blocks-meta-hours {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#blocks-page .blocks-block-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  min-height: 30px;
+  color: var(--color-action);
+  font-weight: 600;
+  font-size: 12px;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+#blocks-page .blocks-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+}
+
+#blocks-page .blocks-sort:hover { color: var(--color-strong); }
+
+/* The axis: one tick every two hours, positioned by percentage of the same span
+   the bars use, so the two align at any width. The cell is part of the sticky
+   header row, so it keeps the `position: sticky; top: 0` of
+   `#blocks-timeline thead th` and the labels stay over the rows as they scroll.
+   A sticky cell is a positioned ancestor too, so it also anchors the absolute
+   ticks. */
+#blocks-timeline .blocks-axis {
+  padding: 0;
+}
+
+#blocks-timeline .blocks-axis-inner {
+  display: block;
+  position: relative;
+  height: 36px;
+}
+
+#blocks-timeline .blocks-axis-tick {
+  position: absolute;
+  top: 9px;
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+#blocks-timeline .blocks-track {
+  position: relative;
+  /* The track is its own stacking context, so a bar can never paint over the
+     sticky block columns or the sticky header when the track scrolls under
+     them (Zoom in, and rows scrolling behind the header). */
+  z-index: 0;
+  padding: 0;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(var(--blocks-grid, 25%) - 1px),
+    var(--color-base-300) calc(var(--blocks-grid, 25%) - 1px),
+    var(--color-base-300) var(--blocks-grid, 25%)
+  );
+}
+
+#blocks-page .blocks-bar {
+  position: absolute;
+  top: 6px;
+  height: 24px;
+  min-width: 26px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#blocks-page .blocks-bar:hover { filter: brightness(0.88); }
+
+/* An overlap is an outline and an icon, and every second bar in a run shifts up,
+   so overlapping trips are legible without colour. */
+#blocks-page .blocks-bar-overlap {
+  top: 9px;
+  z-index: 3;
+  outline: 2px solid var(--color-error);
+  box-shadow: 0 0 0 2px var(--color-base-100);
+}
+
+#blocks-page .blocks-bar-shift {
+  top: 2px;
+  z-index: 4;
+}
+
+#blocks-page .blocks-gap {
+  position: absolute;
+  top: 5px;
+  height: 26px;
+  min-width: 2px;
+  z-index: 1;
+  container-type: inline-size;
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: center;
+  border: 0;
+  border-bottom: 3px solid var(--color-control);
+  background: transparent;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--color-muted);
+}
+
+#blocks-page .blocks-gap-short { border-bottom-color: var(--color-warning); }
+#blocks-page .blocks-gap-move { border-bottom-style: dashed; }
+
+/* The minutes print only when the gap's own bar is at least 32px wide. */
+#blocks-page .blocks-gap-label {
+  display: none;
+  font-weight: 600;
+}
+
+@container (min-width: 32px) {
+  #blocks-page .blocks-gap-label { display: inline; }
 }
 
 #station-sub-nav {

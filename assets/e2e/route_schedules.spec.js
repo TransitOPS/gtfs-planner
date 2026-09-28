@@ -330,12 +330,20 @@ test.describe("Schedules editing journeys", () => {
     expect(await mutationTripIdsAtDeparture(page, "06:00")).toHaveLength(1);
     expect(await mutationTripIdsAtDeparture(page, "06:30")).toHaveLength(1);
 
-    // Edit the created 06:30 trip: change its headsign and block.
+    // Edit the created 06:30 trip: change its headsign. The block is read-only in
+    // this drawer, so the journey asserts the stored value and the Blocks link
+    // instead of filling a block field.
     const [createdTrip] = await mutationTripIdsAtDeparture(page, "06:30");
     await page.locator(`#trip-${createdTrip}-edit`).click();
     await page.locator("#trip-drawer").waitFor({ state: "visible" });
+    await expect(page.locator("#trip-block-value")).toHaveText("No block");
+    await expect(page.locator("#trip-block-link")).toHaveText("Change on Blocks");
+    await expect(page.locator("#trip-block-link")).toHaveAttribute(
+      "href",
+      /\/blocks\?day=[^&]+&trip=./,
+    );
+    await expect(page.locator("#trip-block input")).toHaveCount(0);
     await page.fill("#trip-headsign", "Keyboard heading");
-    await page.fill("#trip-block", "SM-9");
     await page.locator("#trip-drawer-save").click();
     await page.locator("#trip-drawer").waitFor({ state: "hidden" });
 

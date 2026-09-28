@@ -26,6 +26,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
+  alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
@@ -533,13 +535,14 @@ defmodule GtfsPlanner.Gtfs do
   Edits one trip in place through `Schedules.update_trip/5`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
-  `:trip_headsign`, `:trip_short_name`, `:block_id`, `:wheelchair_accessible` and
-  `:bikes_allowed`. `expected_updated_at` must match the stored trip, otherwise
-  `{:error, :stale}` is returned with no write. A frequency trip refuses a start
-  or timing change with `:frequency_trip`, a linked trip re-materializes its stop
-  times in place against a timing of its own pattern, and a custom trip adopts a
-  timing only when its ordered stops and direction match or returns
-  `:stops_differ`. The trip ID never changes.
+  `:trip_headsign`, `:trip_short_name`, `:wheelchair_accessible` and
+  `:bikes_allowed`. Block membership is read-only in Schedules and changes on the
+  Blocks page, so `:block_id` is ignored. `expected_updated_at` must match the
+  stored trip, otherwise `{:error, :stale}` is returned with no write. A frequency
+  trip refuses a start or timing change with `:frequency_trip`, a linked trip
+  re-materializes its stop times in place against a timing of its own pattern, and
+  a custom trip adopts a timing only when its ordered stops and direction match or
+  returns `:stops_differ`. The trip ID never changes.
   """
   @spec update_trip(
           String.t(),
@@ -4710,6 +4713,120 @@ defmodule GtfsPlanner.Gtfs do
       )
 
     Ecto.Multi.delete_all(multi, :pathways, pathway_query)
+  end
+
+  # ============================================================================
+  # Blocks
+  # ============================================================================
+
+  @doc """
+  Loads one day type's blocks, pool and checks through the configured catalog read adapter.
+
+  The read derives the published version's day types, selects `day_type_key` (`nil`
+  selects the first in list order) and returns every trip of that day type exactly
+  once, in the block named by its `block_id` or in the pool, together with the
+  day's findings, counts, peak and timeline axis. A foreign or unpublished version
+  is `{:error, :not_found}`, an unknown key `{:error, {:unknown_day_type, day_types}}`
+  and a lost database connection `{:error, :unavailable}`.
+  """
+  @spec load_blocking_day(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, Blocking.day()}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :unavailable}
+  def load_blocking_day(organization_id, gtfs_version_id, day_type_key) do
+    catalog_read_adapter().load_blocking_day(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
+  Returns the current block errors and warnings involving the given trips.
+
+  Natural trip IDs name the trips; for each one that runs in a block, every day
+  type its service runs in is checked and the type 4/5 records naming it are
+  evaluated, so the answer covers every date the trip runs, not only the one on
+  screen. Each problem carries its code, block ID, day-type keys and the number of
+  dates it affects, errors before warnings. The read takes no lock: it is advisory
+  and never decides whether a write may proceed. A foreign or unpublished version
+  is `{:error, :not_found}` and a lost database connection `{:error, :unavailable}`.
+  """
+  @spec block_problems_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          {:ok, [Blocking.problem()]} | {:error, :not_found | :unavailable}
+  def block_problems_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    catalog_read_adapter().block_problems_for_trips(organization_id, gtfs_version_id, trip_ids)
+  end
+
+  @doc """
+  Returns the key of the first day type containing a service, or `:none`.
+
+  The key is derived from the published version's calendars through the same
+  `Blocking.DayTypes` derivation every day load uses, so it selects exactly the day
+  type it names and never falls back to another (INV-6). A service whose calendar
+  has no active date is `{:ok, :none}`; a foreign or unpublished version is
+  `{:error, :not_found}` and a lost database connection `{:error, :unavailable}`.
+  """
+  @spec first_blocking_day_type_key(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, String.t() | :none} | {:error, :not_found | :unavailable}
+  def first_blocking_day_type_key(organization_id, gtfs_version_id, service_id) do
+    catalog_read_adapter().first_day_type_key(organization_id, gtfs_version_id, service_id)
+  end
+
+  @doc """
+  Returns the minimum layover for an organization's GTFS version.
+
+  A version with no stored setting returns `%{min_layover_minutes: 5}`; the read
+  never inserts a row.
+  """
+  @spec get_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: %{min_layover_minutes: 0..120}
+  def get_blocking_settings(organization_id, gtfs_version_id) do
+    Blocking.get_settings(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Stores the minimum layover for an organization's published GTFS version.
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, and `{:error, changeset}` when the value is not a whole
+  number from 0 to 120.
+  """
+  @spec update_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update_blocking_settings(organization_id, gtfs_version_id, attrs) do
+    Blocking.update_settings(organization_id, gtfs_version_id, attrs)
+  end
+
+  @doc """
+  Applies one block command on a day type of an organization's GTFS version.
+
+  The command is an `:assign` or `:unassign` of trips or a `:rename` or `:merge`
+  of block IDs; the whole command runs in the configured reviewed transaction
+  (SERIALIZABLE in production). A rename takes the selected day type's trips
+  carrying the source ID and is `:block_id_taken` when the new ID is already used
+  on those trips' dates; a merge additionally requires the destination block on
+  the selected day type (`:not_found` otherwise). A command with
+  nothing to change returns `{:ok, result}` with no `changed_trip_ids`; a command
+  whose effects reach another date returns `{:needs_confirmation, review}` and writes
+  nothing until it is called again with the review's fingerprint. Every refusal
+  (`:not_found`, `{:ineligible, ids}`, `:too_many_trips`, `:unknown_day_type`,
+  `:invalid_command`, `:invalid_block_id`, `:block_id_taken`, `{:stale_review,
+  review}`, `{:audit_failed, reason}`, `:busy`) is an `{:error, reason}` and writes
+  nothing: a refused audit insert rolls the command back and is reported, never
+  raised.
+  """
+  @spec apply_block_change(
+          String.t(),
+          GtfsPlanner.Gtfs.Blocking.command(),
+          AuditContext.t(),
+          String.t() | nil
+        ) ::
+          {:ok, GtfsPlanner.Gtfs.Blocking.apply_result()}
+          | {:needs_confirmation, GtfsPlanner.Gtfs.Blocking.Review.review()}
+          | {:error, term()}
+  def apply_block_change(day_type_key, command, audit_context),
+    do: apply_block_change(day_type_key, command, audit_context, nil)
+
+  def apply_block_change(day_type_key, command, %AuditContext{} = audit_context, confirmation) do
+    Blocking.apply_block_change(day_type_key, command, audit_context, confirmation)
   end
 
   # ============================================================================

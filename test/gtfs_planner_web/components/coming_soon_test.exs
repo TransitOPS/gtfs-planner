@@ -9,21 +9,9 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
   alias GtfsPlannerWeb.ComingSoon
 
   # Literal expectations transcribed from the finalized content table. They are
-  # written here rather than read back from the catalog under test. Transfers is
-  # absent: the destination ships as a working page, so it has no catalog entry.
+  # written here rather than read back from the catalog under test. Transfers and
+  # Blocks are absent: both ship as working pages, so neither has a catalog entry.
   @catalog [
-    blocks: %{
-      title: "Blocks",
-      scope: :version,
-      summary: "Plan which trips each vehicle runs in sequence, one day type at a time.",
-      section_names: [
-        "Timeline",
-        "Unassigned trips",
-        "Checks",
-        "Riders stay on board",
-        "Deadheads and relief points"
-      ]
-    },
     runs: %{
       title: "Runs",
       scope: :version,
@@ -83,7 +71,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 9
+      assert length(@catalog) == 8
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -104,6 +92,16 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         assert_raise FunctionClauseError, fn ->
           ComingSoon.feature(Function.identity(key))
         end
+      end
+    end
+
+    test "no longer answers for Blocks, which has a page of its own" do
+      # Removing the placeholder entry is what keeps a stale `:blocks` lookup
+      # from rendering placeholder copy beside the real page.
+      # `Function.identity/1` hides the argument from the compiler, which would
+      # otherwise warn that `feature/1` has no clause for the literal atom.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:blocks))
       end
     end
 
@@ -130,14 +128,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders the caller's scope label verbatim" do
-      doc = render_doc(ComingSoon.feature(:blocks), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:runs), "This version: Fall 2026")
 
       assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
     end
 
     test "renders exactly one title element at the requested heading level" do
       for level <- [1, 2, 3] do
-        doc = render_doc(ComingSoon.feature(:blocks), "All versions", level)
+        doc = render_doc(ComingSoon.feature(:runs), "All versions", level)
 
         assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
         assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1

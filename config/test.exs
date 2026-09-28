@@ -11,7 +11,13 @@ config :gtfs_planner, GtfsPlanner.Repo,
   hostname: "localhost",
   database: "gtfs_planner_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  # Two connections per scheduler is two on a single-scheduler host. The interleaving
+  # cases in `test/gtfs_planner/gtfs/blocking/concurrency_test.exs` hold one connection
+  # per holder, one per concurrent command and one for the shared sandbox owner, so a
+  # four-connection case has no margin at `2 * 2` and does not fit below it. Ecto offers
+  # no per-module pool size, and this 10 matches what `config/dev.exs` and
+  # `config/runtime.exs` already use.
+  pool_size: max(System.schedulers_online() * 2, 10)
 
 # Use a deterministic final-validator adapter for browser journeys while ordinary
 # ExUnit cases retain process-owned Mox expectations.

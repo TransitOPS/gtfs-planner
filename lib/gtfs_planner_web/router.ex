@@ -154,11 +154,11 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
       live "/stops/:stop_id/evolutions", Gtfs.ComingSoonLive, :evolutions
+      live "/blocks", Gtfs.BlocksLive, :index
       # Operations placeholders. They group under the Operations area; the
       # organization-wide Garages and Fleet pages live in Settings, where the
       # version in the URL is navigation context and selects the stop IDs the
       # garage conflict notice compares.
-      live "/blocks", Gtfs.ComingSoonLive, :blocks
       live "/runs", Gtfs.ComingSoonLive, :runs
       live "/rosters", Gtfs.ComingSoonLive, :rosters
       # Flex has no area bar of its own in the architecture's groups.

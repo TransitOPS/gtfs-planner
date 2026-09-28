@@ -186,7 +186,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
         schedule_trip_fixture(context.organization.id, context.version.id, "12m", scope.bundle, %{
           trip_id: "12m-0-#{scope.service}-0600",
           service_id: scope.service,
-          start_time: "06:00:00"
+          start_time: "06:00:00",
+          block_id: "B0"
         }).trip
 
       # A request repeating the stored values changes nothing: no write, no log.
@@ -223,9 +224,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert edited.timed_pattern_id == scope.bundle.timing.id
       assert edited.pattern_derivation_state == "linked"
 
-      assert {edited.trip_headsign, edited.trip_short_name, edited.block_id,
-              edited.wheelchair_accessible, edited.bikes_allowed} ==
-               {"Downtown", "12M", "B1", 1, 2}
+      assert {edited.trip_headsign, edited.trip_short_name, edited.wheelchair_accessible,
+              edited.bikes_allowed} == {"Downtown", "12M", 1, 2}
+
+      # The submitted block ID is ignored here: Schedules never edits a block.
+      assert edited.block_id == "B0"
 
       assert DateTime.compare(edited.updated_at, trip.updated_at) == :gt
 
@@ -301,11 +304,17 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
         })
 
       custom =
-        custom_trip!(context, "12c", scope, [
-          {"A", nil, nil},
-          {"B", "06:05:00", "06:05:30"},
-          {"C", "06:12:00", "06:12:00"}
-        ])
+        custom_trip!(
+          context,
+          "12c",
+          scope,
+          [
+            {"A", nil, nil},
+            {"B", "06:05:00", "06:05:30"},
+            {"C", "06:12:00", "06:12:00"}
+          ],
+          %{block_id: "C0"}
+        )
 
       assert custom.pattern_derivation_state == "custom"
       assert custom.timed_pattern_id == nil
@@ -325,6 +334,22 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
 
       assert raw_stop_times(custom.trip_id) == before
 
+      # A block-only request changes nothing: the trip comes back unchanged, with
+      # no write and no log.
+      assert {:ok, ignored} =
+               Gtfs.update_trip(
+                 "12c",
+                 custom.id,
+                 %{block_id: "C9"},
+                 custom.updated_at,
+                 context.audit
+               )
+
+      assert ignored.block_id == "C0"
+      assert ignored.updated_at == custom.updated_at
+      assert trip_logs(context) == []
+      assert Repo.get!(Trip, custom.id).block_id == "C0"
+
       # A metadata edit leaves every custom stop-time row byte-identical.
       assert {:ok, edited} =
                Gtfs.update_trip(
@@ -336,7 +361,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
                )
 
       assert edited.pattern_derivation_state == "custom"
-      assert edited.block_id == "C9"
+      assert edited.trip_headsign == "Loop"
+      assert edited.block_id == "C0"
       assert raw_stop_times(custom.trip_id) == before
 
       # Adoption rewrites the missing times from the timing and marks the trip linked.
@@ -357,7 +383,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert adopted.timed_pattern_id == scope.bundle.timing.id
       assert adopted.pattern_derivation_state == "linked"
       assert adopted.pattern_derivation_reason == nil
-      assert adopted.block_id == "C9"
+      assert adopted.block_id == "C0"
 
       assert clocks(custom.trip_id) == [
                {1, "A", "08:00:00", "08:00:00"},
@@ -374,7 +400,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       adoption_log =
         Enum.find(logs, &(&1.changed_fields["after"]["pattern_derivation_state"] == "linked"))
 
-      assert metadata_log.changed_fields["after"]["block_id"] == "C9"
+      # The audit keeps the block identical on both sides of the metadata edit.
+      assert metadata_log.changed_fields["before"]["block_id"] == "C0"
+      assert metadata_log.changed_fields["after"]["block_id"] == "C0"
+      assert metadata_log.changed_fields["after"]["trip_headsign"] == "Loop"
       assert adoption_log.changed_fields["after"]["timed_pattern_id"] == scope.bundle.timing.id
       assert is_list(metadata_log.changed_fields["before"]["stop_times"])
       refute Map.has_key?(adoption_log.changed_fields["after"], "stop_times")
@@ -475,6 +504,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
           trip_id: "12f-0-#{scope.service}-0600",
           service_id: scope.service,
           start_time: "06:00:00",
+          block_id: "F0",
           frequencies: [
             %{start_time: "09:00:00", end_time: "12:00:00", headway_secs: 1200, exact_times: 0}
           ]
@@ -512,7 +542,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert Repo.aggregate(from(t in Trip, where: t.route_id == ^route_id), :count) == 1
       assert trip_logs(context) == []
 
-      # Metadata and calendar edits are allowed on frequency service.
+      # Metadata and calendar edits are allowed on frequency service, but the
+      # block is not editable here.
       assert {:ok, edited} =
                Gtfs.update_trip(
                  "12f",
@@ -522,7 +553,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
                  context.audit
                )
 
-      assert edited.block_id == "F1"
+      assert edited.block_id == "F0"
+      assert edited.trip_headsign == "Shuttle"
+      assert Repo.get!(Trip, trip.id).block_id == "F0"
 
       assert {:ok, moved} =
                Gtfs.update_trip(
@@ -610,9 +643,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert copy.pattern_derivation_reason == nil
       assert copy.trip_headsign == "Downtown"
 
-      assert {copy.service_id, copy.trip_short_name, copy.block_id, copy.wheelchair_accessible,
+      assert {copy.service_id, copy.trip_short_name, copy.wheelchair_accessible,
               copy.bikes_allowed, copy.shape_id} ==
-               {scope.service, "12D", "B7", 1, 2, "SHAPE-12"}
+               {scope.service, "12D", 1, 2, "SHAPE-12"}
+
+      # A duplicate never joins a block; the source keeps its own.
+      assert copy.block_id == nil
+      assert Repo.get!(Trip, copy.id).block_id == nil
 
       assert clocks(copy.trip_id) == [
                {1, "A", "06:30:00", "06:30:00"},
@@ -622,9 +659,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
 
       assert Enum.map(raw_stop_times(copy.trip_id), & &1.shape_dist_traveled) == [nil, nil, nil]
 
-      # The source trip is unchanged, including its shape distances.
+      # The source trip is unchanged, including its shape distances and its block.
       assert raw_stop_times(source.trip_id) == source_rows
       assert Repo.get!(Trip, source.id) == source
+      assert Repo.get!(Trip, source.id).block_id == "B7"
       assert length(trip_logs(context)) == 2
 
       # A custom source needs a timing, and the duplicate is created linked on the

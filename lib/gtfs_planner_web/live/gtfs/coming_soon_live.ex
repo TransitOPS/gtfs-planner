@@ -2,12 +2,12 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
   @moduledoc """
   Read-only placeholder pages for GTFS destinations that are navigable before they are built.
 
-  One LiveView serves the five fixed actions in the architecture's route table:
-  Blocks/Runs/Rosters (`/blocks`, `/runs`, `/rosters`), Flex (`/flex`) and
-  Evolutions (`/stops/:stop_id/evolutions`). Each mounts through
-  the ordinary `:gtfs_routes` session, so the shared user, organization and
-  published-version hooks decide whether a request reaches it; the editor guard is
-  declared here because a session alone grants no GTFS access.
+  One LiveView serves the four fixed actions in the architecture's route table:
+  Runs and Rosters (`/runs`, `/rosters`), Flex (`/flex`) and Evolutions
+  (`/stops/:stop_id/evolutions`). Each mounts through the ordinary `:gtfs_routes`
+  session, so the shared user, organization and published-version hooks decide
+  whether a request reaches it; the editor guard is declared here because a
+  session alone grants no GTFS access.
 
   The feature body comes from `GtfsPlannerWeb.ComingSoon`. This LiveView supplies
   only what a page owns: the area sub-navigation, the `This version: <name>` scope
@@ -140,7 +140,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
 
   # The area bar a fixed action belongs to. Flex has none: the sitemap places it
   # as a single destination, not a group with siblings.
-  defp area(action) when action in [:blocks, :runs, :rosters], do: :operations
+  defp area(action) when action in [:runs, :rosters], do: :operations
   defp area(:evolutions), do: :station
   defp area(_action), do: nil
 
@@ -151,7 +151,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
 
   defp version_target(socket, version_id) do
     case socket.assigns.live_action do
-      :blocks -> ~p"/gtfs/#{version_id}/blocks"
       :runs -> ~p"/gtfs/#{version_id}/runs"
       :rosters -> ~p"/gtfs/#{version_id}/rosters"
       :flex -> ~p"/gtfs/#{version_id}/flex"

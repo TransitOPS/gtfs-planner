@@ -19,17 +19,9 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
     parent_station: nil
   }
 
-  # The four standalone placeholder destinations with the area bar each one must
+  # The three standalone placeholder destinations with the area bar each one must
   # render, the link it must mark current, and the tab count of that bar.
   @standalone_destinations [
-    %{
-      path: "/blocks",
-      title: "Blocks",
-      sections: 5,
-      bar: "#operations-sub-nav",
-      current: "/blocks",
-      tabs: 3
-    },
     %{
       path: "/runs",
       title: "Runs",
@@ -57,7 +49,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
   ]
 
   @placeholder_paths [
-    "/blocks",
     "/runs",
     "/rosters",
     "/flex",
@@ -178,7 +169,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
 
       for version_id <- [Ecto.UUID.generate(), staging.id, foreign_version.id] do
         assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
-                 live(conn, "/gtfs/#{version_id}/blocks")
+                 live(conn, "/gtfs/#{version_id}/runs")
       end
     end
   end
@@ -302,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       selected_version_id = to_string(other_version.id)
 
-      for path <- ["/blocks", "/runs", "/rosters", "/flex"] do
+      for path <- ["/runs", "/rosters", "/flex"] do
         {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{path}")
 
         render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})
@@ -366,7 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       foreign_version = gtfs_version_fixture(other_organization.id)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/blocks")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/runs")
 
       for version_id <- [staging.id, foreign_version.id, Ecto.UUID.generate()] do
         render_hook(view, "switch_gtfs_version", %{"version" => to_string(version_id)})
