@@ -7,8 +7,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   module renders the list pane's search and filter toolbar, its table of general
   rules, its load failure, first-use and filtered-empty states, the selected
   rule's inspector, the compare view for the rules it competes with, the context
-  pane before a connection is chosen, and the labels and reason text the rules
-  display.
+  pane's connection map with its pick callout, the state before a connection is
+  chosen, and the labels and reason text the rules display.
 
   The states reuse the shared callout and empty state rather than the visual
   reference's own state boxes, so a failed load and an empty list read the same
@@ -1266,6 +1266,138 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   @doc """
+  Renders the context pane's connection map.
+
+  The region is the reference's map header, canvas, legend and its two failure
+  affordances. The canvas is the `TransferMap` hook's own container —
+  `phx-update="ignore"`, so the server never patches inside it — while every
+  control and sentence the operator reads lives outside it, so a map that never
+  loads leaves the list, the inspector and the form working (AC-22).
+
+  The title says what the map is drawing: the selected rule, the open draft, or
+  the side a pick session is waiting for. Pick mode says how to answer and how to
+  leave it, and the named stop fields stay the keyboard alternative. The version's
+  bounding box travels as the hook's `data-extent`, read once at mount.
+
+  ## Examples
+
+      <.map_region
+        editor_open?={false}
+        pick={@pick}
+        map_state={@map_state}
+        generation={@map_generation}
+        extent={@map_extent}
+        missing={@map_missing}
+      />
+  """
+  attr :editor_open?, :boolean, required: true, doc: "whether the draft editor is open"
+  attr :pick, :map, default: nil, doc: "the active pick session, or nil"
+  attr :map_state, :atom, required: true, values: [:ready, :unavailable]
+  attr :generation, :string, required: true, doc: "the mount's map generation"
+  attr :extent, :map, default: nil, doc: "the version's bounding box, or nil"
+
+  attr :missing, :list,
+    required: true,
+    doc: "the connection's endpoints the payload reports without coordinates"
+
+  def map_region(assigns) do
+    assigns = assign(assigns, :title, map_title(assigns))
+
+    ~H"""
+    <div id="transfer-map-region" class="border-b border-base-300">
+      <div class="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <h3 id="transfer-map-title" class="text-sm font-semibold">{@title}</h3>
+        <.button
+          id="transfer-map-fit"
+          type="button"
+          variant="quiet"
+          size="sm"
+          class="min-h-9 py-1 text-primary underline underline-offset-4"
+          phx-click={JS.dispatch("transfer-map:fit", to: "#transfer-map")}
+        >
+          Fit connection
+        </.button>
+      </div>
+
+      <div :if={@pick} class="mx-4 mb-3 sm:mx-6">
+        <.callout id="transfer-pick-callout" kind="info" title="Pick on the map">
+          <p>Select a stop on the map, or use the named stop field.</p>
+          <p :if={@pick.truncated?} id="transfer-pick-truncated" class="mt-1">
+            Zoom in to see all stops.
+          </p>
+          <.button
+            id="transfer-pick-cancel"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="mt-2 min-h-9"
+            phx-click="cancel_pick"
+            phx-window-keydown="cancel_pick"
+            phx-key="Escape"
+          >
+            Cancel picking
+          </.button>
+        </.callout>
+      </div>
+
+      <div class={if(@map_state == :unavailable, do: "hidden")}>
+        <div
+          id="transfer-map"
+          phx-hook="TransferMap"
+          phx-update="ignore"
+          data-map-generation={@generation}
+          data-extent={Jason.encode!(@extent || %{})}
+          class="h-72 w-full lg:h-80"
+        >
+        </div>
+      </div>
+
+      <div
+        :if={@map_state == :unavailable}
+        id="transfer-map-unavailable"
+        class="grid h-72 place-content-center gap-1 bg-base-200/50 px-6 text-center lg:h-80"
+      >
+        <h3 class="text-base font-semibold">Map unavailable</h3>
+        <p class="text-sm text-base-content/70">Stop names and rule details are still available.</p>
+        <.button
+          id="transfer-map-retry"
+          type="button"
+          variant="secondary"
+          size="sm"
+          class="mx-auto mt-3 min-h-11"
+          phx-click="retry_map"
+        >
+          Retry map
+        </.button>
+      </div>
+
+      <div
+        :if={@map_state == :ready}
+        id="transfer-map-legend"
+        class="flex flex-wrap gap-x-4 gap-y-1 border-t border-base-300 px-4 py-2 text-xs text-base-content/70 sm:px-6"
+      >
+        <span><b class="text-primary">A</b> Arrival</span>
+        <span><b class="text-secondary">B</b> Departure</span>
+        <span><b class="text-accent">⇢</b> Rule direction · not a walking route</span>
+      </div>
+
+      <ul
+        :if={@map_state == :ready and @missing != []}
+        id="transfer-map-missing"
+        class="border-t border-base-300 px-4 py-2 text-xs text-base-content/70 sm:px-6"
+      >
+        <li :for={name <- @missing}>{name} has no coordinates.</li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp map_title(%{pick: %{side: :from}}), do: "Choose the arrival stop"
+  defp map_title(%{pick: %{side: :to}}), do: "Choose the departure stop"
+  defp map_title(%{editor_open?: true}), do: "Preview this connection"
+  defp map_title(_assigns), do: "Selected connection"
+
+  @doc """
   Renders the confirmation for deleting the rules the operator selected.
 
   The dialog lists every rule it will delete — both endpoints with the scope each
@@ -1664,6 +1796,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     assigns =
       assigns
       |> assign(:component_id, "transfer-#{side}-stop")
+      |> assign(:pick_side, pick_side(side))
       |> assign(:input_id, "#{field.id}_text_input")
       |> assign(:field, field)
       |> assign(:stop_options, stop_option_list(stop))
@@ -1684,24 +1817,36 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     ~H"""
     <div class="mt-4">
       <label for={@input_id} class="label mb-1 text-base">{@label}</label>
-      <.live_component
-        module={LiveSelectComponent}
-        id={@component_id}
-        field={@field}
-        options={@stop_options}
-        debounce={200}
-        update_min_len={1}
-        placeholder="Search stops or stations"
-        text_input_class="input input-bordered w-full min-h-11"
-        dropdown_class="bg-base-100 border border-base-300 shadow-lg mt-1 text-base-content"
-        option_class="px-4 py-2.5 border-b border-base-300 last:border-b-0"
-        active_option_class="bg-primary text-primary-content"
-        available_option_class="hover:bg-base-200 cursor-pointer"
-      >
-        <:option :let={option}>
-          <span class="font-medium">{option.label}</span>
-        </:option>
-      </.live_component>
+      <div class="flex items-start gap-2">
+        <.live_component
+          module={LiveSelectComponent}
+          id={@component_id}
+          field={@field}
+          options={@stop_options}
+          debounce={200}
+          update_min_len={1}
+          placeholder="Search stops or stations"
+          text_input_class="input input-bordered w-full min-h-11"
+          dropdown_class="bg-base-100 border border-base-300 shadow-lg mt-1 text-base-content"
+          option_class="px-4 py-2.5 border-b border-base-300 last:border-b-0"
+          active_option_class="bg-primary text-primary-content"
+          available_option_class="hover:bg-base-200 cursor-pointer"
+        >
+          <:option :let={option}>
+            <span class="font-medium">{option.label}</span>
+          </:option>
+        </.live_component>
+        <.button
+          id={"transfer-pick-#{@side}"}
+          type="button"
+          variant="secondary"
+          class="min-h-11 shrink-0 whitespace-nowrap"
+          phx-click="start_pick"
+          phx-value-side={@pick_side}
+        >
+          Pick on map
+        </.button>
+      </div>
       <p id={@hint_id} class="mt-1.5 text-sm text-base-content/70">{@hint}</p>
       <p :if={@errors != []} id={@error_id} class="mt-1.5 text-sm text-error">
         {Enum.join(@errors, " ")}
@@ -2025,6 +2170,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       _name -> "Stop in this version."
     end
   end
+
+  # The map protocol's name for the side a pick session answers.
+  defp pick_side(:from), do: "a"
+  defp pick_side(:to), do: "b"
 
   # A duplicate names the colliding row's view: a type 4/5 record cannot be
   # edited here (R1), and a collision whose row vanished is offered the general

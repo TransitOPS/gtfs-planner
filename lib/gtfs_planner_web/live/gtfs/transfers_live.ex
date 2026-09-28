@@ -22,8 +22,21 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   Filtering and search are in the URL too: the search term, the stop, route and
   type filters and the Needs attention checkbox each patch the list and drop the
   page and the selected rule, and a filtered list that hides every rule shows its
-  own empty state rather than first use. The connection map arrives with its own
-  step.
+  own empty state rather than first use.
+
+  The context pane's map region draws whatever connection the pane describes: the
+  selected rule in list mode and the open draft in editor mode, each time as a
+  `transfer_map:show` push carrying that connection's endpoints. The hook reports
+  the map's own state with the generation this mount assigned, so a delayed report
+  from a previous mount is ignored (R10); a failure replaces the canvas with the
+  "Map unavailable" panel and "Retry map" asks the hook for the same connection
+  again, while the list, the inspector and the form keep working. A pick session
+  carries the next id and the side it answers: the hook's bounds are resolved to
+  this version's stops for the candidate markers, a candidate is accepted only for
+  the session that is still running and only if it names a stop or station of this
+  version, and a pick sets that side's stop, drops the route and trip it had and
+  marks the draft dirty. Pick mode is left by its own cancel control, by Escape or
+  by closing the editor.
 
   The page holds two views of the same version. `@view` is `:general` (types 0–3,
   the default) or `:in_seat` (types 4 and 5), it lives in the URL as `view=in_seat`
@@ -114,8 +127,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   }
 
   # The two stop searches the editor renders: a LiveSelect change names the
-  # component it came from, which is the only place a side is decided.
-  @stop_component_sides %{"transfer-from-stop" => :from, "transfer-to-stop" => :to}
+  # component it came from, which is the only place a side is decided, and a
+  # picked stop is sent back to the same component.
+  @stop_components %{from: "transfer-from-stop", to: "transfer-to-stop"}
+  @stop_component_sides Map.new(@stop_components, fn {side, id} -> {id, side} end)
 
   @empty_filters %{q: nil, stop: nil, route: nil, type: nil, attention: false}
 
@@ -145,6 +160,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:delete_dialog, nil)
      |> assign(:editor, nil)
      |> assign(:open_editor_for, nil)
+     |> assign(:map_generation, Ecto.UUID.generate())
+     |> assign(:map_extent, map_extent(socket))
+     |> assign(:map_state, :ready)
+     |> assign(:map_missing, [])
+     |> assign(:pick, nil)
+     |> assign(:next_pick_id, 1)
      |> assign_filters(@empty_filters)
      |> stream(:transfers, [])}
   end
@@ -309,7 +330,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_event("open_create", _params, socket) do
     if socket.assigns.view == :general and is_nil(socket.assigns.editor) do
-      {:noreply, assign(socket, :editor, new_editor(socket))}
+      editor = new_editor(socket)
+      {:noreply, socket |> assign(:editor, editor) |> show_draft_map(editor)}
     else
       {:noreply, socket}
     end
@@ -327,7 +349,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   def handle_event("reverse_draft", _params, socket) do
     case {socket.assigns.view, socket.assigns.editor, socket.assigns.selected} do
       {:general, nil, %{transfer: %{transfer_type: type}} = row} when type in @general_types ->
-        {:noreply, assign(socket, :editor, reverse_editor(socket, row))}
+        editor = reverse_editor(socket, row)
+
+        # The draft mirrors the rule, so the map has to draw the mirrored
+        # connection rather than the rule it was opened from (R7).
+        {:noreply, socket |> assign(:editor, editor) |> show_draft_map(editor)}
 
       _other ->
         {:noreply, socket}
@@ -390,7 +416,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   @impl true
   def handle_event("cancel_editor", _params, socket) do
-    {:noreply, assign(socket, :editor, nil)}
+    socket =
+      socket
+      |> assign(:editor, nil)
+      |> end_pick()
+      |> show_selected_map(socket.assigns.selected)
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -419,6 +451,193 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # --- connection map and pick-on-map ----------------------------------------
+
+  # The hook reports the map's own state with the generation it mounted with, so a
+  # delayed report from a previous mount cannot speak for this one (R10). Only the
+  # two failure states and `ready` are known; anything else leaves the page as it
+  # was.
+  @impl true
+  def handle_event("transfer_map_state", params, socket) do
+    if Map.get(params, "generation") == socket.assigns.map_generation do
+      {:noreply, assign_map_state(socket, Map.get(params, "state"))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # "Retry map" shows the canvas again and asks the hook for the same connection:
+  # it redraws its tiles and remeasures the container it has held all along.
+  @impl true
+  def handle_event("retry_map", _params, socket) do
+    {:noreply, socket |> assign(:map_state, :ready) |> push_event("transfer_map:retry", %{})}
+  end
+
+  # A pick session belongs to the open draft and to the next pick id. The hook
+  # echoes that id on every candidate and pick, so a session that has ended cannot
+  # answer for the next one (CR-6).
+  @impl true
+  def handle_event("start_pick", %{"side" => value}, socket) do
+    with true <- editor_open?(socket.assigns.editor, socket.assigns.view),
+         side when not is_nil(side) <- pick_side(value) do
+      pick = %{id: socket.assigns.next_pick_id, side: side, truncated?: false}
+
+      {:noreply,
+       socket
+       |> assign(:pick, pick)
+       |> assign(:next_pick_id, pick.id + 1)
+       |> push_event("transfer_map:pick_start", %{
+         pick_id: pick.id,
+         side: pick_side_value(side)
+       })}
+    else
+      _refused -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_pick", _params, socket), do: {:noreply, end_pick(socket)}
+
+  # The candidates are this version's own stops inside the box the hook reports.
+  # The read parses and clamps the box, and a box it refuses pushes nothing.
+  @impl true
+  def handle_event("transfer_map_bounds", params, socket) do
+    with %{id: id} <- socket.assigns.pick,
+         true <- Map.get(params, "pick_id") == id,
+         {:ok, candidates} <-
+           Gtfs.transfer_stops_in_bounds(organization_id(socket), version_id(socket), params) do
+      {:noreply,
+       socket
+       |> assign(:pick, %{socket.assigns.pick | truncated?: candidates.truncated?})
+       |> push_event("transfer_map:pick_candidates", %{
+         pick_id: id,
+         stops: candidates.stops,
+         truncated: candidates.truncated?
+       })}
+    else
+      _refused -> {:noreply, socket}
+    end
+  end
+
+  # A pick names one side and one stop. The id is resolved inside this page's own
+  # version before it can reach the draft, so an entrance, an unknown id, another
+  # version's stop or a stale session leaves the draft exactly as it was (R2,
+  # R10).
+  @impl true
+  def handle_event("transfer_map_pick", params, socket) do
+    with %{id: id, side: side} <- socket.assigns.pick,
+         true <- Map.get(params, "pick_id") == id,
+         true <- editor_open?(socket.assigns.editor, socket.assigns.view),
+         stop_id when is_binary(stop_id) <- Map.get(params, "stop_id"),
+         {:ok, stop} <-
+           Gtfs.fetch_transfer_stop(organization_id(socket), version_id(socket), stop_id) do
+      {:noreply, apply_pick(socket, side, stop)}
+    else
+      _refused -> {:noreply, socket}
+    end
+  end
+
+  defp assign_map_state(socket, "ready"), do: assign(socket, :map_state, :ready)
+
+  defp assign_map_state(socket, state) when state in ["imagery_unavailable", "fatal"],
+    do: assign(socket, :map_state, :unavailable)
+
+  defp assign_map_state(socket, _unknown), do: socket
+
+  defp map_extent(socket),
+    do: Gtfs.transfer_version_extent(organization_id(socket), version_id(socket))
+
+  # The map protocol's two names for one side of the connection.
+  defp pick_side("a"), do: :from
+  defp pick_side("b"), do: :to
+  defp pick_side(_value), do: nil
+
+  defp pick_side_value(:from), do: "a"
+  defp pick_side_value(:to), do: "b"
+
+  # A pick is over: the hook is told which session ended, so its candidate markers
+  # go and later bounds pushes are dropped there too.
+  defp end_pick(socket) do
+    case socket.assigns.pick do
+      nil ->
+        socket
+
+      %{id: id} ->
+        socket |> assign(:pick, nil) |> push_event("transfer_map:pick_end", %{pick_id: id})
+    end
+  end
+
+  # A picked stop is that side's answer: the route and trip it had were answered
+  # for the stop that is gone, so both go, and the option lists follow the new
+  # stop. `LiveSelect` keeps the option list it first rendered across a parent
+  # re-render, so the picked stop's label travels with its value.
+  defp apply_pick(socket, side, stop) do
+    editor = socket.assigns.editor
+
+    params =
+      editor.params
+      |> Map.put("#{side}_stop_id", stop.stop_id)
+      |> Map.drop(["#{side}_route_id", "#{side}_trip_id"])
+      |> strip_selectors(editor.scope)
+
+    editor = %{editor | params: params}
+    editor = put_draft_stop(editor, side, stop)
+    editor = refresh_options(socket, editor)
+
+    editor = %{
+      editor
+      | dirty?: params != editor.initial,
+        form: editor_form(socket, params, :validate)
+    }
+
+    send_update(LiveSelectComponent,
+      id: Map.fetch!(@stop_components, side),
+      value: stop.stop_id,
+      options: [%{label: stop_label(stop), value: stop.stop_id}]
+    )
+
+    socket
+    |> put_editor(editor)
+    |> end_pick()
+    |> show_draft_map(editor)
+  end
+
+  defp put_draft_stop(editor, :from, stop), do: %{editor | from_stop: stop}
+  defp put_draft_stop(editor, :to, stop), do: %{editor | to_stop: stop}
+
+  # The connection the context pane describes is the connection the map draws: the
+  # selected rule in list mode and the draft in editor mode. `fit` asks the hook
+  # for the connection's own view, and the same payload names the endpoints the
+  # version holds without coordinates.
+  # A load in list mode brings the map back to the selected rule. A load while a
+  # draft is open leaves the map drawing that draft, which is the connection the
+  # context pane describes then.
+  defp show_loaded_map(%{assigns: %{editor: nil}} = socket, selection),
+    do: show_selected_map(socket, selection)
+
+  defp show_loaded_map(socket, _selection), do: socket
+
+  defp show_selected_map(socket, nil), do: assign(socket, :map_missing, [])
+
+  defp show_selected_map(socket, %{from: from, to: to}) do
+    push_map(socket, %{from_stop_id: from.stop_id, to_stop_id: to.stop_id})
+  end
+
+  defp show_draft_map(socket, editor) do
+    push_map(socket, %{
+      from_stop_id: editor.params["from_stop_id"],
+      to_stop_id: editor.params["to_stop_id"]
+    })
+  end
+
+  defp push_map(socket, endpoints) do
+    payload = Gtfs.transfer_map_payload(organization_id(socket), version_id(socket), endpoints)
+
+    socket
+    |> assign(:map_missing, payload.missing_coordinates)
+    |> push_event("transfer_map:show", Map.put(payload, :fit, true))
   end
 
   # --- create editor ---------------------------------------------------------
@@ -661,15 +880,31 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           |> strip_selectors(scope)
     }
 
+    endpoints = draft_endpoints(editor)
     editor = clear_dependents(editor, target)
     editor = refresh_stop(socket, editor, target)
     editor = refresh_options(socket, editor)
 
-    put_editor(socket, %{
+    editor = %{
       editor
       | dirty?: editor.params != editor.initial,
         form: editor_form(socket, editor.params, :validate)
-    })
+    }
+
+    socket = put_editor(socket, editor)
+
+    # The map answers the draft's two endpoints. A change to anything else — the
+    # scope, a route, the minimum time — redraws the same connection, and a fit on
+    # every keystroke would fight the operator's own view of the map.
+    if draft_endpoints(editor) == endpoints do
+      socket
+    else
+      show_draft_map(socket, editor)
+    end
+  end
+
+  defp draft_endpoints(editor) do
+    {editor.params["from_stop_id"], editor.params["to_stop_id"]}
   end
 
   defp clear_dependents(editor, "from_stop_id"),
@@ -868,6 +1103,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   defp saved(socket, transfer) do
     socket
+    |> end_pick()
     |> assign(:editor, nil)
     |> put_flash(:info, "Transfer saved in #{socket.assigns.current_gtfs_version.name}.")
     |> push_patch(to: list_path(socket, rule: transfer.id))
@@ -883,6 +1119,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # left to write, so the editor closes and the list loads again without it.
   defp rule_gone(socket) do
     socket
+    |> end_pick()
     |> assign(:editor, nil)
     |> put_flash(:info, "This rule is no longer in this version.")
     |> push_patch(to: list_path(socket, rule: nil))
@@ -1070,6 +1307,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
             </div>
           </:list>
           <:context>
+            <.map_region
+              :if={editor_open?(@editor, @view) or not is_nil(@selected)}
+              editor_open?={editor_open?(@editor, @view)}
+              pick={@pick}
+              map_state={@map_state}
+              generation={@map_generation}
+              extent={@map_extent}
+              missing={@map_missing}
+            />
             <.draft_preview :if={editor_open?(@editor, @view)} editor={@editor} />
             <.inspector
               :if={not editor_open?(@editor, @view) and @selected}
@@ -1145,6 +1391,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           |> assign(:view, view)
           |> assign(:catalog_state, :ready)
           |> stream_rows(catalog, previous_selected_id)
+          |> show_loaded_map(selection)
 
         if canonical_params(socket.assigns) == url_params do
           {:noreply, socket}

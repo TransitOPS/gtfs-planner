@@ -225,13 +225,13 @@ describe("transfer_map_hook mount and map state", () => {
     expect(map.setView).toHaveBeenCalledWith([20, 0], 1);
   });
 
-  it("tags a tile load as ready and a tile error as imagery_unavailable", () => {
+  it("tags a tile image as ready and a tile error as imagery_unavailable", () => {
     const { L } = createLeaflet();
     window.L = L;
 
     const { hook } = mountHook(buildRoot({ mapGeneration: GENERATION }));
 
-    tileHandler(L, 0, "load")();
+    tileHandler(L, 0, "tileload")();
     tileHandler(L, 1, "tileerror")();
 
     expect(hook.pushEvent).toHaveBeenNthCalledWith(1, "transfer_map_state", {

@@ -274,12 +274,14 @@ const TransferMapHook = {
     this._push("transfer_map_state", { generation: this.generation, state });
   },
 
-  // One tile load is enough to call the imagery present. A tile error reports
-  // the degraded state once per failure and nothing else changes, so a missing
-  // basemap leaves the page usable (AC-22, FH-20).
+  // A tile that loaded is enough to call the imagery present, and a failed tile
+  // reports the degraded state. The layer's `load` event is not that signal:
+  // Leaflet fires it once every tile in view is ready, and a tile that errored
+  // counts as ready, so a wholly aborted basemap ends with `load` and clears the
+  // degraded state (AC-22, FH-20). `tileload` is the per-tile success event.
   _bindTileState() {
     this._tileLayers.forEach((layer) => {
-      layer.on?.("load", () => this._emitState("ready"));
+      layer.on?.("tileload", () => this._emitState("ready"));
       layer.on?.("tileerror", () => this._emitState("imagery_unavailable"));
     });
   },
