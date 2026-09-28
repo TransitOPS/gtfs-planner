@@ -483,6 +483,172 @@ test.describe("calendar coverage", () => {
   });
 });
 
+// ---- Calendar coverage details (step 5) ------------------------------------
+
+const DETAILS_VERSION = "Browser Calendar Details";
+
+// The next weekday strictly after `from`, so a removal default always has a
+// calendar that runs on the chosen date whatever day the suite runs.
+async function nextWeekday(page, from, days) {
+  return page.evaluate(
+    ({ from, days }) => {
+      const date = new Date(from);
+      date.setUTCDate(date.getUTCDate() + days);
+      while (date.getUTCDay() === 0 || date.getUTCDay() === 6) {
+        date.setUTCDate(date.getUTCDate() + 1);
+      }
+      return date.toISOString().slice(0, 10);
+    },
+    { from, days },
+  );
+}
+
+test.describe("calendar coverage details", () => {
+  test("keyboard activation opens the exact dates and Escape returns focus to its control", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const versionId = await openCalendars(page, DETAILS_VERSION);
+
+    const control = page.locator(
+      '#calendars-list [data-calendar-coverage="DETAIL_SCHOOL"]',
+    );
+    await expect(control).toHaveJSProperty("tagName", "BUTTON");
+    await expect(control).toHaveAttribute("aria-haspopup", "dialog");
+    await expect(control).toContainText("break");
+
+    // The control is keyboard reachable from its own row, not only clickable.
+    await page.locator('#calendars-list [data-calendar-link="DETAIL_SCHOOL"]').focus();
+    await page.keyboard.press("Tab");
+    await expect(control).toBeFocused();
+
+    // Activation by keyboard alone opens the inspector for this exact identity.
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#calendar-coverage-details-overlay[open]", {
+      timeout: 15000,
+    });
+    const details = page.locator("#calendar-coverage-details");
+    await expect(details).toContainText("DETAIL_SCHOOL");
+
+    // The three removed regular service days are stated as a break with its exact
+    // range, and the additions that sit after the weekly range are named exactly.
+    await expect(details).toContainText(
+      /Break · [A-Z][a-z]{2} \d{1,2}, \d{4} – [A-Z][a-z]{2} \d{1,2}, \d{4} · 3 service days removed/,
+    );
+    await expect(details).toContainText(/Extra service: .*outside the regular schedule/);
+    await expect(details).toContainText("Single days off:");
+    await expect(details.locator("#calendar-coverage-details-dates li")).toHaveCount(8);
+    await expect(details).toContainText("Service added");
+    await expect(details).toContainText("Service removed");
+    await expect(details).toContainText(/Next service/);
+    await expect(details).toContainText("2 trips use this calendar");
+    await expect(details).toContainText("BROWSER_DETAILS");
+
+    // This row's own marks are compressed into bins on the long feed, so the inspector
+    // says so instead of presenting an approximate bar as an exact date list.
+    await expect(details.locator("#calendar-coverage-details-approximate")).toContainText(
+      "compressed into bins and drawn approximately",
+    );
+
+    // Escape closes the inspector and returns focus to the control that opened it.
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#calendar-coverage-details-overlay")).not.toHaveAttribute(
+      "open",
+      "",
+    );
+    await expect(control).toBeFocused();
+
+    // A nine-year identity keeps exact dates outside the disclosed window: the count,
+    // the exact span and the statement that no date is dropped.
+    const long = page.locator('#calendars-list [data-calendar-coverage="DETAIL_LONG"]');
+    await long.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#calendar-coverage-details-overlay[open]", {
+      timeout: 15000,
+    });
+    await expect(details.locator("#calendar-coverage-details-outside")).toContainText(
+      /\d+ service dates before [A-Z][a-z]{2} \d{1,2}, \d{4}: [A-Z][a-z]{2} \d{1,2}, \d{4} – [A-Z][a-z]{2} \d{1,2}, \d{4}/,
+    );
+    await expect(details.locator("#calendar-coverage-details-outside")).toContainText(
+      "none of them is dropped",
+    );
+    await expect(details).toContainText("No routes yet");
+
+    // The same Escape contract holds for the control that opened this inspector.
+    await page.keyboard.press("Escape");
+    await expect(long).toBeFocused();
+
+    // The near range clips the latest addition, so the inspector names the exact
+    // date outside the drawn timeline instead of dropping it.
+    await page.goto(`/gtfs/${versionId}/calendars?range=near`);
+    await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
+    await control.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#calendar-coverage-details-overlay[open]", {
+      timeout: 15000,
+    });
+    await expect(details.locator("#calendar-coverage-details-outside")).toContainText(
+      /1 service date after [A-Z][a-z]{2} \d{1,2}, \d{4}: [A-Z][a-z]{2} \d{1,2}, \d{4}/,
+    );
+    await expect(details.locator("#calendar-coverage-details-outside")).toContainText(
+      "none of them is dropped",
+    );
+  });
+
+  test("never routes an unreadable identity into the detail read or the date-change targets", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const versionId = await openCalendars(page, DETAILS_VERSION);
+
+    // The identity stays listed with its name and usage, but its name is not a link
+    // into the detail read that evaluates the dates, and it has no coverage control.
+    const invalidRow = page.locator("#calendars-list tr", {
+      hasText: "Details reversed range",
+    });
+    await expect(invalidRow).toBeVisible();
+    await expect(
+      page.locator('#calendars-list [data-calendar-link="DETAIL_REVERSED"]'),
+    ).toHaveCount(0);
+    await expect(invalidRow.locator('a[href*="/calendars/show"]')).toHaveCount(0);
+    await expect(
+      page.locator('[data-calendar-coverage="DETAIL_REVERSED"]'),
+    ).toHaveCount(0);
+    await expect(invalidRow).toContainText("Range needs repair");
+    await expect(
+      page.locator("#calendar-coverage-repair-DETAIL_REVERSED"),
+    ).toHaveAttribute("href", `/gtfs/${versionId}/import`);
+    await expect(invalidRow).toContainText(
+      "Correct the calendar file and import the feed again",
+    );
+
+    // The reviewed date change evaluates every target, so the unreadable identity is
+    // not offered as a stop or a run target while the readable ones are.
+    const today = await page.evaluate(() => new Date().toISOString());
+    const date = await nextWeekday(page, today, 4);
+
+    await page.click("#calendar-date-change");
+    await page.waitForSelector("#calendar-date-change-form[data-phx-id]", {
+      timeout: 15000,
+    });
+    await page.fill("#calendar-date-change-dates-date", date);
+    await expect(
+      page.locator("#calendar-date-change-remove-DETAIL_SCHOOL"),
+    ).toBeVisible();
+    await expect(page.locator("#calendar-date-change-add-DETAIL_SCHOOL")).toBeVisible();
+    await expect(page.locator("#calendar-date-change-add-DETAIL_DATES")).toBeVisible();
+    await expect(
+      page.locator('[id^="calendar-date-change-add-DETAIL_REVERSED"]'),
+    ).toHaveCount(0);
+    await expect(
+      page.locator('[id^="calendar-date-change-remove-DETAIL_REVERSED"]'),
+    ).toHaveCount(0);
+    await expect(page.locator("#calendar-date-change-drawer")).not.toContainText(
+      "DETAIL_REVERSED",
+    );
+  });
+});
+
 // ---- Calendar editor journeys (step 6) -------------------------------------
 
 function isoDate(date) {

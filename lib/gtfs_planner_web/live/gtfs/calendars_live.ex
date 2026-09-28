@@ -88,6 +88,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      |> assign(:gaps, [])
      |> assign(:screen, nil)
      |> assign(:coverage, nil)
+     |> assign(:coverage_detail, nil)
+     |> assign(:coverage_return_focus, nil)
      |> assign(:invalid_calendars, [])
      |> assign(:long_history?, false)
      |> assign(:calendars_empty?, false)
@@ -187,6 +189,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     else
       {:noreply, socket}
     end
+  end
+
+  ## Coverage details inspector
+
+  @impl true
+  def handle_event("open_coverage_details", %{"service-id" => service_id}, socket) do
+    {:noreply, open_coverage_details(socket, service_id)}
+  end
+
+  @impl true
+  def handle_event("close_coverage_details", _params, socket) do
+    {:noreply, assign(socket, :coverage_detail, nil)}
   end
 
   ## Date-change drawer
@@ -324,15 +338,51 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
-  # The axis is pure geometry over the snapshot, so a range change re-reads nothing
-  # beyond the ordinary load and the domain dates are never narrowed by the axis.
+  # A closed inspector keeps the read's projection in step with the list, so it drops its
+  # snapshot as soon as the screen is re-read: a range, filter, sort, refresh or version
+  # change shows dates from the read it was opened against, never a stale axis.
   defp assign_coverage(socket) do
-    assign(
-      socket,
+    socket
+    |> assign(:coverage_detail, nil)
+    |> assign(
       :coverage,
       CalendarCoverage.project(socket.assigns.screen, range_atom(socket.assigns.range))
     )
   end
+
+  defp open_coverage_details(socket, service_id) do
+    with %{} = row <- Enum.find(socket.assigns.all_calendars, &(&1.service_id == service_id)),
+         true <- is_nil(row.coverage_error),
+         %{} = projection <- socket.assigns.coverage do
+      socket
+      |> assign(:coverage_detail, coverage_detail(projection, row, socket.assigns.today))
+      |> assign(:coverage_return_focus, CalendarComponents.coverage_control_id(service_id))
+    else
+      _unavailable -> socket
+    end
+  end
+
+  defp coverage_detail(projection, row, today) do
+    outside = CalendarCoverage.dates_outside(projection, row)
+
+    %{
+      row: row,
+      coverage: Map.get(projection.rows, row.service_id, %{marks: [], offscreen: nil}),
+      window: coverage_window(projection),
+      before: outside.before,
+      after: outside.after,
+      today: today,
+      regular_days: regular_days(row)
+    }
+  end
+
+  defp coverage_window(%{first_date: nil}), do: nil
+
+  defp coverage_window(%{first_date: first_date, last_date: last_date}),
+    do: %{first_date: first_date, last_date: last_date}
+
+  defp coverage_details_title(%{coverage_detail: nil}), do: "Service dates"
+  defp coverage_details_title(%{coverage_detail: %{row: row}}), do: row.name || row.service_id
 
   defp range_atom("near"), do: :near
   defp range_atom("all"), do: :all
@@ -358,6 +408,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     socket
     |> assign(:screen, nil)
     |> assign(:coverage, nil)
+    |> assign(:coverage_detail, nil)
     |> assign(:invalid_calendars, [])
     |> assign(:long_history?, false)
   end
@@ -455,8 +506,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign_date_change_form("single", %{})
   end
 
+  # The date-change command evaluates every target through `ServiceDates`, so an
+  # identity whose retained range cannot be read never enters the drawer as a target:
+  # it has no readable date set to stop or run, and its repair action is the import
+  # link on the list. The identity itself stays listed with its name and usage.
   defp snapshot_sources(summaries) do
-    Map.new(summaries, fn summary ->
+    summaries
+    |> Enum.reject(& &1.coverage_error)
+    |> Map.new(fn summary ->
       {summary.service_id,
        %{
          service_id: summary.service_id,
@@ -1242,12 +1299,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               sort={column_sort_state(@sort_by, @sort_dir, "name")}
             >
               <.link
+                :if={is_nil(summary.coverage_error)}
                 navigate={detail_path(assigns, summary)}
                 data-calendar-link={summary.service_id}
                 class="link link-primary font-semibold"
               >
                 {summary.name || "Untitled calendar"}
               </.link>
+              <%!-- An identity whose retained range cannot be read has no date set to
+              inspect or edit, and the detail read evaluates the dates, so its name is
+              plain text here; the repair action is the import link in the Service dates
+              cell. --%>
+              <span :if={summary.coverage_error} class="font-semibold">
+                {summary.name || "Untitled calendar"}
+              </span>
               <div class="text-sm text-base-content/70">
                 <code class="font-mono">{summary.service_id}</code>
               </div>
@@ -1496,6 +1561,21 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             </button>
           </div>
         </.form>
+      </.drawer>
+
+      <.drawer
+        id="calendar-coverage-details"
+        open={@coverage_detail != nil}
+        on_close="close_coverage_details"
+        title={coverage_details_title(assigns)}
+        return_focus_id={@coverage_return_focus}
+        class="max-w-[min(100vw,30rem)]"
+      >
+        <CalendarComponents.coverage_details
+          :if={@coverage_detail}
+          detail={@coverage_detail}
+          version_id={@current_gtfs_version.id}
+        />
       </.drawer>
     </Layouts.app>
     """

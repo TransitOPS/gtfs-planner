@@ -472,13 +472,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   @doc """
-  Renders one row's coverage bar with its exact-date caption.
+  Renders one row's coverage bar with its exact-date caption as one keyboard control.
 
   `coverage` is the row's projection from `CalendarCoverage.project/2` and `axis`
   carries the scale every row shares, so the bar is drawn on the same axis as the
-  header. The lane is decoration: the caption below it states the exact first and
-  last date and the break, day-off and added-date counts in text, so no fact exists
-  only as a colour or a position.
+  header. The whole cell is the control: the lane is decoration and stays
+  `aria-hidden`, while the caption below it states the exact first and last date and
+  the break, day-off and added-date counts in text, so the bar is never the only
+  carrier of a fact and the control always has a readable name. Activating it (click,
+  Enter or Space) opens the exact inspector through `open_coverage_details`, which
+  carries the row's exact service ID as `phx-value-service-id`;
+  `coverage_control_id/1` names the control so a closed inspector returns focus to it.
   """
   attr :row, :map, required: true
   attr :coverage, :map, required: true
@@ -486,8 +490,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   def coverage_bar(assigns) do
     ~H"""
-    <div data-calendar-coverage={@row.service_id} class="calendar-coverage">
-      <div class="calendar-coverage-lane" aria-hidden="true">
+    <button
+      type="button"
+      id={coverage_control_id(@row.service_id)}
+      data-calendar-coverage={@row.service_id}
+      phx-click="open_coverage_details"
+      phx-value-service-id={@row.service_id}
+      aria-haspopup="dialog"
+      class="calendar-coverage-trigger"
+    >
+      <span class="sr-only">{@row.name || @row.service_id} coverage details</span>
+      <span class="calendar-coverage-lane" aria-hidden="true">
         <span
           :if={@axis.today_position}
           class="calendar-coverage-past"
@@ -520,8 +533,117 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           <.icon name={outside_icon(@coverage.offscreen)} class="size-3.5" />
           {outside_label(@coverage.offscreen)}
         </span>
+      </span>
+      <span class="calendar-coverage-caption">{coverage_caption(@row)}</span>
+    </button>
+    """
+  end
+
+  @doc """
+  Names one row's coverage control so the inspector can return focus to it.
+  """
+  def coverage_control_id(service_id),
+    do: "calendar-coverage-open-#{URI.encode_www_form(service_id)}"
+
+  @doc """
+  Renders the exact service-date inspector for one coverage control.
+
+  Everything here is the loaded read: the derived periods, breaks, days off and added
+  dates, the stored exception rows, the grouped route usage and the agency-local next
+  service. The coverage bar is a view of the same dates, so a compressed or clipped
+  mark never becomes the only statement about a date: dates outside the visible axis are
+  counted with their exact span, an approximate mark says so, and the exact periods stay
+  proportional to real civil days instead of the drawn range.
+  """
+  attr :detail, :map, required: true
+  attr :version_id, :any, required: true
+
+  def coverage_details(assigns) do
+    assigns =
+      assigns
+      |> assign(:row, assigns.detail.row)
+      |> assign(:periods, assigns.detail.row.periods)
+      |> assign(:exceptions, assigns.detail.row.exceptions)
+      |> assign(:approximate?, Enum.any?(assigns.detail.coverage.marks, & &1.mixed?))
+      |> assign(:next_service, next_service(assigns.detail.row, assigns.detail.today))
+      |> assign(:empty_dates_text, empty_dates_text(assigns.detail.row))
+      |> assign(:outside_lines, outside_lines(assigns.detail))
+
+    ~H"""
+    <div id="calendar-coverage-details-body" class="space-y-6">
+      <div>
+        <p id="calendar-coverage-details-identity">
+          <code class="font-mono">{@row.service_id}</code>
+          <span class="text-sm text-base-content/70">{" · "}{@detail.regular_days}</span>
+        </p>
+        <p class="mt-1 text-sm text-base-content/70">
+          Exact service dates behind the bar on the list.
+        </p>
       </div>
-      <p class="calendar-coverage-caption">{coverage_caption(@row)}</p>
+
+      <section :if={@row.kind == :weekly} id="calendar-coverage-details-periods-section">
+        <h3 class="font-semibold">Regular service and changes</h3>
+        <p class="mb-2 text-sm text-base-content/70">
+          The weekly range, its breaks, the single days off and the added dates.
+        </p>
+        <.periods_section
+          id="calendar-coverage-details-periods"
+          periods={@periods}
+          exceptions={@exceptions}
+          timeline_label={"Service periods with #{length(@periods.breaks)} breaks"}
+        />
+        <p :if={@periods.periods == [] and @periods.breaks == []} class="text-sm text-base-content/70">
+          This calendar has no regular service days.
+        </p>
+      </section>
+
+      <section id="calendar-coverage-details-dates-section">
+        <h3 class="font-semibold">
+          {if @row.kind == :weekly, do: "Stored date changes", else: "Service dates"}
+        </h3>
+        <p :if={@row.kind == :weekly} class="text-sm text-base-content/70">
+          Every added and removed date exactly as it is stored, including the ones outside the
+          weekly range.
+        </p>
+        <.date_chips
+          id="calendar-coverage-details-dates"
+          entries={@exceptions}
+        />
+        <p :if={@exceptions == []} class="mt-2 text-sm text-base-content/70">
+          {@empty_dates_text}
+        </p>
+      </section>
+
+      <section id="calendar-coverage-details-next-section">
+        <h3 class="font-semibold">Next service</h3>
+        <p id="calendar-coverage-details-next" class="mt-1">{next_service_label(assigns)}</p>
+      </section>
+
+      <section id="calendar-coverage-details-usage-section">
+        <h3 class="font-semibold">Used by</h3>
+        <div class="mt-1">
+          <.usage_strip
+            id="calendar-coverage-details-usage"
+            usage={%{trip_count: @row.trip_count, routes: @row.routes}}
+            version_id={@version_id}
+          />
+        </div>
+      </section>
+
+      <section id="calendar-coverage-details-outside">
+        <h3 class="font-semibold">Outside the timeline</h3>
+        <ul class="mt-1 space-y-1 text-sm text-base-content/70">
+          <li :for={line <- @outside_lines}>{line}</li>
+        </ul>
+        <p
+          :if={@approximate?}
+          id="calendar-coverage-details-approximate"
+          class="mt-2 text-sm text-base-content/70"
+        >
+          Some marks in this range are compressed into bins and drawn approximately. Every
+          date above is exact.
+        </p>
+      </section>
     </div>
     """
   end
@@ -550,7 +672,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         navigate={"/gtfs/#{@version_id}/import"}
         class="link link-primary mt-0.5 inline-block"
       >
-        Import the feed again
+        Correct the calendar file and import the feed again
       </.link>
     </div>
     """
@@ -583,7 +705,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           navigate={"/gtfs/#{@version_id}/import"}
           class="link link-primary mt-2 inline-block"
         >
-          Import the feed again
+          Correct the calendar file and import the feed again
         </.link>
       </.callout>
     </div>
@@ -644,6 +766,62 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp plural(count, one, many), do: "#{count} #{many || one <> "s"}"
 
   defp plural(count, one), do: plural(count, one, nil)
+
+  # The inspector's next service is the first loaded exact date on or after the
+  # agency-local today, so it states a real date instead of re-evaluating the range.
+  defp next_service(%{active_dates: dates}, %Date{} = today) when is_list(dates) do
+    Enum.find(dates, &(Date.compare(&1, today) != :lt))
+  end
+
+  defp next_service(_row, _today), do: nil
+
+  defp next_service_label(%{next_service: nil}), do: "None scheduled"
+
+  defp next_service_label(%{next_service: date, detail: %{today: today}}) do
+    label = Elixir.Calendar.strftime(date, "%a, %b %-d, %Y")
+
+    if date == today, do: "Today, #{label}", else: label
+  end
+
+  defp next_service_label(_assigns), do: "None scheduled"
+
+  defp empty_dates_text(%{kind: :weekly}), do: "This calendar has no stored date changes."
+  defp empty_dates_text(_row), do: "This calendar runs on no dates yet."
+
+  # Dates outside the drawn range are counted with their exact span rather than
+  # discarded: the axis is a view of the loaded dates, never a limit on them (INV-5).
+  defp outside_lines(%{window: nil}) do
+    ["This version has no service dates, so there is no timeline to compare against."]
+  end
+
+  defp outside_lines(%{window: window} = detail) do
+    lines =
+      [
+        outside_line("before", detail.before, window.first_date),
+        outside_line("after", detail.after, window.last_date)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case lines do
+      [] -> ["Every service date falls inside the timeline."]
+      _lines -> lines ++ ["The timeline is a view of these dates, so none of them is dropped."]
+    end
+  end
+
+  defp outside_line(_side, [], _edge), do: nil
+
+  defp outside_line("before", dates, edge) do
+    "#{plural(length(dates), "service date")} before #{format_date(edge)}: #{date_span(dates)}"
+  end
+
+  defp outside_line("after", dates, edge) do
+    "#{plural(length(dates), "service date")} after #{format_date(edge)}: #{date_span(dates)}"
+  end
+
+  defp date_span([date]), do: format_date(date)
+
+  defp date_span([first | _rest] = dates),
+    do: "#{format_date(first)} – #{format_date(List.last(dates))}"
 
   defp invalid_title(1), do: "1 calendar has a date range that cannot be read"
   defp invalid_title(count), do: "#{count} calendars have a date range that cannot be read"

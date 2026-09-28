@@ -810,6 +810,315 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     end
   end
 
+  describe "coverage details inspector through the real Repo adapter" do
+    setup :use_real_adapter
+
+    test "opens one identity's exact periods, breaks, days off, additions, next service and usage",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+      monday = next_monday(today)
+      route_a = route_fixture(organization.id, version.id, %{route_id: "CHIP_A"})
+      route_b = route_fixture(organization.id, version.id, %{route_id: "CHIP_B"})
+
+      # Three consecutive removed regular service days are a break, one removed day is
+      # a day off, and an addition inside the range is regular extra service. Every date
+      # is derived from next week's Monday, so the derived counts hold on any run day.
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_WEEK",
+        start_date: Date.add(today, -21),
+        end_date: Date.add(today, 28)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_WEEK",
+        service_description: "Detailed weekdays"
+      })
+
+      for removed <- [monday, Date.add(monday, 1), Date.add(monday, 2)] do
+        calendar_date_fixture(organization.id, version.id, %{
+          service_id: "DETAIL_WEEK",
+          date: removed,
+          exception_type: 2
+        })
+      end
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_WEEK",
+        date: Date.add(monday, 7),
+        exception_type: 2
+      })
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_WEEK",
+        date: Date.add(monday, 5),
+        exception_type: 1
+      })
+
+      # Two additions after the weekly range: exact out-of-range additions.
+      outside_first = Date.add(today, 60)
+      outside_last = Date.add(today, 61)
+
+      for date <- [outside_first, outside_last] do
+        calendar_date_fixture(organization.id, version.id, %{
+          service_id: "DETAIL_WEEK",
+          date: date,
+          exception_type: 1
+        })
+      end
+
+      trip_fixture(organization.id, version.id, route_a.route_id, %{service_id: "DETAIL_WEEK"})
+      trip_fixture(organization.id, version.id, route_b.route_id, %{service_id: "DETAIL_WEEK"})
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      list_html = loaded(view)
+
+      # The control is one keyboard button that carries the row's exact service ID, and
+      # the caption stays the accessible name so the bar is never the only statement.
+      assert has_element?(
+               view,
+               "button#calendar-coverage-open-DETAIL_WEEK" <>
+                 "[data-calendar-coverage='DETAIL_WEEK']" <>
+                 "[phx-value-service-id='DETAIL_WEEK'][aria-haspopup='dialog']"
+             )
+
+      assert list_html =~ "Detailed weekdays coverage details"
+
+      html = render_click(view, "open_coverage_details", %{"service-id" => "DETAIL_WEEK"})
+
+      # The inspector is the existing drawer, opened for that exact identity and ready
+      # to return focus to the control that opened it.
+      assert has_element?(view, "#calendar-coverage-details-overlay[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details[data-return-focus-id='calendar-coverage-open-DETAIL_WEEK']"
+             )
+
+      assert has_element?(view, "#calendar-coverage-details-title", "Detailed weekdays")
+
+      assert text_of(html, "#calendar-coverage-details-identity") |> Enum.join(" ") =~
+               "DETAIL_WEEK"
+
+      # Periods, the break with its exact range and its three removed service days, the
+      # single day off and the additions all come from the loaded read.
+      break_range =
+        "#{Calendar.strftime(monday, "%b %-d, %Y")} – " <>
+          Calendar.strftime(Date.add(monday, 2), "%b %-d, %Y")
+
+      day_off = Calendar.strftime(Date.add(monday, 7), "%b %-d, %Y")
+      inside_addition = Calendar.strftime(Date.add(monday, 5), "%b %-d, %Y")
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details-periods",
+               "Break · #{break_range} · 3 service days removed"
+             )
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details-periods",
+               "Single days off: #{day_off}"
+             )
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details-periods",
+               "Extra service: #{inside_addition}"
+             )
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details-periods",
+               "outside the regular schedule"
+             )
+
+      # Every stored addition and removal is listed exactly, including the additions
+      # after the weekly range.
+      assert length(text_of(html, "#calendar-coverage-details-dates li")) == 7
+      assert has_element?(view, "#calendar-coverage-details-dates", "Service removed")
+      assert has_element?(view, "#calendar-coverage-details-dates", "Service added")
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details-dates",
+               Calendar.strftime(outside_first, "%b %-d, %Y")
+             )
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-details-dates",
+               Calendar.strftime(outside_last, "%b %-d, %Y")
+             )
+
+      # Next service is the first loaded date on or after the agency-local today, and
+      # the usage strip names the real trip count and route IDs.
+      expected_next =
+        if Date.day_of_week(today) <= 5,
+          do: today,
+          else: Date.add(today, 8 - Date.day_of_week(today))
+
+      expected_label =
+        if expected_next == today do
+          "Today, #{Calendar.strftime(today, "%a, %b %-d, %Y")}"
+        else
+          Calendar.strftime(expected_next, "%a, %b %-d, %Y")
+        end
+
+      assert text_of(html, "#calendar-coverage-details-next") == [expected_label]
+      assert has_element?(view, "#calendar-coverage-details-usage", "2 trips use this calendar")
+      assert has_element?(view, "#calendar-coverage-details-usage-route-CHIP_A")
+      assert has_element?(view, "#calendar-coverage-details-usage-route-CHIP_B")
+
+      # Every exact date falls inside this axis, so the inspector says so rather than
+      # implying dates were dropped.
+      assert text_of(html, "#calendar-coverage-details-outside li") |> Enum.join(" ") =~
+               "Every service date falls inside the timeline."
+
+      # Closing drops the inspector content and keeps the control in place for focus.
+      closed = render_click(view, "close_coverage_details", %{})
+      assert has_element?(view, "#calendar-coverage-details-overlay[data-open=false]")
+      refute closed =~ "3 service days removed"
+      refute has_element?(view, "#calendar-coverage-details-body")
+      assert has_element?(view, "button#calendar-coverage-open-DETAIL_WEEK")
+    end
+
+    test "counts the exact dates outside the drawn timeline on a long feed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+      start_date = Date.add(today, -3_200)
+
+      # Nine years of daily service make the whole-feed axis the disclosed recent window
+      # from twelve months before today, so this row keeps most of its exact dates
+      # outside it.
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_LONG",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 1,
+        sunday: 1,
+        start_date: start_date,
+        end_date: Date.add(today, 400)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_LONG",
+        service_description: "Nine year service"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      _list_html = loaded(view)
+
+      html = render_click(view, "open_coverage_details", %{"service-id" => "DETAIL_LONG"})
+      outside = text_of(html, "#calendar-coverage-details-outside li") |> Enum.join(" ")
+      axis_first = Date.new!(today.year - 1, today.month, 1)
+
+      # The count and the exact span before the drawn range, closed by the statement
+      # that the timeline is a view rather than a limit on the dates (INV-5).
+      assert outside =~ ~r/\b\d+ service dates before/
+
+      assert outside =~
+               "before #{Calendar.strftime(axis_first, "%b %-d, %Y")}: " <>
+                 "#{Calendar.strftime(start_date, "%b %-d, %Y")} – " <>
+                 Calendar.strftime(Date.add(axis_first, -1), "%b %-d, %Y")
+
+      assert outside =~ "none of them is dropped"
+    end
+
+    test "never routes an unreadable identity into the detail read or the date-change targets",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_OK",
+        start_date: Date.add(today, -10),
+        end_date: Date.add(today, 10)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_OK",
+        service_description: "Readable detail weekdays"
+      })
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_REVERSED",
+        start_date: Date.add(today, 60),
+        end_date: Date.add(today, -60)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "DETAIL_REVERSED",
+        service_description: "Reversed detail range"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      html = loaded(view)
+
+      # The identity stays listed with its name and usage, but its name is plain text
+      # and it has no coverage control, so the detail read that evaluates the dates is
+      # unreachable from the row. The repair action stays.
+      assert html =~ "Reversed detail range"
+      refute has_element?(view, "#calendars-list [data-calendar-link='DETAIL_REVERSED']")
+      refute html =~ "/calendars/show?service_id=DETAIL_REVERSED"
+      refute has_element?(view, "[data-calendar-coverage='DETAIL_REVERSED']")
+      assert has_element?(view, "[data-calendar-coverage-repair='DETAIL_REVERSED']")
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-repair-DETAIL_REVERSED[href='/gtfs/#{version.id}/import']"
+             )
+
+      assert html =~ "Correct the calendar file and import the feed again"
+      assert has_element?(view, "[data-calendar-link='DETAIL_OK']")
+
+      # Neither the control's own event nor a forged service ID opens the inspector.
+      for service_id <- ["DETAIL_REVERSED", "NO_SUCH_CALENDAR"] do
+        render_click(view, "open_coverage_details", %{"service-id" => service_id})
+        assert has_element?(view, "#calendar-coverage-details-overlay[data-open=false]")
+        refute has_element?(view, "#calendar-coverage-details-body")
+      end
+
+      # The reviewed date change evaluates every target, so the unreadable identity is
+      # neither offered nor accepted as a target while the readable one is.
+      render_click(view, "open_date_change", %{})
+
+      view
+      |> form("#calendar-date-change-form",
+        date_change: %{mode: "single", date: Date.to_iso8601(next_monday(today))}
+      )
+      |> render_change()
+
+      assert has_element?(view, "#calendar-date-change-add-DETAIL_OK")
+      assert has_element?(view, "#calendar-date-change-remove-DETAIL_OK")
+      refute has_element?(view, "#calendar-date-change-add-DETAIL_REVERSED")
+      refute has_element?(view, "#calendar-date-change-remove-DETAIL_REVERSED")
+
+      assert render_click(view, "date_change_toggle", %{
+               "group" => "add",
+               "service-id" => "DETAIL_REVERSED"
+             }) =~ "not in this service version"
+    end
+  end
+
   describe "states through the adapter seam" do
     setup :use_mock_adapter
 

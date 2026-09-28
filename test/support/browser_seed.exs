@@ -2490,6 +2490,153 @@ case Accounts.register_first_admin(%{
       "Browser seed: 6 calendar identities in #{diagram_version.id} (today #{calendar_today})"
     )
 
+    # ── Calendar coverage details scenario ──
+    #
+    # The coverage control and its exact-details inspector need shapes the six
+    # identities above do not carry: a break of exactly three removed regular
+    # service days, added dates inside and after the weekly range, a
+    # specific-dates identity and an imported reversed range. A dedicated
+    # published version keeps every list assertion on the Browser E2E Version
+    # unchanged. Branding once more below leaves that version the current one.
+    {:ok, details_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Calendar Details"})
+
+    details_today = Gtfs.DisplayClock.today(org.id, details_version.id).date
+
+    {:ok, _details_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: details_version.id,
+        route_id: "BROWSER_DETAILS",
+        route_short_name: "BD",
+        route_long_name: "Browser calendar details",
+        route_type: 3
+      })
+
+    [
+      %{
+        service_id: "DETAIL_SCHOOL",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: Date.add(details_today, -30),
+        end_date: Date.add(details_today, 30)
+      },
+      %{
+        service_id: "DETAIL_REVERSED",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: Date.add(details_today, 60),
+        end_date: Date.add(details_today, -60)
+      },
+      # Nine years of service, so the whole-feed view opens on the disclosed recent
+      # window: this row keeps exact dates before it and the other rows' marks are
+      # compressed into bins the bar draws as approximate.
+      %{
+        service_id: "DETAIL_LONG",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 1,
+        sunday: 0,
+        start_date: Date.add(details_today, -3_000),
+        end_date: Date.add(details_today, 400)
+      }
+    ]
+    |> Enum.map(
+      &Map.merge(&1, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: details_version.id,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      })
+    )
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.Calendar, &1))
+
+    [
+      {"DETAIL_SCHOOL", "Details school days"},
+      {"DETAIL_DATES", "Details specific dates"},
+      {"DETAIL_LONG", "Details nine year service"},
+      {"DETAIL_REVERSED", "Details reversed range"}
+    ]
+    |> Enum.map(fn {service_id, description} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: details_version.id,
+        service_id: service_id,
+        service_description: description,
+        service_schedule_typicality: 0,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
+
+    # Three consecutive removed regular days are a break; one removed day is a day
+    # off; the added date inside the weekly range is regular extra service and the
+    # two after it are the additions outside the range.
+    [
+      {"DETAIL_SCHOOL", Date.add(details_today, 1), 2},
+      {"DETAIL_SCHOOL", Date.add(details_today, 2), 2},
+      {"DETAIL_SCHOOL", Date.add(details_today, 3), 2},
+      {"DETAIL_SCHOOL", Date.add(details_today, 10), 2},
+      {"DETAIL_SCHOOL", Date.add(details_today, 5), 1},
+      {"DETAIL_SCHOOL", Date.add(details_today, 45), 1},
+      {"DETAIL_SCHOOL", Date.add(details_today, 46), 1},
+      # Past the near-range window, so the inspector has an exact date outside the
+      # drawn timeline.
+      {"DETAIL_SCHOOL", Date.add(details_today, 120), 1},
+      {"DETAIL_DATES", Date.add(details_today, 7), 1},
+      {"DETAIL_DATES", Date.add(details_today, 21), 1}
+    ]
+    |> Enum.map(fn {service_id, date, exception_type} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: details_version.id,
+        service_id: service_id,
+        date: date,
+        exception_type: exception_type,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarDate, &1))
+
+    for index <- 1..2 do
+      {:ok, _trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: details_version.id,
+          route_id: "BROWSER_DETAILS",
+          trip_id: "DETAIL_TRIP_#{index}",
+          service_id: "DETAIL_SCHOOL",
+          trip_headsign: "Calendar details scenario"
+        })
+    end
+
+    diagram_version
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: coverage details version #{details_version.id} " <>
+        "(today #{details_today})"
+    )
+
     # ── Route schedules read view (Schedules tab) ──
     #
     # Three isolated routes on the shared Browser E2E Version cover the Schedules

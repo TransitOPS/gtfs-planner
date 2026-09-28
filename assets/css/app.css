@@ -1612,8 +1612,36 @@ dialog[role="alertdialog"][open] > div > div {
   border-bottom: 1px solid var(--color-base-300);
 }
 
+/* The bar and its caption are one keyboard control, so the whole cell is the target,
+   the lane and caption are its own block children, and the focus ring follows the
+   control's geometry. The button stays unstyled apart from that: the cell padding is
+   the table's, so the lane keeps the axis scale. */
+.calendar-coverage-trigger {
+  display: block;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* The caption is the control's visible affordance: hovering or focusing the bar
+   strengthens and underlines the same text that names the control. */
+@media (hover: hover) {
+  .calendar-coverage-trigger:hover .calendar-coverage-caption {
+    color: var(--color-base-content);
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+}
+
+.calendar-coverage-trigger:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .calendar-coverage-lane {
   position: relative;
+  display: block;
   height: 1rem;
 }
 
@@ -1786,6 +1814,7 @@ dialog[role="alertdialog"][open] > div > div {
 }
 
 .calendar-coverage-caption {
+  display: block;
   margin-top: 0.25rem;
   font-size: 0.8125rem;
   line-height: 1.25rem;

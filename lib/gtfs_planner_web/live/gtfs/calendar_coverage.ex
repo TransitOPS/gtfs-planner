@@ -176,6 +176,29 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverage do
   end
 
   @doc """
+  Splits one row's exact service dates into the ones before and after the projected axis.
+
+  A clipped or compressed axis is a view, never a limit on the domain set (INV-5), so the
+  exact-details surface asks this instead of reading dates back out of bins. Both lists keep
+  their ascending exact `Date` values and may be empty; an all-empty feed projects no axis at
+  all, and every row then reports both lists empty rather than a nil comparison.
+  """
+  @spec dates_outside(projection(), Calendars.summary()) :: %{
+          before: [Date.t()],
+          after: [Date.t()]
+        }
+  def dates_outside(%{first_date: nil}, _row), do: %{before: [], after: []}
+
+  def dates_outside(%{first_date: first_date, last_date: last_date}, row) do
+    dates = row.active_dates || []
+
+    %{
+      before: Enum.filter(dates, &(Date.compare(&1, first_date) == :lt)),
+      after: Enum.filter(dates, &(Date.compare(&1, last_date) == :gt))
+    }
+  end
+
+  @doc """
   Reports whether the feed's own month-aligned span is long enough for `:whole` to
   disclose a recent window instead of every year.
 
