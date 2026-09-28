@@ -893,7 +893,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         <div class="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
           <div class="min-w-0 border-l-4 border-primary pl-3">
             <span class="block text-xs text-base-content/70">Arrive at</span>
-            <strong class="block text-sm font-semibold">{endpoint_name(@row.from)}</strong>
+            <strong id="transfer-inspector-arrive" class="block text-sm font-semibold">
+              {endpoint_name(@row.from)}
+            </strong>
             <span class="block text-xs text-base-content/70">
               {selector_label(@row.from, :from)}
             </span>
@@ -901,7 +903,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           <span aria-hidden="true" class="pt-6 text-base-content/50">→</span>
           <div class="min-w-0 border-l-4 border-info pl-3">
             <span class="block text-xs text-base-content/70">Board at</span>
-            <strong class="block text-sm font-semibold">{endpoint_name(@row.to)}</strong>
+            <strong id="transfer-inspector-board" class="block text-sm font-semibold">
+              {endpoint_name(@row.to)}
+            </strong>
             <span class="block text-xs text-base-content/70">{selector_label(@row.to, :to)}</span>
           </div>
         </div>

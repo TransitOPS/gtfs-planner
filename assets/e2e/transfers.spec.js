@@ -188,7 +188,9 @@ test.describe("Transfers", () => {
     await selectRow(page, stationRule);
 
     const inspector = page.locator("#transfer-inspector");
-    const arrival = inspector.locator("strong").first();
+    // The arrival cell has its own id, so the wait does not ride on the cell's
+    // position among the panel's `strong` elements.
+    const arrival = page.locator("#transfer-inspector-arrive");
 
     await press(
       page,
