@@ -3315,6 +3315,33 @@ defmodule GtfsPlanner.Gtfs do
       )
 
   @doc """
+  Reports every station access loss over a range of service dates.
+
+  The covered span starts at the first service date's origin and ends at the later
+  of the origin after the last service date and the latest end of an instance on
+  it, so a `00:00:00` window on a daylight-saving date and a `25:00:00` window on
+  the last date are both inside it. Every instance boundary is swept rather than
+  sampled, and only the periods whose comparison differs from the base graph are
+  returned, each with its exact active instances, both UTC offsets and the
+  `preview_target` naming its start instant.
+
+  A reversed range or a span over 31 requested service days is refused before any
+  row is read, as `:range_invalid`; a missing, invalid or conflicting agency zone
+  is refused with its reason, and the candidate-span and instance bounds are
+  checked before any instance is built. An incomplete station keeps the report
+  `:incomplete` whatever the findings are.
+  """
+  def analyze_closures(organization_id, gtfs_version_id, stop_id, first_date, last_date),
+    do:
+      PathwayEvolutions.analyze_closures(
+        organization_id,
+        gtfs_version_id,
+        stop_id,
+        first_date,
+        last_date
+      )
+
+  @doc """
   Creates one validated closure under the published-version write lock.
 
   The actor's active editor membership is rechecked and the scoped published
