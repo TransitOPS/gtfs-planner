@@ -238,6 +238,7 @@ test.describe("Transfers", () => {
       page,
       "Stop not recorded",
       "Stop not recorded",
+      "Trip BXF_24_0840",
     );
     await expect(stopless).toHaveCount(1);
     await expect(stopless).toContainText("Stop not recorded");
