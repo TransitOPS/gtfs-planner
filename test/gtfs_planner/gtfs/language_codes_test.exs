@@ -58,6 +58,11 @@ defmodule GtfsPlanner.Gtfs.LanguageCodesTest do
     test "keeps a stored mul value selectable when the caller excludes mul" do
       assert [{"Current value", [{"mul", "mul"}]} | _] = LanguageCodes.options(current: "mul")
     end
+
+    test "treats a present nil include_mul as excluded for a stored mul value" do
+      assert [{"Current value", [{"mul", "mul"}]} | _] =
+               LanguageCodes.options(include_mul: nil, current: "mul")
+    end
   end
 
   describe "valid?/2" do
@@ -79,6 +84,11 @@ defmodule GtfsPlanner.Gtfs.LanguageCodesTest do
       refute LanguageCodes.valid?("mul", [])
       refute LanguageCodes.valid?("mul", include_mul: false)
       assert LanguageCodes.valid?("mul", include_mul: true)
+    end
+
+    test "returns false, not nil, for a present nil include_mul" do
+      assert LanguageCodes.valid?("mul", include_mul: nil) == false
+      assert LanguageCodes.valid?("en", include_mul: nil) == true
     end
   end
 end

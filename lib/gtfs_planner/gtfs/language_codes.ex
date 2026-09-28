@@ -203,7 +203,7 @@ defmodule GtfsPlanner.Gtfs.LanguageCodes do
   @spec valid?(String.t() | nil, keyword()) :: boolean()
   def valid?(code, opts) do
     is_binary(code) and
-      (code in @codes or (code == "mul" and Keyword.get(opts, :include_mul, false)))
+      (code in @codes or (code == "mul" and Keyword.get(opts, :include_mul, false) == true))
   end
 
   @spec options(keyword()) :: [{String.t(), [{String.t(), String.t()}]}]
