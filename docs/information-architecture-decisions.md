@@ -347,6 +347,16 @@ zone dropdown on the stop edit form.
 **Found during review.** `stops` has no `zone_id`, so zones are lost on import. Meanwhile
 `fare_rules.txt` exports zone references that no stop carries.
 
+**Resolved.** AC-STOP-023 to AC-STOP-026 now describe this placement: the zone list with counts and
+its stop filter, creating a zone with a name, an ID and a map color, reviewed bulk assignment from
+the map or the list, unassignment, and the zone read-only on stop details. The requirement index
+lists fare zones as Live.
+
+**Resolved.** `stops` carries `zone_id` through import and export, so new versions keep their zone
+membership and `fare_rules.txt` references point at zones real stops carry. Versions imported before
+the column existed keep the old gap; the Checks tab reports it and re-importing the source feed is
+the recovery path.
+
 ## 11. GTFS-flex
 
 **First proposal.** Round-trip only, with an export switch and no authoring UI.
