@@ -242,6 +242,35 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   end
 
   @doc """
+  Returns the native reference boundary for closures in one organization/version.
+
+  A service id belongs to the set only when a `calendars` or `calendar_dates`
+  row exists in the scope; a metadata-only identity (a `calendar_attributes`
+  row alone) does not qualify. This is the single definition of that boundary:
+  closure authoring, the closure usage guards and the registered
+  `pathway_evolutions.txt` import pass all read it, so a feed cannot satisfy an
+  import reference while failing an authoring reference, or the reverse.
+  """
+  @spec native_service_ids(Ecto.UUID.t(), Ecto.UUID.t()) :: MapSet.t(String.t())
+  def native_service_ids(organization_id, gtfs_version_id) do
+    weekly =
+      from(c in Calendar,
+        where: c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id,
+        select: c.service_id
+      )
+
+    dates =
+      from(d in CalendarDate,
+        where: d.organization_id == ^organization_id and d.gtfs_version_id == ^gtfs_version_id,
+        select: d.service_id
+      )
+
+    from(s in subquery(union(weekly, ^dates)), select: s.service_id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  @doc """
   Previews one station's closure effect at a single service date and service time.
 
   Every input is loaded inside `Export.with_read_snapshot/1` - the production
@@ -1351,27 +1380,6 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   end
 
   defp calendar_label(%{service_id: service_id}), do: service_id
-
-  # The native reference boundary for closures: a service counts only when a
-  # weekly or exception row exists in the scope. A metadata-only identity does
-  # not qualify.
-  defp native_service_ids(organization_id, gtfs_version_id) do
-    weekly =
-      from(c in Calendar,
-        where: c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id,
-        select: c.service_id
-      )
-
-    dates =
-      from(d in CalendarDate,
-        where: d.organization_id == ^organization_id and d.gtfs_version_id == ^gtfs_version_id,
-        select: d.service_id
-      )
-
-    from(s in subquery(union(weekly, ^dates)), select: s.service_id)
-    |> Repo.all()
-    |> MapSet.new()
-  end
 
   defp closure_counts_by_service(organization_id, gtfs_version_id) do
     scoped_evolutions(organization_id, gtfs_version_id)

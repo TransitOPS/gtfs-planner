@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   - `stops.txt` - Stop/station locations and metadata
   - `stop_times.txt` - Stop times for trips
   - `pathways.txt` - Pathways connecting stops within stations
+  - `pathway_evolutions.txt` - Scheduled station closures (supported subset)
 
   All imports are executed within a single database transaction to ensure
   data consistency. Files are processed in dependency order to satisfy
@@ -38,9 +39,23 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
 
   alias GtfsPlanner.{Repo, Gtfs}
-  alias GtfsPlanner.Gtfs.Import.{Result, Failure, BatchProcessor, RowParser, CsvParser}
+
+  alias GtfsPlanner.Gtfs.Import.{
+    Result,
+    Failure,
+    BatchProcessor,
+    ParseError,
+    RowParser,
+    CsvParser
+  }
+
   alias GtfsPlanner.Gtfs.Extensions
+  alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Gtfs.PathwayEvolutions
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
+
+  import Ecto.Query, only: [from: 2]
 
   require Logger
 
@@ -80,6 +95,13 @@ defmodule GtfsPlanner.Gtfs.Import do
     {:trips, "trips.txt", Gtfs.Trip, &RowParser.trip_row_to_attrs/3, :phase_1},
     {:stops, "stops.txt", Gtfs.Stop, &RowParser.stop_row_to_attrs/3, :phase_1},
     {:pathways, "pathways.txt", Gtfs.Pathway, &RowParser.pathway_row_to_attrs/3, :phase_1},
+    # Scheduled closures reference `pathways` and native calendar rows, so the
+    # file is registered immediately after `pathways.txt` and before every other
+    # dependent file. The entry also fixes the recovery order: `cleanup_schemas/0`
+    # reverses the manifest, so closures are deleted before the pathways they
+    # reference and the composite pathway foreign key never blocks cleanup.
+    {:pathway_evolutions, "pathway_evolutions.txt", Gtfs.PathwayEvolution,
+     &RowParser.pathway_evolution_row_to_attrs/3, :phase_1},
     {:transfers, "transfers.txt", Gtfs.Transfer, &RowParser.transfer_row_to_attrs/3, :phase_1},
     {:stop_areas, "stop_areas.txt", Gtfs.StopArea, &RowParser.stop_area_row_to_attrs/3, :phase_1},
     {:frequencies, "frequencies.txt", Gtfs.Frequency, &RowParser.frequency_row_to_attrs/3,
@@ -358,6 +380,53 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
+  # Scheduled closures are the one phase-one category whose row function cannot
+  # decide the whole contract: a row may parse cleanly and still name a pathway
+  # or a service that does not exist in the target scope, or repeat a tuple that
+  # is already stored. Those are reference questions, and they need the scoped
+  # pathway set, the native calendar set and the version's existing closure
+  # tuples, none of which the batch processor's row-function interface carries.
+  #
+  # So this clause validates the whole category before inserting a single row,
+  # then replays the same immutable input events through the unchanged
+  # `BatchProcessor.insert_batched/5` interface. The first rejected row ends the
+  # category with its own file, source row and bounded code while nothing has
+  # been written, and the phase-one transaction still owns publication.
+  #
+  # The scoped sets are read once for the category, after `pathways.txt`,
+  # `calendar.txt` and `calendar_dates.txt` have been inserted in the same
+  # transaction, so a closure may reference a pathway or service that this very
+  # import created. Duplicate tuples are carried across every file and every
+  # batch of the category and reported against the repeating row's own source
+  # row, so the recorded row identifies the offender rather than the first
+  # occurrence.
+  defp process_file_category(
+         files,
+         organization_id,
+         gtfs_version_id,
+         topic,
+         :pathway_evolutions,
+         schema,
+         row_to_attrs_fn
+       ) do
+    with {:ok, parsed_files} <- parse_evolution_files(files),
+         :ok <-
+           validate_evolution_files(
+             parsed_files,
+             evolution_reference_state(organization_id, gtfs_version_id),
+             row_to_attrs_fn
+           ) do
+      insert_evolution_files(
+        parsed_files,
+        organization_id,
+        gtfs_version_id,
+        topic,
+        schema,
+        row_to_attrs_fn
+      )
+    end
+  end
+
   # Processes a category of files using batch insertion
   defp process_file_category(
          files,
@@ -379,6 +448,152 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
 
     process_category_files(files, insert)
+  end
+
+  # Each file is parsed once; the parsed stream is immutable and re-enumerable, so
+  # the validation pass and the insertion pass observe the identical events. A
+  # file-level parse failure (header, quoting, encoding) passes through unchanged.
+  defp parse_evolution_files(files) do
+    files
+    |> Enum.reduce_while({:ok, []}, &accumulate_parsed_file/2)
+    |> case do
+      {:ok, parsed_files} -> {:ok, Enum.reverse(parsed_files)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp accumulate_parsed_file(file, {:ok, acc}) do
+    case CsvParser.stream(file.filename, file.content) do
+      {:ok, parsed} -> {:cont, {:ok, [{file, parsed} | acc]}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp validate_evolution_files(parsed_files, state, row_to_attrs_fn) do
+    Enum.reduce_while(parsed_files, {:ok, state}, fn {file, parsed}, {:ok, state} ->
+      case validate_evolution_events(parsed.events, file.filename, row_to_attrs_fn, state) do
+        {:ok, state} -> {:cont, {:ok, state}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, _state} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_evolution_events(events, file_name, row_to_attrs_fn, state) do
+    Enum.reduce_while(events, {:ok, state}, fn event, {:ok, state} ->
+      case validate_evolution_event(event, file_name, row_to_attrs_fn, state) do
+        {:ok, state} -> {:cont, {:ok, state}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  # A structural CSV failure keeps its own `ParseError` (with its bounded parser
+  # reason) rather than being reported as a rejected row.
+  defp validate_evolution_event(
+         {:error, %ParseError{} = parse_error},
+         _file_name,
+         _row_to_attrs_fn,
+         _state
+       ),
+       do: {:error, parse_error}
+
+  defp validate_evolution_event(
+         {:ok, row_number, row_map},
+         file_name,
+         row_to_attrs_fn,
+         state
+       ) do
+    case row_to_attrs_fn.(row_map, state.organization_id, state.gtfs_version_id) do
+      {:ok, attrs} -> check_evolution_references(file_name, row_number, attrs, state)
+      {:error, reason} -> {:error, evolution_row_error(file_name, row_number, reason)}
+    end
+  end
+
+  defp check_evolution_references(file_name, row_number, attrs, state) do
+    tuple = {attrs.pathway_id, attrs.service_id, attrs.start_time, attrs.end_time}
+
+    cond do
+      not MapSet.member?(state.pathway_ids, attrs.pathway_id) ->
+        evolution_rejected(file_name, row_number, :evolution_pathway_missing)
+
+      not MapSet.member?(state.service_ids, attrs.service_id) ->
+        evolution_rejected(file_name, row_number, :evolution_service_missing)
+
+      MapSet.member?(state.tuples, tuple) ->
+        evolution_rejected(file_name, row_number, :evolution_duplicate)
+
+      true ->
+        {:ok, %{state | tuples: MapSet.put(state.tuples, tuple)}}
+    end
+  end
+
+  defp evolution_rejected(file_name, row_number, code) do
+    {:error, evolution_row_error(file_name, row_number, {:evolution_rejected, code})}
+  end
+
+  # The one shape `Failure` reads a bounded closure code from. The rejected row's
+  # values are never part of the term, so no row text can reach the run record.
+  defp evolution_row_error(file_name, row_number, reason) do
+    %{file: file_name, row: row_number, reason: reason}
+  end
+
+  defp evolution_reference_state(organization_id, gtfs_version_id) do
+    %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      pathway_ids: scoped_pathway_ids(organization_id, gtfs_version_id),
+      service_ids: PathwayEvolutions.native_service_ids(organization_id, gtfs_version_id),
+      tuples: existing_evolution_tuples(organization_id, gtfs_version_id)
+    }
+  end
+
+  defp scoped_pathway_ids(organization_id, gtfs_version_id) do
+    from(p in Pathway,
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id,
+      select: p.pathway_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # The unique closure index covers organization, version and the four reference
+  # and window columns, so the in-scope tuples are exactly what a new row would
+  # collide with.
+  defp existing_evolution_tuples(organization_id, gtfs_version_id) do
+    from(e in PathwayEvolution,
+      where: e.organization_id == ^organization_id and e.gtfs_version_id == ^gtfs_version_id,
+      select: {e.pathway_id, e.service_id, e.start_time, e.end_time}
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp insert_evolution_files(
+         parsed_files,
+         organization_id,
+         gtfs_version_id,
+         topic,
+         schema,
+         row_to_attrs_fn
+       ) do
+    parsed_files
+    |> Enum.reduce_while(0, fn {file, parsed}, count ->
+      case BatchProcessor.insert_batched(
+             Repo,
+             schema,
+             parsed.events,
+             row_to_attrs_fn,
+             batch_options(file, parsed, organization_id, gtfs_version_id, topic)
+           ) do
+        {:ok, inserted} -> {:cont, count + inserted}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> normalize_category_count()
   end
 
   defp process_category_files(files, insert) do
