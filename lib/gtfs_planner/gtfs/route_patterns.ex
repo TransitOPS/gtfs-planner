@@ -705,6 +705,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
       audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
       delete_pattern_children!(pattern.id)
+      Alignments.delete_owned_shape!(pattern)
       Repo.delete!(pattern)
       %{pattern: nil, trips_updated: 0}
     end

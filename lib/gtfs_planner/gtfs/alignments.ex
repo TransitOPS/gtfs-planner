@@ -963,6 +963,45 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     |> Repo.all()
   end
 
+  @doc """
+  Removes a deleted pattern's owned shape rows, in the caller's transaction.
+
+  Deletes the `shapes` rows for `pattern.shape_id` only when no trip in the
+  pattern's organization and version still references that `shape_id` (R10;
+  shapes still referenced by any trip are never deleted). Patterns with nil
+  `shape_id` are a no-op. The pattern's override rows disappear through the
+  `route_pattern_stops` foreign-key cascade when 01 deletes the occurrences.
+  Called by `RoutePatterns` `:delete` before `Repo.delete!/1` (CR-1); every
+  read and write filters by organization and version (INV-2).
+  """
+  @spec delete_owned_shape!(RoutePattern.t()) :: :ok
+  def delete_owned_shape!(%RoutePattern{shape_id: nil}), do: :ok
+
+  def delete_owned_shape!(%RoutePattern{} = pattern) do
+    referenced? =
+      Repo.exists?(
+        from(t in Trip,
+          where:
+            t.organization_id == ^pattern.organization_id and
+              t.gtfs_version_id == ^pattern.gtfs_version_id and
+              t.shape_id == ^pattern.shape_id
+        )
+      )
+
+    unless referenced? do
+      Repo.delete_all(
+        from(s in Shape,
+          where:
+            s.organization_id == ^pattern.organization_id and
+              s.gtfs_version_id == ^pattern.gtfs_version_id and
+              s.shape_id == ^pattern.shape_id
+        )
+      )
+    end
+
+    :ok
+  end
+
   @type imported_shape :: %{
           shape_id: String.t(),
           trip_count: non_neg_integer(),
