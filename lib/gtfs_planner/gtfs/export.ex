@@ -424,11 +424,21 @@ defmodule GtfsPlanner.Gtfs.Export do
   defp conflict_rollback([]), do: :ok
   defp conflict_rollback(conflicts), do: Repo.rollback({:garage_stop_id_conflict, conflicts})
 
-  # Runs the whole GTFS read inside one transaction whose snapshot is established
-  # before the first query, so route patterns, trips and stop times describe a
-  # single committed revision. A caller-owned transaction cannot change its own
-  # isolation (for example the SQL sandbox), so the boundary owns the decision.
-  defp with_read_snapshot(fun) do
+  @doc """
+  Runs `fun` inside one repeatable-read read transaction.
+
+  The snapshot is established before the first query, so every read inside `fun`
+  describes a single committed revision: a concurrent committed edit is either
+  entirely visible or entirely invisible. A caller-owned transaction cannot change
+  its own isolation (for example the SQL sandbox), so this boundary owns the
+  decision and the configured `GtfsPlanner.Gtfs.Export.Snapshot` adapter; this
+  function does not change either one.
+
+  `fun`'s return value is passed through: `Repo.transaction/2` only fails when
+  `fun` rolls the transaction back.
+  """
+  @spec with_read_snapshot((-> term())) :: {:ok, term()} | {:error, term()}
+  def with_read_snapshot(fun) when is_function(fun, 0) do
     Repo.transaction(
       fn ->
         snapshot_module().begin_read()
