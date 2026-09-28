@@ -15,7 +15,9 @@ defmodule GtfsPlanner.Gtfs do
     :trip,
     "trip",
     :transfer,
-    "transfer"
+    "transfer",
+    :pathway_evolution,
+    "pathway_evolution"
   ]
 
   import Ecto.Query, warn: false
@@ -55,6 +57,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.PathwayEvolutions
   alias GtfsPlanner.Gtfs.RecentChanges
   alias GtfsPlanner.Gtfs.RiderCategory
@@ -3289,6 +3292,21 @@ defmodule GtfsPlanner.Gtfs do
     do: PathwayEvolutions.count_closures(organization_id, gtfs_version_id)
 
   @doc """
+  Creates one validated closure under the published-version write lock.
+
+  The actor's active editor membership is rechecked and the scoped published
+  version is locked before the exact native service and pathway references are
+  validated. One `pathway_evolution` change log records the closure UUID, the
+  `pathway_id`, the audit scope (including the page's `station_stop_id`) and the
+  `after` snapshot in the same transaction; any audit failure rolls back the
+  closure. Returns the persisted row, its fingerprint and same-service overlap /
+  no-active-dates notices, or a changeset field error, `:forbidden` or
+  `:not_found`.
+  """
+  def create_pathway_evolution(attrs, audit_context),
+    do: PathwayEvolutions.create_pathway_evolution(attrs, audit_context)
+
+  @doc """
   Returns a unique stop_id within an organization and GTFS version.
 
   Uses the provided base stop_id if available, otherwise appends `_2`, `_3`, etc.
@@ -6414,6 +6432,9 @@ defmodule GtfsPlanner.Gtfs do
   def reversible_fields_for(:calendar), do: reversible_fields_for("calendar")
   def reversible_fields_for("calendar"), do: []
 
+  def reversible_fields_for(:pathway_evolution), do: reversible_fields_for("pathway_evolution")
+  def reversible_fields_for("pathway_evolution"), do: []
+
   @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.
 
@@ -6447,7 +6468,8 @@ defmodule GtfsPlanner.Gtfs do
              "route_pattern_build",
              "calendar",
              "trip",
-             "transfer"
+             "transfer",
+             "pathway_evolution"
            ],
       do: {:error, :audit_only_entity}
 
@@ -6472,7 +6494,8 @@ defmodule GtfsPlanner.Gtfs do
              "route_pattern_build",
              "calendar",
              "trip",
-             "transfer"
+             "transfer",
+             "pathway_evolution"
            ],
       do: {:error, :audit_only_entity}
 
@@ -6659,6 +6682,14 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot("calendar", %CalendarAttribute{} = anchor),
     do: Calendars.audit_snapshot(anchor)
 
+  # A closure's audit identity is the closure UUID; the structured create record
+  # carries before=nil and after=the normalized closure snapshot.
+  defp build_snapshot(:pathway_evolution, %PathwayEvolution{} = evolution),
+    do: snapshot_pathway_evolution(evolution)
+
+  defp build_snapshot("pathway_evolution", %PathwayEvolution{} = evolution),
+    do: snapshot_pathway_evolution(evolution)
+
   # A trip's audit identity is the trip UUID plus its GTFS `trip_id`; the complete
   # aggregate before/after snapshots are passed explicitly by Schedules, so the
   # entity itself never yields a snapshot.
@@ -6754,6 +6785,16 @@ defmodule GtfsPlanner.Gtfs do
     }
   end
 
+  defp snapshot_pathway_evolution(evolution) do
+    %{
+      pathway_id: evolution.pathway_id,
+      service_id: evolution.service_id,
+      start_time: evolution.start_time,
+      end_time: evolution.end_time,
+      note: evolution.note
+    }
+  end
+
   defp snapshot_route_pattern(pattern),
     do: RoutePatterns.audit_snapshot(pattern)
 
@@ -6800,6 +6841,10 @@ defmodule GtfsPlanner.Gtfs do
 
   defp entity_external_id_for("calendar", %CalendarAttribute{} = anchor, _attrs),
     do: anchor.service_id
+
+  defp entity_external_id_for(type, %PathwayEvolution{} = evolution, _attrs)
+       when type in [:pathway_evolution, "pathway_evolution"],
+       do: evolution.pathway_id
 
   defp entity_external_id_for(type, %Trip{} = trip, _attrs) when type in [:trip, "trip"],
     do: trip.trip_id

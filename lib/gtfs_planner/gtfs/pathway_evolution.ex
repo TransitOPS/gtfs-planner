@@ -92,13 +92,15 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
     pathway_evolution
     |> cast(attrs, [:pathway_id, :service_id, :start_time, :end_time, :note])
     |> trim_string_fields()
-    |> validate_required([:pathway_id, :service_id])
+    |> validate_required([:pathway_id, :service_id, :start_time, :end_time])
     |> add_service_time_errors(time_errors)
     |> validate_window_order()
     |> validate_length(:note, max: @max_note_length)
     |> unique_constraint(
       [:organization_id, :gtfs_version_id, :pathway_id, :service_id, :start_time, :end_time],
-      name: :pathway_evolutions_closure_index
+      name: :pathway_evolutions_closure_index,
+      error_key: :base,
+      message: "This closure already exists."
     )
     |> foreign_key_constraint(:pathway_id, name: :pathway_evolutions_pathway_fkey)
   end
@@ -111,16 +113,34 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
         :error ->
           {acc, errors}
 
-        {:ok, value} ->
-          case parse_service_time(value) do
-            {:ok, seconds} ->
-              {Map.put(acc, key, seconds), errors}
+        # Blank and missing values fall through to validate_required/2's
+        # "can't be blank" error instead of piling a parse error on top.
+        {:ok, value} when is_nil(value) ->
+          {Map.delete(acc, key), errors}
 
-            {:error, :invalid_time} ->
-              {Map.delete(acc, key), [{field, "is not a valid service time"} | errors]}
+        {:ok, value} when is_binary(value) ->
+          case String.trim(value) do
+            "" ->
+              {Map.delete(acc, key), errors}
+
+            trimmed ->
+              put_parsed_service_time(acc, errors, field, key, trimmed)
           end
+
+        {:ok, value} ->
+          put_parsed_service_time(acc, errors, field, key, value)
       end
     end)
+  end
+
+  defp put_parsed_service_time(acc, errors, field, key, value) do
+    case parse_service_time(value) do
+      {:ok, seconds} ->
+        {Map.put(acc, key, seconds), errors}
+
+      {:error, :invalid_time} ->
+        {Map.delete(acc, key), [{field, "is not a valid service time"} | errors]}
+    end
   end
 
   defp add_service_time_errors(changeset, errors) do
