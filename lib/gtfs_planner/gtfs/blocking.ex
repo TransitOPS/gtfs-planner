@@ -487,26 +487,50 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, Enum.uniq(trip_ids)})
   end
 
-  # One `{finding, day_type}` per check result. A block shared by several requested
-  # trips is checked once per day type, and the pair is deduplicated, so the day
-  # type's date count is added to a problem at most once.
+  # One `{finding, day_type}` per check result. The pairs are collected and
+  # deduplicated before the read, so a block shared by several requested trips is
+  # checked once per day type and every pair's block rows come from one query: the
+  # query count does not grow with the number of requested trips. Each pair is
+  # checked over its own block's trips on its own day type, filtered from that read.
   defp block_problem_entries(organization_id, gtfs_version_id, day_types, trips, min_layover) do
-    trips
-    |> Enum.filter(&is_binary(&1.block_id))
-    |> Enum.flat_map(fn trip ->
-      for day_type <- DayTypes.containing(day_types, trip.service_id) do
-        block_trips =
-          Queries.trip_rows(
-            organization_id,
-            gtfs_version_id,
-            {:blocks, [trip.block_id], day_type.service_ids}
-          )
+    pairs =
+      trips
+      |> Enum.filter(&is_binary(&1.block_id))
+      |> Enum.flat_map(fn trip ->
+        Enum.map(DayTypes.containing(day_types, trip.service_id), &{trip.block_id, &1})
+      end)
+      |> Enum.uniq_by(fn {block_id, day_type} -> {block_id, day_type.key} end)
 
-        {Checks.block_findings(trip.block_id, block_trips, min_layover), day_type}
-      end
+    rows = block_pair_rows(organization_id, gtfs_version_id, pairs)
+
+    pairs
+    |> Enum.map(fn {block_id, day_type} ->
+      block_trips =
+        Enum.filter(rows, &(&1.block_id == block_id and &1.service_id in day_type.service_ids))
+
+      {Checks.block_findings(block_id, block_trips, min_layover), day_type}
     end)
     |> Enum.flat_map(fn {findings, day_type} -> Enum.map(findings, &{&1, day_type}) end)
     |> Enum.uniq_by(fn {finding, day_type} -> {Checks.finding_key(finding), day_type.key} end)
+  end
+
+  # Every pair's block trips in one query: the rows are the union over the pair
+  # block IDs and the pairs' day-type services, and each pair filters its own block
+  # and service out of them above.
+  defp block_pair_rows(_organization_id, _gtfs_version_id, []), do: []
+
+  defp block_pair_rows(organization_id, gtfs_version_id, pairs) do
+    Queries.trip_rows(
+      organization_id,
+      gtfs_version_id,
+      {:blocks, pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq(), pair_services(pairs)}
+    )
+  end
+
+  defp pair_services(pairs) do
+    pairs
+    |> Enum.flat_map(fn {_block_id, day_type} -> day_type.service_ids end)
+    |> Enum.uniq()
   end
 
   # The type 4/5 records naming a requested trip, evaluated once over the derived
