@@ -6,5 +6,10 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox do
   alias GtfsPlanner.Repo
 
   @impl true
-  def run(transaction), do: Repo.transaction(transaction)
+  def run(transaction), do: run(transaction, [])
+
+  @impl true
+  def run(transaction, options) when is_function(transaction, 0) and is_list(options) do
+    Repo.transaction(transaction, Keyword.take(options, [:timeout]))
+  end
 end

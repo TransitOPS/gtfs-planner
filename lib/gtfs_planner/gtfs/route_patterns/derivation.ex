@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
@@ -136,14 +137,74 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       when is_binary(route_id) do
     provenance = normalize_provenance!(provenance)
 
-    Repo.transaction(
+    run_derivation_transaction(
       fn -> derive_route_transaction(organization_id, version_id, route_id, provenance) end,
-      timeout: @route_transaction_timeout
+      provenance
     )
   end
 
   def derive_route(_organization_id, _version_id, _route_id, _provenance),
     do: {:error, :invalid_input}
+
+  # Editor-provenance derivation joins the R5 M1 serializable/retry convention:
+  # the whole route closure runs through the reviewed-apply adapter at
+  # SERIALIZABLE with the preserved 300-second route budget. Import provenance
+  # keeps its independent unpublished-version contract (plain transaction on
+  # the importer's own version), unchanged.
+  defp run_derivation_transaction(transaction, {:import, _import_run_id}),
+    do: Repo.transaction(transaction, timeout: @route_transaction_timeout)
+
+  defp run_derivation_transaction(transaction, {:editor, %AuditContext{}}) do
+    run_editor_transaction(transaction)
+  end
+
+  # The route command bounded-retry convention: rerun the whole serializable
+  # closure on a transient serialization failure (40001) or deadlock (40P01),
+  # at most three attempts, then `:busy`. Every other failure is returned
+  # unchanged, preserving derive_route/4's return shape.
+  defp run_editor_transaction(transaction, attempts \\ 3) do
+    case run_reviewed_transaction(transaction) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:retryable_conflict, _error} ->
+        retry_editor_transaction(transaction, attempts)
+
+      {:error, reason} ->
+        if retryable_conflict?(reason),
+          do: retry_editor_transaction(transaction, attempts),
+          else: {:error, reason}
+    end
+  end
+
+  defp retry_editor_transaction(transaction, attempts) when attempts > 1,
+    do: run_editor_transaction(transaction, attempts - 1)
+
+  defp retry_editor_transaction(_transaction, _attempts), do: {:error, :busy}
+
+  defp run_reviewed_transaction(transaction) do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransaction.Repo
+    ).run(transaction, timeout: @route_transaction_timeout)
+  rescue
+    error in Postgrex.Error ->
+      if retryable_conflict?(error),
+        do: {:retryable_conflict, error},
+        else: reraise(error, __STACKTRACE__)
+  end
+
+  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
+       when code in [
+              :serialization_failure,
+              "40001",
+              :deadlock_detected,
+              "40P01"
+            ],
+       do: true
+
+  defp retryable_conflict?(_reason), do: false
 
   @doc """
   Counts the trips still pending derivation for one route.
