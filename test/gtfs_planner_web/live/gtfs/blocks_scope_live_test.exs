@@ -230,12 +230,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       {:ok, view, _html} = live(conn, blocks_path(version.id))
 
       options = day_options(view)
+      texts = Enum.map(options, &elem(&1, 1))
 
-      assert {"WK", "Weekday · #{weekday_count()} dates"} in options
+      # Every option value is the derived day-type key (R1), never a service ID.
+      assert Enum.all?(options, fn {key, _text} -> String.length(key) == 43 end)
 
-      assert {"SAT", "Saturday · #{saturday_count()} dates"} in options
+      # The Weekday calendar alone holds every weekday except 2026-11-26, which
+      # the Thanksgiving calendar splits into its own one-date day type.
+      assert "Weekday · #{weekday_count_except_special_day()} dates" in texts
 
-      assert Enum.any?(options, fn {_key, text} -> text == "Thanksgiving · 1 date" end)
+      assert "Saturday · #{saturday_count()} dates" in texts
+
+      # 2026-11-26 runs the Weekday service too, so AC-1 labels the one-date day
+      # type with both names joined and puts it under “Special days”.
+      assert "Thanksgiving + Weekday · 1 date" in texts
 
       doc = view |> render() |> LazyHTML.from_fragment()
 
@@ -243,7 +251,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
                ["Special days"]
 
       assert LazyHTML.text(LazyHTML.query(doc, "#blocks-day optgroup option")) |> String.trim() ==
-               "Thanksgiving · 1 date"
+               "Thanksgiving + Weekday · 1 date"
     end
 
     test "selecting a day patches the day key and drops the trip and paging",
@@ -259,7 +267,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       saturday = day_key(view, "Saturday")
 
-      view |> element("#blocks-day") |> render_change(%{"day" => saturday})
+      # `select_day` hangs off the day form, the element that carries phx-change.
+      view |> element("#blocks-day-form") |> render_change(%{"day" => saturday})
 
       assert_patch(view, blocks_path(version.id) <> "?day=#{saturday}")
       assert :sys.get_state(view.pid).socket.assigns.selection == MapSet.new()
@@ -431,7 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       end)
 
       saturday = day_key(view, "Saturday")
-      view |> element("#blocks-day") |> render_change(%{"day" => saturday})
+      view |> element("#blocks-day-form") |> render_change(%{"day" => saturday})
 
       assert has_element?(view, "#blocks-unavailable")
       assert strip_value(view, "blocks") == "2"
@@ -605,6 +614,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
   end
 
   defp weekday_count, do: dates_matching(&(Date.day_of_week(&1) in 1..5))
+
+  # 2026-11-26 is the Thanksgiving calendar's only date, so it forms its own
+  # one-date day type and is not among the Weekday day type's dates.
+  defp weekday_count_except_special_day,
+    do: dates_matching(&(Date.day_of_week(&1) in 1..5 and &1 != ~D[2026-11-26]))
 
   defp saturday_count, do: dates_matching(&(Date.day_of_week(&1) == 6))
 end
