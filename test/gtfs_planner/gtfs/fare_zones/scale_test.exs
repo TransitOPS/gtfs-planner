@@ -17,7 +17,11 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
     zone finish within the budget, and apply reports 10,000 minus that zone's
     prior count.
   - Every timed call must finish under the 15,000 ms Repo timeout, which is the
-    budget CL-14 names.
+    budget CL-14 names. Each measured call runs inside a connection checked out
+    *before* `:timer.tc/1` starts (`timed/1`), and the run prints the database,
+    pool, pool size and connection-acquisition time it observed, so a pool
+    checkout wait can never be reported as a data-path timing and a contended
+    environment shows up as its own number (F2).
 
   The fixture is written with `Repo.insert_all(Stop, ...)` in five batches of
   2,000 because `zone_id` is never cast: the batches carry round-robin zone IDs
@@ -26,7 +30,9 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
   Proof boundary: this measures one local machine (developer laptop, local
   PostgreSQL, SQL Sandbox) on a single version with no fare rules, so the printed
   milliseconds say nothing about payload rendering in a browser (EV-27), other
-  hardware, concurrent writers or versions with many fare rules.
+  hardware, concurrent writers or versions with many fare rules. The printed
+  numbers are the data-path durations only: the connection each call runs on is
+  acquired before its timer starts.
   """
   use GtfsPlanner.DataCase, async: false
 
@@ -60,8 +66,10 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
     organization_id = organization.id
     gtfs_version_id = version.id
 
+    report_environment()
+
     {inventory_us, inventory} =
-      :timer.tc(fn -> FareZones.inventory(organization_id, gtfs_version_id) end)
+      timed(fn -> FareZones.inventory(organization_id, gtfs_version_id) end)
 
     zone_counts = Enum.map(inventory.zones, & &1.stop_count)
 
@@ -74,7 +82,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
     assert_within_budget("inventory/2", inventory_us)
 
     {points_us, points} =
-      :timer.tc(fn -> FareZones.list_stop_points(organization_id, gtfs_version_id) end)
+      timed(fn -> FareZones.list_stop_points(organization_id, gtfs_version_id) end)
 
     {encode_us, payload} = :timer.tc(fn -> Jason.encode!(points) end)
 
@@ -89,7 +97,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
     assert_within_budget("list_stop_points/2", points_us)
 
     {ids_us, ids} =
-      :timer.tc(fn ->
+      timed(fn ->
         FareZones.matching_stop_ids(organization_id, gtfs_version_id, filter: :all)
       end)
 
@@ -102,7 +110,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
     prior_count = inventory.zones |> Enum.find(&(&1.zone_id == target)) |> Map.fetch!(:stop_count)
 
     {preview_us, preview_result} =
-      :timer.tc(fn ->
+      timed(fn ->
         FareZones.preview_assignment(organization_id, gtfs_version_id, ids, target)
       end)
 
@@ -114,7 +122,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
     assert_within_budget("preview_assignment/4", preview_us)
 
     {apply_us, apply_result} =
-      :timer.tc(fn ->
+      timed(fn ->
         FareZones.apply_assignment(organization_id, gtfs_version_id, review.changes)
       end)
 
@@ -128,6 +136,26 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
       FareZones.matching_stop_ids(organization_id, gtfs_version_id, filter: {:zone, target})
 
     assert length(matching) == @stop_count
+  end
+
+  # Each measured call runs inside its own checked-out connection, so the pool
+  # checkout happens before `:timer.tc/1` starts and a checkout wait can never be
+  # reported as a data-path duration (F2). `Repo.transaction/1` inside the
+  # production functions runs on that same connection.
+  defp timed(fun), do: Repo.checkout(fn -> :timer.tc(fun) end)
+
+  # Records the database and pool this run measured on, with the connection
+  # acquisition it paid, so a contended environment is visible as a checkout
+  # number instead of hidden inside a data-path number.
+  defp report_environment do
+    config = Repo.config()
+
+    {checkout_us, :ok} = :timer.tc(fn -> Repo.checkout(fn -> :ok end) end)
+
+    IO.puts(
+      "scale environment: database #{config[:database]}, pool #{inspect(config[:pool])}, " <>
+        "pool_size #{config[:pool_size]}, connection acquisition #{ms(checkout_us)} ms"
+    )
   end
 
   # Five batched inserts, so the fixture is written the way import writes stops

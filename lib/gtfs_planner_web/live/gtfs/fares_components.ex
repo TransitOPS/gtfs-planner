@@ -606,8 +606,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     required: true,
     doc: "the stop UUIDs the current filter and search match"
 
-  attr :zones, :list, required: true, doc: "the inventory's zones, the assign targets"
-
   def selection_bar(assigns) do
     selected_count = MapSet.size(assigns.selection)
 
@@ -615,7 +613,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       assigns
       |> assign(:selected_count, selected_count)
       |> assign(:empty?, selected_count == 0)
-      |> assign(:assignable?, assigns.zones != [])
       |> assign(
         :outside_count,
         MapSet.size(MapSet.difference(assigns.selection, assigns.matching_ids))
@@ -634,9 +631,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           </p>
           <p :if={@outside_count > 0} id="fare-zone-selection-outside" class="text-xs">
             {@outside_count} outside current filter
-          </p>
-          <p :if={!@assignable?} id="fare-zone-assign-unavailable" class="text-xs">
-            Create a fare zone first.
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -669,7 +663,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
             class="min-h-11"
             phx-click="open_assignment"
             phx-value-mode="assign"
-            disabled={!@assignable?}
           >
             Assign zone
           </.button>

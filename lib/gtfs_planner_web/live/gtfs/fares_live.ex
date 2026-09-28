@@ -732,11 +732,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
               </:before_stops>
             </.stop_list>
 
-            <.selection_bar
-              selection={@selection}
-              matching_ids={@matching_ids}
-              zones={@inventory.zones}
-            />
+            <.selection_bar selection={@selection} matching_ids={@matching_ids} />
           </section>
         </div>
         <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2">

@@ -1154,6 +1154,14 @@ test("rule drawer", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-rule-drawer-overlay")).toHaveAttribute("data-open", "true");
   await expect(page.locator("#fare-rule-drawer-title")).toHaveText("Edit fare rule");
 
+  // The panel slides in over 300ms (assets/css/app.css), so a geometry read taken
+  // mid-slide measures a different point of the animation than the read after it.
+  // Waiting for the panel's own animations to finish makes the comparison below
+  // and the captures taken from it observe one settled layout.
+  await drawer.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
+
   // Every field the reference puts in the dialog, in its own order and words.
   await expect(page.locator("#fare-rule-fare")).toHaveValue("CROSS");
   await expect(page.locator("#fare-rule-fare-help")).toHaveText(
@@ -1223,6 +1231,12 @@ test("rule drawer", async ({ page }, testInfo) => {
   // ── create and remove, ending where the case started ──
   await page.locator("#add-fare-rule").click();
   await expect(page.locator("#fare-rule-drawer-title")).toHaveText("Add a fare rule");
+
+  // The same 300ms slide as the edit drawer above, so this capture waits for the
+  // panel to settle too.
+  await drawer.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
 
   await page.selectOption("#fare-rule-origin", "A");
   await page.selectOption("#fare-rule-destination", "B");
