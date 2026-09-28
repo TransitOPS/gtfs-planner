@@ -12,13 +12,24 @@ defmodule GtfsPlannerWeb.HeaderTest do
   alias GtfsPlanner.Versions.GtfsVersion
 
   describe "Header - Unauthenticated Users (Auth Layout)" do
-    test "displays Pathways Studio brand with semantic tokens", %{conn: conn} do
-      conn = get(conn, ~p"/users/log_in")
-      html = html_response(conn, 200)
+    test "auth frame shows both product logos above a card with the card shadow", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log_in")
 
-      assert html =~ "text-brand"
-      assert html =~ "Pathways Studio"
-      assert html =~ "bg-brand"
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='GTFS Planner'][src='/images/gtfs-planner-logo.svg'])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='Pathways Studio'][src='/images/pathways-studio-logo.svg'])
+             )
+
+      html = render(view)
+      assert html =~ "shadow-card"
+      assert html =~ "border-subtle"
+      refute html =~ "gtfs-logo.svg"
+      refute has_element?(view, "#auth-brands .text-brand")
     end
 
     test "does not display logout button", %{conn: conn} do
@@ -26,14 +37,6 @@ defmodule GtfsPlannerWeb.HeaderTest do
       html = html_response(conn, 200)
 
       refute html =~ "/users/log_out"
-    end
-
-    test "auth layout uses semantic border not shadow", %{conn: conn} do
-      conn = get(conn, ~p"/users/log_in")
-      html = html_response(conn, 200)
-
-      assert html =~ "border-base-300"
-      refute html =~ "shadow"
     end
   end
 

@@ -74,6 +74,26 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
     end
   end
 
+  describe "auth frame" do
+    test "renders both product logos above the card without the old wordmark", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/reset_password")
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='GTFS Planner'][src='/images/gtfs-planner-logo.svg'])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='Pathways Studio'][src='/images/pathways-studio-logo.svg'])
+             )
+
+      html = render(view)
+      refute html =~ "gtfs-logo.svg"
+      refute has_element?(view, "#auth-brands .text-brand")
+    end
+  end
+
   describe "blur validation" do
     test "blur with an invalid address validates the interacted control", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/users/reset_password")
