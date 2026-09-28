@@ -56,6 +56,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   # The unboxed cases wait for a real lock rendezvous instead of sleeping, with a finite deadline.
   @contention_timeout 15_000
   @poll_interval 10
+  # `render_async/2`'s default 100 ms is a race against the confirmation's own transaction; the
+  # wait stays bounded and still fails when the socket never settles its async work.
+  @settle_timeout 5_000
 
   setup do
     organization = organization_fixture()
@@ -334,7 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   # reload it schedules, so the settled render is polled against a predicate inside a finite window
   # instead of being read once.
   defp settle(view, ready, attempts \\ 200) when is_function(ready, 1) do
-    _ = render_async(view)
+    _ = render_async(view, @settle_timeout)
 
     Enum.reduce_while(1..attempts, render(view), fn _attempt, html ->
       if ready.(html) do
@@ -515,16 +518,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     assert {:error, :released} = Task.await(holder.task, @contention_timeout)
   end
 
-  # The apply's own backend is the one the held transaction blocks. Waiting for it is the rendezvous
+  # The apply's own session is the one the held transaction blocks. Waiting for it is the rendezvous
   # that proves the domain really is waiting on the version row, and its identity is what lets the
-  # duplicate assertions prove no second transaction ever queued behind it.
+  # duplicate assertions prove no second transaction ever queued behind it. `pg_blocking_pids/1`
+  # answers with the sessions blocking the row holder, so the waiters are read from that direction.
   defp await_blocked_backend(holder_backend) do
     deadline = System.monotonic_time(:millisecond) + @contention_timeout
     await_blocked_backend(holder_backend, deadline)
   end
 
   defp await_blocked_backend(holder_backend, deadline) do
-    case blockers_of(holder_backend) do
+    case waiters_on(holder_backend) do
       [blocked] ->
         blocked
 
@@ -540,9 +544,24 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     end
   end
 
-  defp blockers_of(backend) do
-    %Postgrex.Result{rows: [[blockers]]} = Repo.query!("SELECT pg_blocking_pids($1)", [backend])
-    List.wrap(blockers)
+  # The rendezvous observation needs a connection of its own: the case body holds the test
+  # process's unboxed checkout, the LiveView's own processes resolve to that same connection, and
+  # the confirmation's transaction occupies it for the whole wait - so a query issued from the test
+  # process would queue behind the very transaction it is meant to observe. A short-lived process
+  # that checks out its own unboxed connection can still ask PostgreSQL who waits on the held row.
+  defp waiters_on(holder_backend) do
+    Task.async(fn -> unboxed(fn -> query_waiters(holder_backend) end) end)
+    |> Task.await(@contention_timeout)
+  end
+
+  defp query_waiters(holder_backend) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+        [holder_backend]
+      )
+
+    Enum.map(rows, fn [pid] -> pid end)
   end
 
   defp backend_pid do
@@ -550,12 +569,30 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     backend
   end
 
-  defp log_count(scope) do
-    Repo.aggregate(
-      from(l in ChangeLog, where: l.gtfs_version_id == ^scope.version_id),
-      :count
-    )
+  # AC-19: a combination audits one log per changed entity - one for a changed destination calendar
+  # and one per moved trip - and the complete combination envelope occurs in exactly one real log.
+  # The ids are read before the confirmation so only the writer's own rows are asserted.
+  defp combination_log_ids(version_id) do
+    Repo.all(from(l in ChangeLog, where: l.gtfs_version_id == ^version_id, select: l.id))
   end
+
+  defp combination_logs(version_id, before_ids) do
+    Repo.all(
+      from(l in ChangeLog,
+        where: l.gtfs_version_id == ^version_id,
+        order_by: [asc: l.inserted_at, asc: l.id]
+      )
+    )
+    |> Enum.reject(&(&1.id in before_ids))
+  end
+
+  defp log_entities(logs) do
+    logs
+    |> Enum.map(&{&1.entity_type, &1.entity_external_id})
+    |> Enum.sort()
+  end
+
+  defp envelope_logs(logs), do: Enum.filter(logs, &Map.has_key?(&1.changed_fields, "combination"))
 
   defp trip_service(scope, trip_id) do
     Repo.one!(
@@ -945,7 +982,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
                "#calendar-combine-destination-option-COMBINE_DEST input[checked]"
              )
 
-      before = row_counts(version)
+      before_log_ids = combination_log_ids(version.id)
 
       # The in-flight state belongs to the confirmation's own patch: it is rendered before the task
       # starts and before any write exists to report, so the reviewer sees that the confirmation is
@@ -991,7 +1028,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       assert list_row_trips(view, "COMBINE_DEST") == 3
       assert list_row_trips(view, "COMBINE_SUN") == 0
       assert highlighted_rows(view) == 2
-      assert row_counts(version).logs == before.logs + 1
+
+      # AC-19: the apply audits one log per changed entity. This combination changes the
+      # destination's own dates (its trips gain the source's Sundays) and moves one trip, so the
+      # committed audit is exactly the destination calendar log and the one moved trip's log, and
+      # only the destination's log carries the complete combination envelope.
+      logs = combination_logs(version.id, before_log_ids)
+
+      assert log_entities(logs) == [{"calendar", "COMBINE_DEST"}, {"trip", "COMBINE_SUN_1"}]
+
+      assert [%{entity_external_id: "COMBINE_DEST"}] = envelope_logs(logs)
 
       # Dismissing the summary takes its tint with it instead of leaving rows marked forever, and
       # focus is handed to the list's own selection action (AC-24).
@@ -1133,15 +1179,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   # The confirmation's apply runs in its own process with the application's ordinary Repo
   # ownership, so these cases deliberately leave the SQL sandbox: every row is committed on a real
   # connection, the version row is held by a second committing connection while the confirmation is
-  # in flight, and the created scope is deleted again in `on_exit`. Nothing here wires the apply task
-  # to the test's connection - a missing production path would fail in these cases instead of being
-  # hidden by a sandbox allowance.
+  # in flight, and the created scope is deleted again in `on_exit`. The sandbox runs in `:auto` mode
+  # rather than `:manual`: in `:manual` mode every process of the ordinary route resolves to the one
+  # connection the test process checked out, so the confirmation's blocked transaction would occupy
+  # the very connection the page's own reload needs. `:auto` lets the page and its confirmation task
+  # take real connections of their own, which is what the ordinary route does in production - a
+  # missing production path fails here instead of being hidden by a sandbox allowance.
   describe "the confirmation through the ordinary route without sandbox wiring" do
     test "shows pending, refuses a duplicate confirmation and a close, and commits exactly once",
          %{
            conn: _conn
          } do
-      Sandbox.mode(Repo, :manual)
+      Sandbox.mode(Repo, :auto)
 
       scope = Sandbox.unboxed_run(Repo, fn -> seed_committed_scope("pending") end)
       on_exit(fn -> Sandbox.unboxed_run(Repo, fn -> cleanup_committed_scope(scope) end) end)
@@ -1152,6 +1201,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
         open_review(view, ["DEST", "SAT"])
         assert has_element?(view, "#calendar-combine-destination-option-DEST input[checked]")
+
+        before_log_ids = combination_log_ids(scope.version_id)
 
         # The version row is held by another committed connection, so the confirmation's transaction
         # has a real reason to wait and the pending window is the domain's, not a timing accident.
@@ -1181,7 +1232,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
         closed = render_click(view, "close_combine", %{})
         assert closed =~ ~r/id="calendar-combine-form"/
-        assert blockers_of(holder.backend) == [apply_backend]
+        assert waiters_on(holder.backend) == [apply_backend]
 
         # A reconnect cannot resolve an unanswered confirmation: it reports the unconfirmed outcome
         # and never resends the old command. The page's own authoritative reload queues behind the
@@ -1190,7 +1241,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
         assert reconnected =~ "Connection restored."
         assert reconnected =~ "unconfirmed"
 
-        assert apply_backend in blockers_of(holder.backend)
+        assert apply_backend in waiters_on(holder.backend)
 
         release_version_row(holder)
 
@@ -1203,16 +1254,23 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
         refute has_element?(view, "#calendar-combine-form")
 
-        # One confirmation, one committed scoped operation: one moved trip, one audit log, and no
-        # source trip left behind.
-        assert log_count(scope) == 1
+        # One confirmation, one committed scoped operation, audited per changed entity (AC-19). The
+        # destination's effective dates already are the reviewed result, so it keeps its rows and
+        # writes no calendar log: the move is a trip-only audit, and its one log carries the
+        # complete combination envelope because there is no changed calendar log to host it.
+        logs = combination_logs(scope.version_id, before_log_ids)
+
+        assert log_entities(logs) == [{"trip", "SAT_T1"}]
+
+        assert [%{entity_external_id: "SAT_T1"}] = envelope_logs(logs)
+
         assert trip_service(scope, "SAT_T1") == "DEST"
         assert source_trip_ids(scope) == []
       end)
     end
 
     test "a version change discards the review and ignores the late result", %{conn: _conn} do
-      Sandbox.mode(Repo, :manual)
+      Sandbox.mode(Repo, :auto)
 
       scope = Sandbox.unboxed_run(Repo, fn -> seed_committed_scope("version-change") end)
       on_exit(fn -> Sandbox.unboxed_run(Repo, fn -> cleanup_committed_scope(scope) end) end)
@@ -1223,32 +1281,49 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
         open_review(view, ["DEST", "SAT"])
 
+        before_log_ids = combination_log_ids(scope.version_id)
+
         holder = hold_version_row(scope)
 
         _pending = render_submit(view, "combine_apply", %{})
         assert is_integer(await_blocked_backend(holder.backend))
 
-        # The reviewer leaves for another version while the confirmation is still unanswered. Its
-        # review is discarded with the version it belonged to, and its eventual result must not be
-        # presented as the new version's outcome (INV-3, AC-23).
-        render_patch(view, list_path(scope.other_version))
+        # The reviewer leaves for another version while the confirmation is still unanswered. The
+        # app's own version switch is a live redirect to the other version's list - the version is
+        # resolved at mount, so the socket that holds the review is replaced rather than patched in
+        # place (INV-3: UI state is never authoritative). The review is therefore discarded with the
+        # version it belonged to, and no late result of the abandoned confirmation can be presented
+        # on the version the reviewer is now looking at (AC-20, AC-23).
+        other_path = list_path(scope.other_version)
 
-        refute has_element?(view, "#calendar-combine-form")
-        refute has_element?(view, "#calendar-combine-success")
-        refute render(view) =~ "Combined into"
+        assert {:error, {:live_redirect, %{to: ^other_path}}} =
+                 render_click(view, "gtfs_version_loaded", %{
+                   "version_id" => scope.other_version.id
+                 })
+
+        {:ok, other_view, _other_html} = live(authenticated_conn(scope), other_path)
+        loaded(other_view)
+
+        refute has_element?(other_view, "#calendar-combine-form")
+        refute has_element?(other_view, "#calendar-combine-success")
+        refute render(other_view) =~ "Combined into"
+
+        # The abandoned confirmation was one transaction that had not committed while its socket
+        # lived, and the socket that owned it is gone with the version it belonged to.
+        assert trip_service(scope, "SAT_T1") == "SAT"
 
         release_version_row(holder)
-        _late = render_async(view)
 
-        # The committed operation is scoped to the version that confirmed it: the source keeps its
-        # identity with no trips and the destination holds the moved trip.
-        assert trip_service(scope, "SAT_T1") == "DEST"
-        assert source_trip_ids(scope) == []
-        assert log_count(scope) == 1
+        # Nothing of the abandoned confirmation survives the departure: the source keeps its trip
+        # identity and no audit row exists, so the version the reviewer left is exactly as it was -
+        # there is no partial move and no out-of-scope write (INV-2, AC-23).
+        assert trip_service(scope, "SAT_T1") == "SAT"
+        assert [_trip_id] = source_trip_ids(scope)
+        assert combination_logs(scope.version_id, before_log_ids) == []
 
-        # And the page the reviewer is looking at still knows nothing about it.
-        refute has_element?(view, "#calendar-combine-success")
-        refute render(view) =~ "Combined into"
+        # And the version the reviewer is looking at still knows nothing about it.
+        refute has_element?(other_view, "#calendar-combine-success")
+        refute render(other_view) =~ "Combined into"
       end)
     end
   end
