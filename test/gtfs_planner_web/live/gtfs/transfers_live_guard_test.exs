@@ -140,7 +140,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
       view |> element("#transfer-discard-dialog-confirm") |> render_click()
 
       refute has_element?(view, "#transfer-editor")
-      assert has_element?(view, "#transfers")
+      # The version has no rules, so the pane comes back in its first-use state.
+      assert has_element?(view, "#transfers-first-use")
+      assert has_element?(view, "#transfers-create")
     end
 
     test "a link departure asks the same question and then navigates", ctx do

@@ -884,8 +884,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     socket
     |> assign(:editor, nil)
     |> end_pick()
+    |> restream_list()
     |> show_selected_map(socket.assigns.selected)
   end
+
+  # The editor replaces the list pane, so the rows the stream last sent landed in a
+  # container the DOM no longer had. Opening the editor without a patch (the create
+  # button or a row's Edit) leaves the stream holding nothing pending, so closing it
+  # re-sends every row of the page the pane shows again. `push_patch` paths (save,
+  # deleted rule, version switch) reload the catalog and re-stream themselves.
+  defp restream_list(%{assigns: %{catalog: %{rows: rows}}} = socket),
+    do: stream(socket, :transfers, rows, reset: true)
+
+  defp restream_list(socket), do: socket
 
   # The rules the compare view lists: the selected rule and its competitors.
   defp known_rule_id?(socket, id) do

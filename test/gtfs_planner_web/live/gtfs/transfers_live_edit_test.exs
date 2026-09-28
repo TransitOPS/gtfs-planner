@@ -494,6 +494,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       view |> element("#transfer-open-existing") |> render_click()
 
+      # The refused draft is dirty, so the departure waits behind the discard
+      # question (AC-20); confirming it opens the rule the collision names.
+      assert has_element?(view, "#transfer-discard-dialog[data-open='true']")
+      view |> element("#transfer-discard-dialog-confirm") |> render_click()
+
       # The rule is named in the URL — the search is gone — and its editor is the
       # one that opened.
       assert_patch(view, transfers_path(ctx.version, rule: collision.id))
@@ -505,10 +510,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       view |> element("#transfer-cancel") |> render_click()
 
       # The list behind the editor is the bare general list: the colliding rule
-      # the search had hidden is the selected row of it.
+      # the search had hidden is the selected row of it, and the search field is
+      # empty. Closing the editor keeps the URL the opening patch already set.
       refute has_element?(view, "#transfer-editor")
       assert has_element?(view, "#transfer-select-#{collision.id}[aria-current='true']")
-      assert_patch(view, transfers_path(ctx.version, rule: collision.id))
+      assert has_element?(view, "#transfer-search-form input[name='q'][value='']")
+      assert has_element?(view, "#transfer-check-#{collision.id}")
     end
 
     test "the compare view's Edit rule opens that rule's editor", ctx do
