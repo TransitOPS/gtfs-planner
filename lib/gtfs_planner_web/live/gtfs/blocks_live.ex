@@ -72,10 +72,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       </:sub_header>
 
       <div id="blocks-page">
-        <.header>
-          Blocks
-          <:subtitle>A block is one vehicle's sequence of trips.</:subtitle>
-        </.header>
+        <section class="min-h-screen bg-base-100">
+          <div class="mx-auto w-full max-w-7xl">
+            <.header>
+              Blocks
+              <:subtitle>A block is one vehicle's sequence of trips.</:subtitle>
+            </.header>
+          </div>
+        </section>
       </div>
     </Layouts.app>
     """

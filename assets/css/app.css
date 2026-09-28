@@ -67,11 +67,13 @@
   --color-control-border: color-mix(in oklab, var(--color-base-content) 50%, var(--color-base-100));
 }
 
-/* Design-system tokens for the header only, under names that do not collide with
-   daisyUI (`primary`, `base-*`) or this theme's `brand`/`control-border`. The
-   classes these generate are used exclusively inside `#app-header` and its two
-   menus, so page content keeps the daisyUI palette above. Values come from the
-   design system's application theme, as recorded in
+/* Design-system tokens for the header and the Blocks page, under names that do
+   not collide with daisyUI (`primary`, `base-*`) or this theme's
+   `brand`/`control-border`. The classes these generate are used exclusively
+   inside `#app-header` and its two menus; the Blocks page reads the same values
+   inside its own `#blocks-page` scope instead. Every other page keeps the
+   daisyUI palette above. Values come from the design system's application
+   theme, as recorded in
    `.specs/00-information-architecture/evidence/header-nav/header-tokens.css`. */
 @theme {
   --font-ds: "Figtree", ui-sans-serif, system-ui, sans-serif;
@@ -210,6 +212,40 @@ body {
    their own daisyUI rings; this rule is deliberately unlayered so it wins over
    the header's utility classes without `!important`. */
 #app-header :is(a, button, summary):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* ── Blocks page theme ──
+   The Blocks page adopts the design system's fonts, ink and action colour from
+   `.specs/05-basic-gtfs-blocking/refereneces/gtfs-blocking-prototype.html`,
+   scoped to `#blocks-page` so the header and every other page keep the daisyUI
+   palette (proposal *Theme*, design-critique S1, AC-30). `--color-primary` is
+   the token daisyUI's filled controls read, so a primary button inside the page
+   paints #C81870 (5.5:1 for white text); unlayered rules beat the layered
+   daisyUI theme, so no `!important` is needed. Headings follow the prototype's
+   `h1,h2` rule and the subtitle its `.title p` rule: 28px/600 Gabarito in the
+   ink colour over 13px muted. */
+#blocks-page {
+  --color-primary: var(--color-action);
+  font-family: var(--font-ds);
+  color: var(--color-strong);
+}
+
+#blocks-page :is(h1, h2) {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+#blocks-page header p {
+  margin-top: 3px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+#blocks-page :is(a, button, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }

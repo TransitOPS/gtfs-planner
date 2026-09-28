@@ -114,6 +114,8 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     test "no longer answers for Blocks, which has a page of its own" do
       # Removing the placeholder entry is what keeps a stale `:blocks` lookup
       # from rendering placeholder copy beside the real page.
+      # `Function.identity/1` hides the argument from the compiler, which would
+      # otherwise warn that `feature/1` has no clause for the literal atom.
       assert_raise FunctionClauseError, fn ->
         ComingSoon.feature(Function.identity(:blocks))
       end
