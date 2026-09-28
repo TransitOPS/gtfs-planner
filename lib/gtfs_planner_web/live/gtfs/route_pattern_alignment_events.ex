@@ -17,6 +17,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   alias GtfsPlanner.Gtfs.Alignments
   alias Phoenix.Component
 
+  require Phoenix.LiveView
+
   @doc """
   Loads the alignment editor model when the Alignment task shows a pattern
   whose model is absent or belongs to another pattern. Returns
@@ -98,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def retry_tiles(socket, _params),
     do: Phoenix.LiveView.push_event(socket, "alignment:retry_tiles", %{})
 
-  @doc "Closes the help, discard, delete, simplify, import and save dialogs."
+  @doc "Closes the help, discard, delete, simplify, import, generate and save dialogs."
   def close_dialogs(socket) do
     socket
     |> Component.assign(:alignment_dialog, nil)
@@ -106,6 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_delete_dialog, nil)
     |> Component.assign(:alignment_simplify_dialog, nil)
     |> Component.assign(:alignment_import_dialog, nil)
+    |> Component.assign(:alignment_generate_dialog, nil)
     |> Component.assign(:alignment_pending, nil)
   end
 
@@ -440,6 +443,292 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   defp import_choice_param(%{"import_shape" => wanted}) when is_binary(wanted), do: wanted
   defp import_choice_param(%{import_shape: wanted}) when is_binary(wanted), do: wanted
   defp import_choice_param(_params), do: nil
+
+  @generation_key :alignment_generation
+
+  @doc """
+  Starts street-path generation (step 32).
+
+  A `"position"` param generates one section, asking first through the
+  replace dialog when the section already has saved points. `"retry"`
+  regenerates the notice's failed positions. No position generates every
+  missing section. `"confirmed"` runs the replace dialog's stored
+  positions. Viewers, an in-flight generation and an empty target leave
+  the socket unchanged; nothing is written (CR-9).
+  """
+  def generate(socket, params) when is_map(params) do
+    cond do
+      not editable?(socket) ->
+        socket
+
+      not is_nil(socket.assigns[:alignment_generation]) ->
+        socket
+
+      is_nil(socket.assigns[:alignment]) ->
+        socket
+
+      Map.has_key?(params, "confirmed") or Map.has_key?(params, :confirmed) ->
+        confirm_generate(socket)
+
+      Map.has_key?(params, "retry") or Map.has_key?(params, :retry) ->
+        retry_generate(socket)
+
+      true ->
+        position_or_missing(socket, params)
+    end
+  end
+
+  def generate(socket, _params), do: socket
+
+  @doc """
+  Starts the async street-routing request for the given positions (step 32).
+
+  Runs `Gtfs.suggest_alignment_paths/5` under `start_async`, so the map
+  stays interactive while routing. The token (a fresh ref plus the
+  pattern's natural ID) lets `handle_generation_result/3` drop stale
+  arrivals after a cancel or a pattern switch.
+  """
+  def start_generation(socket, positions) when is_list(positions) and positions != [] do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    route_id = socket.assigns.route_id
+    pattern = socket.assigns.pattern
+    route_pattern_id = pattern.route_pattern_id
+
+    generation = %{
+      token: :erlang.make_ref(),
+      positions: positions,
+      pattern_id: route_pattern_id
+    }
+
+    socket
+    |> Component.assign(:alignment_generation, generation)
+    |> Component.assign(:alignment_generate_notice, nil)
+    |> Phoenix.LiveView.start_async(@generation_key, fn ->
+      Gtfs.suggest_alignment_paths(
+        organization_id,
+        version_id,
+        route_id,
+        route_pattern_id,
+        positions
+      )
+    end)
+  end
+
+  def start_generation(socket, _positions), do: socket
+
+  @doc """
+  Cancels in-flight street-path generation (step 32).
+
+  Clears the token before `cancel_async`, so a response that already left
+  the task is dropped by `handle_generation_result/3` instead of pushing
+  suggestions. Pushes nothing.
+  """
+  def cancel_generation(socket, _params) do
+    socket
+    |> Component.assign(:alignment_generation, nil)
+    |> Phoenix.LiveView.cancel_async(@generation_key)
+  end
+
+  @doc """
+  Handles the async street-routing result (step 32).
+
+  A cleared token (cancel), a pattern mismatch (the user switched patterns
+  while routing) or a revoked editor drops the result with no push, so a
+  stale result never lands on another section or pattern (FH-42).
+  Otherwise pushes `alignment:suggestions` with `review: true` for the
+  routed positions and shows the ready status; failures show a notice with
+  Retry and Draw manually and push nothing. Exits and unexpected errors
+  show the unavailable notice. Nothing is written (CR-9).
+  """
+  def handle_generation_result(socket, _key, {:ok, {:ok, %{suggestions: _, failed: _} = result}}) do
+    case generation_context(socket) do
+      {:ok, _generation} -> apply_generation_result(socket, result)
+      :stale -> Component.assign(socket, :alignment_generation, nil)
+    end
+  end
+
+  def handle_generation_result(socket, _key, _result) do
+    case generation_context(socket) do
+      {:ok, _generation} ->
+        socket
+        |> Component.assign(:alignment_generation, nil)
+        |> Component.assign(:alignment_generate_notice, %{kind: :unavailable, failures: []})
+
+      :stale ->
+        Component.assign(socket, :alignment_generation, nil)
+    end
+  end
+
+  # A result is live only while its generation is still current, on the
+  # same pattern, for an editor. Anything else is stale.
+  defp generation_context(socket) do
+    with %{pattern_id: pattern_id} <- socket.assigns[:alignment_generation],
+         %{route_pattern_id: current} <- socket.assigns[:pattern],
+         true <- pattern_id == current,
+         true <- editable?(socket) do
+      {:ok, socket.assigns[:alignment_generation]}
+    else
+      _ -> :stale
+    end
+  end
+
+  defp apply_generation_result(socket, %{suggestions: suggestions, failed: failed}) do
+    socket = Component.assign(socket, :alignment_generation, nil)
+
+    socket =
+      if map_size(failed) > 0 do
+        Component.assign(socket, :alignment_generate_notice, generate_notice(socket, failed))
+      else
+        Component.assign(socket, :alignment_generate_notice, nil)
+      end
+
+    sections =
+      suggestions
+      |> Enum.sort_by(fn {position, _points} -> position end)
+      |> Enum.map(fn {position, points} -> %{position: position, points: points} end)
+
+    if sections == [] do
+      socket
+    else
+      socket
+      |> Component.assign(
+        :status_message,
+        "Suggested path ready. Review the streets before saving."
+      )
+      |> Phoenix.LiveView.push_event("alignment:suggestions", %{
+        sections: sections,
+        review: true
+      })
+    end
+  end
+
+  # `:no_route` names each failed section; every other failure (timeout,
+  # rate limiting, unavailability, missing key, invalid responses and
+  # unreachable validation positions) shares the unavailable notice.
+  # The API key never appears in either (AC-37).
+  defp generate_notice(socket, failed) do
+    visits_by_position = visits_by_position(socket)
+
+    {no_route, unavailable} =
+      Enum.split_with(failed, fn {_position, reason} -> reason == :no_route end)
+
+    failures =
+      Enum.map(no_route ++ unavailable, fn {position, _reason} ->
+        failure_entry(visits_by_position, position)
+      end)
+
+    if unavailable == [] do
+      %{kind: :no_route, failures: failures}
+    else
+      %{kind: :unavailable, failures: failures}
+    end
+  end
+
+  defp failure_entry(visits_by_position, position) do
+    from = Map.get(visits_by_position, position, %{})
+    to = Map.get(visits_by_position, position + 1, %{})
+
+    %{
+      position: position,
+      from: Map.get(from, :name, ""),
+      to: Map.get(to, :name, "")
+    }
+  end
+
+  defp visits_by_position(socket) do
+    case socket.assigns[:alignment] do
+      %{visits: visits} -> Map.new(visits, &{&1.position, &1})
+      _ -> %{}
+    end
+  end
+
+  defp confirm_generate(socket) do
+    case socket.assigns[:alignment_generate_dialog] do
+      %{positions: positions} when is_list(positions) and positions != [] ->
+        socket
+        |> Component.assign(:alignment_generate_dialog, nil)
+        |> start_generation(positions)
+
+      _ ->
+        Component.assign(socket, :alignment_generate_dialog, nil)
+    end
+  end
+
+  defp retry_generate(socket) do
+    case socket.assigns[:alignment_generate_notice] do
+      %{failures: [%{position: _} | _] = failures} ->
+        start_generation(socket, Enum.map(failures, & &1.position))
+
+      _ ->
+        socket
+    end
+  end
+
+  defp position_or_missing(socket, params) do
+    case generation_position(params) do
+      {:position, position} -> generate_position(socket, position)
+      :missing -> generate_missing(socket)
+      :invalid -> socket
+    end
+  end
+
+  defp generation_position(%{"position" => param}), do: generation_position_value(param)
+  defp generation_position(%{position: param}), do: generation_position_value(param)
+  defp generation_position(_params), do: :missing
+
+  defp generation_position_value(param) do
+    case parse_position(param) do
+      {position, ""} -> {:position, position}
+      _ -> :invalid
+    end
+  end
+
+  defp generate_position(socket, position) do
+    section =
+      case socket.assigns[:alignment] do
+        %{sections: sections} -> Enum.find(sections, &(&1.position == position))
+        _ -> nil
+      end
+
+    cond do
+      is_nil(section) -> socket
+      section.points != [] -> open_generate_dialog(socket, position)
+      true -> start_generation(socket, [position])
+    end
+  end
+
+  defp generate_missing(socket) do
+    positions =
+      case socket.assigns[:alignment] do
+        %{sections: sections} ->
+          sections
+          |> Enum.filter(&(&1.kind == :missing))
+          |> Enum.map(& &1.position)
+
+        _ ->
+          []
+      end
+
+    start_generation(socket, positions)
+  end
+
+  defp open_generate_dialog(socket, position) do
+    names = visit_names(visit_list(socket), position)
+
+    Component.assign(socket, :alignment_generate_dialog, %{
+      positions: [position],
+      from: names.from,
+      to: names.to
+    })
+  end
+
+  defp visit_list(socket) do
+    case socket.assigns[:alignment] do
+      %{visits: visits} -> visits
+      _ -> []
+    end
+  end
 
   @doc """
   Reviews the hook's dirty sections for saving (step 28).
@@ -938,6 +1227,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_delete_dialog, nil)
          |> Component.assign(:alignment_simplify_dialog, nil)
          |> Component.assign(:alignment_import_dialog, nil)
+         |> Component.assign(:alignment_generate_dialog, nil)
+         |> Component.assign(:alignment_generate_notice, nil)
+         |> Component.assign(:alignment_generation, nil)
+         |> Phoenix.LiveView.cancel_async(:alignment_generation)
          |> Component.assign(:alignment_pending, nil)
          |> Component.assign(:alignment_save_notice, nil)
          |> Component.assign(:alignment_forced_local, [])}

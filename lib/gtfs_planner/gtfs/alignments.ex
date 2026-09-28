@@ -41,6 +41,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.StreetRouting
 
   @type visit :: %{
           occurrence_id: Ecto.UUID.t(),
@@ -131,10 +132,17 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         sections = initial
         status = build_status(pattern, sections, resolved_digest)
 
-        %{pattern: pattern, visits: visits, sections: sections, status: status, digest: resolved_digest}
+        %{
+          pattern: pattern,
+          visits: visits,
+          sections: sections,
+          status: status,
+          digest: resolved_digest
+        }
 
       {:error, {:blocked, blockers}} ->
-        blocker_by_position = Map.new(blockers, fn %{position: pos, reason: reason} -> {pos, reason} end)
+        blocker_by_position =
+          Map.new(blockers, fn %{position: pos, reason: reason} -> {pos, reason} end)
 
         sections =
           Enum.map(initial, fn section ->
@@ -313,7 +321,13 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     blockers = materialization_blockers(pattern, visit_count, linked, stop_counts)
 
     if present?(pattern.shape_id) do
-      %{shape_id: pattern.shape_id, mode: :existing, replaced: [], previous: previous, blockers: blockers}
+      %{
+        shape_id: pattern.shape_id,
+        mode: :existing,
+        replaced: [],
+        previous: previous,
+        blockers: blockers
+      }
     else
       distinct_shapes = linked |> Enum.map(& &1.shape_id) |> Enum.uniq()
 
@@ -459,8 +473,12 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp first_unused_shape_id(%RoutePattern{} = pattern) do
     Stream.iterate(1, &(&1 + 1))
     |> Enum.find_value(fn
-      1 -> unless shape_id_taken?(pattern, pattern.route_pattern_id), do: pattern.route_pattern_id
-      n -> unless shape_id_taken?(pattern, "#{pattern.route_pattern_id}-#{n}"), do: "#{pattern.route_pattern_id}-#{n}"
+      1 ->
+        unless shape_id_taken?(pattern, pattern.route_pattern_id), do: pattern.route_pattern_id
+
+      n ->
+        unless shape_id_taken?(pattern, "#{pattern.route_pattern_id}-#{n}"),
+          do: "#{pattern.route_pattern_id}-#{n}"
     end)
   end
 
@@ -1110,6 +1128,118 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   @doc """
+  Suggests street-routed interior points for the given section positions (step 32).
+
+  Scopes through `RoutePatterns.published_route/3` and a scoped pattern query
+  like `editor/4`, so foreign organizations or versions return `:not_found`
+  (INV-2, CL-10). Positions are validated: unknown positions land in `failed`
+  as `:unknown_position` and sections without stop coordinates as
+  `:no_coordinates`. Contiguous positions share one `StreetRouting.route/2`
+  call whose legs map back to positions in visit order; a run failure marks
+  every position in the run. Leg endpoints are the stop anchors (R5, kept in
+  `[lon, lat]` per INV-1): only interior points are suggested. Nothing is
+  written (CR-9).
+  """
+  @spec suggest_paths(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), [pos_integer()]) ::
+          {:ok,
+           %{suggestions: %{pos_integer() => [[float()]]}, failed: %{pos_integer() => atom()}}}
+          | {:error, :not_found}
+  def suggest_paths(organization_id, gtfs_version_id, route_id, route_pattern_id, positions)
+      when is_list(positions) do
+    with {:ok, _route} <-
+           RoutePatterns.published_route(organization_id, gtfs_version_id, route_id),
+         %RoutePattern{} = pattern <-
+           scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+      {:ok, suggest_for_sections(resolve(pattern), positions)}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def suggest_paths(_, _, _, _, _), do: {:ok, %{suggestions: %{}, failed: %{}}}
+
+  defp suggest_for_sections(resolved, positions) do
+    sections_by_position = Map.new(resolved.sections, &{&1.position, &1})
+    visits_by_position = Map.new(resolved.visits, &{&1.position, &1})
+
+    wanted =
+      positions
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    {routable, failed} =
+      Enum.reduce(wanted, {[], %{}}, fn position, {ok, failed} ->
+        case Map.get(sections_by_position, position) do
+          nil ->
+            {ok, Map.put(failed, position, :unknown_position)}
+
+          %{blocked_reason: :no_coordinates} ->
+            {ok, Map.put(failed, position, :no_coordinates)}
+
+          _section ->
+            {[position | ok], failed}
+        end
+      end)
+
+    {suggestions, failed} =
+      routable
+      |> Enum.sort()
+      |> contiguous_runs()
+      |> Enum.reduce({%{}, failed}, fn run, {suggestions, failed} ->
+        case route_run(run, visits_by_position) do
+          {:ok, run_suggestions} -> {Map.merge(suggestions, run_suggestions), failed}
+          {:failed, run_failed} -> {suggestions, Map.merge(failed, run_failed)}
+        end
+      end)
+
+    %{suggestions: suggestions, failed: failed}
+  end
+
+  # Groups sorted positions into maximal consecutive runs so one routing
+  # request covers each run's waypoints in visit order.
+  defp contiguous_runs(positions) do
+    positions
+    |> Enum.reduce([], fn
+      position, [] -> [{position, position}]
+      position, [{first, last} | rest] when position == last + 1 -> [{first, position} | rest]
+      position, runs -> [{position, position} | runs]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp route_run({first, last}, visits_by_position) do
+    waypoints =
+      Enum.map(first..(last + 1), fn visit_position ->
+        visit = Map.fetch!(visits_by_position, visit_position)
+        {visit.lat, visit.lon}
+      end)
+
+    if Enum.all?(waypoints, fn {lat, lon} -> is_number(lat) and is_number(lon) end) do
+      case StreetRouting.route(waypoints) do
+        {:ok, legs} when length(legs) == last - first + 1 ->
+          suggestions =
+            legs
+            |> Enum.with_index(first)
+            |> Map.new(fn {leg, position} -> {position, leg_interior(leg)} end)
+
+          {:ok, suggestions}
+
+        {:ok, _legs} ->
+          {:failed, Map.new(first..last, &{&1, :invalid_response})}
+
+        {:error, reason} ->
+          {:failed, Map.new(first..last, &{&1, reason})}
+      end
+    else
+      {:failed, Map.new(first..last, &{&1, :no_coordinates})}
+    end
+  end
+
+  # Leg endpoints are the stop anchors: only interior points become a draft (R5).
+  defp leg_interior(leg) when is_list(leg), do: Enum.slice(leg, 1..-2//1)
+
+  @doc """
   Returns the JSON-ready hook model for an `editor/4` result.
 
   Converts Decimals to floats and atoms to strings, keeps `[lon, lat]` axis
@@ -1219,10 +1349,16 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
       case section.kind do
         :override ->
-          %{section | shared_points: Map.get(shared_by_pair, {section.from_stop_id, section.to_stop_id})}
+          %{
+            section
+            | shared_points: Map.get(shared_by_pair, {section.from_stop_id, section.to_stop_id})
+          }
 
         :shared ->
-          %{section | shared_users: Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, 0)}
+          %{
+            section
+            | shared_users: Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, 0)
+          }
 
         _ ->
           section
@@ -1293,7 +1429,11 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
     points =
       Enum.map(rows, fn row ->
-        [decimal_to_float(row.shape_pt_lon), decimal_to_float(row.shape_pt_lat), row.shape_dist_traveled]
+        [
+          decimal_to_float(row.shape_pt_lon),
+          decimal_to_float(row.shape_pt_lat),
+          row.shape_dist_traveled
+        ]
       end)
 
     lon_lat = Enum.map(points, fn [lon, lat, _] -> [lon, lat] end)
@@ -1593,7 +1733,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       resolved = resolve(pattern)
 
       case Draft.normalize(draft_params, resolved) do
-        {:error, reason} -> {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+
         # The ops carry the validated points step 12 writes, and the
         # resolved sections carry the stop-pair identity; the review shape
         # itself stays the step-10 contract.
@@ -1684,7 +1826,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         {:ok,
          %{
            fingerprint:
-             review_fingerprint(pattern, resolved, ops, sections_by_position, review_sections, plan),
+             review_fingerprint(
+               pattern,
+               resolved,
+               ops,
+               sections_by_position,
+               review_sections,
+               plan
+             ),
            sections: review_sections,
            origin: %{complete?: complete?, plan: plan},
            replaced_shapes: replaced,
@@ -1703,8 +1852,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     if conflicted == [] do
       :ok
     else
-      {:error,
-       {:conflict, Enum.map(conflicted, &Map.fetch!(sections_by_position, &1.position))}}
+      {:error, {:conflict, Enum.map(conflicted, &Map.fetch!(sections_by_position, &1.position))}}
     end
   end
 
@@ -1730,6 +1878,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     ops
     |> Enum.filter(fn op ->
       section = Map.fetch!(sections_by_position, op.position)
+
       (op.op == :set and section.kind in [:missing, :shared]) or
         (op.op == :delete and section.kind == :shared)
     end)
@@ -1775,7 +1924,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     |> Map.new(fn seg -> {{seg.from_stop_id, seg.to_stop_id}, seg.points || []} end)
   end
 
-  defp build_review_section(op, section, visits_by_position, users_by_pair, pattern, audit_context) do
+  defp build_review_section(
+         op,
+         section,
+         visits_by_position,
+         users_by_pair,
+         pattern,
+         audit_context
+       ) do
     base = %{
       position: op.position,
       op: op.op,
@@ -1801,20 +1957,34 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         users = Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, [])
         {affected, custom} = split_review_users(users, pattern.id, op.position)
         action = if affected == [], do: :write_shared, else: :choose_scope
-        {rematerialize, shared_blockers} = shared_review_effects(op, section, affected, pattern, audit_context)
+
+        {rematerialize, shared_blockers} =
+          shared_review_effects(op, section, affected, pattern, audit_context)
 
         base
         |> Map.put(:action, action)
-        |> Map.merge(%{affected: affected, custom_unchanged: custom, shared_rematerialize: rematerialize, shared_blockers: shared_blockers})
+        |> Map.merge(%{
+          affected: affected,
+          custom_unchanged: custom,
+          shared_rematerialize: rematerialize,
+          shared_blockers: shared_blockers
+        })
 
       {:delete, :shared} ->
         users = Map.get(users_by_pair, {section.from_stop_id, section.to_stop_id}, [])
         {affected, custom} = split_review_users(users, pattern.id, op.position)
-        {rematerialize, shared_blockers} = shared_review_effects(op, section, affected, pattern, audit_context)
+
+        {rematerialize, shared_blockers} =
+          shared_review_effects(op, section, affected, pattern, audit_context)
 
         base
         |> Map.put(:action, :delete_shared)
-        |> Map.merge(%{affected: affected, custom_unchanged: custom, shared_rematerialize: rematerialize, shared_blockers: shared_blockers})
+        |> Map.merge(%{
+          affected: affected,
+          custom_unchanged: custom,
+          shared_rematerialize: rematerialize,
+          shared_blockers: shared_blockers
+        })
     end
   end
 
@@ -1937,8 +2107,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       end),
       Enum.map(review_sections, fn section ->
         {section.position, section.action,
-         Enum.map(section.affected, &{&1.pattern_id, &1.visit_positions, &1.custom_positions, &1.owns_shape?}),
-         Enum.map(section.custom_unchanged, &{&1.pattern_id, &1.visit_positions, &1.custom_positions, &1.owns_shape?})}
+         Enum.map(
+           section.affected,
+           &{&1.pattern_id, &1.visit_positions, &1.custom_positions, &1.owns_shape?}
+         ),
+         Enum.map(
+           section.custom_unchanged,
+           &{&1.pattern_id, &1.visit_positions, &1.custom_positions, &1.owns_shape?}
+         )}
       end),
       plan_part,
       rematerialized
@@ -2024,7 +2200,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
              | {:invalid_draft, atom()}}
   def apply_save(pattern_id, draft_params, choices, fingerprint, %AuditContext{} = audit_context)
       when is_binary(pattern_id) do
-    apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, @apply_attempts)
+    apply_with_retries(
+      pattern_id,
+      draft_params,
+      choices,
+      fingerprint,
+      audit_context,
+      @apply_attempts
+    )
   end
 
   def apply_save(_, _, _, _, _), do: {:error, :invalid_input}
@@ -2054,7 +2237,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
       {:error, @apply_retry_marker} ->
         if attempts > 1 do
-          apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts - 1)
+          apply_with_retries(
+            pattern_id,
+            draft_params,
+            choices,
+            fingerprint,
+            audit_context,
+            attempts - 1
+          )
         else
           {:error, :busy}
         end
@@ -2065,7 +2255,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       {:apply_raised, error, stacktrace} ->
         cond do
           apply_retryable?(error) and attempts > 1 ->
-            apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts - 1)
+            apply_with_retries(
+              pattern_id,
+              draft_params,
+              choices,
+              fingerprint,
+              audit_context,
+              attempts - 1
+            )
 
           apply_retryable?(error) ->
             {:error, :busy}
@@ -2082,10 +2279,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   # recomputed review surfaces the race as a conflict or stale review.
   defp apply_retryable?(%Postgrex.Error{postgres: %{code: code} = fields}) do
     cond do
-      code in [:serialization_failure, "40001", :deadlock_detected, "40P01"] -> true
+      code in [:serialization_failure, "40001", :deadlock_detected, "40P01"] ->
+        true
+
       code in [:unique_violation, "23505"] ->
         to_string(Map.get(fields, :constraint, "")) in @apply_retry_constraints
-      true -> false
+
+      true ->
+        false
     end
   end
 
@@ -2140,7 +2341,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       end)
 
     case result do
-      {:error, _} = error -> error
+      {:error, _} = error ->
+        error
+
       {:ok, decisions} ->
         if review.requires_confirmation? and not confirm?,
           do: {:error, :confirmation_required},
@@ -2182,7 +2385,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp apply_scope_value(_), do: :invalid
 
   defp apply_confirmed?(choices) when is_map(choices) do
-    Map.get(choices, "confirm_replacements", Map.get(choices, :confirm_replacements, false)) == true
+    Map.get(choices, "confirm_replacements", Map.get(choices, :confirm_replacements, false)) ==
+      true
   end
 
   defp apply_confirmed?(_), do: false
@@ -2195,7 +2399,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end
   end
 
-  defp apply_section_decision(%{action: :delete_shared, affected: affected, position: position}, scopes) do
+  defp apply_section_decision(
+         %{action: :delete_shared, affected: affected, position: position},
+         scopes
+       ) do
     cond do
       affected == [] -> {:ok, :direct}
       Map.get(scopes, position, :missing) == :shared -> {:ok, :shared}
@@ -2215,7 +2422,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     targets = apply_shared_targets(pattern_id, review, decisions)
 
     route_ids =
-      ([origin_route_id | Enum.map(targets, &elem(&1, 1))] |> Enum.uniq() |> Enum.sort())
+      [origin_route_id | Enum.map(targets, &elem(&1, 1))] |> Enum.uniq() |> Enum.sort()
 
     routes =
       Map.new(route_ids, fn route_id ->
@@ -2225,7 +2432,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     route_for = Map.new(targets, fn {id, route_id} -> {id, route_id} end)
     route_for = Map.put(route_for, pattern_id, origin_route_id)
 
-    pattern_ids = ([pattern_id | Enum.map(targets, &elem(&1, 0))] |> Enum.uniq() |> Enum.sort())
+    pattern_ids = [pattern_id | Enum.map(targets, &elem(&1, 0))] |> Enum.uniq() |> Enum.sort()
 
     locked =
       Map.new(pattern_ids, fn id ->
@@ -2537,7 +2744,11 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     {Enum.reverse(materialized), trips_updated, shapes_deleted}
   end
 
-  defp apply_materialize_one(pattern, audit_context, {materialized, trips_updated, shapes_deleted}) do
+  defp apply_materialize_one(
+         pattern,
+         audit_context,
+         {materialized, trips_updated, shapes_deleted}
+       ) do
     resolved = resolve(pattern)
 
     if Enum.all?(resolved.sections, &(&1.kind not in [:missing, :blocked])) do

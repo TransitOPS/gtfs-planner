@@ -957,6 +957,23 @@ defmodule GtfsPlanner.Gtfs do
   def alignment_editor(organization_id, gtfs_version_id, route_id, route_pattern_id),
     do: Alignments.editor(organization_id, gtfs_version_id, route_id, route_pattern_id)
 
+  @doc "Suggests street-routed interior points for the given alignment sections without writing."
+  def suggest_alignment_paths(
+        organization_id,
+        gtfs_version_id,
+        route_id,
+        route_pattern_id,
+        positions
+      ),
+      do:
+        Alignments.suggest_paths(
+          organization_id,
+          gtfs_version_id,
+          route_id,
+          route_pattern_id,
+          positions
+        )
+
   @doc "Reviews an alignment save, computing scope actions, affected patterns and a fingerprint without writing."
   def review_alignment_save(pattern_id, draft_params, %AuditContext{} = audit_context),
     do: Alignments.review_save(pattern_id, draft_params, audit_context)

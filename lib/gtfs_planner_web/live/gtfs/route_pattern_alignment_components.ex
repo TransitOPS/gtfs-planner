@@ -4,11 +4,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   Presents the `Gtfs.alignment_editor/4` read model: workspace header with the
   R9 status badge, the section inspector with per-section status and scope,
-  the selected-section detail and the GTFS shape footer. Slice A has no draft
-  or map interactivity yet: section selection is server-side, Save stays
-  disabled until the draft/save flow lands, and the map pane is an ignored
-  container the map hook fills in a later step. No generation control renders
-  (CR-10).
+  the selected-section detail and the GTFS shape footer. Step 32 wires the
+  street-generation controls (CR-10's slice-A restriction is lifted for
+  these controls only): the empty-state overlay, the per-section Generate
+  button with its replace dialog, the in-flight overlay with cancel, and
+  the routing failure notices. Generation only produces drafts (CR-9); Save
+  stays the only commit.
   """
 
   use GtfsPlannerWeb, :html
@@ -50,6 +51,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: false,
     doc: "disables Save while a save apply round-trips"
 
+  attr :generation, :map,
+    default: nil,
+    doc: "%{token, positions, pattern_id} while street routing is in flight"
+
+  attr :generate_dialog, :map,
+    default: nil,
+    doc: "%{positions, from, to} when the generate replace dialog is open"
+
+  attr :generate_notice, :map,
+    default: nil,
+    doc: "%{kind: :no_route | :unavailable, failures: [%{position, from, to}]}"
+
   def alignment_task(assigns) do
     assigns =
       assigns
@@ -61,7 +74,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:footer_status, footer_status(assigns.alignment))
       |> assign(:save_title, save_title(assigns.alignment, assigns.editable?))
       |> assign(:saved_count, saved_count(assigns.alignment))
+      |> assign(:missing_count, missing_count(assigns.alignment))
       |> assign(:save_enabled, save_enabled?(assigns))
+      |> assign(:generating?, not is_nil(assigns[:generation]))
+      |> assign(:generate_overlay?, generate_overlay?(assigns.alignment, assigns[:editable?]))
+
+    # The first-alignment overlay is a nudge, not a gate: once a draft
+    # exists (generated or drawn) the hook owns visible geometry, so the
+    # overlay gets out of the way. Discarding the draft brings it back.
+    assigns =
+      assign(
+        assigns,
+        :overlay_dismissed?,
+        assigns.generating? or assigns.dirty_positions != []
+      )
 
     assigns =
       assign(
@@ -245,18 +271,156 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         {save_notice_message(@save_notice)}
       </.callout>
 
+      <%!-- Step 32 routing failures: name the failed sections with Retry and
+        Draw manually, and push nothing (AC-37). Drafts and saved paths stay
+        unchanged; the API key never appears here. --%>
+      <.callout
+        :if={@generate_notice != nil and @generate_notice.kind == :no_route}
+        id="alignment-generate-notice"
+        kind="warning"
+        title="No street path found"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>{generate_notice_body(@generate_notice)}</p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              id="alignment-generate-retry"
+              phx-click="alignment_generate_paths"
+              phx-value-retry="true"
+              data-commit="alignment"
+              class="btn btn-outline min-h-11 shrink-0"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              id="alignment-generate-draw"
+              phx-click={
+                JS.dispatch("alignment:action",
+                  to: "#alignment-map-root",
+                  detail: %{action: "draw", position: generate_draw_position(@generate_notice)}
+                )
+              }
+              class="btn btn-outline min-h-11 shrink-0"
+            >
+              Draw manually
+            </button>
+          </div>
+        </div>
+      </.callout>
+
+      <.callout
+        :if={@generate_notice != nil and @generate_notice.kind == :unavailable}
+        id="alignment-generate-notice"
+        kind="error"
+        title="Street routing is unavailable"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p>Draw the section or try again later.</p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              id="alignment-generate-retry"
+              phx-click="alignment_generate_paths"
+              phx-value-retry="true"
+              data-commit="alignment"
+              class="btn btn-outline min-h-11 shrink-0"
+            >
+              Retry
+            </button>
+            <button
+              :if={generate_draw_position(@generate_notice) != nil}
+              type="button"
+              id="alignment-generate-draw"
+              phx-click={
+                JS.dispatch("alignment:action",
+                  to: "#alignment-map-root",
+                  detail: %{action: "draw", position: generate_draw_position(@generate_notice)}
+                )
+              }
+              class="btn btn-outline min-h-11 shrink-0"
+            >
+              Draw manually
+            </button>
+          </div>
+        </div>
+      </.callout>
+
       <div class="mt-4 flex flex-col gap-4 lg:grid lg:grid-cols-[316px_minmax(0,1fr)]">
         <section aria-label="Alignment map" class="order-1 min-w-0 lg:order-2">
-          <div
-            id="alignment-map-root"
-            phx-hook="PatternAlignment"
-            phx-update="ignore"
-            data-tile-url="/map/tiles/osm-bright/{z}/{x}/{y}"
-            class="flex min-h-80 items-center justify-center rounded-lg border border-base-300 bg-base-200 p-6 lg:min-h-[520px]"
-          >
-            <p id="alignment-map-loading" role="status" class="text-sm text-base-content/70">
-              Loading map…
-            </p>
+          <%!-- Step 32 generation overlays: server-rendered siblings over the
+            map container, outside the ignored hook element. --%>
+          <div class="relative">
+            <div
+              id="alignment-map-root"
+              phx-hook="PatternAlignment"
+              phx-update="ignore"
+              data-tile-url="/map/tiles/osm-bright/{z}/{x}/{y}"
+              class="flex min-h-80 items-center justify-center rounded-lg border border-base-300 bg-base-200 p-6 lg:min-h-[520px]"
+            >
+              <p id="alignment-map-loading" role="status" class="text-sm text-base-content/70">
+                Loading map…
+              </p>
+            </div>
+            <div
+              :if={@generate_overlay? and not @overlay_dismissed?}
+              id="alignment-generate-overlay"
+              class="absolute inset-0 z-[1100] flex items-center justify-center rounded-lg bg-base-100/85 p-6"
+            >
+              <div class="max-w-sm text-center">
+                <h4 class="text-base font-semibold">Give this pattern a path</h4>
+                <p class="mt-2 text-sm text-base-content/70">
+                  Start with a suggested street path, then adjust it to match where
+                  your bus actually travels.
+                </p>
+                <button
+                  type="button"
+                  id="alignment-generate-all"
+                  phx-click="alignment_generate_paths"
+                  data-commit="alignment"
+                  disabled={@offline?}
+                  title={if(@offline?, do: "Reconnect before generating", else: nil)}
+                  class="btn btn-primary mt-4 min-h-11 w-full"
+                >
+                  Generate street paths
+                </button>
+                <button
+                  type="button"
+                  id="alignment-overlay-draw"
+                  phx-click={
+                    JS.dispatch("alignment:action",
+                      to: "#alignment-map-root",
+                      detail: %{action: "draw", position: first_missing_position(@alignment)}
+                    )
+                  }
+                  class="btn btn-ghost mt-2 min-h-11 w-full"
+                >
+                  Or draw a section
+                </button>
+              </div>
+            </div>
+            <div
+              :if={@generating?}
+              id="alignment-generating"
+              role="status"
+              class="absolute inset-0 z-[1100] flex items-center justify-center rounded-lg bg-base-100/85 p-6"
+            >
+              <div class="max-w-sm text-center">
+                <h4 class="text-base font-semibold">Finding a street path…</h4>
+                <p class="mt-2 text-sm text-base-content/70">
+                  Your saved paths stay unchanged.
+                </p>
+                <button
+                  type="button"
+                  id="alignment-cancel-generation"
+                  phx-click="alignment_cancel_generation"
+                  class="btn btn-outline mt-4 min-h-11 w-full"
+                >
+                  Cancel generation
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -272,6 +436,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
               </p>
             </div>
             <p class="mt-1 text-sm text-base-content/60">Select a section to inspect it.</p>
+            <%!-- Step 32 all-missing generation for partially drawn patterns:
+              the empty-state overlay covers the first-alignment moment only,
+              so this entry point fires the same event while sections remain. --%>
+            <button
+              :if={@editable? and @missing_count > 0 and @missing_count < length(@alignment.sections)}
+              type="button"
+              id="alignment-generate-missing"
+              phx-click="alignment_generate_paths"
+              data-commit="alignment"
+              disabled={@offline? or @generating?}
+              title={generate_button_title(@offline?, @generating?)}
+              class="btn btn-outline mt-3 min-h-11 w-full"
+            >
+              Generate street paths
+            </button>
           </div>
 
           <div id="alignment-sections" class="flex flex-col gap-2 p-4">
@@ -291,6 +470,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
             visits_by_position={@visits_by_position}
             total={length(@alignment.sections)}
             editable?={@editable?}
+            offline?={@offline?}
+            generating?={@generating?}
             dirty?={@selected.position in @dirty_positions}
             flagged?={@selected.position in @flagged_positions}
           />
@@ -322,6 +503,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         organization_name={@organization_name}
       />
       <.import_dialog dialog={@import_dialog} alignment={@alignment} />
+      <.generate_replace_dialog dialog={@generate_dialog} />
       <.blocked_dialog pending={@pending} />
       <.conflict_dialog pending={@pending} visits_by_position={@visits_by_position} />
     </div>
@@ -385,6 +567,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: false,
     doc: "shows the keyboard point list toggle for editable non-missing sections"
 
+  attr :offline?, :boolean, default: false, doc: "disables Generate until reconnected"
+  attr :generating?, :boolean, default: false, doc: "disables Generate while routing"
   attr :dirty?, :boolean, default: false
   attr :flagged?, :boolean, default: false
 
@@ -396,6 +580,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:repeat, repeat_labels(assigns.section, assigns.visits_by_position))
       |> assign(:guidance, section_guidance(assigns.section))
       |> assign(:draw?, draw_section?(assigns.section, assigns.editable?))
+      |> assign(:generate?, generate_section?(assigns.section, assigns.editable?))
       |> assign(:more?, more_actions?(assigns.section, assigns.editable?))
       |> assign(:use_shared?, use_shared?(assigns.section))
       |> assign(
@@ -416,8 +601,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         Visits {@repeat.from} → {@repeat.to}
       </p>
       <p class="mt-1 text-sm text-base-content/70">{@guidance}</p>
+      <%!-- Generate street path (step 32): the street-routing entry point on
+        sections with stop coordinates. Replacing saved points asks first
+        through the replace dialog; nothing is written before Save (CR-9). --%>
+      <div :if={@generate?} class="pa-actions mt-3">
+        <button
+          type="button"
+          id="alignment-generate-section"
+          phx-click="alignment_generate_paths"
+          phx-value-position={@section.position}
+          data-commit="alignment"
+          disabled={@offline? or @generating?}
+          title={generate_button_title(@offline?, @generating?)}
+          class="btn btn-outline min-h-11 w-full"
+        >
+          Generate street path
+        </button>
+      </div>
       <%!-- Draw manually (step 26): the primary action on sections without
-        saved geometry. No Generate control renders (CR-10). --%>
+        saved geometry. --%>
       <div :if={@draw?} class="pa-actions mt-3">
         <button
           type="button"
@@ -946,6 +1148,37 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     """
   end
 
+  attr :dialog, :map,
+    default: nil,
+    doc: "%{positions, from, to} when the generate replace dialog is open"
+
+  def generate_replace_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="alignment-generate-replace-dialog"
+      open={@dialog != nil}
+      title="Replace the drawn path?"
+      confirm_label="Generate new path"
+      pending_label="Generating…"
+      confirm_variant="primary"
+      on_confirm="alignment_confirm_generate"
+      on_cancel="alignment_close_dialog"
+      described_by="alignment-generate-replace-dialog-body"
+      return_focus_id="alignment-generate-section"
+    >
+      <div>
+        <p :if={@dialog}>
+          {@dialog.from} → {@dialog.to} already has a path. Generating replaces
+          it with a suggested street path.
+        </p>
+        <p class="mt-2 text-sm text-base-content/70">
+          Nothing is written until you save. You can undo this draft change.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
   attr :dialog, :any, default: nil, doc: "non-nil when the discard dialog is open"
 
   def discard_dialog(assigns) do
@@ -1012,6 +1245,50 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     </.confirm_dialog>
     """
   end
+
+  # Generate needs stop coordinates, like Draw, and additionally offers
+  # replacing a saved path (the replace dialog asks first). Blocked
+  # sections keep their guidance instead: generation cannot fix them.
+  defp generate_section?(%{kind: kind}, true) when kind in [:missing, :override, :shared],
+    do: true
+
+  defp generate_section?(_section, _editable?), do: false
+
+  # The first-alignment overlay shows while every section is still missing
+  # and an editor can generate. Viewers never see generation controls.
+  defp generate_overlay?(%{sections: [_ | _] = sections}, true),
+    do: Enum.all?(sections, &(&1.kind == :missing))
+
+  defp generate_overlay?(_alignment, _editable?), do: false
+
+  defp first_missing_position(%{sections: sections}) do
+    case Enum.find(sections, &(&1.kind == :missing)) do
+      %{position: position} -> position
+      nil -> nil
+    end
+  end
+
+  defp first_missing_position(_alignment), do: nil
+
+  defp generate_notice_body(%{failures: failures}) do
+    failures
+    |> Enum.map(fn %{from: from, to: to} -> "#{from} → #{to}" end)
+    |> Enum.map_join("; ", & &1)
+    |> case do
+      "" -> "Street routing found no path. Draw the section or try again."
+      names -> "#{names} may be unreachable by street routing. Draw the section or try again."
+    end
+  end
+
+  defp generate_notice_body(_notice),
+    do: "Street routing found no path. Draw the section or try again."
+
+  defp generate_draw_position(%{failures: [%{position: position} | _]}), do: position
+  defp generate_draw_position(_notice), do: nil
+
+  defp generate_button_title(true, _generating?), do: "Reconnect before generating"
+  defp generate_button_title(_offline?, true), do: "Generation is already running"
+  defp generate_button_title(_offline?, _generating?), do: nil
 
   # Draw is the primary action on sections without saved geometry:
   # missing sections, and blocked zero-length connectors whose anchors
@@ -1189,6 +1466,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   defp saved_count(alignment) do
     Enum.count(alignment.sections, &(&1.kind in [:override, :shared]))
+  end
+
+  defp missing_count(nil), do: 0
+
+  defp missing_count(alignment) do
+    Enum.count(alignment.sections, &(&1.kind == :missing))
   end
 
   # Save enables for editors with a dirty draft; the hook pushes only

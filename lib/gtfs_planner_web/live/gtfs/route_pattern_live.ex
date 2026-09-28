@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     refresh_timing_review retry_timing_review confirm_timing_dialog
     confirm_delete_timing copy_pattern confirm_delete_pattern
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
+    alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
   )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
@@ -141,6 +142,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_save_notice, nil)
      |> assign(:alignment_forced_local, [])
      |> assign(:alignment_editable, false)
+     |> assign(:alignment_generation, nil)
+     |> assign(:alignment_generate_dialog, nil)
+     |> assign(:alignment_generate_notice, nil)
      |> assign(:details_params, @creation_defaults)
      |> assign(:details_baseline, nil)
      |> assign(:details_form, details_form(@creation_defaults, []))
@@ -191,6 +195,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:alignment_save_notice, nil)
     |> assign(:alignment_forced_local, [])
     |> assign(:alignment_import_dialog, nil)
+    |> assign(:alignment_generate_dialog, nil)
+    |> assign(:alignment_generate_notice, nil)
+    |> assign(:alignment_generation, nil)
+    |> cancel_async(:alignment_generation)
   end
 
   @impl true
@@ -704,6 +712,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_generate_paths", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.generate(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_confirm_generate", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.generate(socket, Map.put(params, "confirmed", true))}
+  end
+
+  @impl true
+  def handle_event("alignment_cancel_generation", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.cancel_generation(socket, params)}
+  end
+
+  @impl true
   def handle_event("alignment_review_again", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.review_again(socket, params)}
   end
@@ -1096,6 +1119,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     handle_version_switch(socket, version_id)
   end
 
+  @impl true
+  def handle_async(:alignment_generation, result, socket) do
+    {:noreply,
+     RoutePatternAlignmentEvents.handle_generation_result(socket, :alignment_generation, result)}
+  end
+
   defp handle_version_switch(socket, version_id) do
     organization_id = socket.assigns.current_organization.id
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
@@ -1299,6 +1328,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         discard_dialog={@alignment_discard_dialog}
                         simplify_dialog={@alignment_simplify_dialog}
                         import_dialog={@alignment_import_dialog}
+                        generation={@alignment_generation}
+                        generate_dialog={@alignment_generate_dialog}
+                        generate_notice={@alignment_generate_notice}
                       />
                     <% else %>
                       <.skeleton

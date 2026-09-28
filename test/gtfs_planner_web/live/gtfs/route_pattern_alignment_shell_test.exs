@@ -375,14 +375,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
       assert has_element?(view, "#alignment-footer", "Imported shape")
     end
 
-    test "renders no placeholder and no generation control",
+    test "renders no placeholder and the step-32 generation entry point",
          %{conn: conn, organization: organization, version: version} do
       {route, pattern} = drawn_pair(organization, version)
 
-      {:ok, view, html} = live(conn, pattern_path(version, route, pattern, "?task=alignment"))
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=alignment"))
 
       refute has_element?(view, "#coming-soon")
-      refute html =~ "Generate"
+      # CR-10's slice-A restriction is lifted for these controls only:
+      # the selected saved section offers street generation (the replace
+      # dialog asks first), while Save stays the only commit.
+      assert has_element?(view, "#alignment-generate-section", "Generate street path")
       assert has_element?(view, "#alignment-save[disabled]")
     end
 

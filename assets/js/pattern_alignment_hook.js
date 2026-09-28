@@ -48,6 +48,9 @@
  *   with `convertImportedShape` into one dirty `set` draft per section,
  *   flags uncertain sections for review, and draws imported shapes as grey
  *   read-only reference polylines while the pattern still exports them.
+ * - `alignment:suggestions` (step 32) applies server-routed legs as dirty
+ *   `set` drafts with a review flag, one undo entry per section; stop
+ *   anchors stay fixed, failures push nothing.
  * - The first `tileerror` pushes `alignment_map_error` exactly once; a
  *   later `tileload` pushes `alignment_map_ok`. `alignment:retry_tiles`
  *   rebuilds the tile layer so a new failure episode reports again.
@@ -226,6 +229,12 @@ const PatternAlignment = {
     // the hook splits it into flagged section drafts (CR-9: drafts only).
     this.handleEvent("alignment:convert", (payload) =>
       this._convertImported(payload),
+    );
+    // Step 32 street generation: the server pushes routed legs as
+    // interior points per section; the hook applies them as dirty `set`
+    // drafts with a review flag (CR-9: drafts only, Save stays the commit).
+    this.handleEvent("alignment:suggestions", (payload) =>
+      this._applySuggestions(payload),
     );
     this.handleEvent("alignment:simplify", (payload) =>
       this._simplifySection(payload),
@@ -656,6 +665,52 @@ const PatternAlignment = {
     });
     const first = sections.length > 0 ? sections[0].position : null;
     if (first !== null) this._select(first, true);
+    if (this._editableSection(this._selected)) this._setMode("edit");
+    this.pushDraftState();
+  },
+
+  // Applies server-routed suggestions (step 32) as dirty `set` drafts.
+  // Each entry carries interior `[lon, lat]` points only; stop anchors
+  // stay fixed (R5). Unknown positions and misshapen points are skipped,
+  // suggested sections land in `_flagged` for review, and every applied
+  // section records one undo entry through `_recordOp` (batched: a single
+  // `pushDraftState`, mirroring `_convertImported`). Failures push
+  // nothing server-side, so there is no failure path here.
+  _applySuggestions(payload) {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    const entries =
+      payload && Array.isArray(payload.sections) ? payload.sections : null;
+    if (!entries || entries.length === 0) return;
+    const known = new Set(
+      (this._model.sections || []).map((section) => section.position),
+    );
+    let first = null;
+    entries.forEach((entry) => {
+      const position = entry ? entry.position : null;
+      const points = entry ? entry.points : null;
+      if (!Number.isInteger(position) || !known.has(position)) return;
+      if (!Array.isArray(points)) return;
+      const interior = points.filter(
+        (point) =>
+          Array.isArray(point) &&
+          point.length === 2 &&
+          point.every((coord) => Number.isFinite(coord)),
+      );
+      // An empty interior draws nothing new: skip it rather than
+      // recording a no-op draft, flag and undo entry.
+      if (interior.length === 0) return;
+      this._recordOp(
+        position,
+        interior.map(([lon, lat]) => [lon, lat]),
+        "set",
+        { dirty: true },
+      );
+      this._flagged.add(position);
+      if (first === null) first = position;
+    });
+    if (first === null) return;
+    this._select(first, true);
     if (this._editableSection(this._selected)) this._setMode("edit");
     this.pushDraftState();
   },

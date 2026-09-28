@@ -1,0 +1,235 @@
+import { test, expect } from "@playwright/test";
+import { bodyFitsViewport } from "./browser_helpers";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+
+/**
+ * Street-path generation (spec 12, step 32).
+ *
+ * `test.describe("generation")` opens the GEN-2 pattern (AL_S3 → AL_S4,
+ * every section missing) for the empty-state overlay, the in-flight state
+ * and the generated draft, and the GEN-1 pattern (touches the 40.7500 stop,
+ * so BrowserStreetRouting reports :no_route) for the routing-unavailable
+ * notice. Generation only drafts (CR-9): nothing here saves, so both
+ * patterns stay missing and every viewport reuses them. The server is the
+ * Playwright webServer block (BROWSER_E2E=true, BrowserStreetRouting —
+ * no live Geoapify calls); only tiles are stubbed.
+ */
+
+const EDITOR_USER = {
+  email: "diagram-test@gtfs-planner.test",
+  password: "DiagramTest123!",
+};
+
+const ALIGN_ROUTE = "BROWSER_ALIGN";
+const GEN_PATTERN = "BROWSER-ALIGN-GEN-2";
+const GEN_NOROUTE_PATTERN = "BROWSER-ALIGN-GEN-1";
+
+const CAPTURE_DIR = process.env.PATTERN_ALIGNMENT_CAPTURE_DIR;
+
+// A verified-transparent 1×1 PNG served for every tile request, so captures
+// never depend on the network or on Geoapify credits.
+const BLANK_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
+  "base64",
+);
+
+async function captureViewport(page, name) {
+  if (!CAPTURE_DIR) return;
+  mkdirSync(CAPTURE_DIR, { recursive: true });
+  await page.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`) });
+}
+
+async function captureFullPage(page, name) {
+  if (!CAPTURE_DIR) return;
+  mkdirSync(CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(CAPTURE_DIR, `${name}.png`),
+    fullPage: true,
+    animations: "disabled",
+  });
+}
+
+// An already authenticated session is redirected away from the login page, so
+// the form is only filled when it is actually rendered.
+async function logIn(page, user = EDITOR_USER) {
+  await page.goto("/users/log_in");
+
+  if ((await page.locator('input[name="user[email]"]').count()) === 0) return;
+
+  await page.fill('input[name="user[email]"]', user.email);
+  await page.fill('input[name="user[password]"]', user.password);
+  await page.locator('button:has-text("Log in")').click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
+}
+
+async function getVersionId(page, versionName = "Browser E2E Version") {
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: versionName });
+
+  await expect(option).toHaveCount(1);
+
+  const versionId = await option.getAttribute("data-version-id");
+  if (!versionId) throw new Error(`${versionName} is missing its version ID`);
+  return versionId;
+}
+
+function collectPageErrors(page) {
+  const problems = [];
+  page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") problems.push(`console: ${message.text()}`);
+  });
+  return problems;
+}
+
+// Waits for the LiveView root to report itself connected, so an interaction is
+// never clicked into a server-rendered page that has not been hydrated yet.
+async function waitForLiveView(page) {
+  await page.waitForSelector("[data-phx-main]", { state: "attached" });
+
+  await page.waitForFunction(
+    () => {
+      const main = document.querySelector("[data-phx-main]");
+      return (
+        Boolean(main) &&
+        main.classList.contains("phx-connected") &&
+        window.liveSocket?.isConnected()
+      );
+    },
+    { timeout: 20000 },
+  );
+}
+
+async function stubTiles(page) {
+  await page.route("**/map/tiles/**", async (route) => {
+    await route.fulfill({ contentType: "image/png", body: BLANK_PNG });
+  });
+}
+
+async function openAlignment(page, versionId, patternId) {
+  await page.goto(
+    `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${patternId}?task=alignment`,
+  );
+  await page.waitForSelector("#alignment-task", { timeout: 15000 });
+  await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+  await waitForLiveView(page);
+  await expect(
+    page.locator("#alignment-map-root .leaflet-container"),
+  ).toBeVisible({ timeout: 15000 });
+  await expect(
+    page.locator("#alignment-map-root .pa-stop-pin").first(),
+  ).toBeVisible({ timeout: 15000 });
+}
+
+test.describe("generation", () => {
+  test("generates a street path from the empty state through review at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, versionId, GEN_PATTERN);
+
+    // The first-alignment overlay offers the suggested street path with
+    // Draw manually as the secondary path.
+    await expect(page.locator("#alignment-generate-overlay")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-generate-overlay")).toContainText(
+      "Give this pattern a path",
+    );
+    await expect(page.locator("#alignment-generate-all")).toContainText(
+      "Generate street paths",
+    );
+    await expect(page.locator("#alignment-overlay-draw")).toContainText(
+      "Or draw a section",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "generate-empty-1440");
+
+    // The in-flight overlay renders before the routed legs arrive; the
+    // saved paths stay unchanged and Cancel stays available.
+    await page.locator("#alignment-generate-all").click();
+    await expect(page.locator("#alignment-generating")).toBeVisible({
+      timeout: 5000,
+    });
+    await expect(page.locator("#alignment-generating")).toContainText(
+      "Finding a street path…",
+    );
+    await expect(page.locator("#alignment-cancel-generation")).toContainText(
+      "Cancel generation",
+    );
+    await captureViewport(page, "generate-inflight-1440");
+
+    // The routed legs land as a dirty draft awaiting review before saving.
+    await expect(page.locator("#alignment-generating")).toBeHidden({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#status")).toContainText(
+      "Suggested path ready. Review the streets before saving.",
+      { timeout: 15000 },
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "generated-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // A phone-width run starts from a fresh load (drafts never persist),
+    // so the generated draft captures cleanly at 320 px too.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openAlignment(page, versionId, GEN_PATTERN);
+    await page.locator("#alignment-generate-all").click();
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+    await captureFullPage(page, "generated-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+
+  test("shows the routing-unavailable notice when no street path exists", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, versionId, GEN_NOROUTE_PATTERN);
+
+    await page.locator("#alignment-generate-all").click();
+    await expect(page.locator("#alignment-generate-notice")).toContainText(
+      "No street path found",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-generate-notice")).toContainText(
+      "Gen Hilltop → Gen Valley",
+    );
+    await expect(page.locator("#alignment-generate-retry")).toContainText(
+      "Retry",
+    );
+    await expect(page.locator("#alignment-generate-draw")).toContainText(
+      "Draw manually",
+    );
+    // The failure drafts nothing: the section stays missing.
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Missing",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "route-error-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
