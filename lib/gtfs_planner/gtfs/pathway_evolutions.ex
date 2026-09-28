@@ -23,14 +23,22 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   persisted closure row, so editing a referenced calendar or pathway never makes
   a closure stale, while any write to the row itself does.
 
-  Creates are audited, locked mutations: `create_pathway_evolution/2` rechecks
+  Creates, updates and deletes are audited, locked mutations: each rechecks
   the actor's active editor membership, locks the scoped published version with
   `Calendars.lock_published_version!/1`, validates the exact native service and
   pathway references (plus station membership when the audit context carries a
-  station), inserts through `PathwayEvolution.changeset/2` and records one
+  station), writes through `PathwayEvolution.changeset/2` and records one
   structured `pathway_evolution` change log in the same transaction. Any audit
   failure rolls the closure back. Scope comes from the `AuditContext`, never
   from the attribute map.
+
+  Updates and deletes are stale-safe: the scoped row is loaded `FOR UPDATE`
+  and its fingerprint is compared with the caller's before any write, so a save
+  or delete based on an older row returns `:stale_review` while edits beside the
+  row (calendars, pathways) never do. An unchanged valid update returns the
+  persisted row without touching `updated_at` or writing audit. The update log
+  carries explicit `before`/`after` snapshots, the delete log `before` only.
+  Delete removes only the closure row and is independent of calendar activity.
   """
 
   import Ecto.Query, warn: false
@@ -223,14 +231,70 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
       |> validate_service_reference(audit_context)
       |> validate_pathway_reference(audit_context, station)
 
-    evolution = insert_or_rollback!(changeset)
-    audit!(audit_context, evolution)
+    evolution = changeset |> Repo.insert() |> write_or_rollback!()
+    audit!(audit_context, evolution, "created")
 
-    %{
-      evolution: evolution,
-      fingerprint: fingerprint(evolution),
-      notices: notices_for(evolution)
-    }
+    mutation_result(evolution)
+  end
+
+  @doc """
+  Updates one persisted closure under the published-version write lock.
+
+  The create rules apply unchanged: the actor's active editor membership is
+  rechecked (`:forbidden` otherwise), the scoped published version is locked
+  (`:not_found` when unpublished or foreign) and the station scope is resolved
+  from the audit context. The scoped row is then loaded `FOR UPDATE` and its
+  fingerprint compared with the caller's before any write: a mismatch returns
+  `:stale_review` and an unknown, foreign or malformed closure id returns
+  `:not_found`, neither writing anything.
+
+  The update goes through `PathwayEvolution.changeset/2` (window rules and note
+  ceiling) and rechecks the native service and pathway references, including
+  station membership. A valid submission whose fields are unchanged returns the
+  persisted row and its fingerprint without touching `updated_at` or writing
+  audit. A real change records one `pathway_evolution` change log with explicit
+  `before`/`after` snapshots in the same transaction; any audit failure rolls
+  the update back. Notices match create: same-service `{:overlaps, others}` and
+  `:no_active_dates`. Scope comes from the audit context, never from `attrs`.
+  """
+  @spec update_pathway_evolution(Ecto.UUID.t(), map(), fingerprint(), AuditContext.t()) ::
+          {:ok, mutation_result()}
+          | {:error, Ecto.Changeset.t() | :forbidden | :not_found | :stale_review}
+  def update_pathway_evolution(id, attrs, expected_fingerprint, %AuditContext{} = audit_context)
+      when is_map(attrs) do
+    transact(fn ->
+      authorize_editor!(audit_context)
+      Calendars.lock_published_version!(audit_context)
+      evolution = lock_evolution!(id, expected_fingerprint, audit_context)
+      update_locked!(evolution, attrs, audit_context)
+    end)
+  end
+
+  @doc """
+  Deletes one persisted closure under the published-version write lock.
+
+  Authorization, the version lock, the scoped row load and the fingerprint
+  compare match `update_pathway_evolution/4`: a mismatched
+  fingerprint returns `:stale_review` and preserves the row, and an unknown,
+  foreign or malformed closure id returns `:not_found`.
+
+  Deletion is independent of calendar activity: no notice or active-date state
+  can block it, and only the closure row is removed — its calendar and pathway
+  rows are left intact. One `pathway_evolution` change log records the `before`
+  snapshot in the same transaction; any audit failure rolls the delete back.
+  """
+  @spec delete_pathway_evolution(Ecto.UUID.t(), fingerprint(), AuditContext.t()) ::
+          {:ok, %{deleted: PathwayEvolution.t()}}
+          | {:error, :forbidden | :not_found | :stale_review}
+  def delete_pathway_evolution(id, expected_fingerprint, %AuditContext{} = audit_context) do
+    transact(fn ->
+      authorize_editor!(audit_context)
+      Calendars.lock_published_version!(audit_context)
+      evolution = lock_evolution!(id, expected_fingerprint, audit_context)
+      deleted = evolution |> Repo.delete() |> write_or_rollback!()
+      audit!(audit_context, deleted, "deleted")
+      %{deleted: deleted}
+    end)
   end
 
   defp authorize_editor!(%AuditContext{} = audit_context) do
@@ -238,6 +302,70 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
       :ok -> :ok
       {:error, reason} -> Repo.rollback(reason)
     end
+  end
+
+  defp update_locked!(%PathwayEvolution{} = evolution, attrs, %AuditContext{} = audit_context) do
+    station = station_scope!(audit_context)
+
+    changeset =
+      evolution
+      |> PathwayEvolution.changeset(attrs)
+      |> validate_service_reference(audit_context)
+      |> validate_pathway_reference(audit_context, station)
+
+    cond do
+      not changeset.valid? ->
+        Repo.rollback(changeset)
+
+      # An unchanged valid submission writes neither row nor audit.
+      changeset.changes == %{} ->
+        mutation_result(evolution)
+
+      true ->
+        apply_update!(evolution, changeset, audit_context)
+    end
+  end
+
+  defp apply_update!(%PathwayEvolution{} = evolution, changeset, %AuditContext{} = audit_context) do
+    before = Gtfs.entity_snapshot(:pathway_evolution, evolution)
+    updated = changeset |> Repo.update() |> write_or_rollback!()
+
+    audit!(audit_context, updated, "updated", %{
+      before: before,
+      after: Gtfs.entity_snapshot(:pathway_evolution, updated)
+    })
+
+    mutation_result(updated)
+  end
+
+  # The scoped row is locked before the fingerprint compare, so concurrent
+  # editors serialize here and the slower one sees the committed row and a
+  # stale fingerprint. A missing, foreign or malformed id is :not_found.
+  defp lock_evolution!(id, expected_fingerprint, %AuditContext{} = audit_context) do
+    evolution = locked_evolution(audit_context, id)
+
+    cond do
+      is_nil(evolution) -> Repo.rollback(:not_found)
+      fingerprint(evolution) != expected_fingerprint -> Repo.rollback(:stale_review)
+      true -> evolution
+    end
+  end
+
+  defp locked_evolution(%AuditContext{} = audit_context, id) do
+    with true <- is_binary(id),
+         {:ok, uuid} <- Ecto.UUID.cast(id) do
+      from(e in scoped_evolutions(audit_context.organization_id, audit_context.gtfs_version_id),
+        where: e.id == ^uuid,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+    else
+      _other -> nil
+    end
+  end
+
+  defp mutation_result(%PathwayEvolution{} = evolution) do
+    %{evolution: evolution, fingerprint: fingerprint(evolution), notices: notices_for(evolution)}
   end
 
   # The station scope is authority, not a field: a missing, foreign or
@@ -307,19 +435,21 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
     |> Enum.any?(&(&1.pathway_id == pathway_id))
   end
 
-  defp insert_or_rollback!(%Ecto.Changeset{} = changeset) do
-    case Repo.insert(changeset) do
-      {:ok, evolution} -> evolution
-      {:error, error} -> Repo.rollback(error)
-    end
-  end
+  defp write_or_rollback!({:ok, written}), do: written
+  defp write_or_rollback!({:error, error}), do: Repo.rollback(error)
 
-  defp audit!(%AuditContext{} = audit_context, %PathwayEvolution{} = evolution) do
+  defp audit!(
+         %AuditContext{} = audit_context,
+         %PathwayEvolution{} = evolution,
+         action,
+         attrs \\ %{}
+       ) do
     case Gtfs.record_change_in_transaction(
            audit_context,
            :pathway_evolution,
            evolution,
-           "created"
+           action,
+           attrs
          ) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
