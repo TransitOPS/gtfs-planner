@@ -27,18 +27,23 @@
  *                                                     data-selected-count on it
  */
 
-// One constant so the basemap can be switched in one place (PM-13). Tiles come
-// from the existing authenticated Geoapify proxy; no key reaches the browser.
-const TILE_URL = "/map/tiles/osm-bright/{z}/{x}/{y}";
-const TILE_ATTRIBUTION =
-  "© OpenStreetMap contributors © OpenMapTiles © Geoapify";
+import {
+  STREET_MAX_ZOOM,
+  STREET_TILE_ATTRIBUTION,
+  STREET_TILE_URL,
+} from "./basemap_layers";
+
+// This surface reads zone boundaries against the streets the fare applies to,
+// so it wants the same street basemap as the Transfers map. The tile URL, its
+// attribution and the zoom ceiling all live in the shared basemap module, so the
+// streets can be switched in one place (PM-13). Tiles come from the existing
+// authenticated Geoapify proxy; no key reaches the browser.
 
 // Leaflet needs some view before the handshake reply lands; the reply's fit
 // replaces it immediately. Step 23 renders no initial-view data attributes.
 const DEFAULT_CENTER = [0, 0];
 const DEFAULT_ZOOM = 2;
 const MIN_ZOOM = 2;
-const MAX_ZOOM = 19;
 const FIT_PADDING = [24, 24];
 
 const LABEL_PANE = "fareZoneMapLabels";
@@ -219,7 +224,7 @@ const FareZoneMap = {
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
       minZoom: MIN_ZOOM,
-      maxZoom: MAX_ZOOM,
+      maxZoom: STREET_MAX_ZOOM,
       zoomControl: false,
       // The label canvas is drawn in container coordinates and is not scaled
       // with the map pane, so an animated zoom would drag the IDs away from
@@ -230,9 +235,9 @@ const FareZoneMap = {
     this._map = map;
 
     const tiles = leaflet
-      .tileLayer(TILE_URL, {
-        attribution: TILE_ATTRIBUTION,
-        maxZoom: MAX_ZOOM,
+      .tileLayer(STREET_TILE_URL, {
+        attribution: STREET_TILE_ATTRIBUTION,
+        maxZoom: STREET_MAX_ZOOM,
       })
       .addTo(map);
     this._onTileError = () => {

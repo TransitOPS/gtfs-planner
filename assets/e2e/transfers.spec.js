@@ -41,7 +41,9 @@ const NARROW = { width: 320, height: 800 };
 const ONE_PX_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC";
 
-const TILE_HOST = "https://server.arcgisonline.com/**";
+// The map draws streets through this app's own Geoapify proxy, so the tile
+// requests are same-origin and no journey reaches an external tile host.
+const TILE_ROUTE = "**/map/tiles/**";
 
 test.describe.configure({ mode: "serial" });
 
@@ -53,7 +55,7 @@ test.beforeEach(async ({ page }) => {
 
   // Registered before the first navigation of every journey: no journey may
   // reach an external tile host.
-  await page.route(TILE_HOST, (route) =>
+  await page.route(TILE_ROUTE, (route) =>
     route.fulfill({
       status: 200,
       contentType: "image/png",
@@ -481,7 +483,7 @@ test.describe("Transfers", () => {
   }, testInfo) => {
     // Aborted tile requests are this journey's whole point, so its route
     // replaces the fulfilling one the other journeys use.
-    await page.route(TILE_HOST, (route) => route.abort());
+    await page.route(TILE_ROUTE, (route) => route.abort());
 
     await openTransfers(page);
     await openCreate(page);

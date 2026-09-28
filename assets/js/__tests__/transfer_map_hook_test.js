@@ -4,15 +4,17 @@ import TransferMapHook from "../transfer_map_hook";
 import { treatmentForLocationType } from "../stop_icon_symbols";
 
 // Merge evidence (EV-26) for the TransferMap hook. The Leaflet runtime is
-// stubbed, so nothing here loads a tile or reaches the Esri hosts: these cases
+// stubbed, so nothing here loads a tile or reaches a tile host: these cases
 // establish the hook's own contract — what it draws, which events it echoes and
 // what it tears down — for CL-20 (the connection map) and CL-21 (pick on map).
 const GENERATION = "5f2b7c40-6a1e-4b1f-9c6d-2f0b5b3a1e01";
 
+// The basemap is streets, via this app's own Geoapify proxy, so the key never
+// reaches the browser. Asserted as a literal: this is the assertion that fails
+// if the map silently falls back to aerial imagery.
+const STREET_URL = "/map/tiles/osm-bright/{z}/{x}/{y}";
 const IMAGERY_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-const ROADS_URL =
-  "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}";
 
 const A_POINT = {
   stop_id: "CEN",
@@ -205,14 +207,15 @@ describe("transfer_map_hook mount and map state", () => {
       dragging: true,
       scrollWheelZoom: false,
       attributionControl: true,
+      maxZoom: 19,
     });
 
-    // The Esri layers come from addEsriBasemap, not from local tile URLs.
-    expect(L.tileLayer).toHaveBeenCalledTimes(2);
-    expect(L.tileLayer.mock.calls[0][0]).toBe(IMAGERY_URL);
-    expect(L.tileLayer.mock.calls[1][0]).toBe(ROADS_URL);
+    // The street layer comes from addStreetBasemap, and it is streets: a
+    // connection drawn over aerial imagery is a connection over nothing.
+    expect(L.tileLayer).toHaveBeenCalledTimes(1);
+    expect(L.tileLayer.mock.calls[0][0]).toBe(STREET_URL);
+    expect(L.tileLayer.mock.calls[0][0]).not.toBe(IMAGERY_URL);
     expect(tileLayer(L, 0).addTo).toHaveBeenCalledWith(map);
-    expect(tileLayer(L, 1).addTo).toHaveBeenCalledWith(map);
 
     // Two groups: connection layers this hook replaces per show, and the
     // candidates a pick session owns separately.
@@ -225,14 +228,16 @@ describe("transfer_map_hook mount and map state", () => {
     expect(map.setView).toHaveBeenCalledWith([20, 0], 1);
   });
 
-  it("tags a tile image as ready and a tile error as imagery_unavailable", () => {
+  it("tags a basemap tile loading as ready and a tile error as imagery_unavailable", () => {
     const { L } = createLeaflet();
     window.L = L;
 
     const { hook } = mountHook(buildRoot({ mapGeneration: GENERATION }));
 
+    // One street layer carries both handlers, so the same layer reports the
+    // map arriving and the map failing.
     tileHandler(L, 0, "tileload")();
-    tileHandler(L, 1, "tileerror")();
+    tileHandler(L, 0, "tileerror")();
 
     expect(hook.pushEvent).toHaveBeenNthCalledWith(1, "transfer_map_state", {
       generation: GENERATION,
@@ -758,7 +763,6 @@ describe("transfer_map_hook page controls and teardown", () => {
     events.get("transfer_map:retry")({});
 
     expect(tileLayer(L, 0).redraw).toHaveBeenCalledTimes(1);
-    expect(tileLayer(L, 1).redraw).toHaveBeenCalledTimes(1);
     expect(map.invalidateSize).toHaveBeenCalledTimes(1);
   });
 

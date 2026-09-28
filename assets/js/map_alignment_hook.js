@@ -35,7 +35,7 @@
  *   #map-other-overlays-opacity  range input controlling other-level opacity
  */
 
-import { addEsriBasemap } from "./basemap_layers";
+import { addSatelliteBasemap } from "./basemap_layers";
 import { createOtherLevelsLayers } from "./map_overlay_layers";
 import {
   normalizeDiagramPoint,
@@ -357,7 +357,10 @@ const MapAlignmentHook = {
       zoomSnap: 0.5,
     });
 
-    const [imageryLayer, roadsLayer] = addEsriBasemap(L, map);
+    // This surface is the one that needs aerial imagery: the floorplan is being
+    // matched against the station it was surveyed from, so the ground under it
+    // has to be the ground the survey was taken of.
+    const [imageryLayer, roadsLayer] = addSatelliteBasemap(L, map);
 
     this.leafletMap = map;
     this._tileLayers = [imageryLayer, roadsLayer];
