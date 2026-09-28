@@ -209,6 +209,16 @@
   background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
 }
 
+/* Which of the map's two modes is current belongs to the FareZoneMap hook: the
+   root is phx-update="ignore" and the server never re-renders the buttons, so the
+   pressed state has to be read back off the attribute the hook writes rather than
+   off a server-rendered class. Everything else about the buttons is the shared
+   button component's own. */
+#fare-zone-map [data-map-mode][aria-pressed="true"] {
+  background-color: var(--color-base-300);
+  color: var(--color-base-content);
+}
+
 /* Improve font rendering and ensure full-height background */
 html {
   min-height: 100vh;

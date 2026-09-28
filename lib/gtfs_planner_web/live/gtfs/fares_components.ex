@@ -45,6 +45,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   The callout reports what a completed save did and offers Undo, which is the
   domain's own restore of the exact previous zone bytes.
 
+  The map is the stage's other way to read and change membership. Its root is
+  static markup the `FareZoneMap` hook binds, so the server renders the controls,
+  the canvas element and the legend once and never patches them; the hook hydrates
+  from the `fare_zone_map_ready` reply and keeps its own state. The legend names
+  the zones a marker can carry, and the fallback replaces the frame with the
+  reference's copy and its two ways out when the map cannot load, because the stop
+  list below is always a complete alternative.
+
   The Fare rules and Checks bodies are added beside these components by the
   following steps.
   """
@@ -158,14 +166,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   Renders the stage's header: what the current filter shows and how much of it.
 
   The optional `actions` slot is where a tab adds its own controls beside the
-  title, so the header stays one place instead of one per step.
+  title, so the header stays one place instead of one per step. Passing `view`
+  adds the Zones tab's "Map + list" / "List" switch: which of the two the
+  operator is reading is browser state, so the server only echoes it back.
 
   ## Examples
 
-      <.stage_header title="All stops" subtitle="27 stops in this version" />
+      <.stage_header title="All stops" subtitle="27 stops in this version" view={@view} />
   """
   attr :title, :string, required: true
   attr :subtitle, :string, required: true
+  attr :view, :any, default: nil, doc: "`nil` renders no switch; otherwise `:map` or `:list`"
   slot :actions
 
   def stage_header(assigns) do
@@ -175,12 +186,200 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
         <h3 id="fare-zone-stage-title" class="text-base font-semibold">{@title}</h3>
         <p id="fare-zone-stage-subtitle" class="text-sm text-base-content/70">{@subtitle}</p>
       </div>
-      <div :if={@actions != []} class="flex flex-wrap items-center gap-2">
+      <div :if={@actions != [] or @view != nil} class="flex flex-wrap items-center gap-2">
         {render_slot(@actions)}
+        <.segmented_control
+          :if={@view != nil}
+          id="fare-zone-view"
+          name="view"
+          legend="Stop display"
+          options={[{"Map + list", "map"}, {"List", "list"}]}
+          value={Atom.to_string(@view)}
+          event="set_view"
+          appearance={:joined}
+        />
       </div>
     </div>
     """
   end
+
+  @doc """
+  Renders the Zones tab's map: the hook's root and the controls it binds.
+
+  The markup here is deliberately static. `phx-update="ignore"` keeps the server
+  from patching anything inside the root, and the `FareZoneMap` hook binds the
+  mode, zoom and fit controls itself, so Select/Pan is browser state the server
+  never has to carry. `[data-map-hint]` ships the Select copy so the frame reads
+  correctly before the hook mounts, and the hook keeps it current per mode.
+
+  The frame's height is fixed so the map never pushes the stop list out of reach,
+  and the controls sit above the Leaflet panes so they stay operable while the
+  map is dragged or zoomed. The hint clears the tile attribution Leaflet prints
+  along the frame's bottom edge, which at 320 px wraps to two lines: the hint
+  sits above that band instead of colliding with it.
+
+  ## Examples
+
+      <.zone_map />
+  """
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def zone_map(assigns) do
+    ~H"""
+    <div
+      id="fare-zone-map"
+      phx-hook="FareZoneMap"
+      phx-update="ignore"
+      class={[
+        "relative overflow-hidden border-b border-base-300 bg-base-200",
+        map_frame_class(),
+        @class
+      ]}
+      {@rest}
+    >
+      <%!-- The Leaflet container. The hook draws here and writes data-map-state,
+      data-point-count and data-selected-count on it. --%>
+      <div data-map-canvas class="absolute inset-0"></div>
+
+      <div class="absolute left-3 top-3 z-[900] flex flex-wrap gap-1.5">
+        <.map_control data-map-mode="select" aria-pressed="true">Select stops</.map_control>
+        <.map_control data-map-mode="pan" aria-pressed="false">Pan map</.map_control>
+      </div>
+
+      <div class="absolute right-3 top-3 z-[900] grid gap-1.5">
+        <.map_control data-map-zoom="in" aria-label="Zoom in">＋</.map_control>
+        <.map_control data-map-zoom="out" aria-label="Zoom out">−</.map_control>
+        <.map_control data-map-fit>Fit</.map_control>
+      </div>
+
+      <p
+        data-map-hint
+        class="absolute bottom-12 left-3 z-[900] max-w-[calc(100%-1.5rem)] rounded border border-base-300 bg-base-100/90 px-2.5 py-1.5 text-xs"
+      >
+        Click stops or drag a box to select. The box does not create a zone boundary.
+      </p>
+    </div>
+    """
+  end
+
+  # One control inside the map frame. The frame sits over tiles, so each control
+  # carries its own opaque surface rather than the outline variant's transparent
+  # one, and `min-h-11` keeps the touch target the workspace's other controls use.
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  defp map_control(assigns) do
+    ~H"""
+    <.button
+      type="button"
+      variant="secondary"
+      size="sm"
+      class="min-h-11 bg-base-100 hover:bg-base-200"
+      {@rest}
+    >
+      {render_slot(@inner_block)}
+    </.button>
+    """
+  end
+
+  @doc """
+  Renders the map's legend: a chip and name per zone a marker can carry, then
+  Unassigned.
+
+  Only zones with at least one boardable stop are listed, because the map draws
+  exactly those stops; a zone with no stops has no marker to explain. The chip
+  repeats the inventory's own treatment, so a color means the same thing in the
+  panel, the legend and the list, and the zone ID is printed beside it rather
+  than conveyed by color alone.
+
+  ## Examples
+
+      <.map_legend zones={@inventory.zones} />
+  """
+  attr :zones, :list, required: true, doc: "the inventory's zones"
+
+  def map_legend(assigns) do
+    assigns = assign(assigns, :shown, Enum.filter(assigns.zones, &(&1.stop_count > 0)))
+
+    ~H"""
+    <div
+      id="fare-zone-map-legend"
+      class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-base-300 px-4 py-2.5 text-xs"
+    >
+      <span :for={zone <- @shown} class="flex items-center gap-1.5">
+        <span
+          class={chip_class(FareZone.color_hex(zone.color))}
+          style={chip_style(FareZone.color_hex(zone.color))}
+          aria-hidden="true"
+        >
+          <span class="truncate">{zone.zone_id}</span>
+        </span>
+        <span>{zone.name}</span>
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class={chip_class(nil)} aria-hidden="true">–</span>
+        <span>Unassigned</span>
+      </span>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the fallback the Zones tab shows when the map cannot load.
+
+  Both ways out are here because the two failures are different: Retry map is for
+  a map that can load now, and Use stop list is for an operator who wants the work
+  done without the map. The stop list below stays a complete alternative either
+  way, which is what the copy says. The fallback occupies the map's own fixed
+  height, so a failed map neither moves the list nor changes the stage's layout
+  when Retry brings the frame back.
+
+  ## Examples
+
+      <.map_unavailable />
+  """
+  def map_unavailable(assigns) do
+    ~H"""
+    <div
+      id="fare-zone-map-unavailable"
+      class={[
+        "flex items-center justify-center border-b border-base-300 bg-base-200 px-4",
+        map_frame_class()
+      ]}
+    >
+      <.empty_state title="The map is unavailable" class="w-full max-w-xl">
+        <p>You can still find and assign every stop in the list.</p>
+        <:action>
+          <div class="flex flex-wrap items-center justify-center gap-2">
+            <.button
+              id="fare-zone-map-retry"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="retry_map"
+            >
+              Retry map
+            </.button>
+            <.button
+              id="fare-zone-map-use-list"
+              type="button"
+              variant="primary"
+              class="min-h-11"
+              phx-click="use_stop_list"
+            >
+              Use stop list
+            </.button>
+          </div>
+        </:action>
+      </.empty_state>
+    </div>
+    """
+  end
+
+  # The map's frame height, fixed so the map never pushes the stop list out of
+  # reach and the fallback that replaces it does not change the stage's height.
+  defp map_frame_class, do: "h-80 w-full md:h-[400px]"
 
   @doc """
   Renders the stage's stop list: search, the unlocated count, the rows and the
@@ -220,6 +419,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     required: true,
     doc: "how many stops the current filter and search match"
 
+  slot :before_stops,
+    doc: "content between the search row and the stops head: the Zones tab's map"
+
   def stop_list(assigns) do
     assigns =
       assigns
@@ -250,6 +452,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           {@stop_page.without_location_count} without map location
         </p>
       </form>
+
+      {render_slot(@before_stops)}
 
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <p id="fare-zone-stop-head" class="text-sm">

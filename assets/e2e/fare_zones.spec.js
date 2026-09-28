@@ -925,3 +925,106 @@ test("delete dialog", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?dialog=delete", "ref-delete");
 });
+
+// ── zones map ─────────────────────────────────────────────────────────────
+
+// The Zones tab's map. The hook hydrates from the server's `fare_zone_map_ready`
+// reply and draws beside the stop list, the stage header's switch removes it, and
+// a map that cannot load becomes the reference's fallback with both ways out.
+// Tiles are answered locally in each direction: a blank PNG while the map is
+// expected to work, and a 500 when it is expected to fail.
+test("zones map", async ({ page, context }, testInfo) => {
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+  await openFares(page, "zones");
+
+  const canvas = page.locator("#fare-zone-map [data-map-canvas]");
+
+  // The seeded version carries 26 located boardable stops. `ready` means the
+  // handshake reply arrived and was applied, so the count beside it is the
+  // hydrated snapshot rather than a placeholder.
+  await expect(page.locator("#fare-zone-map")).toBeVisible();
+  await expect(canvas).toHaveAttribute("data-map-state", "ready");
+  await expect(canvas).toHaveAttribute("data-point-count", "26");
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("All stops");
+
+  // Map + list is one stage: the map, its legend and the complete list below it.
+  await expect(page.locator("#fare-zone-map-legend")).toContainText("Central");
+  await expect(page.locator("#fare-zone-map-legend")).toContainText("Eastbank");
+  await expect(page.locator("#fare-zone-map-legend")).toContainText("Unassigned");
+  await expect(page.locator("#fare-zone-stop-list")).toBeVisible();
+  await expect(page.locator("#fare-zone-map [data-map-hint]")).toContainText(
+    "Click stops or drag a box to select.",
+  );
+  await expect(page.locator("#fare-zone-map [data-map-mode='select']")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("#fare-zone-map [data-map-zoom='in']")).toHaveAttribute(
+    "aria-label",
+    "Zoom in",
+  );
+
+  await capture(page, testInfo, "zones-map-1440", { fullPage: false });
+
+  // List takes the stage: the map root and its hook go, the list stays.
+  await page.locator('label[for="fare-zone-view-option-list"]').click();
+
+  await expect(page.locator("#fare-zone-map")).toHaveCount(0);
+  await expect(page.locator("#fare-zone-map-legend")).toHaveCount(0);
+  await expect(page.locator("#fare-zone-stop-list")).toBeVisible();
+
+  await capture(page, testInfo, "zones-map-list-1440", { fullPage: false });
+
+  // Back to Map + list, where a fresh hook hydrates from its own reply.
+  await page.locator('label[for="fare-zone-view-option-map"]').click();
+
+  await expect(page.locator("#fare-zone-map")).toBeVisible();
+  await expect(canvas).toHaveAttribute("data-map-state", "ready");
+  await expect(canvas).toHaveAttribute("data-point-count", "26");
+
+  // At 320 px the frame is full width and the page does not overflow.
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#fare-zone-map")).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  await capture(page, testInfo, "zones-map-320", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // A map whose tiles fail becomes the fallback on a fresh page, so the first
+  // tile error is the one this render sees.
+  const failed = await context.newPage();
+
+  await failed.setViewportSize(DESKTOP);
+  await failed.route("**/map/tiles/**", (route) => route.fulfill({ status: 500, body: "" }));
+  await openFares(failed, "zones");
+
+  await expect(failed.locator("#fare-zone-map")).toHaveCount(0);
+  await expect(failed.locator("#fare-zone-map-unavailable")).toBeVisible();
+  await expect(failed.locator("#fare-zone-map-unavailable")).toContainText(
+    "The map is unavailable",
+  );
+  await expect(failed.locator("#fare-zone-map-unavailable")).toContainText(
+    "You can still find and assign every stop in the list.",
+  );
+  await expect(failed.locator("#fare-zone-map-retry")).toHaveText("Retry map");
+  await expect(failed.locator("#fare-zone-map-use-list")).toHaveText("Use stop list");
+  // The legend stays under the fallback, as the reference keeps it.
+  await expect(failed.locator("#fare-zone-map-legend")).toContainText("Central");
+  // The list is the complete alternative, exactly as the copy says.
+  await expect(failed.locator("#fare-zone-stop-list")).toBeVisible();
+
+  await capture(failed, testInfo, "zones-map-unavailable", { fullPage: false });
+
+  // Use stop list is the fallback's other way out.
+  await failed.locator("#fare-zone-map-use-list").click();
+
+  await expect(failed.locator("#fare-zone-map-unavailable")).toHaveCount(0);
+  await expect(failed.locator("#fare-zone-stop-list")).toBeVisible();
+
+  await failed.close();
+
+  await captureReference(page, testInfo, "?state=ready", "ref-zones");
+  await captureReference(page, testInfo, "?state=map-error", "ref-zones-map-error");
+});

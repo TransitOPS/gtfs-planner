@@ -83,6 +83,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   and fences the next confirm against them, and a zone another editor removed
   closes the dialog with what happened. Success patches to All stops and reports
   "Zone deleted." (AC-16, AC-26).
+
+  The Zones tab's map is the stage's other membership surface. `@view` decides
+  whether the map is shown beside the list or the list takes the stage, and the
+  map itself carries no state here: the `FareZoneMap` hook mounts, replies to
+  `fare_zone_map_ready` with the whole `map_snapshot/1`, and the server answers
+  every later change with the narrowest delta the protocol has - a selection
+  change, the stops an assignment moved, the colors a metadata edit changed, the
+  whole snapshot after a rename or a delete, and the filter. `@map_mounted?`
+  records whether a hook is mounted to receive them, so nothing is pushed at a
+  map that is not there, and `@map_state` records the one failure the map has:
+  `map_unavailable` replaces the frame with the reference's copy and its two ways
+  out, and Retry map renders the hook again, where the next mount hydrates from a
+  fresh reply rather than from deltas it never received (CR-8, AC-29).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -94,12 +107,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       first_use_empty: 1,
       load_error: 1,
       loading: 1,
+      map_legend: 1,
+      map_unavailable: 1,
       saved_callout: 1,
       selection_bar: 1,
       stage_header: 1,
       stop_list: 1,
       zone_drawer: 1,
-      zone_inventory: 1
+      zone_inventory: 1,
+      zone_map: 1
     ]
 
   alias GtfsPlanner.Gtfs
@@ -162,6 +178,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:zone_delete, nil)
      |> assign(:zone_delete_return_focus_id, nil)
      |> assign(:zone_notice, nil)
+     |> assign(:view, :map)
+     |> assign(:map_state, :ready)
+     |> assign(:map_mounted?, false)
+     |> assign(:map_filter, nil)
+     |> assign(:map_snapshot_after_load, false)
      |> stream(:stops, [])}
   end
 
@@ -178,6 +199,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       |> assign(:undo, undo_after_patch(socket, action))
       |> assign(:zone_notice, notice_after_patch(socket, action))
       |> assign(:workspace_action, action)
+      # A patch that leaves the Zones tab removes the map root with the rest of
+      # the stage, so the hook it held is gone and must not be pushed to until a
+      # new one mounts and hydrates (CR-8).
+      |> assign(:map_mounted?, socket.assigns.map_mounted? and action == :zones)
 
     if connected?(socket) do
       {:noreply, load_workspace(socket)}
@@ -245,8 +270,67 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   @impl true
   def handle_event("clear_selection", _params, socket) do
-    {:noreply, socket |> assign(:selection, MapSet.new()) |> restream_page()}
+    {:noreply, socket |> assign_selection(MapSet.new()) |> restream_page()}
   end
+
+  # The map's handshake. A newly mounted hook asks for the whole state and draws
+  # from this reply alone, so Retry map, List -> Map + list and a tab return each
+  # begin from the current points, colors, selection and filter rather than from
+  # whatever deltas an earlier mount happened to receive (CR-8, AC-29). The reply
+  # is the same payload a later `fare_zone_snapshot` carries.
+  @impl true
+  def handle_event("fare_zone_map_ready", _params, socket) do
+    {:reply, map_snapshot(socket),
+     socket
+     |> assign(:map_mounted?, socket.assigns.map_state == :ready)
+     |> assign(:map_filter, socket.assigns.filter)}
+  end
+
+  # A box dragged on the map. The IDs arrive from the browser, so each one is
+  # cast and then resolved against this version's own boardable stops before it
+  # can join the selection: a malformed value, a stop of another organization or
+  # version, or a station of this one is dropped without reaching a query
+  # (CR-5, INV-1). The selection grows by what remains.
+  @impl true
+  def handle_event("select_stops", %{"ids" => ids}, socket) when is_list(ids) do
+    {:noreply, select(socket, MapSet.new(known_stop_ids(socket, ids)))}
+  end
+
+  def handle_event("select_stops", _params, socket), do: {:noreply, socket}
+
+  # The hook reports the one map failure it can have - Leaflet is missing, or the
+  # first tile did not load - and the frame becomes the reference's fallback. The
+  # root goes with it, so the map is not mounted until Retry map renders it again.
+  @impl true
+  def handle_event("map_unavailable", _params, socket) do
+    {:noreply, socket |> assign(:map_state, :unavailable) |> unmount_map()}
+  end
+
+  @impl true
+  def handle_event("retry_map", _params, socket) do
+    {:noreply, assign(socket, :map_state, :ready)}
+  end
+
+  # Use stop list is the fallback's other way out: the same List view the stage
+  # header's switch selects, so the map stops rendering and the list takes the
+  # stage.
+  @impl true
+  def handle_event("use_stop_list", _params, socket) do
+    {:noreply, socket |> assign(:view, :list) |> assign(:map_mounted?, false)}
+  end
+
+  # Which of the two views the stage shows. It is a display choice rather than
+  # URL state, so it stays in the socket; leaving the map view removes the hook's
+  # root and returning renders a fresh one that hydrates from its own reply.
+  @impl true
+  def handle_event("set_view", %{"view" => view}, socket) when view in ["map", "list"] do
+    {:noreply,
+     socket
+     |> assign(:view, String.to_existing_atom(view))
+     |> assign(:map_mounted?, false)}
+  end
+
+  def handle_event("set_view", _params, socket), do: {:noreply, socket}
 
   # Opening a review is a read: the domain reports, from current database values,
   # what each selected stop would change to, and which of its sibling platforms
@@ -465,6 +549,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
             <.stage_header
               title={stage_title(@filter, @inventory)}
               subtitle={stage_subtitle(@filter, @inventory)}
+              view={@view}
             >
               <:actions :if={stage_zone_id(@filter, @inventory)}>
                 <.button
@@ -492,7 +577,21 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
               patch_base={zones_path(@current_gtfs_version.id)}
               selection={@selection}
               matching_count={MapSet.size(@matching_ids)}
-            />
+            >
+              <%!-- The map is the stage's first surface in Map + list view, between
+              the search row and the stops: choosing List removes the root and its
+              hook, and Retry map renders it again, where the new mount hydrates
+              from its own reply. --%>
+              <:before_stops>
+                <div :if={@view == :map}>
+                  <.zone_map :if={@map_state == :ready} />
+                  <.map_unavailable :if={@map_state == :unavailable} />
+                  <%!-- The legend stays under the fallback, as the reference keeps
+                  it: the colors it names are the ones the list below shows. --%>
+                  <.map_legend zones={@inventory.zones} />
+                </div>
+              </:before_stops>
+            </.stop_list>
 
             <.selection_bar
               selection={@selection}
@@ -595,11 +694,44 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> stream(:stops, stop_page.entries, reset: true)
         |> assign(:load_state, :ready)
         |> resolve_zone_filter(inventory)
+        |> sync_map_filter()
+        |> push_pending_map_snapshot()
 
       {:error, :unavailable} ->
         # The previous load stays in assigns so a failed refresh never erases
         # values a later step can still render; the state decides what is shown.
-        assign(socket, :load_state, :unavailable)
+        # The stage body goes with the error callout, so the map's hook is gone
+        # and nothing is pushed to it until Reload renders a fresh one.
+        socket
+        |> assign(:load_state, :unavailable)
+        |> unmount_map()
+    end
+  end
+
+  # The filter the map dims by is a delta, so it is pushed when it actually
+  # changed: a search or a page patch reloads the workspace without touching it.
+  defp sync_map_filter(socket) do
+    if socket.assigns.map_mounted? and socket.assigns.map_filter != socket.assigns.filter do
+      socket
+      |> assign(:map_filter, socket.assigns.filter)
+      |> push_event("fare_zone_filter", %{filter: map_filter_payload(socket.assigns.filter)})
+    else
+      socket
+    end
+  end
+
+  # A rename or a delete invalidates the whole map state - the stored IDs every
+  # point carries moved with it - so the snapshot cannot be built from the
+  # inventory the write replaced. The write marks the next load, which is the
+  # first moment the fresh state is in hand, and this pushes the snapshot from
+  # exactly there.
+  defp push_pending_map_snapshot(socket) do
+    if socket.assigns.map_snapshot_after_load do
+      socket
+      |> assign(:map_snapshot_after_load, false)
+      |> push_map_snapshot()
+    else
+      socket
     end
   end
 
@@ -626,16 +758,45 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     cond do
       MapSet.member?(socket.assigns.selection, id) ->
         socket
-        |> assign(:selection, MapSet.delete(socket.assigns.selection, id))
+        |> assign_selection(MapSet.delete(socket.assigns.selection, id))
         |> restream_stop(id)
 
       known_stop?(socket, id) ->
         socket
-        |> assign(:selection, MapSet.put(socket.assigns.selection, id))
+        |> assign_selection(MapSet.put(socket.assigns.selection, id))
         |> restream_stop(id)
 
       true ->
         socket
+    end
+  end
+
+  # The IDs a dragged box reported, cast and then filtered to this version's own
+  # boardable stops in one scoped read. Casting first matters: the domain compares
+  # UUIDs in SQL, so a value that is not a UUID is dropped before it can raise,
+  # and the read's scope drops UUIDs of another organization or version, stations
+  # and unlocated stops alike.
+  defp known_stop_ids(socket, ids) do
+    uuids =
+      ids
+      |> Enum.filter(&is_binary/1)
+      |> Enum.flat_map(fn id ->
+        case Ecto.UUID.cast(id) do
+          {:ok, uuid} -> [uuid]
+          :error -> []
+        end
+      end)
+
+    case uuids do
+      [] ->
+        []
+
+      uuids ->
+        FareZones.matching_stop_ids(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id,
+          ids: uuids
+        )
     end
   end
 
@@ -660,8 +821,26 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp select(socket, ids) do
     socket
-    |> assign(:selection, MapSet.union(socket.assigns.selection, ids))
+    |> assign_selection(MapSet.union(socket.assigns.selection, ids))
     |> restream_page()
+  end
+
+  # The one place the selection changes, so the map's delta is never forgotten:
+  # the hook rings newly selected stops and drops the rings of removed ones, and
+  # it learns of both from this push rather than from a re-render it cannot see
+  # (the root is `phx-update="ignore"`). A change is pushed only while a hook is
+  # mounted; a map that mounts later receives the whole selection in its reply.
+  defp assign_selection(socket, selection) do
+    added = selection |> MapSet.difference(socket.assigns.selection) |> MapSet.to_list()
+    removed = socket.assigns.selection |> MapSet.difference(selection) |> MapSet.to_list()
+
+    socket = assign(socket, :selection, selection)
+
+    if socket.assigns.map_mounted? and (added != [] or removed != []) do
+      push_event(socket, "fare_zone_selection", %{added: added, removed: removed})
+    else
+      socket
+    end
   end
 
   # Re-sending the page's rows keeps each rendered checkbox with the state behind
@@ -784,14 +963,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     case socket.assigns.zone_drawer_zone_id do
       nil ->
         case FareZones.create_zone(organization_id, gtfs_version_id, params) do
-          {:ok, zone} -> zone_saved(socket, zone, @zone_created_message)
+          {:ok, zone} -> zone_saved(socket, zone, @zone_created_message, nil)
           {:error, %Ecto.Changeset{} = changeset} -> zone_form_error(socket, changeset)
           {:error, :not_found} -> assign(socket, :zone_error, @save_failed_message)
         end
 
       current_zone_id ->
         case FareZones.update_zone(organization_id, gtfs_version_id, current_zone_id, params) do
-          {:ok, zone} -> zone_saved(socket, zone, @zone_updated_message)
+          {:ok, zone} -> zone_saved(socket, zone, @zone_updated_message, current_zone_id)
           {:error, %Ecto.Changeset{} = changeset} -> zone_form_error(socket, changeset)
           {:error, :not_found} -> zone_edit_not_found(socket, current_zone_id)
         end
@@ -830,16 +1009,34 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # again. The saved zone becomes the filter the way clicking its row does - so a
   # create shows the new zone's own list - except when an edit kept the ID, where
   # the URL already names exactly that zone.
-  defp zone_saved(socket, zone, message) do
+  #
+  # `previous_zone_id` is the edit key the write ran under: nil for a create, and
+  # the exact stored ID for an edit, which is what tells a rename from a metadata
+  # edit. A create adds no point and no color to the map; a metadata edit changes
+  # only the zone's name and color; a rename moves the ID every member's point
+  # carries, so the map's whole state is stale (CR-8).
+  defp zone_saved(socket, zone, message, previous_zone_id) do
     socket =
       socket
       |> close_zone_drawer()
       |> assign(:undo, nil)
       |> assign(:zone_notice, message)
 
-    case socket.assigns.filter do
-      {:zone, zone_id} when zone_id == zone.zone_id -> load_workspace(socket)
-      _filter -> push_patch(socket, to: zone_filter_url(socket, zone.zone_id))
+    cond do
+      is_binary(previous_zone_id) and previous_zone_id != zone.zone_id ->
+        socket
+        |> assign(:map_snapshot_after_load, true)
+        |> push_patch(to: zone_filter_url(socket, zone.zone_id))
+
+      socket.assigns.filter == {:zone, zone.zone_id} ->
+        socket = load_workspace(socket)
+
+        # An edit kept the ID, so the map's points, selection and filter are
+        # unchanged and only the zone's name and color are new.
+        if is_binary(previous_zone_id), do: push_map_zones(socket), else: socket
+
+      true ->
+        push_patch(socket, to: zone_filter_url(socket, zone.zone_id))
     end
   end
 
@@ -951,11 +1148,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       {:ok, _result} ->
         # A write happened, so the workspace is the base path the reference
         # reports from (All stops), the previous assignment save's Undo is no
-        # longer what the page is about, and the dialog is done.
+        # longer what the page is about, and the dialog is done. Deleting a zone
+        # moves the stored ID on every member stop and can remove a zone from the
+        # map's colors, so the write marks the next load and that load pushes the
+        # snapshot: the map is never left drawing the deleted zone.
         socket
         |> assign(:zone_delete, nil)
         |> assign(:undo, nil)
         |> assign(:zone_notice, @zone_deleted_message)
+        |> assign(:map_snapshot_after_load, true)
         |> push_patch(to: zones_path(socket.assigns.current_gtfs_version.id))
 
       # Another editor changed the zone since the dialog opened. Nothing was
@@ -1093,11 +1294,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       {:ok, %{applied: applied}} ->
         # The review is done: the selection it was made from is cleared, and the
         # workspace is read again so the rows show the zones that were written.
+        # The map is told both changes - the selection it can no longer ring and
+        # the stops whose zone moved - instead of re-reading its own state.
         socket =
           socket
-          |> assign(:selection, MapSet.new())
+          |> assign_selection(MapSet.new())
           |> load_workspace()
           |> assign(:assignment, nil)
+          |> push_map_points_changed(applied)
 
         assign(socket, :undo, %{
           kind: "success",
@@ -1138,10 +1342,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
            socket.assigns.current_gtfs_version.id,
            socket.assigns.undo.applied
          ) do
-      {:ok, %{applied: _applied}} ->
+      {:ok, %{applied: applied}} ->
+        # `applied` is the undo's own change list, so its `to` is the zone each stop
+        # was restored to; the map restyles exactly those stops.
         socket
         |> load_workspace()
         |> assign(:undo, %{kind: "success", applied: nil, message: "Change undone."})
+        |> push_map_points_changed(applied)
 
       {:error, reason} ->
         socket
@@ -1171,6 +1378,79 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # so this takes the assigns map rather than the socket).
   defp inventory_zones(%{inventory: nil}), do: []
   defp inventory_zones(%{inventory: inventory}), do: inventory.zones
+
+  # The whole state a newly mounted map draws from: the version's located
+  # boardable points, the color each zone ID has, the selection and the filter. It
+  # answers the hook's handshake and is the payload of every `fare_zone_snapshot`,
+  # so a remount can never depend on deltas an earlier mount received (CR-8).
+  # Points come from the domain's own read, and the colors are the palette hex
+  # values the panel and the list already use for the same zones.
+  defp map_snapshot(socket) do
+    %{
+      points:
+        FareZones.list_stop_points(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id
+        ),
+      zones: map_zones(socket),
+      selected: socket.assigns.selection |> MapSet.to_list() |> Enum.sort(),
+      filter: map_filter_payload(socket.assigns.filter)
+    }
+  end
+
+  defp map_zones(socket) do
+    Map.new(inventory_zones(socket.assigns), fn zone ->
+      {zone.zone_id, %{name: zone.name, color: FareZone.color_hex(zone.color)}}
+    end)
+  end
+
+  # The filter as the hook reads it: a kind it can match, and the exact stored
+  # zone ID bytes of a zone filter (INV-3).
+  defp map_filter_payload(:all), do: %{kind: "all", zone_id: nil}
+  defp map_filter_payload(:unassigned), do: %{kind: "unassigned", zone_id: nil}
+  defp map_filter_payload({:zone, zone_id}), do: %{kind: "zone", zone_id: zone_id}
+
+  # `@map_mounted?` is the single gate on every push: a hook that is not in the
+  # page has no `handleEvent` to receive one, and a map that mounts later
+  # hydrates from its own reply instead.
+  defp push_map_snapshot(socket) do
+    if socket.assigns.map_mounted? do
+      socket
+      |> assign(:map_filter, socket.assigns.filter)
+      |> push_event("fare_zone_snapshot", map_snapshot(socket))
+    else
+      socket
+    end
+  end
+
+  defp push_map_zones(socket) do
+    if socket.assigns.map_mounted? do
+      push_event(socket, "fare_zone_zones", %{zones: map_zones(socket)})
+    else
+      socket
+    end
+  end
+
+  # The stops an assignment save or Undo moved, as `[stop id, zone id or nil]`.
+  # A stop the map does not draw (no coordinates) has no marker to restyle and the
+  # hook skips it, which is AC-7's located boardable point set.
+  defp push_map_points_changed(socket, applied) do
+    changes = Enum.map(applied, fn change -> [change.id, change.to] end)
+
+    if socket.assigns.map_mounted? and changes != [] do
+      push_event(socket, "fare_zone_points_changed", %{changes: changes})
+    else
+      socket
+    end
+  end
+
+  # No map root is in the page (List view, the fallback, a failed load or another
+  # tab), so nothing is pushed at it until a new hook mounts and hydrates.
+  defp unmount_map(socket) do
+    socket
+    |> assign(:map_mounted?, false)
+    |> assign(:map_filter, nil)
+  end
 
   # The zone the current filter names when the inventory still carries it, else the
   # first zone of the inventory. The IDs are compared byte-for-byte.
