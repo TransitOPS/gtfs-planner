@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   use GtfsPlannerWeb, :live_view
   require Logger
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.TransitPresentation
@@ -24,6 +25,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:user_roles, user_roles)
      |> assign(:stop_state, :loading)
      |> assign(:child_stops_state, :ready)
+     |> assign(:fare_zone, nil)
+     |> assign(:platform_fare_zones, [])
      |> assign(:levels_state, :ready)
      |> assign(:pathways_state, :ready)
      |> assign(:editing_status_state, :ready)
@@ -76,6 +79,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           socket
           |> assign(:stop, stop)
           |> assign(:stop_state, :ready)
+          |> assign(:fare_zone, fare_zone(socket, stop))
           |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, stop))
 
         socket = load_regions(socket)
@@ -172,6 +176,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           socket
           |> assign(:stop, stop)
           |> assign(:stop_state, :ready)
+          |> assign(:fare_zone, fare_zone(socket, stop))
           |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, stop))
 
         socket = load_regions(socket)
@@ -349,12 +354,76 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     |> assign(:child_stops_by_level, child_stops_by_level)
     |> assign(:child_stops_empty?, child_stops == [])
     |> assign(:child_stops_count, length(child_stops))
+    |> assign(:platform_fare_zones, platform_fare_zones(socket, child_stops))
     |> stream(:child_stops, child_stops, reset: true)
   end
 
   defp apply_child_stops_region(socket, {:error, :unavailable}) do
     assign(socket, :child_stops_state, :unavailable)
   end
+
+  # The fare zone a boardable stop itself carries, named by this version through
+  # `FareZones.zone_names/3` (a zone record's name, or the ID when the zone is
+  # implied by stops or fare rules rather than declared). A station's or an
+  # entrance's own `zone_id` is not a fare zone on this page (CR-5), and the
+  # stored bytes are shown exactly as they are kept (INV-3).
+  defp fare_zone(socket, %Stop{location_type: 0, zone_id: zone_id}) when is_binary(zone_id) do
+    %{zone_id: zone_id, name: Map.get(zone_names(socket, [zone_id]), zone_id, zone_id)}
+  end
+
+  defp fare_zone(_socket, _stop), do: nil
+
+  # A station's platform fare zones are the distinct zones of the boardable stops
+  # in its child-stops region: entrances, boarding areas and platforms without a
+  # zone contribute nothing, and the station's own `zone_id` is never used
+  # (CR-5). The IDs keep their exact stored bytes in byte order, so the entry is
+  # stable between loads (INV-3).
+  defp platform_fare_zones(%{assigns: %{stop: %Stop{location_type: 1}}} = socket, child_stops) do
+    zone_ids =
+      child_stops
+      |> Enum.filter(&(&1.location_type == 0 and is_binary(&1.zone_id)))
+      |> Enum.map(& &1.zone_id)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    names = zone_names(socket, zone_ids)
+
+    Enum.map(zone_ids, fn zone_id ->
+      %{zone_id: zone_id, name: Map.get(names, zone_id, zone_id)}
+    end)
+  end
+
+  defp platform_fare_zones(_socket, _child_stops), do: []
+
+  defp zone_names(socket, zone_ids) do
+    FareZones.zone_names(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      zone_ids
+    )
+  end
+
+  # Every Fares link is built here, so the zone travels as its own query key
+  # through `URI.encode_query/1` and `filter=unassigned` stays a different key
+  # from `zone` (CR-7). No zone ID reaches a DOM ID.
+  defp fares_zone_path(gtfs_version_id, nil) do
+    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"filter" => "unassigned"})
+  end
+
+  defp fares_zone_path(gtfs_version_id, zone_id) do
+    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"zone" => zone_id})
+  end
+
+  # The zone as "name · ID", which is how the workspace names a zone; an
+  # undeclared zone's name is its own ID, so the entry never reads as blank, and
+  # a stop with no zone reads "None".
+  defp fare_zone_label(nil), do: "None"
+
+  defp fare_zone_label(%{zone_id: zone_id, name: name}) when is_binary(name) and name != "" do
+    "#{name} · #{zone_id}"
+  end
+
+  defp fare_zone_label(%{zone_id: zone_id}), do: zone_id
 
   defp apply_levels_region(socket, {:ok, levels}) do
     socket
@@ -783,6 +852,52 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                 <div>
                   <dt class="text-sm font-medium text-base-content/70">Platform Code</dt>
                   <dd class="mt-1 text-base">{@stop.platform_code || "—"}</dd>
+                </div>
+
+                <div :if={@stop.location_type == 0}>
+                  <dt class="text-sm font-medium text-base-content/70">Fare zone</dt>
+                  <dd class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-base">
+                    <span id="stop-fare-zone">{fare_zone_label(@fare_zone)}</span>
+                    <.link
+                      id="stop-fare-zone-link"
+                      navigate={
+                        fares_zone_path(@current_gtfs_version.id, @fare_zone && @fare_zone.zone_id)
+                      }
+                      class="inline-flex min-h-11 items-center text-sm font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                    >
+                      View in Fares
+                    </.link>
+                  </dd>
+                </div>
+
+                <div :if={@stop.location_type == 1}>
+                  <dt class="text-sm font-medium text-base-content/70">Platform fare zones</dt>
+                  <dd class="mt-1 text-base">
+                    <%= cond do %>
+                      <% @child_stops_state == :unavailable -> %>
+                        <span id="station-platform-fare-zones">—</span>
+                      <% @platform_fare_zones == [] -> %>
+                        <span id="station-platform-fare-zones">None</span>
+                      <% true -> %>
+                        <ul
+                          id="station-platform-fare-zones"
+                          class="flex flex-wrap items-center gap-x-4 gap-y-1"
+                        >
+                          <li
+                            :for={{zone, index} <- Enum.with_index(@platform_fare_zones)}
+                            class="flex items-center"
+                          >
+                            <.link
+                              id={"platform-fare-zone-#{index}"}
+                              navigate={fares_zone_path(@current_gtfs_version.id, zone.zone_id)}
+                              class="inline-flex min-h-11 items-center font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                            >
+                              {fare_zone_label(zone)}
+                            </.link>
+                          </li>
+                        </ul>
+                    <% end %>
+                  </dd>
                 </div>
 
                 <div>

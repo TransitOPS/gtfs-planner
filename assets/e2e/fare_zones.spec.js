@@ -1343,3 +1343,88 @@ test("checks", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?tab=checks", "ref-checks");
   await captureReference(page, testInfo, "?state=import&tab=checks", "ref-checks-repair");
 });
+
+// ── stop details ──────────────────────────────────────────────────────────
+
+// The read-only fare zone stop details carries, and the Fares link that leaves
+// it. The seeded "Browser Fare Zones Version" gives Central Union Platform 1
+// zone A (named Central), leaves the four Bayline stops unassigned, and gives
+// Central Union Station two platforms in zone A while the station itself
+// carries A too - so the station's entry is its platforms' zones, not its own.
+test("stop details", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await faresVersionId(page);
+  const stopPath = (stopId) => `/gtfs/${versionId}/stops/${stopId}`;
+
+  // ── a boardable platform ──
+  await page.goto(stopPath("BROWSER_FZ_PLATFORM_1"));
+  await waitForLiveView(page);
+
+  await expect(page.locator("dt", { hasText: /^Fare zone$/ })).toHaveCount(1);
+  await expect(page.locator("#stop-fare-zone")).toHaveText("Central · A");
+  await expect(page.locator("#stop-fare-zone-link")).toHaveText("View in Fares");
+  await expect(page.locator("#stop-fare-zone-link")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?zone=A`,
+  );
+  await expect(page.locator("#station-platform-fare-zones")).toHaveCount(0);
+
+  await capture(page, testInfo, "stop-details-1440", { fullPage: false });
+
+  // ── the station over those platforms ──
+  await page.goto(stopPath("BROWSER_FZ_STATION"));
+  await waitForLiveView(page);
+
+  await expect(page.locator("#stop-fare-zone")).toHaveCount(0);
+  await expect(page.locator("#station-platform-fare-zones a")).toHaveCount(1);
+  await expect(page.locator("#platform-fare-zone-0")).toHaveText("Central · A");
+  await expect(page.locator("#platform-fare-zone-0")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?zone=A`,
+  );
+
+  await capture(page, testInfo, "stop-details-station-1440", { fullPage: false });
+
+  // ── a boardable stop with no zone ──
+  await page.goto(stopPath("BROWSER_FZ_UNASSIGNED_1"));
+  await waitForLiveView(page);
+
+  await expect(page.locator("#stop-fare-zone")).toHaveText("None");
+  await expect(page.locator("#stop-fare-zone-link")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?filter=unassigned`,
+  );
+
+  await capture(page, testInfo, "stop-details-unassigned-1440", { fullPage: false });
+
+  // ── the narrow viewport ──
+  await page.setViewportSize(NARROW);
+
+  await page.goto(stopPath("BROWSER_FZ_PLATFORM_1"));
+  await waitForLiveView(page);
+
+  await expect(page.locator("#stop-fare-zone")).toBeVisible();
+
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  await capture(page, testInfo, "stop-details-320", { fullPage: false });
+
+  // ── the link reaches that zone's filter ──
+  await page.setViewportSize(DESKTOP);
+
+  await page.goto(stopPath("BROWSER_FZ_PLATFORM_1"));
+  await waitForLiveView(page);
+
+  await page.locator("#stop-fare-zone-link").click();
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares\\?zone=A$`));
+
+  await waitForLiveView(page);
+
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Central");
+  await expect(page.locator("#fare-zone-row-all")).not.toHaveAttribute("aria-current", "page");
+
+  await capture(page, testInfo, "stop-details-fares-1440", { fullPage: false });
+});
