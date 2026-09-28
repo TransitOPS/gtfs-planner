@@ -23,6 +23,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
+  alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
@@ -950,6 +952,59 @@ defmodule GtfsPlanner.Gtfs do
   def get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id \\ nil),
     do:
       RoutePatterns.get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id)
+
+  @doc "Loads the alignment editor read model for one pattern in its published route scope."
+  def alignment_editor(organization_id, gtfs_version_id, route_id, route_pattern_id),
+    do: Alignments.editor(organization_id, gtfs_version_id, route_id, route_pattern_id)
+
+  @doc "Summarizes every pattern's alignment status for a route with a constant number of queries."
+  def route_alignment_summary(organization_id, gtfs_version_id, route_id),
+    do: Alignments.route_summary(organization_id, gtfs_version_id, route_id)
+
+  @doc "Suggests street-routed interior points for the given alignment sections without writing."
+  def suggest_alignment_paths(
+        organization_id,
+        gtfs_version_id,
+        route_id,
+        route_pattern_id,
+        positions
+      ),
+      do:
+        Alignments.suggest_paths(
+          organization_id,
+          gtfs_version_id,
+          route_id,
+          route_pattern_id,
+          positions
+        )
+
+  @doc "Routes one street leg between two `[lon, lat]` endpoints without writing."
+  def suggest_alignment_between(from, to),
+    do: Alignments.suggest_between(from, to)
+
+  @doc "Suggests street-routed interior points for every missing section of the given patterns without writing."
+  def suggest_missing_alignments(
+        organization_id,
+        gtfs_version_id,
+        route_id,
+        route_pattern_ids
+      ),
+      do:
+        Alignments.suggest_missing(organization_id, gtfs_version_id, route_id, route_pattern_ids)
+
+  @doc "Reviews an alignment save, computing scope actions, affected patterns and a fingerprint without writing."
+  def review_alignment_save(pattern_id, draft_params, %AuditContext{} = audit_context),
+    do: Alignments.review_save(pattern_id, draft_params, audit_context)
+
+  @doc "Applies a reviewed alignment save transactionally, re-verifying the review fingerprint and scope choices."
+  def apply_alignment_save(
+        pattern_id,
+        draft_params,
+        choices,
+        fingerprint,
+        %AuditContext{} = audit_context
+      ),
+      do: Alignments.apply_save(pattern_id, draft_params, choices, fingerprint, audit_context)
 
   @doc "Creates a pattern, its ordered occurrences, an unassigned Timing A and one audit row."
   def create_pattern(route_id, attrs, %AuditContext{} = audit_context),
@@ -5854,6 +5909,34 @@ defmodule GtfsPlanner.Gtfs do
   # complete before/after snapshots are passed explicitly by Transfers, so the
   # entity itself never yields a snapshot.
   defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
+  # Alignment segments snapshot their scope, stop-pair identity, override
+  # linkage, optimistic-lock revision and interior points. Pattern shapes
+  # snapshot the owning pattern's shape identity; the replaced-shape detail
+  # travels in the explicit before/after maps (INV-5).
+  defp build_snapshot(type, %AlignmentSegment{} = segment)
+       when type in [:alignment_segment, "alignment_segment"] do
+    %{
+      id: segment.id,
+      scope: %{
+        organization_id: segment.organization_id,
+        gtfs_version_id: segment.gtfs_version_id
+      },
+      from_stop_id: segment.from_stop_id,
+      to_stop_id: segment.to_stop_id,
+      from_occurrence_id: segment.from_occurrence_id,
+      lock_version: segment.lock_version,
+      points: normalize_value(segment.points)
+    }
+  end
+
+  defp build_snapshot(type, %RoutePattern{} = pattern)
+       when type in [:pattern_shape, "pattern_shape"] do
+    %{
+      route_pattern_id: pattern.route_pattern_id,
+      shape_id: pattern.shape_id,
+      alignment_digest: pattern.alignment_digest
+    }
+  end
 
   defp build_snapshot(_, _), do: nil
 
@@ -5945,6 +6028,24 @@ defmodule GtfsPlanner.Gtfs do
        when type in [:transfer, "transfer"],
        do: Transfer.audit_external_id(transfer)
 
+  # A shared segment is addressed by its stop pair; an override also names the
+  # visit it belongs to (INV-6). A pattern shape is addressed by the pattern's
+  # natural GTFS ID.
+  defp entity_external_id_for(type, %AlignmentSegment{} = segment, _attrs)
+       when type in [:alignment_segment, "alignment_segment"] do
+    pair = "#{segment.from_stop_id}>#{segment.to_stop_id}"
+
+    if is_nil(segment.from_occurrence_id) do
+      pair
+    else
+      "#{pair}@#{segment.from_occurrence_id}"
+    end
+  end
+
+  defp entity_external_id_for(type, %RoutePattern{} = pattern, _attrs)
+       when type in [:pattern_shape, "pattern_shape"],
+       do: pattern.route_pattern_id
+
   defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
 
   defp entity_external_id_for(:route_pattern_build, nil, attrs),
@@ -5992,6 +6093,15 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  # Alignment entries carry explicit before/after aggregates like trips and
+  # calendars; no segment or shape column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs)
+       when type in [:alignment_segment, "alignment_segment", :pattern_shape, "pattern_shape"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(before after)
+    end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -6031,6 +6141,21 @@ defmodule GtfsPlanner.Gtfs do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_transfer_operation(attrs)
+  end
+
+  # Alignment entries, like trips, store the explicit before/after aggregates
+  # (including INV-5 replaced-shape detail) rather than a column diff.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [
+              :alignment_segment,
+              "alignment_segment",
+              :pattern_shape,
+              "pattern_shape"
+            ] and action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)

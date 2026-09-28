@@ -14,6 +14,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternStop do
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
     field :stop_id, :string
     field :position, :integer
+    field :shape_dist_traveled, :decimal
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -25,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternStop do
           gtfs_version_id: Ecto.UUID.t(),
           stop_id: String.t(),
           position: pos_integer(),
+          shape_dist_traveled: Decimal.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }

@@ -39,17 +39,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
       section_names: ["Closures", "Access check"]
     },
-    alignment: %{
-      title: "Alignment",
-      scope: :version,
-      summary: "Draw the path this pattern travels between stops.",
-      section_names: [
-        "Segment status",
-        "Generate along streets",
-        "Edit points",
-        "Shared segments"
-      ]
-    },
     export_defaults: %{
       title: "Export defaults",
       scope: :all_versions,
@@ -66,7 +55,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 7
+      assert length(@catalog) == 6
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -77,6 +66,12 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         assert Enum.map(entry.sections, & &1.name) == expected.section_names
         assert Enum.all?(entry.sections, &(&1.text != ""))
       end)
+    end
+
+    test "raises for the retired alignment key" do
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:alignment))
+      end
     end
 
     test "raises for a key outside the catalog, including the shipped Transfers key" do

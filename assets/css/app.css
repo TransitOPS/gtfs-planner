@@ -1216,3 +1216,366 @@ dialog[role="alertdialog"][open] > div > div {
   .pattern-timing-table input[type="text"] { width: 100%; }
   .pattern-timing-table td label { overflow-wrap: anywhere; }
 }
+
+/* Pattern alignment map (spec 12, step 23). The server renders only the
+   ignored `#alignment-map-root` with a loading note; the PatternAlignment
+   hook owns every node below (CR-5) on the daisyUI theme (CR-7). Bar above
+   the stage, tools top-right, legend bottom — per the map-draw prototype's
+   Missing-section and Map-unavailable states, minus its illustrative SVG,
+   demo palette and scale caption (real tiles replace them). */
+#alignment-map-root.pa-live {
+  display: block;
+  padding: 0;
+}
+
+#alignment-map-root .pa-map {
+  display: flex;
+  flex-direction: column;
+  min-height: inherit;
+}
+
+#alignment-map-root .pa-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  background-color: var(--color-base-100);
+  border-bottom: 1px solid var(--color-base-300);
+  padding: 0.5rem 0.75rem;
+}
+
+#alignment-map-root .pa-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+#alignment-map-root .pa-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 380px;
+  overflow: hidden;
+  background-color: var(--color-base-200);
+}
+
+#alignment-map-root .pa-leaflet {
+  position: absolute;
+  inset: 0;
+}
+
+#alignment-map-root .pa-fallback {
+  padding: 1.5rem;
+  font-size: 0.875rem;
+  color: var(--color-base-content);
+  opacity: 0.7;
+}
+
+#alignment-map-root .pa-help {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  z-index: 500;
+  max-width: calc(100% - 90px);
+  background-color: var(--color-base-100);
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  pointer-events: none;
+}
+
+#alignment-map-root .pa-help strong {
+  display: block;
+}
+
+#alignment-map-root .pa-help span {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+/* Floating zoom/fit tools. Every button holds a 44 px target with a visible
+   focus ring; the group sits above the Leaflet panes (400) but below the
+   help card. */
+#alignment-map-root .pa-tools {
+  position: absolute;
+  right: 14px;
+  top: 16px;
+  z-index: 500;
+  display: grid;
+  background-color: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.375rem;
+  overflow: hidden;
+}
+
+#alignment-map-root .pa-tools button {
+  border: 0;
+  border-bottom: 1px solid var(--color-base-300);
+  min-width: 44px;
+  min-height: 44px;
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
+  font-size: 1.375rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#alignment-map-root .pa-tools button:last-child {
+  border-bottom: 0;
+}
+
+#alignment-map-root .pa-tools button:hover {
+  background-color: var(--color-base-200);
+}
+
+#alignment-map-root .pa-tools button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+#alignment-map-root .pa-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+  padding: 0.625rem 1rem;
+  background-color: var(--color-base-100);
+  border-top: 1px solid var(--color-base-300);
+  font-size: 0.75rem;
+}
+
+#alignment-map-root .pa-legend {
+  display: flex;
+  gap: 0.9375rem;
+  flex-wrap: wrap;
+}
+
+#alignment-map-root .pa-legend i {
+  display: inline-block;
+  width: 18px;
+  vertical-align: middle;
+  margin-right: 5px;
+  border-top: 3px solid var(--color-primary);
+}
+
+#alignment-map-root .pa-legend [data-pa-legend-missing] {
+  border-color: #9b1c1c;
+  border-top-style: dashed;
+}
+
+#alignment-map-root .pa-legend [data-pa-legend-unsaved] {
+  border-color: #8a5a0e;
+}
+
+#alignment-map-root .pa-toggle-labels {
+  min-height: 44px;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+#alignment-map-root .pa-toggle-labels:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Point-editing handles (spec 12, step 24). The divIcon root holds the 44 px
+   hit area; the inner dot is the visible circle: white fill, amber border,
+   theme-primary fill once selected. The UA outline is suppressed only on
+   :focus-visible, where the double ring replaces it. */
+#alignment-map-root .alignment-handle {
+  background: none;
+  border: none;
+}
+
+#alignment-map-root .alignment-handle-dot {
+  display: block;
+  width: 26px;
+  height: 26px;
+  margin: 9px;
+  border-radius: 9999px;
+  background-color: #fff;
+  border: 3px solid #8a5a0e;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+#alignment-map-root .alignment-handle-dot.is-selected {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+#alignment-map-root .alignment-handle:focus-visible {
+  outline: none;
+}
+
+#alignment-map-root .alignment-handle:focus-visible .alignment-handle-dot {
+  box-shadow:
+    0 0 0 3px #fff,
+    0 0 0 6px var(--color-primary);
+}
+
+/* Shift-drag box-select overlay, drawn in the stage frame. */
+#alignment-map-root .pa-select-box {
+  position: absolute;
+  z-index: 600;
+  border: 2px dashed var(--color-primary);
+  background-color: rgb(255 255 255 / 0.12);
+  background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  pointer-events: none;
+}
+
+/* Section-level draft actions (spec 12, step 26). The native More
+   section actions disclosure keeps Clear/Delete behind one explicit
+   tap; daisyUI `btn` carries the theme. The summary is a 44 px target
+   with the same visible focus ring as the point-list controls. */
+#alignment-detail .pa-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+#alignment-detail .pa-more-actions {
+  margin-top: 0.75rem;
+}
+
+#alignment-detail .pa-more-actions > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.875rem;
+  opacity: 0.7;
+  cursor: pointer;
+  border-radius: 0.25rem;
+}
+
+#alignment-detail .pa-more-actions > summary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Keyboard point list (spec 12, step 25). Hook-owned rows inside the
+   server-rendered `#alignment-detail` panel (CR-5), following the
+   prototype's Editing-points point list: helper copy, one checkbox row
+   with Locate per interior point, Add midpoint and Delete points. 20 px
+   checkboxes sit in 44 px rows with a full-row label target; daisyUI
+   `checkbox`/`btn` carry the theme and the rule below guarantees the
+   visible focus ring on every list control. */
+#alignment-point-list .pa-point-help {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+#alignment-point-list .pa-point-empty {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+#alignment-point-list .pa-point-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  min-height: 44px;
+}
+
+#alignment-point-list .pa-point-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+#alignment-point-list .pa-point-row label {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+#alignment-point-list .pa-point-row [data-focus-point] {
+  margin-left: auto;
+}
+
+#alignment-point-list .pa-point-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+#alignment-point-list :is(button, input):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Visit markers. Leaflet centers the fixed 30 px icon on the stop; the name
+   overflows symmetrically below the pin and hides under the label toggle. */
+#alignment-map-root .pa-div-icon {
+  background: none;
+  border: none;
+}
+
+#alignment-map-root .pa-stop-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  margin: 1px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background-color: #fff;
+  border: 3px solid var(--color-primary);
+  color: var(--color-neutral);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+#alignment-map-root .pa-stop-name {
+  display: block;
+  margin-top: 2px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-neutral);
+  background-color: rgb(255 255 255 / 0.85);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+#alignment-map-root.pa-hide-labels .pa-stop-name {
+  display: none;
+}
+
+@media (max-width: 650px) {
+  #alignment-map-root .pa-stage {
+    min-height: 270px;
+  }
+
+  #alignment-map-root .pa-help {
+    left: 8px;
+    top: 8px;
+    padding: 0.4375rem 0.5625rem;
+  }
+
+  #alignment-map-root .pa-help span {
+    display: none;
+  }
+
+  #alignment-map-root .pa-tools {
+    right: 8px;
+    top: 8px;
+  }
+
+  #alignment-map-root .pa-bar {
+    padding: 0.375rem;
+  }
+}

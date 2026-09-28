@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Calendars
@@ -271,10 +272,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   trip's pattern; required, because a custom source has no timing of its own).
   The new trip copies `service_id`, `trip_headsign`, `trip_short_name`,
   `wheelchair_accessible`, `bikes_allowed` and `shape_id`, gets no block, takes
-  the pattern's direction, gets a freshly allocated trip ID and newly
-  materialized stop times with no copied `shape_dist_traveled`, and is audited as
-  created. A frequency source is refused with `:frequency_trip` and the source
-  trip itself is never written.
+  the pattern's direction, and gets a freshly allocated trip ID. New stop times
+  take the pattern's per-visit distances when the source already references the
+  pattern's shape; otherwise their distances are nil (R15). The duplicate is
+  audited as created. A frequency source is refused with `:frequency_trip` and
+  the source trip itself is never written.
   """
   @spec duplicate_trip(String.t(), Ecto.UUID.t(), duplicate_attrs(), AuditContext.t()) ::
           {:ok, Trip.t()} | {:error, Ecto.Changeset.t() | update_error()}
@@ -978,9 +980,12 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     # Rule-table lock order: the calendar's version row `FOR SHARE` first, then the
     # route `FOR UPDATE`, then the pattern `FOR UPDATE`. Timing rows are loaded
     # after the route lock, so a created trip always matches the committed timing.
+    # The shape attributes are read after the pattern lock, so they cannot
+    # change until commit (R15).
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, service_id)
     route = RoutePatterns.lock_published_route!(audit_context, route_id)
     pattern = RoutePatterns.lock_pattern!(route, pattern_id)
+    shape_attrs = Alignments.trip_shape_attrs(pattern)
     timing = locked_timing!(pattern, timed_pattern_id)
 
     occurrences = pattern_occurrences(pattern)
@@ -999,13 +1004,24 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       )
 
     trips =
-      insert_trip_batch!(starts, trip_ids, route, pattern, timing, service_id, audit_context)
+      insert_trip_batch!(
+        starts,
+        trip_ids,
+        route,
+        pattern,
+        timing,
+        service_id,
+        shape_attrs.shape_id,
+        audit_context
+      )
 
     now = DateTime.utc_now()
 
     trips
     |> Enum.zip(materialized)
-    |> Enum.flat_map(fn {trip, stop_times} -> stop_time_rows(trip, stop_times, now) end)
+    |> Enum.flat_map(fn {trip, stop_times} ->
+      stop_time_rows(trip, stop_times, shape_attrs.visit_distances, now)
+    end)
     |> insert_stop_times!()
 
     audit_created_trips!(trips, starts, materialized, timing, audit_context)
@@ -1022,7 +1038,19 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     end)
   end
 
-  defp insert_trip_batch!(starts, trip_ids, route, pattern, timing, service_id, audit_context) do
+  # Trips created on a drawn pattern carry its `shape_id`; on an undrawn
+  # pattern the ID stays nil (R15). The linkage fields remain
+  # application-owned, never cast from the request.
+  defp insert_trip_batch!(
+         starts,
+         trip_ids,
+         route,
+         pattern,
+         timing,
+         service_id,
+         shape_id,
+         audit_context
+       ) do
     headsign = timing.headsign || pattern.headsign
 
     starts
@@ -1034,6 +1062,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         service_id: service_id,
         direction_id: pattern.direction_id,
         trip_headsign: headsign,
+        shape_id: shape_id,
         organization_id: audit_context.organization_id,
         gtfs_version_id: audit_context.gtfs_version_id,
         route_pattern_id: pattern.route_pattern_id,
@@ -1080,8 +1109,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp constraint_type(meta) when is_map(meta), do: Map.get(meta, :constraint)
   defp constraint_type(_meta), do: nil
 
-  defp stop_time_rows(trip, materialized, now) do
-    Enum.map(materialized, fn row ->
+  # `distances` runs alongside the materialized rows by position; a row past
+  # the end of the vector (which cannot happen for a locked pattern's own
+  # occurrences) keeps nil rather than shifting every later distance.
+  defp stop_time_rows(trip, materialized, distances, now) do
+    materialized
+    |> Enum.with_index()
+    |> Enum.map(fn {row, index} ->
       %{
         trip_id: trip.trip_id,
         stop_id: row.stop_id,
@@ -1094,7 +1128,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         timepoint: row.timepoint,
         continuous_pickup: nil,
         continuous_drop_off: nil,
-        shape_dist_traveled: nil,
+        shape_dist_traveled: Enum.at(distances, index),
         organization_id: trip.organization_id,
         gtfs_version_id: trip.gtfs_version_id,
         inserted_at: now,
@@ -1503,7 +1537,21 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       )
 
     new_trip = insert_trip!(duplicate_trip_attrs(trip, route, pattern, timing, new_trip_id))
-    insert_stop_times!(stop_time_rows(new_trip, materialized, DateTime.utc_now()))
+
+    # The copy keeps the source's shape ID (which equals the pattern's shape
+    # when the source is already on it). Only a source on the pattern's own
+    # shape takes the pattern's per-visit distances; any other source keeps
+    # nil distances, as before (R15).
+    shape_attrs = Alignments.trip_shape_attrs(pattern)
+
+    distances =
+      if trip.shape_id == pattern.shape_id and not is_nil(pattern.shape_id) do
+        shape_attrs.visit_distances
+      else
+        List.duplicate(nil, length(materialized))
+      end
+
+    insert_stop_times!(stop_time_rows(new_trip, materialized, distances, DateTime.utc_now()))
 
     audit_trip!(
       audit_context,

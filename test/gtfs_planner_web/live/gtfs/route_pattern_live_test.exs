@@ -741,7 +741,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
   describe "pattern alignment task" do
     setup :editor_scope
 
-    test "an existing pattern lists four ordered tasks and patches to the Alignment placeholder",
+    test "an existing pattern lists four ordered tasks and patches to the Alignment shell",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "ALIGN1")
       stops = Enum.map(1..3, &stop(organization, version, "ALIGN1", &1))
@@ -773,16 +773,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       )
 
       assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
-      assert has_element?(view, "#coming-soon")
-      assert has_element?(view, "h3#coming-soon-title", "Alignment")
-      assert has_element?(view, "#coming-soon-status", "Coming soon")
-      assert has_element?(view, "#coming-soon-scope", "This version: #{version.name}")
-      assert has_element?(view, "#coming-soon-sections", "Generate along streets")
-
-      # The destination is described, not built: the sitemap's Generate action
-      # stays absent rather than rendering a control that cannot work.
-      refute has_element?(view, "#coming-soon form")
-      refute has_element?(view, "#coming-soon button")
+      assert has_element?(view, "#alignment-task")
+      assert has_element?(view, "h3#alignment-title", "Alignment")
+      assert has_element?(view, "#alignment-status")
+      assert has_element?(view, "#alignment-sections")
+      assert has_element?(view, "#alignment-detail")
+      assert has_element?(view, "#alignment-footer")
+      refute has_element?(view, "#coming-soon")
 
       # Alignment has its own branch and never falls through to timings.
       refute has_element?(view, "#timing-select")
@@ -803,14 +800,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=alignment"))
 
       assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
-      assert has_element?(view, "#coming-soon")
+      assert has_element?(view, "#alignment-task")
       assert has_element?(view, "h2", "Direct alignment")
-      assert has_element?(view, "h3#coming-soon-title", "Alignment")
+      assert has_element?(view, "h3#alignment-title", "Alignment")
 
       html = render(view)
       assert_single_h1(html, "ALIGN2 - ALIGN2 corridor")
       assert index(html, "<h1") < index(html, "<h2")
-      assert index(html, "<h2") < index(html, "id=\"coming-soon-title\"")
+      assert index(html, "<h2") < index(html, "id=\"alignment-title\"")
     end
 
     test "creating with task=alignment stays in Details with only Details and Stops",

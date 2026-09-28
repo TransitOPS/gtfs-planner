@@ -3685,6 +3685,330 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
+    # ── Pattern alignment fixtures (spec 12, step 20 and every later visual step) ──
+    #
+    # One route holds the shell captures: A has four visits with one missing
+    # section, a stop pair shared with B and linked trips; B is drawn through
+    # the production review/apply composition as the seeded editor, so it has
+    # a shared path and an owned shape. LOOP is a drawn loop, IMPORTED carries
+    # linked trips on two imported shapes, LONG has 200 visits, GEN-1/GEN-2
+    # are missing (GEN-1 touches the 40.7500 stop), ACTIONS holds a drawn
+    # five-point section for the step 26 Simplify capture on its own stop
+    # pair (so shared-user counts on A/B never move), and the -B patterns are
+    # clean copies for the 320 px runs. Tile requests in later steps go
+    # through the existing /map/tiles proxy; no live Geoapify call happens here.
+    Enum.each(
+      [
+        {"AL_S1", "Align Central", "40.712800", "-74.006000"},
+        {"AL_S2", "Align Civic", "40.713800", "-74.005000"},
+        {"AL_S3", "Align Market", "40.714800", "-74.004000"},
+        {"AL_S4", "Align Harbor", "40.715800", "-74.003000"},
+        {"AL_S5", "Align Park", "40.716800", "-74.002000"},
+        {"AL_A1", "Actions North", "40.730000", "-73.990000"},
+        {"AL_A2", "Actions Central", "40.731000", "-73.989000"},
+        {"AL_A3", "Actions South", "40.732000", "-73.988000"},
+        {"AL_G1", "Gen Hilltop", "40.750000", "-73.980000"},
+        {"AL_G2", "Gen Valley", "40.751000", "-73.979000"}
+      ],
+      fn {stop_id, name, lat, lon} ->
+        {:ok, _stop} =
+          Gtfs.create_stop(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            stop_id: stop_id,
+            stop_name: name,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon),
+            location_type: 0
+          })
+      end
+    )
+
+    {:ok, align_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_ALIGN",
+        route_short_name: "AL",
+        route_long_name: "Browser Alignment",
+        route_type: 3
+      })
+
+    align_pattern = fn pattern_id ->
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: align_route.route_id,
+        route_pattern_id: pattern_id,
+        route_pattern_name: pattern_id,
+        direction_id: 0
+      })
+    end
+
+    align_occurrences = fn pattern, stop_ids ->
+      stop_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop_id, position} ->
+        GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(
+          pattern,
+          stop_id,
+          position
+        )
+      end)
+    end
+
+    align_timing = fn pattern, occurrences ->
+      timing =
+        GtfsPlanner.GtfsFixtures.timed_pattern_fixture(pattern, %{name: "Alignment"})
+
+      Enum.each(occurrences, fn occurrence ->
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, occurrence, %{
+          arrival_offset: 0,
+          departure_offset: 0
+        })
+      end)
+
+      timing
+    end
+
+    align_audit = %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: org.id,
+      gtfs_version_id: diagram_version.id,
+      station_stop_id: nil,
+      actor_id: editor.id,
+      actor_email: editor.email
+    }
+
+    align_draw = fn pattern, entries, scopes ->
+      pattern = Repo.reload!(pattern)
+
+      draft =
+        Enum.map(entries, fn {position, points} ->
+          section =
+            pattern
+            |> GtfsPlanner.Gtfs.Alignments.resolve()
+            |> Map.fetch!(:sections)
+            |> Enum.find(&(&1.position == position))
+
+          %{
+            "position" => section.position,
+            "from_occurrence_id" => section.from_occurrence_id,
+            "to_stop_id" => section.to_stop_id,
+            "op" => "set",
+            "points" => points,
+            "base" => %{
+              "segment_id" => section.revision.segment_id,
+              "lock_version" => section.revision.lock_version
+            }
+          }
+        end)
+
+      {:ok, review} = Gtfs.review_alignment_save(pattern.id, draft, align_audit)
+
+      needed =
+        for section <- review.sections,
+            section.action == :choose_scope,
+            into: %{},
+            do: {to_string(section.position), Map.fetch!(scopes, to_string(section.position))}
+
+      choices = %{"scopes" => needed}
+
+      choices =
+        if review.requires_confirmation?,
+          do: Map.put(choices, "confirm_replacements", true),
+          else: choices
+
+      {:ok, _result} =
+        Gtfs.apply_alignment_save(pattern.id, draft, choices, review.fingerprint, align_audit)
+    end
+
+    pattern_a = align_pattern.("BROWSER-ALIGN-A")
+    occurrences_a = align_occurrences.(pattern_a, ["AL_S1", "AL_S2", "AL_S3", "AL_S4"])
+    timing_a = align_timing.(pattern_a, occurrences_a)
+
+    pattern_b = align_pattern.("BROWSER-ALIGN-B")
+    occurrences_b = align_occurrences.(pattern_b, ["AL_S1", "AL_S2", "AL_S3"])
+    align_timing.(pattern_b, occurrences_b)
+
+    align_draw.(pattern_a, [{1, [[-74.005500, 40.713300]]}, {2, [[-74.004500, 40.714300]]}], %{
+      "1" => "shared",
+      "2" => "local"
+    })
+
+    align_draw.(pattern_b, [{1, [[-74.005600, 40.713200]]}, {2, [[-74.004600, 40.714100]]}], %{
+      "1" => "shared",
+      "2" => "shared"
+    })
+
+    # Step 26 needs a saved section with at least 4 anchor-to-anchor
+    # points for its Simplify capture. ACTIONS draws one on a fresh stop
+    # pair so the A/B shared-user counts never move.
+    pattern_actions = align_pattern.("BROWSER-ALIGN-ACTIONS")
+    align_occurrences.(pattern_actions, ["AL_A1", "AL_A2", "AL_A3"])
+
+    align_draw.(
+      pattern_actions,
+      [
+        {1, [[-73.989700, 40.730300], [-73.989500, 40.730500], [-73.989200, 40.730700]]},
+        {2, [[-73.988500, 40.731500]]}
+      ],
+      %{"1" => "shared", "2" => "local"}
+    )
+
+    {:ok, align_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: align_route.route_id,
+        trip_id: "BROWSER_ALIGN_T1",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Alignment",
+        direction_id: 0
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(align_trip, %{
+      route_pattern_id: "BROWSER-ALIGN-A",
+      timed_pattern_id: timing_a.id,
+      pattern_derivation_state: "linked"
+    })
+
+    ["AL_S1", "AL_S2", "AL_S3", "AL_S4"]
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, sequence} ->
+      {:ok, _stop_time} =
+        Gtfs.create_stop_time(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          trip_id: "BROWSER_ALIGN_T1",
+          stop_id: stop_id,
+          stop_sequence: sequence,
+          arrival_time: "08:0#{sequence}:00",
+          departure_time: "08:0#{sequence}:00"
+        })
+    end)
+
+    pattern_loop = align_pattern.("BROWSER-ALIGN-LOOP")
+    align_occurrences.(pattern_loop, ["AL_S1", "AL_S2", "AL_S3", "AL_S1", "AL_S2"])
+
+    align_draw.(
+      pattern_loop,
+      [
+        {1, [[-74.005500, 40.713300]]},
+        {2, [[-74.004500, 40.714300]]},
+        {3, [[-74.005000, 40.713500]]},
+        {4, [[-74.005600, 40.713200]]}
+      ],
+      %{"1" => "shared", "2" => "shared", "4" => "shared"}
+    )
+
+    pattern_imported = align_pattern.("BROWSER-ALIGN-IMPORTED")
+    occurrences_imported = align_occurrences.(pattern_imported, ["AL_S4", "AL_S5"])
+    timing_imported = align_timing.(pattern_imported, occurrences_imported)
+
+    for {shape_id, sequence, lat, lon, dist} <- [
+          {"IMP-ALIGN-1", 0, "40.715800", "-74.003000", "0"},
+          {"IMP-ALIGN-1", 1, "40.716800", "-74.002000", "812.4"},
+          {"IMP-ALIGN-2", 0, "40.715900", "-74.003100", "0"},
+          {"IMP-ALIGN-2", 1, "40.716900", "-74.002100", "900.0"}
+        ] do
+      %GtfsPlanner.Gtfs.Shape{}
+      |> GtfsPlanner.Gtfs.Shape.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: shape_id,
+        shape_pt_sequence: sequence,
+        shape_pt_lat: lat,
+        shape_pt_lon: lon,
+        shape_dist_traveled: dist
+      })
+      |> Repo.insert!()
+    end
+
+    for {trip_id, shape_id} <- [
+          {"BROWSER_ALIGN_IMP_T1", "IMP-ALIGN-1"},
+          {"BROWSER_ALIGN_IMP_T2", "IMP-ALIGN-2"}
+        ] do
+      {:ok, trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: align_route.route_id,
+          trip_id: trip_id,
+          service_id: "BROWSER_PATTERN_SERVICE",
+          trip_headsign: "Alignment Imported",
+          direction_id: 0,
+          shape_id: shape_id
+        })
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-ALIGN-IMPORTED",
+        timed_pattern_id: timing_imported.id,
+        pattern_derivation_state: "linked"
+      })
+    end
+
+    long_visits =
+      ["AL_S1", "AL_S2", "AL_S3", "AL_S4", "AL_S5"]
+      |> Stream.cycle()
+      |> Enum.take(200)
+
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-LONG"), long_visits)
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-GEN-1"), ["AL_G1", "AL_G2"])
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-GEN-2"), ["AL_S3", "AL_S4"])
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-A-B"), ["AL_S1", "AL_S2", "AL_S3", "AL_S4"])
+
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-LOOP-B"), [
+      "AL_S1",
+      "AL_S2",
+      "AL_S3",
+      "AL_S1",
+      "AL_S2"
+    ])
+
+    align_occurrences.(align_pattern.("BROWSER-ALIGN-IMPORTED-B"), ["AL_S4", "AL_S5"])
+
+    # Step 29 needs a single-shape imported pattern whose shape sits ~500 m
+    # north of its stops, so dialog conversion flags its section for review.
+    pattern_imported_single = align_pattern.("BROWSER-ALIGN-IMPORTED-SINGLE")
+    occurrences_imported_single = align_occurrences.(pattern_imported_single, ["AL_S4", "AL_S5"])
+    timing_imported_single = align_timing.(pattern_imported_single, occurrences_imported_single)
+
+    for {shape_id, sequence, lat, lon, dist} <- [
+          {"IMP-ALIGN-3", 0, "40.720800", "-74.003000", "0"},
+          {"IMP-ALIGN-3", 1, "40.721300", "-74.002500", "70.0"},
+          {"IMP-ALIGN-3", 2, "40.721800", "-74.002000", "140.0"}
+        ] do
+      %GtfsPlanner.Gtfs.Shape{}
+      |> GtfsPlanner.Gtfs.Shape.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: shape_id,
+        shape_pt_sequence: sequence,
+        shape_pt_lat: lat,
+        shape_pt_lon: lon,
+        shape_dist_traveled: dist
+      })
+      |> Repo.insert!()
+    end
+
+    {:ok, imported_single_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: align_route.route_id,
+        trip_id: "BROWSER_ALIGN_IMP_T3",
+        service_id: "BROWSER_PATTERN_SERVICE",
+        trip_headsign: "Alignment Imported Single",
+        direction_id: 0,
+        shape_id: "IMP-ALIGN-3"
+      })
+
+    GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(imported_single_trip, %{
+      route_pattern_id: "BROWSER-ALIGN-IMPORTED-SINGLE",
+      timed_pattern_id: timing_imported_single.id,
+      pattern_derivation_state: "linked"
+    })
+
+    IO.puts("Browser seed: pattern alignment fixtures (BROWSER_ALIGN with 12 patterns)")
+
     # ── Agencies list page (settings_agencies_feed.spec.js; EV-16, EV-17) ──
     #
     # Two published versions give the Agencies list page its states: one with
