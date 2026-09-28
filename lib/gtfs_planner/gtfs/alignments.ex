@@ -826,6 +826,56 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end
   end
 
+  @doc """
+  Clears derived distances for one drawn pattern, in the caller's transaction.
+
+  Sets `route_pattern_stops.shape_dist_traveled` and the linked trips'
+  `stop_times.shape_dist_traveled` to nil while keeping `shape_id` (R14).
+  The structural change that triggers the clear leaves the pattern `:stale`
+  until the next save. Called by
+  `RoutePatterns.persist_stop_edit!/2` when a structural stop edit reorders
+  retained visits or changes a retained visit's stop. Every read and write is
+  scoped to the pattern's organization and version (INV-2). Linked trips
+  already advance `updated_at` in `persist_stop_edit!/2` (INV-4).
+  """
+  @spec clear_visit_distances!(RoutePattern.t()) :: :ok
+  def clear_visit_distances!(%RoutePattern{} = pattern) do
+    now = DateTime.utc_now()
+
+    Repo.update_all(
+      from(o in RoutePatternStop,
+        where:
+          o.route_pattern_id == ^pattern.id and
+            o.organization_id == ^pattern.organization_id and
+            o.gtfs_version_id == ^pattern.gtfs_version_id
+      ),
+      set: [shape_dist_traveled: nil, updated_at: now]
+    )
+
+    linked_trip_ids =
+      from(t in Trip,
+        where:
+          t.organization_id == ^pattern.organization_id and
+            t.gtfs_version_id == ^pattern.gtfs_version_id and
+            t.route_id == ^pattern.route_id and
+            t.route_pattern_id == ^pattern.route_pattern_id and
+            t.pattern_derivation_state == "linked",
+        select: t.trip_id
+      )
+
+    Repo.update_all(
+      from(st in StopTime,
+        where:
+          st.organization_id == ^pattern.organization_id and
+            st.gtfs_version_id == ^pattern.gtfs_version_id and
+            st.trip_id in subquery(linked_trip_ids)
+      ),
+      set: [shape_dist_traveled: nil, updated_at: now]
+    )
+
+    :ok
+  end
+
   @type imported_shape :: %{
           shape_id: String.t(),
           trip_count: non_neg_integer(),
