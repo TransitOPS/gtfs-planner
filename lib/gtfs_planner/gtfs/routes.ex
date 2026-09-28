@@ -50,6 +50,14 @@ defmodule GtfsPlanner.Gtfs.Routes do
   a deliberate merge is bound to the displayed current revision so a third
   intervening save returns a fresh conflict instead of a stale write. Changed
   fields and the route audit commit together; a no-op writes nothing.
+
+  `set_route_active/4` is the distinct R4 status command, kept separate from
+  detail params. It reauthorizes and locks the published version then the route
+  row in one serializable transaction, requires the exact saved UUID/revision
+  for a real state change, and writes only the boolean state together with its
+  transactional audit. Only explicit `false` is inactive: a desired state that
+  is already effective (including NULL requested as `true`) is a no-op that
+  never backfills, and Undo/reactivation must arrive with a fresh source.
   """
 
   import Ecto.Changeset, only: [add_error: 3]
@@ -433,6 +441,40 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   def update_route(_route_id, _attrs, _base, _choices, _audit), do: {:error, :invalid_input}
+
+  @doc """
+  Changes route eligibility (R4 status command).
+
+  `active` is the desired boolean state and `source` the saved identity the
+  caller acts on (an R2 `source/1` map). The command is deliberately separate
+  from detail params: one serializable transaction reauthorizes the active
+  editor, locks the scoped published version and then the route row, and writes
+  only the boolean state together with its transactional route audit.
+
+  A real state change requires the source's exact UUID and revision; a source
+  describing a replaced route (same natural ID, different UUID) is `:stale` and
+  a deleted or foreign route is `:not_found`, so Undo must arrive with a fresh
+  source. Only explicit `false` is inactive: when the desired state is already
+  effective (including NULL requested as `true`) the call is a no-op that writes
+  nothing, touches no timestamp and never backfills NULL.
+  """
+  @spec set_route_active(String.t(), boolean(), map(), AuditContext.t()) ::
+          {:ok, update_result()}
+          | {:error, :not_found | :stale | :forbidden | :busy | :failed_audit | :invalid_input}
+  def set_route_active(route_id, active, source, %AuditContext{} = audit)
+      when is_binary(route_id) and is_boolean(active) and is_map(source) do
+    run_command_transaction(fn ->
+      :ok = authorize_editor!(audit)
+      _version = lock_published_version!(audit)
+
+      case lock_scoped_route(route_id, audit) do
+        nil -> Repo.rollback(:not_found)
+        current_route -> apply_status_change(current_route, active, source, audit)
+      end
+    end)
+  end
+
+  def set_route_active(_route_id, _active, _source, _audit), do: {:error, :invalid_input}
 
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
@@ -942,9 +984,12 @@ defmodule GtfsPlanner.Gtfs.Routes do
   defp bound_to_displayed_current?(choices, current_route) do
     binding = Map.get(choices, :current_updated_at) || Map.get(choices, "current_updated_at")
 
-    case Ecto.Type.cast(:utc_datetime_usec, binding) do
-      {:ok, bound} -> DateTime.compare(bound, current_route.updated_at) == :eq
-      :error -> false
+    case binding && Ecto.Type.cast(:utc_datetime_usec, binding) do
+      {:ok, bound} when not is_nil(bound) ->
+        DateTime.compare(bound, current_route.updated_at) == :eq
+
+      _other ->
+        false
     end
   end
 
@@ -990,6 +1035,68 @@ defmodule GtfsPlanner.Gtfs.Routes do
           {:error, failed} ->
             Repo.rollback(failed)
         end
+    end
+  end
+
+  # --- status internals ----------------------------------------------------
+
+  # Only explicit false is inactive (R4/INV-4): true and NULL both mean
+  # effectively eligible, so a desired state already effective is a no-op and
+  # a NULL row is never backfilled to true.
+  defp effectively_active?(active), do: active != false
+
+  # Identity binding is fail-closed and applies to every call (AC-9): a source
+  # that does not describe this exact route row (replaced UUID, scope change or
+  # a one-sided identity) is :stale and never authorizes the command. A real
+  # state change additionally requires the exact displayed revision, so Undo
+  # and reactivation use the fresh source minted by the previous change.
+  defp apply_status_change(current_route, desired, source, audit) do
+    current = source(current_route)
+
+    case check_identity(side(source).identity, side(current).identity) do
+      {:error, :source_mismatch} ->
+        Repo.rollback(:stale)
+
+      :ok ->
+        cond do
+          effectively_active?(current_route.active) == desired ->
+            %{route: current_route, source: current}
+
+          not exact_revision?(source, current_route) ->
+            Repo.rollback(:stale)
+
+          true ->
+            write_status_change(current_route, desired, audit)
+        end
+    end
+  end
+
+  defp exact_revision?(source, current_route) do
+    revision = Map.get(source, :updated_at) || Map.get(source, "updated_at")
+
+    case revision && Ecto.Type.cast(:utc_datetime_usec, revision) do
+      {:ok, bound} when not is_nil(bound) ->
+        DateTime.compare(bound, current_route.updated_at) == :eq
+
+      _other ->
+        false
+    end
+  end
+
+  # A deliberate status change writes the boolean state and the transactional
+  # audit only (R4/INV-3): no detail field is cast, a failed audit rolls the
+  # mutation back, and the ordinary revision advance is what forces Undo to
+  # reauthorize against a fresh source.
+  defp write_status_change(current_route, desired, audit) do
+    changeset = Ecto.Changeset.change(current_route, active: desired)
+
+    case Repo.update(changeset) do
+      {:ok, updated} ->
+        audit_updated!(current_route, updated, audit)
+        %{route: updated, source: source(updated)}
+
+      {:error, failed} ->
+        Repo.rollback(failed)
     end
   end
 

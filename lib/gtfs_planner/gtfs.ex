@@ -945,6 +945,21 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.update_route(route_id, attrs, source, choices, audit_context)
 
   @doc """
+  Changes route eligibility (R4 status command).
+
+  See `GtfsPlanner.Gtfs.Routes.set_route_active/4` for the status and error
+  contract. The command is separate from detail params: it reauthorizes inside
+  its serializable transaction, locks the scoped published version before the
+  route row, requires the exact saved UUID/revision for a real state change and
+  writes the boolean state together with its transactional route audit. A
+  desired state that is already effective is a no-op and never backfills NULL.
+  """
+  @spec set_route_active(String.t(), boolean(), map(), AuditContext.t()) ::
+          {:ok, map()} | {:error, term()}
+  def set_route_active(route_id, active, source, %AuditContext{} = audit_context),
+    do: Routes.set_route_active(route_id, active, source, audit_context)
+
+  @doc """
   Returns a list of distinct route types for an organization and GTFS version.
 
   ## Examples
