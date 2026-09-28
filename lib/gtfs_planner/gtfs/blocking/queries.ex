@@ -48,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
           {:services, [String.t()]}
           | {:uuids, [Ecto.UUID.t()]}
           | {:trip_ids, [String.t()]}
+          | {:blocks, [String.t()]}
           | {:blocks, [String.t()], [String.t()]}
 
   @type in_seat_row :: %{
@@ -68,8 +69,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   parsed, `frequency?` exactly when the trip has a `frequencies` row, and
   `headway_secs` is the smallest headway of those rows.
 
-  The filter is one of the four `filter()` variants: a day type's services, exact
-  trip UUIDs, natural trip IDs, or block IDs within a set of services.
+  The filter is one of the `filter()` variants: a day type's services, exact trip
+  UUIDs, natural trip IDs, block IDs within a set of services, or block IDs across
+  every service of the version (which is what a calendar combination's companion
+  closure needs).
   """
   @spec trip_rows(Ecto.UUID.t(), Ecto.UUID.t(), filter()) :: [trip_row()]
   def trip_rows(organization_id, gtfs_version_id, filter) do
@@ -101,6 +104,90 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
     headways = headway_rows(organization_id, gtfs_version_id, trip_ids)
 
     Enum.map(trips, &trip_row(&1, first_endpoints, last_endpoints, stop_refs, headways))
+  end
+
+  @doc """
+  Loads one filter's trip identities without their endpoints, stops or frequencies.
+
+  The filter is the same `filter()` `trip_rows/3` accepts and the rows come back in
+  UUID order. Each carries the mutable trip columns a review fingerprints, including
+  `updated_at`, so a caller can read the identities, take its row locks and then read
+  the derived rows of exactly the set it locked (the lock-then-reread order
+  `Blocking.apply_block_change/4` already uses).
+  """
+  @spec trip_identities(Ecto.UUID.t(), Ecto.UUID.t(), filter()) :: [map()]
+  def trip_identities(organization_id, gtfs_version_id, filter) do
+    filter
+    |> trips_filter(organization_id, gtfs_version_id)
+    |> order_by([t], asc: t.id)
+    |> select([t], %{
+      id: t.id,
+      trip_id: t.trip_id,
+      route_id: t.route_id,
+      service_id: t.service_id,
+      block_id: t.block_id,
+      trip_headsign: t.trip_headsign,
+      route_pattern_id: t.route_pattern_id,
+      updated_at: t.updated_at
+    })
+    |> Repo.all()
+  end
+
+  @doc """
+  Loads the raw rows behind `trip_rows/3`'s endpoints, stop geometry and headways.
+
+  `stop_times` are the two endpoint rows of each trip - the smallest and the largest
+  `stop_sequence`, the same rows `trip_rows/3` derives its clocks from - `stops` are
+  the stops those rows name, `parents` the parent stations the stops reference
+  (empty when none is referenced or one is missing) and `frequencies` every row of
+  the trips rather than only the smallest headway. Each list is ordered by its
+  natural keys.
+
+  A caller that digests these rows detects a same-count endpoint replacement, a
+  retiming, a stop or parent change and a headway change instead of trusting only the
+  derived values: a stop's own coordinates hide a changed parent otherwise, and the
+  smallest headway hides a second frequency window. The read is five queries whatever
+  the number of trips.
+  """
+  @spec raw_sources(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()]) :: %{
+          stop_times: [map()],
+          stops: [map()],
+          parents: [map()],
+          frequencies: [map()]
+        }
+  def raw_sources(organization_id, gtfs_version_id, trip_ids) do
+    trip_ids_query =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+            t.id in ^trip_ids,
+        select: t.trip_id
+      )
+
+    first_endpoints = endpoint_rows(organization_id, gtfs_version_id, trip_ids_query, :asc)
+    last_endpoints = endpoint_rows(organization_id, gtfs_version_id, trip_ids_query, :desc)
+
+    stops =
+      first_endpoints
+      |> endpoint_stop_ids(last_endpoints)
+      |> then(&stops_by_id(organization_id, gtfs_version_id, &1))
+
+    parents =
+      stops
+      |> Map.values()
+      |> Enum.map(& &1.parent_station)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> then(&stops_by_id(organization_id, gtfs_version_id, &1))
+
+    %{
+      stop_times:
+        (Map.values(first_endpoints) ++ Map.values(last_endpoints))
+        |> Enum.sort_by(&{&1.trip_id, &1.stop_sequence}),
+      stops: stops |> Map.values() |> Enum.sort_by(& &1.stop_id),
+      parents: parents |> Map.values() |> Enum.sort_by(& &1.stop_id),
+      frequencies: frequency_source_rows(organization_id, gtfs_version_id, trip_ids_query)
+    }
   end
 
   @doc """
@@ -244,6 +331,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
     |> where([t], t.block_id in ^block_ids and t.service_id in ^service_ids)
   end
 
+  # No service restriction: a combination's companions are every trip sharing a touched
+  # block anywhere in the version, so a calendar the review did not select still decides
+  # whether the moved block keeps its ID (AC-17).
+  defp trips_filter({:blocks, block_ids}, organization_id, gtfs_version_id) do
+    scoped_trips(organization_id, gtfs_version_id)
+    |> where([t], t.block_id in ^block_ids)
+  end
+
   defp scoped_trips(organization_id, gtfs_version_id) do
     from(t in Trip,
       where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id
@@ -271,10 +366,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       select: %{
         trip_id: st.trip_id,
         stop_id: st.stop_id,
+        stop_sequence: st.stop_sequence,
         arrival_time: st.arrival_time,
         departure_time: st.departure_time
       }
     )
+  end
+
+  defp frequency_source_rows(organization_id, gtfs_version_id, trip_ids) do
+    from(f in Frequency,
+      where:
+        f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id and
+          f.trip_id in subquery(trip_ids),
+      order_by: [asc: f.trip_id, asc: f.start_time, asc: f.headway_secs, asc: f.id],
+      select: %{
+        id: f.id,
+        trip_id: f.trip_id,
+        start_time: f.start_time,
+        end_time: f.end_time,
+        headway_secs: f.headway_secs,
+        exact_times: f.exact_times
+      }
+    )
+    |> Repo.all()
   end
 
   defp headway_rows(organization_id, gtfs_version_id, trip_ids) do

@@ -39,12 +39,19 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.Queries
+  alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -439,6 +446,308 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         apply!(normalized, review_fingerprint, audit_context)
       end)
     end
+  end
+
+  # The internal entrypoint a calendar combination is reviewed and applied from. It is not a
+  # public command and adds no endpoint: `review_calendar_change/3` and `apply_calendar_change/3`
+  # call it inside their own ordinary `Repo.transaction/1` (READ COMMITTED, never the configured
+  # `ReviewedApplyTransaction` SERIALIZABLE adapter) and both consume the same loaded map, so a
+  # review and its apply can never disagree about which rows were protected.
+  #
+  # Inside that transaction it asserts the isolation it needs, acquires the scoped published
+  # version `FOR UPDATE` before any snapshot read, re-resolves and holds the actor's current
+  # active editor membership `FOR SHARE`, loads the trip closure this combination's consequences
+  # depend on, takes the established lower locks, and only then reads the authoritative derived
+  # rows and raw rows through the real `Blocking.Queries` producer. Every read is batched: the
+  # number of queries does not grow with the number of trips.
+  @doc false
+  @spec load_combination_inputs!(
+          {:combine, String.t(), [String.t()], map()},
+          AuditContext.t()
+        ) :: Blocking.combination_inputs()
+  def load_combination_inputs!(
+        {:combine, destination_id, source_ids, _decisions},
+        %AuditContext{} = audit_context
+      )
+      when is_binary(destination_id) and is_list(source_ids) do
+    assert_read_committed!()
+    lock_published_version!(audit_context)
+    lock_editor_membership!(audit_context)
+
+    selected_ids = [destination_id | source_ids]
+    {closure, transfers} = combination_closure!(audit_context, selected_ids)
+    lock_combination_closure!(audit_context, closure)
+
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    trip_ids = Enum.map(closure, & &1.id)
+
+    raw_trips = Queries.trip_identities(organization_id, version_id, {:uuids, trip_ids})
+    trips = Queries.trip_rows(organization_id, version_id, {:uuids, trip_ids})
+    sources = Queries.raw_sources(organization_id, version_id, trip_ids)
+    raw_settings = settings_rows(organization_id, version_id)
+    calendars = combination_calendars!(audit_context, closure, selected_ids)
+    selected = MapSet.new(selected_ids)
+
+    %{
+      calendars: calendars,
+      trips: trips,
+      selected_trip_ids:
+        raw_trips
+        |> Enum.filter(&MapSet.member?(selected, &1.service_id))
+        |> Enum.map(& &1.id),
+      transfers: transfers,
+      settings: absent_marker(Blocking.get_settings(organization_id, version_id), raw_settings),
+      raw: %{
+        selected_calendars: combination_snapshots(calendars, selected_ids),
+        trips: raw_trips,
+        stop_times: sources.stop_times,
+        frequencies: sources.frequencies,
+        stops: sources.stops,
+        parents: sources.parents,
+        settings: raw_settings,
+        transfers: transfers,
+        agencies: agency_rows(organization_id, version_id)
+      },
+      today: DisplayClock.today(organization_id, version_id).date
+    }
+  end
+
+  # -- Combination inputs ---------------------------------------------------
+
+  @read_committed "read committed"
+
+  # A combination never runs inside an earlier repeatable snapshot: a SERIALIZABLE or
+  # REPEATABLE READ enclosing transaction keeps returning its pre-wait rows after the version
+  # lock, so the internal boundary refuses it instead of claiming a freshness it cannot observe
+  # (critique M1). An ordinary `Repo.transaction/1` and the SQL sandbox's read-committed
+  # transaction both pass; the configured SERIALIZABLE apply adapter does not.
+  defp assert_read_committed! do
+    %Postgrex.Result{rows: [[isolation]]} = Repo.query!("SHOW transaction_isolation")
+
+    if isolation == @read_committed do
+      :ok
+    else
+      Repo.rollback({:unsupported_isolation, isolation})
+    end
+  end
+
+  # AC-13: the actor's *current* membership is resolved again after the version-lock wait and
+  # held `FOR SHARE` through commit, so a revocation committed while a combination waited is
+  # refused and a later one waits for it. `authorize_editor!/1` is not reused because it reads
+  # the membership without the lock this read has to hold.
+  defp lock_editor_membership!(%AuditContext{} = audit_context) do
+    case editor_membership_for_share(audit_context) do
+      %UserOrgMembership{deactivated_at: nil, roles: roles} ->
+        if editor_role?(roles), do: :ok, else: Repo.rollback(:forbidden)
+
+      _other ->
+        Repo.rollback(:forbidden)
+    end
+  end
+
+  defp editor_membership_for_share(%AuditContext{
+         actor_id: actor_id,
+         organization_id: organization_id
+       }) do
+    if uuid?(actor_id) and uuid?(organization_id) do
+      from(m in UserOrgMembership,
+        where: m.user_id == ^actor_id and m.organization_id == ^organization_id,
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+    end
+  end
+
+  # AC-14/AC-17: the closure starts at every selected trip and grows through the rows that decide
+  # the reviewed consequences - every trip on a touched non-nil block anywhere in the version,
+  # every type-4/5 record naming one of those trips, each record's counterpart trip and every
+  # trip on a counterpart's block, because an in-seat sequence is read over the whole block.
+  # Identities are deduplicated by UUID. The values used downstream are read again after the
+  # lower locks through `Queries.trip_rows/3`, so this discovery read decides the lock set only.
+  defp combination_closure!(%AuditContext{} = audit_context, selected_ids) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    selected = Queries.trip_identities(organization_id, version_id, {:services, selected_ids})
+    selected_blocks = block_ids(selected)
+
+    companions =
+      selected ++ Queries.trip_identities(organization_id, version_id, {:blocks, selected_blocks})
+
+    companion_trip_ids = natural_trip_ids(companions)
+
+    transfers = Queries.in_seat_rows(organization_id, version_id, companion_trip_ids)
+
+    counterparts =
+      transfers
+      |> Enum.flat_map(&[&1.from_trip_id, &1.to_trip_id])
+      |> excluding(companion_trip_ids)
+      |> then(&Queries.trip_identities(organization_id, version_id, {:trip_ids, &1}))
+
+    block_mates =
+      Queries.trip_identities(
+        organization_id,
+        version_id,
+        {:blocks, excluding(block_ids(counterparts), selected_blocks)}
+      )
+
+    {dedupe_trips(companions ++ counterparts ++ block_mates), transfers}
+  end
+
+  # INV-1: after the exclusive version lock the command's lower locks follow the established
+  # order - the closure's routes and patterns in sorted order, the version's blocking advisory
+  # lock and finally the closure's trip rows in UUID order. A route or pattern this version does
+  # not hold has nothing to lock and is skipped, exactly as an unlinked trip is for
+  # `RoutePatterns.lock_pattern!/2`'s existing callers.
+  defp lock_combination_closure!(%AuditContext{} = audit_context, trips) do
+    routes = lock_combination_routes!(audit_context, trips)
+    lock_combination_patterns!(audit_context, trips, routes)
+    Blocking.lock_blocking!(audit_context.gtfs_version_id)
+
+    Queries.lock_trips!(
+      audit_context.organization_id,
+      audit_context.gtfs_version_id,
+      Enum.map(trips, & &1.id),
+      [],
+      []
+    )
+
+    :ok
+  end
+
+  defp lock_combination_routes!(%AuditContext{} = audit_context, trips) do
+    trips
+    |> distinct_values(& &1.route_id)
+    |> scoped_route_ids(audit_context)
+    |> Enum.map(&RoutePatterns.lock_published_route!(audit_context, &1))
+  end
+
+  defp lock_combination_patterns!(%AuditContext{} = audit_context, trips, routes) do
+    route_by_route_id = Map.new(routes, &{&1.route_id, &1})
+
+    trips
+    |> distinct_values(& &1.route_pattern_id)
+    |> scoped_patterns(audit_context)
+    |> Enum.each(fn pattern ->
+      case Map.get(route_by_route_id, pattern.route_id) do
+        nil -> :ok
+        route -> RoutePatterns.lock_pattern!(route, pattern.id)
+      end
+    end)
+  end
+
+  defp scoped_route_ids(route_ids, %AuditContext{} = audit_context) do
+    from(r in Route,
+      where:
+        r.organization_id == ^audit_context.organization_id and
+          r.gtfs_version_id == ^audit_context.gtfs_version_id and r.route_id in ^route_ids,
+      order_by: r.route_id,
+      select: r.route_id
+    )
+    |> Repo.all()
+  end
+
+  defp scoped_patterns(pattern_ids, %AuditContext{} = audit_context) do
+    from(p in RoutePattern,
+      where:
+        p.organization_id == ^audit_context.organization_id and
+          p.gtfs_version_id == ^audit_context.gtfs_version_id and
+          p.route_pattern_id in ^pattern_ids,
+      order_by: [asc: p.route_id, asc: p.route_pattern_id],
+      select: %{id: p.id, route_id: p.route_id}
+    )
+    |> Repo.all()
+  end
+
+  # Every service the closure's trips use plus every selected ID - a selected calendar with no
+  # trips is still part of the plan - in the one batched summary read the list surface already
+  # uses, so a service's date set is never loaded one identity at a time (AC-14).
+  defp combination_calendars!(%AuditContext{} = audit_context, closure, selected_ids) do
+    service_ids = MapSet.new(selected_ids ++ Enum.map(closure, & &1.service_id))
+
+    case list_calendars(audit_context.organization_id, audit_context.gtfs_version_id) do
+      {:ok, summaries} -> Enum.filter(summaries, &MapSet.member?(service_ids, &1.service_id))
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The exact selected snapshots `Combination.plan/5` and `Combination.encode/3` consume, keyed by
+  # the exact service ID. A selected ID this version does not hold has no snapshot and is left
+  # out, so the plan reports it as missing instead of reading an invented empty calendar.
+  # Exceptions are ordered by date and type here so a digest of this map cannot depend on row
+  # order.
+  defp combination_snapshots(calendars, selected_ids) do
+    by_service_id = Map.new(calendars, &{&1.service_id, &1})
+
+    selected_ids
+    |> Enum.uniq()
+    |> Enum.reduce(%{}, fn service_id, snapshots ->
+      case Map.get(by_service_id, service_id) do
+        nil ->
+          snapshots
+
+        summary ->
+          Map.put(snapshots, service_id, %{
+            calendar: summary.calendar,
+            exceptions: Enum.sort_by(summary.exceptions, &exception_sort_key/1),
+            attributes: summary.attributes,
+            trip_count: summary.trip_count
+          })
+      end
+    end)
+  end
+
+  # The absence of a stored settings row is kept, and the effective value still comes from
+  # `Blocking.get_settings/2`, the owner of the real default, so the review can distinguish an
+  # absent row from a stored default of the same value without a second definition of the default.
+  defp absent_marker(%{min_layover_minutes: minutes}, raw_settings) do
+    %{min_layover_minutes: minutes, absent?: raw_settings == []}
+  end
+
+  defp exception_sort_key(%CalendarDate{} = exception) do
+    date = exception.date
+    {date.year, date.month, date.day, exception.exception_type}
+  end
+
+  defp settings_rows(organization_id, version_id) do
+    from(s in BlockingSetting,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id,
+      select: %{id: s.id, min_layover_minutes: s.min_layover_minutes, updated_at: s.updated_at}
+    )
+    |> Repo.all()
+  end
+
+  defp agency_rows(organization_id, version_id) do
+    from(a in Agency,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^version_id,
+      order_by: a.agency_id,
+      select: %{
+        id: a.id,
+        agency_id: a.agency_id,
+        agency_name: a.agency_name,
+        agency_timezone: a.agency_timezone,
+        agency_lang: a.agency_lang
+      }
+    )
+    |> Repo.all()
+  end
+
+  defp block_ids(trips), do: distinct_values(trips, & &1.block_id)
+
+  defp natural_trip_ids(trips), do: distinct_values(trips, & &1.trip_id)
+
+  defp dedupe_trips(trips) do
+    trips |> Enum.uniq_by(& &1.id) |> Enum.sort_by(& &1.id)
+  end
+
+  defp distinct_values(values, fun) do
+    values |> Enum.map(fun) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> Enum.sort()
+  end
+
+  defp excluding(values, known) do
+    known = MapSet.new(known)
+    values |> Enum.uniq() |> Enum.reject(&MapSet.member?(known, &1))
   end
 
   # The anchor supplies the audit `entity_id`; aggregate before/after snapshots are
