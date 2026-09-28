@@ -11,6 +11,17 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   R9. Only this context (and its submodules) reads `alignment_segments`
   (CR-1); every read filters by the pattern's organization and version
   (INV-2).
+
+  Saves apply through `apply_save/5` in a SERIALIZABLE
+  `ReviewedApplyTransaction` transaction (R7): the snapshot is taken at the
+  first statement, the review is recomputed and its fingerprint compared in
+  constant time (`:stale_review` on mismatch), a differing base returns
+  `{:conflict, current_sections}` and a changed identity `:stale_stops`, all
+  with no writes. Route `FOR UPDATE` locks are taken in `route_id` order,
+  then patterns in id order, then linked trips in id order. Serialization
+  failures (`40001`), deadlocks (`40P01`) and unique violations (`23505`)
+  on the alignment and shape indexes retry up to three times with a fresh
+  snapshot, then return `:busy`. There is no advisory lock (CR-3).
   """
 
   import Ecto.Query
@@ -20,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
@@ -1350,7 +1362,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       end
 
       case compute_review(pattern_id, draft_params, audit_context) do
-        {:ok, review} -> {:ok, review}
+        {:ok, review, _ops, _resolved} -> {:ok, review}
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
@@ -1372,7 +1384,14 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
       case Draft.normalize(draft_params, resolved) do
         {:error, reason} -> {:error, reason}
-        {:ok, ops} -> build_review(pattern, resolved, ops, audit_context)
+        # The ops carry the validated points step 12 writes, and the
+        # resolved sections carry the stop-pair identity; the review shape
+        # itself stays the step-10 contract.
+        {:ok, ops} ->
+          case build_review(pattern, resolved, ops, audit_context) do
+            {:ok, review} -> {:ok, review, ops, resolved}
+            {:error, _} = error -> error
+          end
       end
     else
       nil -> {:error, :not_found}
@@ -1735,4 +1754,593 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp review_canonical(value), do: value
+
+  @apply_attempts 3
+
+  # Unique violations worth one fresh snapshot: the two alignment segment
+  # indexes, the owned-shape index and the shapes identity index (R7).
+  @apply_retry_constraints ~w(
+    alignment_segments_shared_pair_index
+    alignment_segments_override_visit_index
+    route_patterns_owned_shape_index
+    shapes_organization_id_gtfs_version_id_shape_id_shape_pt_sequence_index
+  )
+
+  @apply_retry_marker :alignment_apply_retry
+
+  @doc """
+  Applies a reviewed alignment save transactionally (R6/R7/R8/R12/R13).
+
+  Recomputes `review_save/3` inside a SERIALIZABLE `ReviewedApplyTransaction`
+  transaction, compares the fingerprint in constant time (`:stale_review` on
+  mismatch), validates the scope/confirmation choices (`:missing_scope` /
+  `:confirmation_required`), locks the origin and re-materialized routes
+  (`FOR UPDATE` in `route_id` order), their patterns (in id order) and their
+  linked trips (in id order), writes the segment rows with one
+  `:alignment_segment` audit entry each, then materializes the origin when
+  it is complete and each affected shape-owning pattern that is complete
+  afterwards (R8). A differing base returns `{:conflict, current_sections}`
+  and a changed identity `:stale_stops`, both with no writes; trip-count
+  mismatches roll the whole save back with `{:blocked, blockers}` (R13).
+  Serialization failures (`40001`), deadlocks (`40P01`) and unique
+  violations (`23505`) on the alignment and shape indexes retry with a
+  fresh snapshot up to three times, then return `:busy`. There is no
+  advisory lock (CR-3).
+
+  Callers pass the `draft_params` and `fingerprint` from `review_save/3`
+  plus `choices` of `%{"scopes" => %{position => "local" | "shared"},
+  "confirm_replacements" => boolean()}`. Consumed by
+  `RoutePatternAlignmentEvents` (step 28) through
+  `Gtfs.apply_alignment_save/5`.
+  """
+  @spec apply_save(Ecto.UUID.t(), [map()], map() | nil, String.t(), AuditContext.t()) ::
+          {:ok,
+           %{
+             materialized: [String.t()],
+             trips_updated: non_neg_integer(),
+             shapes_deleted: [String.t()],
+             segments_written: non_neg_integer()
+           }}
+          | {:error,
+             :not_found
+             | :stale_stops
+             | :stale_review
+             | :busy
+             | :missing_scope
+             | :confirmation_required
+             | :invalid_input
+             | {:conflict, [section()]}
+             | {:blocked, [blocker()]}
+             | {:invalid_draft, atom()}}
+  def apply_save(pattern_id, draft_params, choices, fingerprint, %AuditContext{} = audit_context)
+      when is_binary(pattern_id) do
+    apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, @apply_attempts)
+  end
+
+  def apply_save(_, _, _, _, _), do: {:error, :invalid_input}
+
+  defp apply_transaction_runner do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransaction.Repo
+    )
+  end
+
+  defp apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts) do
+    result =
+      try do
+        apply_transaction_runner().run(fn ->
+          apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context)
+        end)
+      rescue
+        error in [Postgrex.Error, Ecto.ConstraintError, Ecto.StaleEntryError] ->
+          {:apply_raised, error, __STACKTRACE__}
+      end
+
+    case result do
+      {:ok, applied} ->
+        {:ok, applied}
+
+      {:error, @apply_retry_marker} ->
+        if attempts > 1 do
+          apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts - 1)
+        else
+          {:error, :busy}
+        end
+
+      {:error, _} = error ->
+        error
+
+      {:apply_raised, error, stacktrace} ->
+        cond do
+          apply_retryable?(error) and attempts > 1 ->
+            apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts - 1)
+
+          apply_retryable?(error) ->
+            {:error, :busy}
+
+          true ->
+            reraise(error, stacktrace)
+        end
+    end
+  end
+
+  # A SERIALIZABLE race surfaces as 40001/40P01, as a unique violation on
+  # one of the four apply indexes, or as a stale optimistic lock on the
+  # same lost race. Each retries with a fresh snapshot, where the
+  # recomputed review surfaces the race as a conflict or stale review.
+  defp apply_retryable?(%Postgrex.Error{postgres: %{code: code} = fields}) do
+    cond do
+      code in [:serialization_failure, "40001", :deadlock_detected, "40P01"] -> true
+      code in [:unique_violation, "23505"] ->
+        to_string(Map.get(fields, :constraint, "")) in @apply_retry_constraints
+      true -> false
+    end
+  end
+
+  defp apply_retryable?(%Postgrex.Error{}), do: false
+
+  defp apply_retryable?(%Ecto.ConstraintError{constraint: constraint}),
+    do: to_string(constraint) in @apply_retry_constraints
+
+  defp apply_retryable?(%Ecto.StaleEntryError{}), do: true
+  defp apply_retryable?(_), do: false
+
+  defp apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context) do
+    case compute_review(pattern_id, draft_params, audit_context) do
+      {:error, reason} ->
+        Repo.rollback(reason)
+
+      {:ok, review, ops, resolved} ->
+        with :ok <- verify_apply_fingerprint(review.fingerprint, fingerprint),
+             {:ok, decisions} <- apply_decisions(review, choices) do
+          execute_apply(pattern_id, review, ops, resolved, decisions, audit_context)
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+    end
+  end
+
+  defp verify_apply_fingerprint(expected, actual) do
+    if secure_equal?(expected, actual), do: :ok, else: {:error, :stale_review}
+  end
+
+  defp secure_equal?(left, right)
+       when is_binary(left) and is_binary(right) and byte_size(left) == byte_size(right),
+       do: Plug.Crypto.secure_compare(left, right)
+
+  defp secure_equal?(_, _), do: false
+
+  # Validates the dialog choices against the fresh review: every
+  # `:choose_scope` position needs a `"local"`/`"shared"` scope, every
+  # `:delete_shared` position that others still use needs `"shared"`, and
+  # a review that replaces imported shapes needs `confirm_replacements`.
+  # Returns the per-position decision (`:local`, `:shared` or `:direct`).
+  defp apply_decisions(review, choices) do
+    scopes = apply_scopes(choices)
+    confirm? = apply_confirmed?(choices)
+
+    result =
+      Enum.reduce_while(review.sections, {:ok, %{}}, fn section, {:ok, decisions} ->
+        case apply_section_decision(section, scopes) do
+          {:error, _} = error -> {:halt, error}
+          {:ok, decision} -> {:cont, {:ok, Map.put(decisions, section.position, decision)}}
+        end
+      end)
+
+    case result do
+      {:error, _} = error -> error
+      {:ok, decisions} ->
+        if review.requires_confirmation? and not confirm?,
+          do: {:error, :confirmation_required},
+          else: {:ok, decisions}
+    end
+  end
+
+  defp apply_scopes(choices) when is_map(choices) do
+    raw = Map.get(choices, "scopes", Map.get(choices, :scopes, %{}))
+
+    if is_map(raw) do
+      Map.new(raw, fn {key, value} -> {apply_scope_key(key), apply_scope_value(value)} end)
+    else
+      %{}
+    end
+  end
+
+  defp apply_scopes(_), do: %{}
+
+  defp apply_scope_key(key) when is_integer(key), do: key
+
+  defp apply_scope_key(key) when is_binary(key) do
+    case Integer.parse(key) do
+      {position, ""} -> position
+      _ -> :drop
+    end
+  end
+
+  defp apply_scope_key(key) when is_atom(key) do
+    key |> Atom.to_string() |> apply_scope_key()
+  end
+
+  defp apply_scope_key(_), do: :drop
+
+  defp apply_scope_value("local"), do: :local
+  defp apply_scope_value(:local), do: :local
+  defp apply_scope_value("shared"), do: :shared
+  defp apply_scope_value(:shared), do: :shared
+  defp apply_scope_value(_), do: :invalid
+
+  defp apply_confirmed?(choices) when is_map(choices) do
+    Map.get(choices, "confirm_replacements", Map.get(choices, :confirm_replacements, false)) == true
+  end
+
+  defp apply_confirmed?(_), do: false
+
+  defp apply_section_decision(%{action: :choose_scope, position: position}, scopes) do
+    case Map.get(scopes, position, :missing) do
+      :local -> {:ok, :local}
+      :shared -> {:ok, :shared}
+      _ -> {:error, :missing_scope}
+    end
+  end
+
+  defp apply_section_decision(%{action: :delete_shared, affected: affected, position: position}, scopes) do
+    cond do
+      affected == [] -> {:ok, :direct}
+      Map.get(scopes, position, :missing) == :shared -> {:ok, :shared}
+      true -> {:error, :missing_scope}
+    end
+  end
+
+  defp apply_section_decision(_section, _scopes), do: {:ok, :direct}
+
+  defp execute_apply(pattern_id, review, ops, resolved, decisions, audit_context) do
+    origin_route_id =
+      case review_route_id(pattern_id, audit_context) do
+        {:ok, route_id} -> route_id
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+    targets = apply_shared_targets(pattern_id, review, decisions)
+
+    route_ids =
+      ([origin_route_id | Enum.map(targets, &elem(&1, 1))] |> Enum.uniq() |> Enum.sort())
+
+    routes =
+      Map.new(route_ids, fn route_id ->
+        {route_id, RoutePatterns.lock_published_route!(audit_context, route_id)}
+      end)
+
+    route_for = Map.new(targets, fn {id, route_id} -> {id, route_id} end)
+    route_for = Map.put(route_for, pattern_id, origin_route_id)
+
+    pattern_ids = ([pattern_id | Enum.map(targets, &elem(&1, 0))] |> Enum.uniq() |> Enum.sort())
+
+    locked =
+      Map.new(pattern_ids, fn id ->
+        {id, RoutePatterns.lock_pattern!(Map.fetch!(routes, Map.fetch!(route_for, id)), id)}
+      end)
+
+    Enum.each(pattern_ids, fn id -> lock_apply_trips!(Map.fetch!(locked, id)) end)
+
+    sections_by_position = Map.new(review.sections, &{&1.position, &1})
+    resolved_by_position = Map.new(resolved.sections, &{&1.position, &1})
+    locked_origin = Map.fetch!(locked, pattern_id)
+
+    segments_written =
+      ops
+      |> Enum.sort_by(& &1.position)
+      |> Enum.reduce(0, fn op, count ->
+        section = Map.fetch!(sections_by_position, op.position)
+        resolved_section = Map.fetch!(resolved_by_position, op.position)
+
+        count +
+          apply_section_write!(
+            op,
+            section,
+            resolved_section,
+            Map.fetch!(decisions, op.position),
+            audit_context,
+            locked_origin
+          )
+      end)
+
+    {materialized, trips_updated, shapes_deleted} =
+      apply_materializations(pattern_id, pattern_ids, locked, audit_context)
+
+    %{
+      materialized: materialized,
+      trips_updated: trips_updated,
+      shapes_deleted: shapes_deleted,
+      segments_written: segments_written
+    }
+  end
+
+  # Rematerialization candidates are the affected shape-owning patterns of
+  # sections whose decision actually writes or deletes the shared row. The
+  # origin rematerializes through its own path, never here.
+  defp apply_shared_targets(origin_id, review, decisions) do
+    review.sections
+    |> Enum.filter(&(Map.get(decisions, &1.position) == :shared))
+    |> Enum.flat_map(& &1.affected)
+    |> Enum.filter(&(&1.owns_shape? and &1.pattern_id != origin_id))
+    |> Enum.map(&{&1.pattern_id, &1.route_id})
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp lock_apply_trips!(%RoutePattern{} = pattern) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^pattern.organization_id and
+          t.gtfs_version_id == ^pattern.gtfs_version_id and
+          t.route_id == ^pattern.route_id and
+          t.route_pattern_id == ^pattern.route_pattern_id,
+      order_by: [asc: t.id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+
+    :ok
+  end
+
+  defp apply_section_write!(op, section, resolved_section, decision, audit_context, locked_origin) do
+    case {op.op, section.action, decision} do
+      {:set, :write_override, _} ->
+        write_override_segment!(op, resolved_section, audit_context, locked_origin)
+
+      {:set, :choose_scope, :local} ->
+        write_override_segment!(op, resolved_section, audit_context, locked_origin)
+
+      {:set, :write_shared, _} ->
+        write_shared_segment!(resolved_section, op.points, audit_context, locked_origin)
+
+      {:set, :choose_scope, :shared} ->
+        write_shared_segment!(resolved_section, op.points, audit_context, locked_origin) +
+          delete_override_segment!(op, audit_context, locked_origin)
+
+      {op_name, :delete_override, _} when op_name in [:delete, :use_shared] ->
+        delete_override_segment!(op, audit_context, locked_origin)
+
+      {:delete, :delete_shared, _} ->
+        delete_shared_segment!(resolved_section, audit_context, locked_origin)
+
+      _ ->
+        Repo.rollback({:invalid_draft, :unsupported_op})
+    end
+  end
+
+  defp fetch_shared_segment(audit_context, from_stop_id, to_stop_id) do
+    Repo.one(
+      from(s in AlignmentSegment,
+        where:
+          s.organization_id == ^audit_context.organization_id and
+            s.gtfs_version_id == ^audit_context.gtfs_version_id and
+            is_nil(s.from_occurrence_id) and s.from_stop_id == ^from_stop_id and
+            s.to_stop_id == ^to_stop_id
+      )
+    )
+  end
+
+  defp fetch_override_segment(audit_context, occurrence_id, to_stop_id) do
+    Repo.one(
+      from(s in AlignmentSegment,
+        where:
+          s.organization_id == ^audit_context.organization_id and
+            s.gtfs_version_id == ^audit_context.gtfs_version_id and
+            s.from_occurrence_id == ^occurrence_id and s.to_stop_id == ^to_stop_id
+      )
+    )
+  end
+
+  defp write_shared_segment!(section, points, audit_context, locked_origin) do
+    case fetch_shared_segment(audit_context, section.from_stop_id, section.to_stop_id) do
+      nil ->
+        %AlignmentSegment{
+          organization_id: audit_context.organization_id,
+          gtfs_version_id: audit_context.gtfs_version_id,
+          from_stop_id: section.from_stop_id,
+          to_stop_id: section.to_stop_id
+        }
+        |> AlignmentSegment.changeset(%{points: points})
+        |> Repo.insert()
+        |> case do
+          {:ok, segment} ->
+            audit!(audit_context, :alignment_segment, segment, "created", %{
+              before: nil,
+              after: apply_segment_after(segment)
+            })
+
+            1
+
+          {:error, changeset} ->
+            apply_segment_error!(changeset, audit_context, locked_origin)
+        end
+
+      %{points: current} when current == points ->
+        0
+
+      existing ->
+        before = apply_segment_before(existing)
+
+        existing
+        |> AlignmentSegment.changeset(%{points: points})
+        |> Repo.update()
+        |> case do
+          {:ok, segment} ->
+            audit!(audit_context, :alignment_segment, segment, "updated", %{
+              before: before,
+              after: apply_segment_after(segment)
+            })
+
+            1
+
+          {:error, changeset} ->
+            apply_segment_error!(changeset, audit_context, locked_origin)
+        end
+    end
+  end
+
+  # An override upsert heals a stale-identity row for the same visit and
+  # target: the unique index allows only one row per visit, so a lingering
+  # row takes the current stop pair and points instead of conflicting.
+  defp write_override_segment!(op, section, audit_context, locked_origin) do
+    case fetch_override_segment(audit_context, op.from_occurrence_id, op.to_stop_id) do
+      nil ->
+        %AlignmentSegment{
+          organization_id: audit_context.organization_id,
+          gtfs_version_id: audit_context.gtfs_version_id,
+          from_stop_id: section.from_stop_id,
+          to_stop_id: section.to_stop_id,
+          from_occurrence_id: op.from_occurrence_id
+        }
+        |> AlignmentSegment.changeset(%{points: op.points})
+        |> Repo.insert()
+        |> case do
+          {:ok, segment} ->
+            audit!(audit_context, :alignment_segment, segment, "created", %{
+              before: nil,
+              after: apply_segment_after(segment)
+            })
+
+            1
+
+          {:error, changeset} ->
+            apply_segment_error!(changeset, audit_context, locked_origin)
+        end
+
+      %{points: current, from_stop_id: stored}
+      when current == op.points and stored == section.from_stop_id ->
+        0
+
+      existing ->
+        before = apply_segment_before(existing)
+
+        %{existing | from_stop_id: section.from_stop_id}
+        |> AlignmentSegment.changeset(%{points: op.points})
+        |> Repo.update()
+        |> case do
+          {:ok, segment} ->
+            audit!(audit_context, :alignment_segment, segment, "updated", %{
+              before: before,
+              after: apply_segment_after(segment)
+            })
+
+            1
+
+          {:error, changeset} ->
+            apply_segment_error!(changeset, audit_context, locked_origin)
+        end
+    end
+  end
+
+  defp delete_shared_segment!(section, audit_context, _locked_origin) do
+    case fetch_shared_segment(audit_context, section.from_stop_id, section.to_stop_id) do
+      nil ->
+        0
+
+      existing ->
+        before = apply_segment_before(existing)
+
+        case Repo.delete(existing) do
+          {:ok, segment} ->
+            audit!(audit_context, :alignment_segment, segment, "deleted", %{
+              before: before,
+              after: nil
+            })
+
+            1
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp delete_override_segment!(op, audit_context, _locked_origin) do
+    case fetch_override_segment(audit_context, op.from_occurrence_id, op.to_stop_id) do
+      nil ->
+        0
+
+      existing ->
+        before = apply_segment_before(existing)
+
+        case Repo.delete(existing) do
+          {:ok, segment} ->
+            audit!(audit_context, :alignment_segment, segment, "deleted", %{
+              before: before,
+              after: nil
+            })
+
+            1
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  # A duplicate pair inside the transaction is the lost-race retry marker;
+  # any other segment validation failure (unreachable after `Draft`) rolls
+  # back as a conflict against the freshly resolved sections.
+  defp apply_segment_error!(changeset, _audit_context, locked_origin) do
+    if apply_unique_retry?(changeset) do
+      Repo.rollback(@apply_retry_marker)
+    else
+      Repo.rollback({:conflict, resolve(locked_origin).sections})
+    end
+  end
+
+  defp apply_unique_retry?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn {_field, {_message, opts}} ->
+      Keyword.get(opts, :constraint) == :unique and
+        to_string(Keyword.get(opts, :constraint_name, "")) in @apply_retry_constraints
+    end)
+  end
+
+  defp apply_segment_before(segment) do
+    %{points: segment.points, lock_version: segment.lock_version}
+  end
+
+  defp apply_segment_after(segment) do
+    %{points: segment.points, lock_version: segment.lock_version}
+  end
+
+  # Materializes the origin first, then each locked candidate that still
+  # resolves completely after the writes; incomplete patterns keep their
+  # trip shape references and distances byte-for-byte (INV-3). A candidate
+  # with trip-count blockers rolls the whole save back (R13).
+  defp apply_materializations(origin_id, pattern_ids, locked, audit_context) do
+    {materialized, trips_updated, shapes_deleted} =
+      apply_materialize_one(Map.fetch!(locked, origin_id), audit_context, {[], 0, []})
+
+    {materialized, trips_updated, shapes_deleted} =
+      Enum.reduce(pattern_ids, {materialized, trips_updated, shapes_deleted}, fn id, acc ->
+        if id == origin_id do
+          acc
+        else
+          apply_materialize_one(Map.fetch!(locked, id), audit_context, acc)
+        end
+      end)
+
+    {Enum.reverse(materialized), trips_updated, shapes_deleted}
+  end
+
+  defp apply_materialize_one(pattern, audit_context, {materialized, trips_updated, shapes_deleted}) do
+    resolved = resolve(pattern)
+
+    if Enum.all?(resolved.sections, &(&1.kind not in [:missing, :blocked])) do
+      plan = shape_plan(pattern, length(resolved.visits))
+      result = materialize_pattern!(pattern, resolved, plan, audit_context)
+
+      {
+        [pattern.route_pattern_id | materialized],
+        trips_updated + result.trips_updated,
+        shapes_deleted ++ result.shapes_deleted
+      }
+    else
+      {materialized, trips_updated, shapes_deleted}
+    end
+  end
 end
