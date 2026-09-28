@@ -146,6 +146,129 @@ defmodule GtfsPlanner.Gtfs.Import.FailureTest do
     end
   end
 
+  describe "scheduled-closure rejections" do
+    @closure_rejections [
+      {:evolution_pathway_required, "evolution_pathway_required"},
+      {:evolution_service_required, "evolution_service_required"},
+      {:evolution_opening_unsupported, "evolution_opening_unsupported"},
+      {:evolution_direction_unsupported, "evolution_direction_unsupported"},
+      {:evolution_time_invalid, "evolution_time_invalid"},
+      {:evolution_pathway_missing, "evolution_pathway_missing"},
+      {:evolution_service_missing, "evolution_service_missing"},
+      {:evolution_duplicate, "evolution_duplicate"}
+    ]
+
+    test "keeps every fixed closure code in the bounded vocabulary" do
+      for {code, string} <- @closure_rejections do
+        assert Atom.to_string(code) == string
+        assert string in Failure.reason_codes()
+      end
+    end
+
+    test "classifies a closure row rejection with its code and sanitized file/row" do
+      error = %{
+        file: "/var/data/uploads/2027-03/pathway_evolutions.txt",
+        row: 42,
+        reason: {:evolution_rejected, :evolution_direction_unsupported}
+      }
+
+      failure = Failure.from_error(error, phase: :phase_1)
+
+      assert failure.reason_code == "evolution_direction_unsupported"
+      assert failure.failed_file == "pathway_evolutions.txt"
+      assert failure.failed_row == 42
+      assert failure.reason_code in Failure.reason_codes()
+    end
+
+    test "persists every fixed closure code unchanged through from_error/2" do
+      for {code, string} <- @closure_rejections do
+        error = %{
+          file: "pathway_evolutions.txt",
+          row: 7,
+          reason: {:evolution_rejected, code}
+        }
+
+        failure = Failure.from_error(error, phase: :phase_1)
+
+        assert failure.reason_code == string
+        assert failure.failed_file == "pathway_evolutions.txt"
+        assert failure.failed_row == 7
+      end
+    end
+
+    test "accepts a code already carried as a string" do
+      error = %{
+        file: "pathway_evolutions.txt",
+        row: 3,
+        reason: {:evolution_rejected, "evolution_duplicate"}
+      }
+
+      failure = Failure.from_error(error, phase: :phase_1)
+
+      assert failure.reason_code == "evolution_duplicate"
+    end
+
+    test "normalizes an unrecognized closure code to the unknown-error code" do
+      for code <- [
+            :evolution_time_invalid_but_verbose,
+            "evolution_time_invalid; DROP TABLE pathways",
+            42,
+            nil,
+            true,
+            %{"row" => "P1, S1, 09:00:00, 10:00:00, 1"}
+          ] do
+        error = %{file: "pathway_evolutions.txt", row: 9, reason: {:evolution_rejected, code}}
+
+        failure = Failure.from_error(error, phase: :phase_1)
+
+        assert failure.reason_code == "unknown_error"
+        assert failure.reason_code in Failure.reason_codes()
+        assert failure.failed_file == "pathway_evolutions.txt"
+        assert failure.failed_row == 9
+        refute serialized_contains?(failure, "DROP TABLE")
+        refute serialized_contains?(failure, "09:00:00")
+      end
+    end
+
+    test "classifies before the generic row-error clause" do
+      error = %{
+        file: "pathway_evolutions.txt",
+        row: 4,
+        reason: {:evolution_rejected, :evolution_time_invalid}
+      }
+
+      generic = %{file: "pathway_evolutions.txt", row: 4, reason: "value is not a time: 09:0:0"}
+
+      assert Failure.from_error(error, phase: :phase_1).reason_code == "evolution_time_invalid"
+      assert Failure.from_error(generic, phase: :phase_1).reason_code == "row_invalid"
+    end
+
+    test "never serializes the rejected row's values" do
+      error = %{
+        file: "/uploads/pathway_evolutions.txt",
+        row: 12,
+        reason: {:evolution_rejected, :evolution_service_required}
+      }
+
+      attrs = Failure.to_run_attrs(Failure.from_error(error, phase: :phase_1))
+
+      assert attrs.reason_code == "evolution_service_required"
+      assert attrs.failed_file == "pathway_evolutions.txt"
+      assert attrs.failed_row == 12
+      refute inspect(attrs) =~ "/uploads"
+    end
+
+    test "drops a non-positive closure row number" do
+      error = %{
+        file: "pathway_evolutions.txt",
+        row: 0,
+        reason: {:evolution_rejected, :evolution_duplicate}
+      }
+
+      assert Failure.from_error(error, phase: :phase_1).failed_row == nil
+    end
+  end
+
   describe "to_run_attrs/1" do
     test "emits only bounded, sanitized persisted attributes" do
       failure =

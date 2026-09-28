@@ -53,7 +53,20 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
     nested_archive duplicate_entity_file
   )
 
+  # Fixed vocabulary for a scheduled-closure row that is not in the supported
+  # interchange subset. The row parser produces the first five; the registered
+  # import pass produces the last three once it can resolve references and
+  # detect a repeated tuple. Each code names a field or an omitted feature, never
+  # a value from the rejected row.
+  @evolution_reason_codes ~w(
+    evolution_pathway_required evolution_service_required
+    evolution_opening_unsupported evolution_direction_unsupported
+    evolution_time_invalid evolution_pathway_missing evolution_service_missing
+    evolution_duplicate
+  )
+
   @reason_codes @parse_reason_codes ++
+                  @evolution_reason_codes ++
                   ~w(
                     row_invalid constraint_violation database_error
                     missing_references image_write_failed missing_image
@@ -135,6 +148,14 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
     {parse_reason_code(reason), sanitize_file(file), sanitize_row(row)}
   end
 
+  # A scheduled-closure row rejection carries exactly one bounded code. The
+  # sanitized file and source row are kept; the rejected row's values are not in
+  # the term and are never read. An unrecognized code normalizes to the existing
+  # unknown-error code instead of being persisted.
+  defp classify(%{file: file, row: row, reason: {:evolution_rejected, code}}) do
+    {evolution_reason_code(code), sanitize_file(file), sanitize_row(row)}
+  end
+
   # BatchProcessor row-conversion error: the row's attrs function returned an
   # error. The `reason` is a free-form message and must never be stored.
   defp classify(%{file: file, row: row, reason: _reason}) do
@@ -176,6 +197,20 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
   end
 
   defp parse_reason_code(_reason), do: "unexpected_parser_failure"
+
+  defp evolution_reason_code(code) do
+    normalized = normalize_reason_code(code)
+
+    if normalized in @evolution_reason_codes do
+      normalized
+    else
+      "unknown_error"
+    end
+  end
+
+  defp normalize_reason_code(code) when is_atom(code), do: Atom.to_string(code)
+  defp normalize_reason_code(code) when is_binary(code), do: code
+  defp normalize_reason_code(_code), do: nil
 
   # -- sanitizers -------------------------------------------------------------
 
