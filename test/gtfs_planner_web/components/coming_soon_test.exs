@@ -18,18 +18,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Tell trip planners where riders can change vehicles: between stops, routes or two specific trips.",
       section_names: ["Transfer list", "New transfer", "In-seat transfers"]
     },
-    blocks: %{
-      title: "Blocks",
-      scope: :version,
-      summary: "Plan which trips each vehicle runs in sequence, one day type at a time.",
-      section_names: [
-        "Timeline",
-        "Unassigned trips",
-        "Checks",
-        "Riders stay on board",
-        "Deadheads and relief points"
-      ]
-    },
     runs: %{
       title: "Runs",
       scope: :version,
@@ -101,7 +89,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 12
+      assert length(@catalog) == 11
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -120,6 +108,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       # cannot match the closed clause set. The call under test is unchanged.
       assert_raise FunctionClauseError, fn ->
         ComingSoon.feature(Function.identity(:unbuilt))
+      end
+    end
+
+    test "no longer answers for Blocks, which has a page of its own" do
+      # Removing the placeholder entry is what keeps a stale `:blocks` lookup
+      # from rendering placeholder copy beside the real page.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:blocks))
       end
     end
 
@@ -146,7 +142,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders the caller's scope label verbatim" do
-      doc = render_doc(ComingSoon.feature(:blocks), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:runs), "This version: Fall 2026")
 
       assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
     end

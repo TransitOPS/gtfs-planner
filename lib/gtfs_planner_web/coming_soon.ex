@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the twelve catalog keys only. Any other key raises, so a
+  `feature/1` answers for the eleven catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -48,27 +48,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
         %{
           name: "In-seat transfers",
           text: "Review connections where riders stay on board, set on Operations › Blocks."
-        }
-      ]
-    }
-  end
-
-  def feature(:blocks) do
-    %{
-      title: "Blocks",
-      scope: :version,
-      summary: "Plan which trips each vehicle runs in sequence, one day type at a time.",
-      sections: [
-        %{name: "Timeline", text: "Arrange trips into vehicle blocks."},
-        %{name: "Unassigned trips", text: "Find trips that still need a vehicle block."},
-        %{name: "Checks", text: "Find overlaps, short layovers and repositioning problems."},
-        %{
-          name: "Riders stay on board",
-          text: "Mark connections where riders can remain in the vehicle."
-        },
-        %{
-          name: "Deadheads and relief points",
-          text: "Plan non-service movements and operator changes."
         }
       ]
     }
