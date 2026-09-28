@@ -369,6 +369,24 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Creates one general (types 0–3) transfer rule for the audit context's version.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.create_general/2`. The
+  organization and version come from the context, never from the attributes, so a
+  foreign tenant or version in the request is ignored (R10). The references are
+  validated against the version inside the write transaction (R2/R4), the row is
+  audited with one in-transaction `"transfer"` change log (R9), and a key
+  collision is `{:error, {:duplicate, %{id, transfer_type} | nil}}` with `nil`
+  when the colliding row was removed in between (R5). Serialization failures and
+  deadlocks retry up to three attempts before `:busy` (R8).
+  """
+  @spec create_general_transfer(map(), AuditContext.t()) ::
+          {:ok, Transfer.t()} | {:error, Transfers.write_error()}
+  def create_general_transfer(attrs, %AuditContext{} = audit) do
+    Transfers.create_general(attrs, audit)
+  end
+
+  @doc """
   Fetches one calendar identity through the configured catalog read adapter.
 
   Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted

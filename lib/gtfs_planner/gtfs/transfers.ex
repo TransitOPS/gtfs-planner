@@ -30,10 +30,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   page of them is returned with the requested rule selected when it is present.
 
   Both views are read-only here: in-seat rows carry no attention reasons and no
-  competitors, and nothing in this module creates, changes or deletes a transfer.
-  The filtered page is a display set, never a write or delete scope, and
-  `count_general/3` counts a detail page's related rules with the same stop and
-  route predicates this listing uses.
+  competitors. The module's one write, `create_general/2`, creates a types 0–3
+  rule only and never touches a type 4/5 row (R1). The filtered page is a display
+  set, never a write or delete scope, and `count_general/3` counts a detail page's
+  related rules with the same stop and route predicates this listing uses.
 
   The editor's option queries read the same scope: `search_stops/3` matches a
   case-insensitive substring of the stop name, ID or platform code among the stops
@@ -52,12 +52,23 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   coordinates; `stops_in_bounds/3` parses and clamps a viewport from the map hook
   and answers at most 200 drawable stops with `truncated?`; and `version_extent/2`
   returns the version's own bounding box, or nil when no stop has coordinates.
+
+  `create_general/2` creates one general rule in this module's own retry loop over
+  the configured `ReviewedApplyTransaction` module: the editor changeset's
+  references are checked against the version's stops, routes and trips inside the
+  write transaction (R2/R4), one `"transfer"` change log is written with the row in
+  the same transaction (R9), and a unique-key failure is reported after the
+  rollback as `{:duplicate, %{id, transfer_type} | nil}` (R5). Serialization
+  failures and deadlocks retry up to three attempts before `:busy` (R8).
   """
 
+  import Ecto.Changeset
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
@@ -72,6 +83,22 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   @stop_search_limit 20
   @stop_bounds_limit 200
   @sort_keys [:from, :to, :type, :min_time]
+  @write_attempts 3
+  @key_fields [
+    :from_stop_id,
+    :to_stop_id,
+    :from_route_id,
+    :to_route_id,
+    :from_trip_id,
+    :to_trip_id
+  ]
+
+  @missing_stop_message "Choose a stop or station in this version"
+  @invalid_stop_type_message "Choose a stop, platform or station"
+  @missing_route_message "Choose a route in this version"
+  @missing_trip_message "Choose a trip in this version"
+  @trip_not_on_route_message "This trip is on a different route"
+  @trip_not_at_stop_message "This trip doesn't stop here"
 
   @typedoc "A side's effective selector: the trip when set, else the route, else nothing."
   @type selector :: :any | {:route, String.t()} | {:trip, String.t()}
@@ -484,6 +511,40 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     )
     |> Repo.one()
     |> extent()
+  end
+
+  @typedoc "The row that already holds a written rule's six-field key."
+  @type collision :: %{id: Ecto.UUID.t(), transfer_type: 0..5}
+
+  @typedoc "A failed transfer write."
+  @type write_error ::
+          Ecto.Changeset.t() | {:duplicate, collision() | nil} | :not_found | :stale | :busy
+
+  @doc """
+  Creates one general (types 0–3) transfer rule for the audit context's version.
+
+  The rule's organization and version come only from `audit`; a tenant value in
+  `attrs` is ignored, and `Transfer.editor_changeset/2` accepts types 0–3 only, so
+  a type 4/5 row can never be created here (R1). The changeset's references are
+  then checked inside the write transaction: each stop must exist in this version
+  with `location_type` nil, 0 or 1 (R2), and each set route and trip must exist,
+  with the trip on the side's route and serving the side's coverage (R4). The row
+  is inserted and audited with one `"transfer"` change log in the same transaction
+  (R9); an audit failure rolls the whole write back.
+
+  The transaction runs in this module's retry loop over the configured
+  `ReviewedApplyTransaction` module, retrying a serialization failure (40001) or a
+  deadlock (40P01) up to three attempts before `:busy` (R8). A unique-key failure
+  returns `{:error, {:duplicate, collision}}` where `collision` carries the
+  colliding row's id and type, or `nil` when that row was removed in between; the
+  lookup runs after the failed transaction has rolled back (R5).
+  """
+  @spec create_general(map(), AuditContext.t()) :: {:ok, Transfer.t()} | {:error, write_error()}
+  def create_general(attrs, %AuditContext{} = audit) when is_map(attrs) do
+    case run_write(fn -> create_general_transaction(attrs, audit) end) do
+      {:error, %Ecto.Changeset{} = changeset} -> duplicate_result(changeset, audit)
+      result -> result
+    end
   end
 
   # -- Scoped loads ----------------------------------------------------------
@@ -1526,4 +1587,300 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp competitors(rows, %{competitor_ids: ids}) do
     Enum.filter(rows, &(&1.id in ids))
   end
+
+  # -- Writes ----------------------------------------------------------------
+
+  # Bounded retry over the configured transaction module. This is the third copy
+  # beside `Schedules` and `RoutePatterns`, which keep private loops of their own;
+  # extract one shared loop once package 05's retry-code change merges (spec
+  # Deferred work). A serialization failure (40001) or a deadlock (40P01) retries
+  # the whole transaction; every other failure is returned unchanged.
+  defp run_write(transaction, attempts \\ @write_attempts) do
+    case run_write_transaction(transaction) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:retryable_failure, _error} ->
+        retry_write(transaction, attempts)
+
+      {:error, reason} ->
+        retry_write_error(reason, transaction, attempts)
+    end
+  end
+
+  defp retry_write(transaction, attempts) when attempts > 1,
+    do: run_write(transaction, attempts - 1)
+
+  defp retry_write(_transaction, _attempts), do: {:error, :busy}
+
+  defp retry_write_error(reason, transaction, attempts) do
+    if retryable?(reason),
+      do: retry_write(transaction, attempts),
+      else: {:error, reason}
+  end
+
+  defp run_write_transaction(transaction) do
+    write_transaction_module().run(transaction)
+  rescue
+    error in Postgrex.Error ->
+      if retryable?(error) do
+        {:retryable_failure, error}
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp write_transaction_module do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransaction.Repo
+    )
+  end
+
+  defp retryable?(%Postgrex.Error{postgres: %{code: code}})
+       when code in [:serialization_failure, "40001", :deadlock_detected, "40P01"],
+       do: true
+
+  defp retryable?(_error), do: false
+
+  defp create_general_transaction(attrs, audit) do
+    %Transfer{organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id}
+    |> Transfer.editor_changeset(attrs)
+    |> validate_references(audit.organization_id, audit.gtfs_version_id)
+    |> insert_created_transfer(audit)
+  end
+
+  defp insert_created_transfer(%Ecto.Changeset{valid?: false} = changeset, _audit),
+    do: Repo.rollback(changeset)
+
+  defp insert_created_transfer(changeset, audit) do
+    case Repo.insert(changeset) do
+      {:ok, transfer} -> audit_created_transfer(transfer, audit)
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp audit_created_transfer(transfer, audit) do
+    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, "created", %{
+           before: nil,
+           after: Transfer.audit_snapshot(transfer),
+           operation_id: Ecto.UUID.generate(),
+           affected_transfer_ids: [transfer.id]
+         }) do
+      {:ok, _log} -> transfer
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  # CR-3: the unique-constraint failure already rolled the transaction back, so the
+  # colliding row is read in a fresh query. The error lands on `:organization_id`
+  # (the first field of the constraint list), so the key is taken from the applied
+  # values, never from the error field.
+  defp duplicate_result(%Ecto.Changeset{} = changeset, audit) do
+    if unique_conflict?(changeset) do
+      collision =
+        find_collision(
+          audit.organization_id,
+          audit.gtfs_version_id,
+          apply_changes(changeset)
+        )
+
+      {:error, {:duplicate, collision}}
+    else
+      {:error, changeset}
+    end
+  end
+
+  # Empty equals empty: a nil key column is compared with `IS NULL`, so the lookup
+  # matches the NULLS NOT DISTINCT index across all types, including an in-seat row
+  # that holds the same key as the refused general rule (R5).
+  defp find_collision(organization_id, gtfs_version_id, %Transfer{} = transfer) do
+    @key_fields
+    |> Enum.reduce(
+      from(t in Transfer,
+        where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+        select: %{id: t.id, transfer_type: t.transfer_type},
+        limit: 1
+      ),
+      fn field, query ->
+        value = Map.fetch!(transfer, field)
+
+        if is_nil(value) do
+          where(query, [t], is_nil(field(t, ^field)))
+        else
+          where(query, [t], field(t, ^field) == ^value)
+        end
+      end
+    )
+    |> Repo.one()
+  end
+
+  defp unique_conflict?(changeset) do
+    Enum.any?(changeset.errors, fn {_field, {_message, meta}} ->
+      constraint_type(meta) == :unique
+    end)
+  end
+
+  defp constraint_type(meta) when is_list(meta), do: Keyword.get(meta, :constraint)
+  defp constraint_type(meta) when is_map(meta), do: Map.get(meta, :constraint)
+  defp constraint_type(_meta), do: nil
+
+  # R2/R4 reference validation, run inside the write transaction so the read of
+  # the referenced trips and stop_times is ordered with a concurrent trip deletion
+  # (INV-4). A field the changeset has already rejected is not re-checked, and a
+  # side whose stop is not usable contributes no trip-at-stop error.
+  defp validate_references(changeset, organization_id, gtfs_version_id) do
+    stops = reference_stops(changeset, organization_id, gtfs_version_id)
+    routes = reference_route_ids(changeset, organization_id, gtfs_version_id)
+    trips = reference_trips(changeset, organization_id, gtfs_version_id)
+    incidence = trip_stop_incidence(changeset, organization_id, gtfs_version_id, stops)
+
+    changeset
+    |> validate_stop(:from, stops)
+    |> validate_stop(:to, stops)
+    |> validate_route(:from, routes)
+    |> validate_route(:to, routes)
+    |> validate_trip(:from, trips, incidence, stops)
+    |> validate_trip(:to, trips, incidence, stops)
+  end
+
+  # One query for both stops and every stop naming one of them as its parent, so a
+  # station endpoint's coverage is complete.
+  defp reference_stops(changeset, organization_id, gtfs_version_id) do
+    changeset
+    |> reference_ids([:from_stop_id, :to_stop_id])
+    |> then(&load_stops(organization_id, gtfs_version_id, &1))
+    |> Map.new(&{&1.stop_id, &1})
+  end
+
+  defp reference_route_ids(changeset, organization_id, gtfs_version_id) do
+    route_ids = reference_ids(changeset, [:from_route_id, :to_route_id])
+
+    if route_ids == [] do
+      MapSet.new()
+    else
+      from(r in Route,
+        where:
+          r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+            r.route_id in ^route_ids,
+        select: r.route_id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+    end
+  end
+
+  defp reference_trips(changeset, organization_id, gtfs_version_id) do
+    changeset
+    |> reference_ids([:from_trip_id, :to_trip_id])
+    |> then(&load_trips(organization_id, gtfs_version_id, &1))
+    |> Map.new(&{&1.trip_id, &1})
+  end
+
+  defp reference_ids(changeset, fields) do
+    fields
+    |> Enum.map(&get_field(changeset, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp validate_stop(changeset, side, stops) do
+    field = stop_field(side)
+
+    case {field_error?(changeset, field), Map.get(stops, get_field(changeset, field))} do
+      {true, _stop} -> changeset
+      {false, nil} -> add_error(changeset, field, @missing_stop_message)
+      {false, %Stop{location_type: type}} when type in [nil, 0, 1] -> changeset
+      {false, %Stop{}} -> add_error(changeset, field, @invalid_stop_type_message)
+    end
+  end
+
+  defp validate_route(changeset, side, routes) do
+    field = route_field(side)
+    route_id = get_field(changeset, field)
+
+    if not is_nil(route_id) and not field_error?(changeset, field) and
+         not MapSet.member?(routes, route_id),
+       do: add_error(changeset, field, @missing_route_message),
+       else: changeset
+  end
+
+  defp validate_trip(changeset, side, trips, incidence, stops) do
+    field = trip_field(side)
+    trip_id = get_field(changeset, field)
+    trip = Map.get(trips, trip_id)
+
+    cond do
+      is_nil(trip_id) or field_error?(changeset, field) ->
+        changeset
+
+      is_nil(trip) ->
+        add_error(changeset, field, @missing_trip_message)
+
+      different_route?(changeset, side, trip) ->
+        add_error(changeset, field, @trip_not_on_route_message)
+
+      not valid_stop?(changeset, side, stops) ->
+        changeset
+
+      not trip_serves_stop?(trip_id, changeset, side, stops, incidence) ->
+        add_error(changeset, field, @trip_not_at_stop_message)
+
+      true ->
+        changeset
+    end
+  end
+
+  defp different_route?(changeset, side, trip) do
+    route_id = get_field(changeset, route_field(side))
+    not is_nil(route_id) and trip.route_id != route_id
+  end
+
+  defp valid_stop?(changeset, side, stops) do
+    case Map.get(stops, get_field(changeset, stop_field(side))) do
+      %Stop{location_type: type} when type in [nil, 0, 1] -> true
+      _stop -> false
+    end
+  end
+
+  defp trip_serves_stop?(trip_id, changeset, side, stops, incidence) do
+    coverage(get_field(changeset, stop_field(side)), stops)
+    |> Enum.any?(&MapSet.member?(incidence, {trip_id, &1}))
+  end
+
+  defp trip_stop_incidence(changeset, organization_id, gtfs_version_id, stops) do
+    trip_ids = reference_ids(changeset, [:from_trip_id, :to_trip_id])
+    leaves = reference_coverage(changeset, stops)
+
+    if trip_ids == [] or leaves == [] do
+      MapSet.new()
+    else
+      from(st in StopTime,
+        where:
+          st.organization_id == ^organization_id and
+            st.gtfs_version_id == ^gtfs_version_id and
+            st.trip_id in ^trip_ids and st.stop_id in ^leaves,
+        select: {st.trip_id, st.stop_id}
+      )
+      |> Repo.all()
+      |> MapSet.new()
+    end
+  end
+
+  defp reference_coverage(changeset, stops) do
+    changeset
+    |> reference_ids([:from_stop_id, :to_stop_id])
+    |> Enum.flat_map(&coverage(&1, stops))
+    |> Enum.uniq()
+  end
+
+  defp stop_field(:from), do: :from_stop_id
+  defp stop_field(:to), do: :to_stop_id
+  defp route_field(:from), do: :from_route_id
+  defp route_field(:to), do: :to_route_id
+  defp trip_field(:from), do: :from_trip_id
+  defp trip_field(:to), do: :to_trip_id
+
+  defp field_error?(%Ecto.Changeset{errors: errors}, field), do: Keyword.has_key?(errors, field)
 end
