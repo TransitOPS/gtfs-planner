@@ -58,6 +58,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       "stop",
       "pathway",
       "level",
+      "route",
       "route_pattern",
       "timed_pattern",
       "route_pattern_build",
