@@ -43,6 +43,16 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   `UPDATE` statement sets `agency_timezone` and `updated_at` for the version's agencies;
   no stop time, frequency or calendar row is read or written (CR-7).
 
+  Deleting an agency is a review and an apply bound by a fingerprint (R7, INV-3).
+  `review_agency_deletion/3` refuses the version's last agency, requires a different
+  existing receiving agency when the agency has routes, and otherwise reports the routes
+  that will move, the fare attributes and attributions that block the deletion, and the
+  record-bound translation count. `delete_agency/4` takes the version row `FOR UPDATE`,
+  re-reads the same state, and refuses with `:stale_review` unless every reviewed
+  condition still holds. On a match one transaction moves the agency's routes to the
+  receiving agency, deletes its record-bound translations and deletes the agency, so no
+  route can be left naming an agency that no longer exists.
+
   Outside import and test fixtures this module is the application's writer of `agencies`
   and `feed_info` rows and of the agency columns they own (INV-5).
   """
@@ -60,11 +70,13 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   alias GtfsPlanner.Gtfs.FeedInfo
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
   @editor_role "pathways_studio_editor"
+  @no_attribution_id "(no ID)"
 
   @type scope :: AuditContext.t()
   @type zone_state :: {:ok, String.t()} | {:unresolved, :missing | :invalid | :conflicting}
@@ -88,6 +100,21 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
           agency_count: non_neg_integer(),
           unassigned_routes: non_neg_integer(),
           zone: zone_state()
+        }
+
+  @type deletion_review :: %{
+          agency: Agency.t(),
+          target: Agency.t() | nil,
+          fingerprint: String.t(),
+          routes: [
+            %{
+              route_id: String.t(),
+              route_short_name: String.t() | nil,
+              route_long_name: String.t() | nil
+            }
+          ],
+          blockers: %{fare_ids: [String.t()], attribution_ids: [String.t()]},
+          translation_count: non_neg_integer()
         }
 
   @doc """
@@ -367,6 +394,97 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
           |> apply_timezone_locked!(zone, fingerprint, audit_context)
         end)
     end
+  end
+
+  @doc """
+  Reviews the deletion of one of the version's agencies against its current state (R7,
+  INV-3).
+
+  `id` is the agency's row UUID and `target_id` the row UUID of the receiving agency, or
+  nil when the editor chose none. One transaction authorizes the actor, share-locks the
+  published version row (INV-2) and loads:
+
+  - the scoped agency, so a malformed, unknown, foreign or other-version id is
+    `:not_found`;
+  - the version's agency row IDs, because the last agency cannot be deleted (AC-19);
+  - the routes that carry the agency's own ID, ordered by `route_id` (AC-20);
+  - the `fare_id`s and `attribution_id`s that reference the agency, which block the
+    deletion until later work can move them (AC-21);
+  - the number of record-bound agency translations, which the deletion removes.
+
+  A review is returned even when blockers exist, so the editor can be told why. An agency
+  with routes needs a different existing receiving agency in the same version, and any
+  target given for an agency without routes is ignored. `fingerprint` binds that command
+  and the reviewed route and agency sets, so `delete_agency/4` can tell whether the
+  version still matches this review.
+
+  ## Returns
+
+  - `{:ok, review}` with `:agency`, `:target`, `:fingerprint`, `:routes`, `:blockers` and
+    `:translation_count`
+  - `{:error, :not_found}` for an agency id outside the version or the actor's
+    organization, or a scope that is not a published version of it
+  - `{:error, :last_agency}` when the version holds fewer than two agencies
+  - `{:error, :target_required}` when the agency has routes and no target was chosen
+  - `{:error, :invalid_target}` when the chosen target does not exist in the version or is
+    the agency itself
+  - `{:error, :forbidden}` for a deactivated or non-editor member
+  """
+  @spec review_agency_deletion(AuditContext.t(), String.t(), String.t() | nil) ::
+          {:ok, deletion_review()}
+          | {:error, :forbidden | :not_found | :last_agency | :target_required | :invalid_target}
+  def review_agency_deletion(%AuditContext{} = audit_context, id, target_id) do
+    Repo.transaction(fn ->
+      authorize_editor!(audit_context)
+      share_version!(audit_context)
+
+      audit_context
+      |> deletion_state(id, target_id)
+      |> deletion_review_locked!(target_id)
+    end)
+  end
+
+  @doc """
+  Deletes a reviewed agency, moving its routes to the receiving agency in one transaction
+  (R7, INV-2, INV-3).
+
+  `id` and `target_id` are the arguments the review was taken with and `fingerprint` is
+  the token `review_agency_deletion/3` returned. One transaction authorizes the actor and
+  takes the published version row `FOR UPDATE` before re-reading the reviewed state. It
+  rolls back `:stale_review` with no write unless all of the following still hold:
+
+  - the agency exists in the version and is not the last one;
+  - the receiving agency rule still resolves to the reviewed target, so a deleted or
+    replaced target, a target that became the agency itself and a missing target all
+    refuse a command that needs one;
+  - no fare attribute or attribution references the agency;
+  - the fingerprint still matches, so a route, an agency or a different target that
+    appeared after the review changes nothing.
+
+  On a match the routes that carry the agency's ID are moved to the receiving agency, the
+  agency's record-bound translations are deleted, and the agency row is deleted. A review
+  whose agency was already deleted, or a second of two valid reviews taken before either
+  applied, therefore loses with `:stale_review` instead of emptying the version or leaving
+  a route on a deleted agency.
+
+  ## Returns
+
+  - `{:ok, %{moved_routes: count, target: agency | nil}}` on a deletion
+  - `{:error, :forbidden}` for a deactivated or non-editor member
+  - `{:error, :not_found}` for a malformed agency id, or a scope that is not a published
+    version of the actor's organization
+  - `{:error, :stale_review}` when the version no longer matches the review, including an
+    agency that no longer resolves in it
+  """
+  @spec delete_agency(AuditContext.t(), String.t(), String.t() | nil, String.t()) ::
+          {:ok, %{moved_routes: non_neg_integer(), target: Agency.t() | nil}}
+          | {:error, :forbidden | :not_found | :stale_review}
+  def delete_agency(%AuditContext{} = audit_context, id, target_id, fingerprint) do
+    Repo.transaction(fn ->
+      authorize_editor!(audit_context)
+      lock_version!(audit_context)
+      deletion_locked!(audit_context, id, target_id, fingerprint)
+    end)
   end
 
   @doc """
@@ -871,6 +989,246 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       |> Repo.update_all(set: [agency_timezone: zone, updated_at: now])
 
     count
+  end
+
+  # -- Agency deletion -------------------------------------------------------
+
+  # One snapshot of everything a deletion re-validates. `nil` when the agency is not in
+  # scope, so a malformed, unknown, foreign or other-version id never reaches a write.
+  defp deletion_state(%AuditContext{} = audit_context, id, target_id) do
+    with %Agency{} = agency <- scoped_agency_row(audit_context, id) do
+      %{
+        agency: agency,
+        target: scoped_agency_row(audit_context, target_id),
+        agency_row_ids: audit_context |> agencies_in_scope() |> Enum.map(& &1.id) |> Enum.sort(),
+        routes: deletion_routes(audit_context, agency),
+        blockers: deletion_blockers(audit_context, agency),
+        translation_count: deletion_translation_count(audit_context, agency)
+      }
+    end
+  end
+
+  # The row id is cast before the query, so a malformed id is the same as an unknown one,
+  # and the scope filters make another organization's or another version's row the same as
+  # no row at all (R10). Both callers hold the version row lock, which is the state the
+  # deletion depends on (INV-2).
+  defp scoped_agency_row(%AuditContext{} = audit_context, row_id) do
+    case Ecto.UUID.cast(row_id) do
+      {:ok, agency_id} ->
+        scoped_agency(audit_context.organization_id, audit_context.gtfs_version_id, agency_id)
+
+      :error ->
+        nil
+    end
+  end
+
+  # The routes that move are the ones carrying the agency's own ID (R7). Exact matches
+  # only: with two or more agencies a blank or padded reference is not this agency's route
+  # (R5), and it names no agency, so the move leaves it as it was.
+  defp deletion_routes(%AuditContext{} = audit_context, agency) do
+    from(r in Route,
+      where:
+        r.organization_id == ^audit_context.organization_id and
+          r.gtfs_version_id == ^audit_context.gtfs_version_id and
+          not is_nil(r.agency_id) and r.agency_id == ^agency.agency_id,
+      order_by: [asc: r.route_id],
+      select: %{
+        route_id: r.route_id,
+        route_short_name: r.route_short_name,
+        route_long_name: r.route_long_name
+      }
+    )
+    |> Repo.all()
+  end
+
+  # R7 blocks the deletion while a fare attribute or an attribution names the agency,
+  # because neither has a rule for a receiving agency. The review reports their IDs so the
+  # editor knows what to resolve first.
+  defp deletion_blockers(%AuditContext{} = audit_context, agency) do
+    %{
+      fare_ids: deletion_fare_ids(audit_context, agency),
+      attribution_ids: deletion_attribution_ids(audit_context, agency)
+    }
+  end
+
+  defp deletion_fare_ids(%AuditContext{} = audit_context, agency) do
+    from(f in FareAttribute,
+      where:
+        f.organization_id == ^audit_context.organization_id and
+          f.gtfs_version_id == ^audit_context.gtfs_version_id and
+          f.agency_id == ^agency.agency_id,
+      select: f.fare_id
+    )
+    |> Repo.all()
+    |> Enum.sort()
+  end
+
+  # An attribution may carry no ID of its own, so a blocker without one is named by a
+  # placeholder the editor can match against the row.
+  defp deletion_attribution_ids(%AuditContext{} = audit_context, agency) do
+    from(a in Attribution,
+      where:
+        a.organization_id == ^audit_context.organization_id and
+          a.gtfs_version_id == ^audit_context.gtfs_version_id and
+          a.agency_id == ^agency.agency_id,
+      select: a.attribution_id
+    )
+    |> Repo.all()
+    |> Enum.map(&(&1 || @no_attribution_id))
+    |> Enum.sort()
+  end
+
+  # The translations that name the agency row are never exported and have no editor, so
+  # the deletion removes them with the agency (R7). A `field_value` translation matches no
+  # record id and stays.
+  defp deletion_translation_count(%AuditContext{} = audit_context, agency) do
+    from(t in Translation,
+      where:
+        t.organization_id == ^audit_context.organization_id and
+          t.gtfs_version_id == ^audit_context.gtfs_version_id and t.table_name == "agency" and
+          t.record_id == ^agency.id,
+      select: count(t.id)
+    )
+    |> Repo.one()
+  end
+
+  # The token binds the command to the state the review observed: the agency, the
+  # receiving agency, the route IDs that move and the version's agency set (R7, INV-3).
+  defp deletion_fingerprint(%{
+         agency: agency,
+         target: target,
+         routes: routes,
+         agency_row_ids: agency_row_ids
+       }) do
+    :crypto.hash(
+      :sha256,
+      :erlang.term_to_binary(
+        {:delete, agency.id, target && target.id, Enum.map(routes, & &1.route_id), agency_row_ids}
+      )
+    )
+    |> Base.encode16(case: :lower)
+  end
+
+  defp deletion_review_locked!(nil, _target_id), do: Repo.rollback(:not_found)
+
+  defp deletion_review_locked!(state, target_id) do
+    if length(state.agency_row_ids) < 2 do
+      Repo.rollback(:last_agency)
+    end
+
+    case resolve_deletion_target(state, target_id) do
+      {:ok, target} -> deletion_review(state, target)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp deletion_review(state, target) do
+    %{
+      agency: state.agency,
+      target: target,
+      fingerprint: deletion_fingerprint(%{state | target: target}),
+      routes: state.routes,
+      blockers: state.blockers,
+      translation_count: state.translation_count
+    }
+  end
+
+  # A receiving agency must exist in the same version and differ from the agency (R7). An
+  # agency with no routes needs none, and a target given for one is ignored, so a review
+  # and an apply called with the same arguments bind the same command either way.
+  defp resolve_deletion_target(%{agency: agency, target: target, routes: routes}, target_id) do
+    cond do
+      target_id == nil and routes == [] -> {:ok, nil}
+      target_id == nil -> {:error, :target_required}
+      target == nil -> {:error, :invalid_target}
+      target.id == agency.id -> {:error, :invalid_target}
+      routes == [] -> {:ok, nil}
+      true -> {:ok, target}
+    end
+  end
+
+  # A malformed id is a protocol error, refused with `:not_found` exactly like the other
+  # scoped writes, and only after the actor was authorized, so what an unauthorized caller
+  # sees never depends on the id's shape. A well-formed id that no longer resolves in the
+  # scope is a stale review instead: the row set the review observed changed.
+  defp deletion_locked!(%AuditContext{} = audit_context, id, target_id, fingerprint) do
+    case Ecto.UUID.cast(id) do
+      {:ok, _agency_id} ->
+        audit_context
+        |> deletion_state(id, target_id)
+        |> deletion_apply_locked!(target_id, fingerprint, audit_context)
+
+      :error ->
+        Repo.rollback(:not_found)
+    end
+  end
+
+  defp deletion_apply_locked!(nil, _target_id, _fingerprint, _audit_context),
+    do: Repo.rollback(:stale_review)
+
+  defp deletion_apply_locked!(state, target_id, fingerprint, %AuditContext{} = audit_context) do
+    if length(state.agency_row_ids) < 2 do
+      Repo.rollback(:stale_review)
+    end
+
+    if state.blockers.fare_ids != [] or state.blockers.attribution_ids != [] do
+      Repo.rollback(:stale_review)
+    end
+
+    target =
+      case resolve_deletion_target(state, target_id) do
+        {:ok, target} -> target
+        {:error, _reason} -> Repo.rollback(:stale_review)
+      end
+
+    if deletion_fingerprint(%{state | target: target}) != fingerprint do
+      Repo.rollback(:stale_review)
+    end
+
+    moved_routes = move_agency_routes!(state.agency, target, audit_context)
+    delete_agency_translations!(state.agency, audit_context)
+    delete_agency_row!(state.agency)
+
+    %{moved_routes: moved_routes, target: target}
+  end
+
+  # Skipping the move without a receiving agency keeps a route on the agency that is about
+  # to be deleted out of reach by construction.
+  defp move_agency_routes!(_agency, nil, _audit_context), do: 0
+
+  defp move_agency_routes!(agency, %Agency{} = target, %AuditContext{} = audit_context) do
+    {count, _} =
+      Route
+      |> where(
+        [r],
+        r.organization_id == ^audit_context.organization_id and
+          r.gtfs_version_id == ^audit_context.gtfs_version_id
+      )
+      |> where([r], r.agency_id == ^agency.agency_id)
+      |> Repo.update_all(set: [agency_id: target.agency_id])
+
+    count
+  end
+
+  defp delete_agency_translations!(agency, %AuditContext{} = audit_context) do
+    Translation
+    |> where(
+      [t],
+      t.organization_id == ^audit_context.organization_id and
+        t.gtfs_version_id == ^audit_context.gtfs_version_id and t.table_name == "agency" and
+        t.record_id == ^agency.id
+    )
+    |> Repo.delete_all()
+  end
+
+  # The transaction owns the irreversible step: a delete that finds the row already gone
+  # rolls the whole command back to the reviewed state instead of raising out of the
+  # public contract.
+  defp delete_agency_row!(agency) do
+    case Repo.delete(agency) do
+      {:ok, _deleted} -> :ok
+      {:error, _changeset} -> Repo.rollback(:stale_review)
+    end
   end
 
   defp insert_or_rollback!(changeset) do
