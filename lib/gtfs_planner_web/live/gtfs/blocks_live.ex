@@ -40,10 +40,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -73,6 +77,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
   @empty_peak %{count: 0, at_secs: nil, excluded_unassigned: 0, excluded_frequency: 0}
 
+  # The destination picker offers at most this many matches, so a day type with
+  # thousands of blocks still narrows by search rather than by scrolling (AC-26).
+  @destination_limit 25
+
+  @permission_message "You don't have permission to change blocks in this version."
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -89,6 +99,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> stream(:block_rows, [], dom_id: &block_dom_id/1)
      |> stream(:list_rows, [], dom_id: &block_dom_id/1)
      |> stream(:pool_rows, [], dom_id: &pool_dom_id/1)
+     |> assign(:assign, nil)
+     |> assign(:review, nil)
+     |> assign(:review_stale?, false)
      |> assign_empty_derived()}
   end
 
@@ -106,7 +119,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @impl true
   def handle_event("select_day", %{"day" => day}, socket) do
     patch(socket, %{day: blank_to_nil(day), trip: nil, page: 1, pool_page: 1},
-      clear_selection: true
+      clear_selection: true,
+      clear_command: true
     )
   end
 
@@ -172,8 +186,82 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # “Select this page” selects the whole page in step 26's bulk selection.
   def handle_event("select_page", _params, socket), do: {:noreply, socket}
 
-  # “Assign trip” opens step 25's assignment form from the row.
+  # The assignment form lives in the trip drawer, so opening it from a pool row
+  # patches `trip=` to open that drawer; a trip already in the URL keeps its URL,
+  # including any `block=` context its “Back to block” link reads. Step 26 adds
+  # the `selection` scope beside this one.
+  def handle_event("open_assign", %{"scope" => "trip", "trip" => trip_id}, socket) do
+    case find_day_trip(socket.assigns.day, trip_id) do
+      nil ->
+        {:noreply, socket}
+
+      trip ->
+        socket = assign(socket, :assign, new_assign(trip))
+
+        if socket.assigns.state.trip == trip.trip_id do
+          {:noreply, socket}
+        else
+          patch(socket, %{trip: trip.trip_id, gap: nil, block: nil})
+        end
+    end
+  end
+
   def handle_event("open_assign", _params, socket), do: {:noreply, socket}
+
+  # The search input carries the whole form, so the handler keeps the checked
+  # radio as well as the narrowed search (the form is re-rendered on every event).
+  def handle_event("search_destination", params, socket) do
+    case socket.assigns.assign do
+      nil -> {:noreply, socket}
+      assign -> {:noreply, assign(socket, :assign, put_form_params(assign, params))}
+    end
+  end
+
+  def handle_event("submit_assign", params, socket) do
+    case socket.assigns.assign do
+      nil ->
+        {:noreply, socket}
+
+      assign ->
+        assign =
+          assign
+          |> put_form_params(params)
+          |> Map.merge(%{error: nil, ineligible: []})
+
+        case command(assign) do
+          {:ok, command} -> run_command(assign(socket, :assign, assign), command, nil)
+          {:error, message} -> {:noreply, assign(socket, :assign, %{assign | error: message})}
+        end
+    end
+  end
+
+  # “Remove from block” runs the same reviewed command path as an assignment, so
+  # a removal that adds a problem opens the review too (R10, AC-26).
+  def handle_event("unassign", %{"scope" => "trip", "trip" => trip_id}, socket) do
+    case find_day_trip(socket.assigns.day, trip_id) do
+      nil -> {:noreply, socket}
+      trip -> run_command(socket, {:unassign, [trip.id]}, nil)
+    end
+  end
+
+  def handle_event("unassign", _params, socket), do: {:noreply, socket}
+
+  def handle_event("confirm_review", _params, socket) do
+    case socket.assigns.review do
+      %{command: command, fingerprint: fingerprint} ->
+        run_command(socket, command, fingerprint)
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  # “Change selection” closes the review and leaves the form with its chosen
+  # target, so the reader can pick another destination without reopening the
+  # drawer.
+  def handle_event("cancel_review", _params, socket) do
+    {:noreply, assign(socket, review: nil, review_stale?: false)}
+  end
 
   def handle_event("open_drawer", %{"key" => key}, socket) do
     case key do
@@ -204,7 +292,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     socket = assign(socket, :open_drawer, nil)
 
     if socket.assigns.state.trip || socket.assigns.state.gap || socket.assigns.state.block do
-      patch(socket, %{trip: nil, gap: nil, block: nil})
+      patch(socket, %{trip: nil, gap: nil, block: nil}, clear_command: true)
     else
       {:noreply, socket}
     end
@@ -280,6 +368,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     socket =
       if Keyword.get(opts, :close_drawer, false),
         do: assign(socket, :open_drawer, nil),
+        else: socket
+
+    socket =
+      if Keyword.get(opts, :clear_command, false),
+        do: assign(socket, assign: nil, review: nil, review_stale?: false),
         else: socket
 
     {:noreply, push_patch(socket, to: blocks_path(Map.merge(socket.assigns.state, overrides)))}
@@ -634,11 +727,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # Every trip of the day type is in exactly one block or in the pool, so the two
-  # lists hold the trip a deep link can name.
+  # A trip's drawer and the assignment form both name it by its natural trip ID;
+  # an unloaded day holds no trip at all.
+  defp find_day_trip(nil, _trip_id), do: nil
+
   defp find_day_trip(day, trip_id) do
     (Enum.flat_map(day.blocks, & &1.trips) ++ day.pool)
     |> Enum.find(&(&1.trip_id == trip_id))
+  end
+
+  defp find_day_trip_by_id(nil, _id), do: nil
+
+  defp find_day_trip_by_id(day, id) do
+    (Enum.flat_map(day.blocks, & &1.trips) ++ day.pool)
+    |> Enum.find(&(&1.id == id))
   end
 
   # The page holding the trip: its block's own page for a blocked trip, the pool's
@@ -678,6 +780,254 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     day_types
     |> Enum.min_by(&length(&1.service_ids))
     |> Map.fetch!(:label)
+  end
+
+  # --- reviewed block commands (step 25) --------------------------------------
+
+  # Every apply on this page goes through here (CR-8): the editor role is
+  # re-read from the membership first, so a role revoked while the page is open
+  # refuses the next write, and the audit context is built from the socket rather
+  # than from any parameter (CR-4). The context resolves the command against the
+  # organization, version and selected day type again, so a crafted event can
+  # never widen the scope.
+  defp run_command(%{assigns: %{day_type: nil}} = socket, _command, _confirmation),
+    do: {:noreply, socket}
+
+  defp run_command(socket, command, confirmation) do
+    if editor_access?(socket) do
+      case Gtfs.apply_block_change(
+             socket.assigns.day_type.key,
+             command,
+             audit_context(socket),
+             confirmation
+           ) do
+        {:ok, result} -> applied(socket, command, result)
+        {:needs_confirmation, review} -> {:noreply, show_review(socket, review, false)}
+        {:error, {:stale_review, review}} -> {:noreply, show_review(socket, review, true)}
+        {:error, {:ineligible, ids}} -> {:noreply, refuse_ineligible(socket, ids)}
+        {:error, reason} -> {:noreply, refuse(socket, reason)}
+      end
+    else
+      {:noreply, put_flash(socket, :error, @permission_message)}
+    end
+  end
+
+  # A write reloads the day, drops the form and the review and follows the first
+  # changed trip to the page that holds it, so the reader sees the row the flash
+  # names (AC-26). Nothing here re-derives a review: the result carries the one
+  # the context built.
+  defp applied(socket, command, result) do
+    socket = load_day(socket)
+
+    socket =
+      case result.changed_trip_ids do
+        [first | _rest] -> follow_changed_trip(socket, first)
+        [] -> socket
+      end
+
+    socket
+    |> assign(assign: nil, review: nil, review_stale?: false)
+    |> put_flash(:info, success_message(command, result))
+    # A successful command also clears step 26's selection, because those trips
+    # are no longer the trips the reader selected.
+    |> then(&patch(&1, %{trip: nil, gap: nil, block: nil}, clear_selection: true))
+  end
+
+  defp follow_changed_trip(socket, trip_id) do
+    case find_day_trip_by_id(socket.assigns.day, trip_id) do
+      nil -> socket
+      trip -> override_trip_page(socket, trip)
+    end
+  end
+
+  defp success_message(_command, %{changed_trip_ids: []}),
+    do: "No assignment changed. The trip already has this block."
+
+  defp success_message({:assign, _ids, _target}, result) do
+    "Assigned #{count_label(length(result.changed_trip_ids))} to block #{result.block_id}."
+  end
+
+  defp success_message({:unassign, _ids}, result) do
+    "Removed #{count_label(length(result.changed_trip_ids))} from #{source_label(result.review)}."
+  end
+
+  defp success_message(_command, _result), do: "Saved the block change."
+
+  defp source_label(%{changes: changes}) do
+    case changes |> Enum.map(& &1.from) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [block_id] -> "block #{block_id}"
+      _other -> "its block"
+    end
+  end
+
+  defp source_label(_review), do: "its block"
+
+  # The review keeps the command and its fingerprint, so confirming re-runs it
+  # under the lock and writes only when the recomputed fingerprint still matches
+  # (AC-12). The failure sentence is cleared by the new review.
+  defp show_review(socket, review, stale?) do
+    socket
+    |> clear_command_error()
+    |> assign(review: review, review_stale?: stale?)
+  end
+
+  defp clear_command_error(socket) do
+    case socket.assigns.assign do
+      nil -> socket
+      assign -> assign(socket, :assign, %{assign | error: nil, ineligible: []})
+    end
+  end
+
+  # An ineligible trip is named in the form rather than dropped: the reason comes
+  # from the trip's own flags, so the reader sees which rule refused it (FH-18).
+  defp refuse_ineligible(socket, ids) do
+    case socket.assigns.assign do
+      nil ->
+        put_flash(socket, :error, "Some selected trips can't be assigned to a block.")
+
+      assign ->
+        assign(socket, :assign, %{assign | ineligible: ids, error: nil})
+    end
+  end
+
+  # A failed save keeps the form, its target and its review: only the sentence
+  # changes, so a retry repeats exactly the reviewed command (AC-26).
+  defp refuse(socket, reason) do
+    message = command_error(reason)
+
+    case socket.assigns.assign do
+      nil -> put_flash(socket, :error, message)
+      assign -> assign(socket, :assign, %{assign | error: message})
+    end
+  end
+
+  defp command_error(:busy), do: "Another change is being saved. Try again."
+  defp command_error(:not_found), do: "That trip isn't in this version."
+  defp command_error(:unknown_day_type), do: "This day type isn't in this version."
+  defp command_error(:invalid_command), do: "That change isn't valid."
+
+  defp command_error(:invalid_block_id),
+    do: "Enter a block ID of 1 to 255 characters."
+
+  defp command_error(:block_id_taken),
+    do: "That block ID already runs on these dates. Choose another."
+
+  defp command_error(:too_many_trips), do: "This change touches too many trips."
+
+  defp command_error({:audit_failed, _reason}),
+    do: "The change couldn't be saved. Nothing was written."
+
+  defp command_error(_reason), do: "The change couldn't be saved. Try again."
+
+  # --- the assignment form (step 25) -----------------------------------------
+
+  defp new_assign(trip) do
+    %{
+      scope: :trip,
+      trips: [trip],
+      trip_ids: [trip.id],
+      blocked?: not is_nil(trip.block_id),
+      target: nil,
+      search: "",
+      error: nil,
+      ineligible: []
+    }
+  end
+
+  defp put_form_params(assign, params) do
+    values = Map.get(params, "assign", %{})
+
+    %{
+      assign
+      | search: Map.get(values, "search", assign.search),
+        target: destination_target(Map.get(values, "destination"), assign.target)
+    }
+  end
+
+  defp destination_target(nil, current), do: current
+  defp destination_target("new", _current), do: :new
+  defp destination_target("none", _current), do: :none
+  defp destination_target(block_id, _current), do: block_id
+
+  defp command(%{target: nil}), do: {:error, "Choose a destination block."}
+  defp command(%{target: :new, trip_ids: ids}), do: {:ok, {:assign, ids, :new}}
+  defp command(%{target: :none, trip_ids: ids}), do: {:ok, {:unassign, ids}}
+  defp command(%{target: target, trip_ids: ids}), do: {:ok, {:assign, ids, target}}
+
+  defp assign_form(nil), do: nil
+
+  defp assign_form(assign) do
+    to_form(
+      %{"search" => assign.search, "destination" => destination_value(assign.target)},
+      as: :assign
+    )
+  end
+
+  defp destination_value(nil), do: "new"
+  defp destination_value(:new), do: "new"
+  defp destination_value(:none), do: "none"
+  defp destination_value(block_id), do: block_id
+
+  # The destination options are the day type's own block IDs, filtered by a
+  # case-insensitive substring, with an exact match first and at most 25 entries
+  # (AC-26). `total` is the match count before the cap, so the form can say the
+  # list was cut rather than pretending it is complete.
+  defp destination_options(blocks, nil),
+    do: {Enum.take(blocks, @destination_limit), length(blocks)}
+
+  defp destination_options(blocks, search) do
+    needle = search |> String.trim() |> String.downcase()
+
+    matched =
+      blocks
+      |> Enum.filter(&String.contains?(String.downcase(&1.block_id), needle))
+      |> Enum.sort_by(&(String.downcase(&1.block_id) != needle))
+
+    {Enum.take(matched, @destination_limit), length(matched)}
+  end
+
+  defp destination_option(block) do
+    %{block_id: block.summary.block_id, detail: destination_detail(block.summary)}
+  end
+
+  defp destination_detail(%{trip_count: count, start_secs: nil}), do: count_label(count)
+
+  defp destination_detail(%{trip_count: count, start_secs: start, end_secs: finish}) do
+    "#{count_label(count)} · #{BlocksComponents.clock(start)}–#{BlocksComponents.clock(finish)}"
+  end
+
+  defp count_label(1), do: "1 trip"
+  defp count_label(count), do: "#{count} trips"
+
+  # --- editor authority ------------------------------------------------------
+
+  # The role is re-read from the membership on every mutating event, so a role
+  # revoked while the page is open refuses the next write. This is the stricter
+  # form of the `has_role?(@user_roles, :pathways_studio_editor)` check: the
+  # assign is only a snapshot from mount (AC-31).
+  defp editor_access?(socket) do
+    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
+  end
+
+  defp live_roles(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id) do
+      membership.roles || []
+    else
+      _ -> []
+    end
+  end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: nil,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
   end
 
   defp effective_page(page, visible_count) do
@@ -735,6 +1085,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       mixed_timezones?: day.mixed_timezones?,
       trip_labels: trip_labels(day),
       findings_by_trip: findings_by_trip(day.findings),
+      destination_blocks: Enum.map(day.blocks, &destination_option/1),
       untimed_trips: Enum.filter(day.unplottable, & &1.block_id)
     )
   end
@@ -758,6 +1109,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       mixed_timezones?: false,
       trip_labels: %{},
       findings_by_trip: %{},
+      destination_blocks: [],
       untimed_trips: [],
       visible_count: 0,
       timeline_key: nil,
@@ -778,6 +1130,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   @impl true
   def render(assigns) do
+    {options, total} =
+      destination_options(
+        assigns.destination_blocks,
+        assigns.assign && assigns.assign.search
+      )
+
+    assigns =
+      assigns
+      |> assign(:assign_form, assign_form(assigns.assign))
+      |> assign(:destination_options, options)
+      |> assign(:destination_total, total)
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -906,6 +1270,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                       findings={Map.get(@findings_by_trip, trip.id, [])}
                       in_seat={Map.get(@in_seat, trip.id, [])}
                       back_block={@back_block}
+                      assign={@assign}
+                      assign_form={@assign_form}
+                      destination_options={@destination_options}
+                      destination_total={@destination_total}
                     />
                   <% {:elsewhere, trip_id, day_types} -> %>
                     <BlocksComponents.trip_elsewhere
@@ -944,6 +1312,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     findings_by_trip={@findings_by_trip}
                   />
                 <% end %>
+
+                <BlocksComponents.review_dialog
+                  review={@review}
+                  stale?={@review_stale?}
+                  error={@assign && @assign.error}
+                  day_type={@day_type}
+                  version_name={@current_gtfs_version.name}
+                />
               <% true -> %>
             <% end %>
           </div>

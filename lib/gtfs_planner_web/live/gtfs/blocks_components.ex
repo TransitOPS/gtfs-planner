@@ -471,6 +471,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :findings, :list, required: true
   attr :in_seat, :list, required: true
   attr :back_block, :string, default: nil
+  attr :assign, :map, default: nil
+  attr :assign_form, :any, default: nil
+  attr :destination_options, :list, default: []
+  attr :destination_total, :integer, default: 0
 
   def trip_drawer(assigns) do
     assigns =
@@ -586,6 +590,48 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </p>
       </section>
 
+      <%!-- The trip's own assign controls: a blocked trip can be removed from its
+      block, and any eligible trip can open the destination picker in this drawer
+      (step 25). An ineligible trip keeps “Remove from block” only, because an
+      assignment needs usable times and a single trip (R10). --%>
+      <div
+        :if={@trip.block_id || eligible?(@trip)}
+        class="mt-6 flex flex-wrap gap-2 border-t border-base-300 pt-4"
+      >
+        <button
+          :if={@trip.block_id}
+          id="trip-unassign"
+          type="button"
+          phx-click="unassign"
+          phx-value-scope="trip"
+          phx-value-trip={@trip.trip_id}
+          class="btn btn-sm min-h-11"
+        >
+          Remove from block
+        </button>
+        <button
+          :if={eligible?(@trip)}
+          id="trip-change-assignment"
+          type="button"
+          phx-click="open_assign"
+          phx-value-scope="trip"
+          phx-value-trip={@trip.trip_id}
+          aria-expanded={to_string(@assign != nil)}
+          class="btn btn-sm btn-primary min-h-11"
+        >
+          {if @trip.block_id, do: "Change assignment", else: "Assign trip"}
+        </button>
+      </div>
+
+      <.assign_form
+        :if={@assign && @trip.id in @assign.trip_ids}
+        assign={@assign}
+        form={@assign_form}
+        options={@destination_options}
+        total={@destination_total}
+        total_dates={@total_dates}
+      />
+
       <%!-- “Back to block” is what a trip opened from the block drawer gets; a trip
       opened from a bar or a marker has no block context and no back link. --%>
       <div :if={@back_block} class="mt-6 border-t border-base-300 pt-4">
@@ -600,6 +646,298 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </button>
       </div>
     </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the single-trip assignment form: the scope sentence, the “Find a
+  block” search, the destination radio list and “Save assignment”.
+
+  The form posts one `submit_assign` after the search has been narrowed by the
+  debounced `search_destination` event, so the reader chooses one of at most 25
+  matching block IDs instead of scanning the day type (AC-26). “New block” is
+  always first because a new ID is resolved under the lock before the review; an
+  exact match leads the results; a blocked trip also offers “No block”, which
+  removes it. A failed save keeps the chosen radio checked and prints the
+  sentence in `#assign-error`, and an ineligible trip is named instead of being
+  silently dropped (FH-18).
+  """
+  attr :assign, :map, required: true
+  attr :form, :any, required: true
+  attr :options, :list, required: true
+  attr :total, :integer, required: true
+  attr :total_dates, :integer, required: true
+
+  def assign_form(assigns) do
+    assigns =
+      assign(assigns,
+        trip_count: length(assigns.assign.trip_ids),
+        search_summary: destination_summary(assigns.options, assigns.total)
+      )
+
+    ~H"""
+    <%!-- The change event belongs to the form, not to the search input: LiveView
+    serialises an input-level change with only that input's own name, so a
+    re-render after a search would reset the chosen radio. A form-level event
+    carries the destination and the narrowed search together (AC-26). --%>
+    <.form
+      for={@form}
+      id="assign-form"
+      phx-change="search_destination"
+      phx-debounce="200"
+      phx-submit="submit_assign"
+      class="mt-3 space-y-3"
+    >
+      <p class="text-sm text-base-content/70">
+        {count_label(@trip_count, "trip", "trips")} · {@total_dates} affected dates
+      </p>
+
+      <div class="field">
+        <.input
+          id="destination-search"
+          field={@form[:search]}
+          type="search"
+          label="Find a block"
+          placeholder="Search block ID"
+          autocomplete="off"
+          help="Choose an existing ID or create a new block. This does not suggest operational compatibility."
+        />
+      </div>
+
+      <.callout
+        :if={@assign.ineligible != []}
+        id="assign-ineligible"
+        kind="warning"
+        title={ineligible_title(@assign)}
+      >
+        No trips will be changed until the selection is eligible.
+      </.callout>
+
+      <fieldset>
+        <legend class="text-sm font-medium">Destination block</legend>
+        <div class="mt-2 space-y-2">
+          <label class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+            <input
+              type="radio"
+              id="destination-new"
+              name={@form[:destination].name}
+              value="new"
+              checked={@assign.target in [nil, :new]}
+              class="radio radio-sm"
+            />
+            <span>
+              <span class="text-sm font-medium">New block</span>
+              <small class="block text-base-content/70">
+                A new ID is resolved before the review.
+              </small>
+            </span>
+          </label>
+
+          <label
+            :for={option <- @options}
+            data-role="destination-option"
+            data-block={option.block_id}
+            class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+          >
+            <input
+              type="radio"
+              id={"destination-block-" <> dom_token(option.block_id)}
+              name={@form[:destination].name}
+              value={option.block_id}
+              checked={@assign.target == option.block_id}
+              class="radio radio-sm"
+            />
+            <span>
+              <span class="text-sm font-medium">Block {option.block_id}</span>
+              <small class="block text-base-content/70">{option.detail}</small>
+            </span>
+          </label>
+
+          <label
+            :if={@assign.blocked?}
+            data-role="destination-option"
+            data-block="none"
+            class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+          >
+            <input
+              type="radio"
+              id="destination-none"
+              name={@form[:destination].name}
+              value="none"
+              checked={@assign.target == :none}
+              class="radio radio-sm"
+            />
+            <span>
+              <span class="text-sm font-medium">No block</span>
+              <small class="block text-base-content/70">Remove this trip from its block.</small>
+            </span>
+          </label>
+        </div>
+        <p id="destination-summary" class="mt-2 text-sm text-base-content/70" role="status">
+          {@search_summary}
+        </p>
+      </fieldset>
+
+      <p id="assign-error" class="text-sm text-error" role="alert">{@assign.error}</p>
+
+      <p class="text-sm text-base-content/70">
+        Assignment follows the selected trips across all their dates. Changes with
+        additional consequences require confirmation.
+      </p>
+
+      <div class="flex justify-end">
+        <button type="submit" class="btn btn-primary min-h-11" phx-disable-with="Saving…">
+          Save assignment
+        </button>
+      </div>
+    </.form>
+    """
+  end
+
+  @doc """
+  Renders the block-change review: the day type and version, the preview counts,
+  the assignment changes table and one effect card per affected day type with its
+  added problems, plus the existing problems and new notices.
+
+  The dialog is the `confirm_dialog` review surface, so the confirm label repeats
+  the verb and its object (“Assign 1 trip”) and the cancel action is “Change
+  selection”, which returns to the form with its target. A stale confirmation
+  prints “Trips changed since you reviewed. Check the changes again.” above the
+  refreshed review and never saves; a failed save prints its own sentence above
+  the unchanged review, so a retry repeats exactly the reviewed command (AC-12,
+  AC-26).
+  """
+  attr :review, :map, default: nil
+  attr :stale?, :boolean, default: false
+  attr :error, :string, default: nil
+  attr :day_type, :map, default: nil
+  attr :version_name, :string, default: nil
+
+  def review_dialog(assigns) do
+    assigns =
+      assign(assigns,
+        confirm_label: confirm_label(assigns.review),
+        notices: added_notices(assigns.review),
+        existing: existing_problem_count(assigns.review)
+      )
+
+    ~H"""
+    <.confirm_dialog
+      id="block-review"
+      open={@review != nil}
+      title="Review block changes"
+      confirm_label={@confirm_label}
+      pending_label="Saving…"
+      on_confirm="confirm_review"
+      on_cancel="cancel_review"
+      cancel_label="Change selection"
+      described_by="block-review-body"
+      size="lg"
+      confirm_variant="primary"
+      return_focus_id="trip-change-assignment"
+      data-initial-focus-id="block-review-changes"
+    >
+      <div :if={@review}>
+        <.callout
+          :if={@stale?}
+          id="block-review-stale"
+          kind="warning"
+          title="Trips changed since you reviewed. Check the changes again."
+        />
+
+        <.callout :if={@error} id="block-review-error" kind="error" title={@error} />
+
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-sm text-base-content/70">
+            {(@day_type && @day_type.label) || "Day type"} · {@version_name}
+          </p>
+          <.status_badge status="warning" label="Preview · not saved" />
+        </div>
+
+        <div class="mt-3 grid grid-cols-3 gap-2">
+          <div>
+            <strong>{length(@review.changes)}</strong>
+            <span class="block text-base-content/70">trips changing block</span>
+          </div>
+          <div>
+            <strong>{@review.affected_date_count}</strong>
+            <span class="block text-base-content/70">affected service dates</span>
+          </div>
+          <div>
+            <strong>{@review.added_problem_count}</strong>
+            <span class="block text-base-content/70">new problems across day types</span>
+          </div>
+        </div>
+
+        <h3 id="block-review-changes" tabindex="-1" class="mt-4 text-sm font-semibold">
+          Assignment changes
+        </h3>
+
+        <.table id="block-review-changes-table" rows={@review.changes}>
+          <:col :let={change} label="Trip">{change.trip.trip_id}</:col>
+          <:col :let={change} label="Current block">{change.from || "Unassigned"}</:col>
+          <:col :let={change} label="Proposed block">
+            <strong data-role="review-proposed">{change.to || "Unassigned"}</strong>
+          </:col>
+        </.table>
+
+        <h3 class="mt-4 text-sm font-semibold">Affected dates</h3>
+
+        <div class="mt-2 space-y-3">
+          <div
+            :for={effect <- @review.effects}
+            id={"review-effect-" <> effect.day_type.key}
+            data-role="review-effect"
+            data-selected={to_string(effect.selected?)}
+            class="border border-base-300 px-3 py-2"
+          >
+            <strong>
+              {if effect.selected?, do: "Current view", else: "Also changes"} · {effect.day_type.label} · {date_count_label(
+                effect.day_type.date_count
+              )}
+            </strong>
+            <p class="mt-1">{effect_sentence(effect, @review)}</p>
+            <p :for={split <- effect.splits}>
+              Block {split.block_id} splits: {split.remaining} {if split.remaining == 1,
+                do: "trip stays",
+                else: "trips stay"} on {split.block_id}.
+            </p>
+            <p
+              :for={finding <- added_problems(effect)}
+              data-role="review-added"
+              class="mt-1 flex flex-wrap items-center gap-2"
+            >
+              <span class="font-medium">Added</span>
+              <.status_badge
+                status={severity_status(finding.severity)}
+                label={code_label(finding.code)}
+              />
+              <span>{finding_detail(finding)}</span>
+            </p>
+            <p :if={added_problems(effect) == []} class="mt-1 text-base-content/70">
+              No new timing or transfer problems on these dates.
+            </p>
+          </div>
+        </div>
+
+        <details class="mt-4 border-t border-base-300 pt-2">
+          <summary class="min-h-11 cursor-pointer content-center">
+            Existing problems and new notices
+          </summary>
+          <p class="mt-2 text-sm text-base-content/70">
+            {@existing} existing problem occurrences remain across affected day types.
+          </p>
+          <p :for={{label, notice} <- @notices} class="mt-1 text-sm">{label} · {notice}</p>
+          <p :if={@notices == []} class="mt-1 text-sm text-base-content/70">
+            No additional notices.
+          </p>
+        </details>
+
+        <p class="mt-3 text-sm text-base-content/70">
+          Trip times, stop order, and transfer records stay unchanged by this assignment.
+        </p>
+      </div>
+    </.confirm_dialog>
     """
   end
 
@@ -2225,6 +2563,79 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp handoff_key(:same_station), do: "same_station"
   defp handoff_key({:nearby, meters}), do: "nearby-#{meters}"
   defp handoff_key({:moves, _meters}), do: "moves"
+
+  # --- the assignment form and the review (step 25) --------------------------
+
+  # The picker's status line: how many of the day type's block IDs the search
+  # matched, and whether the 25-entry cap cut the list (AC-26).
+  defp destination_summary(options, total) do
+    count = length(options)
+
+    if count < total do
+      "#{count} of #{total} matching blocks · refine your search"
+    else
+      "#{count} matching blocks"
+    end
+  end
+
+  # An ineligible trip is named with its own reason rather than silently dropped
+  # (FH-18).
+  defp ineligible_title(%{ineligible: ids, trips: trips}) do
+    reasons =
+      trips
+      |> Enum.filter(&(&1.id in ids))
+      |> Enum.map(&eligibility_text/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case reasons do
+      [] -> "This trip can't be assigned to a block."
+      reasons -> "This trip can't be assigned to a block · " <> Enum.join(reasons, ", ")
+    end
+  end
+
+  # The confirm button repeats the verb and its object (AC-26).
+  defp confirm_label(%{command: {:rename, _source, _target}}), do: "Rename block"
+  defp confirm_label(%{command: {:merge, _source, _target}}), do: "Merge blocks"
+
+  defp confirm_label(%{command: {:unassign, _ids}, changes: changes}),
+    do: "Remove " <> count_label(length(changes), "trip", "trips")
+
+  defp confirm_label(%{changes: changes}),
+    do: "Assign " <> count_label(length(changes), "trip", "trips")
+
+  defp confirm_label(_review), do: "Save changes"
+
+  defp effect_sentence(effect, review) do
+    count = length(effect.changed_trip_ids)
+    noun = if count == 1, do: "trip assignment changes", else: "trip assignments change"
+    target = if review.target, do: "block " <> review.target, else: "unassigned"
+    "#{count} #{noun} to #{target}."
+  end
+
+  # “Added” problems are the errors and warnings a command introduces; a new
+  # notice alone never needs confirmation, so it belongs in the disclosure.
+  defp added_problems(effect), do: Enum.reject(effect.added, &(&1.severity == :notice))
+
+  defp added_notices(nil), do: []
+
+  defp added_notices(review) do
+    Enum.flat_map(review.effects, fn effect ->
+      effect.added
+      |> Enum.filter(&(&1.severity == :notice))
+      |> Enum.map(&{effect.day_type.label, notice_text(&1)})
+    end)
+  end
+
+  defp notice_text(finding), do: "#{code_label(finding.code)} · #{finding_detail(finding)}"
+
+  defp existing_problem_count(nil), do: 0
+
+  defp existing_problem_count(review) do
+    review.effects
+    |> Enum.flat_map(& &1.existing)
+    |> Enum.count(&(&1.severity in [:error, :warning]))
+  end
 
   # A DOM id token for a block or trip ID that may hold any Unicode: the same
   # URL-safe Base64 as the block rows, never the raw ID (Setup and hazards).
