@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Import.CsvParser
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Repo
 
   @password "valid user password 123456"
@@ -44,6 +45,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
   @level_id "FLOW_LEVEL_1"
   @level_name "Flow Concourse"
   @pathway_id "FLOW_PATHWAY_1"
+  @service_id "FLOW_WEEKDAY"
   @route_off_id "FLOW_ROUTE_OFF"
   @trip_id "FLOW_TRIP_OFF"
   @diagram_filename "flow-floorplan.png"
@@ -125,6 +127,13 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
       gtfs_version_fixture(foreign_organization.id, %{name: "Flow Foreign Version"})
 
     selected = seed_complete_version(organization.id, version.id)
+
+    # The version really does hold a scheduled closure, so the unchanged file
+    # names below are not observed on a closure-free version.
+    assert %PathwayEvolution{} = Repo.get(PathwayEvolution, selected.closure.id)
+    assert selected.closure.pathway_id == @pathway_id
+    assert selected.closure.start_time == 82_800
+    assert selected.closure.end_time == 93_600
 
     seed_decoy_version(
       organization.id,
@@ -400,13 +409,30 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
     route = route_fixture(organization_id, version_id, route_id: @route_off_id, active: false)
     trip_fixture(organization_id, version_id, route.id, trip_id: @trip_id)
 
+    # A native calendar and one scheduled closure on the exported pathway. The
+    # companion-API archive is the static pathways profile, so this version is
+    # exactly the case where a closure exists and the file names must not move.
+    calendar_fixture(organization_id, version_id, %{service_id: @service_id})
+
+    closure =
+      %PathwayEvolution{organization_id: organization_id, gtfs_version_id: version_id}
+      |> PathwayEvolution.changeset(%{
+        pathway_id: @pathway_id,
+        service_id: @service_id,
+        start_time: "23:00",
+        end_time: "26:00",
+        note: "APPLICATION-ONLY-NOTE"
+      })
+      |> Repo.insert!()
+
     %{
       station: station,
       platform_a1: platform_a1,
       platform_a2: platform_a2,
       pathway: pathway,
       level: level,
-      route: route
+      route: route,
+      closure: closure
     }
   end
 
@@ -550,6 +576,14 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
     # routes.txt and trips.txt are never part of a pathways export.
     refute "routes.txt" in names
     refute "trips.txt" in names
+
+    # A version holding scheduled closures and their native calendar still
+    # exports exactly the same static file names: no closure file and no
+    # calendar files reach the companion-API archive.
+    refute "pathway_evolutions.txt" in names
+    refute "calendar.txt" in names
+    refute "calendar_dates.txt" in names
+    refute "calendar_attributes.txt" in names
   end
 
   defp archive_names(body) do

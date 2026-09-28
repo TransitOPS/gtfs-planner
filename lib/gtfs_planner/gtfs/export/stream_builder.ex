@@ -285,6 +285,16 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     order_by(query, [s], asc: s.route_id, asc: s.route_pattern_id)
   end
 
+  # A closure identity is the whole tuple, so every component orders the output
+  defp order_by_for_schema(query, GtfsPlanner.Gtfs.PathwayEvolution) do
+    order_by(query, [s],
+      asc: s.pathway_id,
+      asc: s.service_id,
+      asc: s.start_time,
+      asc: s.end_time
+    )
+  end
+
   defp order_by_for_schema(query, GtfsPlanner.Gtfs.Shape) do
     order_by(query, [s], asc: s.shape_id, asc: s.shape_pt_sequence)
   end
