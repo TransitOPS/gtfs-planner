@@ -1678,6 +1678,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                   class="inline-flex min-h-11 min-w-8 items-center justify-center"
                 >
                   <input
+                    id={"calendar-select-#{URI.encode_www_form(summary.service_id)}"}
                     type="checkbox"
                     class="checkbox checkbox-sm"
                     disabled
