@@ -262,6 +262,68 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Searches a version's selectable stops for the transfer editor.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.search_stops/3`; only the
+  page's catalog load uses `CatalogReadAdapter`. The query matches a
+  case-insensitive substring of the stop name, ID or platform code among the stops
+  the editor may pick (`location_type` nil, 0 or 1) and returns at most 20 options
+  in name then ID order, with `truncated?: true` when more stops match.
+  """
+  @spec search_transfer_stops(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          %{stops: [Transfers.stop_option()], truncated?: boolean()}
+  def search_transfer_stops(organization_id, gtfs_version_id, query) do
+    Transfers.search_stops(organization_id, gtfs_version_id, query)
+  end
+
+  @doc """
+  Resolves one picked stop for the transfer editor's map.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.fetch_pickable_stop/3`: the ID
+  must resolve to a stop of the requested organization and version whose location
+  type is nil, 0 or 1. An unknown, foreign or non-selectable stop is `:error`, so a
+  picked ID never comes from the payload unchecked.
+  """
+  @spec fetch_transfer_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Transfers.stop_option()} | :error
+  def fetch_transfer_stop(organization_id, gtfs_version_id, stop_id) do
+    Transfers.fetch_pickable_stop(organization_id, gtfs_version_id, stop_id)
+  end
+
+  @doc """
+  Lists the active routes serving a stop's coverage for the transfer editor.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.route_options/4`, which appends
+  the stored route with `:missing`, `:inactive` or `:not_serving` when the options
+  do not already offer it.
+  """
+  @spec transfer_route_options(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, String.t() | nil) ::
+          [Transfers.route_option()]
+  def transfer_route_options(organization_id, gtfs_version_id, stop_id, current) do
+    Transfers.route_options(organization_id, gtfs_version_id, stop_id, current)
+  end
+
+  @doc """
+  Lists the trips of one route serving a stop's coverage for the transfer editor.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.trip_options/6`; `side` is
+  `:from` (the earliest arrival) or `:to` (the earliest departure) at the coverage,
+  and the stored trip is appended with `:missing`, `:other_route` or `:not_serving`
+  when the options do not already offer it.
+  """
+  @spec transfer_trip_options(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t() | nil,
+          String.t() | nil,
+          :from | :to,
+          String.t() | nil
+        ) :: [Transfers.trip_option()]
+  def transfer_trip_options(organization_id, gtfs_version_id, route_id, stop_id, side, current) do
+    Transfers.trip_options(organization_id, gtfs_version_id, route_id, stop_id, side, current)
+  end
+
+  @doc """
   Fetches one calendar identity through the configured catalog read adapter.
 
   Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted

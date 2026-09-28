@@ -34,10 +34,23 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   The filtered page is a display set, never a write or delete scope, and
   `count_general/3` counts a detail page's related rules with the same stop and
   route predicates this listing uses.
+
+  The editor's option queries read the same scope: `search_stops/3` matches a
+  case-insensitive substring of the stop name, ID or platform code among the stops
+  the editor may pick (`location_type` nil, 0 or 1) and returns 20 options plus
+  `truncated?`; `fetch_pickable_stop/3` resolves one picked ID fail-closed;
+  `route_options/4` lists the active routes serving a stop's R2 coverage; and
+  `trip_options/6` lists the trips of one route that serve that coverage, each with
+  the first five characters of its earliest arrival (`:from`) or departure (`:to`).
+  A stored selector that is missing, inactive or no longer serving is appended with
+  the reason, so an edit never silently drops it. None of these queries writes, and
+  every one of them is scoped by organization and version.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
@@ -49,6 +62,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   @general_types [0, 1, 2, 3]
   @in_seat_types [4, 5]
   @default_per_page 50
+  @stop_search_limit 20
   @sort_keys [:from, :to, :type, :min_time]
 
   @typedoc "A side's effective selector: the trip when set, else the route, else nothing."
@@ -106,6 +120,35 @@ defmodule GtfsPlanner.Gtfs.Transfers do
           competitors: [row()],
           counts: %{general: non_neg_integer(), in_seat: non_neg_integer()},
           filter_options: %{stops: [map()], routes: [map()], types: [0..5]}
+        }
+
+  @typedoc "One selectable stop or station option for the editor."
+  @type stop_option :: %{
+          stop_id: String.t(),
+          stop_name: String.t() | nil,
+          location_type: integer() | nil,
+          platform_code: String.t() | nil,
+          parent_name: String.t() | nil,
+          child_count: non_neg_integer(),
+          lat: float() | nil,
+          lon: float() | nil
+        }
+
+  @typedoc "One route option, with the stored route's note when it is not offered."
+  @type route_option :: %{
+          route_id: String.t(),
+          route_short_name: String.t() | nil,
+          route_long_name: String.t() | nil,
+          note: nil | :not_serving | :inactive | :missing
+        }
+
+  @typedoc "One trip option of a route at a stop's coverage for one side."
+  @type trip_option :: %{
+          trip_id: String.t(),
+          time: String.t() | nil,
+          headsign: String.t() | nil,
+          service_id: String.t() | nil,
+          note: nil | :not_serving | :other_route | :missing
         }
 
   @doc """
@@ -212,6 +255,123 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     general
     |> Enum.filter(&matches_filters?(&1, stop_ids, route_id, trip_routes))
     |> length()
+  end
+
+  @doc """
+  Searches one version's selectable stops and stations for the editor.
+
+  The query matches a case-insensitive substring of the stop name, the stop ID or
+  the platform code, with `%`, `_` and `\` treated literally, and returns only the
+  stops the editor may pick: `location_type` nil, 0 or 1 (R2), so a station is an
+  option and an entrance is not. At most 20 options come back ordered by name then
+  ID, and `truncated?` is true when more stops match; a blank query returns none.
+  Every query is scoped by organization and version, so a foreign version's stops
+  never appear.
+  """
+  @spec search_stops(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          %{stops: [stop_option()], truncated?: boolean()}
+  def search_stops(organization_id, gtfs_version_id, query) do
+    case stop_search_pattern(query) do
+      nil ->
+        %{stops: [], truncated?: false}
+
+      pattern ->
+        {matches, extra} =
+          from(s in Stop,
+            where:
+              s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+            where: is_nil(s.location_type) or s.location_type in [0, 1],
+            where:
+              ilike(s.stop_name, ^pattern) or ilike(s.stop_id, ^pattern) or
+                ilike(s.platform_code, ^pattern),
+            order_by: [asc: s.stop_name, asc: s.stop_id],
+            limit: @stop_search_limit + 1
+          )
+          |> Repo.all()
+          |> Enum.split(@stop_search_limit)
+
+        %{stops: stop_options(organization_id, gtfs_version_id, matches), truncated?: extra != []}
+    end
+  end
+
+  @doc """
+  Fetches one selectable stop for the editor's pick-on-map flow.
+
+  The same option shape as `search_stops/3`, resolved from a scoped query for the
+  requested ID. The lookup is fail-closed: an unknown ID, a stop of another
+  organization or version, a non-string payload value and a stop whose
+  `location_type` is not nil, 0 or 1 are all `:error`, so a picked ID must resolve
+  inside the socket's own version (R2, R10).
+  """
+  @spec fetch_pickable_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, stop_option()} | :error
+  def fetch_pickable_stop(_organization_id, _gtfs_version_id, stop_id)
+      when not is_binary(stop_id),
+      do: :error
+
+  def fetch_pickable_stop(organization_id, gtfs_version_id, stop_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      where: s.stop_id == ^stop_id,
+      where: is_nil(s.location_type) or s.location_type in [0, 1]
+    )
+    |> Repo.all()
+    |> case do
+      [stop] -> {:ok, stop_options(organization_id, gtfs_version_id, [stop]) |> hd()}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Lists the active routes that serve a stop's coverage, plus the stored route.
+
+  The coverage is R2's: a station covers itself and its child stops and platforms,
+  and any other stop covers only itself. The options are the active routes with a
+  `stop_time` at one of those leaves, ordered by short name then ID. When the
+  stored route is not among them it is appended with the reason it is missing —
+  `:missing` (no such route), `:inactive` (the route is not active) or
+  `:not_serving` (active, but it does not serve this stop) — so an edit can still
+  show the stored selector. A nil stop has no options.
+  """
+  @spec route_options(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, String.t() | nil) ::
+          [route_option()]
+  def route_options(_organization_id, _gtfs_version_id, nil, _current), do: []
+
+  def route_options(organization_id, gtfs_version_id, stop_id, current) do
+    coverage = stop_coverage(organization_id, gtfs_version_id, stop_id)
+    route_ids = serving_route_ids(organization_id, gtfs_version_id, coverage)
+    options = active_route_options(organization_id, gtfs_version_id, route_ids)
+
+    append_current_route(options, organization_id, gtfs_version_id, current)
+  end
+
+  @doc """
+  Lists the trips of one route that serve a stop's coverage for one side.
+
+  `:from` reports the earliest arrival and `:to` the earliest departure at any leaf
+  of the stop's coverage, as the first five characters of the stored clock, ordered
+  by that clock then trip ID. The stored trip is appended with `:missing` (no such
+  trip), `:other_route` (it exists on another route) or `:not_serving` (it exists on
+  this route but has no `stop_time` in the coverage) when it is not among them, so
+  an edit can still show the stored selector. A nil route or nil stop has no
+  options.
+  """
+  @spec trip_options(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t() | nil,
+          String.t() | nil,
+          :from | :to,
+          String.t() | nil
+        ) :: [trip_option()]
+  def trip_options(_organization_id, _gtfs_version_id, nil, _stop_id, _side, _current), do: []
+  def trip_options(_organization_id, _gtfs_version_id, _route_id, nil, _side, _current), do: []
+
+  def trip_options(organization_id, gtfs_version_id, route_id, stop_id, side, current) do
+    coverage = stop_coverage(organization_id, gtfs_version_id, stop_id)
+    options = trip_option_rows(organization_id, gtfs_version_id, route_id, coverage, side)
+
+    append_current_trip(options, organization_id, gtfs_version_id, route_id, current)
   end
 
   # -- Scoped loads ----------------------------------------------------------
@@ -812,6 +972,243 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       options
     else
       options ++ [%{route_id: route_id, route_short_name: nil, route_long_name: nil}]
+    end
+  end
+
+  # -- Editor options ---------------------------------------------------------
+
+  # The same trim and LIKE-wildcard escaping as `RoutePatterns.search_stops/3`, so
+  # `%`, `_` and `\` in a query match literally instead of scanning the version's
+  # stops.
+  defp stop_search_pattern(query) when is_binary(query) do
+    case String.trim(query) do
+      "" ->
+        nil
+
+      trimmed ->
+        "%" <> String.replace(trimmed, ~r/[\\%_]/, fn match -> "\\" <> match end) <> "%"
+    end
+  end
+
+  defp stop_search_pattern(_query), do: nil
+
+  # The parent name and the station child count come from two bounded follow-up
+  # queries for the returned options, so the search itself stays one query.
+  defp stop_options(_organization_id, _gtfs_version_id, []), do: []
+
+  defp stop_options(organization_id, gtfs_version_id, stops) do
+    parent_names = load_parent_names(organization_id, gtfs_version_id, stops)
+    child_counts = load_child_counts(organization_id, gtfs_version_id, stops)
+
+    Enum.map(stops, &build_stop_option(&1, parent_names, child_counts))
+  end
+
+  defp load_parent_names(organization_id, gtfs_version_id, stops) do
+    parent_ids =
+      stops
+      |> Enum.map(& &1.parent_station)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    organization_id
+    |> load_parent_stops(gtfs_version_id, parent_ids)
+    |> Map.new(&{&1.stop_id, &1.stop_name})
+  end
+
+  # R2's selectable children only: the nil-or-0 location types the validator and
+  # the coverage rule count, never an entrance or a generic node.
+  defp load_child_counts(organization_id, gtfs_version_id, stops) do
+    station_ids = for %Stop{location_type: 1, stop_id: stop_id} <- stops, do: stop_id
+
+    case station_ids do
+      [] ->
+        %{}
+
+      ids ->
+        from(s in Stop,
+          where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+          where: s.parent_station in ^ids,
+          where: is_nil(s.location_type) or s.location_type == 0,
+          group_by: s.parent_station,
+          select: {s.parent_station, count(s.stop_id)}
+        )
+        |> Repo.all()
+        |> Map.new()
+    end
+  end
+
+  defp build_stop_option(stop, parent_names, child_counts) do
+    %{
+      stop_id: stop.stop_id,
+      stop_name: stop.stop_name,
+      location_type: stop.location_type,
+      platform_code: stop.platform_code,
+      parent_name: Map.get(parent_names, stop.parent_station),
+      child_count: Map.get(child_counts, stop.stop_id, 0),
+      lat: decimal_to_float(stop.stop_lat),
+      lon: decimal_to_float(stop.stop_lon)
+    }
+  end
+
+  defp decimal_to_float(nil), do: nil
+  defp decimal_to_float(%Decimal{} = value), do: Decimal.to_float(value)
+
+  # R2 coverage of one stop from a scoped load. A stop that is not in this
+  # organization and version covers nothing, so a foreign or unknown ID can never
+  # contribute a route or a trip option.
+  defp stop_coverage(organization_id, gtfs_version_id, stop_id) do
+    stops =
+      organization_id
+      |> load_stops(gtfs_version_id, [stop_id])
+      |> Map.new(&{&1.stop_id, &1})
+
+    coverage(stop_id, stops)
+  end
+
+  # `Gtfs.get_routes_for_stops/3` answers with route maps keyed by stop; only the
+  # route IDs are used here, because the options need the active routes and their
+  # long names, which that helper does not return.
+  defp serving_route_ids(_organization_id, _gtfs_version_id, []), do: []
+
+  defp serving_route_ids(organization_id, gtfs_version_id, coverage) do
+    organization_id
+    |> Gtfs.get_routes_for_stops(gtfs_version_id, coverage)
+    |> Enum.flat_map(fn {_stop_id, routes} -> routes end)
+    |> Enum.map(& &1.route_id)
+    |> Enum.uniq()
+  end
+
+  defp active_route_options(_organization_id, _gtfs_version_id, []), do: []
+
+  defp active_route_options(organization_id, gtfs_version_id, route_ids) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      where: r.route_id in ^route_ids and r.active == true,
+      order_by: [asc: r.route_short_name, asc: r.route_id],
+      select: %{
+        route_id: r.route_id,
+        route_short_name: r.route_short_name,
+        route_long_name: r.route_long_name
+      }
+    )
+    |> Repo.all()
+    |> Enum.map(&Map.put(&1, :note, nil))
+  end
+
+  defp append_current_route(options, _organization_id, _gtfs_version_id, nil), do: options
+
+  defp append_current_route(options, organization_id, gtfs_version_id, current) do
+    if Enum.any?(options, &(&1.route_id == current)) do
+      options
+    else
+      options ++ [current_route_option(organization_id, gtfs_version_id, current)]
+    end
+  end
+
+  defp current_route_option(organization_id, gtfs_version_id, route_id) do
+    case load_routes(organization_id, gtfs_version_id, [route_id]) do
+      [] ->
+        %{route_id: route_id, route_short_name: nil, route_long_name: nil, note: :missing}
+
+      [route] ->
+        %{
+          route_id: route_id,
+          route_short_name: route.route_short_name,
+          route_long_name: route.route_long_name,
+          note: if(route.active, do: :not_serving, else: :inactive)
+        }
+    end
+  end
+
+  # One query for every stop_time of the route's trips at a coverage leaf, grouped
+  # per trip; the earliest clock of a trip decides the displayed time.
+  defp trip_option_rows(_organization_id, _gtfs_version_id, _route_id, [], _side), do: []
+
+  defp trip_option_rows(organization_id, gtfs_version_id, route_id, coverage, side) do
+    from(st in StopTime,
+      join: t in Trip,
+      on:
+        t.trip_id == st.trip_id and t.organization_id == st.organization_id and
+          t.gtfs_version_id == st.gtfs_version_id,
+      where:
+        st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
+          t.route_id == ^route_id and st.stop_id in ^coverage,
+      select: {t.trip_id, t.trip_headsign, t.service_id, st.arrival_time, st.departure_time}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0))
+    |> Enum.map(&trip_option(&1, side))
+    |> Enum.sort_by(&{&1.time, &1.trip_id})
+  end
+
+  defp trip_option(
+         {trip_id, [{_trip_id, headsign, service_id, _arrival, _departure} | _] = rows},
+         side
+       ) do
+    %{
+      trip_id: trip_id,
+      time: rows |> Enum.map(&side_clock(&1, side)) |> earliest_clock(),
+      headsign: headsign,
+      service_id: service_id,
+      note: nil
+    }
+  end
+
+  defp side_clock({_trip_id, _headsign, _service_id, arrival, _departure}, :from), do: arrival
+  defp side_clock({_trip_id, _headsign, _service_id, _arrival, departure}, :to), do: departure
+
+  # The earliest clock is compared as parsed seconds, so a GTFS value past midnight
+  # or a single-digit hour still orders correctly; an unparseable stored value sorts
+  # after every valid clock by its own text rather than raising.
+  defp earliest_clock(clocks) do
+    case Enum.reject(clocks, &is_nil/1) do
+      [] -> nil
+      values -> values |> Enum.min_by(&clock_key/1) |> String.slice(0, 5)
+    end
+  end
+
+  defp clock_key(value) do
+    case GtfsTime.parse(value) do
+      {:ok, seconds} -> {0, seconds, value}
+      {:error, :invalid_time} -> {1, 0, value}
+    end
+  end
+
+  defp append_current_trip(options, _organization_id, _gtfs_version_id, _route_id, nil),
+    do: options
+
+  defp append_current_trip(options, organization_id, gtfs_version_id, route_id, current) do
+    if Enum.any?(options, &(&1.trip_id == current)) do
+      options
+    else
+      options ++ [current_trip_option(organization_id, gtfs_version_id, route_id, current)]
+    end
+  end
+
+  # The appended selector carries no clock: the trip is offered for its note, not
+  # as a schedulable option with a time at this coverage.
+  defp current_trip_option(organization_id, gtfs_version_id, route_id, trip_id) do
+    case load_trips(organization_id, gtfs_version_id, [trip_id]) do
+      [] ->
+        %{trip_id: trip_id, time: nil, headsign: nil, service_id: nil, note: :missing}
+
+      [%{route_id: ^route_id} = trip] ->
+        %{
+          trip_id: trip_id,
+          time: nil,
+          headsign: trip.trip_headsign,
+          service_id: trip.service_id,
+          note: :not_serving
+        }
+
+      [trip] ->
+        %{
+          trip_id: trip_id,
+          time: nil,
+          headsign: trip.trip_headsign,
+          service_id: trip.service_id,
+          note: :other_route
+        }
     end
   end
 
