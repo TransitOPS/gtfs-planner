@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ComingSoon
   alias GtfsPlannerWeb.Layouts
+  alias GtfsPlannerWeb.ProductSurfaces
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -189,7 +190,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={@active_tab} />
+        <.settings_nav
+          gtfs_version_id={@current_gtfs_version.id}
+          active_tab={@active_tab}
+          organization={@current_organization}
+        />
       </:sub_header>
 
       <%= if @section_key do %>
@@ -200,7 +205,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
           <:subtitle>Rarely changed configuration and reference data, grouped by scope.</:subtitle>
         </.header>
 
-        <.settings_overview groups={overview_groups(@current_gtfs_version, @user_roles)} />
+        <.settings_overview groups={
+          overview_groups(@current_gtfs_version, @user_roles, @current_organization)
+        } />
       <% end %>
     </Layouts.app>
     """
@@ -210,7 +217,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
   defp settings_overview(assigns) do
     ~H"""
+    <p :if={@groups == []} id="settings-empty" class="text-sm text-muted">
+      No settings are available for this organization.
+    </p>
     <div
+      :if={@groups != []}
       id="settings-overview"
       class={["grid gap-6 sm:grid-cols-2", length(@groups) == 3 && "xl:grid-cols-3"]}
     >
@@ -252,23 +263,27 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     assign(assigns, feature: feature, scope_label: scope_label)
   end
 
-  defp overview_groups(version, user_roles) do
-    groups = [
-      %{
-        id: "settings-version",
-        scope: scope_here(version),
-        entries:
-          Enum.map(@version_pages, &existing_page_entry(&1, version.id)) ++
-            Enum.map(@version_sections, &placeholder_entry(&1, version.id))
-      },
-      %{
-        id: "settings-all-versions",
-        scope: "All versions",
-        entries:
-          Enum.map(@all_version_sections, &placeholder_entry(&1, version.id)) ++
-            Enum.map(@all_version_pages, &existing_page_entry(&1, version.id))
-      }
-    ]
+  # ProductSurfaces alone decides which entries an organization sees (INV-1):
+  # every entry key is asked through `visible?/2`, and groups left empty are
+  # dropped. The Organization group keeps its existing admin gate and is never
+  # filtered, so an org admin still sees it when everything else is hidden.
+  defp overview_groups(version, user_roles, organization) do
+    version_entries =
+      (Enum.map(@version_pages, &existing_page_entry(&1, version.id)) ++
+         Enum.map(@version_sections, &placeholder_entry(&1, version.id)))
+      |> Enum.filter(&ProductSurfaces.visible?(organization, &1.key))
+
+    all_version_entries =
+      (Enum.map(@all_version_sections, &placeholder_entry(&1, version.id)) ++
+         Enum.map(@all_version_pages, &existing_page_entry(&1, version.id)))
+      |> Enum.filter(&ProductSurfaces.visible?(organization, &1.key))
+
+    groups =
+      [
+        %{id: "settings-version", scope: scope_here(version), entries: version_entries},
+        %{id: "settings-all-versions", scope: "All versions", entries: all_version_entries}
+      ]
+      |> Enum.reject(&(&1.entries == []))
 
     if "pathways_studio_admin" in user_roles do
       groups ++

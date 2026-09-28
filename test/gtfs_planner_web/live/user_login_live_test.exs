@@ -10,11 +10,14 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
   @wrong_password "totally wrong password"
 
   describe "stable form contract" do
-    test "renders the native form, task copy, pending contract, and focus wiring", %{conn: conn} do
+    test "renders the prototype login body, footer line, auth frame, and focus wiring", %{
+      conn: conn
+    } do
       {:ok, view, _html} = live(conn, ~p"/users/log_in")
 
-      assert page_title(view) == "Log in · Pathways Studio"
-      assert has_element?(view, "h1", "Log in")
+      assert page_title(view) == "Log in · GTFS Planner · Pathways Studio"
+      assert has_element?(view, "#login-title", "Log in")
+      assert has_element?(view, ~s(#login-title[class~="text-[28px]"]))
 
       h1s =
         view
@@ -34,32 +37,76 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
 
       assert has_element?(
                view,
-               ~s(#login_form[action="/users/log_in"][method="post"][phx-update="ignore"])
+               ~s(#login_form[action="/users/log_in"][method="post"][phx-update="ignore"][class~="mt-6"])
              )
 
       refute has_element?(view, "#login_form[phx-submit]")
 
+      assert has_element?(
+               view,
+               ~s(label[for="login-email"][class~="text-sm"][class~="font-semibold"]),
+               "Email"
+             )
+
       assert has_element?(view, ~s(#login-email[name="user[email]"][type="email"][required]))
+
+      assert has_element?(
+               view,
+               ~s(#login-email[class~="h-11"][class~="rounded-control"][class~="border-control"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(label[for="login-password"][class~="text-sm"][class~="font-semibold"]),
+               "Password"
+             )
 
       assert has_element?(
                view,
                ~s(#login-password[name="user[password]"][type="password"][required])
              )
 
+      assert has_element?(
+               view,
+               ~s(#login-password[class~="h-11"][class~="rounded-control"][class~="border-control"])
+             )
+
+      assert has_element?(view, ~s(label[for="login-remember-me"][class~="min-h-11"]))
+
       assert has_element?(view, ~s(#login-remember-me[name="user[remember_me]"][type="checkbox"]))
+
+      assert has_element?(view, ~s(#login-remember-me[class~="accent-action"]))
+
+      assert has_element?(
+               view,
+               ~s(label[for="login-remember-me"]),
+               "Keep me logged in for 60 days"
+             )
 
       assert has_element?(view, "#login-submit", "Log in")
       refute has_element?(view, "#login-submit", "→")
 
-      assert has_element?(view, ~s(#login-submit[phx-disable-with="Logging in…"]))
-      assert has_element?(view, ~s(#login_form[class~="phx-submit-loading:opacity-60"]))
-      refute has_element?(view, ~s(#login-submit[class~="phx-submit-loading:opacity-60"]))
+      assert has_element?(view, ~s(#login-submit[type="submit"][phx-disable-with="Logging in…"]))
 
       assert has_element?(
                view,
-               ~s(#login_form a[href="/users/reset_password"]),
+               ~s(#login-submit[class~="bg-action"][class~="w-full"][class~="rounded-control"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#login-page a[href="/users/reset_password"][class~="text-action"]),
                "Forgot your password?"
              )
+
+      assert has_element?(
+               view,
+               "#main-content p",
+               "No account? Ask your organization administrator for an invitation."
+             )
+
+      assert has_element?(view, ~s(#auth-brands img[alt="GTFS Planner"]))
+      assert has_element?(view, ~s(#auth-brands img[alt="Pathways Studio"]))
 
       refute has_element?(view, "#login-recovery")
       refute has_element?(view, "#flash-error")
@@ -67,7 +114,9 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
   end
 
   describe "recovery callout" do
-    test "invalid credentials render the fixed callout and preserve the email", %{conn: conn} do
+    test "invalid credentials render the error tone and fixed copy and preserve the email", %{
+      conn: conn
+    } do
       %{user: user} = member_user()
 
       view =
@@ -75,12 +124,16 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
         |> post_log_in(user.email, @wrong_password)
         |> live_log_in()
 
-      assert has_element?(view, ~s(#login-recovery[tabindex="-1"]), "Log in failed")
+      assert has_element?(
+               view,
+               ~s(#login-recovery[tabindex="-1"][class~="bg-error-bg"][class~="text-error-fg"]),
+               "Email or password is incorrect"
+             )
 
       assert has_element?(
                view,
                "#login-recovery",
-               "Check your email and password, then try again."
+               "Check both and try again."
              )
 
       assert has_element?(view, ~s(#login-email[value="#{user.email}"]))
@@ -112,7 +165,9 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
                render(element(unknown_email_view, "#login-recovery"))
     end
 
-    test "a deactivated member renders the fixed deactivated callout", %{conn: conn} do
+    test "a deactivated member renders the warning tone and fixed deactivated callout", %{
+      conn: conn
+    } do
       %{user: user, organization: organization} = member_user()
       {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
 
@@ -121,7 +176,11 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
         |> post_log_in(user.email, valid_user_password())
         |> live_log_in()
 
-      assert has_element?(view, ~s(#login-recovery[tabindex="-1"]), "Account deactivated")
+      assert has_element?(
+               view,
+               ~s(#login-recovery[tabindex="-1"][class~="bg-warning-bg"][class~="text-warning-fg"]),
+               "Account deactivated"
+             )
 
       assert has_element?(
                view,
@@ -133,7 +192,8 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
       refute has_element?(view, "#flash-error")
     end
 
-    test "a member without an organization renders the fixed organization callout", %{conn: conn} do
+    test "a member without an organization renders the warning tone and fixed organization callout",
+         %{conn: conn} do
       user = user_fixture()
 
       view =
@@ -143,7 +203,7 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
 
       assert has_element?(
                view,
-               ~s(#login-recovery[tabindex="-1"]),
+               ~s(#login-recovery[tabindex="-1"][class~="bg-warning-bg"][class~="text-warning-fg"]),
                "Organization access required"
              )
 

@@ -1333,9 +1333,17 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders the Settings tabs for the version-scoped, all-version and asset sections.
 
+  Sections hidden for the organization's product
+  (`GtfsPlannerWeb.ProductSurfaces.visible?/2`) are omitted, and the bar renders
+  nothing when only Overview would remain.
+
   ## Examples
 
-      <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:index} />
+      <.settings_nav
+        gtfs_version_id={@current_gtfs_version.id}
+        active_tab={:index}
+        organization={@current_organization}
+      />
   """
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
 
@@ -1352,9 +1360,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
     ],
     default: :index
 
+  attr :organization, :any,
+    default: nil,
+    doc: "the current organization; hidden sections are omitted"
+
   def settings_nav(assigns) do
     ~H"""
     <nav
+      :if={settings_section_visible?(@organization)}
       id="settings-nav"
       aria-label="Settings sections"
       class="w-full"
@@ -1370,6 +1383,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Overview
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :feed_details)}
             id="settings-tab-feed_details"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/feed-details"}
             class={sub_nav_link_class(@active_tab == :feed_details)}
@@ -1378,6 +1392,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Feed details
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :agencies)}
             id="settings-tab-agencies"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/agencies"}
             class={sub_nav_link_class(@active_tab == :agencies)}
@@ -1386,6 +1401,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Agencies
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :fares)}
             id="settings-tab-fares"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/fares"}
             class={sub_nav_link_class(@active_tab == :fares)}
@@ -1394,6 +1410,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Fares
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :export_defaults)}
             id="settings-tab-export_defaults"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/export-defaults"}
             class={sub_nav_link_class(@active_tab == :export_defaults)}
@@ -1402,6 +1419,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Export defaults
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :feed_url)}
             id="settings-tab-feed_url"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/feed-url"}
             class={sub_nav_link_class(@active_tab == :feed_url)}
@@ -1410,6 +1428,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Feed URL
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :garages)}
             id="settings-tab-garages"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/garages"}
             class={sub_nav_link_class(@active_tab == :garages)}
@@ -1418,6 +1437,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Garages
           </.link>
           <.link
+            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :fleet)}
             id="settings-tab-fleet"
             navigate={"/gtfs/#{@gtfs_version_id}/settings/fleet"}
             class={sub_nav_link_class(@active_tab == :fleet)}
@@ -1429,6 +1449,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
     </nav>
     """
+  end
+
+  # Only `ProductSurfaces` decides which sections an organization sees (INV-1).
+  # When every section tab is hidden, only Overview would remain, so the whole
+  # bar is omitted instead of rendering a dangling single tab.
+  defp settings_section_visible?(organization) do
+    Enum.any?(
+      [:feed_details, :agencies, :fares, :export_defaults, :feed_url, :garages, :fleet],
+      &GtfsPlannerWeb.ProductSurfaces.visible?(organization, &1)
+    )
   end
 
   @doc """

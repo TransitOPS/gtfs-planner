@@ -6,12 +6,24 @@ defmodule GtfsPlannerWeb.Layouts do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlannerWeb.Navigation
+  alias GtfsPlannerWeb.ProductSurfaces
 
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
   # and other static content.
   embed_templates "layouts/*"
+
+  # Signed-out pages belong to both products; signed-in pages use the brand of
+  # the organization on the connection.
+  defp title_suffix(%{current_user: %{}} = assigns) do
+    brand = ProductSurfaces.brand(assigns[:current_organization])
+    " · " <> ProductSurfaces.name(brand)
+  end
+
+  defp title_suffix(_assigns) do
+    " · #{ProductSurfaces.name(:planner)} · #{ProductSurfaces.name(:pathways)}"
+  end
 
   @doc """
   Renders your app layout.
@@ -71,15 +83,24 @@ defmodule GtfsPlannerWeb.Layouts do
       <div class="px-4 sm:px-6 lg:px-8">
         <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8">
           <.link
+            id="app-brand"
             href={~p"/"}
-            class="flex min-h-[72px] shrink-0 flex-col justify-center"
-            aria-label="Pathways Studio - Go to homepage"
+            class="flex min-h-[72px] shrink-0 items-center gap-3.5 no-underline max-md:flex-col max-md:items-start max-md:justify-center max-md:gap-1.5 max-md:py-2"
+            aria-label={"#{ProductSurfaces.name(ProductSurfaces.brand(assigns[:current_organization]))}, go to home"}
           >
-            <span class="font-display text-[21px] font-semibold leading-none tracking-[-0.04em] text-strong">
-              Pathways Studio
-            </span>
-            <span :if={@current_organization} class="mt-1.5 text-[13px] leading-none text-muted">
-              {@current_organization.name}
+            <img
+              id="app-brand-logo"
+              src={ProductSurfaces.logo_path(ProductSurfaces.brand(assigns[:current_organization]))}
+              alt=""
+              class="h-9 w-fit md:h-11"
+            />
+            <span
+              :if={assigns[:current_organization]}
+              aria-hidden="true"
+              class="h-8 w-px bg-subtle max-md:hidden"
+            />
+            <span :if={assigns[:current_organization]} class="text-[13px] leading-none text-muted">
+              {assigns[:current_organization].name}
             </span>
           </.link>
 
@@ -190,7 +211,9 @@ defmodule GtfsPlannerWeb.Layouts do
   @doc """
   Renders the auth layout for unauthenticated pages like login, registration, etc.
 
-  This layout provides a centered card with logo branding, suitable for authentication flows.
+  This layout shows both product logos above a centered card, suitable for
+  authentication flows. An optional `:footer` slot renders a muted line below
+  the card.
 
   ## Examples
 
@@ -203,6 +226,7 @@ defmodule GtfsPlannerWeb.Layouts do
   """
   attr :flash, :map, required: true, doc: "the map of flash messages"
   slot :inner_block, required: true
+  slot :footer, doc: "optional muted line rendered below the card"
 
   def auth(assigns) do
     ~H"""
@@ -213,22 +237,32 @@ defmodule GtfsPlannerWeb.Layouts do
       Skip to main content
     </a>
 
-    <main id="main-content" class="min-h-screen flex items-start justify-center px-4 py-12 sm:py-16">
-      <div class="w-full max-w-md">
-        <div class="bg-base-100 border border-base-300 rounded-box">
-          <div class="p-6">
-            <div class="flex items-center justify-center gap-3 mb-6">
-              <div class="bg-brand p-2 rounded-lg">
-                <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
-              </div>
-              <span class="text-xl font-semibold tracking-tight text-brand">
-                Pathways Studio
-              </span>
-            </div>
-
-            {render_slot(@inner_block)}
-          </div>
+    <main
+      id="main-content"
+      class="min-h-dvh bg-canvas px-4 pb-32 pt-10 font-ds text-default sm:pt-[max(64px,13vh)]"
+    >
+      <div class="mx-auto w-full max-w-[440px]">
+        <div id="auth-brands" class="mb-6 flex items-center gap-5 px-5 sm:gap-6 sm:px-8">
+          <img
+            src={~p"/images/gtfs-planner-logo.svg"}
+            alt="GTFS Planner"
+            class="h-11 w-auto sm:h-14"
+          />
+          <span aria-hidden="true" class="h-10 w-px shrink-0 bg-subtle sm:h-12"></span>
+          <img
+            src={~p"/images/pathways-studio-logo.svg"}
+            alt="Pathways Studio"
+            class="h-11 w-auto sm:h-14"
+          />
         </div>
+
+        <section class="rounded-card border border-subtle bg-white p-5 shadow-card sm:p-8">
+          {render_slot(@inner_block)}
+        </section>
+
+        <p :if={@footer != []} class="mt-5 px-5 text-[13px] text-balance text-muted sm:px-8">
+          {render_slot(@footer)}
+        </p>
       </div>
     </main>
 

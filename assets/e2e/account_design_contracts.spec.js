@@ -283,7 +283,7 @@ test.describe("account navigation", () => {
 
     const header = page.locator("#app-header");
     const mask = [
-      page.locator("#app-header a[aria-label='Pathways Studio - Go to homepage'] span"),
+      page.locator("#app-brand"),
       page.locator("#gtfs-version-switcher"),
     ];
 

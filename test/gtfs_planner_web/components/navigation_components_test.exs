@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   import Phoenix.Component
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.Navigation
 
@@ -589,6 +590,103 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert Enum.empty?(LazyHTML.query(nav, "a[href*='settings']"))
       refute LazyHTML.text(nav) =~ "Settings"
       assert Enum.empty?(LazyHTML.query(nav, "a[href$='/import']"))
+    end
+  end
+
+  describe "product filtering (ProductSurfaces)" do
+    defp planner_struct_org,
+      do: %Organization{id: 1, alias: "test-org", name: "Test Org", product: :planner}
+
+    defp pathways_struct_org,
+      do: %Organization{id: 1, alias: "test-org", name: "Test Org", product: :pathways}
+
+    defp product_editor_assigns(org) do
+      %{
+        current_user: editor_user(),
+        current_organization: org,
+        user_roles: ["pathways_studio_editor"],
+        current_path: "/gtfs/42/routes",
+        current_gtfs_version: gtfs_version()
+      }
+    end
+
+    test "planner organization renders all six task links" do
+      doc = LazyHTML.from_fragment(render_nav(product_editor_assigns(planner_struct_org())))
+
+      for id <- [
+            "nav-routes",
+            "nav-calendars",
+            "nav-operations",
+            "nav-stops",
+            "nav-flex",
+            "nav-gtfs"
+          ] do
+        refute Enum.empty?(LazyHTML.query(doc, "##{id}")),
+               "expected ##{id} for a planner organization"
+      end
+    end
+
+    test "pathways organization hides Operations and Flex and keeps the other four" do
+      doc = LazyHTML.from_fragment(render_nav(product_editor_assigns(pathways_struct_org())))
+
+      for id <- ["nav-routes", "nav-calendars", "nav-stops", "nav-gtfs"] do
+        refute Enum.empty?(LazyHTML.query(doc, "##{id}")),
+               "expected ##{id} for a pathways organization"
+      end
+
+      assert Enum.empty?(LazyHTML.query(doc, "#nav-operations"))
+      assert Enum.empty?(LazyHTML.query(doc, "#nav-flex"))
+    end
+
+    test "nil organization does not crash the product filter" do
+      html = render_nav(product_editor_assigns(nil))
+      doc = LazyHTML.from_fragment(html)
+
+      # The pre-existing show_tasks gate (unchanged by this step) renders no
+      # task links without an organization; nil staying visible is proven by
+      # ProductSurfaces.visible?(nil, _) in EV-2.
+      assert Enum.empty?(LazyHTML.query(doc, "#main-navigation a"))
+      assert nav_link_texts(html) == []
+    end
+
+    test "planner editor keeps the version Settings entry" do
+      doc =
+        menu_doc(%{
+          current_organization: planner_struct_org(),
+          user_roles: ["pathways_studio_editor"],
+          current_gtfs_version: gtfs_version()
+        })
+
+      settings = LazyHTML.query(doc, "#settings-link")
+      assert Enum.count(settings) == 1
+      assert LazyHTML.attribute(settings, "href") == ["/gtfs/42/settings"]
+      assert LazyHTML.text(settings) =~ "Agencies, fares, exports, garages, fleet"
+    end
+
+    test "pathways editor without admin renders no Settings entry" do
+      doc =
+        menu_doc(%{
+          current_organization: pathways_struct_org(),
+          user_roles: ["pathways_studio_editor"],
+          current_gtfs_version: gtfs_version()
+        })
+
+      assert Enum.empty?(LazyHTML.query(doc, "#settings-link"))
+      refute LazyHTML.text(LazyHTML.query(doc, "#user-menu-panel")) =~ "Test Org"
+    end
+
+    test "pathways editor with admin falls back to the Users Settings entry" do
+      doc =
+        menu_doc(%{
+          current_organization: pathways_struct_org(),
+          user_roles: ["pathways_studio_editor", "pathways_studio_admin"],
+          current_gtfs_version: gtfs_version()
+        })
+
+      settings = LazyHTML.query(doc, "#settings-link")
+      assert Enum.count(settings) == 1
+      assert LazyHTML.attribute(settings, "href") == ["/admin/users"]
+      assert LazyHTML.text(settings) =~ "Organization name, users"
     end
   end
 

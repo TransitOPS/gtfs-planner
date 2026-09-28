@@ -204,6 +204,13 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       {:ok, view, _html} = live(conn, ~p"/admin/organizations")
 
       assert has_element?(view, "#organizations-empty")
+
+      assert has_element?(
+               view,
+               "#organizations-empty",
+               "Create the first organization to give its members access."
+             )
+
       refute has_element?(view, "tbody#organizations")
 
       assert has_element?(view, "#organizations-empty a[href='/admin/organizations/new']")
@@ -457,6 +464,61 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert html =~ "can&#39;t be blank"
       assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
       assert Repo.aggregate(Organization, :count) == organizations_before
+    end
+
+    test "creating an organization with Pathways Studio stores the product", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      assert has_element?(view, "#organization-product")
+      assert has_element?(view, "#organization-product option[value='planner']", "GTFS Planner")
+
+      assert has_element?(
+               view,
+               "#organization-product option[value='pathways']",
+               "Pathways Studio"
+             )
+
+      assert has_element?(
+               view,
+               "#organization-product option[value='planner'][selected]",
+               "GTFS Planner"
+             )
+
+      view
+      |> form("#org-form",
+        organization: %{name: "Pathways Org", alias: "pathways-org", product: "pathways"}
+      )
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/organizations")
+
+      created = Organizations.get_organization_by_alias("pathways-org")
+      assert created
+      assert created.product == :pathways
+      assert Organizations.get_organization!(created.id).product == :pathways
+    end
+
+    test "editing an organization to Pathways Studio updates the row and detail shows it", %{
+      conn: conn
+    } do
+      org = organization_fixture(%{name: "Original Name", alias: "original-alias"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
+
+      assert has_element?(view, "#organization-product")
+
+      view
+      |> form("#org-form", organization: %{product: "pathways"})
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/organizations")
+
+      assert Organizations.get_organization!(org.id).product == :pathways
+
+      {:ok, detail_view, _html} = live(conn, ~p"/admin/organizations/#{org.id}")
+      html = render(detail_view)
+      assert html =~ "Product"
+      assert html =~ "Pathways Studio"
     end
   end
 

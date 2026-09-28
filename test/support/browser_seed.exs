@@ -7,6 +7,8 @@
 # User 3 (org admin): admin-contracts@gtfs-planner.test — used by
 #   admin_design_contracts.spec.js, together with its own "Admin Contracts Org"
 #   and its deterministic active/deactivated/pending/multi-role/long-email members.
+# User 4 (Pathways editor): pathways-editor@gtfs-planner.test — used by
+#   product_branding.spec.js, in "Browser Pathways Org" (product: :pathways).
 #
 # Both users belong to the same org. The editor user can access GTFS routes
 # because it has the pathways_studio_editor role and a session-scoped
@@ -1657,6 +1659,41 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: administration fixtures in #{admin_org.name} (id=#{admin_org.id}) — " <>
         "active, multi-role, long-email, deactivate-target, deactivated, invitation-pending"
+    )
+
+    # ── Pathways branding fixtures (product_branding.spec.js) ──
+    #
+    # A Pathways-product organization so the header shows the Pathways Studio
+    # logo and the hidden task links are absent. Versions are per organization,
+    # so this version cannot become Browser Test Org's latest.
+    {:ok, pathways_org} =
+      Organizations.create_organization(%{
+        name: "Browser Pathways Org",
+        alias: "browser-pathways",
+        product: :pathways
+      })
+
+    {:ok, _pathways_version} =
+      Versions.create_gtfs_version(pathways_org.id, %{name: "Browser Pathways Version"})
+
+    {:ok, pathways_editor} =
+      Accounts.register_user(%{
+        email: "pathways-editor@gtfs-planner.test",
+        password: "PathwaysEditor123!"
+      })
+
+    Repo.update!(User.confirm_changeset(pathways_editor))
+
+    {:ok, _pathways_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: pathways_editor.id,
+        organization_id: pathways_org.id,
+        roles: ["pathways_studio_editor", "pathways_studio_admin"]
+      })
+
+    IO.puts(
+      "Browser seed: pathways editor #{pathways_editor.email} in #{pathways_org.name} " <>
+        "(id=#{pathways_org.id})"
     )
 
     # ── Package 11 account design-contract fixtures (account_design_contracts.spec.js) ──

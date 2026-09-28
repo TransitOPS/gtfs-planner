@@ -33,7 +33,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/users/reset_password/#{token}")
 
-      assert page_title(view) == "Set new password · Pathways Studio"
+      assert page_title(view) == "Set new password · GTFS Planner · Pathways Studio"
       assert has_element?(view, "h1", "Set new password")
 
       h1s =
@@ -106,6 +106,29 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(view, ~s(#reset-password-confirmation[aria-invalid="false"]))
       refute has_element?(view, "#reset-password-new-password-error")
       refute has_element?(view, "#reset-password-confirmation-error")
+    end
+  end
+
+  describe "auth frame" do
+    test "renders both product logos above the card without the old wordmark", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/reset_password/#{token}")
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='GTFS Planner'][src='/images/gtfs-planner-logo.svg'])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='Pathways Studio'][src='/images/pathways-studio-logo.svg'])
+             )
+
+      html = render(view)
+      refute html =~ "gtfs-logo.svg"
+      refute has_element?(view, "#auth-brands .text-brand")
     end
   end
 

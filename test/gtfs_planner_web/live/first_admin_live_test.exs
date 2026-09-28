@@ -83,11 +83,31 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     end
   end
 
+  describe "auth frame" do
+    test "renders both product logos above the card without the old wordmark", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='GTFS Planner'][src='/images/gtfs-planner-logo.svg'])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='Pathways Studio'][src='/images/pathways-studio-logo.svg'])
+             )
+
+      html = render(view)
+      refute html =~ "gtfs-logo.svg"
+      refute has_element?(view, "#auth-brands .text-brand")
+    end
+  end
+
   describe "task copy and pending contract" do
     test "renders the exact title, H1, help copy, and pending contract", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/first")
 
-      assert page_title(view) == "Create administrator account · Pathways Studio"
+      assert page_title(view) == "Create administrator account · GTFS Planner · Pathways Studio"
       assert has_element?(view, "h1", "Create administrator account")
 
       h1s =

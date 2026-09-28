@@ -12,13 +12,24 @@ defmodule GtfsPlannerWeb.HeaderTest do
   alias GtfsPlanner.Versions.GtfsVersion
 
   describe "Header - Unauthenticated Users (Auth Layout)" do
-    test "displays Pathways Studio brand with semantic tokens", %{conn: conn} do
-      conn = get(conn, ~p"/users/log_in")
-      html = html_response(conn, 200)
+    test "auth frame shows both product logos above a card with the card shadow", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log_in")
 
-      assert html =~ "text-brand"
-      assert html =~ "Pathways Studio"
-      assert html =~ "bg-brand"
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='GTFS Planner'][src='/images/gtfs-planner-logo.svg'])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='Pathways Studio'][src='/images/pathways-studio-logo.svg'])
+             )
+
+      html = render(view)
+      assert html =~ "shadow-card"
+      assert html =~ "border-subtle"
+      refute html =~ "gtfs-logo.svg"
+      refute has_element?(view, "#auth-brands .text-brand")
     end
 
     test "does not display logout button", %{conn: conn} do
@@ -27,18 +38,10 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       refute html =~ "/users/log_out"
     end
-
-    test "auth layout uses semantic border not shadow", %{conn: conn} do
-      conn = get(conn, ~p"/users/log_in")
-      html = html_response(conn, 200)
-
-      assert html =~ "border-base-300"
-      refute html =~ "shadow"
-    end
   end
 
   describe "Header - Authenticated Users" do
-    test "displays the Pathways Studio wordmark link with the design-system face", %{conn: conn} do
+    test "displays the GTFS Planner logo brand link without an organization", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -46,20 +49,25 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(
                view,
-               "#app-header a[href='/'][aria-label='Pathways Studio - Go to homepage']"
+               "#app-brand[aria-label='GTFS Planner, go to home']"
              )
 
       assert has_element?(
                view,
-               "#app-header a[href='/'] span.font-display",
-               "Pathways Studio"
+               "#app-brand-logo[src='/images/gtfs-planner-logo.svg']"
              )
 
-      # The header no longer carries the logo tile; only the auth layout keeps it.
-      refute has_element?(view, "#app-header .bg-brand")
+      brand_html = view |> element("#app-brand") |> render()
+      assert brand_html =~ ~s(alt="")
+
+      # Logo only: no divider and no organization name without an organization.
+      refute has_element?(view, "#app-brand span")
+
+      # The header no longer carries the text wordmark; only the logo image remains.
+      refute has_element?(view, "#app-brand .font-display")
     end
 
-    test "shows the organization name beneath the product name", %{conn: conn} do
+    test "shows the organization name inside the brand link", %{conn: conn} do
       organization = organization_fixture()
       user = user_fixture()
 
@@ -75,19 +83,113 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(
                view,
-               "#app-header a[href='/'] span.text-muted",
+               "#app-brand span.text-muted",
                organization.name
              )
     end
 
-    test "omits the organization name when there is no organization", %{conn: conn} do
+    test "omits the divider and organization name when there is no organization", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      assert has_element?(view, "#app-header a[href='/'] span.font-display")
-      refute has_element?(view, "#app-header a[href='/'] span.text-muted")
+      assert has_element?(view, "#app-brand-logo")
+      refute has_element?(view, "#app-brand span")
+    end
+
+    test "a Planner editor gets the GTFS Planner logo with the organization name", %{
+      conn: conn
+    } do
+      organization = organization_fixture(%{product: :planner})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#app-brand[aria-label='GTFS Planner, go to home']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-brand-logo[src='/images/gtfs-planner-logo.svg']"
+             )
+
+      brand_html = view |> element("#app-brand") |> render()
+      assert brand_html =~ ~s(alt="")
+      assert brand_html =~ organization.name
+      assert has_element?(view, "#app-brand span[aria-hidden='true']")
+    end
+
+    test "a Pathways editor gets the Pathways Studio logo with the organization name", %{
+      conn: conn
+    } do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#app-brand[aria-label='Pathways Studio, go to home']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-brand-logo[src='/images/pathways-studio-logo.svg']"
+             )
+
+      brand_html = view |> element("#app-brand") |> render()
+      assert brand_html =~ ~s(alt="")
+      assert brand_html =~ organization.name
+      assert has_element?(view, "#app-brand span[aria-hidden='true']")
+    end
+
+    test "a system administrator without an organization gets the Planner logo only", %{
+      conn: conn
+    } do
+      admin = user_fixture()
+      membership_org = organization_fixture()
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: admin.id,
+          organization_id: membership_org.id,
+          roles: ["administrator"]
+        })
+
+      conn = log_in_user(conn, admin)
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations")
+
+      assert has_element?(
+               view,
+               "#app-brand[aria-label='GTFS Planner, go to home']"
+             )
+
+      assert has_element?(
+               view,
+               "#app-brand-logo[src='/images/gtfs-planner-logo.svg']"
+             )
+
+      refute has_element?(view, "#app-brand span")
     end
 
     test "account menu trigger is labeled and paneled with the email", %{conn: conn} do
@@ -411,7 +513,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       {:ok, view, html} = live(conn, ~p"/")
 
       # Dashboard remains reachable with no session organization (optional mode).
-      assert html =~ "Pathways Studio"
+      refute html =~ "Pathways Studio"
       assert has_element?(view, "#dashboard-no-organization")
       assert has_element?(view, "#app-header #user-menu-panel a[href='/users/settings']")
     end
@@ -426,36 +528,163 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(view, "#ds-page-navigation")
       assert has_element?(view, "#app-header #user-menu-panel a[href='/users/settings']")
     end
+
+    test "a Pathways editor sees four task areas and no Operations or Flex", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      for {id, label} <- [
+            {"nav-routes", "Routes"},
+            {"nav-calendars", "Calendars"},
+            {"nav-stops", "Stops & stations"},
+            {"nav-gtfs", "GTFS"}
+          ] do
+        assert has_element?(view, "#main-navigation ##{id}", label)
+      end
+
+      refute has_element?(view, "#main-navigation #nav-operations")
+      refute has_element?(view, "#main-navigation #nav-flex")
+    end
+
+    test "a Planner editor's Settings entry points at version Settings", %{conn: conn} do
+      organization = organization_fixture(%{product: :planner})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/gtfs/#{version.id}/settings']",
+               "Settings"
+             )
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link",
+               "Agencies, fares, exports, garages, fleet"
+             )
+    end
+
+    test "a Pathways editor who is also an org admin gets the Users Settings entry", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor", "pathways_studio_admin"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/admin/users']",
+               "Settings"
+             )
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link",
+               "Organization name, users"
+             )
+    end
+
+    test "a Pathways editor without admin has no Settings entry", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      refute has_element?(view, "#settings-link")
+    end
   end
 
   describe "Document titles" do
-    test "root title uses Pathways Studio suffix with page title", %{conn: conn} do
-      user = user_fixture()
-      conn = log_in_user(conn, user)
+    test "signed-out page title names both products", %{conn: conn} do
+      html = conn |> get(~p"/users/log_in") |> html_response(200)
 
-      {:ok, _view, html} = live(conn, ~p"/")
-
-      assert html =~ "· Pathways Studio</title>"
-      assert html =~ ~s(data-default="Pathways Studio")
-      assert html =~ ~s(data-suffix=" · Pathways Studio")
+      assert html =~ "· GTFS Planner · Pathways Studio</title>"
+      assert html =~ ~s(data-default="GTFS Planner")
+      assert html =~ ~s(data-suffix=" · GTFS Planner · Pathways Studio")
     end
 
-    test "settings title uses Pathways Studio shell", %{conn: conn} do
-      user = user_fixture()
-      conn = log_in_user(conn, user)
+    test "signed-in user without an organization gets the GTFS Planner suffix", %{conn: conn} do
+      conn = log_in_user(conn, user_fixture())
 
-      {:ok, _view, html} = live(conn, ~p"/users/settings")
+      html = conn |> get(~p"/") |> html_response(200)
 
-      assert html =~ "· Pathways Studio</title>"
-      assert html =~ ~s(data-default="Pathways Studio")
-      assert html =~ ~s(data-suffix=" · Pathways Studio")
+      assert html =~ "· GTFS Planner</title>"
+      assert html =~ ~s(data-suffix=" · GTFS Planner")
+      refute html =~ "Pathways Studio"
     end
 
-    test "auth page renders Pathways Studio brand", %{conn: conn} do
-      conn = get(conn, ~p"/users/log_in")
-      html = html_response(conn, 200)
+    test "settings title uses the GTFS Planner suffix without an organization", %{conn: conn} do
+      conn = log_in_user(conn, user_fixture())
 
-      assert html =~ "Pathways Studio"
+      html = conn |> get(~p"/users/settings") |> html_response(200)
+
+      assert html =~ "· GTFS Planner</title>"
+      assert html =~ ~s(data-suffix=" · GTFS Planner")
+    end
+
+    test "Planner and Pathways editors get their own product suffix", %{conn: conn} do
+      for {product, suffix} <- [
+            {:planner, " · GTFS Planner"},
+            {:pathways, " · Pathways Studio"}
+          ] do
+        organization = organization_fixture(%{product: product})
+        user = user_fixture()
+
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["pathways_studio_editor"]
+        })
+
+        version = gtfs_version_fixture(organization.id)
+
+        html =
+          conn
+          |> log_in_user(user, organization: organization)
+          |> get(~p"/gtfs/#{version.id}/routes")
+          |> html_response(200)
+
+        assert html =~ ~s(data-suffix="#{suffix}")
+        assert html =~ "#{suffix}</title>"
+      end
     end
   end
 end

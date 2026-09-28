@@ -611,7 +611,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:fares} />
+        <.settings_nav
+          gtfs_version_id={@current_gtfs_version.id}
+          active_tab={:fares}
+          organization={@current_organization}
+        />
       </:sub_header>
 
       <.header>

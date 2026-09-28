@@ -98,10 +98,17 @@
   --color-error-bg: #fbe3e3;
   --color-error-fg: #9b1c1c;
   --color-error-line: #d33a3a;
+  --color-warning-bg: #fcf1db;
+  --color-warning-fg: #8a5a0e;
+  --color-warning-line: #d69822;
+  --color-info-bg: #e0f1f5;
+  --color-info-fg: #0e5c73;
+  --color-info-line: #2c8faa;
 
   --radius-badge: 4px;
   --radius-control: 6px;
   --radius-card: 8px;
+  --shadow-card: 0 2px 3px #0a133005, 0 10px 24px #0a133007;
   --shadow-float: 0 4px 18px #0a133017;
 }
 

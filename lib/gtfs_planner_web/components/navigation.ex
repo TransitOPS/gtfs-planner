@@ -44,7 +44,8 @@ defmodule GtfsPlannerWeb.Navigation do
   @doc """
   Renders the role-aware main navigation: the six task areas in the information
   architecture's order, then Organizations after a divider for system
-  administrators.
+  administrators. Task areas hidden for the organization's product
+  (`GtfsPlannerWeb.ProductSurfaces.visible?/2`) are omitted.
 
   Task links are label-only and carry the design system's selection tint on the
   current area; each task owns its path family, so `/gtfs/:version/runs` marks
@@ -79,7 +80,11 @@ defmodule GtfsPlannerWeb.Navigation do
       assign(assigns,
         show_tasks:
           has_role?(assigns.user_roles, :pathways_studio_editor) &&
-            assigns.current_organization && assigns.current_gtfs_version
+            assigns.current_organization && assigns.current_gtfs_version,
+        visible_tasks:
+          Enum.filter(main_tasks(), fn {key, _label_families} ->
+            GtfsPlannerWeb.ProductSurfaces.visible?(assigns.current_organization, key)
+          end)
       )
 
     ~H"""
@@ -90,7 +95,7 @@ defmodule GtfsPlannerWeb.Navigation do
       class="flex min-h-[72px] flex-wrap items-center gap-1"
     >
       <.link
-        :for={{key, {label, families}} <- main_tasks()}
+        :for={{key, {label, families}} <- @visible_tasks}
         :if={@show_tasks}
         id={"nav-#{key}"}
         navigate={"/gtfs/#{@current_gtfs_version.id}/#{hd(families)}"}
@@ -241,12 +246,15 @@ defmodule GtfsPlannerWeb.Navigation do
 
   # The Settings entry for this viewer's context, or nil when the viewer has no
   # Settings destination. An editor with a version wins over the organization
-  # administrator fallback, and an organization is required for both.
+  # administrator fallback, and an organization is required for both. When the
+  # organization's product hides version Settings, the editor branch is skipped
+  # so an administrator falls back to Users and anyone else gets no entry.
   defp settings_target(nil, _user_roles, _current_gtfs_version), do: nil
 
-  defp settings_target(_organization, user_roles, current_gtfs_version) do
+  defp settings_target(organization, user_roles, current_gtfs_version) do
     cond do
-      has_role?(user_roles, :pathways_studio_editor) && current_gtfs_version ->
+      has_role?(user_roles, :pathways_studio_editor) && current_gtfs_version &&
+          GtfsPlannerWeb.ProductSurfaces.visible?(organization, :feed_details) ->
         %{
           href: "/gtfs/#{current_gtfs_version.id}/settings",
           hint: "Agencies, fares, exports, garages, fleet"

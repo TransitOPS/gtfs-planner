@@ -485,7 +485,7 @@ test.describe("header presentation", () => {
 
     // The product name and the page h1 share a left edge.
     const brandBox = await page
-      .locator("#app-header a[aria-label='Pathways Studio - Go to homepage']")
+      .locator("#app-brand")
       .boundingBox();
     const h1Box = await page.locator("main h1").first().boundingBox();
     expect(Math.abs(brandBox.x - h1Box.x)).toBeLessThanOrEqual(1);
@@ -503,13 +503,8 @@ test.describe("header presentation", () => {
     expect(h1Font).toContain("Inter");
     expect(h1Font).not.toContain("Figtree");
 
-    const productFont = await page
-      .locator(
-        "#app-header a[aria-label='Pathways Studio - Go to homepage'] span",
-      )
-      .first()
-      .evaluate((el) => getComputedStyle(el).fontFamily);
-    expect(productFont).toContain("Gabarito");
+    // The product mark is the logo image, not text.
+    await expect(page.locator("#app-brand-logo")).toBeVisible();
 
     // Both families are loaded from the app's own static files.
     const loaded = await page.evaluate(async () => {
@@ -518,13 +513,9 @@ test.describe("header presentation", () => {
     });
     expect(loaded).toContain("Figtree 400");
     expect(loaded).toContain("Figtree 600");
-    expect(loaded).toContain("Gabarito 600");
 
     expect(
       await page.evaluate(() => document.fonts.check("600 14px Figtree")),
-    ).toBe(true);
-    expect(
-      await page.evaluate(() => document.fonts.check("600 21px Gabarito")),
     ).toBe(true);
 
     // The trigger shows the seeded editor's initials, worked out from the email.

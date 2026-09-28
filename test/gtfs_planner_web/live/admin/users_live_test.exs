@@ -719,5 +719,31 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert reloaded.name == "Renamed Org"
       assert reloaded.alias == organization.alias
     end
+
+    test "the organization form ignores a crafted product", %{
+      conn: conn,
+      organization: organization
+    } do
+      assert Organizations.get_organization!(organization.id).product == :planner
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      refute has_element?(
+               view,
+               "#organization-settings-form select[name='organization[product]']"
+             )
+
+      refute has_element?(view, "#organization-settings-form #organization-product")
+
+      render_submit(view, "save_organization", %{
+        "organization" => %{"name" => "Renamed", "product" => "pathways"}
+      })
+
+      assert_patch(view, ~p"/admin/users")
+
+      reloaded = Organizations.get_organization!(organization.id)
+      assert reloaded.name == "Renamed"
+      assert reloaded.product == :planner
+    end
   end
 end

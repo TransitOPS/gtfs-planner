@@ -26,7 +26,7 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
 
-      assert page_title(view) == "Set password · Pathways Studio"
+      assert page_title(view) == "Set password · GTFS Planner · Pathways Studio"
 
       assert has_element?(view, ~s(#accept-invite-page[phx-hook="FormErrorFocus"]))
       refute has_element?(view, "#accept-invite-page[phx-update]")
@@ -68,6 +68,29 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
         |> LazyHTML.to_tree()
 
       assert length(h1s) == 1
+    end
+  end
+
+  describe "auth frame" do
+    test "renders both product logos above the card without the old wordmark", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='GTFS Planner'][src='/images/gtfs-planner-logo.svg'])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#auth-brands img[alt='Pathways Studio'][src='/images/pathways-studio-logo.svg'])
+             )
+
+      html = render(view)
+      refute html =~ "gtfs-logo.svg"
+      refute has_element?(view, "#auth-brands .text-brand")
     end
   end
 

@@ -84,7 +84,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
       <div class="mt-6">
         <.callout kind="info" title="Organization access required">
-          Organization access is required to use Pathways Studio. Contact an administrator if you need access.
+          Organization access is required to use this application. Contact an administrator if you need access.
         </.callout>
       </div>
     </div>
@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
       <div class="mt-6">
         <.callout kind="info" title="Organization access required">
-          Organization access is required to use Pathways Studio. Contact an administrator if you need access.
+          Organization access is required to use this application. Contact an administrator if you need access.
         </.callout>
       </div>
     </div>
@@ -181,7 +181,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
       <div class="mt-6">
         <.callout kind="info" title="No task access">
-          An organization administrator controls access to Pathways Studio tasks for this organization.
+          An organization administrator controls task access for this organization.
         </.callout>
       </div>
     </div>

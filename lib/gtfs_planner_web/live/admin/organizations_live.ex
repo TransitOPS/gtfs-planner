@@ -652,6 +652,13 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         required
         help="Lowercase, with spaces replaced by hyphens."
       />
+      <.input
+        field={@form[:product]}
+        type="select"
+        id="organization-product"
+        label="Product"
+        options={[{"GTFS Planner", "planner"}, {"Pathways Studio", "pathways"}]}
+      />
 
       <:actions>
         <div class="flex-1"></div>
@@ -850,6 +857,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     <div class="mt-6">
       <.list>
         <:item title="Alias">{@organization.alias}</:item>
+        <:item title="Product">{GtfsPlannerWeb.ProductSurfaces.name(@organization.product)}</:item>
         <:item title="Organization ID">
           <span id="organization-id" class="font-mono text-sm break-all">{@organization.id}</span>
         </:item>
@@ -996,7 +1004,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         id="organizations-empty"
         title="No organizations yet"
       >
-        Create the first organization to give its members access to Pathways Studio.
+        Create the first organization to give its members access.
         <:action>
           <.button class="min-h-11" navigate={~p"/admin/organizations/new"}>
             Create organization
