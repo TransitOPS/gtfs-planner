@@ -110,6 +110,61 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
       assert reloaded.route_short_name == "32"
       assert reloaded.route_long_name == "Original"
     end
+
+    test "keeps the import changeset accepting a whitespace-only short name", %{
+      organization: organization,
+      version: version
+    } do
+      # A feed row's whitespace-only name is held on the row struct (Ecto's
+      # cast maps a submitted blank to nil before validation); the base
+      # revision's nil-based rule accepted these rows and kept the stored value.
+      attrs = %{
+        route_id: "R-IMPORT-WS",
+        route_type: 3,
+        organization_id: organization.id,
+        gtfs_version_id: version.id
+      }
+
+      changeset = Route.changeset(%Route{route_short_name: "   "}, attrs)
+
+      assert changeset.valid?
+
+      {:ok, imported} = Repo.insert(changeset)
+      reloaded = Repo.reload(imported)
+
+      assert reloaded.route_short_name == "   "
+      assert reloaded.route_long_name == nil
+    end
+
+    test "rejects a whitespace-only short name with no long name in the editor", %{
+      organization: organization,
+      version: version
+    } do
+      data_held =
+        %Route{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          route_short_name: "   "
+        }
+        |> Route.editor_changeset(%{route_id: "R-EDITOR-WS", route_type: 3}, :create)
+
+      refute data_held.valid?
+
+      assert "at least one of route_short_name or route_long_name must be present" in errors_on(
+               data_held
+             ).route_short_name
+
+      submitted =
+        %Route{organization_id: organization.id, gtfs_version_id: version.id}
+        |> Route.editor_changeset(
+          %{route_id: "R-EDITOR-WS", route_type: 3, route_short_name: "   "},
+          :create
+        )
+
+      refute submitted.valid?
+
+      assert {:error, _changeset} = Repo.insert(data_held)
+    end
   end
 
   describe "field validation" do
@@ -238,6 +293,55 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
 
       refute Map.has_key?(changeset.changes, :text_mode)
       assert changeset.changes.route_text_color == "FFFFFF"
+    end
+
+    test "an automatic save with no color change is a no-op for the custom text color", %{
+      route: route
+    } do
+      before_update = Repo.reload(route)
+
+      changeset =
+        Route.editor_changeset(
+          route,
+          %{
+            route_short_name: route.route_short_name,
+            route_long_name: route.route_long_name,
+            route_type: route.route_type,
+            agency_id: route.agency_id,
+            route_desc: route.route_desc,
+            route_url: route.route_url,
+            route_color: route.route_color,
+            route_text_color: route.route_text_color,
+            route_sort_order: route.route_sort_order,
+            continuous_pickup: route.continuous_pickup,
+            continuous_drop_off: route.continuous_drop_off,
+            network_id: route.network_id,
+            text_mode: "automatic"
+          },
+          :edit
+        )
+
+      assert changeset.changes == %{}
+
+      {:ok, updated} = Repo.update(changeset)
+      reloaded = Repo.reload(updated)
+
+      assert reloaded.route_text_color == "AABBCC"
+      assert reloaded.updated_at == before_update.updated_at
+    end
+
+    test "changing the background with automatic text mode recomputes the text color", %{
+      route: route
+    } do
+      {:ok, updated} =
+        route
+        |> Route.editor_changeset(%{route_color: "FFFFFF", text_mode: "automatic"}, :edit)
+        |> Repo.update()
+
+      reloaded = Repo.reload(updated)
+
+      assert reloaded.route_color == "FFFFFF"
+      assert reloaded.route_text_color == "000000"
     end
 
     test "persists a custom text color as entered", %{route: route} do
