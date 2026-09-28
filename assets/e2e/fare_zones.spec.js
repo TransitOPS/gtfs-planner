@@ -13,6 +13,7 @@ import { test, expect } from "@playwright/test";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bodyFitsViewport } from "./browser_helpers.js";
 
 // The Playwright runner starts in `assets/`, so repository-relative inputs are
 // resolved from the checkout root the way `playwright.config.js` does.
@@ -214,4 +215,96 @@ test("settings entry", async ({ page }, testInfo) => {
 
     await capture(page, testInfo, `settings-entry-${viewport.label}`);
   }
+});
+
+// ── zones inventory ───────────────────────────────────────────────────────
+
+// The Zones tab's inventory is the page's navigation: All stops, one row per
+// zone in the version, and Unassigned, each a patch link carrying its own
+// filter. The seeded "Browser Fare Zones Version" carries Central (11 boardable
+// stops), Eastbank (12), a fare-rule-referenced C with no stops and no record,
+// the declared-but-empty Airport, and 4 unassigned stops of 27.
+test("zones inventory", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  const versionId = await openFares(page, "zones");
+
+  const inventory = page.locator("#fare-zone-inventory");
+
+  await expect(inventory).toBeVisible();
+  await expect(page.locator("#fare-zone-inventory-count")).toHaveText("4");
+  await expect(inventory).toContainText("Each stop belongs to one zone.");
+  await expect(inventory).toContainText(
+    "Zone names help your team. Zone IDs travel with your GTFS feed.",
+  );
+
+  const allStops = page.locator("#fare-zone-row-all");
+
+  await expect(allStops).toContainText("All stops");
+  await expect(allStops).toContainText("Every zone");
+  await expect(page.locator("#fare-zone-row-all-count")).toHaveText("27");
+  await expect(allStops).toHaveAttribute("href", `/gtfs/${versionId}/settings/fares`);
+  await expect(allStops).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("All stops");
+  await expect(page.locator("#fare-zone-stage-subtitle")).toHaveText(
+    "27 stops in this version",
+  );
+
+  const zones = [
+    { index: 1, id: "A", name: "Central", count: "11", subtext: "ID A" },
+    { index: 2, id: "B", name: "Eastbank", count: "12", subtext: "ID B" },
+    { index: 3, id: "C", name: "C", count: "0", subtext: "ID C · Empty zone" },
+    { index: 4, id: "D", name: "Airport", count: "0", subtext: "ID D · Empty zone" },
+  ];
+
+  for (const zone of zones) {
+    const row = page.locator(`#fare-zone-row-${zone.index}`);
+
+    await expect(row).toContainText(zone.name);
+    await expect(row).toContainText(zone.subtext);
+    await expect(page.locator(`#fare-zone-row-${zone.index}-count`)).toHaveText(zone.count);
+    await expect(row).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/settings/fares?zone=${zone.id}`,
+    );
+    await expect(row).not.toHaveAttribute("aria-current", "page");
+  }
+
+  const unassigned = page.locator("#fare-zone-row-unassigned");
+
+  await expect(unassigned).toContainText("Unassigned");
+  await expect(unassigned).toContainText("Needs assignment");
+  await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
+  await expect(unassigned).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?filter=unassigned`,
+  );
+
+  // Selecting a zone keeps the filter in the URL and renames the stage.
+  await page.locator("#fare-zone-row-2").click();
+
+  await expect(page).toHaveURL(new RegExp(`zone=B$`));
+  await expect(page.locator("#fare-zone-row-2")).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#fare-zone-row-2")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/settings/fares?zone=B`,
+  );
+  await expect(allStops).not.toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Eastbank");
+  await expect(page.locator("#fare-zone-stage-subtitle")).toHaveText("12 stops · Zone ID B");
+
+  for (const viewport of [DESKTOP, NARROW]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(page);
+
+    await expect(page.locator("#fare-zone-row-all")).toBeVisible();
+
+    if (viewport === NARROW) {
+      expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+    }
+
+    await capture(page, testInfo, `zones-inventory-${viewport.width}`, { fullPage: false });
+  }
+
+  await captureReference(page, testInfo, "", "ref-zones");
 });

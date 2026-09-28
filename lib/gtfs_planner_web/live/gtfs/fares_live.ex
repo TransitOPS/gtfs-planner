@@ -17,14 +17,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   partial workspace, or a crash reported as downtime.
 
   The disconnected render shows the skeleton; the connected load resolves to
-  `:ready` or `:unavailable`, and `reload` re-runs the same load. The three tab
-  bodies are added by the following steps; this shell renders each tab's panel
-  container so those bodies have one place to land.
+  `:ready` or `:unavailable`, and `reload` re-runs the same load. The Zones tab
+  renders the version's inventory and the filter the URL asked for; the stop
+  list below the stage header is added by the following step.
   """
 
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.Gtfs.FaresComponents, only: [load_error: 1, loading: 1]
+  import GtfsPlannerWeb.Gtfs.FaresComponents,
+    only: [load_error: 1, loading: 1, stage_header: 1, zone_inventory: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Versions
@@ -126,7 +127,24 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       <.load_error :if={@load_state == :unavailable} />
 
       <%= if @load_state == :ready do %>
-        <div :if={@live_action == :zones} id="fare-zones-panel" class="mt-2"></div>
+        <div
+          :if={@live_action == :zones}
+          id="fare-zones-panel"
+          class="mt-2 overflow-hidden rounded-box border border-base-300 bg-base-100 md:grid md:grid-cols-[240px_minmax(0,1fr)]"
+        >
+          <.zone_inventory
+            inventory={@inventory}
+            filter={@filter}
+            patch_base={zones_path(@current_gtfs_version.id)}
+          />
+
+          <section id="fare-zone-stage" class="min-w-0" aria-label="Stops workspace">
+            <.stage_header
+              title={stage_title(@filter, @inventory)}
+              subtitle={stage_subtitle(@filter, @inventory)}
+            />
+          </section>
+        </div>
         <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2"></div>
         <div :if={@live_action == :checks} id="fare-checks-panel" class="mt-2"></div>
       <% end %>
@@ -176,6 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> assign(:checks, checks)
         |> assign(:stop_page, stop_page)
         |> assign(:load_state, :ready)
+        |> resolve_zone_filter(inventory)
 
       {:error, :unavailable} ->
         # The previous load stays in assigns so a failed refresh never erases
@@ -184,6 +203,59 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     end
   end
 
+  # A `zone` value the inventory does not carry - a stale link, or a zone renamed
+  # or deleted since the URL was made - shows All stops rather than a filter that
+  # matches nothing. The IDs are compared byte-for-byte, never trimmed.
+  #
+  # The stop page in hand was read for the unknown filter, so it is read again
+  # for :all: the list below the header must describe the filter the header and
+  # the inventory show. Reading the inventory first is not an option, because
+  # the workspace arrives in one load (and this LiveView issues no query of its
+  # own).
+  defp resolve_zone_filter(%{assigns: %{filter: {:zone, zone_id}}} = socket, inventory) do
+    if Enum.any?(inventory.zones, &(&1.zone_id == zone_id)) do
+      socket
+    else
+      socket |> assign(:filter, :all) |> load_workspace()
+    end
+  end
+
+  defp resolve_zone_filter(socket, _inventory), do: socket
+
+  # The stage names the stops the filter shows. A zone filter is named by the
+  # zone's display name, or by its exact ID when the inventory has no record.
+  defp stage_title(:all, _inventory), do: "All stops"
+  defp stage_title(:unassigned, _inventory), do: "Unassigned stops"
+
+  defp stage_title({:zone, zone_id}, inventory) do
+    case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
+      nil -> zone_id
+      zone -> zone.name
+    end
+  end
+
+  # Counts are the filter's own: boardable stops of the version, of the zone, or
+  # without a zone. A zone's count is its boardable membership, so a zone carried
+  # only by stations reads 0 and "Empty zone".
+  defp stage_subtitle(:all, inventory),
+    do: "#{stops_count(inventory.boardable_count)} in this version"
+
+  defp stage_subtitle(:unassigned, inventory),
+    do: "#{stops_count(inventory.unassigned_count)}"
+
+  defp stage_subtitle({:zone, zone_id}, inventory) do
+    count =
+      case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
+        nil -> 0
+        zone -> zone.stop_count
+      end
+
+    "#{stops_count(count)} · Zone ID #{zone_id}"
+  end
+
+  defp stops_count(1), do: "1 stop"
+  defp stops_count(count), do: "#{count} stops"
+
   # One issue per stopless referenced zone, plus one for unassigned stops. The
   # caller passes nil while the workspace load has not resolved, so the badge
   # never claims a clean version on data nobody has read yet.
@@ -191,7 +263,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     length(stopless) + if unassigned > 0, do: 1, else: 0
   end
 
+  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares"
+
   defp fares_path(version_id, :rules), do: "/gtfs/#{version_id}/settings/fares/rules"
   defp fares_path(version_id, :checks), do: "/gtfs/#{version_id}/settings/fares/checks"
-  defp fares_path(version_id, _zones), do: "/gtfs/#{version_id}/settings/fares"
+  defp fares_path(version_id, _zones), do: zones_path(version_id)
 end
