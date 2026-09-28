@@ -24,6 +24,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
+  alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
@@ -4420,6 +4422,34 @@ defmodule GtfsPlanner.Gtfs do
       )
 
     Ecto.Multi.delete_all(multi, :pathways, pathway_query)
+  end
+
+  # ============================================================================
+  # Blocks
+  # ============================================================================
+
+  @doc """
+  Returns the minimum layover for an organization's GTFS version.
+
+  A version with no stored setting returns `%{min_layover_minutes: 5}`; the read
+  never inserts a row.
+  """
+  @spec get_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: %{min_layover_minutes: 0..120}
+  def get_blocking_settings(organization_id, gtfs_version_id) do
+    Blocking.get_settings(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Stores the minimum layover for an organization's published GTFS version.
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, and `{:error, changeset}` when the value is not a whole
+  number from 0 to 120.
+  """
+  @spec update_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update_blocking_settings(organization_id, gtfs_version_id, attrs) do
+    Blocking.update_settings(organization_id, gtfs_version_id, attrs)
   end
 
   # ============================================================================
