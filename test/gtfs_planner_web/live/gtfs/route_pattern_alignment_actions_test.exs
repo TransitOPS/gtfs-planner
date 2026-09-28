@@ -304,7 +304,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentActionsTest do
       assert html =~ "25 metres · fewer points"
 
       view
-      |> element("#alignment-simplify-tolerance")
+      |> form("#alignment-simplify-tolerance-form")
       |> render_change(%{"tolerance_m" => "25"})
 
       render_click(element(view, "#alignment-simplify-dialog-confirm"))

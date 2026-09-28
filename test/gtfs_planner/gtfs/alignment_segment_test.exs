@@ -156,6 +156,7 @@ defmodule GtfsPlanner.Gtfs.AlignmentSegmentTest do
       RoutePattern.changeset(pattern, %{"shape_id" => "X", "alignment_digest" => "d"})
 
     assert Ecto.Changeset.get_field(pattern_changeset, :shape_id) == pattern.shape_id
+
     assert Ecto.Changeset.get_field(pattern_changeset, :alignment_digest) ==
              pattern.alignment_digest
 

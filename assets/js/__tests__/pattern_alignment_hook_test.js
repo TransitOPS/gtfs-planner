@@ -364,7 +364,7 @@ describe("pattern_alignment_hook save settle", () => {
     hook._commit(1, [[-74.0, 40.006]]);
     save.disabled = true;
 
-    handlers["alignment:rebase"]({ bases: {} });
+    handlers["alignment:rebase"]({ bases: [] });
 
     expect(hook.dirtyPositions()).toEqual([1]);
     expect(save.disabled).toBe(false);

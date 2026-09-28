@@ -294,9 +294,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.TripWritersTest do
     source
     |> persisted_source_rows()
     |> Enum.each(fn row ->
-      Repo.update!(
-        Ecto.Changeset.change(row, shape_dist_traveled: Decimal.new("1.50"))
-      )
+      Repo.update!(Ecto.Changeset.change(row, shape_dist_traveled: Decimal.new("1.50")))
     end)
 
     assert {:ok, copy} =

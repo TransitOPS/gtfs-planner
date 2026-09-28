@@ -924,21 +924,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   defp follow_coords(lon, lat)
        when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and
               lat >= -90 and lat <= 90 do
-    if finite_coord?(lon) and finite_coord?(lat) do
-      {:ok, [lon * 1.0, lat * 1.0]}
-    else
-      :invalid
-    end
+    {:ok, [lon * 1.0, lat * 1.0]}
   end
 
   defp follow_coords(_lon, _lat), do: :invalid
-
-  # JSON numbers cannot encode NaN or infinities, but a forged hook
-  # payload reaches this clause all the same; the product test below is
-  # the deliberate fail-safe, stated without a self-comparison.
-  defp finite_coord?(coord) when is_float(coord), do: coord * 0 == 0
-  defp finite_coord?(coord) when is_integer(coord), do: true
-  defp finite_coord?(_coord), do: false
 
   defp start_follow(socket, request) do
     %{from: from, to: to} = request

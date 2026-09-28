@@ -1134,7 +1134,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         inserted_at: now,
         updated_at: now
       }
-      end)
+    end)
   end
 
   defp insert_stop_times!(rows) do

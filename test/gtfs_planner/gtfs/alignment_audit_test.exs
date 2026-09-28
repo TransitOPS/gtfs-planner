@@ -52,10 +52,16 @@ defmodule GtfsPlanner.Gtfs.AlignmentAuditTest do
     assert {:ok, log} =
              Repo.transaction(fn ->
                {:ok, log} =
-                 Gtfs.record_change_in_transaction(audit, :alignment_segment, segment, "created", %{
-                   before: nil,
-                   after: %{points: [[-74.006, 40.7128]]}
-                 })
+                 Gtfs.record_change_in_transaction(
+                   audit,
+                   :alignment_segment,
+                   segment,
+                   "created",
+                   %{
+                     before: nil,
+                     after: %{points: [[-74.006, 40.7128]]}
+                   }
+                 )
 
                log
              end)
@@ -88,10 +94,16 @@ defmodule GtfsPlanner.Gtfs.AlignmentAuditTest do
     assert {:ok, log} =
              Repo.transaction(fn ->
                {:ok, log} =
-                 Gtfs.record_change_in_transaction(audit, :alignment_segment, segment, "created", %{
-                   before: nil,
-                   after: %{points: [[-74.006, 40.7128]]}
-                 })
+                 Gtfs.record_change_in_transaction(
+                   audit,
+                   :alignment_segment,
+                   segment,
+                   "created",
+                   %{
+                     before: nil,
+                     after: %{points: [[-74.006, 40.7128]]}
+                   }
+                 )
 
                log
              end)

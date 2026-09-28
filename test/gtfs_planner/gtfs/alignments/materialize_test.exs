@@ -348,13 +348,18 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializeTest do
 
     rows = shape_rows(organization, version, "X")
     assert length(rows) == 2
-    assert Enum.map(rows, & &1.shape_dist_traveled) == [Decimal.new("0.00"), Decimal.new("139.53")]
+
+    assert Enum.map(rows, & &1.shape_dist_traveled) == [
+             Decimal.new("0.00"),
+             Decimal.new("139.53")
+           ]
 
     audit = latest_shape_audit(organization, version, pattern)
     assert audit.action == "updated"
     assert audit.entity_external_id == "P1"
 
     replaced = audit.changed_fields["before"]["replaced_shapes"]
+
     assert [%{"shape_id" => "X", "trip_count" => 2, "action" => "adopted", "points" => points}] =
              replaced
 
@@ -380,7 +385,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializeTest do
 
     link_trip(organization, version, pattern, "T1", "Y", [Decimal.new("0"), Decimal.new("5.5")])
     link_trip(organization, version, pattern, "T2", "Z", [Decimal.new("0"), Decimal.new("6.5")])
-    custom_trip(organization, version, pattern, "KEEPER", "Z", [Decimal.new("0"), Decimal.new("6.5")])
+
+    custom_trip(organization, version, pattern, "KEEPER", "Z", [
+      Decimal.new("0"),
+      Decimal.new("6.5")
+    ])
 
     {result, _resolved, plan} = materialize!(organization, version, pattern)
 
@@ -395,6 +404,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializeTest do
 
     audit = latest_shape_audit(organization, version, pattern)
     replaced = audit.changed_fields["before"]["replaced_shapes"]
+
     assert [%{"shape_id" => "Y", "trip_count" => 1, "action" => "deleted", "points" => points}] =
              replaced
 

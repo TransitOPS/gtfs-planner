@@ -365,9 +365,17 @@ defmodule GtfsPlanner.Gtfs.Alignments.ShapePlanTest do
 
     foreign_timing = timed_pattern_fixture(foreign_pattern)
 
-    link_trip(foreign_organization, foreign_version, foreign_pattern, foreign_timing, "FT1", "X", [
-      Decimal.new("0")
-    ])
+    link_trip(
+      foreign_organization,
+      foreign_version,
+      foreign_pattern,
+      foreign_timing,
+      "FT1",
+      "X",
+      [
+        Decimal.new("0")
+      ]
+    )
 
     assert %{shape_id: "X", mode: :adopt} = Alignments.shape_plan(pattern, 3)
   end

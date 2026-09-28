@@ -6027,6 +6027,7 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for(type, %Transfer{} = transfer, _attrs)
        when type in [:transfer, "transfer"],
        do: Transfer.audit_external_id(transfer)
+
   # A shared segment is addressed by its stop pair; an override also names the
   # visit it belongs to (INV-6). A pattern shape is addressed by the pattern's
   # natural GTFS ID.
@@ -6150,7 +6151,7 @@ defmodule GtfsPlanner.Gtfs do
               "alignment_segment",
               :pattern_shape,
               "pattern_shape"
-             ] and action in ["created", "updated", "deleted"] do
+            ] and action in ["created", "updated", "deleted"] do
     %{
       "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))

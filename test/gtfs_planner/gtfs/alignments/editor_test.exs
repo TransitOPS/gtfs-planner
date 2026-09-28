@@ -95,7 +95,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.EditorTest do
     base_stops(organization, version)
 
     route_fixture(organization.id, version.id, %{route_id: "R1"})
-    pattern = route_pattern_fixture(organization.id, version.id, %{route_id: "R1", route_pattern_id: "P1"})
+
+    pattern =
+      route_pattern_fixture(organization.id, version.id, %{route_id: "R1", route_pattern_id: "P1"})
+
     route_pattern_stop_fixture(pattern, "A", 1)
     route_pattern_stop_fixture(pattern, "B", 2)
 
@@ -109,7 +112,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.EditorTest do
              Gtfs.alignment_editor(other_organization.id, other_version.id, "R1", "P1")
 
     {:ok, staging} =
-      Versions.create_staging_gtfs_version(organization.id, %{name: "Staging #{System.unique_integer()}"})
+      Versions.create_staging_gtfs_version(organization.id, %{
+        name: "Staging #{System.unique_integer()}"
+      })
 
     assert {:error, :not_found} = Gtfs.alignment_editor(organization.id, staging.id, "R1", "P1")
   end
@@ -140,7 +145,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.EditorTest do
       route_pattern_stop_fixture(pattern, "A", 1)
       route_pattern_stop_fixture(pattern, "B", 2)
 
-      assert {:ok, model} = Gtfs.alignment_editor(organization.id, version.id, route_id, "PC#{index}")
+      assert {:ok, model} =
+               Gtfs.alignment_editor(organization.id, version.id, route_id, "PC#{index}")
+
       assert model.route_color == expected
     end
   end
@@ -231,8 +238,16 @@ defmodule GtfsPlanner.Gtfs.Alignments.EditorTest do
     insert_shape(organization, version, "Y", 0, "40.712800", "-74.006000", "0")
     insert_shape(organization, version, "Y", 1, "40.714800", "-74.004000", "250")
 
-    link_trip(organization, version, pattern, timing, "T1", "X", [Decimal.new("0"), Decimal.new("100")])
-    link_trip(organization, version, pattern, timing, "T2", "X", [Decimal.new("0"), Decimal.new("100")])
+    link_trip(organization, version, pattern, timing, "T1", "X", [
+      Decimal.new("0"),
+      Decimal.new("100")
+    ])
+
+    link_trip(organization, version, pattern, timing, "T2", "X", [
+      Decimal.new("0"),
+      Decimal.new("100")
+    ])
+
     # Three stop times for two visits: no representative distances.
     link_trip(organization, version, pattern, timing, "T3", "Y", [
       Decimal.new("0"),

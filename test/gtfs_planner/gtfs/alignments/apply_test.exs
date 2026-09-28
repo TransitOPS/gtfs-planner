@@ -98,7 +98,12 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
 
   defp link_trip(organization, version, pattern, trip_id, shape_id, dists) do
     timing = timed_pattern_fixture(pattern)
-    trip = trip_fixture(organization.id, version.id, pattern.route_id, %{trip_id: trip_id, shape_id: shape_id})
+
+    trip =
+      trip_fixture(organization.id, version.id, pattern.route_id, %{
+        trip_id: trip_id,
+        shape_id: shape_id
+      })
 
     trip_pattern_metadata_fixture(trip, %{
       route_pattern_id: pattern.route_pattern_id,
@@ -145,7 +150,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
   end
 
   defp section_at(pattern, position) do
-    pattern |> Alignments.resolve() |> Map.fetch!(:sections) |> Enum.find(&(&1.position == position))
+    pattern
+    |> Alignments.resolve()
+    |> Map.fetch!(:sections)
+    |> Enum.find(&(&1.position == position))
   end
 
   defp first_occurrence(pattern) do
@@ -253,7 +261,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     origin = routed_pattern(organization, version, "R1", "P1", ["A", "B"])
     other = routed_pattern(organization, version, "R2", "P2", ["A", "B"])
     insert_shared(organization, version, "A", "B", [[-74.0057, 40.7130]])
-    other_trip = link_trip(organization, version, Repo.reload!(other), "OTHER", nil, [Decimal.new("0"), Decimal.new("0")])
+
+    other_trip =
+      link_trip(organization, version, Repo.reload!(other), "OTHER", nil, [
+        Decimal.new("0"),
+        Decimal.new("0")
+      ])
+
     audit = audit_context(organization, version)
 
     draft = [set_entry(section_at(origin, 1), [[-74.0055, 40.7131]])]
@@ -302,12 +316,19 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     insert_shared(organization, version, "A", "B", [[-74.0057, 40.7130]])
     # A stale-identity override for the origin visit (its stop moved on): the
     # section resolves shared, and the shared choice cleans the lingerer up.
-    insert_override(organization, version, first_occurrence(origin), "X", "B", [[-74.0059, 40.7133]])
+    insert_override(organization, version, first_occurrence(origin), "X", "B", [
+      [-74.0059, 40.7133]
+    ])
 
     holder |> Ecto.Changeset.change(%{shape_id: "P2"}) |> Repo.update!()
     insert_shape(organization, version, "P2", 0, "40.700000", "-74.020000", "0")
     insert_shape(organization, version, "P2", 1, "40.701000", "-74.019000", "100.0")
-    holder_trip = link_trip(organization, version, Repo.reload!(holder), "H1", "P2", [Decimal.new("0"), Decimal.new("100.0")])
+
+    holder_trip =
+      link_trip(organization, version, Repo.reload!(holder), "H1", "P2", [
+        Decimal.new("0"),
+        Decimal.new("100.0")
+      ])
 
     [custom_first | _] =
       Repo.all(
@@ -321,7 +342,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
 
     insert_shape(organization, version, "IMP", 0, "40.712800", "-74.006000", "0")
     insert_shape(organization, version, "IMP", 1, "40.713800", "-74.005000", "139.53")
-    link_trip(organization, version, Repo.reload!(imported), "I1", "IMP", [Decimal.new("0"), Decimal.new("139.53")])
+
+    link_trip(organization, version, Repo.reload!(imported), "I1", "IMP", [
+      Decimal.new("0"),
+      Decimal.new("139.53")
+    ])
 
     audit = audit_context(organization, version)
     draft = [set_entry(section_at(origin, 1), [[-74.0055, 40.7131]])]
@@ -352,7 +377,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     assert holder_trip.id != nil
 
     # The custom-path pattern and the imported-shape pattern are unchanged.
-    assert override_row(organization, version, custom_first.id, "B").points == [[-74.0051, 40.7135]]
+    assert override_row(organization, version, custom_first.id, "B").points == [
+             [-74.0051, 40.7135]
+           ]
+
     assert trip_row(organization, version, "I1").shape_id == "IMP"
     assert trip_distances(organization, version, "I1") == before_imported_distances
     assert shape_points(organization, version, "IMP") == before_imported_shapes
@@ -366,7 +394,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
 
     pattern = routed_pattern(organization, version, "R1", "P1", ["A", "B", "C"])
     insert_shared(organization, version, "B", "C", [])
-    link_trip(organization, version, pattern, "T1", nil, [Decimal.new("1.5"), Decimal.new("2.5"), Decimal.new("3.5")])
+
+    link_trip(organization, version, pattern, "T1", nil, [
+      Decimal.new("1.5"),
+      Decimal.new("2.5"),
+      Decimal.new("3.5")
+    ])
+
     audit = audit_context(organization, version)
 
     draft = [
@@ -389,7 +423,12 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
 
     assert shape_points(organization, version, "P1") == []
     assert trip_row(organization, version, "T1").shape_id == nil
-    assert trip_distances(organization, version, "T1") == [Decimal.new("1.5"), Decimal.new("2.5"), Decimal.new("3.5")]
+
+    assert trip_distances(organization, version, "T1") == [
+             Decimal.new("1.5"),
+             Decimal.new("2.5"),
+             Decimal.new("3.5")
+           ]
   end
 
   test "a fingerprint from an earlier review returns stale_review and writes nothing" do
@@ -424,7 +463,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     review = review!(origin.id, draft, audit)
     assert [%{action: :choose_scope}] = review.sections
 
-    assert {:error, :missing_scope} = apply(origin.id, draft, %{"scopes" => %{}}, review.fingerprint, audit)
+    assert {:error, :missing_scope} =
+             apply(origin.id, draft, %{"scopes" => %{}}, review.fingerprint, audit)
+
     assert shared_row(organization, version, "A", "B").points == [[-74.0057, 40.7130]]
     assert segment_count(organization, version) == 1
   end
@@ -444,6 +485,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     assert [%{action: :delete_shared, affected: [_]}] = review.sections
 
     assert {:error, :missing_scope} = apply(origin.id, draft, %{}, review.fingerprint, audit)
+
     assert {:error, :missing_scope} =
              apply(origin.id, draft, %{"scopes" => %{"1" => "local"}}, review.fingerprint, audit)
 
@@ -484,7 +526,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     assert trip_row(organization, version, "T1").shape_id == "X"
 
     assert {:ok, result} =
-             apply(pattern.id, draft, %{"confirm_replacements" => true}, review.fingerprint, audit)
+             apply(
+               pattern.id,
+               draft,
+               %{"confirm_replacements" => true},
+               review.fingerprint,
+               audit
+             )
 
     assert result.materialized == ["P1"]
     assert result.trips_updated == 1
@@ -526,7 +574,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     |> AlignmentSegment.changeset(%{points: [[-74.0051, 40.7135]]})
     |> Repo.update!()
 
-    assert {:error, {:conflict, [current]}} = apply(pattern.id, draft, %{}, review.fingerprint, audit)
+    assert {:error, {:conflict, [current]}} =
+             apply(pattern.id, draft, %{}, review.fingerprint, audit)
+
     assert current.position == 1
     assert current.revision.lock_version == stale_section.revision.lock_version + 1
 

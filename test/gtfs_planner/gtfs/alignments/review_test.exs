@@ -39,11 +39,18 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
 
   defp routed_pattern(organization, version, route_id, pattern_id, stops) do
     route_fixture(organization.id, version.id, %{route_id: route_id})
-    pattern = route_pattern_fixture(organization.id, version.id, %{route_id: route_id, route_pattern_id: pattern_id})
+
+    pattern =
+      route_pattern_fixture(organization.id, version.id, %{
+        route_id: route_id,
+        route_pattern_id: pattern_id
+      })
 
     stops
     |> Enum.with_index(1)
-    |> Enum.each(fn {stop_id, position} -> route_pattern_stop_fixture(pattern, stop_id, position) end)
+    |> Enum.each(fn {stop_id, position} ->
+      route_pattern_stop_fixture(pattern, stop_id, position)
+    end)
 
     Repo.reload!(pattern)
   end
@@ -87,7 +94,12 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
 
   defp link_trip(organization, version, pattern, trip_id, shape_id, dists) do
     timing = timed_pattern_fixture(pattern)
-    trip = trip_fixture(organization.id, version.id, pattern.route_id, %{trip_id: trip_id, shape_id: shape_id})
+
+    trip =
+      trip_fixture(organization.id, version.id, pattern.route_id, %{
+        trip_id: trip_id,
+        shape_id: shape_id
+      })
 
     trip_pattern_metadata_fixture(trip, %{
       route_pattern_id: pattern.route_pattern_id,
@@ -113,7 +125,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
       "to_stop_id" => section.to_stop_id,
       "op" => "set",
       "points" => points,
-      "base" => %{"segment_id" => section.revision.segment_id, "lock_version" => section.revision.lock_version}
+      "base" => %{
+        "segment_id" => section.revision.segment_id,
+        "lock_version" => section.revision.lock_version
+      }
     }
   end
 
@@ -123,12 +138,18 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
       "from_occurrence_id" => section.from_occurrence_id,
       "to_stop_id" => section.to_stop_id,
       "op" => "delete",
-      "base" => %{"segment_id" => section.revision.segment_id, "lock_version" => section.revision.lock_version}
+      "base" => %{
+        "segment_id" => section.revision.segment_id,
+        "lock_version" => section.revision.lock_version
+      }
     }
   end
 
   defp section_at(pattern, position) do
-    pattern |> Alignments.resolve() |> Map.fetch!(:sections) |> Enum.find(&(&1.position == position))
+    pattern
+    |> Alignments.resolve()
+    |> Map.fetch!(:sections)
+    |> Enum.find(&(&1.position == position))
   end
 
   test "a set on a sole-user missing section writes shared without a choice" do
@@ -139,9 +160,22 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     audit = audit_context(organization, version)
 
     assert {:ok, review} =
-             Gtfs.review_alignment_save(pattern.id, [set_entry(section_at(pattern, 1), [[-74.0055, 40.7131]])], audit)
+             Gtfs.review_alignment_save(
+               pattern.id,
+               [set_entry(section_at(pattern, 1), [[-74.0055, 40.7131]])],
+               audit
+             )
 
-    assert [%{position: 1, op: :set, action: :write_shared, affected: [], from_name: "Stop A", to_name: "Stop B"}] =
+    assert [
+             %{
+               position: 1,
+               op: :set,
+               action: :write_shared,
+               affected: [],
+               from_name: "Stop A",
+               to_name: "Stop B"
+             }
+           ] =
              review.sections
 
     assert review.origin.complete? == true
@@ -156,14 +190,25 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     base_stops(organization, version)
     pattern = routed_pattern(organization, version, "R1", "P1", ["A", "B", "C"])
 
-    [first | _] = Repo.all(Ecto.Query.from(o in GtfsPlanner.Gtfs.RoutePatternStop, where: o.route_pattern_id == ^pattern.id, order_by: [asc: o.position]))
+    [first | _] =
+      Repo.all(
+        Ecto.Query.from(o in GtfsPlanner.Gtfs.RoutePatternStop,
+          where: o.route_pattern_id == ^pattern.id,
+          order_by: [asc: o.position]
+        )
+      )
+
     insert_override(organization, version, first, "A", "B", [[-74.0055, 40.7131]])
     insert_shared(organization, version, "B", "C", [])
 
     audit = audit_context(organization, version)
 
     assert {:ok, review} =
-             Gtfs.review_alignment_save(pattern.id, [set_entry(section_at(pattern, 1), [[-74.0051, 40.7135]])], audit)
+             Gtfs.review_alignment_save(
+               pattern.id,
+               [set_entry(section_at(pattern, 1), [[-74.0051, 40.7135]])],
+               audit
+             )
 
     assert [%{position: 1, op: :set, action: :write_override, affected: []}] = review.sections
     assert review.origin.complete? == true
@@ -181,16 +226,27 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     insert_shared(organization, version, "A", "B", [[-74.0057, 40.7130]])
 
     [custom_first | _] =
-      Repo.all(Ecto.Query.from(o in GtfsPlanner.Gtfs.RoutePatternStop, where: o.route_pattern_id == ^custom.id, order_by: [asc: o.position]))
+      Repo.all(
+        Ecto.Query.from(o in GtfsPlanner.Gtfs.RoutePatternStop,
+          where: o.route_pattern_id == ^custom.id,
+          order_by: [asc: o.position]
+        )
+      )
 
     insert_override(organization, version, custom_first, "A", "B", [[-74.0051, 40.7135]])
 
     audit = audit_context(organization, version)
 
     assert {:ok, review} =
-             Gtfs.review_alignment_save(origin.id, [set_entry(section_at(origin, 1), [[-74.0055, 40.7131]])], audit)
+             Gtfs.review_alignment_save(
+               origin.id,
+               [set_entry(section_at(origin, 1), [[-74.0055, 40.7131]])],
+               audit
+             )
 
-    assert [%{action: :choose_scope, affected: affected, custom_unchanged: custom_unchanged}] = review.sections
+    assert [%{action: :choose_scope, affected: affected, custom_unchanged: custom_unchanged}] =
+             review.sections
+
     assert Enum.map(affected, & &1.route_pattern_id) == ["P2"]
     assert [%{visit_positions: [1], custom_positions: []}] = affected
     assert other.id in Enum.map(affected, & &1.pattern_id)
@@ -210,7 +266,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     audit = audit_context(organization, version)
 
     assert {:ok, review} =
-             Gtfs.review_alignment_save(pattern.id, [set_entry(section_at(pattern, 1), [[-74.0055, 40.7131]])], audit)
+             Gtfs.review_alignment_save(
+               pattern.id,
+               [set_entry(section_at(pattern, 1), [[-74.0055, 40.7131]])],
+               audit
+             )
 
     assert [%{action: :choose_scope, affected: affected}] = review.sections
     assert [%{pattern_id: affected_id, visit_positions: [4]}] = affected
@@ -227,8 +287,17 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     insert_shared(organization, version, "A", "B", [])
     audit = audit_context(organization, version)
 
-    assert {:ok, review} = Gtfs.review_alignment_save(origin.id, [delete_entry(section_at(origin, 1))], audit)
-    assert [%{op: :delete, action: :delete_shared, affected: [%{route_pattern_id: "P2", visit_positions: [1]}]}] = review.sections
+    assert {:ok, review} =
+             Gtfs.review_alignment_save(origin.id, [delete_entry(section_at(origin, 1))], audit)
+
+    assert [
+             %{
+               op: :delete,
+               action: :delete_shared,
+               affected: [%{route_pattern_id: "P2", visit_positions: [1]}]
+             }
+           ] = review.sections
+
     assert review.origin.complete? == false
     assert review.origin.plan == nil
 
@@ -239,7 +308,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     insert_shared(solo_org, solo_version, "A", "B", [])
     solo_audit = audit_context(solo_org, solo_version)
 
-    assert {:ok, solo_review} = Gtfs.review_alignment_save(solo.id, [delete_entry(section_at(solo, 1))], solo_audit)
+    assert {:ok, solo_review} =
+             Gtfs.review_alignment_save(solo.id, [delete_entry(section_at(solo, 1))], solo_audit)
+
     assert [%{action: :delete_shared, affected: []}] = solo_review.sections
   end
 
@@ -258,7 +329,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     |> Repo.update!()
 
     assert {:error, {:conflict, [current]}} =
-             Gtfs.review_alignment_save(pattern.id, [set_entry(stale_section, [[-74.0050, 40.7132]])], audit)
+             Gtfs.review_alignment_save(
+               pattern.id,
+               [set_entry(stale_section, [[-74.0050, 40.7132]])],
+               audit
+             )
 
     assert current.position == 1
     assert current.revision.lock_version == stale_section.revision.lock_version + 1
@@ -273,7 +348,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     foreign_audit = audit_context(foreign_org, foreign_version)
 
     assert {:error, :not_found} =
-             Gtfs.review_alignment_save(pattern.id, [set_entry(fresh, [[-74.0050, 40.7132]])], foreign_audit)
+             Gtfs.review_alignment_save(
+               pattern.id,
+               [set_entry(fresh, [[-74.0050, 40.7132]])],
+               foreign_audit
+             )
   end
 
   test "a complete pattern on imported shapes plans replacements and requires confirmation" do
@@ -295,7 +374,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     audit = audit_context(organization, version)
 
     assert {:ok, review} =
-             Gtfs.review_alignment_save(pattern.id, [set_entry(section_at(pattern, 1), [[-74.0055, 40.7131]])], audit)
+             Gtfs.review_alignment_save(
+               pattern.id,
+               [set_entry(section_at(pattern, 1), [[-74.0055, 40.7131]])],
+               audit
+             )
 
     assert review.origin.complete? == true
     assert review.origin.plan.mode == :adopt
@@ -314,14 +397,22 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     insert_shared(organization, version, "A", "B", [])
     insert_shared(organization, version, "B", "C", [])
 
-    link_trip(organization, version, Repo.reload!(origin), "BAD", nil, [Decimal.new("0"), Decimal.new("1")])
+    link_trip(organization, version, Repo.reload!(origin), "BAD", nil, [
+      Decimal.new("0"),
+      Decimal.new("1")
+    ])
 
     audit = audit_context(organization, version)
 
     assert {:ok, review} =
-             Gtfs.review_alignment_save(origin.id, [set_entry(section_at(origin, 1), [[-74.0055, 40.7131]])], audit)
+             Gtfs.review_alignment_save(
+               origin.id,
+               [set_entry(section_at(origin, 1), [[-74.0055, 40.7131]])],
+               audit
+             )
 
-    assert [%{trip_id: "BAD", stop_time_count: 2, visit_count: 3, route_pattern_id: "P1"}] = review.blockers
+    assert [%{trip_id: "BAD", stop_time_count: 2, visit_count: 3, route_pattern_id: "P1"}] =
+             review.blockers
 
     affected_org = organization_fixture()
     affected_version = gtfs_version_fixture(affected_org.id)
@@ -335,7 +426,9 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     |> Ecto.Changeset.change(%{shape_id: "P2"})
     |> Repo.update!()
 
-    link_trip(affected_org, affected_version, Repo.reload!(holder), "SHARED-BAD", nil, [Decimal.new("0")])
+    link_trip(affected_org, affected_version, Repo.reload!(holder), "SHARED-BAD", nil, [
+      Decimal.new("0")
+    ])
 
     holder_audit = audit_context(affected_org, affected_version)
 
@@ -346,7 +439,14 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
                holder_audit
              )
 
-    assert [%{action: :choose_scope, affected: [%{route_pattern_id: "P2"}], shared_rematerialize: [remat], shared_blockers: [%{trip_id: "SHARED-BAD"}]}] =
+    assert [
+             %{
+               action: :choose_scope,
+               affected: [%{route_pattern_id: "P2"}],
+               shared_rematerialize: [remat],
+               shared_blockers: [%{trip_id: "SHARED-BAD"}]
+             }
+           ] =
              shared_review.sections
 
     assert remat.route_pattern_id == "P2"

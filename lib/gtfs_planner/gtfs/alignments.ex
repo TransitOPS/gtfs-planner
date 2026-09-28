@@ -1342,23 +1342,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp endpoint_latlon([lon, lat])
        when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and
               lat >= -90 and lat <= 90 do
-    if finite_number?(lon) and finite_number?(lat) do
-      {:ok, {lat * 1.0, lon * 1.0}}
-    else
-      {:error, :invalid_coordinates}
-    end
+    {:ok, {lat * 1.0, lon * 1.0}}
   end
 
   defp endpoint_latlon(_point), do: {:error, :invalid_coordinates}
-
-  # Erlang floats can be NaN/inf only through exotic ports, but a forged
-  # hook payload is just JSON numbers: reject the non-finite ones here so
-  # they never reach the adapter. NaN and infinities are the only floats
-  # whose product with zero is not zero, which states the guard without a
-  # self-comparison.
-  defp finite_number?(value) when is_float(value), do: value * 0 == 0
-  defp finite_number?(value) when is_integer(value), do: true
-  defp finite_number?(_value), do: false
 
   @bulk_section_limit 200
 
