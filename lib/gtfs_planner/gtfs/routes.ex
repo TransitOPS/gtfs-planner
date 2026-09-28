@@ -27,6 +27,11 @@ defmodule GtfsPlanner.Gtfs.Routes do
   resolve with one coupled choice. Identity keys carried by base and current
   must fully agree, so a same-natural-ID replacement UUID or a scope change is
   rejected instead of silently rebasing an old edit.
+
+  `infer_route_id/3` is the pure R3 creation-ID precursor: it proposes a
+  candidate identifier with its reason and generated/manual mode against a
+  caller-supplied taken-ID snapshot. Final database allocation under the
+  version write lock belongs to `create_editor_route/3` (step 7).
   """
 
   import Ecto.Query
@@ -103,6 +108,13 @@ defmodule GtfsPlanner.Gtfs.Routes do
           mode_counts: [mode_count()],
           warning_candidates: [warning_candidate()],
           last_saved: last_save() | nil
+        }
+
+  @type id_example :: %{route_id: String.t(), route_short_name: String.t() | nil}
+  @type id_inference :: %{
+          route_id: String.t(),
+          reason: :manual | :inferred_prefix | :number | :name_slug | :slug_fallback,
+          mode: :generated | :manual
         }
 
   @doc """
@@ -198,6 +210,43 @@ defmodule GtfsPlanner.Gtfs.Routes do
     DBConnection.ConnectionError -> {:error, :unavailable}
   end
 
+  @doc """
+  Infers the creation route identifier (R3, pure precursor).
+
+  `candidates` are the same-mode example routes: each carries the natural
+  `route_id` and its own `route_short_name` as its number. `attrs` carries the
+  submitted `route_short_name` (number), `route_long_name` (name) and an
+  optional manual `route_id` (string or atom keys). `taken_ids` is the scoped
+  identifier snapshot; suffixed duplicates resolve against it only.
+
+  A manual `route_id` is used verbatim and a duplicate stays `{:error,
+  :duplicate_route_id}` — never suffixed. A generated candidate takes the
+  prefix shared by at least two eligible examples (IDs ending in their own
+  number) when that prefix covers at least 60% of them, with ties resolved
+  lexicographically; otherwise the number, then the lowercase name slug, then
+  `route` when the slug is empty or non-Latin. Generated duplicates append
+  `-2`, `-3`, and so on.
+  """
+  @spec infer_route_id([id_example()], map(), MapSet.t(String.t()) | Enumerable.t()) ::
+          {:ok, id_inference()} | {:error, :duplicate_route_id}
+  def infer_route_id(candidates, attrs, taken_ids) do
+    taken = MapSet.new(taken_ids)
+    attrs = normalize_keys(attrs)
+
+    case trimmed(Map.get(attrs, :route_id)) do
+      nil ->
+        {candidate, reason} = generated_candidate(candidates, attrs)
+        {:ok, %{route_id: dedupe(candidate, taken), reason: reason, mode: :generated}}
+
+      manual ->
+        if MapSet.member?(taken, manual) do
+          {:error, :duplicate_route_id}
+        else
+          {:ok, %{route_id: manual, reason: :manual, mode: :manual}}
+        end
+    end
+  end
+
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
       %{
@@ -255,6 +304,91 @@ defmodule GtfsPlanner.Gtfs.Routes do
     )
     |> Repo.one()
   end
+
+  # --- identifier inference internals -------------------------------------
+
+  defp generated_candidate(candidates, attrs) do
+    number = trimmed(Map.get(attrs, :route_short_name))
+    name = trimmed(Map.get(attrs, :route_long_name))
+
+    case inferred_prefix(candidates, number) do
+      prefix when is_binary(prefix) ->
+        {prefix <> number, :inferred_prefix}
+
+      nil when is_binary(number) ->
+        {number, :number}
+
+      nil ->
+        case name_slug(name) do
+          "" -> {"route", :slug_fallback}
+          slug -> {slug, :name_slug}
+        end
+    end
+  end
+
+  # The lexicographically smallest nonempty prefix shared by at least two
+  # eligible same-mode examples with >=60% agreement. Examples whose IDs end
+  # in their own number with an empty prefix count in the denominator but are
+  # never selected: their inferred ID is the number fallback either way.
+  defp inferred_prefix(_candidates, nil), do: nil
+
+  defp inferred_prefix(candidates, _number) do
+    examples =
+      Enum.flat_map(candidates, fn candidate ->
+        candidate = normalize_keys(candidate)
+        id = trimmed(Map.get(candidate, :route_id))
+        example_number = trimmed(Map.get(candidate, :route_short_name))
+
+        with true <- is_binary(id),
+             true <- is_binary(example_number),
+             true <- String.ends_with?(id, example_number) do
+          [binary_part(id, 0, byte_size(id) - byte_size(example_number))]
+        else
+          _ -> []
+        end
+      end)
+
+    total = length(examples)
+
+    examples
+    |> Enum.frequencies()
+    |> Enum.filter(fn {prefix, count} ->
+      prefix != "" and count >= 2 and count * 100 >= 60 * total
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.sort()
+    |> List.first()
+  end
+
+  defp dedupe(candidate, taken) do
+    if MapSet.member?(taken, candidate) do
+      Stream.iterate(2, &(&1 + 1))
+      |> Stream.map(&"#{candidate}-#{&1}")
+      |> Enum.find(&(not MapSet.member?(taken, &1)))
+    else
+      candidate
+    end
+  end
+
+  defp name_slug(nil), do: ""
+
+  defp name_slug(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/u, "-")
+    |> String.trim("-")
+  end
+
+  defp trimmed(nil), do: nil
+
+  defp trimmed(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp trimmed(_value), do: nil
 
   # --- comparison internals -----------------------------------------------
 
