@@ -78,7 +78,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     route_type = parse_route_type(params["route_type"])
     agency_id = parse_string(params["agency_id"])
-    active = params["active"]
+    # Status presentation follows the same effective predicate as the shared
+    # list/count filters (only explicit false is inactive), so an unknown value
+    # presents as All statuses instead of drifting from the query.
+    active = Gtfs.normalize_route_status_filter(params["active"])
     search = params["search"] || ""
     sort_by = parse_atom(params["sort_by"], :route_id)
     sort_dir = parse_atom(params["sort_dir"], :asc)
@@ -99,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     filter_form_data = %{
       "route_type" => params["route_type"] || "",
       "agency_id" => params["agency_id"] || "",
-      "active" => params["active"] || ""
+      "active" => active
     }
 
     socket =

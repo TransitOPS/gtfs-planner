@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Repo
@@ -897,5 +898,189 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
 
       assert has_element?(detail_view, "#route-workspace h1#route-title", "Slash Route")
     end
+  end
+
+  describe "RoutesLive route status filters" do
+    setup :shared_setup
+
+    # These cases exercise the ordinary public entrypoint (LiveView mount ->
+    # Gtfs.load_route_catalog/3 -> the concrete CatalogReadAdapter.Repo ->
+    # Gtfs.list_routes/3 and Gtfs.count_routes/3) with database fixtures, so
+    # the module's mock override is removed for each of them.
+    test "Active shows true and NULL rows, Inactive shows only explicit false, and counts match rows",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      Application.delete_env(:gtfs_planner, @adapter_key)
+      conn = log_in_user(conn, user, organization: organization)
+
+      route_fixture(organization.id, version.id, %{route_id: "STAT-TRUE", active: true})
+      route_fixture(organization.id, version.id, %{route_id: "STAT-NULL", active: nil})
+      route_fixture(organization.id, version.id, %{route_id: "STAT-FALSE", active: false})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?active=true")
+
+      assert has_element?(view, "a", "STAT-TRUE")
+      assert has_element?(view, "a", "STAT-NULL")
+      refute has_element?(view, "a", "STAT-FALSE")
+      assert status_row_count(view) == 2
+      assert has_element?(view, "div", "of 2 routes")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?active=false")
+
+      refute has_element?(view, "a", "STAT-TRUE")
+      refute has_element?(view, "a", "STAT-NULL")
+      assert has_element?(view, "a", "STAT-FALSE")
+      assert status_row_count(view) == 1
+      assert has_element?(view, "div", "of 1 routes")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert status_row_count(view) == 3
+      assert has_element?(view, "div", "of 3 routes")
+
+      # Filtering never backfills stored NULLs.
+      assert Gtfs.get_route_by_route_id(organization.id, version.id, "STAT-TRUE").active == true
+      assert Gtfs.get_route_by_route_id(organization.id, version.id, "STAT-NULL").active == nil
+      assert Gtfs.get_route_by_route_id(organization.id, version.id, "STAT-FALSE").active == false
+    end
+
+    test "search, mode and agency filters combine with the effective status predicate", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.delete_env(:gtfs_planner, @adapter_key)
+      conn = log_in_user(conn, user, organization: organization)
+
+      agency = agency_fixture(organization.id, version.id)
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "COMBO-ACTIVE",
+        route_short_name: "Combotest One",
+        route_type: 3,
+        agency_id: agency.agency_id,
+        active: true
+      })
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "COMBO-NULL",
+        route_short_name: "Combotest Two",
+        route_type: 3,
+        agency_id: agency.agency_id,
+        active: nil
+      })
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "COMBO-FALSE",
+        route_short_name: "Combotest Three",
+        route_type: 3,
+        agency_id: agency.agency_id,
+        active: false
+      })
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "COMBO-OTHER",
+        route_short_name: "Combotest Four",
+        route_type: 2,
+        active: nil
+      })
+
+      query = "route_type=3&agency_id=#{agency.agency_id}&search=combotest"
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?active=true&#{query}")
+
+      assert has_element?(view, "a", "COMBO-ACTIVE")
+      assert has_element?(view, "a", "COMBO-NULL")
+      refute has_element?(view, "a", "COMBO-FALSE")
+      refute has_element?(view, "a", "COMBO-OTHER")
+      assert status_row_count(view) == 2
+      assert has_element?(view, "div", "of 2 routes")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?active=false&#{query}")
+
+      assert has_element?(view, "a", "COMBO-FALSE")
+      refute has_element?(view, "a", "COMBO-ACTIVE")
+      refute has_element?(view, "a", "COMBO-NULL")
+      refute has_element?(view, "a", "COMBO-OTHER")
+      assert status_row_count(view) == 1
+      assert has_element?(view, "div", "of 1 routes")
+    end
+
+    test "pagination keeps the status predicate in the URL and stored nulls", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.delete_env(:gtfs_planner, @adapter_key)
+      conn = log_in_user(conn, user, organization: organization)
+
+      for idx <- 1..50 do
+        route_fixture(organization.id, version.id, %{
+          route_id: "PAGE#{String.pad_leading(Integer.to_string(idx), 3, "0")}",
+          active: true
+        })
+      end
+
+      route_fixture(organization.id, version.id, %{route_id: "ZZNULL", active: nil})
+      route_fixture(organization.id, version.id, %{route_id: "AAFALSE", active: false})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?active=true")
+
+      assert status_row_count(view) == 50
+      assert has_element?(view, "div", "of 51 routes")
+      refute has_element?(view, "a", "ZZNULL")
+
+      view
+      |> element("button[phx-click='paginate'][phx-value-page='2']")
+      |> render_click()
+
+      assert_patched(
+        view,
+        "/gtfs/#{version.id}/routes?active=true&page=2&sort_by=route_id&sort_dir=asc"
+      )
+
+      # The NULL route is the 51st Active row.
+      assert has_element?(view, "a", "ZZNULL")
+      refute has_element?(view, "a", "PAGE001")
+      refute has_element?(view, "a", "AAFALSE")
+      assert status_row_count(view) == 1
+      assert has_element?(view, "div", "of 51 routes")
+
+      assert Gtfs.get_route_by_route_id(organization.id, version.id, "ZZNULL").active == nil
+    end
+
+    test "unknown status values present as All statuses", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.delete_env(:gtfs_planner, @adapter_key)
+      conn = log_in_user(conn, user, organization: organization)
+
+      route_fixture(organization.id, version.id, %{route_id: "NORM-TRUE", active: true})
+      route_fixture(organization.id, version.id, %{route_id: "NORM-NULL", active: nil})
+      route_fixture(organization.id, version.id, %{route_id: "NORM-FALSE", active: false})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?active=bogus")
+
+      assert status_row_count(view) == 3
+      assert has_element?(view, "div", "of 3 routes")
+      assert has_element?(view, "option[selected]", "All statuses")
+    end
+  end
+
+  defp status_row_count(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("tbody#routes tr")
+    |> Enum.count()
   end
 end

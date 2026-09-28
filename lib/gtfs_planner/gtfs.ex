@@ -748,6 +748,28 @@ defmodule GtfsPlanner.Gtfs do
     do: StationJournal.refresh_pin_coordinates_for_stop_level(stop_level, image_w, image_h)
 
   @doc """
+  Normalizes a route status filter to its canonical URL presentation.
+
+  Only explicit `false` is inactive (R4/INV-4): `"true"` selects effectively
+  active routes (`active` true or `NULL`), `"false"` selects inactive routes,
+  and every other value means no status filter. `list_routes/3`,
+  `count_routes/3` and the routes list presentation share this mapping so the
+  status filters and their counts cannot disagree.
+
+  ## Examples
+
+      iex> normalize_route_status_filter("true")
+      "true"
+
+      iex> normalize_route_status_filter("other")
+      ""
+  """
+  @spec normalize_route_status_filter(term()) :: String.t()
+  def normalize_route_status_filter("true"), do: "true"
+  def normalize_route_status_filter("false"), do: "false"
+  def normalize_route_status_filter(_), do: ""
+
+  @doc """
   Returns the list of routes for an organization and GTFS version.
 
   Accepts optional filters, search, sort, and pagination via opts keyword list.
@@ -5021,16 +5043,16 @@ defmodule GtfsPlanner.Gtfs do
     where(query, [r], r.agency_id == ^agency_id)
   end
 
-  defp maybe_filter_active(query, nil), do: query
-  defp maybe_filter_active(query, "all"), do: query
-  defp maybe_filter_active(query, ""), do: query
-
-  defp maybe_filter_active(query, "true") do
-    where(query, [r], r.active == true)
-  end
-
-  defp maybe_filter_active(query, "false") do
-    where(query, [r], r.active == false)
+  # Shared list/count status predicate: only explicit false is inactive, so
+  # Active is `active IS DISTINCT FROM FALSE` (true or NULL) and Inactive is
+  # `active = false`. Both `list_routes/3` and `count_routes/3` funnel through
+  # here so filtered counts always match filtered rows.
+  defp maybe_filter_active(query, active) do
+    case normalize_route_status_filter(active) do
+      "true" -> where(query, [r], fragment("? IS DISTINCT FROM FALSE", r.active))
+      "false" -> where(query, [r], r.active == false)
+      "" -> query
+    end
   end
 
   defp maybe_filter_wheelchair(query, nil), do: query
