@@ -153,6 +153,52 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
+  describe "product field" do
+    test "create_organization/1 without product defaults to :planner" do
+      attrs = valid_organization_attributes()
+
+      assert {:ok, %Organization{} = organization} =
+               Organizations.create_organization(attrs)
+
+      assert organization.product == :planner
+    end
+
+    test "a row inserted with raw SQL without product reads back planner" do
+      id = Ecto.UUID.generate()
+      org_alias = "org-sql-#{System.unique_integer([:positive])}"
+
+      Repo.query!(
+        "INSERT INTO organizations (id, alias, name, inserted_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        [id, org_alias, "SQL Default Org"]
+      )
+
+      assert %Organization{product: :planner} = Organizations.get_organization!(id)
+    end
+
+    test "update_organization/2 stores :pathways and rejects unknown products" do
+      organization = organization_fixture()
+
+      assert {:ok, %Organization{} = updated} =
+               Organizations.update_organization(organization, %{product: "pathways"})
+
+      assert updated.product == :pathways
+
+      assert {:error, changeset} =
+               Organizations.update_organization(updated, %{product: "other"})
+
+      assert %{product: [_ | _]} = errors_on(changeset)
+    end
+
+    test "change_organization/2 with nil product is invalid" do
+      organization = organization_fixture()
+
+      changeset = Organizations.change_organization(organization, %{product: nil})
+
+      refute changeset.valid?
+      assert %{product: ["can't be blank"]} = errors_on(changeset)
+    end
+  end
+
   describe "delete_organization/1" do
     test "deletes the organization" do
       organization = organization_fixture()
@@ -169,7 +215,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       assert %Ecto.Changeset{} =
                changeset = Organizations.change_organization(%Organization{})
 
-      assert changeset.required == [:alias, :name]
+      assert changeset.required == [:alias, :name, :product]
     end
 
     test "allows changes to alias and name" do

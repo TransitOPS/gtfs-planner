@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Organizations.Organization do
           id: Ecto.UUID.t(),
           alias: String.t(),
           name: String.t(),
+          product: :planner | :pathways,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -16,6 +17,7 @@ defmodule GtfsPlanner.Organizations.Organization do
   schema "organizations" do
     field :alias, :string
     field :name, :string
+    field :product, Ecto.Enum, values: [:planner, :pathways], default: :planner
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -31,10 +33,10 @@ defmodule GtfsPlanner.Organizations.Organization do
   """
   def changeset(organization, attrs) do
     organization
-    |> cast(attrs, [:alias, :name])
+    |> cast(attrs, [:alias, :name, :product])
     |> trim_string_fields()
     |> normalize_alias()
-    |> validate_required([:alias, :name])
+    |> validate_required([:alias, :name, :product])
     |> validate_length(:alias, max: 255)
     |> validate_length(:name, max: 255)
     |> unique_constraint(:alias)
