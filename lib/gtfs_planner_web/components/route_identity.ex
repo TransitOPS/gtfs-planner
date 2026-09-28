@@ -50,38 +50,39 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
       case normalize_hex(bg) do
         {:ok, norm_bg} ->
           resolved_fg = resolve_foreground(norm_bg, fg)
-          {"background-color: ##{norm_bg}; color: ##{resolved_fg}", nil}
+
+          # A near-white route color (FFD200 reads ~1.2:1 on white) needs an edge,
+          # or the badge disappears into the page. Anything below the 3:1 WCAG
+          # 1.4.11 floor for component graphics gets a subtle ring.
+          edge =
+            if contrast_ratio(norm_bg, "FFFFFF") < 3.0,
+              do: " ring-1 ring-inset ring-subtle",
+              else: ""
+
+          {"background-color: ##{norm_bg}; color: ##{resolved_fg}", "shrink-0" <> edge}
 
         :error ->
-          {nil, "bg-base-300 text-base-content"}
+          # Unvalidated feed values never reach the style attribute; a bad or
+          # missing route_color falls back to a neutral surface, not to white.
+          {nil, "bg-canvas text-strong ring-1 ring-inset ring-subtle shrink-0"}
       end
 
     label = badge_text(assigns.route)
 
     assigns =
       assigns
-      |> assign(:style, style)
+      |> assign(:style_attrs, if(style, do: [style: style], else: []))
       |> assign(:badge_class, badge_class)
       |> assign(:label, label)
 
     ~H"""
     <span
-      :if={@style}
       class={[
-        "inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium",
-        @class
-      ]}
-      style={@style}
-    >
-      {@label}
-    </span>
-    <span
-      :if={!@style}
-      class={[
-        "inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium",
+        "inline-flex items-center justify-center rounded-badge px-2 py-0.5 text-xs font-bold leading-none tabular-nums",
         @badge_class,
         @class
       ]}
+      {@style_attrs}
     >
       {@label}
     </span>

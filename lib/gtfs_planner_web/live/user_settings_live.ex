@@ -16,7 +16,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
     >
       <div id="account-settings" phx-hook=".SettingsFormFocus" class="space-y-12">
         <.header>
-          <span id="account-settings-title">Account settings</span>
+          <span id="account-settings-title">Profile settings</span>
           <:subtitle>Manage your email address and password.</:subtitle>
         </.header>
 
@@ -173,7 +173,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
     socket =
       socket
-      |> assign(:page_title, "Account settings")
+      |> assign(:page_title, "Profile settings")
       |> assign(:user_roles, user_roles)
       |> assign(:email_form, to_form(Accounts.change_user_email(user)))
       |> assign(:password_form, to_form(Accounts.change_user_password(user)))
