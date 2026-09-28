@@ -17,16 +17,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   The whole loaded day lives in the server-only `:day` assign, which `render/1`
   never reads: the render assigns (`:day_types`, `:day_type`, `:counts`,
-  `:peak`, `:bins`, `:axis` and the rest) are derived from it, so a route filter,
-  a page change or a drawer never re-reads the trips (CR-6). A load runs when
-  the connected page has no day for the requested key; every other URL change
-  only re-renders. An unknown `day` key keeps its recovery state and applies no
-  default (INV-6), and a failed load keeps the last loaded day on screen.
+  `:peak`, `:bins`, `:axis`, the trip's in-seat records and the rest) are derived
+  from it, so a route filter, a page change or a drawer never re-reads the trips
+  (CR-6). A load runs when the connected page has no day for the requested key;
+  every other URL change only re-renders. An unknown `day` key keeps its recovery
+  state and applies no default (INV-6), and a failed load keeps the last loaded
+  day on screen.
+
+  `trip=` is a deep link to one trip's read-only drawer: `handle_params/3`
+  resolves it against the loaded day, opens `#trip-drawer` on the page that holds
+  the trip (overriding a requested `page`/`pool_page`), and shows
+  `#blocks-trip-elsewhere` with the trip's own day types or the unavailable
+  sentence when the loaded day type or the version does not hold it (AC-29).
   """
 
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
@@ -81,7 +89,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_params(params, _uri, socket) do
     state = parse_state(params, socket.assigns.current_gtfs_version)
 
-    {:noreply, socket |> assign(:state, state) |> ensure_day_loaded()}
+    {:noreply,
+     socket
+     |> assign(:state, state)
+     |> ensure_day_loaded()
+     |> resolve_trip()}
   end
 
   @impl true
@@ -168,8 +180,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # Mirrors the catch-all on `set_panel` / `set_view` / `set_scale`.
   def handle_event("open_drawer", _params, socket), do: {:noreply, socket}
 
+  # The trip drawer is part of the URL (`trip=`), so closing it drops the
+  # parameter as well as the panel-only drawer's state; the other drawers keep the
+  # URL they had. Step 24 shares the rule for the block drawer.
   def handle_event("close_drawer", _params, socket) do
-    {:noreply, assign(socket, :open_drawer, nil)}
+    socket = assign(socket, :open_drawer, nil)
+
+    if socket.assigns.state.trip do
+      patch(socket, %{trip: nil})
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("open_trip", %{"trip" => trip_id}, socket) do
@@ -181,7 +202,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   def handle_event("retry", _params, socket) do
-    {:noreply, load_day(socket)}
+    {:noreply, socket |> load_day() |> resolve_trip()}
   end
 
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
@@ -421,6 +442,108 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # and the pool stay in step on a day, filter or page change.
   defp assign_page_rows(socket), do: socket |> assign_timeline() |> assign_pool()
 
+  # A `trip` deep link resolves to that trip's drawer on the page that holds it
+  # (AC-29). The trip's day types come from `Blocking.trip_day_types/3`, the one
+  # derivation the day load also uses, so the drawer's all-dates scope and an
+  # “another day type” notice agree with the loaded day (INV-6, CR-2). The page
+  # holding the trip overrides the requested `page`/`pool_page` (Pages), which is
+  # why the resolved page is written back before either streamed page is sliced.
+  #
+  # Resolution needs the loaded day: the disconnected first paint keeps its
+  # skeleton, and an unavailable or unknown day keeps its own state with no drawer.
+  defp resolve_trip(socket) do
+    case {connected?(socket), socket.assigns.day, socket.assigns.state.trip} do
+      {true, day, trip_id} when not is_nil(day) and not is_nil(trip_id) ->
+        resolve_trip_id(socket, day, trip_id)
+
+      _other ->
+        assign(socket, :trip_view, nil)
+    end
+  end
+
+  defp resolve_trip_id(socket, day, trip_id) do
+    case find_day_trip(day, trip_id) do
+      nil ->
+        resolve_absent_trip(socket, trip_id)
+
+      trip ->
+        socket
+        |> assign(:trip_view, {:trip, trip, trip_day_types(socket, trip_id)})
+        |> override_trip_page(trip)
+    end
+  end
+
+  # A trip the day type does not hold still names its own day types; a trip the
+  # version does not hold is the unavailable notice.
+  defp resolve_absent_trip(socket, trip_id) do
+    case trip_day_types_result(socket, trip_id) do
+      {:ok, day_types} -> assign(socket, :trip_view, {:elsewhere, trip_id, day_types})
+      :error -> assign(socket, :trip_view, {:unknown, trip_id})
+    end
+  end
+
+  defp trip_day_types(socket, trip_id) do
+    case trip_day_types_result(socket, trip_id) do
+      {:ok, day_types} -> day_types
+      :error -> []
+    end
+  end
+
+  defp trip_day_types_result(socket, trip_id) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    case Blocking.trip_day_types(organization.id, version.id, trip_id) do
+      {:ok, %{day_types: day_types}} -> {:ok, day_types}
+      {:error, _reason} -> :error
+    end
+  end
+
+  # Every trip of the day type is in exactly one block or in the pool, so the two
+  # lists hold the trip a deep link can name.
+  defp find_day_trip(day, trip_id) do
+    (Enum.flat_map(day.blocks, & &1.trips) ++ day.pool)
+    |> Enum.find(&(&1.trip_id == trip_id))
+  end
+
+  # The page holding the trip: its block's own page for a blocked trip, the pool's
+  # page for an unassigned one. The same visible order the page slices decides it,
+  # so the resolved page is the one that renders the trip; a filter that hides it
+  # leaves the requested page in place.
+  defp override_trip_page(socket, trip) do
+    %{state: state, day: day} = socket.assigns
+
+    state =
+      if is_nil(trip.block_id) do
+        override_page(state, :pool_page, visible_pool(day.pool, state.route), & &1.id, trip.id)
+      else
+        block_ids = Enum.map(visible_blocks(day.blocks, state), & &1.summary.block_id)
+        override_page(state, :page, block_ids, & &1, trip.block_id)
+      end
+
+    socket
+    |> assign(:state, state)
+    |> assign_page_rows()
+  end
+
+  defp override_page(state, key, values, identity, wanted) do
+    case Enum.find_index(values, &(identity.(&1) == wanted)) do
+      nil -> state
+      index -> Map.put(state, key, div(index, @page_size) + 1)
+    end
+  end
+
+  # The trip's calendar label: the day type with the fewest services containing
+  # the trip's service names the calendar exactly when that day type holds one
+  # service. The day load carries no per-service name, so this derives the label
+  # from the same day types every other surface prints.
+  defp calendar_label([]), do: "—"
+
+  defp calendar_label(day_types) do
+    day_types
+    |> Enum.min_by(&length(&1.service_ids))
+    |> Map.fetch!(:label)
+  end
+
   defp effective_page(page, visible_count) do
     min(page, max(div(visible_count + @page_size - 1, @page_size), 1))
   end
@@ -472,6 +595,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       axis: day.axis,
       routes: day.routes,
       findings: day.findings,
+      in_seat: day.in_seat,
       mixed_timezones?: day.mixed_timezones?,
       trip_labels: trip_labels(day),
       findings_by_trip: findings_by_trip(day.findings),
@@ -490,6 +614,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       axis: nil,
       routes: %{},
       findings: [],
+      in_seat: %{},
+      trip_view: nil,
       mixed_timezones?: false,
       trip_labels: %{},
       findings_by_trip: %{},
@@ -628,6 +754,34 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   bins={@bins}
                   axis={@axis}
                 />
+
+                <%= case @trip_view do %>
+                  <% {:trip, trip, day_types} -> %>
+                    <BlocksComponents.trip_drawer
+                      open={true}
+                      trip={trip}
+                      routes={@routes}
+                      version_id={@state.version_id}
+                      calendar_label={calendar_label(day_types)}
+                      day_types={day_types}
+                      findings={Map.get(@findings_by_trip, trip.id, [])}
+                      in_seat={Map.get(@in_seat, trip.id, [])}
+                    />
+                  <% {:elsewhere, trip_id, day_types} -> %>
+                    <BlocksComponents.trip_elsewhere
+                      open={true}
+                      trip_id={trip_id}
+                      day_types={day_types}
+                      version_id={@state.version_id}
+                    />
+                  <% {:unknown, trip_id} -> %>
+                    <BlocksComponents.trip_elsewhere
+                      open={true}
+                      trip_id={trip_id}
+                      version_id={@state.version_id}
+                    />
+                  <% _other -> %>
+                <% end %>
               <% true -> %>
             <% end %>
           </div>

@@ -21,6 +21,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
@@ -444,6 +445,212 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         usable timing are also left out, and this is not a fleet requirement.
       </p>
     </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the read-only trip drawer: the trip's identity, its stored times and
+  block, every day type it runs in with the all-dates scope sentence, its own
+  findings and every type 4/5 record naming it.
+
+  The day-type links patch `day` and `trip`, so one link follows the trip to
+  another day type's page with the drawer open again (AC-29). The record list is
+  read-only and holds every record that names the trip, including one whose pair
+  has no hosting gap (AC-25, INV-3). A frequency trip carries the repeat text and
+  an unplottable one its missing-time warning; neither can be plotted.
+  """
+  attr :open, :boolean, required: true
+  attr :trip, :map, required: true
+  attr :routes, :map, required: true
+  attr :version_id, :string, required: true
+  attr :calendar_label, :string, required: true
+  attr :day_types, :list, required: true
+  attr :findings, :list, required: true
+  attr :in_seat, :list, required: true
+
+  def trip_drawer(assigns) do
+    assigns =
+      assign(assigns, :total_dates, Enum.sum(Enum.map(assigns.day_types, & &1.date_count)))
+
+    ~H"""
+    <.drawer
+      id="trip-drawer"
+      open={@open}
+      title={"Trip " <> @trip.trip_id}
+      return_focus_id={"trip-bar-" <> dom_token(@trip.trip_id)}
+    >
+      <div class="flex flex-wrap items-center gap-2">
+        <.route_badge_for route_id={@trip.route_id} routes={@routes} />
+        <strong>{route_name(@routes, @trip.route_id)}</strong>
+        <.status_badge :if={@trip.frequency?} status="info" label="Frequency service" />
+      </div>
+
+      <dl class="mt-4 divide-y divide-base-300 border-y border-base-300 text-sm">
+        <.trip_field label="Headsign">{blank_dash(@trip.trip_headsign)}</.trip_field>
+        <.trip_field label="Pattern">{blank_dash(@trip.route_pattern_id)}</.trip_field>
+        <.trip_field label="Calendar">{@calendar_label}</.trip_field>
+        <.trip_field label="Departure">
+          <strong>{clock(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
+        </.trip_field>
+        <.trip_field label="Arrival">
+          <strong>{clock(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
+        </.trip_field>
+        <.trip_field label="GTFS time">
+          {gtfs_time(@trip.first_departure)} → {gtfs_time(@trip.last_arrival)}
+        </.trip_field>
+        <.trip_field label="Block ID">{@trip.block_id || "Unassigned"}</.trip_field>
+      </dl>
+
+      <.callout
+        :if={@trip.frequency?}
+        id="trip-frequency"
+        kind="info"
+        title={frequency_text(@trip)}
+      />
+
+      <.callout
+        :if={not @trip.plottable?}
+        id="trip-unplottable"
+        kind="warning"
+        title="An endpoint time is missing."
+      >
+        This trip remains in the data and cannot be plotted or assigned until its timing
+        is restored.
+      </.callout>
+
+      <section id="trip-day-types" class="mt-6 border-t border-base-300 pt-4">
+        <h3 class="text-sm font-semibold">Runs on {@total_dates} dates in:</h3>
+        <div class="mt-2 space-y-1">
+          <.link
+            :for={day_type <- @day_types}
+            patch={day_type_trip_path(@version_id, day_type.key, @trip.trip_id)}
+            data-role="trip-day-type"
+            data-day={day_type.key}
+            class="link link-primary block min-h-11 content-center"
+          >
+            {day_type_option_label(day_type)}
+          </.link>
+        </div>
+        <p :if={@day_types == []} class="mt-2 text-sm text-base-content/70">
+          This trip has no active service dates.
+        </p>
+        <p class="mt-2 text-sm text-base-content/70">
+          Changes apply to all {@total_dates} dates this trip runs.
+        </p>
+      </section>
+
+      <section :if={@findings != []} class="mt-6 border-t border-base-300 pt-4">
+        <h3 class="text-sm font-semibold">Checks</h3>
+        <p
+          :for={finding <- @findings}
+          data-role="trip-finding"
+          data-code={finding.code}
+          class="mt-2 flex flex-wrap items-center gap-2 text-sm"
+        >
+          <.status_badge
+            status={severity_status(finding.severity)}
+            label={code_label(finding.code)}
+          />
+          <span>{finding_detail(finding)}</span>
+        </p>
+      </section>
+
+      <section id="trip-transfers" class="mt-6 border-t border-base-300 pt-4">
+        <h3 class="text-sm font-semibold">Transfer records · {length(@in_seat)}</h3>
+        <div class="mt-2 space-y-3">
+          <div
+            :for={entry <- @in_seat}
+            data-role="trip-transfer"
+            data-transfer-type={entry.row.transfer_type}
+            class="border-l-4 border-base-300 pl-3"
+          >
+            <div class="flex flex-wrap items-center gap-2">
+              <strong>{transfer_type_label(entry.row.transfer_type)}</strong>
+              <.status_badge
+                status={transfer_state_status(entry.state)}
+                label={transfer_state_label(entry.state)}
+              />
+            </div>
+            <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
+            <p data-role="trip-transfer-state" class="text-sm text-base-content/70">
+              {in_seat_state_text(entry.state)}
+            </p>
+          </div>
+        </div>
+        <p :if={@in_seat == []} class="mt-2 text-sm text-base-content/70">
+          No type 4/5 records reference this trip.
+        </p>
+      </section>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the notice a `trip=` deep link shows when the trip is not in the loaded
+  day type: one link per day type the trip runs in, or the unavailable sentence
+  when the version holds no such trip (AC-29).
+  """
+  attr :open, :boolean, required: true
+  attr :trip_id, :string, required: true
+  attr :day_types, :list, default: nil
+  attr :version_id, :string, required: true
+
+  def trip_elsewhere(%{day_types: nil} = assigns) do
+    ~H"""
+    <.drawer
+      id="trip-elsewhere"
+      open={@open}
+      title={"Trip " <> @trip_id <> " isn't in this version"}
+    >
+      <div id="blocks-trip-elsewhere">
+        <p>Trip {@trip_id} isn't in this version.</p>
+      </div>
+    </.drawer>
+    """
+  end
+
+  def trip_elsewhere(%{day_types: []} = assigns) do
+    ~H"""
+    <.drawer id="trip-elsewhere" open={@open} title="Trip has no active service dates">
+      <div id="blocks-trip-elsewhere">
+        <p>Trip {@trip_id} has no active service dates in this version.</p>
+      </div>
+    </.drawer>
+    """
+  end
+
+  def trip_elsewhere(assigns) do
+    ~H"""
+    <.drawer id="trip-elsewhere" open={@open} title="Trip runs on another day type">
+      <div id="blocks-trip-elsewhere">
+        <p>Trip {@trip_id} is not in this day type.</p>
+        <div class="mt-3 space-y-1">
+          <.link
+            :for={day_type <- @day_types}
+            patch={day_type_trip_path(@version_id, day_type.key, @trip_id)}
+            data-role="trip-day-type"
+            data-day={day_type.key}
+            class="link link-primary block min-h-11 content-center"
+          >
+            {day_type_option_label(day_type)}
+          </.link>
+        </div>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # One definition-list row of the trip drawer, so every field shares the same
+  # two-column shape and a long value wraps inside its own column.
+  attr :label, :string, required: true
+  slot :inner_block, required: true
+
+  defp trip_field(assigns) do
+    ~H"""
+    <div class="grid grid-cols-[minmax(6rem,auto)_1fr] gap-x-4 py-2">
+      <dt class="text-base-content/70">{@label}</dt>
+      <dd class="min-w-0">{render_slot(@inner_block)}</dd>
+    </div>
     """
   end
 
@@ -1068,6 +1275,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~p"/gtfs/#{version_id}/routes/#{trip.route_id}/schedules?#{[service_id: trip.service_id]}"
   end
 
+  # A day-type link's URL state: the two parameters the page reads, so following
+  # it opens the trip's drawer again in the day type it names.
+  defp day_type_trip_path(version_id, day_key, trip_id) do
+    "/gtfs/#{version_id}/blocks?" <> URI.encode_query([{"day", day_key}, {"trip", trip_id}])
+  end
+
   @doc """
   Renders the paged timeline: the sticky sortable header, the whole-day axis with
   a tick every two hours, and one `block_row/1` per streamed block.
@@ -1506,6 +1719,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp in_seat_reason(reason) when is_atom(reason),
     do: "Can't be confirmed in this view · #{reason}"
 
+  # The trip drawer's record list: every state's copy from the page's vocabulary,
+  # with the match that has no warning and the two severities the badge tints.
+  defp in_seat_state_text(:matches), do: "Matches the block on all shared dates"
+  defp in_seat_state_text({_state, reason}), do: in_seat_reason(reason)
+
+  defp transfer_type_label(4), do: "Riders stay on board"
+  defp transfer_type_label(_type), do: "Riders must get off and board again"
+
+  defp transfer_state_status(:matches), do: "completed"
+  defp transfer_state_status({:stale, _reason}), do: "warning"
+  defp transfer_state_status({:unconfirmed, _reason}), do: "info"
+
+  defp transfer_state_label(:matches), do: "Matches block"
+  defp transfer_state_label({:stale, _reason}), do: "Needs review"
+  defp transfer_state_label({:unconfirmed, _reason}), do: "Can't confirm"
+
+  defp frequency_text(%{headway_secs: secs}) do
+    "Repeats every #{div(secs, 60)} min; individual vehicle work can't be checked here. " <>
+      "An imported block can be removed."
+  end
+
   defp minutes(secs) when is_integer(secs), do: "#{div(secs, 60)} min"
 
   # ── Timeline helpers ──
@@ -1692,6 +1926,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp stop_name(%{name: name}) when is_binary(name) and name != "", do: name
   defp stop_name(%{stop_id: stop_id}) when is_binary(stop_id), do: stop_id
   defp stop_name(_stop), do: "unknown stop"
+
+  defp blank_dash(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> "—"
+      _value -> value
+    end
+  end
+
+  defp blank_dash(_value), do: "—"
+
+  # The stored GTFS clock of a parsed endpoint; a missing time has none.
+  defp gtfs_time(nil), do: "—"
+  defp gtfs_time(secs), do: GtfsTime.format(secs)
 
   defp gap_title(%{handoff: {:moves, _}} = gap),
     do: "#{minutes(gap.gap_secs)} gap · the vehicle moves empty"
