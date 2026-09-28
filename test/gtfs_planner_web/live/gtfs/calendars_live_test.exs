@@ -282,6 +282,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
         service_description: "Alpha weekdays"
       })
 
+      # Today's own service is removed, so this calendar contributes its period
+      # without also claiming to run today whatever weekday "today" happens to be.
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "WEEKD",
+        date: today,
+        exception_type: 2
+      })
+
       # Beta: every-day weekly service with today's own service removed, so its
       # period covers today while today is not one of its active dates.
       calendar_fixture(organization.id, version.id, %{
