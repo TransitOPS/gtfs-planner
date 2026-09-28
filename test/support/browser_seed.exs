@@ -24,6 +24,7 @@ alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.FareAttribute
 alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
@@ -2635,6 +2636,55 @@ case Accounts.register_first_admin(%{
     {:ok, no_agency_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser No Agency Version"})
 
+    # The delete flow needs one version where an agency with routes, the agency
+    # that receives them and an agency a fare attribute still names all exist at
+    # once (settings_agencies_feed.spec.js; EV-25). "Browser Alpha" holds the two
+    # routes that move, "Browser Beta" receives them, and "Browser Gamma" has no
+    # routes but is named by F-BROWSER, which the deletion has to refuse. The fare
+    # attribute has no editor in this package, so it is inserted directly: that
+    # supplies the reference the review reads, not an audited editor save.
+    {:ok, agency_delete_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Agency Delete Version"})
+
+    for {agency_id, name, host, route_count} <- [
+          {"ALPHA", "Browser Alpha", "alpha.example", 2},
+          {"BETA", "Browser Beta", "beta.example", 1},
+          {"GAMMA", "Browser Gamma", "gamma.example", 0}
+        ] do
+      {:ok, _agency} =
+        Gtfs.create_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: agency_delete_version.id,
+          agency_id: agency_id,
+          agency_name: name,
+          agency_url: "https://#{host}",
+          agency_timezone: "America/New_York"
+        })
+
+      for index <- 1..route_count//1 do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: agency_delete_version.id,
+            agency_id: agency_id,
+            route_id: "#{agency_id}_#{index}",
+            route_short_name: "#{index}",
+            route_long_name: "#{name} route #{index}",
+            route_type: 3
+          })
+      end
+    end
+
+    Repo.insert!(%FareAttribute{
+      organization_id: org.id,
+      gtfs_version_id: agency_delete_version.id,
+      fare_id: "F-BROWSER",
+      price: Decimal.new("2.50"),
+      currency_type: "USD",
+      payment_method: 0,
+      agency_id: "GAMMA"
+    })
+
     agencies_default_before
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
     |> Repo.update!()
@@ -2643,7 +2693,9 @@ case Accounts.register_first_admin(%{
       "Browser seed: agencies version #{agencies_version.id} (NCT 5, HBR 2, RCT 0 routes, " <>
         "America/New_York), mixed timezone version #{mixed_timezone_version.id} " <>
         "(America/New_York and America/Chicago), no-agency version #{no_agency_version.id} " <>
-        "(no agencies, no routes), default kept as #{agencies_default_before.name}"
+        "(no agencies, no routes), agency delete version #{agency_delete_version.id} " <>
+        "(ALPHA 2 routes, BETA 1 route, GAMMA 0 routes with fare F-BROWSER), " <>
+        "default kept as #{agencies_default_before.name}"
     )
 
   {:error, changeset} ->

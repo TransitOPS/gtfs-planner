@@ -57,6 +57,16 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   from another version — flashes "This agency no longer exists." and opens
   nothing (AC-28).
 
+  Deleting an agency is the same drawer's third route. The edit footer's Delete
+  agency action switches it to the prototype's choose → review → apply steps: the
+  editor names the agency that receives the routes, reviews every route that will
+  move with the fingerprint that binds the command held in the socket, and
+  applies it through `FeedSettings.delete_agency/4` (INV-3). A fare attribute or
+  attribution that names the agency blocks the deletion instead and is listed by
+  ID, the version's last agency cannot be deleted at all, and a review the version
+  has moved past shows the stale notice with Refresh review and writes nothing
+  (AC-19, AC-20, AC-21, AC-22).
+
   Access follows the other Settings pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
   guard itself because a session alone grants no GTFS access. Version switching
@@ -92,6 +102,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # One sentence for both ways an edit can lose its row — deleted since the list
   # was read, or a UUID from another organization or version (AC-28).
   @agency_missing_error "This agency no longer exists."
+  # The deletion's receiving agency is required whenever the agency has routes,
+  # and the refusal belongs beside the field that made it (AC-20).
+  @target_required_error "Choose the agency that will receive these routes."
+  @invalid_target_error "Choose an agency that is still in this version."
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -118,6 +132,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
      |> assign(:agency_conflict_reloaded?, false)
      |> assign(:agency_dirty?, false)
      |> assign(:agency_confirm_discard?, false)
+     |> assign(:discard_action, nil)
+     |> assign(:agency_delete, nil)
+     |> assign(:agency_delete_form, nil)
+     |> assign(:agency_delete_review, nil)
+     |> assign(:delete_route_count, 0)
+     |> assign(:delete_target_options, [])
      |> assign(:return_focus_id, nil)
      |> stream(:agencies, [])}
   end
@@ -292,12 +312,88 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   @impl true
   def handle_event("cancel_discard_agency", _params, socket) do
-    {:noreply, assign(socket, :agency_confirm_discard?, false)}
+    {:noreply, socket |> assign(:agency_confirm_discard?, false) |> assign(:discard_action, nil)}
   end
 
   @impl true
   def handle_event("confirm_discard_agency", _params, socket) do
-    {:noreply, close_agency(socket)}
+    {:noreply, confirm_discard(socket)}
+  end
+
+  # The edit footer's Delete agency action and the review step's Back both land
+  # here. A changed draft is asked about first, because the deletion reviews the
+  # stored agency and the entries would be lost on either path (AC-6); from the
+  # review step the same event returns to the receiving-agency choice with the
+  # choice the editor already made still selected.
+  @impl true
+  def handle_event("start_delete", _params, socket) do
+    cond do
+      socket.assigns.agency_dirty? ->
+        {:noreply,
+         socket |> assign(:discard_action, :delete) |> assign(:agency_confirm_discard?, true)}
+
+      socket.assigns.agency_delete in [:delete_review, :delete_stale] ->
+        {:noreply, assign(socket, :agency_delete, :delete_choose)}
+
+      true ->
+        {:noreply, open_delete_drawer(socket)}
+    end
+  end
+
+  # The review is the context's own: it reads what would move, what blocks the
+  # deletion and the fingerprint that binds this command, and the drawer shows one
+  # of three states from that result (AC-20, AC-21, INV-3). An agency with no
+  # routes renders no field at all, so the form's payload is empty and the missing
+  # receiving agency is the same command either way.
+  @impl true
+  def handle_event(
+        "review_delete",
+        params,
+        %{assigns: %{agency_delete: :delete_choose}} = socket
+      ),
+      do:
+        {:noreply, review_agency_deletion(socket, chosen_target(params["agency_delete"] || %{}))}
+
+  # A review with no deletion step open is not a state the UI can submit.
+  def handle_event("review_delete", _params, socket), do: {:noreply, socket}
+
+  # Refresh review re-runs the review, after the context refused to apply one,
+  # with the same receiving agency: the editor reviews the version as it is now
+  # rather than the one they reviewed (AC-22).
+  @impl true
+  def handle_event(
+        "refresh_delete_review",
+        _params,
+        %{assigns: %{agency_delete_review: nil}} = socket
+      ),
+      do: {:noreply, socket}
+
+  @impl true
+  def handle_event("refresh_delete_review", _params, socket) do
+    review = socket.assigns.agency_delete_review
+
+    {:noreply, review_agency_deletion(socket, review.target && review.target.id)}
+  end
+
+  # Apply hands the reviewed fingerprint back unchanged: the context re-reads the
+  # version under its write lock and refuses with `:stale_review` if anything the
+  # review observed has moved, so a stale command moves and deletes nothing
+  # (AC-22, INV-3).
+  @impl true
+  def handle_event(
+        "apply_delete",
+        _params,
+        %{assigns: %{agency_delete: :delete_review}} = socket
+      ),
+      do: {:noreply, apply_agency_deletion(socket)}
+
+  def handle_event("apply_delete", _params, socket), do: {:noreply, socket}
+
+  # "Back to agency" returns to the form the drawer opened with, so the blocked
+  # state has a way out that is not the close button (AC-21).
+  @impl true
+  def handle_event("back_to_agency", _params, socket) do
+    {:noreply, assign(socket, :agency_delete, nil)}
   end
 
   @impl true
@@ -598,6 +694,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         form={@agency_form}
         agency={@agency_baseline}
         first_agency?={@health.agency_count == 0}
+        last_agency?={@health.agency_count == 1}
+        delete_mode={@agency_delete}
+        delete_form={@agency_delete_form}
+        delete_review={@agency_delete_review}
+        delete_route_count={@delete_route_count}
+        delete_target_options={@delete_target_options}
         zone={zone_name(@health.zone)}
         zone_names={@zone_names}
         conflict?={@agency_conflict?}
@@ -870,10 +972,21 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # note because a second zone is what the timezone flow exists to prevent
   # (R2, AC-12, AC-15). The edit mode adds the prototype's identity box above the
   # fields and names the stored row in the title.
+  #
+  # The edit footer also carries the deletion's first action, and the same drawer
+  # then shows one of the deletion's steps in place of the form: choosing the
+  # receiving agency, reviewing what moves, what blocks the deletion, or the stale
+  # notice after the context refused an apply (AC-19, AC-20, AC-21, AC-22).
   attr :mode, :any, required: true
   attr :form, :any, required: true
   attr :agency, :any, default: nil
   attr :first_agency?, :boolean, required: true
+  attr :last_agency?, :boolean, required: true
+  attr :delete_mode, :any, required: true
+  attr :delete_form, :any, required: true
+  attr :delete_review, :any, required: true
+  attr :delete_route_count, :integer, required: true
+  attr :delete_target_options, :list, required: true
   attr :zone, :string, default: nil
   attr :zone_names, :list, required: true
   attr :conflict?, :boolean, required: true
@@ -889,7 +1002,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       id="agency-drawer"
       open={@mode != nil}
       on_close="close_agency_drawer"
-      title={agency_drawer_title(@mode, @agency)}
+      title={agency_drawer_title(@mode, @agency, @delete_mode)}
       return_focus_id={@return_focus_id}
     >
       <:header_actions>
@@ -909,73 +1022,321 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           {scope_line(@version, @organization)}
         </p>
 
-        <p class="mt-2 text-sm text-base-content/70">
-          {agency_drawer_intro(@mode)}
-        </p>
+        <%= if @delete_mode do %>
+          <p :if={@delete_mode == :delete_choose} class="mt-2 text-sm text-base-content/70">
+            {delete_choose_intro(@delete_route_count)}
+          </p>
 
-        <%!--
-          The prototype's identity box. The GTFS agency ID is derived from the
-          name and preserved across imports and exports, so the edit form shows
-          it as a fact and submits no field for it (R1).
-        --%>
-        <p
-          :if={@agency}
-          id="agency-identity"
-          class="mt-4 rounded-box bg-base-200 px-4 py-3 text-xs text-base-content/70"
-        >
-          Agency ID <strong class="text-base-content">{@agency.agency_id}</strong>
-          · Preserved in imports and exports
-        </p>
+          <.agency_delete_panel
+            delete={@delete_mode}
+            form={@delete_form}
+            review={@delete_review}
+            agency={@agency}
+            route_count={@delete_route_count}
+            target_options={@delete_target_options}
+          />
+        <% else %>
+          <p class="mt-2 text-sm text-base-content/70">
+            {agency_drawer_intro(@mode)}
+          </p>
 
-        <.form
-          for={@form}
-          id="agency-form"
-          novalidate
-          phx-change="validate_agency"
-          phx-submit="save_agency"
+          <%!--
+            The prototype's identity box. The GTFS agency ID is derived from the
+            name and preserved across imports and exports, so the edit form shows
+            it as a fact and submits no field for it (R1).
+          --%>
+          <p
+            :if={@agency}
+            id="agency-identity"
+            class="mt-4 rounded-box bg-base-200 px-4 py-3 text-xs text-base-content/70"
+          >
+            Agency ID <strong class="text-base-content">{@agency.agency_id}</strong>
+            · Preserved in imports and exports
+          </p>
+
+          <.form
+            for={@form}
+            id="agency-form"
+            novalidate
+            phx-change="validate_agency"
+            phx-submit="save_agency"
+            class="mt-4"
+          >
+            <.callout
+              :if={save_failed?(@form)}
+              id="agency-form-error"
+              kind="error"
+              title={save_failed_title(@mode)}
+              tabindex="-1"
+              class="mb-4"
+            />
+
+            <.conflict_callout :if={@conflict?} reloaded?={@conflict_reloaded?} />
+
+            <.agency_form_fields
+              form={@form}
+              first_agency?={@first_agency?}
+              zone={@zone}
+              zone_names={@zone_names}
+            />
+
+            <div class="mt-8 border-t border-base-300 pt-5">
+              <%!-- A disabled action still names why it is unavailable, and the
+              reason sits with the control that cannot be used (AC-19). --%>
+              <p
+                :if={@last_agency?}
+                id="agency-delete-reason"
+                class="mb-3 text-xs text-base-content/70"
+              >
+                This is the last agency in the version and can't be deleted.
+              </p>
+
+              <div class="flex flex-wrap items-center justify-end gap-3">
+                <.button
+                  :if={@mode == :edit}
+                  id="agency-delete"
+                  type="button"
+                  variant="quiet"
+                  class="mr-auto min-h-11 text-error disabled:pointer-events-none disabled:opacity-60"
+                  disabled={@last_agency?}
+                  phx-click="start_delete"
+                >
+                  Delete agency
+                </.button>
+
+                <.button
+                  id="agency-cancel"
+                  type="button"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="close_agency_drawer"
+                >
+                  Cancel
+                </.button>
+
+                <.button
+                  id="agency-save"
+                  type="submit"
+                  class="min-h-11"
+                  phx-disable-with={agency_pending_label(@mode)}
+                >
+                  {agency_submit_label(@mode)}
+                </.button>
+              </div>
+            </div>
+          </.form>
+        <% end %>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # The deletion's steps in the prototype's order: name the receiving agency,
+  # then review exactly what moves, and apply the command the review bound. The
+  # blocked state replaces the review while a fare attribute or an attribution
+  # names the agency, and the stale state replaces it when the version moved after
+  # the review — both keep the next action that can advance the editor on screen
+  # (R7, AC-20, AC-21, AC-22).
+  attr :delete, :any, required: true
+  attr :form, :any, required: true
+  attr :review, :any, required: true
+  attr :agency, :any, required: true
+  attr :route_count, :integer, required: true
+  attr :target_options, :list, required: true
+
+  defp agency_delete_panel(assigns) do
+    ~H"""
+    <%= if @delete == :delete_blocked do %>
+      <div id="agency-delete-blocked">
+        <.callout
+          id="agency-delete-blocked-callout"
+          kind="warning"
+          title={"#{@agency.agency_name} cannot be deleted yet"}
           class="mt-4"
         >
+          <p>{blocked_body(@review.blockers)}</p>
+        </.callout>
+
+        <ul id="agency-delete-blockers" class="mt-5 divide-y divide-base-200 border-y border-base-300">
+          <li
+            :for={fare_id <- @review.blockers.fare_ids}
+            class="flex items-start justify-between gap-4 py-3"
+          >
+            <span class="text-base-content/70">Fare attribute</span>
+            <span class="font-semibold">{fare_id}</span>
+          </li>
+          <li
+            :for={attribution_id <- @review.blockers.attribution_ids}
+            class="flex items-start justify-between gap-4 py-3"
+          >
+            <span class="text-base-content/70">Attribution</span>
+            <span class="font-semibold">{attribution_id}</span>
+          </li>
+        </ul>
+
+        <p class="mt-5 text-sm text-base-content/70">
+          Route ownership will stay unchanged until every dependency can be moved safely.
+        </p>
+
+        <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+          <.button
+            id="agency-delete-back-to-agency"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="back_to_agency"
+          >
+            Back to agency
+          </.button>
+
+          <.button
+            id="agency-delete-close"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="close_agency_drawer"
+          >
+            Close
+          </.button>
+        </div>
+      </div>
+    <% else %>
+      <%= if @delete == :delete_choose do %>
+        <div id="agency-delete-choose">
+          <p
+            id="agency-delete-identity"
+            class="mt-4 rounded-box bg-base-200 px-4 py-3 text-xs text-base-content/70"
+          >
+            Agency ID <strong class="text-base-content">{@agency.agency_id}</strong>
+            · {routes_label(@route_count)}
+          </p>
+
+          <.form
+            for={@form}
+            id="agency-delete-form"
+            novalidate
+            phx-submit="review_delete"
+            class="mt-4"
+          >
+            <fieldset :if={@route_count > 0} class="mt-5 border-t border-base-300 pt-5">
+              <legend class="pr-4 text-base font-semibold text-base-content">Move routes to</legend>
+
+              <div class="mt-4">
+                <.input
+                  field={@form[:target_id]}
+                  type="select"
+                  label="Receiving agency"
+                  prompt="Choose agency"
+                  options={@target_options}
+                  help="Route IDs and schedules will stay unchanged."
+                />
+              </div>
+            </fieldset>
+
+            <p class="mt-5 text-sm text-base-content/70">
+              Review the exact changes before anything is deleted.
+            </p>
+
+            <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+              <.button
+                id="agency-delete-cancel"
+                type="button"
+                variant="secondary"
+                class="min-h-11"
+                phx-click="close_agency_drawer"
+              >
+                Cancel
+              </.button>
+
+              <.button id="agency-delete-review-submit" type="submit" class="min-h-11">
+                Review deletion
+              </.button>
+            </div>
+          </.form>
+        </div>
+      <% else %>
+        <div id={if @delete == :delete_stale, do: "agency-delete-stale", else: "agency-delete-review"}>
           <.callout
-            :if={save_failed?(@form)}
-            id="agency-form-error"
+            :if={@delete == :delete_stale}
+            id="agency-delete-stale-notice"
             kind="error"
-            title={save_failed_title(@mode)}
-            tabindex="-1"
-            class="mb-4"
-          />
+            title="The agencies or routes changed during your review"
+            class="mt-4"
+          >
+            <p>Nothing was moved or deleted.</p>
+            <div class="mt-3">
+              <.button
+                id="agency-delete-refresh"
+                type="button"
+                variant="secondary"
+                class="min-h-11"
+                phx-click="refresh_delete_review"
+              >
+                Refresh review
+              </.button>
+            </div>
+          </.callout>
 
-          <.conflict_callout :if={@conflict?} reloaded?={@conflict_reloaded?} />
+          <.callout
+            id="agency-delete-summary"
+            kind="warning"
+            title={"#{@agency.agency_name} will be deleted"}
+            class="mt-4"
+          >
+            <p>{delete_review_summary(@review)}</p>
+            <p :if={@review.translation_count > 0} id="agency-delete-translations">
+              {translations_label(@review.translation_count)}
+            </p>
+          </.callout>
 
-          <.agency_form_fields
-            form={@form}
-            first_agency?={@first_agency?}
-            zone={@zone}
-            zone_names={@zone_names}
-          />
+          <ul
+            :if={@review.routes != []}
+            id="agency-delete-routes"
+            class="mt-5 divide-y divide-base-200 border-y border-base-300"
+          >
+            <li :for={route <- @review.routes} class="flex items-start justify-between gap-4 py-3">
+              <span><strong>{route.route_id}</strong> {route_name(route)}</span>
+              <span class="whitespace-nowrap text-sm text-base-content/70">Keep route ID</span>
+            </li>
+          </ul>
+
+          <p
+            id="agency-delete-total"
+            class="mt-5 rounded-box bg-base-200 p-4 text-sm text-base-content/70"
+          >
+            The move and deletion must succeed together. If this review becomes out of date,
+            nothing is changed.
+          </p>
 
           <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
             <.button
-              id="agency-cancel"
+              id="agency-delete-back"
               type="button"
               variant="secondary"
               class="min-h-11"
-              phx-click="close_agency_drawer"
+              phx-click="start_delete"
             >
-              Cancel
+              Back
             </.button>
 
+            <%!-- The reviewed command is the only apply that can succeed, so a
+            stale review disables the submit and offers Refresh review instead
+            (AC-22). --%>
             <.button
-              id="agency-save"
-              type="submit"
+              id="agency-delete-apply"
+              type="button"
+              variant="danger"
               class="min-h-11"
-              phx-disable-with={agency_pending_label(@mode)}
+              disabled={@delete == :delete_stale}
+              phx-click="apply_delete"
+              phx-disable-with="Deleting…"
             >
-              {agency_submit_label(@mode)}
+              {delete_apply_label(@review)}
             </.button>
           </div>
-        </.form>
-      </div>
-    </.drawer>
+        </div>
+      <% end %>
+    <% end %>
     """
   end
 
@@ -1275,6 +1636,186 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   defp agency_draft_params(_socket), do: %{}
 
+  # Delete agency switches the same drawer to the deletion's first step. The
+  # version is read first, so the refusal and the choices describe it as it now
+  # is: a row another editor deleted closes the drawer with the same sentence the
+  # rest of the flow uses (AC-28), and an agency set of one has no receiving
+  # agency to offer, so the action stays unavailable with its reason (AC-19).
+  # Entering the step also resets the form, because the deletion reviews the
+  # stored agency and the close that reached here already discarded the entries.
+  defp open_delete_drawer(socket) do
+    socket = load_agencies(socket)
+    agency = socket.assigns.agency_baseline
+    rows = agencies_in_scope(socket)
+
+    cond do
+      is_nil(agency) ->
+        assign(socket, :agency_delete, nil)
+
+      not Enum.any?(rows, &(&1.agency.id == agency.id)) ->
+        socket |> close_agency() |> put_flash(:error, @agency_missing_error)
+
+      length(rows) < 2 ->
+        assign(socket, :agency_delete, nil)
+
+      true ->
+        socket
+        |> assign_agency_draft(FeedSettings.change_agency(agency, %{}))
+        |> assign(:agency_delete, :delete_choose)
+        |> assign(:agency_delete_review, nil)
+        |> assign(:delete_route_count, agency_route_count(rows, agency))
+        |> assign(:delete_target_options, delete_target_options(rows, agency))
+        |> assign_delete_form(nil)
+    end
+  end
+
+  # Discarding continues to what the close was for. The deletion reviews the
+  # stored agency, so the entries are discarded and the same drawer switches to
+  # its first deletion step instead of closing (AC-6).
+  defp confirm_discard(%{assigns: %{discard_action: :delete}} = socket) do
+    socket
+    |> assign(:discard_action, nil)
+    |> assign(:agency_confirm_discard?, false)
+    |> open_delete_drawer()
+  end
+
+  defp confirm_discard(socket), do: close_agency(socket)
+
+  # The context's review decides which step the editor sees: what blocks the
+  # deletion first, then what would move. Each refusal lands where the editor can
+  # act on it, and a scope that is gone closes the drawer rather than showing a
+  # command that cannot be applied (AC-19, AC-20, AC-21, INV-3).
+  defp review_agency_deletion(socket, target_id) do
+    case FeedSettings.review_agency_deletion(
+           audit_context(socket),
+           socket.assigns.agency_baseline.id,
+           target_id
+         ) do
+      {:ok, review} ->
+        socket
+        |> assign(:agency_delete_review, review)
+        |> assign(
+          :agency_delete,
+          if(deletion_blocked?(review), do: :delete_blocked, else: :delete_review)
+        )
+        |> assign_delete_form(target_id)
+
+      {:error, :target_required} ->
+        socket
+        |> assign(:agency_delete, :delete_choose)
+        |> assign_delete_form(target_id, @target_required_error)
+
+      {:error, :invalid_target} ->
+        socket
+        |> assign(:agency_delete, :delete_choose)
+        |> assign_delete_form(target_id, @invalid_target_error)
+
+      # The version came down to one agency between opening this step and
+      # reviewing it, so there is nothing to delete: the page reloads, the drawer
+      # behind the step shows the row it names, and the reason the action is
+      # unavailable is on screen (AC-19).
+      {:error, :last_agency} ->
+        socket |> load_agencies() |> assign(:agency_delete, nil)
+
+      {:error, :forbidden} ->
+        socket
+        |> close_agency()
+        |> put_flash(:error, "You no longer have editor access to this organization.")
+
+      {:error, :not_found} ->
+        socket
+        |> close_agency()
+        |> load_agencies()
+        |> put_flash(:error, @agency_missing_error)
+    end
+  end
+
+  # The one write of the deletion flow: the context authorizes the actor, locks
+  # the published version row, re-reads the reviewed state and compares the
+  # fingerprint the review returned (R7, INV-2, INV-3). A version that moved
+  # returns `:stale_review` with nothing written, which is the step that offers
+  # Refresh review (AC-22).
+  defp apply_agency_deletion(socket) do
+    review = socket.assigns.agency_delete_review
+
+    case FeedSettings.delete_agency(
+           audit_context(socket),
+           review.agency.id,
+           review.target && review.target.id,
+           review.fingerprint
+         ) do
+      {:ok, %{moved_routes: moved_routes, target: target}} ->
+        socket
+        |> close_agency()
+        |> load_agencies()
+        |> put_flash(:info, deleted_flash(review.agency, moved_routes, target))
+
+      # The review stays on screen: it is what the editor reviewed, and the stale
+      # notice is where Refresh review starts a fresh one (AC-22).
+      {:error, :stale_review} ->
+        assign(socket, :agency_delete, :delete_stale)
+
+      {:error, :forbidden} ->
+        socket
+        |> close_agency()
+        |> put_flash(:error, "You no longer have editor access to this organization.")
+
+      # The reviewed id came from the server, so a malformed one is only reachable
+      # by a caller outside this page: what remains is a version that stopped
+      # being writable, and the editor is sent back to Settings (AC-28).
+      {:error, :not_found} ->
+        socket
+        |> close_agency()
+        |> put_flash(:error, "This version is no longer available.")
+        |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))
+    end
+  end
+
+  # The receiving agency is a form field so its refusal is shown beside the
+  # control that caused it, the way the zone field carries a refused review. The
+  # choice is kept as the field's value, so re-reviewing the same command does
+  # not ask the editor to choose again (R7).
+  defp assign_delete_form(socket, target_id, error \\ nil) do
+    changeset =
+      {%{}, %{target_id: :string}}
+      |> Ecto.Changeset.cast(%{"target_id" => target_id}, [:target_id])
+      |> add_form_error(:target_id, error)
+
+    assign(
+      socket,
+      :agency_delete_form,
+      to_form(changeset, as: :agency_delete, id: "agency-delete-form")
+    )
+  end
+
+  # The select's prompt submits an empty string and a form with no field at all
+  # submits nothing: both are the absent receiving agency, and the context decides
+  # whether this command needs one (R7).
+  defp chosen_target(params) do
+    case params["target_id"] do
+      nil -> nil
+      "" -> nil
+      target_id -> target_id
+    end
+  end
+
+  defp deletion_blocked?(review) do
+    review.blockers.fare_ids != [] or review.blockers.attribution_ids != []
+  end
+
+  defp agency_route_count(rows, agency) do
+    case Enum.find(rows, &(&1.agency.id == agency.id)) do
+      nil -> 0
+      row -> row.route_count
+    end
+  end
+
+  defp delete_target_options(rows, agency) do
+    rows
+    |> Enum.reject(&(&1.agency.id == agency.id))
+    |> Enum.map(&{&1.agency.agency_name, &1.agency.id})
+  end
+
   # The form, the action it reports and the dirty state always move together, so
   # one helper binds them: a handler cannot show a draft the guard would ignore,
   # or guard a form that shows nothing. `action: :validate` marks the round trip
@@ -1302,6 +1843,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     |> assign(:agency_baseline, nil)
     |> assign(:agency_dirty?, false)
     |> assign(:agency_confirm_discard?, false)
+    |> assign(:discard_action, nil)
+    |> assign(:agency_delete, nil)
+    |> assign(:agency_delete_form, nil)
+    |> assign(:agency_delete_review, nil)
+    |> assign(:delete_route_count, 0)
+    |> assign(:delete_target_options, [])
     |> assign(:zone_names, [])
     |> clear_agency_edit_state()
   end
@@ -1325,9 +1872,73 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp save_failed?(_form), do: false
 
   # The edit drawer is titled with the stored name, which is what the list row
-  # the editor clicked showed (AC-15); the create drawer has one title.
-  defp agency_drawer_title(:edit, %Agency{agency_name: name}), do: name
-  defp agency_drawer_title(_mode, _agency), do: "Create agency"
+  # the editor clicked showed (AC-15); the deletion steps are titled for what
+  # they do — the agency they would remove, the removal review, or what blocks
+  # it — and the create drawer has one title.
+  defp agency_drawer_title(_mode, %Agency{agency_name: name}, :delete_choose),
+    do: "Delete #{name}?"
+
+  defp agency_drawer_title(_mode, _agency, :delete_blocked), do: "Agency still used by fares"
+
+  defp agency_drawer_title(_mode, _agency, mode) when mode in [:delete_review, :delete_stale],
+    do: "Review agency removal"
+
+  defp agency_drawer_title(:edit, %Agency{agency_name: name}, nil), do: name
+  defp agency_drawer_title(_mode, _agency, nil), do: "Create agency"
+
+  # The chooser's intro is the prototype's own sentence for each case: routes make
+  # the receiving agency the point of the step, and no routes means the deletion
+  # removes only the identity and contact details (AC-20).
+  defp delete_choose_intro(0),
+    do:
+      "This agency has no routes. Deleting it removes its identity and contact details from this version."
+
+  defp delete_choose_intro(_route_count),
+    do: "Keep the routes by assigning them to another agency before removing this provider."
+
+  defp delete_review_summary(%{target: nil}), do: "No routes or fare references need to move."
+
+  defp delete_review_summary(review) do
+    "#{routes_label(length(review.routes))} will move to #{review.target.agency_name}. " <>
+      "No routes will be deleted."
+  end
+
+  defp translations_label(1), do: "1 translation of this agency's text is also removed."
+
+  defp translations_label(count),
+    do: "#{count} translations of this agency's text are also removed."
+
+  defp delete_apply_label(%{target: nil}), do: "Delete agency"
+  defp delete_apply_label(_review), do: "Move routes and delete"
+
+  # The blocked state names what has to move first, so the list of IDs below it
+  # reads as references rather than as unexplained rows (AC-21).
+  defp blocked_subject(%{fare_ids: [_], attribution_ids: []}),
+    do: "A fare attribute still refers"
+
+  defp blocked_subject(%{fare_ids: [], attribution_ids: [_]}),
+    do: "An attribution still refers"
+
+  defp blocked_subject(_blockers), do: "Fare attributes and attributions still refer"
+
+  defp blocked_body(blockers) do
+    "#{blocked_subject(blockers)} to this agency. " <>
+      "Reassign those references before moving routes and deleting the agency."
+  end
+
+  # The reviewed routes are named by their long name where they have one and
+  # their short name where they do not, the way the Routes list reads them.
+  defp route_name(%{route_long_name: name}) when is_binary(name) and name != "", do: name
+  defp route_name(%{route_short_name: name}), do: name || ""
+
+  defp deleted_flash(agency, 0, nil), do: "#{agency.agency_name} deleted."
+
+  defp deleted_flash(agency, moved_routes, target) do
+    "#{agency.agency_name} deleted. #{moved_routes_label(moved_routes)} to #{target.agency_name}."
+  end
+
+  defp moved_routes_label(1), do: "1 route moved"
+  defp moved_routes_label(count), do: "#{count} routes moved"
 
   defp agency_drawer_intro(:edit),
     do: "Keep the details riders see in journey planners up to date. Optional fields are marked."
@@ -1408,19 +2019,20 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp timezone_form(zone, error \\ nil) do
     {%{}, %{zone: :string}}
     |> Ecto.Changeset.cast(%{"zone" => zone}, [:zone])
-    |> add_zone_error(error)
+    |> add_form_error(:zone, error)
     |> to_form(as: :timezone)
   end
 
   # A refused review is a keystroke-shaped round trip rather than a save, and the
   # action is what makes the error the editor's own submitted value: Phoenix
   # drops the errors of a changeset with no action, so the refusal would render
-  # nowhere without it.
-  defp add_zone_error(changeset, nil), do: changeset
+  # nowhere without it. Both the zone field and the deletion's receiving agency
+  # show their refusal this way.
+  defp add_form_error(changeset, _field, nil), do: changeset
 
-  defp add_zone_error(changeset, message) do
+  defp add_form_error(changeset, field, message) do
     changeset
-    |> Ecto.Changeset.add_error(:zone, message)
+    |> Ecto.Changeset.add_error(field, message)
     |> Map.put(:action, :validate)
   end
 

@@ -88,6 +88,24 @@ const EDIT_CAPTURE_DIR =
     ".specs/13-agencies-and-feed-details/evidence/visual/agencies-edit",
   );
 
+// The version `browser_seed.exs` seeds with the delete flow's three agencies:
+// "Browser Alpha" holds two routes, "Browser Beta" receives them, and "Browser
+// Gamma" has no routes but is named by the fare attribute F-BROWSER (EV-24,
+// EV-25).
+const AGENCY_DELETE_VERSION = "Browser Agency Delete Version";
+
+// The shared version whose one agency is the last one, so its Delete agency
+// action cannot be used (AC-19).
+const SINGLE_AGENCY_VERSION = "Browser E2E Version";
+
+// The delete block's own evidence folder (EV-25).
+const DELETE_CAPTURE_DIR =
+  process.env.AGENCIES_DELETE_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/agencies-delete",
+  );
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -1146,5 +1164,127 @@ test.describe("@agencies-edit", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, EDIT_CAPTURE_DIR, "edit-saved-1280");
+  });
+});
+
+// Declared last on purpose: it is the only block that mutates the seeded
+// "Browser Agency Delete Version", and the suite runs one worker with no
+// retries, so the declared order is the seeding order (CR-10). The last-agency
+// reading on the shared "Browser E2E Version" opens a drawer and changes
+// nothing.
+//
+// Captures land in this block's own evidence folder as
+// `delete-blocked-{1280,375}.png`, `delete-review-{1280,375}.png` and
+// `delete-disabled-1280.png`.
+test.describe("@agencies-delete", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("blocks the fare-referenced agency, deletes Alpha into Beta and shows the last agency", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const deleteVersion = await versionId(page, AGENCY_DELETE_VERSION);
+    await page.goto(`/gtfs/${deleteVersion}/settings/agencies`);
+    await page.waitForSelector("#agencies");
+    await waitForLiveView(page);
+
+    const overlay = page.locator("#agency-drawer-overlay");
+
+    // Browser Gamma is named by F-BROWSER, so the deletion is refused with the
+    // reference the editor has to resolve first (AC-21).
+    const gamma = page.locator("#agencies tr").filter({ hasText: "Browser Gamma" });
+    await gamma.locator("button[id^='agency-open-']").click();
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-delete")).toBeEnabled();
+    await page.click("#agency-delete");
+    await expect(page.locator("#agency-delete-choose")).toBeVisible();
+    await page.click("#agency-delete-review-submit");
+    await expect(page.locator("#agency-delete-blocked")).toContainText(
+      "cannot be deleted yet",
+    );
+    await expect(page.locator("#agency-delete-blocked")).toContainText("F-BROWSER");
+    await expect(page.locator("#agency-delete-back-to-agency")).toHaveText(
+      "Back to agency",
+    );
+    await expect(page.locator("#agency-delete-close")).toHaveText("Close");
+    await expect(page.locator("#agency-delete-apply")).toHaveCount(0);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DELETE_CAPTURE_DIR, "delete-blocked-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#agency-delete-blocked")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DELETE_CAPTURE_DIR, "delete-blocked-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await page.click("#agency-delete-close");
+    await expect(overlay).toHaveAttribute("data-open", "false");
+
+    // Browser Alpha has two routes, so its deletion needs the receiving agency
+    // and reviews exactly the routes that will move (AC-20).
+    const alpha = page.locator("#agencies tr").filter({ hasText: "Browser Alpha" });
+    await alpha.locator("button[id^='agency-open-']").click();
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await page.click("#agency-delete");
+    await expect(page.locator("#agency-delete-choose")).toContainText("Move routes to");
+    await expect(page.locator("#agency-delete-form_target_id")).toBeVisible();
+    await page.selectOption("#agency-delete-form_target_id", { label: "Browser Beta" });
+    await page.click("#agency-delete-review-submit");
+    await expect(page.locator("#agency-delete-review")).toContainText(
+      "Browser Alpha will be deleted",
+    );
+    await expect(page.locator("#agency-delete-review")).toContainText(
+      "2 routes will move to Browser Beta. No routes will be deleted.",
+    );
+    await expect(page.locator("#agency-delete-routes li")).toHaveCount(2);
+    await expect(page.locator("#agency-delete-apply")).toHaveText(
+      "Move routes and delete",
+    );
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DELETE_CAPTURE_DIR, "delete-review-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#agency-delete-apply")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DELETE_CAPTURE_DIR, "delete-review-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    await watchPendingState(page, "#agency-delete-apply");
+    await page.click("#agency-delete-apply");
+
+    const pendingStates = await readPendingStates(page);
+
+    expect(
+      pendingStates.some((state) => state.disabled && state.text === "Deleting…"),
+    ).toBe(true);
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText(
+      "Browser Alpha deleted. 2 routes moved to Browser Beta.",
+    );
+    await expect(page.locator("#agencies")).not.toContainText("Browser Alpha");
+    await expect(page.locator("#agencies")).toContainText("Browser Beta");
+
+    // The version whose one agency is the last one offers the action but cannot
+    // use it, and says why (AC-19).
+    const soloVersion = await versionId(page, SINGLE_AGENCY_VERSION);
+    await page.goto(`/gtfs/${soloVersion}/settings/agencies`);
+    await page.waitForSelector("#agencies");
+    await waitForLiveView(page);
+
+    const solo = page.locator("#agencies tr").first();
+    await solo.locator("button[id^='agency-open-']").click();
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-delete")).toBeDisabled();
+    await expect(page.locator("#agency-delete-reason")).toHaveText(
+      "This is the last agency in the version and can't be deleted.",
+    );
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DELETE_CAPTURE_DIR, "delete-disabled-1280");
   });
 });
