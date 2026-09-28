@@ -426,6 +426,108 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(view, "#ds-page-navigation")
       assert has_element?(view, "#app-header #user-menu-panel a[href='/users/settings']")
     end
+
+    test "a Pathways editor sees four task areas and no Operations or Flex", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      for {id, label} <- [
+            {"nav-routes", "Routes"},
+            {"nav-calendars", "Calendars"},
+            {"nav-stops", "Stops & stations"},
+            {"nav-gtfs", "GTFS"}
+          ] do
+        assert has_element?(view, "#main-navigation ##{id}", label)
+      end
+
+      refute has_element?(view, "#main-navigation #nav-operations")
+      refute has_element?(view, "#main-navigation #nav-flex")
+    end
+
+    test "a Planner editor's Settings entry points at version Settings", %{conn: conn} do
+      organization = organization_fixture(%{product: :planner})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/gtfs/#{version.id}/settings']",
+               "Settings"
+             )
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link",
+               "Agencies, fares, exports, garages, fleet"
+             )
+    end
+
+    test "a Pathways editor who is also an org admin gets the Users Settings entry", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor", "pathways_studio_admin"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link[href='/admin/users']",
+               "Settings"
+             )
+
+      assert has_element?(
+               view,
+               "#user-menu-panel #settings-link",
+               "Organization name, users"
+             )
+    end
+
+    test "a Pathways editor without admin has no Settings entry", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
+
+      refute has_element?(view, "#settings-link")
+    end
   end
 
   describe "Document titles" do
