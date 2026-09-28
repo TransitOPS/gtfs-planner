@@ -324,6 +324,51 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Builds the transfer editor's connection map payload for two endpoints.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.map_payload/3`. The two stop or
+  station IDs come from the draft; each resolves inside the requested organization
+  and version to a point with float coordinates, or is nil when it is unknown,
+  foreign or has no coordinates. `children` holds the drawable children of a
+  station endpoint with their side, and `missing_coordinates` names the endpoints
+  of this version that carry none.
+  """
+  @spec transfer_map_payload(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: Transfers.map_payload()
+  def transfer_map_payload(organization_id, gtfs_version_id, endpoints) do
+    Transfers.map_payload(organization_id, gtfs_version_id, endpoints)
+  end
+
+  @doc """
+  Lists the version's drawable stops inside a map viewport.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.stops_in_bounds/3`. `bounds`
+  arrives from the map hook with `south`, `west`, `north` and `east` as numbers or
+  numeric strings; latitudes and longitudes are clamped to ±90 and ±180 and an
+  invalid box is `{:error, :invalid_bounds}`. At most 200 stops and stations come
+  back in name then ID order with `truncated?`, scoped to the organization and
+  version.
+  """
+  @spec transfer_stops_in_bounds(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, %{stops: [Transfers.map_point()], truncated?: boolean()}}
+          | {:error, :invalid_bounds}
+  def transfer_stops_in_bounds(organization_id, gtfs_version_id, bounds) do
+    Transfers.stops_in_bounds(organization_id, gtfs_version_id, bounds)
+  end
+
+  @doc """
+  Returns the version's stop bounding box for the map's initial view.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.version_extent/2`: the minimum
+  and maximum latitude and longitude over the organization's and version's stops
+  that have both coordinates, or nil when none does.
+  """
+  @spec transfer_version_extent(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          %{south: float(), west: float(), north: float(), east: float()} | nil
+  def transfer_version_extent(organization_id, gtfs_version_id) do
+    Transfers.version_extent(organization_id, gtfs_version_id)
+  end
+
+  @doc """
   Fetches one calendar identity through the configured catalog read adapter.
 
   Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted

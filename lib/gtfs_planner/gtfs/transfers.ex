@@ -45,6 +45,13 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   A stored selector that is missing, inactive or no longer serving is appended with
   the reason, so an edit never silently drops it. None of these queries writes, and
   every one of them is scoped by organization and version.
+
+  The map reads answer the connection view from the same scope: `map_payload/3`
+  resolves the two selected endpoints to float points, the drawable children of a
+  station endpoint tagged with their side, and the endpoints that have no
+  coordinates; `stops_in_bounds/3` parses and clamps a viewport from the map hook
+  and answers at most 200 drawable stops with `truncated?`; and `version_extent/2`
+  returns the version's own bounding box, or nil when no stop has coordinates.
   """
 
   import Ecto.Query, warn: false
@@ -63,6 +70,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   @in_seat_types [4, 5]
   @default_per_page 50
   @stop_search_limit 20
+  @stop_bounds_limit 200
   @sort_keys [:from, :to, :type, :min_time]
 
   @typedoc "A side's effective selector: the trip when set, else the route, else nothing."
@@ -140,6 +148,23 @@ defmodule GtfsPlanner.Gtfs.Transfers do
           route_short_name: String.t() | nil,
           route_long_name: String.t() | nil,
           note: nil | :not_serving | :inactive | :missing
+        }
+
+  @typedoc "One point the connection map can draw: a stop with float coordinates."
+  @type map_point :: %{
+          stop_id: String.t(),
+          name: String.t() | nil,
+          lat: float(),
+          lon: float(),
+          location_type: integer() | nil
+        }
+
+  @typedoc "The connection map payload for one pair of selected endpoints."
+  @type map_payload :: %{
+          a: map_point() | nil,
+          b: map_point() | nil,
+          children: [map()],
+          missing_coordinates: [String.t()]
         }
 
   @typedoc "One trip option of a route at a stop's coverage for one side."
@@ -372,6 +397,93 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     options = trip_option_rows(organization_id, gtfs_version_id, route_id, coverage, side)
 
     append_current_trip(options, organization_id, gtfs_version_id, route_id, current)
+  end
+
+  @doc """
+  Builds the connection map payload for one pair of selected endpoints (AC-22).
+
+  `a` is the departure endpoint's point and `b` the arrival endpoint's, each with
+  float coordinates, or `nil` when the ID names no stop of this organization and
+  version or the stop carries no coordinates. `children` are the direct children
+  of a station endpoint that are stops or platforms (`location_type` nil or 0),
+  have coordinates and are therefore drawable, each tagged with its endpoint's
+  `side` ("a" or "b"); the departure endpoint's children come first. A child is
+  listed once, so the same station on both sides does not double it. Entrances,
+  generic nodes and children without coordinates are omitted.
+
+  `missing_coordinates` names, once each in endpoint order, the endpoints that are
+  in this version but have no coordinates, using the stop name or else the stop ID,
+  so the page can explain an absent marker. An unknown or foreign ID contributes no
+  entry: only stops this version actually holds are reported.
+  """
+  @spec map_payload(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: map_payload()
+  def map_payload(organization_id, gtfs_version_id, endpoints) do
+    from_id = map_stop_id(Map.get(endpoints, :from_stop_id))
+    to_id = map_stop_id(Map.get(endpoints, :to_stop_id))
+
+    stops =
+      [from_id, to_id]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> then(&load_stops(organization_id, gtfs_version_id, &1))
+
+    index = Map.new(stops, &{&1.stop_id, &1})
+
+    %{
+      a: map_endpoint(index, from_id),
+      b: map_endpoint(index, to_id),
+      children: map_children(index, from_id, to_id),
+      missing_coordinates: missing_coordinates(index, [from_id, to_id])
+    }
+  end
+
+  @doc """
+  Lists the version's drawable stops inside a map viewport (AC-23).
+
+  `bounds` carries `south`, `west`, `north` and `east` under string keys (atom keys
+  are accepted too) as numbers or numeric strings; the values arrive from the map
+  hook, so they are parsed rather than interpolated, latitudes are clamped to
+  ±90 and longitudes to ±180, and a value that is missing or not a number, or
+  bounds whose clamped `south > north` or `west > east`, is
+  `{:error, :invalid_bounds}` — the antimeridian is not supported. The result
+  holds at most 200 stops and stations (`location_type` nil, 0 or 1) with
+  coordinates inside the box, ordered by name then ID, with `truncated?: true`
+  when more matched, so the page can ask the operator to zoom in. Every query is
+  scoped by organization and version.
+  """
+  @spec stops_in_bounds(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, %{stops: [map_point()], truncated?: boolean()}} | {:error, :invalid_bounds}
+  def stops_in_bounds(organization_id, gtfs_version_id, bounds) do
+    case parse_bounds(bounds) do
+      {:ok, parsed} -> {:ok, bounds_stops(organization_id, gtfs_version_id, parsed)}
+      :error -> {:error, :invalid_bounds}
+    end
+  end
+
+  @doc """
+  Returns the version's stop bounding box for the map's initial view.
+
+  The box is the minimum and maximum latitude and longitude over the stops of this
+  organization and version that carry both coordinates, as floats, in one
+  aggregate query. A version with no such stop — empty, or every stop missing a
+  coordinate — is `nil`, so the hook falls back to its default view instead of a
+  zero-sized box.
+  """
+  @spec version_extent(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          %{south: float(), west: float(), north: float(), east: float()} | nil
+  def version_extent(organization_id, gtfs_version_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      where: not is_nil(s.stop_lat) and not is_nil(s.stop_lon),
+      select: %{
+        south: min(s.stop_lat),
+        west: min(s.stop_lon),
+        north: max(s.stop_lat),
+        east: max(s.stop_lon)
+      }
+    )
+    |> Repo.one()
+    |> extent()
   end
 
   # -- Scoped loads ----------------------------------------------------------
@@ -1210,6 +1322,165 @@ defmodule GtfsPlanner.Gtfs.Transfers do
           note: :other_route
         }
     end
+  end
+
+  # -- Map reads -------------------------------------------------------------
+
+  # `map_payload/3` answers the whole payload from one scoped `load_stops/3` call:
+  # that query already returns the endpoint stops and every stop naming one as its
+  # parent station, so the points and the children come from the same rows.
+  defp map_endpoint(_index, nil), do: nil
+
+  defp map_endpoint(index, stop_id) do
+    case Map.get(index, stop_id) do
+      %Stop{stop_lat: lat, stop_lon: lon} = stop when not is_nil(lat) and not is_nil(lon) ->
+        map_point(stop)
+
+      _missing_or_incomplete ->
+        nil
+    end
+  end
+
+  # R2 again: only a station endpoint expands to children, and only the children
+  # that are stops or platforms (nil or 0) with coordinates, because a marker needs
+  # a position. A child of both sides is drawn once, under the departure side.
+  defp map_children(index, from_id, to_id) do
+    [{"a", from_id}, {"b", to_id}]
+    |> Enum.filter(fn {_side, stop_id} -> station?(Map.get(index, stop_id)) end)
+    |> Enum.flat_map(fn {side, stop_id} ->
+      index
+      |> Map.values()
+      |> Enum.filter(fn child ->
+        child.parent_station == stop_id and child.location_type in [nil, 0] and
+          not is_nil(child.stop_lat) and not is_nil(child.stop_lon)
+      end)
+      |> Enum.sort_by(&{&1.stop_name, &1.stop_id})
+      |> Enum.map(&Map.put(map_point(&1), :side, side))
+    end)
+    |> Enum.uniq_by(& &1.stop_id)
+  end
+
+  defp station?(%Stop{location_type: 1}), do: true
+  defp station?(_stop), do: false
+
+  # Endpoint display names, once each, in endpoint order: a name or else the ID.
+  defp missing_coordinates(index, stop_ids) do
+    stop_ids
+    |> Enum.flat_map(&missing_coordinate_name(index, &1))
+    |> Enum.uniq()
+  end
+
+  defp missing_coordinate_name(_index, nil), do: []
+
+  defp missing_coordinate_name(index, stop_id) do
+    case Map.get(index, stop_id) do
+      %Stop{stop_lat: nil} = stop -> [stop_label(stop)]
+      %Stop{stop_lon: nil} = stop -> [stop_label(stop)]
+      _known_with_coordinates_or_unknown -> []
+    end
+  end
+
+  defp stop_label(%Stop{stop_name: name, stop_id: stop_id}), do: name || stop_id
+
+  # A hook payload value names a stop only when it is a non-blank string; anything
+  # else is treated as no endpoint rather than cast (CR-6 untrusted input).
+  defp map_stop_id(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp map_stop_id(_value), do: nil
+
+  defp map_point(%Stop{} = stop) do
+    %{
+      stop_id: stop.stop_id,
+      name: stop.stop_name,
+      lat: decimal_to_float(stop.stop_lat),
+      lon: decimal_to_float(stop.stop_lon),
+      location_type: stop.location_type
+    }
+  end
+
+  # The bounds parser. Values arrive from the map hook, so they are parsed from a
+  # number or a numeric string and never interpolated into SQL; the clamped values
+  # are what the ordering check and the query use.
+  defp parse_bounds(bounds) when is_map(bounds) do
+    with {:ok, south} <- bound_value(bounds, :south),
+         {:ok, west} <- bound_value(bounds, :west),
+         {:ok, north} <- bound_value(bounds, :north),
+         {:ok, east} <- bound_value(bounds, :east) do
+      parsed = %{
+        south: clamp_latitude(south),
+        west: clamp_longitude(west),
+        north: clamp_latitude(north),
+        east: clamp_longitude(east)
+      }
+
+      if parsed.south <= parsed.north and parsed.west <= parsed.east do
+        {:ok, parsed}
+      else
+        :error
+      end
+    end
+  end
+
+  defp parse_bounds(_bounds), do: :error
+
+  defp bound_value(bounds, key) do
+    case Map.get(bounds, key) || Map.get(bounds, Atom.to_string(key)) do
+      value when is_number(value) -> {:ok, value / 1}
+      value when is_binary(value) -> bound_number(value)
+      _missing_or_not_a_number -> :error
+    end
+  end
+
+  # `Float.parse/1` accepts a number only when the rest of the string is blank, so
+  # "40.0abc" is invalid rather than silently 40.0.
+  defp bound_number(value) do
+    case Float.parse(value) do
+      {number, rest} -> if String.trim(rest) == "", do: {:ok, number}, else: :error
+      :error -> :error
+    end
+  end
+
+  defp clamp_latitude(value), do: value |> max(-90.0) |> min(90.0)
+  defp clamp_longitude(value), do: value |> max(-180.0) |> min(180.0)
+
+  defp bounds_stops(organization_id, gtfs_version_id, parsed) do
+    south = Decimal.from_float(parsed.south)
+    west = Decimal.from_float(parsed.west)
+    north = Decimal.from_float(parsed.north)
+    east = Decimal.from_float(parsed.east)
+
+    rows =
+      from(s in Stop,
+        where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+        where: is_nil(s.location_type) or s.location_type in [0, 1],
+        where: not is_nil(s.stop_lat) and not is_nil(s.stop_lon),
+        where:
+          s.stop_lat >= ^south and s.stop_lat <= ^north and s.stop_lon >= ^west and
+            s.stop_lon <= ^east,
+        order_by: [asc: s.stop_name, asc: s.stop_id],
+        limit: @stop_bounds_limit + 1
+      )
+      |> Repo.all()
+
+    {stops, extra} = Enum.split(rows, @stop_bounds_limit)
+
+    %{stops: Enum.map(stops, &map_point/1), truncated?: extra != []}
+  end
+
+  defp extent(%{south: nil}), do: nil
+
+  defp extent(%{south: south, west: west, north: north, east: east}) do
+    %{
+      south: decimal_to_float(south),
+      west: decimal_to_float(west),
+      north: decimal_to_float(north),
+      east: decimal_to_float(east)
+    }
   end
 
   # -- View, order and reverse links -----------------------------------------
