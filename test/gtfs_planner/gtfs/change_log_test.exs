@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Repo
 
   @valid_attrs %{
@@ -1111,6 +1112,159 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert_raise Ecto.NoResultsError, fn ->
         Gtfs.get_change_log!(Ecto.UUID.generate())
       end
+    end
+  end
+
+  describe "transfer entity" do
+    setup do
+      org = organization_fixture()
+      version = gtfs_version_fixture(org.id)
+
+      ctx = %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        station_stop_id: "station_central",
+        actor_id: Ecto.UUID.generate(),
+        actor_email: "user@example.com"
+      }
+
+      transfer =
+        transfer_fixture(org.id, version.id, %{from_stop_id: "CEN-A", to_stop_id: "CEN-C"})
+
+      %{org: org, version: version, ctx: ctx, transfer: transfer}
+    end
+
+    test "the changeset accepts the transfer entity type", %{ctx: ctx, transfer: transfer} do
+      changeset =
+        ChangeLog.changeset(%ChangeLog{}, %{
+          entity_type: "transfer",
+          entity_id: transfer.id,
+          entity_external_id: "CEN-A→CEN-C",
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email,
+          action: "created",
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id
+        })
+
+      assert changeset.valid?
+    end
+
+    test "an in-transaction create stores the snapshot, external ID and operation scope", %{
+      ctx: ctx,
+      transfer: transfer
+    } do
+      snapshot = Transfer.audit_snapshot(transfer)
+      operation_id = Ecto.UUID.generate()
+
+      assert {:ok, log} =
+               Repo.transaction(fn ->
+                 {:ok, log} =
+                   Gtfs.record_change_in_transaction(ctx, :transfer, transfer, "created", %{
+                     before: nil,
+                     after: snapshot,
+                     operation_id: operation_id,
+                     affected_transfer_ids: [transfer.id]
+                   })
+
+                 log
+               end)
+
+      assert log.entity_type == "transfer"
+      assert log.entity_id == transfer.id
+      assert log.entity_external_id == "CEN-A→CEN-C"
+      assert log.action == "created"
+      assert is_nil(log.snapshot)
+
+      assert log.changed_fields == %{
+               "before" => nil,
+               "after" => snapshot,
+               "operation_id" => operation_id,
+               "affected_transfer_ids" => [transfer.id]
+             }
+    end
+
+    test "an in-transaction update keeps both explicit snapshots without a column diff", %{
+      ctx: ctx,
+      transfer: transfer
+    } do
+      before_snapshot = Transfer.audit_snapshot(transfer)
+      after_snapshot = %{before_snapshot | "min_transfer_time" => 300}
+      operation_id = Ecto.UUID.generate()
+
+      assert {:ok, log} =
+               Repo.transaction(fn ->
+                 {:ok, log} =
+                   Gtfs.record_change_in_transaction(ctx, :transfer, transfer, "updated", %{
+                     before: before_snapshot,
+                     after: after_snapshot,
+                     operation_id: operation_id,
+                     affected_transfer_ids: [transfer.id],
+                     min_transfer_time: 300
+                   })
+
+                 log
+               end)
+
+      assert log.action == "updated"
+      assert log.changed_fields["before"] == before_snapshot
+      assert log.changed_fields["after"] == after_snapshot
+
+      assert log.changed_fields |> Map.keys() |> MapSet.new() ==
+               MapSet.new(~w(before after operation_id affected_transfer_ids))
+
+      refute Map.has_key?(log.changed_fields, "min_transfer_time")
+    end
+
+    test "an in-transaction delete keeps the stored snapshot and no after value", %{
+      ctx: ctx,
+      transfer: transfer
+    } do
+      snapshot = Transfer.audit_snapshot(transfer)
+      operation_id = Ecto.UUID.generate()
+
+      assert {:ok, log} =
+               Repo.transaction(fn ->
+                 {:ok, log} =
+                   Gtfs.record_change_in_transaction(ctx, :transfer, transfer, "deleted", %{
+                     before: snapshot,
+                     operation_id: operation_id,
+                     affected_transfer_ids: [transfer.id]
+                   })
+
+                 log
+               end)
+
+      assert log.action == "deleted"
+      assert log.entity_id == transfer.id
+      assert is_nil(log.snapshot)
+
+      assert log.changed_fields == %{
+               "before" => snapshot,
+               "after" => nil,
+               "operation_id" => operation_id,
+               "affected_transfer_ids" => [transfer.id]
+             }
+    end
+
+    test "rollback refuses a transfer log", %{ctx: ctx, transfer: transfer} do
+      snapshot = Transfer.audit_snapshot(transfer)
+
+      assert {:ok, log} =
+               Repo.transaction(fn ->
+                 {:ok, log} =
+                   Gtfs.record_change_in_transaction(ctx, :transfer, transfer, "created", %{
+                     before: nil,
+                     after: snapshot,
+                     operation_id: Ecto.UUID.generate(),
+                     affected_transfer_ids: [transfer.id]
+                   })
+
+                 log
+               end)
+
+      assert Gtfs.rollback_entity(log, ctx) == {:error, :audit_only_entity}
+      assert Gtfs.rollback_target_snapshot(log) == {:error, :audit_only_entity}
     end
   end
 

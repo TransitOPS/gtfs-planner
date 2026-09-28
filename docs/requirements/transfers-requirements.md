@@ -256,8 +256,9 @@ As a schedule editor, I want to see trip headsign and departure time when select
 **AC-XFER-001: Transfer list displays required columns**
 - Given I navigate to the Transfers section
 - When the transfer list loads
-- Then I see columns for: From Stop, To Stop, From Route, To Route, Transfer Type, and Min Transfer Time
-- And the list displays all transfers in the current dataset
+- Then I see columns for: From, To, Type, and Min time
+- And each From and To names the stop or station it applies to, with the rule's route or trip scope as subtext
+- And the list shows the current view's rules, 50 to a page
 
 **AC-XFER-002: Transfer list is sortable**
 - Given I am viewing the transfer list
@@ -428,9 +429,10 @@ As a schedule editor, I want to see trip headsign and departure time when select
 - Then the system displays a validation error indicating trip IDs are required
 
 **AC-XFER-029: Trip dropdown shows trip details**
-- Given I am selecting a trip for an in-seat transfer
+- Given I am building a general transfer rule with a specific trip selector
 - When I view the trip dropdown
-- Then I see trip headsign and departure time to help identify the correct trip
+- Then I see each trip's time at this side's coverage, its headsign and its service to help identify the correct trip
+- And type 4/5 records, whose trips are linked on one vehicle, are created on Blocks (package 11) rather than through this picker
 
 **AC-XFER-030: In-seat transfer (type 4)**
 - Given I create a transfer with type 4 and valid trip IDs
@@ -447,10 +449,11 @@ As a schedule editor, I want to see trip headsign and departure time when select
 ### 4.7 Specificity and Validation
 
 **AC-XFER-032: Detect conflicting specificity**
-- Given two transfers exist with identical from_stop_id, to_stop_id, and route/trip combinations
-- When I view the transfer list or validation report
-- Then the conflicting transfers are flagged with a warning
-- And a message indicates the ambiguity should be resolved
+- Given two general transfers apply to the same pair of trips, an arrival trip with a stop_time at a stop both rules' From coverage contains and a departure trip with a stop_time at a stop both rules' To coverage contains
+- And both rules have equal GTFS specificity and different transfer types or minimum times
+- When I view the transfer list
+- Then the conflicting transfers are flagged "Needs attention"
+- And more specific rules that together cover every such trip pair remove the flag
 
 **AC-XFER-033: Validate stop references**
 - Given I am creating a transfer

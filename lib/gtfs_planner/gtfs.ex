@@ -13,7 +13,9 @@ defmodule GtfsPlanner.Gtfs do
     :calendar,
     "calendar",
     :trip,
-    "trip"
+    "trip",
+    :transfer,
+    "transfer"
   ]
 
   import Ecto.Query, warn: false
@@ -68,6 +70,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Validations.WalkabilityTest
@@ -223,6 +226,237 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, [Calendars.summary()]} | {:error, :not_found | :unavailable}
   def load_calendar_catalog(organization_id, gtfs_version_id, opts \\ []) do
     catalog_read_adapter().load_calendar_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Loads a version's transfer catalog through the configured catalog read adapter.
+
+  `opts` are `GtfsPlanner.Gtfs.Transfers.load_catalog/3`'s page options (`:view`,
+  `:search`, `:stop`, `:route`, `:type`, `:attention`, `:sort_by`, `:sort_dir`,
+  `:page`, `:per_page`, `:rule`). The catalog is scoped to the organization and
+  version, lists general (types 0–3) rules by default and type 4/5 rows only in
+  the in-seat view, and annotates every row with its R11 attention reasons. A lost
+  database connection is `{:error, :unavailable}`.
+  """
+  @spec load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Transfers.catalog()} | {:error, :unavailable}
+  def load_transfer_catalog(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_transfer_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Counts a version's general transfer rules for a related page.
+
+  Delegates to `GtfsPlanner.Gtfs.Transfers.count_general/3` directly, not through
+  `CatalogReadAdapter` (spec Design decisions: only the page's catalog load uses the
+  adapter). `filter` is `[stop: stop_id]` or `[route: route_id]`; the count shares the
+  list's own stop and route predicates, so it equals the matching filtered catalog's
+  `total_count` and never covers type 4/5 rows.
+  """
+  @spec count_general_transfers(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          [stop: String.t()] | [route: String.t()]
+        ) :: non_neg_integer()
+  def count_general_transfers(organization_id, gtfs_version_id, filter) do
+    Transfers.count_general(organization_id, gtfs_version_id, filter)
+  end
+
+  @doc """
+  Searches a version's selectable stops for the transfer editor.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.search_stops/3`; only the
+  page's catalog load uses `CatalogReadAdapter`. The query matches a
+  case-insensitive substring of the stop name, ID or platform code among the stops
+  the editor may pick (`location_type` nil, 0 or 1) and returns at most 20 options
+  in name then ID order, with `truncated?: true` when more stops match.
+  """
+  @spec search_transfer_stops(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          %{stops: [Transfers.stop_option()], truncated?: boolean()}
+  def search_transfer_stops(organization_id, gtfs_version_id, query) do
+    Transfers.search_stops(organization_id, gtfs_version_id, query)
+  end
+
+  @doc """
+  Resolves one picked stop for the transfer editor's map.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.fetch_pickable_stop/3`: the ID
+  must resolve to a stop of the requested organization and version whose location
+  type is nil, 0 or 1. An unknown, foreign or non-selectable stop is `:error`, so a
+  picked ID never comes from the payload unchecked.
+  """
+  @spec fetch_transfer_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Transfers.stop_option()} | :error
+  def fetch_transfer_stop(organization_id, gtfs_version_id, stop_id) do
+    Transfers.fetch_pickable_stop(organization_id, gtfs_version_id, stop_id)
+  end
+
+  @doc """
+  Lists the active routes serving a stop's coverage for the transfer editor.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.route_options/4`, which appends
+  the stored route with `:missing`, `:inactive` or `:not_serving` when the options
+  do not already offer it.
+  """
+  @spec transfer_route_options(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, String.t() | nil) ::
+          [Transfers.route_option()]
+  def transfer_route_options(organization_id, gtfs_version_id, stop_id, current) do
+    Transfers.route_options(organization_id, gtfs_version_id, stop_id, current)
+  end
+
+  @doc """
+  Lists the trips of one route serving a stop's coverage for the transfer editor.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.trip_options/6`; `side` is
+  `:from` (the earliest arrival) or `:to` (the earliest departure) at the coverage,
+  and the stored trip is appended with `:missing`, `:other_route` or `:not_serving`
+  when the options do not already offer it.
+  """
+  @spec transfer_trip_options(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t() | nil,
+          String.t() | nil,
+          :from | :to,
+          String.t() | nil
+        ) :: [Transfers.trip_option()]
+  def transfer_trip_options(organization_id, gtfs_version_id, route_id, stop_id, side, current) do
+    Transfers.trip_options(organization_id, gtfs_version_id, route_id, stop_id, side, current)
+  end
+
+  @doc """
+  Builds the transfer editor's connection map payload for two endpoints.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.map_payload/3`. The two stop or
+  station IDs come from the draft; each resolves inside the requested organization
+  and version to a point with float coordinates, or is nil when it is unknown,
+  foreign or has no coordinates. `children` holds the drawable children of a
+  station endpoint with their side, and `missing_coordinates` names the endpoints
+  of this version that carry none.
+  """
+  @spec transfer_map_payload(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: Transfers.map_payload()
+  def transfer_map_payload(organization_id, gtfs_version_id, endpoints) do
+    Transfers.map_payload(organization_id, gtfs_version_id, endpoints)
+  end
+
+  @doc """
+  Lists the version's drawable stops inside a map viewport.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.stops_in_bounds/3`. `bounds`
+  arrives from the map hook with `south`, `west`, `north` and `east` as numbers or
+  numeric strings; latitudes and longitudes are clamped to ±90 and ±180 and an
+  invalid box is `{:error, :invalid_bounds}`. At most 200 stops and stations come
+  back in name then ID order with `truncated?`, scoped to the organization and
+  version.
+  """
+  @spec transfer_stops_in_bounds(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, %{stops: [Transfers.map_point()], truncated?: boolean()}}
+          | {:error, :invalid_bounds}
+  def transfer_stops_in_bounds(organization_id, gtfs_version_id, bounds) do
+    Transfers.stops_in_bounds(organization_id, gtfs_version_id, bounds)
+  end
+
+  @doc """
+  Returns the version's stop bounding box for the map's initial view.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.version_extent/2`: the minimum
+  and maximum latitude and longitude over the organization's and version's stops
+  that have both coordinates, or nil when none does.
+  """
+  @spec transfer_version_extent(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          %{south: float(), west: float(), north: float(), east: float()} | nil
+  def transfer_version_extent(organization_id, gtfs_version_id) do
+    Transfers.version_extent(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Creates one general (types 0–3) transfer rule for the audit context's version.
+
+  Delegates directly to `GtfsPlanner.Gtfs.Transfers.create_general/2`. The
+  organization and version come from the context, never from the attributes, so a
+  foreign tenant or version in the request is ignored (R10). The references are
+  validated against the version inside the write transaction (R2/R4), the row is
+  audited with one in-transaction `"transfer"` change log (R9), and a key
+  collision is `{:error, {:duplicate, %{id, transfer_type} | nil}}` with `nil`
+  when the colliding row was removed in between (R5). Serialization failures and
+  deadlocks retry up to three attempts before `:busy` (R8).
+  """
+  @spec create_general_transfer(map(), AuditContext.t()) ::
+          {:ok, Transfer.t()} | {:error, Transfers.write_error()}
+  def create_general_transfer(attrs, %AuditContext{} = audit) do
+    Transfers.create_general(attrs, audit)
+  end
+
+  @doc """
+  Changes one existing general (types 0–3) transfer rule through
+  `GtfsPlanner.Gtfs.Transfers.update_general/4`.
+
+  The organization and version come from the context (R10). The target is loaded
+  through an id-scoped types 0–3 query, so an unknown or malformed ID, another
+  version's row and a type 4/5 row are `:not_found` (R1). `expected_updated_at` —
+  the stored `DateTime` or its ISO 8601 string — must match the loaded row,
+  otherwise `{:error, :stale}` is returned with no write; submitting the row's
+  current values returns the row unchanged with no audit log. A real change is
+  validated against the version's stops, routes and trips in the write transaction
+  (R2/R4) and audited with one `"updated"` `"transfer"` change log carrying the
+  before and after snapshots (R9). A key collision is
+  `{:error, {:duplicate, %{id, transfer_type} | nil}}` (R5), and serialization
+  failures and deadlocks retry up to three attempts before `:busy` (R8).
+  """
+  @spec update_general_transfer(
+          Ecto.UUID.t(),
+          map(),
+          DateTime.t() | String.t() | nil,
+          AuditContext.t()
+        ) :: {:ok, Transfer.t()} | {:error, Transfers.write_error()}
+  def update_general_transfer(id, attrs, expected_updated_at, %AuditContext{} = audit) do
+    Transfers.update_general(id, attrs, expected_updated_at, audit)
+  end
+
+  @doc """
+  Deletes one existing general (types 0–3) transfer rule through
+  `GtfsPlanner.Gtfs.Transfers.delete_general/3`.
+
+  The organization and version come from the context (R10). The target is loaded
+  through an id-scoped types 0–3 query, so an unknown or malformed ID, another
+  version's or organization's row and a type 4/5 row are `:not_found` (R1).
+  `expected_updated_at` — the stored `DateTime` or its ISO 8601 string — must match
+  the loaded row, otherwise `{:error, :stale}` is returned with no delete (R8).
+  Deletion checks scope, type and freshness only and never validates references, so
+  a damaged imported row stays deletable; it is audited with one in-transaction
+  `"deleted"` `"transfer"` change log carrying its stored snapshot as `before` and
+  nil as `after` (R9). Serialization failures and deadlocks retry up to three
+  attempts before `:busy` (R8).
+  """
+  @spec delete_general_transfer(
+          Ecto.UUID.t(),
+          DateTime.t() | String.t() | nil,
+          AuditContext.t()
+        ) :: {:ok, Transfer.t()} | {:error, :not_found | :stale | :busy}
+  def delete_general_transfer(id, expected_updated_at, %AuditContext{} = audit) do
+    Transfers.delete_general(id, expected_updated_at, audit)
+  end
+
+  @doc """
+  Deletes several general (types 0–3) transfer rules through
+  `GtfsPlanner.Gtfs.Transfers.delete_general_many/2`.
+
+  `pairs` is the exact list of `{id, updated_at}` pairs the editor's checked rows
+  resolve to; a list filter, search, sort or page never defines this scope (R8). An
+  empty list or a malformed element is `{:error, :invalid_input}`. The organization
+  and version come from the context (R10); every target is loaded through one query
+  scoped to them and to `transfer_type in 0..3`, so a missing, foreign, other-version
+  or type 4/5 id makes the whole request `:not_found` and one stale member makes it
+  `:stale`, both with nothing deleted (R1/R8). Otherwise the rows are deleted and
+  each is audited with one in-transaction `"deleted"` `"transfer"` change log
+  sharing one `operation_id` and listing every affected id, so the batch is
+  all-or-nothing (R9). Returns `{:ok, count}`. Serialization failures and deadlocks
+  retry up to three attempts before `:busy` (R8).
+  """
+  @spec delete_general_transfers([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
+          {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
+  def delete_general_transfers(pairs, %AuditContext{} = audit) do
+    Transfers.delete_general_many(pairs, audit)
   end
 
   @doc """
@@ -5341,7 +5575,14 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar", "trip"],
+      when type in [
+             "route_pattern",
+             "timed_pattern",
+             "route_pattern_build",
+             "calendar",
+             "trip",
+             "transfer"
+           ],
       do: {:error, :audit_only_entity}
 
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
@@ -5358,7 +5599,14 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   def rollback_target_snapshot(%ChangeLog{entity_type: type})
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build", "calendar", "trip"],
+      when type in [
+             "route_pattern",
+             "timed_pattern",
+             "route_pattern_build",
+             "calendar",
+             "trip",
+             "transfer"
+           ],
       do: {:error, :audit_only_entity}
 
   def rollback_target_snapshot(%ChangeLog{action: action})
@@ -5469,6 +5717,11 @@ defmodule GtfsPlanner.Gtfs do
   # entity itself never yields a snapshot.
   defp build_snapshot(type, %Trip{}) when type in [:trip, "trip"], do: nil
 
+  # A transfer's audit identity is the row UUID plus its GTFS external ID; the
+  # complete before/after snapshots are passed explicitly by Transfers, so the
+  # entity itself never yields a snapshot.
+  defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
+
   defp build_snapshot(_, _), do: nil
 
   defp snapshot_stop(stop) do
@@ -5555,6 +5808,10 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for(type, %Trip{} = trip, _attrs) when type in [:trip, "trip"],
     do: trip.trip_id
 
+  defp entity_external_id_for(type, %Transfer{} = transfer, _attrs)
+       when type in [:transfer, "transfer"],
+       do: Transfer.audit_external_id(transfer)
+
   defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
 
   defp entity_external_id_for(:route_pattern_build, nil, attrs),
@@ -5594,6 +5851,14 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  # A transfer write carries the explicit before/after snapshots and its operation
+  # scope; no transfer column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs) when type in [:transfer, "transfer"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(before after operation_id affected_transfer_ids)
+    end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -5620,6 +5885,19 @@ defmodule GtfsPlanner.Gtfs do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_trip_operation(attrs)
+  end
+
+  # Transfers, like trips, diff two explicit snapshots supplied by the caller. The log
+  # carries no transfer-column diff, and a bulk delete records its shared operation
+  # UUID and affected transfer UUIDs alongside the snapshot.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:transfer, "transfer"] and
+              action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+    |> put_transfer_operation(attrs)
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
@@ -5683,6 +5961,17 @@ defmodule GtfsPlanner.Gtfs do
   # trip can be reconstructed into the whole command.
   defp put_trip_operation(changed, attrs) do
     Enum.reduce([:operation_id, :affected_trip_ids], changed, fn key, acc ->
+      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
+        nil -> acc
+        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
+      end
+    end)
+  end
+
+  # A bulk transfer delete records its shared operation UUID and every affected
+  # transfer UUID alongside each row's before/after snapshot.
+  defp put_transfer_operation(changed, attrs) do
+    Enum.reduce([:operation_id, :affected_transfer_ids], changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))

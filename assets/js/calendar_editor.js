@@ -23,7 +23,7 @@ const CalendarEditor = {
           (url.hash && url.pathname === window.location.pathname && url.search === window.location.search)) return
       event.preventDefault()
       event.stopImmediatePropagation()
-      this.pushEvent("calendar_depart", {path: url.pathname + url.search})
+      this.pushEvent(this.el.dataset.departEvent || "calendar_depart", {path: url.pathname + url.search})
     }
     // History traversal is same-document: neither click nor beforeunload runs.
     // The early window listener runs before LiveView can replace the view.
@@ -36,7 +36,7 @@ const CalendarEditor = {
         return
       }
       if (this.el.dataset.dirty !== "true") return
-      if (window.confirm("Discard unsaved schedule changes? Cancel to keep editing.")) return
+      if (window.confirm(this.el.dataset.discardMessage || "Discard unsaved schedule changes? Cancel to keep editing.")) return
       event.stopImmediatePropagation()
       const delta = this.liveSocket.currentHistoryPosition - (event.state?.position || 0)
       this.restoringHistory = true
