@@ -15,6 +15,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDates do
       date, so this module raises `ArgumentError` when one date carries both types.
     * Results are ordered ascending by date and are deterministic. No date span is
       truncated, so a legitimate multi-year schedule is evaluated whole.
+    * `active_dates_between/4` bounds membership to an inclusive query window without
+      changing it. Only the requested days are enumerated, its result is the window
+      restriction of `active_dates/2`, and all supplied input is still validated -
+      including exceptions that fall outside the window.
     * Malformed input - a reversed or incomplete weekly range, a non-`Date` exception
       date or an unsupported exception type - raises `ArgumentError`. Callers validate
       editor input before persistence, so a raise here is a programming error rather
@@ -101,6 +105,37 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDates do
     calendar
     |> evaluate(exceptions)
     |> Map.fetch!(:active)
+  end
+
+  @doc """
+  Returns the effective service dates inside an inclusive query window.
+
+  Membership matches `active_dates/2` for every date the window covers: the weekly
+  range and weekday flags supply the base, additions inside or outside the weekly
+  range count, and removals subtract from both. The window only bounds the answer,
+  so a short request against a multi-year calendar enumerates the requested days
+  rather than the whole schedule. Supplied input is validated exactly as
+  `active_dates/2` validates it, so a malformed weekly range or a malformed, or
+  contradictory, exception entry still raises even when it falls outside the
+  window. A `last` that precedes `first` raises `ArgumentError`.
+  """
+  @spec active_dates_between(Calendar.t() | nil, [CalendarDate.t()], Date.t(), Date.t()) :: [
+          Date.t()
+        ]
+  def active_dates_between(calendar, exceptions, %Date{} = first, %Date{} = last) do
+    if Date.compare(first, last) == :gt do
+      raise ArgumentError,
+            "query window ends before it starts: " <>
+              "#{Date.to_iso8601(last)} < #{Date.to_iso8601(first)}"
+    end
+
+    {added, removed} = normalize_exceptions(exceptions)
+
+    calendar
+    |> base_dates_between(first, last)
+    |> MapSet.union(within_window(added, first, last))
+    |> MapSet.difference(within_window(removed, first, last))
+    |> sort_dates()
   end
 
   @doc """
@@ -230,27 +265,67 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDates do
           "expected exception_type 1 (added) or 2 (removed), got: #{inspect(exception)}"
   end
 
-  defp base_dates(nil), do: []
+  defp base_dates(calendar) do
+    case weekly_bounds(calendar) do
+      nil ->
+        []
 
-  defp base_dates(
-         %Calendar{start_date: %Date{} = start_date, end_date: %Date{} = end_date} = calendar
-       ) do
+      {start_date, end_date} ->
+        start_date |> Date.range(end_date) |> Enum.filter(&service_weekday?(calendar, &1))
+    end
+  end
+
+  # Validates the weekly row exactly as the full-calendar path does and returns its
+  # inclusive bounds, or `nil` for dates-only service. Bounded callers reuse it so a
+  # query window disjoint from a malformed weekly range cannot hide the defect.
+  defp weekly_bounds(nil), do: nil
+
+  defp weekly_bounds(%Calendar{start_date: %Date{} = start_date, end_date: %Date{} = end_date}) do
     if Date.compare(start_date, end_date) == :gt do
       raise ArgumentError,
             "calendar weekly range ends before it starts: " <>
               "#{Date.to_iso8601(end_date)} < #{Date.to_iso8601(start_date)}"
     end
 
-    start_date |> Date.range(end_date) |> Enum.filter(&service_weekday?(calendar, &1))
+    {start_date, end_date}
   end
 
-  defp base_dates(%Calendar{} = calendar) do
+  defp weekly_bounds(%Calendar{} = calendar) do
     raise ArgumentError,
           "calendar weekly range needs both start_date and end_date, service: #{inspect(calendar.service_id)}"
   end
 
-  defp base_dates(other) do
+  defp weekly_bounds(other) do
     raise ArgumentError, "expected a Calendar struct or nil, got: #{inspect(other)}"
+  end
+
+  defp base_dates_between(calendar, first, last) do
+    with {start_date, end_date} <- weekly_bounds(calendar),
+         {from, to} <- overlapping_bounds({start_date, end_date}, first, last) do
+      from |> Date.range(to) |> Enum.filter(&service_weekday?(calendar, &1)) |> MapSet.new()
+    else
+      # Dates-only service, or a query window that misses the weekly range entirely.
+      nil -> MapSet.new()
+    end
+  end
+
+  defp overlapping_bounds({start_date, end_date}, first, last) do
+    from = later_date(start_date, first)
+    to = earlier_date(end_date, last)
+
+    if Date.compare(from, to) == :gt, do: nil, else: {from, to}
+  end
+
+  defp later_date(left, right), do: if(Date.compare(left, right) == :gt, do: left, else: right)
+
+  defp earlier_date(left, right), do: if(Date.compare(left, right) == :lt, do: left, else: right)
+
+  defp within_window(dates, first, last) do
+    MapSet.new(
+      Enum.filter(dates, fn date ->
+        Date.compare(date, first) != :lt and Date.compare(date, last) != :gt
+      end)
+    )
   end
 
   defp service_weekday?(calendar, date) do

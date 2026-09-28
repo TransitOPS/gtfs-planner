@@ -11,6 +11,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDatesTest do
   - Warnings use an explicit today with exact 0/14/15-day boundaries and keep
     redundant additions, removals on non-service days and outside-range exceptions
     distinguishable.
+  - Bounded membership (EV-16) enumerates only the requested days of a weekly,
+    dates-only or multi-year calendar, keeps outside-range additions and removals
+    consistent with `active_dates/2`, and still rejects reversed query bounds and
+    malformed or contradictory input that falls outside the window.
 
   Every expected value is hand-derived or produced by a fixed-seed generator plus a
   bounded civil-date oracle that never calls production helpers.
@@ -118,6 +122,208 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDatesTest do
           %CalendarDate{date: ~D[2026-01-01], exception_type: 1},
           %CalendarDate{date: ~D[2026-01-01], exception_type: 2}
         ])
+      end
+    end
+  end
+
+  describe "active_dates_between/4" do
+    test "bounds a weekly calendar with outside-range additions and removals" do
+      calendar = weekly(~D[2026-01-05], ~D[2026-01-16], [1, 2, 3, 4, 5])
+
+      exceptions = [
+        # Outside the weekly range, before and after.
+        added(~D[2025-12-25]),
+        added(~D[2026-01-03]),
+        added(~D[2026-02-07]),
+        # Inside the range: one already-served Wednesday and one non-service Saturday.
+        added(~D[2026-01-07]),
+        added(~D[2026-01-10]),
+        # Two served Tuesdays removed inside the window, one date removed after it.
+        removed(~D[2026-01-06]),
+        removed(~D[2026-01-13]),
+        removed(~D[2026-01-20])
+      ]
+
+      bounded =
+        ServiceDates.active_dates_between(calendar, exceptions, ~D[2026-01-06], ~D[2026-01-20])
+
+      assert bounded == [
+               ~D[2026-01-07],
+               ~D[2026-01-08],
+               ~D[2026-01-09],
+               ~D[2026-01-10],
+               ~D[2026-01-12],
+               ~D[2026-01-14],
+               ~D[2026-01-15],
+               ~D[2026-01-16]
+             ]
+
+      # The served Saturday addition survives; the Monday before the window, both
+      # outside-range additions and the after-window removal stay out.
+      assert ~D[2026-01-10] in bounded
+      refute ~D[2026-01-05] in bounded
+      refute ~D[2026-01-03] in bounded
+      refute ~D[2025-12-25] in bounded
+      refute ~D[2026-02-07] in bounded
+    end
+
+    test "bounds dates-only service, deduplicates and ignores no-op removals" do
+      exceptions = [
+        added(~D[2026-01-15]),
+        added(~D[2026-03-02]),
+        added(~D[2026-03-04]),
+        added(~D[2026-03-04]),
+        added(~D[2026-04-01]),
+        # A removal with neither a weekly day nor an addition to subtract is a no-op.
+        removed(~D[2026-03-03]),
+        removed(~D[2026-03-10])
+      ]
+
+      assert ServiceDates.active_dates_between(nil, exceptions, ~D[2026-03-01], ~D[2026-03-31]) ==
+               [~D[2026-03-02], ~D[2026-03-04]]
+
+      assert ServiceDates.active_dates_between(nil, exceptions, ~D[2026-01-15], ~D[2026-04-01]) ==
+               [~D[2026-01-15], ~D[2026-03-02], ~D[2026-03-04], ~D[2026-04-01]]
+    end
+
+    test "returns only the requested days of a multi-year calendar" do
+      calendar = weekly(~D[2000-01-01], ~D[2010-12-31], [1, 2, 3, 4, 5, 6, 7])
+
+      # The full-calendar contract keeps evaluating the whole legitimate schedule.
+      assert length(ServiceDates.active_dates(calendar, [])) == 4018
+
+      assert ServiceDates.active_dates_between(calendar, [], ~D[2005-06-13], ~D[2005-06-15]) ==
+               [~D[2005-06-13], ~D[2005-06-14], ~D[2005-06-15]]
+
+      exceptions = [
+        removed(~D[2005-06-14]),
+        removed(~D[1999-12-31]),
+        added(~D[2011-01-01])
+      ]
+
+      assert ServiceDates.active_dates_between(
+               calendar,
+               exceptions,
+               ~D[2005-06-13],
+               ~D[2005-06-15]
+             ) ==
+               [~D[2005-06-13], ~D[2005-06-15]]
+
+      assert ServiceDates.active_dates_between(calendar, [], ~D[2011-01-01], ~D[2011-01-02]) == []
+    end
+
+    test "agrees with active_dates/2 across window shapes over one calendar" do
+      calendar = weekly(~D[2026-01-05], ~D[2026-01-16], [1, 2, 3, 4, 5])
+      exceptions = [added(~D[2026-01-03]), added(~D[2026-01-10]), removed(~D[2026-01-13])]
+      full = ServiceDates.active_dates(calendar, exceptions)
+
+      for {first, last} <- [
+            {~D[2026-01-05], ~D[2026-01-16]},
+            {~D[2026-01-05], ~D[2026-01-05]},
+            {~D[2026-01-10], ~D[2026-01-11]},
+            {~D[2025-12-29], ~D[2026-01-01]},
+            {~D[2026-01-17], ~D[2026-01-20]}
+          ] do
+        expected =
+          Enum.filter(full, &(Date.compare(&1, first) != :lt and Date.compare(&1, last) != :gt))
+
+        assert ServiceDates.active_dates_between(calendar, exceptions, first, last) == expected,
+               "window #{Date.to_iso8601(first)}..#{Date.to_iso8601(last)}"
+      end
+
+      # A weekend window with no weekly day still reports the Saturday addition;
+      # before-range and after-range windows carry neither an addition nor a service day.
+      assert ServiceDates.active_dates_between(
+               calendar,
+               exceptions,
+               ~D[2026-01-10],
+               ~D[2026-01-11]
+             ) == [~D[2026-01-10]]
+
+      assert ServiceDates.active_dates_between(
+               calendar,
+               exceptions,
+               ~D[2025-12-29],
+               ~D[2026-01-01]
+             ) == []
+
+      assert ServiceDates.active_dates_between(
+               calendar,
+               exceptions,
+               ~D[2026-01-17],
+               ~D[2026-01-20]
+             ) == []
+    end
+
+    test "raises for a reversed query window" do
+      calendar = weekly(~D[2026-01-05], ~D[2026-01-16], [1, 2, 3, 4, 5])
+
+      assert_raise ArgumentError, ~r/query window ends before it starts/, fn ->
+        ServiceDates.active_dates_between(
+          calendar,
+          [added(~D[2026-01-10])],
+          ~D[2026-01-16],
+          ~D[2026-01-05]
+        )
+      end
+    end
+
+    test "raises for malformed input even when it falls outside the query window" do
+      first = ~D[2026-01-05]
+      last = ~D[2026-01-09]
+
+      assert_raise ArgumentError, ~r/weekly range ends before it starts/, fn ->
+        ServiceDates.active_dates_between(
+          weekly(~D[2026-01-10], ~D[2026-01-05], [1]),
+          [],
+          first,
+          last
+        )
+      end
+
+      assert_raise ArgumentError, ~r/needs both start_date and end_date/, fn ->
+        ServiceDates.active_dates_between(
+          %Calendar{start_date: ~D[2026-01-05], end_date: nil},
+          [],
+          first,
+          last
+        )
+      end
+
+      assert_raise ArgumentError, ~r/expected a Calendar struct or nil/, fn ->
+        ServiceDates.active_dates_between(
+          %{start_date: ~D[2026-01-05], end_date: ~D[2026-01-16]},
+          [],
+          first,
+          last
+        )
+      end
+
+      assert_raise ArgumentError, ~r/conflicting exception types for 2026-06-01/, fn ->
+        ServiceDates.active_dates_between(
+          nil,
+          [added(~D[2026-06-01]), removed(~D[2026-06-01])],
+          first,
+          last
+        )
+      end
+
+      assert_raise ArgumentError, ~r/expected exception_type 1/, fn ->
+        ServiceDates.active_dates_between(
+          nil,
+          [%CalendarDate{date: ~D[2026-06-01], exception_type: 3}],
+          first,
+          last
+        )
+      end
+
+      assert_raise ArgumentError, ~r/expected a calendar date with a Date value/, fn ->
+        ServiceDates.active_dates_between(
+          nil,
+          [%CalendarDate{date: nil, exception_type: 1}],
+          first,
+          last
+        )
       end
     end
   end
@@ -553,6 +759,25 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDatesTest do
         assert actual == expected,
                "fixture #{index} active dates: #{describe_fixture(calendar_or_nil, exceptions)}"
 
+        # Bounded membership must be the window restriction of the same oracle, for a
+        # window over the fixture range and for one that reaches past it.
+        for {window_first, window_last} <- bounded_windows() do
+          expected_window =
+            Enum.filter(
+              expected,
+              &(Date.compare(&1, window_first) != :lt and Date.compare(&1, window_last) != :gt)
+            )
+
+          assert ServiceDates.active_dates_between(
+                   calendar_or_nil,
+                   exceptions,
+                   window_first,
+                   window_last
+                 ) ==
+                   expected_window,
+                 "fixture #{index} bounded #{Date.to_iso8601(window_first)}..#{Date.to_iso8601(window_last)}: #{describe_fixture(calendar_or_nil, exceptions)}"
+        end
+
         assert actual == Enum.sort_by(Enum.uniq(actual), & &1, Date), "fixture #{index} ordering"
 
         result = ServiceDates.periods(calendar_or_nil, exceptions)
@@ -610,6 +835,13 @@ defmodule GtfsPlanner.Gtfs.Calendars.ServiceDatesTest do
   end
 
   defp cell(cells, date), do: Enum.find(cells, &(&1.date == date))
+
+  defp bounded_windows do
+    [
+      {@window_start, Date.add(@window_start, 44)},
+      {Date.add(@window_start, 1000), @window_end}
+    ]
+  end
 
   # -- fixed-seed generator and bounded oracle --------------------------------
 
