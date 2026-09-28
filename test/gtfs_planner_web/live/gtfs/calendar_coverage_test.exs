@@ -219,6 +219,46 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverageTest do
     end
   end
 
+  describe "a long history that has already ended" do
+    test "keeps the feed's own bounds instead of inverting the recent window", context do
+      screen = ended_screen(context, ~D[2020-01-01], ~D[2024-12-31]) |> pinned(~D[2026-09-15])
+      projection = CalendarCoverage.project(screen, :whole)
+
+      # Today's recent window would start 2025-09-01, after this feed ended. Clamping
+      # only the axis start would leave a window running backwards, so the clamp must
+      # not apply and the feed keeps its own month-aligned bounds.
+      assert projection.first_date == ~D[2020-01-01]
+      assert projection.last_date == ~D[2024-12-31]
+      assert Date.diff(projection.last_date, projection.first_date) + 1 == 1827
+      refute projection.clipped?
+      assert projection.today_position == nil
+
+      # Every mark stays inside the axis rather than carrying a negative index.
+      marks = marks!(projection, "ENDED")
+      assert marks != []
+
+      assert Enum.all?(marks, fn mark ->
+               Date.compare(mark.first_date, projection.first_date) != :lt and
+                 Date.compare(mark.last_date, projection.last_date) != :gt and
+                 mark.left >= 0.0 and mark.left + mark.width <= 1.0 + 1.0e-9
+             end)
+    end
+
+    test "keeps a one-day span when the window would start the day after the feed ends",
+         context do
+      # Pinned today makes the window start 2025-07-01, exactly one day after this
+      # feed's month-aligned end (2025-06-30); clamping would leave a zero-day axis.
+      screen = ended_screen(context, ~D[2020-01-01], ~D[2025-06-30]) |> pinned(~D[2026-07-15])
+      projection = CalendarCoverage.project(screen, :whole)
+
+      assert projection.first_date == ~D[2020-01-01]
+      assert projection.last_date == ~D[2025-06-30]
+      assert Date.diff(projection.last_date, projection.first_date) + 1 == 2008
+      assert projection.ticks != []
+      assert projection.today_position == nil
+    end
+  end
+
   describe "rows against the axis and version-wide gaps" do
     test "report offscreen before or after while keeping their exact dates", context do
       screen = bounded_screen(context) |> pinned(~D[2028-06-15])
@@ -399,6 +439,21 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverageTest do
     read_screen(context, calendar, "", attributes)
   end
 
+  # A weekday identity whose whole span is long history that ended before today.
+  defp ended_screen(context, first_date, last_date) do
+    calendar = """
+    service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date
+    ENDED,1,1,1,1,1,0,0,#{compact(first_date)},#{compact(last_date)}
+    """
+
+    attributes = """
+    service_id,service_description
+    ENDED,Ended Long History
+    """
+
+    read_screen(context, calendar, "", attributes)
+  end
+
   defp metadata_only_screen(context) do
     attributes = """
     service_id,service_description
@@ -432,9 +487,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverageTest do
 
   defp removal_rows(service_id, dates) do
     Enum.map_join(dates, fn date ->
-      "#{service_id},#{date |> Date.to_iso8601() |> String.replace("-", "")},2\n"
+      "#{service_id},#{compact(date)},2\n"
     end)
   end
+
+  defp compact(date), do: date |> Date.to_iso8601() |> String.replace("-", "")
 
   # -- reads ------------------------------------------------------------------
 

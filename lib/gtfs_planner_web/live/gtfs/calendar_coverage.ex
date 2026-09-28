@@ -109,8 +109,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverage do
   @spec project(Calendars.screen(), range()) :: projection()
   def project(screen, range) when range in [:whole, :near, :all] do
     case axis(screen, range) do
-      nil -> empty_projection(screen)
-      window -> projection(screen, range, window)
+      nil ->
+        empty_projection(screen)
+
+      window ->
+        # A shared axis must cover at least one day. The axis builder keeps the feed's own
+        # bounds rather than inverting a clamp, and this guard keeps a future caller from
+        # reintroducing a zero or negative span at the one point that divides by it.
+        if span(window) > 0, do: projection(screen, range, window), else: empty_projection(screen)
     end
   end
 
@@ -157,11 +163,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverage do
     last_date = Date.end_of_month(horizon.last_date)
     recent_start = Date.new!(today.year - 1, today.month, 1)
 
-    # Only `:whole` discloses the recent window, and only when the feed really starts
-    # earlier, so a feed that is already recent or future-dated keeps its own bounds.
+    # Only `:whole` discloses the recent window, only when the feed really starts
+    # earlier, and only while the feed's own last month still reaches `recent_start`.
+    # Clamping the start past the end would invert the axis, so a feed that is already
+    # recent, future-dated or wholly historical keeps its own bounds.
     recent? =
       range == :whole and long_history?(first_date, last_date) and
-        Date.compare(recent_start, first_date) == :gt
+        Date.compare(recent_start, first_date) == :gt and
+        Date.compare(recent_start, last_date) != :gt
 
     %{first_date: if(recent?, do: recent_start, else: first_date), last_date: last_date}
   end
