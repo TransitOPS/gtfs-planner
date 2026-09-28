@@ -27,7 +27,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   before writing, enforces the custom-compatibility and frequency rules at the
   context boundary, and writes one `"trip"` audit log per affected trip. A bulk
   deletion validates the whole list before deleting anything and removes
-  stop_times, frequencies and trip-scoped transfers before the trips.
+  stop_times, frequencies and trip-scoped transfers before the trips. A calendar
+  change on a blocked trip additionally joins the block guarantee: it takes
+  `Blocking.lock_blocking!/1` in the rule-table order and clears the block in the
+  same update when the new dates would put the trip on another vehicle's work
+  (R9, D2, INV-1).
 
   Every result is scoped: a foreign, invalid or unpublished organization,
   version or route rolls back to `{:error, :not_found}`.
@@ -37,6 +41,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
@@ -224,8 +229,12 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `:bikes_allowed`. The metadata fields go through a changeset that casts only
   those four fields and validates the two 0..2 enums. A block is read-only here:
   block membership changes on the Blocks page, so a submitted `:block_id` is
-  ignored and leaves the stored block untouched. `direction_id` and
-  `route_pattern_id` are never editable, and `trip_id` never changes.
+  ignored and leaves the stored block untouched. A calendar change is the one
+  exception: it takes the version's blocking advisory lock and clears the block in
+  the same update when the trip would join another vehicle's work on its new dates
+  (R9, D2), so one audit entry records the calendar and the block change together.
+  `direction_id` and `route_pattern_id` are never editable, and `trip_id` never
+  changes.
 
   `expected_updated_at` (a `DateTime` or an ISO 8601 string) must equal the
   locked trip's `updated_at`, otherwise nothing is written and `:stale` is
@@ -1209,9 +1218,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # Every trip writer locks in the rule-table order: the target calendar's version
-  # row `FOR SHARE`, the route `FOR UPDATE`, the trip's pattern `FOR UPDATE` and
-  # then the trip row `FOR UPDATE` by UUID. Timing rows load after the route lock,
-  # so a retime always materializes the committed timing.
+  # row `FOR SHARE`, the route `FOR UPDATE`, the trip's pattern `FOR UPDATE`, the
+  # version's blocking advisory lock when the request changes the calendar, and then
+  # the trip row `FOR UPDATE` by UUID (INV-1). Timing rows load after the route
+  # lock, so a retime always materializes the committed timing.
   defp do_update_trip(route_id, trip_id, attrs, requested_start, expected_updated_at, audit) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
@@ -1227,6 +1237,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, target_service)
     route = RoutePatterns.lock_published_route!(audit, route_id)
     pattern = lock_trip_pattern!(route, current.route_pattern_id)
+
+    # A calendar change can clear the block, so it joins the block guarantee: the
+    # advisory lock is taken after the pattern lock and before the trip row lock.
+    if target_service != current.service_id, do: Blocking.lock_blocking!(version_id)
+
     trip = lock_trip!(organization_id, version_id, route.route_id, trip_id)
 
     if stale?(trip, expected_updated_at) or trip.route_pattern_id != current.route_pattern_id,
@@ -1287,9 +1302,29 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp put_service_change(changeset, request, trip) do
-    if is_binary(request.service) and request.service != trip.service_id,
-      do: Ecto.Changeset.change(changeset, service_id: request.service),
-      else: changeset
+    if is_binary(request.service) and request.service != trip.service_id do
+      changeset
+      |> Ecto.Changeset.change(service_id: request.service)
+      |> clear_conflicting_block(trip, request.service)
+    else
+      changeset
+    end
+  end
+
+  # D2/R9: a calendar change that would put the trip on dates where its block runs
+  # another vehicle's work clears the block in the same update, so `persist_trip_edit!/5`
+  # writes both changes at once and its `before`/`after` snapshots record them together
+  # (AC-17). An unblocked trip has nothing to clear and reads no calendars.
+  defp clear_conflicting_block(changeset, trip, service_id) do
+    if is_binary(trip.block_id) and
+         not Blocking.calendar_change_keeps_block?(
+           trip.organization_id,
+           trip.gtfs_version_id,
+           trip,
+           service_id
+         ),
+       do: Ecto.Changeset.change(changeset, block_id: nil),
+       else: changeset
   end
 
   # Frequency service has no editable start or timing. A linked trip retimes

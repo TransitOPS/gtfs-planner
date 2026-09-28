@@ -237,6 +237,47 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Reports whether a trip may keep its block when its calendar changes (R9).
+
+  A trip's *companions* are the other trips with its `block_id`. The ID is kept only
+  when every companion that runs on a date of the new calendar also ran on a date of
+  the old one — or when there is none — so a calendar change never silently puts the
+  trip on another vehicle's work. `Schedules.update_trip/5` takes
+  `lock_blocking!/1` for a calendar change and clears the block in the same update
+  when this returns false (D2, AC-17).
+
+  Both calendars' dates come from `Calendars.list_calendars/3` through
+  `DayTypes.service_dates/1`, the one service-date source every date evaluation uses
+  (CR-2), so this belongs inside the caller's transaction. A trip with no block has
+  nothing to clear and keeps its answer `true`.
+
+  ## Examples
+
+      iex> calendar_change_keeps_block?(organization_id, gtfs_version_id, trip, "SAT")
+      false
+  """
+  @spec calendar_change_keeps_block?(Ecto.UUID.t(), Ecto.UUID.t(), Trip.t(), String.t()) ::
+          boolean()
+  def calendar_change_keeps_block?(
+        organization_id,
+        gtfs_version_id,
+        %Trip{block_id: block_id} = trip,
+        service_id
+      )
+      when is_binary(block_id) do
+    service_dates = calendar_service_dates(organization_id, gtfs_version_id)
+    companions = block_companions(organization_id, gtfs_version_id, block_id, trip.id)
+
+    companions_before = companions_on_dates(companions, service_dates, trip.service_id)
+    companions_after = companions_on_dates(companions, service_dates, service_id)
+
+    MapSet.subset?(companions_after, companions_before)
+  end
+
+  def calendar_change_keeps_block?(_organization_id, _gtfs_version_id, %Trip{}, _service_id),
+    do: true
+
+  @doc """
   Applies one block command on `day_type_key` inside the reviewed transaction.
 
   The command's shape is validated before any transaction (AC-13, Mutation):
@@ -355,6 +396,40 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       )
 
     Repo.one(query) || Repo.rollback(:not_found)
+  end
+
+  # R9's old and new dates come from the same `Calendars.list_calendars/3` summaries
+  # the day load derives day types from, so a calendar change and a day load cannot
+  # disagree about a service's dates (CR-2). Inside a write transaction the version
+  # row `FOR SHARE` this re-takes is already held by the caller.
+  defp calendar_service_dates(organization_id, gtfs_version_id) do
+    organization_id
+    |> load_calendars!(gtfs_version_id)
+    |> DayTypes.service_dates()
+  end
+
+  # The other trips of the block, in this organization and version only (CR-4). Only
+  # the identity and the service are needed: the dates come from the calendars.
+  defp block_companions(organization_id, gtfs_version_id, block_id, trip_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.block_id == ^block_id and t.id != ^trip_id,
+      select: %{id: t.id, service_id: t.service_id}
+    )
+    |> Repo.all()
+  end
+
+  defp companions_on_dates(companions, service_dates, service_id) do
+    dates = Map.get(service_dates, service_id, MapSet.new())
+
+    companions
+    |> Enum.filter(&companion_on_dates?(&1.service_id, service_dates, dates))
+    |> MapSet.new(& &1.id)
+  end
+
+  defp companion_on_dates?(service_id, service_dates, dates) do
+    not MapSet.disjoint?(Map.get(service_dates, service_id, MapSet.new()), dates)
   end
 
   defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, min_layover) do
