@@ -183,11 +183,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       _parent =
         stop(context, %{stop_id: "Central", stop_name: "Union Station", location_type: 1})
 
+      # A child stop requires a level_id (`Stop.changeset/2`), so both platforms
+      # carry one; the level need not exist because the stop level FK was dropped.
       platform_a =
         stop(context, %{
           stop_id: "CA",
           stop_name: "Platform A",
           parent_station: "Central",
+          level_id: "L1",
           stop_lat: nil,
           stop_lon: nil
         })
@@ -197,6 +200,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
           stop_id: "CB",
           stop_name: "Platform B",
           parent_station: "Central",
+          level_id: "L1",
           stop_lat: nil,
           stop_lon: nil
         })

@@ -329,6 +329,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(socket, %{block: blank_to_nil(block_id), trip: nil, gap: nil}, close_drawer: true)
   end
 
+  def handle_event("open_block", _params, socket), do: {:noreply, socket}
+
   def handle_event("retry", _params, socket) do
     {:noreply, socket |> load_day() |> resolve_drawers()}
   end
