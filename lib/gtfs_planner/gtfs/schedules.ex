@@ -323,6 +323,40 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   @doc """
+  Builds the audit snapshot of many trips in three scoped queries.
+
+  Returns `%{trip.id => snapshot}` with the same snapshot shape the trip edit path
+  records, so a caller that audits many trips in one write reuses the stored shape
+  instead of duplicating it (CR-5). Stop times, frequencies and timing names load
+  for every given trip at once, scoped to `organization_id` and `version_id`; stop
+  times are included only for a trip whose `pattern_derivation_state` is not
+  `"linked"`, exactly as `edit_snapshot/3` decides, and `start_time` is the first
+  stop time's departure.
+  """
+  @spec trip_audit_snapshots(Ecto.UUID.t(), Ecto.UUID.t(), [Trip.t()]) :: %{
+          Ecto.UUID.t() => map()
+        }
+  def trip_audit_snapshots(organization_id, version_id, trips) when is_list(trips) do
+    stop_times_by_trip = load_stop_times(organization_id, version_id, trips)
+    frequencies_by_trip = load_frequencies(organization_id, version_id, trips)
+    timing_names = timing_names(organization_id, version_id, trips)
+
+    Map.new(trips, fn trip ->
+      stop_times = Map.get(stop_times_by_trip, trip.trip_id, [])
+
+      {trip.id,
+       trip_snapshot(
+         trip,
+         Map.get(timing_names, trip.timed_pattern_id),
+         first_departure_secs(stop_times),
+         stop_times,
+         ordered_frequencies(frequencies_by_trip, trip.trip_id),
+         trip.pattern_derivation_state != "linked"
+       )}
+    end)
+  end
+
+  @doc """
   Loads one route's Schedules read for `organization_id`/`version_id`.
 
   `filters` accepts `:service_id`, `:direction_id` (or `:direction`), `:pattern`
@@ -1699,6 +1733,34 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       select: t.name
     )
     |> Repo.one()
+  end
+
+  defp timing_names(_organization_id, _version_id, []), do: %{}
+
+  defp timing_names(organization_id, version_id, trips) do
+    timed_pattern_ids =
+      trips
+      |> Enum.map(& &1.timed_pattern_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    from(t in TimedPattern,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          t.id in ^timed_pattern_ids,
+      select: {t.id, t.name}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # `load_frequencies/3` orders a batch by trip and start time; sorting one trip's
+  # windows by start time then id restores `trip_frequencies/3`'s order, so the
+  # batch snapshot and the snapshot an edit records compare equal.
+  defp ordered_frequencies(frequencies_by_trip, trip_id) do
+    frequencies_by_trip
+    |> Map.get(trip_id, [])
+    |> Enum.sort_by(&{&1.start_time, &1.id})
   end
 
   # The requested start is optional; when present it must parse before any lock
