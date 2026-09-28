@@ -22,14 +22,26 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   row they loaded against the current row. The digest covers exactly the
   persisted closure row, so editing a referenced calendar or pathway never makes
   a closure stale, while any write to the row itself does.
+
+  Creates are audited, locked mutations: `create_pathway_evolution/2` rechecks
+  the actor's active editor membership, locks the scoped published version with
+  `Calendars.lock_published_version!/1`, validates the exact native service and
+  pathway references (plus station membership when the audit context carries a
+  station), inserts through `PathwayEvolution.changeset/2` and records one
+  structured `pathway_evolution` change log in the same transaction. Any audit
+  failure rolls the closure back. Scope comes from the `AuditContext`, never
+  from the attribute map.
   """
 
   import Ecto.Query, warn: false
+  import Ecto.Changeset, only: [add_error: 3, get_field: 2]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.Stop
@@ -52,6 +64,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
           fingerprint: fingerprint(),
           pathway: Pathway.t(),
           calendar: calendar_option() | nil
+        }
+  @type notice :: {:overlaps, [PathwayEvolution.t()]} | :no_active_dates
+  @type mutation_result :: %{
+          evolution: PathwayEvolution.t(),
+          fingerprint: fingerprint(),
+          notices: [notice()]
         }
 
   @doc """
@@ -155,6 +173,219 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  @doc """
+  Creates one validated closure under the published-version write lock.
+
+  The actor's active editor membership is rechecked first (`:forbidden` on a
+  missing, foreign, deactivated or role-less membership), then the scoped
+  published version is locked (`:not_found` when unpublished or foreign). The
+  `service_id` must carry at least one `calendars` or `calendar_dates` row in the
+  version — a metadata-only identity is refused with a `:service_id` field error
+  — and `pathway_id` must be an exact pathway of the version, a `:pathway_id`
+  field error otherwise. When the audit context carries a `station_stop_id`, the
+  station must be a real station in the scope (`:not_found` otherwise) and the
+  pathway must belong to it (a `:pathway_id` field error otherwise).
+
+  The row is inserted through `PathwayEvolution.changeset/2` (which owns the
+  window rules and the note ceiling) and one structured `pathway_evolution`
+  change log records the closure UUID as `entity_id`, `pathway_id` as external
+  ID and `before` = nil / `after` = the normalized closure snapshot in the same
+  transaction; any audit failure rolls back the closure. An exact duplicate
+  tuple is refused with "This closure already exists."
+
+  A successful create returns the persisted row, its fingerprint and notices:
+  `{:overlaps, others}` names other closures on the same pathway and `service_id`
+  whose windows overlap (adjacent windows and other services produce no overlap
+  notice), and `:no_active_dates` reports a referenced calendar with no active
+  service dates. Scope comes from the audit context, never from `attrs`.
+  """
+  @spec create_pathway_evolution(map(), AuditContext.t()) ::
+          {:ok, mutation_result()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def create_pathway_evolution(attrs, %AuditContext{} = audit_context) when is_map(attrs) do
+    transact(fn ->
+      authorize_editor!(audit_context)
+      Calendars.lock_published_version!(audit_context)
+      create_locked!(attrs, audit_context)
+    end)
+  end
+
+  defp create_locked!(attrs, audit_context) do
+    station = station_scope!(audit_context)
+
+    changeset =
+      %PathwayEvolution{
+        organization_id: audit_context.organization_id,
+        gtfs_version_id: audit_context.gtfs_version_id
+      }
+      |> PathwayEvolution.changeset(attrs)
+      |> validate_service_reference(audit_context)
+      |> validate_pathway_reference(audit_context, station)
+
+    evolution = insert_or_rollback!(changeset)
+    audit!(audit_context, evolution)
+
+    %{
+      evolution: evolution,
+      fingerprint: fingerprint(evolution),
+      notices: notices_for(evolution)
+    }
+  end
+
+  defp authorize_editor!(%AuditContext{} = audit_context) do
+    case Calendars.authorize_editor(audit_context) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The station scope is authority, not a field: a missing, foreign or
+  # non-station target returns :not_found before any field validation, matching
+  # the read boundary. A context without a station scope skips the check.
+  defp station_scope!(%AuditContext{station_stop_id: nil}), do: nil
+
+  defp station_scope!(%AuditContext{} = audit_context) do
+    case Gtfs.get_stop_by_stop_id(
+           audit_context.organization_id,
+           audit_context.gtfs_version_id,
+           audit_context.station_stop_id
+         ) do
+      %Stop{location_type: 1} = station -> station
+      _other -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp validate_service_reference(changeset, %AuditContext{} = audit_context) do
+    service_id = get_field(changeset, :service_id)
+
+    if present?(service_id) and
+         not MapSet.member?(
+           native_service_ids(audit_context.organization_id, audit_context.gtfs_version_id),
+           service_id
+         ) do
+      add_error(changeset, :service_id, "has no calendar or calendar dates in this version")
+    else
+      changeset
+    end
+  end
+
+  defp validate_pathway_reference(changeset, %AuditContext{} = audit_context, station) do
+    pathway_id = get_field(changeset, :pathway_id)
+
+    if present?(pathway_id) do
+      cond do
+        is_nil(scoped_pathway(audit_context, pathway_id)) ->
+          add_error(changeset, :pathway_id, "does not exist in this version")
+
+        not is_nil(station) and not pathway_at_station?(audit_context, station, pathway_id) ->
+          add_error(changeset, :pathway_id, "is not a pathway at this station")
+
+        true ->
+          changeset
+      end
+    else
+      changeset
+    end
+  end
+
+  defp scoped_pathway(%AuditContext{} = audit_context, pathway_id) do
+    from(p in Pathway,
+      where:
+        p.organization_id == ^audit_context.organization_id and
+          p.gtfs_version_id == ^audit_context.gtfs_version_id and
+          p.pathway_id == ^pathway_id
+    )
+    |> Repo.one()
+  end
+
+  # Membership reuses the station snapshot's pathway rule unchanged: the
+  # pathway has either endpoint among the station's descendant stops.
+  defp pathway_at_station?(%AuditContext{} = audit_context, station, pathway_id) do
+    audit_context.organization_id
+    |> Gtfs.list_pathways_for_station(audit_context.gtfs_version_id, station.id)
+    |> Enum.any?(&(&1.pathway_id == pathway_id))
+  end
+
+  defp insert_or_rollback!(%Ecto.Changeset{} = changeset) do
+    case Repo.insert(changeset) do
+      {:ok, evolution} -> evolution
+      {:error, error} -> Repo.rollback(error)
+    end
+  end
+
+  defp audit!(%AuditContext{} = audit_context, %PathwayEvolution{} = evolution) do
+    case Gtfs.record_change_in_transaction(
+           audit_context,
+           :pathway_evolution,
+           evolution,
+           "created"
+         ) do
+      {:ok, log} -> log
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp notices_for(%PathwayEvolution{} = evolution) do
+    overlaps = overlapping_closures(evolution)
+
+    overlap_notices = if overlaps == [], do: [], else: [{:overlaps, overlaps}]
+
+    if service_active_dates?(evolution) do
+      overlap_notices
+    else
+      overlap_notices ++ [:no_active_dates]
+    end
+  end
+
+  # Half-open windows: two closures overlap only when each starts before the
+  # other ends, so adjacent windows never warn. Only the same pathway and
+  # service_id can warn.
+  defp overlapping_closures(%PathwayEvolution{} = evolution) do
+    from(e in PathwayEvolution,
+      where:
+        e.organization_id == ^evolution.organization_id and
+          e.gtfs_version_id == ^evolution.gtfs_version_id and
+          e.pathway_id == ^evolution.pathway_id and e.service_id == ^evolution.service_id and
+          e.id != ^evolution.id and
+          e.start_time < ^evolution.end_time and e.end_time > ^evolution.start_time,
+      order_by: [asc: e.start_time, asc: e.end_time, asc: e.id]
+    )
+    |> Repo.all()
+  end
+
+  defp service_active_dates?(%PathwayEvolution{} = evolution) do
+    organization_id = evolution.organization_id
+    gtfs_version_id = evolution.gtfs_version_id
+    service_id = evolution.service_id
+
+    calendar =
+      from(c in Calendar,
+        where:
+          c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id and
+            c.service_id == ^service_id
+      )
+      |> Repo.one()
+
+    exceptions =
+      from(d in CalendarDate,
+        where:
+          d.organization_id == ^organization_id and d.gtfs_version_id == ^gtfs_version_id and
+            d.service_id == ^service_id
+      )
+      |> Repo.all()
+
+    ServiceDates.active_dates(calendar, exceptions) != []
+  end
+
+  defp present?(value) when is_binary(value), do: value != ""
+  defp present?(_value), do: false
+
+  defp transact(fun) do
+    case Repo.transaction(fun) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp closures_for(snapshot, organization_id, gtfs_version_id) do

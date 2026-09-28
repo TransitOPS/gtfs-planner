@@ -3409,10 +3409,18 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   end
 
-  defp authorize_editor(%AuditContext{
-         actor_id: actor_id,
-         organization_id: organization_id
-       }) do
+  @doc """
+  Rechecks the actor's current active organization membership and editor role.
+
+  Every audited mutation calls this before writing, so a membership deactivated
+  or revoked after mount is refused on the next save. Returns `{:error,
+  :forbidden}` for a missing, foreign, deactivated or role-less membership.
+  """
+  @spec authorize_editor(AuditContext.t()) :: :ok | {:error, :forbidden}
+  def authorize_editor(%AuditContext{
+        actor_id: actor_id,
+        organization_id: organization_id
+      }) do
     with true <- uuid?(actor_id),
          true <- uuid?(organization_id),
          %UserOrgMembership{} = membership <-
@@ -3459,7 +3467,16 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     lock_shared_published_version!(audit_context.organization_id, audit_context.gtfs_version_id)
   end
 
-  defp lock_published_version!(%AuditContext{} = audit_context) do
+  @doc """
+  Locks the scoped published version row `FOR UPDATE` and returns it.
+
+  Call only inside `Repo.transaction/1`; this is a write lock, not a transaction.
+  The lock serializes calendar and closure writers on the published version before
+  any row is touched. A missing, foreign or unpublished version rolls back
+  `:not_found`.
+  """
+  @spec lock_published_version!(AuditContext.t()) :: GtfsVersion.t()
+  def lock_published_version!(%AuditContext{} = audit_context) do
     audit_context.organization_id
     |> published_version_for_update(audit_context.gtfs_version_id)
     |> case do
