@@ -25,6 +25,8 @@ alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.ExportRuns
 alias GtfsPlanner.Gtfs.FareAttribute
+alias GtfsPlanner.Gtfs.FareRule
+alias GtfsPlanner.Gtfs.FareZones
 alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
@@ -1960,6 +1962,344 @@ case Accounts.register_first_admin(%{
       )
 
     IO.puts("Browser seed: routes-only version #{routes_only_version.id} with ready export")
+
+    # ── Fare zones fixture versions ──
+    #
+    # Two published versions give the fare-zone workspace its data. "Browser
+    # Fare Zones Version" is a small, hand-placed town whose literal
+    # coordinates are load-bearing: eight boardable stops west of -71.10 (zone
+    # A Central), twelve east of -71.008 (zone B Eastbank), four unassigned
+    # stops, one boardable stop with no coordinates in Central, a station in
+    # Central with two located platforms carrying its zone, and the
+    # declared-but-empty D Airport. The box journey fits this map, drags over
+    # its left half and expects exactly the eight west stops, so every other
+    # point sits east of the fitted midpoint longitude.
+    #
+    # "Browser Fare Zones Scale Version" carries the 10,000 located boardable
+    # stops AC-35 measures in the browser, in five zones, inserted in five
+    # batches of 2,000.
+    #
+    # Zone metadata goes through `FareZones.create_zone/3` (CR-1 keeps that
+    # module `fare_zones`' only writer) and the route through
+    # `Gtfs.create_route/1`. Stop, fare and rule rows are fixture data inserted
+    # directly: no changeset casts `stops.zone_id`, and `FareRule.changeset/2`
+    # would trim the exact rule values. Every row carries one fixed seed
+    # timestamp and a literal ID or coordinate, so a reset and re-run
+    # reproduces the same rows.
+    #
+    # Both versions are created before the "latest default" restore below, so
+    # that restore still decides which version the organization opens by
+    # default: every fare-zone journey selects its version in the version
+    # panel, and no other browser spec sees a different default version.
+    # Creating them after the restore would make the choice depend on the
+    # database session's timezone offset against the app clock.
+    {:ok, fare_zones_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fare Zones Version"})
+
+    {:ok, fare_scale_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fare Zones Scale Version"})
+
+    fare_seed_at = ~U[2026-09-01 00:00:00.000000Z]
+    fare_coordinate = fn value -> Decimal.new(:erlang.float_to_binary(value, decimals: 3)) end
+
+    for {zone_id, name, color} <- [
+          {"A", "Central", "ocean"},
+          {"B", "Eastbank", "teal"},
+          {"D", "Airport", "ochre"}
+        ] do
+      {:ok, _declared_zone} =
+        FareZones.create_zone(org.id, fare_zones_version.id, %{
+          zone_id: zone_id,
+          name: name,
+          color: color
+        })
+    end
+
+    fare_stop = fn stop_id, stop_name, lat, lon, zone_id, attrs ->
+      Map.merge(
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: fare_zones_version.id,
+          stop_id: stop_id,
+          stop_name: stop_name,
+          stop_lat: lat && fare_coordinate.(lat),
+          stop_lon: lon && fare_coordinate.(lon),
+          location_type: 0,
+          zone_id: zone_id,
+          parent_station: nil,
+          platform_code: nil,
+          inserted_at: fare_seed_at,
+          updated_at: fare_seed_at
+        },
+        attrs
+      )
+    end
+
+    fare_west_stops =
+      for index <- 1..8 do
+        fare_stop.(
+          "BROWSER_FZ_WEST_#{index}",
+          "Central West #{index}",
+          42.300 + (index - 1) * 0.002,
+          -71.108 + (index - 1) * 0.001,
+          "A",
+          %{}
+        )
+      end
+
+    fare_east_stops =
+      for index <- 1..12 do
+        fare_stop.(
+          "BROWSER_FZ_EAST_#{index}",
+          "Riverside #{index}",
+          42.300 + (index - 1) * 0.002,
+          -71.019 + (index - 1) * 0.001,
+          "B",
+          %{}
+        )
+      end
+
+    fare_unassigned_stops =
+      for index <- 1..4 do
+        fare_stop.(
+          "BROWSER_FZ_UNASSIGNED_#{index}",
+          "Bayline #{index}",
+          42.330 + (index - 1) * 0.002,
+          -71.005 + (index - 1) * 0.001,
+          nil,
+          %{}
+        )
+      end
+
+    fare_station_stops = [
+      fare_stop.("BROWSER_FZ_STATION", "Central Union Station", 42.400, -71.030, "A", %{
+        location_type: 1
+      }),
+      fare_stop.("BROWSER_FZ_PLATFORM_1", "Central Union Platform 1", 42.400, -71.030, "A", %{
+        parent_station: "BROWSER_FZ_STATION",
+        platform_code: "1"
+      }),
+      fare_stop.("BROWSER_FZ_PLATFORM_2", "Central Union Platform 2", 42.400, -71.029, "A", %{
+        parent_station: "BROWSER_FZ_STATION",
+        platform_code: "2"
+      })
+    ]
+
+    fare_depot_stop = fare_stop.("BROWSER_FZ_DEPOT", "Central Depot", nil, nil, "A", %{})
+
+    fare_zone_stops =
+      fare_west_stops ++
+        fare_east_stops ++ fare_unassigned_stops ++ fare_station_stops ++ [fare_depot_stop]
+
+    {fare_zone_stop_count, nil} = Repo.insert_all(Stop, fare_zone_stops)
+
+    {2, nil} =
+      Repo.insert_all(
+        FareAttribute,
+        Enum.map([{"CITY", "2.50"}, {"CROSS", "3.75"}], fn {fare_id, price} ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: fare_zones_version.id,
+            fare_id: fare_id,
+            price: Decimal.new(price),
+            currency_type: "USD",
+            payment_method: 0,
+            inserted_at: fare_seed_at,
+            updated_at: fare_seed_at
+          }
+        end)
+      )
+
+    {:ok, _fare_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: fare_zones_version.id,
+        route_id: "BROWSER_FARE_ROUTE",
+        route_short_name: "FR",
+        route_long_name: "Browser Fare Route",
+        route_type: 3,
+        route_color: "0055AA"
+      })
+
+    # CITY A→A and CITY C→A (C has no stops and no record, so the Checks tab has
+    # a stopless reference), CROSS A→B, and CROSS through A + B (two rows of one
+    # rule). Four rule groups, five rows.
+    fare_rule_rows = [
+      {"CITY", nil, "A", "A", nil},
+      {"CROSS", nil, "A", "B", nil},
+      {"CROSS", nil, nil, nil, "A"},
+      {"CROSS", nil, nil, nil, "B"},
+      {"CITY", nil, "C", "A", nil}
+    ]
+
+    {5, nil} =
+      Repo.insert_all(
+        FareRule,
+        Enum.map(fare_rule_rows, fn {fare_id, route_id, origin_id, destination_id, contains_id} ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: fare_zones_version.id,
+            fare_id: fare_id,
+            route_id: route_id,
+            origin_id: origin_id,
+            destination_id: destination_id,
+            contains_id: contains_id,
+            inserted_at: fare_seed_at,
+            updated_at: fare_seed_at
+          }
+        end)
+      )
+
+    fare_scale_zones = ~w(A B C D E)
+
+    Enum.each(0..4, fn batch ->
+      rows =
+        for index <- (batch * 2_000)..(batch * 2_000 + 1_999) do
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: fare_scale_version.id,
+            stop_id:
+              "BROWSER_FZ_SCALE_" <> String.pad_leading(Integer.to_string(index + 1), 5, "0"),
+            stop_name: "Scale Stop #{index + 1}",
+            stop_lat: fare_coordinate.(42.000 + rem(index, 100) * 0.002),
+            stop_lon: fare_coordinate.(-71.000 - div(index, 100) * 0.002),
+            location_type: 0,
+            zone_id: Enum.at(fare_scale_zones, rem(index, 5)),
+            inserted_at: fare_seed_at,
+            updated_at: fare_seed_at
+          }
+        end
+
+      {2_000, nil} = Repo.insert_all(Stop, rows)
+    end)
+
+    # The seed is its own verifier: it reads both versions back through the
+    # production functions and fails loudly rather than printing counts a later
+    # UI step cannot rely on.
+    %{zones: fare_zone_list, unassigned_count: fare_unassigned, boardable_count: fare_boardable} =
+      FareZones.inventory(org.id, fare_zones_version.id)
+
+    %{stopless_referenced: fare_stopless, empty_declared: fare_empty_declared} =
+      FareZones.checks(org.id, fare_zones_version.id)
+
+    fare_points = FareZones.list_stop_points(org.id, fare_zones_version.id)
+    fare_rule_groups = FareZones.list_rule_groups(org.id, fare_zones_version.id)
+    fare_fares = FareZones.list_fares(org.id, fare_zones_version.id)
+
+    %{
+      zones: fare_scale_zone_list,
+      boardable_count: fare_scale_boardable,
+      unassigned_count: fare_scale_unassigned
+    } = FareZones.inventory(org.id, fare_scale_version.id)
+
+    fare_scale_points = FareZones.list_stop_points(org.id, fare_scale_version.id)
+
+    fare_lons = Enum.map(fare_points, fn point -> Enum.at(point, 4) end)
+    fare_midpoint = (Enum.min(fare_lons) + Enum.max(fare_lons)) / 2
+    fare_west_points = Enum.filter(fare_points, fn point -> Enum.at(point, 4) < fare_midpoint end)
+    fare_west_lon = fare_west_points |> Enum.map(&Enum.at(&1, 4)) |> Enum.max()
+    fare_east_lon = fare_lons |> Enum.filter(&(&1 > fare_midpoint)) |> Enum.min()
+    fare_gap = fare_east_lon - fare_west_lon
+
+    expect = fn
+      true, _message -> :ok
+      false, message -> raise "Browser seed fare-zone check failed: #{message}"
+    end
+
+    expect.(fare_zone_stop_count == 28, "expected 28 stop rows, got #{fare_zone_stop_count}")
+    expect.(fare_boardable == 27, "expected 27 boardable stops, got #{fare_boardable}")
+    expect.(length(fare_points) == 26, "expected 26 map points, got #{length(fare_points)}")
+    expect.(fare_unassigned == 4, "expected 4 unassigned stops, got #{fare_unassigned}")
+
+    expect.(
+      Enum.sort(Enum.map(fare_zone_list, &{&1.zone_id, &1.stop_count, &1.other_stop_count})) ==
+        Enum.sort([{"A", 11, 1}, {"B", 12, 0}, {"C", 0, 0}, {"D", 0, 0}]),
+      "unexpected zone counts: #{inspect(fare_zone_list)}"
+    )
+
+    expect.(Enum.map(fare_stopless, & &1.zone_id) == ["C"], "expected stopless C")
+    expect.(Enum.map(fare_empty_declared, & &1.zone_id) == ["D"], "expected empty declared D")
+
+    expect.(
+      Enum.sort(
+        Enum.map(fare_rule_groups, fn group ->
+          {group.fare_id, group.origin_id, group.destination_id, group.contains}
+        end)
+      ) ==
+        Enum.sort([
+          {"CITY", "A", "A", []},
+          {"CITY", "C", "A", []},
+          {"CROSS", "A", "B", []},
+          {"CROSS", nil, nil, ["A", "B"]}
+        ]),
+      "unexpected fare rule groups: #{inspect(fare_rule_groups)}"
+    )
+
+    expect.(
+      fare_fares == [
+        %{fare_id: "CITY", price: Decimal.new("2.50"), currency_type: "USD"},
+        %{fare_id: "CROSS", price: Decimal.new("3.75"), currency_type: "USD"}
+      ],
+      "unexpected fares: #{inspect(fare_fares)}"
+    )
+
+    expect.(length(fare_west_points) == 8, "expected 8 stops west of the midpoint")
+    expect.(fare_gap >= 0.02, "expected a longitude gap of at least 0.02, got #{fare_gap}")
+
+    expect.(
+      fare_scale_boardable == 10_000,
+      "unexpected scale boardable count: #{fare_scale_boardable}"
+    )
+
+    expect.(
+      Enum.sort(Enum.map(fare_scale_zone_list, &{&1.zone_id, &1.stop_count})) ==
+        Enum.sort([{"A", 2_000}, {"B", 2_000}, {"C", 2_000}, {"D", 2_000}, {"E", 2_000}]),
+      "unexpected scale zone counts: #{inspect(fare_scale_zone_list)}"
+    )
+
+    expect.(
+      length(fare_scale_points) == 10_000,
+      "expected 10,000 scale map points, got #{length(fare_scale_points)}"
+    )
+
+    expect.(fare_scale_unassigned == 0, "expected no unassigned scale stops")
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Version (#{fare_zones_version.id}) — " <>
+        "#{fare_boardable} boardable stops (#{length(fare_points)} with coordinates, " <>
+        "#{fare_boardable - length(fare_points)} without), #{fare_unassigned} unassigned, " <>
+        "#{length(fare_fares)} fares, #{length(fare_rule_groups)} fare rules in the version"
+    )
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Version geography — fitted midpoint longitude " <>
+        "#{Float.round(fare_midpoint, 4)}, #{length(fare_west_points)} stops west of it " <>
+        "(eastmost #{Float.round(fare_west_lon, 4)}), nearest east stop " <>
+        "#{Float.round(fare_east_lon, 4)}, gap #{Float.round(fare_gap, 4)} degrees"
+    )
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Version zones — " <>
+        Enum.map_join(fare_zone_list, ", ", fn zone ->
+          "#{zone.zone_id}=#{zone.name}:#{zone.stop_count}"
+        end) <>
+        "; stopless referenced " <>
+        Enum.map_join(fare_stopless, ",", & &1.zone_id) <>
+        "; empty declared " <> Enum.map_join(fare_empty_declared, ",", & &1.zone_id)
+    )
+
+    IO.puts(
+      "Browser seed: Browser Fare Zones Scale Version (#{fare_scale_version.id}) — " <>
+        "#{fare_scale_boardable} located boardable stops in " <>
+        "#{length(fare_scale_zone_list)} zones (" <>
+        Enum.map_join(fare_scale_zone_list, ", ", fn zone ->
+          "#{zone.zone_id}=#{zone.stop_count}"
+        end) <> ")"
+    )
 
     diagram_version
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
