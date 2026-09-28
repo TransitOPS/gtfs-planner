@@ -17,6 +17,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground"
   @stops_content "stop_id,stop_name,stop_lat,stop_lon,level_id\nS1,Stop 1,1.0,1.0,L1"
 
+  # The agency findings block's feed: two routes and one stop, so the published
+  # version has routes for `FeedSettings.agency_health/2` to report, and no
+  # agency unless the case adds an agency.txt of its own (AC-27).
+  @findings_routes_content "route_id,route_short_name,route_long_name,route_type\n" <>
+                             "R1,1,First Route,3\n" <>
+                             "R2,2,Second Route,3"
+  @findings_stops_content "stop_id,stop_name,stop_lat,stop_lon\nS1,Stop 1,42.36,-71.05"
+  @findings_one_agency_content "agency_id,agency_name,agency_url,agency_timezone\n" <>
+                                 "NCT,North Coast Transit,https://northcoast.example,America/New_York"
+  @findings_two_zone_agencies_content "agency_id,agency_name,agency_url,agency_timezone\n" <>
+                                        "NCT,North Coast Transit,https://northcoast.example,America/New_York\n" <>
+                                        "HBR,Harbor Shuttle,https://harbor.example,America/Chicago"
+  @findings_invalid_zone_agency_content "agency_id,agency_name,agency_url,agency_timezone\n" <>
+                                          "NCT,North Coast Transit,https://northcoast.example,Mars/Olympus"
+
   defmodule BlockingCleanupWorker do
     def run(organization_id, run_id, lease_token) do
       owner = Application.fetch_env!(:gtfs_planner, :blocking_cleanup_worker_owner)
@@ -1454,6 +1469,201 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert html =~ "Import GTFS"
       assert has_element?(view, "#gtfs-import-form")
       assert has_element?(view, "#gtfs-import-destination")
+    end
+  end
+
+  # The success result's agency findings for the version just published (AC-27,
+  # R11). Every case imports a real feed through the real form and runner, so
+  # `success_for_published_target/2` reads the new version's own agency health,
+  # and the link is compared with that version's ID rather than the URL's.
+  describe "agency findings" do
+    setup :editor_context
+
+    test "a feed with routes but no agency publishes and names the finding", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"routes.txt", @findings_routes_content},
+          {"stops.txt", @findings_stops_content}
+        ])
+      ])
+
+      submit_import(view, "Findings Missing Agency")
+      html = await_import_task(view)
+
+      # Publication is unaffected: the new version is published and announced.
+      assert html =~ "Import successful"
+
+      published = version_by_name(organization.id, "Findings Missing Agency")
+      assert published
+      refute published.id == route_version.id
+
+      assert Versions.get_gtfs_version_for_lifecycle(organization.id, published.id).publication_status ==
+               "published"
+
+      assert has_element?(view, "#gtfs-import-result #gtfs-import-agency-findings")
+      assert html =~ "No agency in this feed"
+      assert html =~ "2 routes need an operating agency before export."
+      refute html =~ "Choose one timezone for this version."
+
+      # The finding links to the published version, never to the URL version.
+      assert has_element?(
+               view,
+               "#gtfs-import-set-up-agency[href='/gtfs/#{published.id}/settings/agencies']"
+             )
+
+      refute has_element?(
+               view,
+               "#gtfs-import-set-up-agency[href='/gtfs/#{route_version.id}/settings/agencies']"
+             )
+    end
+
+    test "two agencies in different timezones name the disagreement", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"agency.txt", @findings_two_zone_agencies_content},
+          {"routes.txt", @findings_routes_content},
+          {"stops.txt", @findings_stops_content}
+        ])
+      ])
+
+      submit_import(view, "Findings Mixed Zones")
+      html = await_import_task(view)
+
+      published = version_by_name(organization.id, "Findings Mixed Zones")
+      assert published
+      assert published.publication_status == "published"
+
+      assert has_element?(view, "#gtfs-import-agency-findings")
+      assert html =~ "Agencies use different timezones"
+      assert html =~ "Choose one timezone for this version."
+      refute html =~ "No agency in this feed"
+
+      assert has_element?(
+               view,
+               "#gtfs-import-resolve-timezones[href='/gtfs/#{published.id}/settings/agencies']"
+             )
+
+      assert html =~ "Resolve timezones"
+    end
+
+    test "an unrecognized agency timezone names that reason", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"agency.txt", @findings_invalid_zone_agency_content},
+          {"routes.txt", @findings_routes_content},
+          {"stops.txt", @findings_stops_content}
+        ])
+      ])
+
+      submit_import(view, "Findings Invalid Zone")
+      html = await_import_task(view)
+
+      published = version_by_name(organization.id, "Findings Invalid Zone")
+      assert published
+      assert published.publication_status == "published"
+
+      assert has_element?(view, "#gtfs-import-agency-findings")
+      assert html =~ "The agency timezone isn’t recognized"
+      assert html =~ "Choose one timezone for this version."
+      refute html =~ "No agency in this feed"
+    end
+
+    test "a clean single-agency feed publishes with no findings element", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"agency.txt", @findings_one_agency_content},
+          {"routes.txt", @findings_routes_content},
+          {"stops.txt", @findings_stops_content}
+        ])
+      ])
+
+      submit_import(view, "Findings Clean Feed")
+      html = await_import_task(view)
+
+      published = version_by_name(organization.id, "Findings Clean Feed")
+      assert published
+      assert published.publication_status == "published"
+
+      assert html =~ "Import successful"
+      refute has_element?(view, "#gtfs-import-agency-findings")
+      refute html =~ "No agency in this feed"
+      refute html =~ "Choose one timezone for this version."
+    end
+
+    test "a new import clears the previous version's finding", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"routes.txt", @findings_routes_content},
+          {"stops.txt", @findings_stops_content}
+        ])
+      ])
+
+      submit_import(view, "Findings Then Clean")
+      html = await_import_task(view)
+
+      assert has_element?(view, "#gtfs-import-agency-findings")
+      assert html =~ "No agency in this feed"
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"agency.txt", @findings_one_agency_content},
+          {"routes.txt", @findings_routes_content},
+          {"stops.txt", @findings_stops_content}
+        ])
+      ])
+
+      html = submit_import(view, "Findings Second Feed")
+
+      # The previous finding is cleared while the new import runs, before the
+      # new version exists to have findings of its own.
+      refute html =~ "No agency in this feed"
+      refute has_element?(view, "#gtfs-import-agency-findings")
+
+      html = await_import_task(view)
+
+      assert html =~ "Import successful"
+      refute has_element?(view, "#gtfs-import-agency-findings")
+      refute html =~ "No agency in this feed"
     end
   end
 end

@@ -129,6 +129,19 @@ const DELETE_CAPTURE_DIR =
     ".specs/13-agencies-and-feed-details/evidence/visual/agencies-delete",
   );
 
+// The import findings block's own evidence folder (EV-31; step 22).
+const IMPORT_FINDINGS_CAPTURE_DIR =
+  process.env.IMPORT_FINDINGS_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/import-findings",
+  );
+
+// The version whose import page the findings block opens. The upload publishes a
+// new, uniquely named version of its own, so no seeded version is mutated
+// (CR-10).
+const IMPORT_VERSION = "Browser E2E Version";
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -190,6 +203,30 @@ async function settleDrawer(page, selector) {
     .evaluate((el) =>
       Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
     );
+}
+
+// The upload channel joins asynchronously, so a file selection that lands before
+// it is ready is dropped. Retry the way `import_export.spec.js` does until every
+// chosen file appears in the entry list.
+async function setImportFiles(page, files) {
+  const input = page.locator("#gtfs-import-upload-input input");
+  const entries = page.locator("#gtfs-import-upload-entries");
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitForLiveView(page);
+    await expect(input).toHaveAttribute("data-phx-upload-ref", /.+/);
+    await input.setInputFiles(files);
+
+    try {
+      for (const file of files) {
+        await expect(entries).toContainText(file.name, { timeout: 5_000 });
+      }
+
+      return;
+    } catch (error) {
+      if (attempt === 3) throw error;
+    }
+  }
 }
 
 // One definition-list row's label and value, in the order the page renders them.
@@ -1602,5 +1639,93 @@ test.describe("@routes-onboarding", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "assigned-1280");
+  });
+});
+
+//
+// Declared last: it imports a feed of its own into a new uniquely named version
+// on the Browser E2E Version's import page, so it reads and writes no seeded
+// version's agencies or routes (CR-10). It needs `mise run prepare:browser` for
+// the seeded login and version panel, not for the import itself.
+//
+// Captures land in this block's own evidence folder as
+// `import-findings-{1280,375}.png`.
+test.describe("@import-findings", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("imports a feed with no agency and shows the new version's finding", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(180_000);
+
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const versionId = await versionId(page, IMPORT_VERSION);
+    await page.goto(`/gtfs/${versionId}/import`);
+    await page.waitForSelector("#gtfs-import-form");
+    await waitForLiveView(page);
+
+    // Two routes and one stop, and no agency.txt at all: the published version
+    // holds two routes no agency accounts for (AC-27).
+    const routes = [
+      "route_id,route_short_name,route_long_name,route_type",
+      "E2E_F1,1,First findings route,3",
+      "E2E_F2,2,Second findings route,3",
+    ].join("\n");
+    const stops = [
+      "stop_id,stop_name,stop_lat,stop_lon",
+      "E2E_S1,Findings stop,42.36,-71.05",
+    ].join("\n");
+
+    // Two .txt entries in one submission reach the same import run a zip would;
+    // the browser sends multiple entries where the LiveView test harness sends
+    // one, so no archive has to be encoded here.
+    await setImportFiles(page, [
+      { name: "routes.txt", mimeType: "text/plain", buffer: Buffer.from(routes) },
+      { name: "stops.txt", mimeType: "text/plain", buffer: Buffer.from(stops) },
+    ]);
+
+    await page.fill("#gtfs-import-version-name", `E2E findings ${Date.now()}`);
+    await page.click("#gtfs-import-submit");
+
+    const result = page.locator("#gtfs-import-result");
+
+    await expect(result).toContainText("Import successful", { timeout: 120_000 });
+
+    // The finding describes the version just published, not the URL version.
+    const findings = page.locator("#gtfs-import-agency-findings");
+
+    await expect(findings).toContainText("No agency in this feed");
+    await expect(findings).toContainText(
+      "2 routes need an operating agency before export.",
+    );
+
+    const setUpAgency = page.locator("#gtfs-import-set-up-agency");
+
+    await expect(setUpAgency).toHaveText("Set up agency");
+    await expect(setUpAgency).not.toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/settings/agencies`,
+    );
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(
+      page,
+      testInfo,
+      IMPORT_FINDINGS_CAPTURE_DIR,
+      "import-findings-1280",
+    );
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await findings.scrollIntoViewIfNeeded();
+    await expect(setUpAgency).toBeInViewport();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(
+      page,
+      testInfo,
+      IMPORT_FINDINGS_CAPTURE_DIR,
+      "import-findings-375",
+    );
   });
 });
