@@ -49,7 +49,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLiveTest do
 
       {:ok, view, _html} = live(conn, blocks_path(version.id))
 
-      assert page_title(view) == "Blocks · Pathways Studio"
+      assert page_title(view) == "Blocks · GTFS Planner"
 
       doc = LazyHTML.from_fragment(render(view))
 

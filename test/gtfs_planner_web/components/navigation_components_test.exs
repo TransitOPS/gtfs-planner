@@ -5,9 +5,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   import Phoenix.Component
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.Navigation
-  alias GtfsPlanner.Organizations.Organization
 
   defp render_nav(assigns) do
     rendered_to_string(~H"""

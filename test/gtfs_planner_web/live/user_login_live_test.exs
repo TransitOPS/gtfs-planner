@@ -95,7 +95,7 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
 
       assert has_element?(
                view,
-               ~s(#login_form a[href="/users/reset_password"][class~="text-action"]),
+               ~s(#login-page a[href="/users/reset_password"][class~="text-action"]),
                "Forgot your password?"
              )
 

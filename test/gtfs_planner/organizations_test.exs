@@ -169,7 +169,7 @@ defmodule GtfsPlanner.OrganizationsTest do
 
       Repo.query!(
         "INSERT INTO organizations (id, alias, name, inserted_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())",
-        [id, org_alias, "SQL Default Org"]
+        [Ecto.UUID.dump!(id), org_alias, "SQL Default Org"]
       )
 
       assert %Organization{product: :planner} = Organizations.get_organization!(id)
