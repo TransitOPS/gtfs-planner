@@ -368,7 +368,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         </:actions>
       </.header>
 
-      <div class="mt-6 bg-base-100 border border-base-300 rounded-box p-4">
+      <div class="mt-6 rounded-card border border-subtle bg-white px-5 py-4">
         <.form
           for={@filter_form}
           id="route-filter-form"
@@ -416,7 +416,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
               phx-debounce="300"
               label="Search"
             />
-            <p class="mt-1 text-xs text-base-content/70">Search names and IDs</p>
+            <p class="mt-1 text-[13px] text-muted">Search names and IDs</p>
           </.form>
         </div>
       </div>
@@ -445,7 +445,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         id="routes-constrained-empty"
         class="mt-6"
       >
-        <.empty_state title="No routes match your filters">
+        <.empty_state title="No routes match your filters" class="border-subtle bg-white">
           Try adjusting your search or filter criteria.
           <:action>
             <.button
@@ -463,7 +463,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       </div>
 
       <div :if={first_use_empty?(assigns)} id="routes-first-use-empty" class="mt-6">
-        <.empty_state title="No routes yet">
+        <.empty_state title="No routes yet" class="border-subtle bg-white">
           Routes appear here after you import a GTFS feed or create a route.
           <:action>
             <.link
@@ -477,7 +477,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       </div>
 
       <div :if={@routes_state == :ready and not @routes_empty?} class="mt-6">
-        <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
+        <div class="overflow-hidden rounded-card border border-subtle bg-white">
           <.table id="routes" rows={@streams.routes} responsive="stack">
             <:col
               :let={{_id, route}}
@@ -488,7 +488,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             >
               <.link
                 navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
-                class="link link-primary font-semibold font-mono"
+                class="link link-primary font-semibold font-mono tabular-nums"
               >
                 {route.route_id}
               </.link>
@@ -521,18 +521,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
               {Route.route_type_label(route.route_type)}
             </:col>
             <:col :let={{_id, route}} label="Badge">
-              <RouteIdentity.route_badge route={route} />
+              <RouteIdentity.route_badge
+                route={route}
+                class="min-h-[26px] min-w-[30px] text-[13px] font-bold tabular-nums"
+              />
             </:col>
           </.table>
+          <div class="border-t border-subtle px-5">
+            <.pagination
+              :if={@total_count > 0}
+              page={@page}
+              per_page={@per_page}
+              total={@total_count}
+              entity="routes"
+            />
+          </div>
         </div>
-
-        <.pagination
-          :if={@total_count > 0}
-          page={@page}
-          per_page={@per_page}
-          total={@total_count}
-          entity="routes"
-        />
       </div>
 
       <.new_route_drawer form={@new_route_form} agency_options={@agency_options} />
@@ -675,7 +679,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         />
       </div>
 
-      <div class="flex flex-wrap items-center gap-3 pt-3">
+      <div class="flex flex-wrap items-center justify-end gap-3 pt-3">
+        <.button
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="close_new_route"
+        >
+          Cancel
+        </.button>
         <.button
           type="submit"
           id="new-route-submit"
@@ -683,9 +695,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           phx-disable-with="Creating…"
         >
           Create route
-        </.button>
-        <.button type="button" variant="quiet" class="min-h-11" phx-click="close_new_route">
-          Cancel
         </.button>
       </div>
     </.form>
