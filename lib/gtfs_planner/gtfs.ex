@@ -931,6 +931,20 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.reconcile_creation(attempt, audit_context)
 
   @doc """
+  Applies reviewed route detail edits (R4).
+
+  See `GtfsPlanner.Gtfs.Routes.update_route/5` for the comparison, merge and
+  error contract. The command reauthorizes inside its transaction, takes the
+  scoped published-version lock before the route lock, validates only the
+  accepted combined result and writes the changed fields together with their
+  route audit.
+  """
+  @spec update_route(String.t(), map(), map(), map(), AuditContext.t()) ::
+          {:ok, map()} | {:error, term()}
+  def update_route(route_id, attrs, source, choices, %AuditContext{} = audit_context),
+    do: Routes.update_route(route_id, attrs, source, choices, audit_context)
+
+  @doc """
   Returns a list of distinct route types for an organization and GTFS version.
 
   ## Examples
@@ -5956,6 +5970,10 @@ defmodule GtfsPlanner.Gtfs do
         :ok
     end)
   end
+
+  @doc false
+  @spec route_audit_snapshot(Route.t()) :: map()
+  def route_audit_snapshot(%Route{} = route), do: snapshot_route(route)
 
   @doc false
   @spec record_change_in_transaction(AuditContext.t(), atom(), struct() | nil, String.t(), map()) ::
