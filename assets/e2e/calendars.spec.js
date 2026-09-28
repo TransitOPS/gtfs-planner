@@ -50,6 +50,18 @@ async function openCalendars(page, versionName = "Browser E2E Version") {
   return versionId;
 }
 
+// School days and Unused calendar run Monday to Friday, so which calendars run
+// today depends on the agency-local date the list shows, not on the runner's clock.
+async function runsTodayNames(page) {
+  const text = await page.locator("#calendars-today").textContent();
+  const date = new Date(`${text.split("·").pop().trim()} UTC`);
+  const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
+
+  return weekend
+    ? ["Every day service"]
+    : ["Every day service", "School days", "Unused calendar"];
+}
+
 async function expectRows(page, names, timeout = 8000) {
   await expect.poll(() => rowNames(page), { timeout }).toEqual(names);
   await expect(page.locator("#calendars-list tr")).toHaveCount(names.length);
@@ -108,7 +120,7 @@ test.describe("calendar list", () => {
       ).toContainText("6");
       await expect(
         page.locator("#calendar-counts-item-run-today"),
-      ).toContainText("1");
+      ).toContainText(String((await runsTodayNames(page)).length));
       await expect(page.locator("#calendars-today")).toContainText("Today ·");
       await expect(page.locator("#calendars-feed-gap")).toBeVisible();
 
@@ -122,11 +134,12 @@ test.describe("calendar list", () => {
       expect(statusText).toContain("Ends in 5 days");
       expect(statusText).toContain("Not used by trips");
 
-      // Grouped trip usage is numeric and right-aligned in its own column.
+      // Grouped trip usage is numeric and right-aligned in its own column. Every day
+      // service also carries the Schedules scenario's 23 trips in this version.
       const dailyRow = page.locator("#calendars-list tr", {
         hasText: "Every day service",
       });
-      await expect(dailyRow.locator('td[data-label="Trips"]')).toHaveText("3");
+      await expect(dailyRow.locator('td[data-label="Trips"]')).toHaveText("26");
       await expect(
         page
           .locator("#calendars-list tr", { hasText: "School days" })
@@ -209,7 +222,7 @@ test.describe("calendar list", () => {
     await expectRows(page, ["Legacy service"]);
 
     await page.selectOption("#calendar-status", "active_today");
-    await expectRows(page, ["Every day service"]);
+    await expectRows(page, await runsTodayNames(page));
 
     await page.selectOption("#calendar-status", "active_period");
     await expectRows(page, [
@@ -898,22 +911,22 @@ test.describe("calendar editor", () => {
       "true",
     );
 
-    await openEditorFor(page, versionId, "CAL_DAILY");
+    // School days is used only on CAL_ROUTE; the Schedules scenario also runs
+    // trips on CAL_DAILY, so that calendar's usage spans several routes.
+    await openEditorFor(page, versionId, "CAL_SCHOOL");
     await openCalendarActions(page);
     await page.click("#calendar-delete");
 
     await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
     await expect(page.locator("#calendar-delete-blocked")).toContainText(
-      "3 trips",
+      "2 trips",
     );
     await expect(page.locator("#calendar-delete-blocked a")).toHaveAttribute(
       "href",
       `/gtfs/${versionId}/routes/CAL_ROUTE`,
     );
     await expect(page.locator("#calendar-review-dialog")).toBeHidden();
-    await expect(page.locator("#calendar-name")).toHaveValue(
-      "Every day service",
-    );
+    await expect(page.locator("#calendar-name")).toHaveValue("School days");
   });
 });
 
@@ -1165,7 +1178,7 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
 test("browser Back and Forward require explicit discard and cancellation retains the draft", async ({page}) => {
   const versionId = await openCalendars(page);
   const listUrl = page.url();
-  await page.locator("#calendars-list [data-calendar-link='School days']").click();
+  await page.locator("#calendars-list [data-calendar-link='CAL_SCHOOL']").click();
   await waitForEditorReady(page);
   const editorUrl = page.url();
   await page.fill("#calendar-name", "History draft");
