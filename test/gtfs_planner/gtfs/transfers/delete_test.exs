@@ -25,7 +25,12 @@ defmodule GtfsPlanner.Gtfs.Transfers.DeleteTest do
   The focused command is deferred to branch review:
   `MIX_TEST_PARTITION=_xfer15 mix test test/gtfs_planner/gtfs/transfers/delete_test.exs`.
   """
-  use GtfsPlanner.DataCase, async: true
+  # The audit case below installs a constraint trigger on `change_logs`, and creating a
+  # trigger takes SHARE ROW EXCLUSIVE on that table. An async module would hold that lock
+  # for the life of its sandbox transaction and stall every concurrently running test that
+  # writes a change log, so the module runs in the synchronous group like the identical
+  # case in create_test.exs.
+  use GtfsPlanner.DataCase, async: false
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -407,8 +412,14 @@ defmodule GtfsPlanner.Gtfs.Transfers.DeleteTest do
   # Test-only fault injection: a constraint trigger on `change_logs` raises on the next
   # transfer audit insert, after the batch delete has run. It is created inside the
   # sandbox transaction, so the guaranteed test rollback removes it, and the test also
-  # drops it explicitly. The names are unique to this file so a concurrent async write
-  # test can never contend for them. No production failure switch exists.
+  # drops it explicitly. The names are unique to this file and the module is non-async,
+  # so no other test can contend for them. No production failure switch exists.
+  #
+  # The raise stays recoverable: `delete_general_many/2` opens the outermost
+  # `Repo.transaction/1` that the case issues, and the sandbox adapter turns that begin on
+  # the already-transactional connection into a savepoint. The 23514 therefore unwinds
+  # only to that savepoint, and the enclosing sandbox transaction is still usable for the
+  # `DROP TRIGGER` and the reloads that follow.
   defp install_transfer_delete_audit_rejection_trigger! do
     Repo.query!("""
     CREATE FUNCTION transfer_delete_audit_rejection() RETURNS trigger LANGUAGE plpgsql AS $$
