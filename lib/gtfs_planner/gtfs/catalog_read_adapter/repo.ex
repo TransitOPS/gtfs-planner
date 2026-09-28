@@ -36,6 +36,10 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     DisplayClock,
     FareZones,
     Route,
+    RoutePatterns,
+    Schedules,
+    Stop,
+    Transfers
   }
 
   @default_per_page 25
