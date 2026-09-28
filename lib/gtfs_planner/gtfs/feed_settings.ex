@@ -18,10 +18,16 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   result instead of a second row or a crash.
 
   The agency reads report the version's rows, their route counts and the version's
-  timezone state, all scoped to the organization and version. Outside import and test
-  fixtures this module is the application's writer of `agencies` and `feed_info` rows
-  and of the agency columns they own (INV-5); the agency write entry points arrive with
-  the steps that consume them.
+  timezone state, all scoped to the organization and version. Creating an agency
+  (`create_agency/2`) is one transaction: it authorizes the actor, takes the published
+  version row `FOR UPDATE` (INV-2) before it reads the state it depends on, resolves the
+  zone (R2), derives a collision-free ID (R1), runs the first- or second-agency backfill
+  (R6), and inserts through the editor changeset (R9). A failed insert rolls the
+  backfill back with it, so a refused create leaves the version's agencies, routes and
+  fare attributes exactly as they were.
+
+  Outside import and test fixtures this module is the application's writer of `agencies`
+  and `feed_info` rows and of the agency columns they own (INV-5).
   """
 
   import Ecto.Query, warn: false
@@ -30,10 +36,13 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Attribution
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FeedInfo
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -132,6 +141,71 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       {:ok, agency_id} -> scoped_agency(organization_id, gtfs_version_id, agency_id)
       :error -> nil
     end
+  end
+
+  @doc """
+  Builds the agency create/edit drawer's changeset (R9).
+
+  The editable fields and their rules live in
+  `GtfsPlanner.Gtfs.Agency.editor_changeset/2`; the row's `organization_id`,
+  `gtfs_version_id` and `agency_id` are never cast, so a drawer request cannot move a
+  row across the tenant boundary or regenerate its GTFS ID.
+  """
+  @spec change_agency(Agency.t(), map()) :: Ecto.Changeset.t()
+  def change_agency(%Agency{} = agency, attrs) do
+    Agency.editor_changeset(agency, attrs)
+  end
+
+  @doc """
+  Creates one agency in the version, applying the ID, timezone and backfill rules (R1,
+  R2, R6, R9) atomically under the published version lock (R10, INV-2).
+
+  `attrs` may use string or atom keys; they are normalized to string keys first. One
+  transaction authorizes the actor, locks the published `gtfs_versions` row
+  `FOR UPDATE`, loads the version's agencies, resolves the zone, chooses the ID, runs
+  the backfill, and inserts the row through the editor changeset:
+
+  - The first agency (no agencies yet) keeps its submitted `agency_timezone`, which the
+    editor changeset validates against `DisplayClock.valid_zone?/1`.
+  - A later agency ignores any submitted zone and takes `DisplayClock.resolve_zone/2`'s
+    resolved zone; a missing, invalid or conflicting version zone returns
+    `:timezone_unresolved` without a write.
+  - The ID is `Stop.slugify(agency_name)`, or `agency` when that is blank, suffixed
+    `_2`, `_3`… until no agency or non-blank `routes`, `fare_attributes` or
+    `attributions` reference in the version uses it. With no agencies yet and exactly one
+    distinct non-blank route reference, that reference is adopted instead.
+  - With no agencies, every route whose `agency_id` is blank or another value is set to
+    the new ID. With exactly one existing agency, blank routes and blank fare attributes
+    are set to that agency's ID; blank attributions stay blank (they apply to the whole
+    dataset).
+
+  Because the insert happens after the backfill in the same transaction, a changeset
+  error rolls the backfill back and leaves the prior committed state usable.
+
+  ## Returns
+
+  - `{:ok, agency}` on a create
+  - `{:error, changeset}` for attrs the editor changeset refuses
+  - `{:error, :forbidden}` for a deactivated or non-editor member
+  - `{:error, :not_found}` for a scope that is not a published version of the actor's
+    organization
+  - `{:error, :timezone_unresolved}` when the version has agencies but no single valid
+    zone
+  """
+  @spec create_agency(AuditContext.t(), map()) ::
+          {:ok, Agency.t()}
+          | {:error, Ecto.Changeset.t() | :forbidden | :not_found | :timezone_unresolved}
+  def create_agency(%AuditContext{} = audit_context, attrs) when is_map(attrs) do
+    attrs = stringify_keys(attrs)
+
+    Repo.transaction(fn ->
+      authorize_editor!(audit_context)
+      lock_version!(audit_context)
+
+      audit_context
+      |> agencies_in_scope()
+      |> create_agency_locked!(attrs, audit_context)
+    end)
   end
 
   @doc """
@@ -258,6 +332,30 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
     end
   end
 
+  # Agency-set writes take the same version row `FOR UPDATE`, before any agency read,
+  # so two writes cannot interleave between the state they read and the write they
+  # make (INV-2). The row and the guards are the ones `share_version!/1` uses.
+  defp lock_version!(%AuditContext{} = audit_context) do
+    audit_context.organization_id
+    |> published_version_for_update(audit_context.gtfs_version_id)
+    |> case do
+      %GtfsVersion{} = version -> version
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp published_version_for_update(organization_id, version_id) do
+    if uuid?(organization_id) and uuid?(version_id) do
+      from(v in GtfsVersion,
+        where:
+          v.id == ^version_id and v.organization_id == ^organization_id and
+            v.publication_status == ^@published_status,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+    end
+  end
+
   defp authorize_editor!(%AuditContext{} = audit_context) do
     case authorize_editor(audit_context) do
       :ok -> :ok
@@ -344,5 +442,174 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       %{fallback?: false, timezone: timezone} -> {:ok, timezone}
       %{fallback_reason: reason} -> {:unresolved, reason}
     end
+  end
+
+  # -- Agency creation -------------------------------------------------------
+
+  defp agencies_in_scope(%AuditContext{} = audit_context) do
+    Gtfs.list_agencies(audit_context.organization_id, audit_context.gtfs_version_id)
+  end
+
+  defp create_agency_locked!(agencies, attrs, %AuditContext{} = audit_context) do
+    attrs = resolve_create_zone!(attrs, audit_context, agencies)
+    agency_id = next_agency_id(attrs["agency_name"], audit_context, agencies)
+
+    backfill_before_create!(agencies, agency_id, audit_context)
+
+    %Agency{
+      organization_id: audit_context.organization_id,
+      gtfs_version_id: audit_context.gtfs_version_id,
+      agency_id: agency_id
+    }
+    |> Agency.editor_changeset(attrs)
+    |> insert_or_rollback!()
+  end
+
+  # The first agency carries the zone the editor validated from the form. Later agencies
+  # take the version zone, so the version never holds two zones (R2).
+  defp resolve_create_zone!(attrs, _audit_context, []), do: attrs
+
+  defp resolve_create_zone!(attrs, %AuditContext{} = audit_context, [_ | _]) do
+    case DisplayClock.resolve_zone(audit_context.organization_id, audit_context.gtfs_version_id) do
+      %{fallback?: false, timezone: timezone} -> Map.put(attrs, "agency_timezone", timezone)
+      %{fallback_reason: _reason} -> Repo.rollback(:timezone_unresolved)
+    end
+  end
+
+  # R1: adopt a single dangling route reference in an otherwise empty version, otherwise
+  # slugify the name and step past every taken ID.
+  defp next_agency_id(name, %AuditContext{} = audit_context, []) do
+    case referenced_agency_ids(audit_context.organization_id, audit_context.gtfs_version_id) do
+      [referenced_id] ->
+        referenced_id
+
+      _none_or_many ->
+        unique_agency_id(slug_or_default(name), taken_agency_ids([], audit_context))
+    end
+  end
+
+  defp next_agency_id(name, %AuditContext{} = audit_context, agencies) do
+    unique_agency_id(slug_or_default(name), taken_agency_ids(agencies, audit_context))
+  end
+
+  defp slug_or_default(name) do
+    case Stop.slugify(name) do
+      "" -> "agency"
+      slug -> slug
+    end
+  end
+
+  defp unique_agency_id(base, taken) do
+    if MapSet.member?(taken, base), do: suffixed_agency_id(base, taken, 2), else: base
+  end
+
+  defp suffixed_agency_id(base, taken, suffix) do
+    candidate = "#{base}_#{suffix}"
+
+    if MapSet.member?(taken, candidate),
+      do: suffixed_agency_id(base, taken, suffix + 1),
+      else: candidate
+  end
+
+  # The candidate must avoid the version's own agency IDs and every non-blank reference
+  # in the three tables whose `agency_id` outlives a single route (R1).
+  defp taken_agency_ids(agencies, %AuditContext{} = audit_context) do
+    referenced =
+      referenced_agency_ids(audit_context.organization_id, audit_context.gtfs_version_id) ++
+        fare_attribute_agency_ids(audit_context.organization_id, audit_context.gtfs_version_id) ++
+        attribution_agency_ids(audit_context.organization_id, audit_context.gtfs_version_id)
+
+    MapSet.new(Enum.map(agencies, & &1.agency_id) ++ referenced)
+  end
+
+  # Route references drive both the adoption rule and the first-agency backfill.
+  defp referenced_agency_ids(organization_id, gtfs_version_id) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      where: not is_nil(r.agency_id) and fragment("btrim(?) <> ''", r.agency_id),
+      distinct: true,
+      select: r.agency_id
+    )
+    |> Repo.all()
+  end
+
+  defp fare_attribute_agency_ids(organization_id, gtfs_version_id) do
+    from(f in FareAttribute,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id,
+      where: not is_nil(f.agency_id) and fragment("btrim(?) <> ''", f.agency_id),
+      distinct: true,
+      select: f.agency_id
+    )
+    |> Repo.all()
+  end
+
+  defp attribution_agency_ids(organization_id, gtfs_version_id) do
+    from(a in Attribution,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id,
+      where: not is_nil(a.agency_id) and fragment("btrim(?) <> ''", a.agency_id),
+      distinct: true,
+      select: a.agency_id
+    )
+    |> Repo.all()
+  end
+
+  defp backfill_before_create!([], agency_id, %AuditContext{} = audit_context) do
+    backfill_first_agency(
+      audit_context.organization_id,
+      audit_context.gtfs_version_id,
+      agency_id
+    )
+  end
+
+  defp backfill_before_create!(
+         [%Agency{agency_id: existing_id}],
+         _agency_id,
+         %AuditContext{} = audit_context
+       ) do
+    backfill_second_agency(
+      audit_context.organization_id,
+      audit_context.gtfs_version_id,
+      existing_id
+    )
+  end
+
+  defp backfill_before_create!(_agencies, _agency_id, _audit_context), do: :ok
+
+  # R6: a first agency claims every route that does not already carry its own ID. A route
+  # that already references the adopted ID is left byte-for-byte as it was.
+  defp backfill_first_agency(organization_id, gtfs_version_id, agency_id) do
+    Route
+    |> where([r], r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id)
+    |> where(
+      [r],
+      is_nil(r.agency_id) or fragment("btrim(?) = ''", r.agency_id) or
+        r.agency_id != ^agency_id
+    )
+    |> Repo.update_all(set: [agency_id: agency_id])
+  end
+
+  # R6: a second agency first fills the blanks that belong to the only existing agency.
+  # Blank attributions stay blank: they describe the whole dataset, not one operator.
+  defp backfill_second_agency(organization_id, gtfs_version_id, agency_id) do
+    Route
+    |> where([r], r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id)
+    |> where([r], is_nil(r.agency_id) or fragment("btrim(?) = ''", r.agency_id))
+    |> Repo.update_all(set: [agency_id: agency_id])
+
+    FareAttribute
+    |> where([f], f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id)
+    |> where([f], is_nil(f.agency_id) or fragment("btrim(?) = ''", f.agency_id))
+    |> Repo.update_all(set: [agency_id: agency_id])
+  end
+
+  defp insert_or_rollback!(changeset) do
+    case Repo.insert(changeset) do
+      {:ok, agency} -> agency
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp stringify_keys(attrs) do
+    Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
   end
 end
