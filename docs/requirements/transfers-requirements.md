@@ -447,10 +447,11 @@ As a schedule editor, I want to see trip headsign and departure time when select
 ### 4.7 Specificity and Validation
 
 **AC-XFER-032: Detect conflicting specificity**
-- Given two transfers exist with identical from_stop_id, to_stop_id, and route/trip combinations
-- When I view the transfer list or validation report
-- Then the conflicting transfers are flagged with a warning
-- And a message indicates the ambiguity should be resolved
+- Given two general transfers apply to the same pair of trips, an arrival trip with a stop_time at a stop both rules' From coverage contains and a departure trip with a stop_time at a stop both rules' To coverage contains
+- And both rules have equal GTFS specificity and different transfer types or minimum times
+- When I view the transfer list
+- Then the conflicting transfers are flagged "Needs attention"
+- And more specific rules that together cover every such trip pair remove the flag
 
 **AC-XFER-033: Validate stop references**
 - Given I am creating a transfer
