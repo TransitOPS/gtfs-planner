@@ -300,13 +300,14 @@ defmodule GtfsPlanner.Gtfs do
   Edits one trip in place through `Schedules.update_trip/5`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
-  `:trip_headsign`, `:trip_short_name`, `:block_id`, `:wheelchair_accessible` and
-  `:bikes_allowed`. `expected_updated_at` must match the stored trip, otherwise
-  `{:error, :stale}` is returned with no write. A frequency trip refuses a start
-  or timing change with `:frequency_trip`, a linked trip re-materializes its stop
-  times in place against a timing of its own pattern, and a custom trip adopts a
-  timing only when its ordered stops and direction match or returns
-  `:stops_differ`. The trip ID never changes.
+  `:trip_headsign`, `:trip_short_name`, `:wheelchair_accessible` and
+  `:bikes_allowed`. Block membership is read-only in Schedules and changes on the
+  Blocks page, so `:block_id` is ignored. `expected_updated_at` must match the
+  stored trip, otherwise `{:error, :stale}` is returned with no write. A frequency
+  trip refuses a start or timing change with `:frequency_trip`, a linked trip
+  re-materializes its stop times in place against a timing of its own pattern, and
+  a custom trip adopts a timing only when its ordered stops and direction match or
+  returns `:stops_differ`. The trip ID never changes.
   """
   @spec update_trip(
           String.t(),

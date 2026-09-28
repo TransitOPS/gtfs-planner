@@ -381,7 +381,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :drawer, :any, required: true
   attr :patterns, :list, required: true
   attr :calendars, :list, required: true
-  attr :block_suggestions, :list, required: true
+  attr :block_suggestions, :list, default: []
   attr :patterns_path, :string, required: true
 
   def trip_drawer(assigns) do

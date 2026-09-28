@@ -1549,7 +1549,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 drawer={@drawer}
                 patterns={@payload.patterns}
                 calendars={@payload.calendars}
-                block_suggestions={@payload.block_suggestions}
                 patterns_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
               />
 

@@ -101,7 +101,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           sections: [Timetable.section()],
           unlinked_trip_count: non_neg_integer(),
           summary: summary(),
-          block_suggestions: [String.t()],
           direction_labels: %{0 => String.t(), 1 => String.t()}
         }
 
@@ -134,7 +133,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           optional(:service_id) => String.t() | nil,
           optional(:trip_headsign) => String.t() | nil,
           optional(:trip_short_name) => String.t() | nil,
-          optional(:block_id) => String.t() | nil,
           optional(:wheelchair_accessible) => 0..2 | nil,
           optional(:bikes_allowed) => 0..2 | nil
         }
@@ -222,9 +220,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   Edits one trip in place, keeping its `trip_id`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
-  `:trip_headsign`, `:trip_short_name`, `:block_id`, `:wheelchair_accessible` and
+  `:trip_headsign`, `:trip_short_name`, `:wheelchair_accessible` and
   `:bikes_allowed`. The metadata fields go through a changeset that casts only
-  those five fields and validates the two 0..2 enums. `direction_id` and
+  those four fields and validates the two 0..2 enums. A block is read-only here:
+  block membership changes on the Blocks page, so a submitted `:block_id` is
+  ignored and leaves the stored block untouched. `direction_id` and
   `route_pattern_id` are never editable, and `trip_id` never changes.
 
   `expected_updated_at` (a `DateTime` or an ISO 8601 string) must equal the
@@ -261,11 +261,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `attrs` carries `:start_time` and `:timed_pattern_id` (a timing of the source
   trip's pattern; required, because a custom source has no timing of its own).
   The new trip copies `service_id`, `trip_headsign`, `trip_short_name`,
-  `block_id`, `wheelchair_accessible`, `bikes_allowed` and `shape_id`, takes the
-  pattern's direction, gets a freshly allocated trip ID and newly materialized
-  stop times with no copied `shape_dist_traveled`, and is audited as created. A
-  frequency source is refused with `:frequency_trip` and the source trip itself
-  is never written.
+  `wheelchair_accessible`, `bikes_allowed` and `shape_id`, gets no block, takes
+  the pattern's direction, gets a freshly allocated trip ID and newly
+  materialized stop times with no copied `shape_dist_traveled`, and is audited as
+  created. A frequency source is refused with `:frequency_trip` and the source
+  trip itself is never written.
   """
   @spec duplicate_trip(String.t(), Ecto.UUID.t(), duplicate_attrs(), AuditContext.t()) ::
           {:ok, Trip.t()} | {:error, Ecto.Changeset.t() | update_error()}
@@ -447,7 +447,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       sections: sections,
       unlinked_trip_count: unlinked_trip_count(trips, patterns),
       summary: summary(trip_data, direction),
-      block_suggestions: block_suggestions(trips, direction),
       direction_labels: direction_labels(trips)
     }
   end
@@ -807,15 +806,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         ),
       incomplete_trip_count: length(trip_data) - length(complete)
     }
-  end
-
-  defp block_suggestions(trips, direction) do
-    trips
-    |> Enum.filter(&(&1.direction_id == direction))
-    |> Enum.map(& &1.block_id)
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> Enum.uniq()
-    |> Enum.sort()
   end
 
   defp direction_labels(trips) do
@@ -1419,12 +1409,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     )
   end
 
-  # The edit changeset casts only the five editable metadata fields; linkage,
+  # The edit changeset casts only the four editable metadata fields; linkage,
   # calendar and times are application-owned and set from loaded records (CR-4).
+  # `block_id` is deliberately absent: Schedules shows blocks read-only and the
+  # Blocks page is the only block editor (D1, INV-5).
   @metadata_fields [
     :trip_headsign,
     :trip_short_name,
-    :block_id,
     :wheelchair_accessible,
     :bikes_allowed
   ]
@@ -1493,7 +1484,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # The copy takes the pattern's direction and natural ID and the source trip's
-  # service and rider-facing metadata, including its shape.
+  # service and rider-facing metadata, including its shape, but never its block:
+  # a duplicate is unblocked until it is assigned on the Blocks page (D1).
   defp duplicate_trip_attrs(trip, route, pattern, timing, trip_id) do
     %{
       trip_id: trip_id,
@@ -1502,7 +1494,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       direction_id: pattern.direction_id,
       trip_headsign: trip.trip_headsign,
       trip_short_name: trip.trip_short_name,
-      block_id: trip.block_id,
+      block_id: nil,
       wheelchair_accessible: trip.wheelchair_accessible,
       bikes_allowed: trip.bikes_allowed,
       shape_id: trip.shape_id,
