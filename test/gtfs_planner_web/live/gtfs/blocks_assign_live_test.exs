@@ -156,7 +156,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
   # weekday one, so the two derive a “School + Weekday” day type beside the plain
   # “Weekday” one.
   defp school_dates do
-    ~D[2026-03-01]..~D[2026-03-31]
+    ~D[2026-03-01]
+    |> Date.range(~D[2026-03-31])
     |> Enum.filter(&(Date.day_of_week(&1) in 1..5))
     |> Enum.take(10)
   end

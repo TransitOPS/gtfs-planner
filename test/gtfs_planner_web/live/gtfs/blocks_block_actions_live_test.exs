@@ -85,7 +85,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
   # is a rename of that day type's own trips and leaves the school trips behind:
   # the split the review names on the other day type.
   defp school_dates do
-    ~D[2026-03-01]..~D[2026-03-31]
+    ~D[2026-03-01]
+    |> Date.range(~D[2026-03-31])
     |> Enum.filter(&(Date.day_of_week(&1) in 1..5))
     |> Enum.take(10)
   end

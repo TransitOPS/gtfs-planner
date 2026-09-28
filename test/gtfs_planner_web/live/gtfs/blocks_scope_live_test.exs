@@ -556,6 +556,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert has_element?(view, "#service-dates-drawer", "02 Mar 2026 – 01 Apr 2026")
       assert has_element?(view, "#service-dates-drawer", "Spring dates · 3 dates")
     end
+
+    test "the spec's `drawer` payload opens the same drawer as the controls' `key`",
+         %{version: version} = context do
+      seed_overlapping_day(context)
+      conn = editor_conn(context)
+
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      # `spec.md`'s Events list names this payload `drawer`; every shipped control
+      # sends `key`. Both open the panel drawer, so a control written to the
+      # spec's letter is not silently swallowed.
+      view |> render_hook("open_drawer", %{"drawer" => "service_dates"})
+      assert has_element?(view, "#service-dates-drawer-overlay[data-open='true']")
+
+      view |> render_hook("open_drawer", %{"drawer" => "checks"})
+      assert has_element?(view, "#checks-drawer-overlay[data-open='true']")
+
+      view |> render_hook("open_drawer", %{"drawer" => "peak"})
+      assert has_element?(view, "#peak-drawer-overlay[data-open='true']")
+    end
   end
 
   describe "URL state" do

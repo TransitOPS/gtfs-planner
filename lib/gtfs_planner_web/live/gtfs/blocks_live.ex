@@ -384,7 +384,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # `spec.md` names the payload `drawer`; the page's own controls send `key`.
-  # Mirrors the catch-all on `set_panel` / `set_view` / `set_scale`.
+  # Both open the same drawer through the reader above, so a later control
+  # written to the spec's letter is not silently swallowed. Mirrors the
+  # catch-all on `set_panel` / `set_view` / `set_scale`.
+  def handle_event("open_drawer", %{"drawer" => key}, socket),
+    do: handle_event("open_drawer", %{"key" => key}, socket)
+
   def handle_event("open_drawer", _params, socket), do: {:noreply, socket}
 
   # The trip, gap and block drawers are part of the URL, so closing one drops the
@@ -1025,19 +1030,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     day |> day_trips() |> Enum.find(&(&1.id == id))
   end
 
-  # The page holding the trip: its block's own page for a blocked trip, the pool's
-  # page for an unassigned one. The same visible order the page slices decides it,
-  # so the resolved page is the one that renders the trip; a filter that hides it
-  # leaves the requested page in place.
+  # The page holding the trip: its block's own panel and page for a blocked trip,
+  # the pool's for an unassigned one. An unassigned trip is rendered by the pool
+  # panel alone, so following one there — after an unassign, or through a `trip=`
+  # deep link (AC-26, AC-29) — switches the panel as well as the page, and the
+  # reverse switch names the Blocks panel again once the trip is in a block. The
+  # same visible order the page slices decides the page, so the resolved page is
+  # the one that renders the trip; a filter that hides it leaves the requested
+  # page in place.
   defp override_trip_page(socket, trip) do
     %{state: state, day: day} = socket.assigns
 
     state =
       if is_nil(trip.block_id) do
-        override_page(state, :pool_page, visible_pool(day.pool, state.route), & &1.id, trip.id)
+        override_page(
+          %{state | panel: :pool, page: 1},
+          :pool_page,
+          visible_pool(day.pool, state.route),
+          & &1.id,
+          trip.id
+        )
       else
         block_ids = Enum.map(visible_blocks(day.blocks, state), & &1.summary.block_id)
-        override_page(state, :page, block_ids, & &1, trip.block_id)
+        override_page(%{state | panel: :blocks}, :page, block_ids, & &1, trip.block_id)
       end
 
     socket
@@ -1484,10 +1499,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           {:noreply, put_layover(socket, attrs, @layover_save_failed)}
       end
     else
-      {:noreply,
-       socket
-       |> put_layover(attrs, nil)
-       |> put_flash(:error, @permission_message)}
+      # The refusal is the drawer's own sentence: the drawer is a top-layer
+      # `<dialog>` and the page flash renders behind it (AC-31).
+      {:noreply, put_layover(socket, attrs, @permission_message)}
     end
   end
 

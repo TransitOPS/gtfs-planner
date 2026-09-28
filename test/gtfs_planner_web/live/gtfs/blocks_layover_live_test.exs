@@ -305,6 +305,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
       html = submit_layover(view, "10")
 
       assert html =~ "You don&#39;t have permission to change blocks in this version."
+
+      # The sentence is shown in the open drawer's own alert slot, so it is visible
+      # and not only in the page flash behind the top-layer <dialog> (AC-31).
+      assert has_element?(
+               view,
+               "#layover-error",
+               "You don't have permission to change blocks in this version."
+             )
+
       assert settings_rows() == 0
       assert stored_minimum(context) == 5
       assert has_element?(view, "#blocks-min-layover", "Minimum layover · 5 min")
