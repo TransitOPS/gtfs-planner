@@ -16,6 +16,16 @@
  *   connector, blocked dotted), one marker per unique stop location with
  *   its visit label (`1 / 4` for a repeated stop), and fits the pattern.
  *   Draft (unsaved) sections redraw in amber.
+ * - Keyboard point list (step 25): the server renders the "Point list"
+ *   toggle and an empty ignored `#alignment-point-list` inside
+ *   `#alignment-detail` for editable non-missing sections. The hook owns
+ *   that container (CR-5): rows with a checkbox and a Locate button per
+ *   interior point, Add midpoint and Delete points actions. `toggle_points`
+ *   arrives as a DOM `alignment:action` on the hook root; opening the
+ *   list from Pan enters Edit points on the editable selected section so
+ *   the keyboard path never dead-ends. Marker keydown moves the focused
+ *   handle by container pixels (2 px, 10 px with Shift), Space/Enter
+ *   toggles its selection, Delete removes it.
  * - Clicking a section pushes `alignment_select_section`; `alignment:select`
  *   widens that polyline with a halo and fits its bounds.
  * - Edit points mode (step 24) shows draggable `L.marker` handles for the
@@ -95,6 +105,9 @@ const PatternAlignment = {
     this._handles = [];
     this._selectedPoints = new Set();
     this._dragWorking = null;
+    // Step 25 keyboard list: closed until the server toggle opens it. The
+    // list DOM lives outside the hook root (see _renderPointList).
+    this._pointsOpen = false;
     this._lastDragEnd = 0;
     this._lastBoxEnd = 0;
     this._shiftHeld = false;
@@ -156,6 +169,12 @@ const PatternAlignment = {
     document.addEventListener("keyup", this._onKeyUp);
     document.addEventListener("mousemove", this._onPointerMove);
     document.addEventListener("mouseup", this._onPointerUp);
+    // The server "Point list" button dispatches a DOM action (not a
+    // LiveView push), following the CalendarDateChange precedent.
+    this._onAction = (event) => {
+      if (event?.detail?.action === "toggle_points") this._togglePointList();
+    };
+    root.addEventListener("alignment:action", this._onAction);
     map.on("mousedown", (event) => this._maybeStartBox(event));
 
     // The server pushes `%{model: ...}` (see the LiveView map test); unwrap
@@ -176,6 +195,11 @@ const PatternAlignment = {
     document.removeEventListener("keyup", this._onKeyUp);
     document.removeEventListener("mousemove", this._onPointerMove);
     document.removeEventListener("mouseup", this._onPointerUp);
+    this.el?.removeEventListener?.("alignment:action", this._onAction);
+    // The point list container is hook-owned but lives outside the root;
+    // clear it so no stale rows survive a re-mount.
+    this._pointsOpen = false;
+    this._renderPointList();
     this._removeBoxOverlay();
     if (this._map) {
       try {
@@ -314,6 +338,8 @@ const PatternAlignment = {
     this._redo = [];
     this._selectedPoints = new Set();
     this._dragWorking = null;
+    this._pointsOpen = false;
+    this._renderPointList();
     this._removeBoxOverlay();
     this._box = null;
     this._clearOverlays();
@@ -456,6 +482,9 @@ const PatternAlignment = {
     }
     this._rebuildHandles();
     this._refreshEditChrome();
+    // The keyboard list names this section's points; re-render it so a
+    // server-driven section change never shows the previous section.
+    this._renderPointList();
 
     if (fit) {
       this._map.fitBounds(L.latLngBounds(entry.latlngs), { padding: [30, 30] });
@@ -618,6 +647,13 @@ const PatternAlignment = {
       marker.on("dragend", () => this._onHandleDragEnd(position, index, marker));
       marker.on("click", () => this._onHandleClick(index));
       marker.addTo(this._map);
+      // Keyboard editing (step 25): Leaflet keyboard markers are plain
+      // tabbable divs, so a DOM keydown owns arrows/Space/Delete per
+      // handle. In-place selection repaints keep this element (and its
+      // listener) alive; rebuilds re-attach below.
+      marker.getElement?.()?.addEventListener?.("keydown", (event) =>
+        this._onHandleKey(position, index, event),
+      );
       this._handles[index] = marker;
     });
   },
@@ -900,6 +936,10 @@ const PatternAlignment = {
     // `#alignment-workspace` in this task; the hook root is the coherent
     // scope for the same intent.)
     if (!this.el.contains(document.activeElement)) return;
+    // Marker keydown owns handle-originated keys (it stopPropagation, but
+    // the guard keeps the single-point Delete below from also firing when
+    // a focused handle bubbles here).
+    if (event.target?.closest?.(".alignment-handle")) return;
     const key = event.key;
     if ((event.ctrlKey || event.metaKey) && (key === "z" || key === "Z")) {
       if (this._mode !== "edit") return;
@@ -942,6 +982,230 @@ const PatternAlignment = {
     }
   },
 
+  // --- Keyboard point list (step 25) --------------------------------------
+  //
+  // The server renders the "Point list" toggle and an empty ignored
+  // `#alignment-point-list` inside `#alignment-detail` for editable
+  // non-missing sections; the hook owns that container's rows (CR-5).
+  // Row anatomy and helper copy follow the prototype's `pointList()`:
+  // checkbox + "Point n" label + Locate per interior point, Add midpoint
+  // and Delete points with the selected count. Handles are 0-based
+  // interior indexes, matching `_selectedPoints`.
+
+  _togglePointList() {
+    if (this._destroyed || !this._map) return;
+    // The list is the keyboard path into Edit points: opening it from Pan
+    // enters edit mode on the editable selected section so the toggle
+    // never appears to do nothing.
+    if (!this._pointsOpen && this._mode !== "edit") {
+      if (!this._editableSection(this._selected)) return;
+      this._setMode("edit");
+    }
+    this._pointsOpen = !this._pointsOpen;
+    this._renderPointList();
+  },
+
+  _renderPointList() {
+    const list = document.getElementById("alignment-point-list");
+    const toggle = document.getElementById("alignment-point-list-toggle");
+    if (toggle) toggle.setAttribute("aria-expanded", String(this._pointsOpen));
+    if (!list) return;
+    // Rebuilds drop focus, so remember which list control held it and
+    // restore it after the rebuild keeps keyboard users in place.
+    const active = document.activeElement;
+    const focusKey =
+      active && list.contains(active) ? active.dataset?.paListFocus : null;
+    const open =
+      this._pointsOpen &&
+      this._mode === "edit" &&
+      this._editableSection(this._selected);
+    if (!open) {
+      list.innerHTML = "";
+      return;
+    }
+    const interior = this._effectiveInterior(this._selected);
+    const selected = this._selectedPoints;
+    const rows = interior
+      .map(
+        (_, index) => `
+      <div class="pa-point-row">
+        <input type="checkbox" class="checkbox" data-point-check="${index}" id="alignment-point-check-${index}" data-pa-list-focus="check-${index}"${selected.has(index) ? " checked" : ""}>
+        <label for="alignment-point-check-${index}">Point ${index + 1}</label>
+        <button type="button" class="btn btn-ghost min-h-11" data-focus-point="${index}" data-pa-list-focus="locate-${index}">Locate</button>
+      </div>`,
+      )
+      .join("");
+    list.innerHTML = `
+      <p class="pa-point-help">Select points here. Arrow keys move a focused map point. End stops are fixed.</p>
+      ${rows || '<p class="pa-point-empty">No interior points yet. Use Add midpoint to start.</p>'}
+      <div class="pa-point-actions">
+        <button type="button" class="btn btn-outline min-h-11" data-add-midpoint data-pa-list-focus="midpoint">Add midpoint</button>
+        <button type="button" class="btn btn-outline min-h-11" data-delete-points data-pa-list-focus="delete"${selected.size === 0 ? " disabled" : ""}>Delete points (${selected.size})</button>
+      </div>`;
+    list.querySelectorAll("[data-point-check]").forEach((box) =>
+      box.addEventListener("change", () =>
+        this._onListCheck(Number(box.dataset.pointCheck), box.checked),
+      ),
+    );
+    list.querySelectorAll("[data-focus-point]").forEach((button) =>
+      button.addEventListener("click", () =>
+        this._focusHandle(Number(button.dataset.focusPoint)),
+      ),
+    );
+    list
+      .querySelector("[data-add-midpoint]")
+      ?.addEventListener("click", () => this._addMidpoint());
+    list
+      .querySelector("[data-delete-points]")
+      ?.addEventListener("click", () => this._deleteSelected());
+    if (focusKey) {
+      // The invoking control may be gone or disabled now (deleted row,
+      // emptied selection): fall back to Add midpoint, never the void.
+      let next = list.querySelector(`[data-pa-list-focus="${focusKey}"]`);
+      if (!next || next.disabled) {
+        next = list.querySelector("[data-add-midpoint]");
+      }
+      if (next && !next.disabled) next.focus();
+    }
+  },
+
+  _onListCheck(index, checked) {
+    if (this._mode !== "edit" || !this._editableSection(this._selected)) return;
+    if (index < 0 || index >= this._effectiveInterior(this._selected).length) {
+      return;
+    }
+    if (checked) {
+      this._selectedPoints.add(index);
+    } else {
+      this._selectedPoints.delete(index);
+    }
+    this._paintHandleSelection();
+    this.pushDraftState();
+  },
+
+  // Focuses the map handle for an interior index; true when one exists.
+  _focusHandle(index) {
+    const element = this._handles[index]?.getElement?.();
+    if (!element) return false;
+    element.focus();
+    return true;
+  },
+
+  // Per-handle keys, mirroring the prototype's `map.onkeydown` on
+  // `[data-map-point]`: arrows move by container pixels at the current
+  // zoom (2 px, 10 px with Shift) through one undoable commit; Space or
+  // Enter toggles the selection with the list checkbox following; Delete
+  // removes exactly the focused point. Anchors are never in the handle
+  // set, so Delete cannot remove them (INV-1).
+  _onHandleKey(position, index, event) {
+    if (this._mode !== "edit" || position !== this._selected) return;
+    const marker = this._handles[index];
+    if (!marker || !this._map) return;
+    const key = event.key;
+    if (
+      key === "ArrowUp" ||
+      key === "ArrowDown" ||
+      key === "ArrowLeft" ||
+      key === "ArrowRight"
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.shiftKey ? 10 : 2;
+      const dx = key === "ArrowRight" ? step : key === "ArrowLeft" ? -step : 0;
+      const dy = key === "ArrowDown" ? step : key === "ArrowUp" ? -step : 0;
+      const at = this._map.latLngToContainerPoint(marker.getLatLng());
+      const next = this._map.containerPointToLatLng(
+        window.L.point(at.x + dx, at.y + dy),
+      );
+      const points = this._effectiveInterior(position);
+      if (index < 0 || index >= points.length) return;
+      marker.setLatLng(next);
+      points[index] = fromLatLng(next);
+      this._commit(position, points);
+      // The commit rebuilds the handles; keep the keyboard on the moved
+      // point so repeated presses keep working.
+      this._focusHandle(index);
+      return;
+    }
+    if (key === " " || key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (this._selectedPoints.has(index)) {
+        this._selectedPoints.delete(index);
+      } else {
+        this._selectedPoints.add(index);
+      }
+      this._paintHandleSelection();
+      this.pushDraftState();
+      return;
+    }
+    if (key === "Delete" || key === "Backspace") {
+      event.preventDefault();
+      event.stopPropagation();
+      this._deletePoint(index);
+    }
+  },
+
+  // Inserts the midpoint of the first edge: first anchor to first
+  // interior point, or second anchor when the interior is empty.
+  _addMidpoint() {
+    if (this._mode !== "edit" || !this._editableSection(this._selected)) return;
+    const L = window.L;
+    if (!L) return;
+    const position = this._selected;
+    const anchors = this._sectionAnchors(position);
+    if (!anchors) return;
+    const interior = this._effectiveInterior(position);
+    const before = L.latLng(anchors.from.lat, anchors.from.lon);
+    // toLatLng returns [lat, lon]; L.latLng accepts that pair verbatim.
+    const after =
+      interior.length > 0
+        ? L.latLng(toLatLng(interior[0]))
+        : L.latLng(anchors.to.lat, anchors.to.lon);
+    const mid = L.latLng(
+      (before.lat + after.lat) / 2,
+      (before.lng + after.lng) / 2,
+    );
+    this._commit(position, [fromLatLng(mid), ...interior]);
+    this._selectedPoints = new Set([0]);
+    this._paintHandleSelection();
+    this.pushDraftState();
+    this._focusHandle(0);
+  },
+
+  // Removes exactly one interior point; the selection names indexes, so
+  // it clears and the keyboard lands on the point now at that index, or
+  // on Add midpoint when none remains.
+  _deletePoint(index) {
+    const position = this._selected;
+    const interior = this._effectiveInterior(position);
+    if (index < 0 || index >= interior.length) return;
+    const next = [...interior];
+    next.splice(index, 1);
+    this._selectedPoints = new Set();
+    this._commit(position, next);
+    if (!this._focusHandle(index)) {
+      document
+        .getElementById("alignment-point-list")
+        ?.querySelector("[data-add-midpoint]")
+        ?.focus();
+    }
+  },
+
+  // Removes every selected interior point; the button label carries the
+  // selected count and the button stays disabled at zero.
+  _deleteSelected() {
+    if (this._selectedPoints.size === 0) return;
+    const position = this._selected;
+    const doomed = [...this._selectedPoints].sort((a, b) => b - a);
+    const next = this._effectiveInterior(position);
+    for (const index of doomed) {
+      if (index >= 0 && index < next.length) next.splice(index, 1);
+    }
+    this._selectedPoints = new Set();
+    this._commit(position, next);
+  },
+
   // --- Draft state ---------------------------------------------------------
 
   dirtyPositions() {
@@ -953,6 +1217,10 @@ const PatternAlignment = {
 
   pushDraftState() {
     if (this._destroyed) return;
+    // Every draft-affecting gesture funnels through here, so the keyboard
+    // list re-renders on the same beat (selection, counts, open state).
+    // Focus inside the list survives via _renderPointList's restore.
+    this._renderPointList();
     this.pushEvent("alignment_draft_state", {
       dirty_positions: this.dirtyPositions(),
       selected: this._selected,

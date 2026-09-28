@@ -359,6 +359,102 @@ test.describe("point editing", () => {
   });
 });
 
+test.describe("point list", () => {
+  test("opens the keyboard point list and moves a located point at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator("#alignment-map-root .pa-stop-pin").first(),
+    ).toBeVisible({ timeout: 15000 });
+
+    // Section 1 is selected by default and saved: enter Edit points, then
+    // open the keyboard list from the section detail.
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle"),
+    ).toHaveCount(1);
+
+    const toggle = page.locator("#alignment-point-list-toggle");
+    await expect(toggle).toBeVisible({ timeout: 15000 });
+    await toggle.click();
+    const rows = page.locator("#alignment-point-list .pa-point-row");
+    await expect(rows).toHaveCount(1);
+    await expect(page.locator("#alignment-point-list")).toContainText(
+      "Arrow keys move a focused map point",
+    );
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    // Checking the row selects the map handle; Locate focuses it.
+    await page.locator('#alignment-point-list [data-point-check="0"]').check();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle-dot.is-selected"),
+    ).toHaveCount(1);
+    await expect(page.locator("#alignment-point-list")).toContainText(
+      "Delete points (1)",
+    );
+    await page.locator('#alignment-point-list [data-focus-point="0"]').click();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle:focus"),
+    ).toHaveCount(1);
+
+    // ArrowRight on the focused handle commits a draft move: Undo enables.
+    await page
+      .locator("#alignment-map-root .alignment-handle")
+      .first()
+      .press("ArrowRight");
+    await expect(page.locator("#alignment-map-root [data-pa-undo]")).toBeEnabled();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle:focus"),
+    ).toHaveCount(1);
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "point-list-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${ALIGN_PATTERN}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    const editNarrow = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(editNarrow).toBeEnabled({ timeout: 15000 });
+    await editNarrow.click();
+    await page.locator("#alignment-point-list-toggle").click();
+    await expect(
+      page.locator("#alignment-point-list .pa-point-row"),
+    ).toHaveCount(1);
+    await page.locator('#alignment-point-list [data-focus-point="0"]').click();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle:focus"),
+    ).toHaveCount(1);
+    await captureFullPage(page, "point-list-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
+
 test.describe("alignment map", () => {
   test("shows section lines on the Leaflet map at desktop and phone widths", async ({
     page,

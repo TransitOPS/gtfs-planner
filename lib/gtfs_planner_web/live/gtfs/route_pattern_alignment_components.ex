@@ -159,6 +159,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
             section={@selected}
             visits_by_position={@visits_by_position}
             total={length(@alignment.sections)}
+            editable?={@editable?}
           />
 
           <div id="alignment-footer" class="border-t border-base-200 p-4">
@@ -231,6 +232,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   attr :visits_by_position, :map, required: true
   attr :total, :integer, required: true
 
+  attr :editable?, :boolean,
+    default: false,
+    doc: "shows the keyboard point list toggle for editable non-missing sections"
+
   def section_detail(assigns) do
     assigns =
       assigns
@@ -252,6 +257,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         Visits {@repeat.from} → {@repeat.to}
       </p>
       <p class="mt-1 text-sm text-base-content/70">{@guidance}</p>
+      <%!-- The keyboard point list (step 25): the button dispatches a DOM
+        action to the PatternAlignment hook, which owns the ignored list
+        container below (CR-5). Rendered only for editable non-missing
+        sections; step 26 adds the remaining section actions here. --%>
+      <div :if={@editable? and @section.kind != :missing} class="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          id="alignment-point-list-toggle"
+          phx-click={
+            JS.dispatch("alignment:action",
+              to: "#alignment-map-root",
+              detail: %{action: "toggle_points"}
+            )
+          }
+          class="btn btn-outline min-h-11"
+          aria-expanded="false"
+          aria-controls="alignment-point-list"
+        >
+          Point list
+        </button>
+      </div>
+      <div
+        :if={@editable? and @section.kind != :missing}
+        id="alignment-point-list"
+        phx-update="ignore"
+      >
+      </div>
     </div>
     """
   end
