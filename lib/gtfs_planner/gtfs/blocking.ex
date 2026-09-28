@@ -5,7 +5,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   Every function is scoped to one organization and GTFS version: organization,
   version and actor come from arguments, never from submitted parameters. The
   minimum layover is stored per published version, read as a default without
-  writing a row, and validated before it reaches the table.
+  writing a row, and validated before it reaches the table. A save takes the
+  scoped version row `FOR SHARE` before its published check and its row write, so
+  a calendar combination that owns the version cannot commit a fresh layover
+  between its review and its apply.
 
   `load_day/3` loads one day type of a published version inside one transaction:
   it derives the day types from `Calendars.list_calendars/3`, selects the requested
@@ -47,6 +50,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Versions
 
   @default_min_layover_minutes 5
+  @published_status "published"
   @seconds_per_hour 3600
 
   # The timeline chart and the Peak drawer bucket the day in 15-minute bins.
@@ -157,15 +161,32 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   @doc """
   Stores the minimum layover for one organization's published GTFS version.
 
-  Returns `{:error, :not_found}` when the version is unpublished or belongs to
-  another organization, and `{:error, changeset}` when the value is not a whole
-  number from 0 to 120. One row is kept per organization and version, so a
-  repeated save replaces the stored value.
+  The save runs in one transaction whose first statement is the scoped version row
+  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the minimum layover a review
+  loaded cannot change under a calendar combination that owns the version, and this
+  save waits behind such an owner in turn. Returns `{:error, :not_found}` when the
+  version is unpublished or belongs to another organization, and
+  `{:error, changeset}` when the value is not a whole number from 0 to 120. One row
+  is kept per organization and version, so a repeated save replaces the stored value.
   """
   @spec update_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
           {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def update_settings(organization_id, gtfs_version_id, attrs) do
-    if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
+    case Repo.transaction(fn -> write_settings!(organization_id, gtfs_version_id, attrs) end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The version share lock is the first statement of the write transaction, before the
+  # published check and the upsert, whether the save updates a stored row or inserts the
+  # version's first one (INV-1). Nothing in this writer takes the version row `FOR UPDATE`,
+  # so no caller upgrades the share lock, and the transaction makes the check and the write
+  # one unit while returning the upsert's own result tuple.
+  defp write_settings!(organization_id, gtfs_version_id, attrs) do
+    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+
+    if version.publication_status == @published_status do
       %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
       |> BlockingSetting.changeset(attrs)
       |> Repo.insert(
@@ -174,6 +195,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         returning: true
       )
     else
+      # The shared lock takes no publication stance, so the published requirement stays here,
+      # exactly as `Calendars` and `RoutePatterns` apply theirs after the lock.
       {:error, :not_found}
     end
   end

@@ -4,8 +4,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   # owns the same version row `FOR UPDATE` cannot commit a reviewed input between a review
   # load and its apply. A staging scope keeps writing because `Versions.lock_for_input_write!/2`
   # is a scoped row lock, not an authorization check. The same boundary covers the named
-  # schedule, pattern, stop/parent, bulk geometry/naming/rollback and published pathway-import
-  # writers, whose contention cases live in the later describes below.
+  # schedule, pattern, stop/parent, bulk geometry/naming/rollback, published pathway-import and
+  # blocking-settings writers, whose contention cases live in the later describes below.
   #
   # `async: false` plus `Sandbox.unboxed_run/2` gives every participant its own committing
   # PostgreSQL connection. Contention is proven by polling `pg_blocking_pids/1` for the
@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
   import Ecto.Query
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -28,6 +29,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
+  alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -880,6 +884,133 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end
   end
 
+  describe "blocking settings writer" do
+    test "an existing layover update and a version's first layover row wait behind the lock",
+         %{supervisor: supervisor} do
+      scope = seed_scope("settings")
+      on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      # One version already stores a layover and the other has no settings row, so the upsert's
+      # update path and its absent-row insertion path are both observed.
+      assert {:ok, %BlockingSetting{min_layover_minutes: 5}} =
+               unboxed(fn -> save_layover(scope.organization.id, scope.version.id, 5) end)
+
+      first_row_version = unboxed(fn -> gtfs_version_fixture(scope.organization.id) end)
+
+      {update_holder, update_holder_backend} = hold_exclusive_version(scope, supervisor)
+
+      {insert_holder, insert_holder_backend} =
+        hold_exclusive_version(%{scope | version: first_row_version}, supervisor)
+
+      {update_writer, update_backend} =
+        start_writer(supervisor, fn ->
+          Gtfs.update_blocking_settings(scope.organization.id, scope.version.id, %{
+            min_layover_minutes: 9
+          })
+        end)
+
+      {insert_writer, insert_backend} =
+        start_writer(supervisor, fn ->
+          Blocking.update_settings(scope.organization.id, first_row_version.id, %{
+            min_layover_minutes: 7
+          })
+        end)
+
+      send(update_writer.pid, :go)
+      send(insert_writer.pid, :go)
+
+      assert_blocked_by(update_backend, update_holder_backend)
+      assert_blocked_by(insert_backend, insert_holder_backend)
+
+      # While the version is exclusively owned, neither the replaced value nor the version's first
+      # row is written; a read still answers the absent-row default and still stores nothing.
+      assert stored_layover(scope.organization.id, scope.version.id) == 5
+      assert stored_layover(scope.organization.id, first_row_version.id) == nil
+
+      assert Blocking.get_settings(scope.organization.id, first_row_version.id) == %{
+               min_layover_minutes: 5
+             }
+
+      assert stored_layover(scope.organization.id, first_row_version.id) == nil
+
+      send(update_holder.pid, :release)
+      assert Task.await(update_holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %BlockingSetting{min_layover_minutes: 9}} =
+               Task.await(update_writer, @collect_timeout)
+
+      assert stored_layover(scope.organization.id, scope.version.id) == 9
+      assert layover_rows(scope.organization.id, scope.version.id) == 1
+      # The first-row writer still waits on its own version row.
+      assert stored_layover(scope.organization.id, first_row_version.id) == nil
+
+      send(insert_holder.pid, :release)
+      assert Task.await(insert_holder, @collect_timeout) == {:error, :released}
+
+      assert {:ok, %BlockingSetting{min_layover_minutes: 7}} =
+               Task.await(insert_writer, @collect_timeout)
+
+      assert stored_layover(scope.organization.id, first_row_version.id) == 7
+      assert layover_rows(scope.organization.id, first_row_version.id) == 1
+    end
+
+    test "a committed layover change moves the review fingerprint a confirmation must match" do
+      scope = seed_schedule_scope("settings-fingerprint")
+      on_exit(fn -> cleanup_schedule_scope(scope) end)
+
+      # Three trips on one service, each four minutes after the previous one: inside the default
+      # five-minute layover and outside a stored zero.
+      clocks = [{"07:00:00", "07:30:00"}, {"07:34:00", "08:04:00"}, {"08:08:00", "08:38:00"}]
+
+      seeded =
+        unboxed(fn ->
+          clocks
+          |> Enum.with_index(1)
+          |> Enum.map(fn {{first_arrival, last_arrival}, index} ->
+            blocked_trip_fixture(
+              scope.organization.id,
+              scope.version.id,
+              scope.route_id,
+              %{
+                trip_id: "FP#{index}",
+                service_id: scope.service,
+                first_arrival: first_arrival,
+                last_arrival: last_arrival
+              }
+            )
+          end)
+        end)
+
+      day_key = unboxed(fn -> day_type_key(scope) end)
+      command = {:assign, Enum.map(seeded, & &1.id), "FP101"}
+
+      assert {:needs_confirmation, review} =
+               unboxed(fn -> Gtfs.apply_block_change(day_key, command, scope.audit) end)
+
+      # Both four-minute gaps are short layovers under the version's default of five minutes.
+      assert review.added_problem_count == 2
+
+      # A prior committed layover change: the review input is genuinely different.
+      assert {:ok, %BlockingSetting{min_layover_minutes: 0}} =
+               unboxed(fn -> save_layover(scope.organization.id, scope.version.id, 0) end)
+
+      assert {:needs_confirmation, refreshed} =
+               unboxed(fn -> Gtfs.apply_block_change(day_key, command, scope.audit) end)
+
+      refute refreshed.fingerprint == review.fingerprint
+      assert refreshed.added_problem_count == 0
+
+      # The confirmation the earlier review issued no longer matches, and nothing is written.
+      assert {:error, {:stale_review, stale}} =
+               unboxed(fn ->
+                 Gtfs.apply_block_change(day_key, command, scope.audit, review.fingerprint)
+               end)
+
+      assert stale.fingerprint == refreshed.fingerprint
+      assert trip_blocks(scope, Enum.map(seeded, & &1.trip_id)) == [nil, nil, nil]
+    end
+  end
+
   # Releases the writer into real contention for the version row while an independent
   # session owns it exclusively, and verifies the writer really waits on that session.
   defp hold_exclusive_version(scope, supervisor) do
@@ -1444,6 +1575,54 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end)
   end
 
+  # -- Blocking settings writer fixtures and observations --------------------
+
+  defp save_layover(organization_id, gtfs_version_id, minutes) do
+    Blocking.update_settings(organization_id, gtfs_version_id, %{min_layover_minutes: minutes})
+  end
+
+  defp stored_layover(organization_id, gtfs_version_id) do
+    unboxed(fn ->
+      from(s in BlockingSetting,
+        where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+        select: s.min_layover_minutes
+      )
+      |> Repo.one()
+    end)
+  end
+
+  defp layover_rows(organization_id, gtfs_version_id) do
+    unboxed(fn ->
+      Repo.aggregate(
+        from(s in BlockingSetting,
+          where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
+        ),
+        :count
+      )
+    end)
+  end
+
+  # The day type key `Blocking` derives for the schedule scope's own service.
+  defp day_type_key(scope) do
+    {:ok, calendars} = Calendars.list_calendars(scope.organization.id, scope.version.id)
+    day_type = Enum.find(DayTypes.derive(calendars), &(scope.service in &1.service_ids))
+    assert day_type, "no day type holds #{scope.service}"
+    day_type.key
+  end
+
+  defp trip_blocks(scope, trip_ids) do
+    unboxed(fn ->
+      from(t in Trip,
+        where:
+          t.organization_id == ^scope.organization.id and
+            t.gtfs_version_id == ^scope.version.id and t.trip_id in ^trip_ids,
+        order_by: t.trip_id,
+        select: t.block_id
+      )
+      |> Repo.all()
+    end)
+  end
+
   defp change_logs(scope) do
     unboxed(fn ->
       from(l in ChangeLog,
@@ -1566,6 +1745,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
       Repo.delete_all(from(st in StopTime, where: st.organization_id == ^organization_id))
       Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
+      # A blocking review fixture carries real stop rows; the organization row does not cascade
+      # to them, so they go before the versions and the organization.
+      Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
 
       Repo.delete_all(
         from(r in TimedPatternStop,
