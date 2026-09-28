@@ -4131,6 +4131,164 @@ case Accounts.register_first_admin(%{
         "empty version #{feed_empty_version.id}, default kept as #{feed_details_default_before.name}"
     )
 
+    # ── Calendar resource scale versions (step 21) ──
+    #
+    # Two dedicated published versions carry 100 calendar identities each: the size
+    # `docs/requirements/calendars-and-service-periods-requirements.md` §5.1 names for the
+    # two-second calendar-list target. They are resource fixtures, not journeys. The one-year
+    # version spans half a year either side of the version's agency-local today; the long-history
+    # version spans nine years ending eleven months ahead (2019-01-01..2027-12-31 on the day this
+    # fixture was recorded), so its whole-feed view opens on the disclosed recent window and
+    # "Show all years" exposes the compressed axis. Five shapes cycle across the indices, so one
+    # screen holds the weekly, exception-only and metadata-only families, and every row is
+    # inserted directly because this fixture supplies scenario data, not an audited edit.
+    for {resource_name, resource_start_offset, resource_end_offset, resource_route_id} <- [
+          {"Browser Calendar Scale One Year", -182, 182, "RSC_YEAR"},
+          {"Browser Calendar Scale Long History", -2_827, 459, "RSC_LONG"}
+        ] do
+      {:ok, resource_version} = Versions.create_gtfs_version(org.id, %{name: resource_name})
+
+      resource_today = Gtfs.DisplayClock.today(org.id, resource_version.id).date
+      resource_now = DateTime.utc_now()
+      resource_first = Date.add(resource_today, resource_start_offset)
+      resource_last = Date.add(resource_today, resource_end_offset)
+      resource_span = Date.diff(resource_last, resource_first)
+
+      resource_service_id = fn index ->
+        "RSC_" <> String.pad_leading(Integer.to_string(index), 3, "0")
+      end
+
+      # A break of three consecutive removed regular service days anchors on a Monday, so a
+      # Mon-Fri identity really loses three service days there whatever day the seed runs.
+      resource_break = fn offset ->
+        base = Date.add(resource_first, offset)
+        Date.add(base, rem(8 - Date.day_of_week(base), 7))
+      end
+
+      resource_indexes = 0..99
+
+      resource_weekly =
+        for index <- resource_indexes, rem(index, 5) in [0, 1, 3] do
+          all_days? = rem(index, 5) == 0
+
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: resource_version.id,
+            service_id: resource_service_id.(index),
+            monday: 1,
+            tuesday: 1,
+            wednesday: 1,
+            thursday: 1,
+            friday: 1,
+            saturday: if(all_days?, do: 1, else: 0),
+            sunday: if(all_days?, do: 1, else: 0),
+            start_date: resource_first,
+            end_date: resource_last,
+            inserted_at: resource_now,
+            updated_at: resource_now
+          }
+        end
+
+      resource_attributes =
+        for index <- resource_indexes do
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: resource_version.id,
+            service_id: resource_service_id.(index),
+            service_description: "Resource service #{index}",
+            service_schedule_typicality: 0,
+            inserted_at: resource_now,
+            updated_at: resource_now
+          }
+        end
+
+      resource_exceptions =
+        Enum.flat_map(resource_indexes, fn index ->
+          case rem(index, 5) do
+            # A Mon-Fri identity gains one Saturday inside its range.
+            1 ->
+              [{index, Date.add(resource_first, 40), 1}]
+
+            # A dates-only identity: one addition a month ahead, so the row is drawn in every
+            # view of both versions, plus two historical additions inside its own span.
+            2 ->
+              [
+                Date.add(resource_today, 30),
+                Date.add(resource_first, div(resource_span, 4)),
+                Date.add(resource_first, div(resource_span, 2))
+              ]
+              |> Enum.map(&{index, &1, 1})
+
+            # Two real breaks across the axis: three consecutive removed weekdays each.
+            3 ->
+              for offset <- [div(resource_span, 3), div(2 * resource_span, 3)],
+                  removed <- 0..2 do
+                {index, Date.add(resource_break.(offset), removed), 2}
+              end
+
+            _other ->
+              []
+          end
+        end)
+        |> Enum.map(fn {index, date, exception_type} ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: resource_version.id,
+            service_id: resource_service_id.(index),
+            date: date,
+            exception_type: exception_type,
+            inserted_at: resource_now,
+            updated_at: resource_now
+          }
+        end)
+
+      resource_trips =
+        for index <- resource_indexes, rem(index, 5) != 4, position <- 1..2 do
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: resource_version.id,
+            route_id: resource_route_id,
+            service_id: resource_service_id.(index),
+            trip_id:
+              "RSC_TRIP_#{String.pad_leading(Integer.to_string(index), 3, "0")}_#{position}",
+            trip_headsign: "Resource trip",
+            inserted_at: resource_now,
+            updated_at: resource_now
+          }
+        end
+
+      {:ok, _resource_route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: resource_version.id,
+          route_id: resource_route_id,
+          route_short_name: "RS",
+          route_long_name: resource_name,
+          route_type: 3
+        })
+
+      Repo.insert_all(GtfsPlanner.Gtfs.Calendar, resource_weekly)
+      Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, resource_attributes)
+      Repo.insert_all(GtfsPlanner.Gtfs.CalendarDate, resource_exceptions)
+      Repo.insert_all(GtfsPlanner.Gtfs.Trip, resource_trips)
+
+      IO.puts(
+        "Browser seed: resource version #{resource_name} (#{resource_version.id}) with " <>
+          "#{length(resource_weekly)} weekly, #{length(resource_exceptions)} exception and " <>
+          "#{length(resource_trips)} trip rows over #{resource_first}..#{resource_last}"
+      )
+    end
+
+    # Branding once more leaves the Browser E2E Version the current one, so the version panel and
+    # every existing list assertion stay as they were.
+    diagram_version
+    |> Ecto.Changeset.change(published_at: DateTime.utc_now())
+    |> Repo.update!()
+
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
     # ── Pattern alignment fixtures (spec 12, step 20 and every later visual step) ──
