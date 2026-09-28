@@ -57,9 +57,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       phx-hook="GtfsVersionHook"
       data-organization-id={@organization_id}
       data-current-version={@current_version.id}
-      class="relative inline-flex w-fit flex-wrap items-center gap-2"
+      class="relative inline-flex w-fit min-w-0 max-w-full flex-wrap items-center gap-2"
     >
-      <div id="version-control" class="relative">
+      <div id="version-control" class="relative min-w-0">
         <button
           id="gtfs-version-trigger"
           type="button"
@@ -68,17 +68,19 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           aria-controls="gtfs-version-panel"
           aria-label={"Version, #{@current_version.name}"}
           phx-click={!@editing? && @open_panel}
-          class="inline-flex items-center gap-2 max-w-[14rem] bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-60 disabled:pointer-events-none"
+          class="inline-flex min-h-11 min-w-0 max-w-full items-center gap-2 rounded-control border border-control bg-white pl-3 pr-2.5 text-sm hover:bg-canvas disabled:pointer-events-none disabled:opacity-60"
         >
-          <span class="flex-none font-normal text-base-content/70">Version</span>
-          <span class="truncate text-base-content">{@current_version.name}</span>
-          <.icon name="hero-chevron-down" class="size-3.5 flex-none text-base-content/70" />
+          <span class="shrink-0 text-muted">Version</span>
+          <span class="min-w-0 max-w-[17rem] truncate font-semibold text-strong">
+            {@current_version.name}
+          </span>
+          <.icon name="hero-chevron-down" class="size-4 shrink-0 text-muted" />
         </button>
 
         <%= if @editing? do %>
           <div
             id="gtfs-version-rename-panel"
-            class="absolute right-0 top-full mt-1 w-72 z-30 rounded-box border border-base-300 bg-base-100 shadow-lg p-3"
+            class="absolute right-0 top-full z-30 mt-2 w-72 rounded-card border border-subtle bg-white p-3 shadow-float"
           >
             <.form
               for={@form}
@@ -88,7 +90,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
               phx-submit="save"
               class="flex flex-col gap-2"
             >
-              <label for="gtfs-version-rename-input" class="text-sm font-medium text-base-content/70">
+              <label for="gtfs-version-rename-input" class="text-[13px] font-semibold text-muted">
                 Version name
               </label>
               <input
@@ -127,6 +129,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
             </.form>
           </div>
         <% else %>
+          <%!-- The reference's 320px panel above md; below md the reference has no
+          version menu at all (the deferred phone Menu replaces it), so the panel
+          keeps the component's narrower width to stay inside the viewport. --%>
           <div
             id="gtfs-version-panel"
             role="menu"
@@ -135,21 +140,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
             phx-window-keydown={@close_panel}
             phx-key="escape"
             style="display: none;"
-            class="absolute right-0 top-full mt-1 w-64 max-h-80 overflow-auto z-30 rounded-box border border-base-300 bg-base-100 shadow-lg text-sm"
+            class="absolute right-0 top-full z-30 mt-2 max-h-80 w-80 max-md:w-64 overflow-auto rounded-card border border-subtle bg-white p-2 text-sm shadow-float"
           >
-            <button
-              id="gtfs-version-rename"
-              type="button"
-              role="menuitem"
-              phx-click={@close_panel |> JS.push("start_edit", target: @myself)}
-              class="block w-full px-3 py-2 min-h-11 text-left hover:bg-base-200 focus:outline-none focus:bg-base-200"
-            >
-              Rename version…
-            </button>
-            <div class="border-t border-base-300 my-1"></div>
-            <div class="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-base-content/40">
-              Switch version
-            </div>
+            <p class="px-3 pb-1 pt-2 text-[13px] font-semibold text-muted">Switch version</p>
             <button
               :for={{id, name} <- @versions}
               id={"gtfs-version-option-#{id}"}
@@ -160,8 +153,11 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
               aria-current={id == @current_version.id && "true"}
               phx-click={@close_panel}
               class={[
-                "flex w-full items-center justify-between gap-2 px-3 py-2 min-h-11 text-left hover:bg-base-200 focus:outline-none focus:bg-base-200 disabled:opacity-60 disabled:pointer-events-none",
-                id == @current_version.id && "bg-primary/10 text-primary font-medium"
+                "flex w-full min-h-11 items-center justify-between gap-2 rounded-control px-3 text-left hover:bg-canvas focus:bg-canvas disabled:pointer-events-none disabled:opacity-60",
+                if(id == @current_version.id,
+                  do: "bg-selection font-semibold text-action",
+                  else: "text-strong"
+                )
               ]}
             >
               <span class="truncate">{name}</span>
@@ -169,10 +165,20 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
                 <.icon name="hero-check" class="size-4" />
               </span>
             </button>
+            <div class="my-1 border-t border-subtle"></div>
+            <button
+              id="gtfs-version-rename"
+              type="button"
+              role="menuitem"
+              phx-click={@close_panel |> JS.push("start_edit", target: @myself)}
+              class="flex w-full min-h-11 items-center rounded-control px-3 text-left text-strong hover:bg-canvas focus:bg-canvas"
+            >
+              Rename version…
+            </button>
           </div>
         <% end %>
       </div>
-      <div id="gtfs-version-pending" hidden class="text-sm text-base-content/70">
+      <div id="gtfs-version-pending" hidden class="text-sm text-muted">
         Switching version…
       </div>
       <div id="gtfs-version-failure" hidden class="flex items-center gap-2">

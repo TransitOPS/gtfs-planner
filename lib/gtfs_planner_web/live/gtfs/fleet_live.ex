@@ -614,9 +614,13 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
+      <:sub_header>
+        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:fleet} />
+      </:sub_header>
+
       <.header>
         Fleet
-        <:subtitle>List your vehicles to check that a plan fits your fleet.</:subtitle>
+        <:subtitle>All versions · List your vehicles to check that a plan fits your fleet.</:subtitle>
         <:actions>
           <.button
             id="import-tods"
@@ -640,8 +644,6 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       </.header>
 
       <.scope_note organization_name={@current_organization.name} class="mt-2" />
-
-      <.blocks_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:fleet} />
 
       <p :if={@type_notice} id="vehicle-type-notice" role="status" class="mt-3 text-sm text-success">
         {@type_notice}
@@ -2073,10 +2075,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   # The Fleet query string carries its filters, so a version switch keeps it in
   # the URL instead of dropping the operator's current view.
   defp fleet_path(version_id, query) when query in [nil, ""] do
-    "/gtfs/#{version_id}/blocks/fleet"
+    "/gtfs/#{version_id}/settings/fleet"
   end
 
   defp fleet_path(version_id, query) do
-    "/gtfs/#{version_id}/blocks/fleet?#{query}"
+    "/gtfs/#{version_id}/settings/fleet?#{query}"
   end
 end

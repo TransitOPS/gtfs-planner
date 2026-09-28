@@ -28,7 +28,10 @@ async function logInAndOpenImport(page) {
     await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
   }
 
-  await page.locator("#app-header a[href$='/import']").first().click();
+  // The header's GTFS area owns Export and Import; Import is that bar's tab.
+  await page.locator("#main-navigation #nav-gtfs").click();
+  await page.waitForURL(/\/gtfs\/[^/]+\/export$/);
+  await page.locator("#gtfs-tab-import").click();
   await page.waitForURL(/\/gtfs\/[^/]+\/import$/);
   await page.waitForSelector("#gtfs-import-upload");
   await waitForLiveView(page);

@@ -323,6 +323,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
+      <:sub_header>
+        <.gtfs_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:export} />
+      </:sub_header>
+
       <.header>
         Export & Validate
         <:subtitle>
@@ -461,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 </ul>
                 <.link
                   id="export-edit-garages"
-                  href={"/gtfs/#{@current_gtfs_version.id}/blocks/garages"}
+                  href={"/gtfs/#{@current_gtfs_version.id}/settings/garages"}
                   class="mt-2 inline-flex min-h-11 items-center font-medium text-primary underline"
                 >
                   Edit garages

@@ -239,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(view, "#export-conflicts", "Main Street")
 
       assert attribute_values(render(view), "#export-edit-garages", "href") == [
-               "/gtfs/#{version.id}/blocks/garages"
+               "/gtfs/#{version.id}/settings/garages"
              ]
 
       # The conflict detail belongs to the conflict panel only.
@@ -257,6 +257,35 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       refute has_element?(view, "#export-conflict-panel")
       refute has_element?(view, "#retry-export")
     end
+  end
+
+  describe "GTFS area navigation" do
+    test "mounts the GTFS tabs with Export current above the unchanged page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/export")
+
+      assert has_element?(view, "#gtfs-sub-nav")
+      assert has_element?(view, "#gtfs-tab-export[aria-current='page']")
+      assert has_element?(view, "#gtfs-tab-import[href='/gtfs/#{version.id}/import']")
+      refute has_element?(view, "#gtfs-tab-import[aria-current='page']")
+
+      assert heading_text(html, "header h1") == "Export & Validate"
+      assert has_element?(view, "#gtfs-export-form")
+      assert has_element?(view, "#export-download-container")
+    end
+  end
+
+  defp heading_text(html, selector) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+    |> String.trim()
   end
 
   defp start_export_and_wait(view, button_id \\ "#start-export") do

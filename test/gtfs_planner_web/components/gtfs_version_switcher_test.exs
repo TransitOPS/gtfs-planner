@@ -72,14 +72,27 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
   end
 
   describe "rename affordance" do
-    test "renders a rename item as the first row in the dropdown", %{
+    test "renders the versions first and the rename item after them", %{
       conn: conn,
       current: current,
       org: org
     } do
       {:ok, view, _html} = mount_host(conn, current, org)
 
+      assert has_element?(view, "#gtfs-version-panel", "Switch version")
       assert has_element?(view, "#gtfs-version-panel #gtfs-version-rename", "Rename version")
+
+      items =
+        view
+        |> element("#gtfs-version-panel")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#gtfs-version-panel [role='menuitem']")
+        |> Enum.map(&LazyHTML.attribute(&1, "id"))
+
+      # Readable order: the version options, then the rename item.
+      assert List.last(items) == ["gtfs-version-rename"]
+      assert Enum.count(items, &(&1 == ["gtfs-version-rename"])) == 1
     end
 
     test "rename item has a 44px-minimum target", %{conn: conn, current: current, org: org} do
@@ -91,6 +104,39 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
         |> render()
 
       assert html =~ "min-h-11"
+    end
+  end
+
+  describe "trigger presentation" do
+    test "keeps the labelled version trigger with the current name in a truncating span", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(
+               view,
+               "#gtfs-version-trigger[aria-label='Version, #{current.name}']"
+             )
+
+      html = view |> element("#gtfs-version-trigger") |> render()
+      assert html =~ "max-w-[17rem]"
+      assert html =~ "truncate"
+      assert has_element?(view, "#gtfs-version-trigger span", "Version")
+    end
+
+    test "keeps the hook's data attributes and hidden pending and failure regions", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(
+               view,
+               "#gtfs-version-switcher[phx-hook='GtfsVersionHook'][data-organization-id='#{org.id}'][data-current-version='#{current.id}']"
+             )
     end
   end
 
@@ -333,6 +379,25 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       submit_html = view |> element("#gtfs-version-rename-form button[type=submit]") |> render()
       assert submit_html =~ ~s(phx-disable-with="Saving name…")
+    end
+  end
+
+  describe "selection tint" do
+    test "current version option carries the selection tint and a check", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      html =
+        view
+        |> element("#gtfs-version-option-#{current.id}")
+        |> render()
+
+      assert html =~ "bg-selection"
+      assert html =~ "text-action"
+      assert html =~ "hero-check"
     end
   end
 

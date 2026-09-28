@@ -11,8 +11,20 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
 
-  @garages_path "/blocks/garages"
-  @fleet_path "/blocks/fleet"
+  @garages_path "/settings/garages"
+  @fleet_path "/settings/fleet"
+
+  # The Settings bar the two moved pages share, in the sitemap's order.
+  @settings_tabs [
+    "Overview",
+    "Feed details",
+    "Agencies",
+    "Fares",
+    "Export defaults",
+    "Feed URL",
+    "Garages",
+    "Fleet"
+  ]
 
   defp editor_setup(_context) do
     organization = organization_fixture()
@@ -42,17 +54,24 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
     member
   end
 
-  defp blocks_pill(doc, version_id) do
-    LazyHTML.query(
-      doc,
-      "nav[aria-label='Main navigation'] a[href='/gtfs/#{version_id}/blocks/garages']"
-    )
+  # The retired Blocks path segments are assembled here so the retired paths
+  # appear only in the negative assertion that they are unrecognized.
+  defp retired_blocks_path(version_id, page) do
+    "/gtfs/#{version_id}/" <> Enum.join(["blocks", page], "/")
   end
 
-  defp sub_nav_links(doc) do
+  defp main_nav_current(doc) do
+    LazyHTML.query(doc, "nav[aria-label='Main navigation'] a[aria-current='page']")
+  end
+
+  defp settings_nav_links(doc) do
     doc
-    |> LazyHTML.query("#blocks-sub-nav a")
+    |> LazyHTML.query("#settings-nav a")
     |> Enum.map(&String.trim(LazyHTML.text(&1)))
+  end
+
+  defp settings_nav_current_href(doc) do
+    LazyHTML.attribute(LazyHTML.query(doc, "#settings-nav a[aria-current='page']"), "href")
   end
 
   describe "access" do
@@ -87,10 +106,10 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
     end
   end
 
-  describe "Blocks navigation and scope" do
+  describe "Settings navigation and scope" do
     setup :editor_setup
 
-    test "the Blocks pill is current on Garages and links to it", %{
+    test "the Garages page renders the Settings bar with Garages current", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -100,23 +119,19 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
 
+      assert has_element?(view, "h1", "Garages")
+      assert render(view) =~ "All versions · Set where your vehicles start and end the day."
+      assert render(view) =~ "Shared across all service versions for #{organization.name}."
+
       doc = LazyHTML.from_fragment(render(view))
 
-      pill = blocks_pill(doc, version.id)
-      assert Enum.count(pill) == 1
-      assert LazyHTML.attribute(pill, "aria-current") == ["page"]
-
-      assert sub_nav_links(doc) == ["Garages", "Fleet"]
-
-      assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#blocks-sub-nav a[aria-current='page']"),
-               "href"
-             ) == ["/gtfs/#{version.id}#{@garages_path}"]
-
-      assert render(view) =~ "Shared across all service versions for #{organization.name}."
+      # A Settings page carries no current main-navigation task.
+      assert Enum.empty?(main_nav_current(doc))
+      assert settings_nav_links(doc) == @settings_tabs
+      assert settings_nav_current_href(doc) == ["/gtfs/#{version.id}#{@garages_path}"]
     end
 
-    test "the Fleet route loads for an editor and keeps one current Blocks pill", %{
+    test "the Fleet page renders the Settings bar with Fleet current", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -128,20 +143,36 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
       assert has_element?(view, "h1", "Fleet")
 
-      doc = LazyHTML.from_fragment(render(view))
-
-      pill = blocks_pill(doc, version.id)
-      assert Enum.count(pill) == 1
-      assert LazyHTML.attribute(pill, "aria-current") == ["page"]
-
-      assert sub_nav_links(doc) == ["Garages", "Fleet"]
-
-      assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#blocks-sub-nav a[aria-current='page']"),
-               "href"
-             ) == ["/gtfs/#{version.id}#{@fleet_path}"]
+      assert render(view) =~
+               "All versions · List your vehicles to check that a plan fits your fleet."
 
       assert render(view) =~ "Shared across all service versions for #{organization.name}."
+
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert Enum.empty?(main_nav_current(doc))
+      assert settings_nav_links(doc) == @settings_tabs
+      assert settings_nav_current_href(doc) == ["/gtfs/#{version.id}#{@fleet_path}"]
+    end
+  end
+
+  describe "retired Blocks routes" do
+    setup :editor_setup
+
+    test "the retired Blocks paths are not recognized", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      for page <- ["garages", "fleet"] do
+        retired = get(conn, retired_blocks_path(version.id, page))
+
+        assert retired.status == 404
+        refute retired.resp_body =~ "Add your first garage"
+      end
     end
   end
 
@@ -184,6 +215,29 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
       render_hook(view, "switch_gtfs_version", %{"version" => to_string(staging.id)})
       refute_redirected(view)
+    end
+
+    test "a foreign-organization or absent selection changes nothing through either event", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      other_organization = organization_fixture()
+      foreign_version = gtfs_version_fixture(other_organization.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+
+      for version_id <- [foreign_version.id, Ecto.UUID.generate()] do
+        render_hook(view, "switch_gtfs_version", %{"version" => to_string(version_id)})
+        refute_push_event(view, "gtfs_version_selected", %{version_id: _})
+        refute_redirected(view)
+
+        render_hook(view, "gtfs_version_loaded", %{"version_id" => to_string(version_id)})
+        refute_redirected(view)
+      end
     end
 
     test "Fleet keeps its query string across a version switch", %{

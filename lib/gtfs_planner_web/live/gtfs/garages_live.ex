@@ -101,7 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/blocks/garages")}
+      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/settings/garages")}
     else
       {:noreply, socket}
     end
@@ -113,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
     if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/blocks/garages")}
+      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/settings/garages")}
     else
       {:noreply, socket}
     end
@@ -352,9 +352,13 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
+      <:sub_header>
+        <.settings_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:garages} />
+      </:sub_header>
+
       <.header>
         Garages
-        <:subtitle>Set where your vehicles start and end the day.</:subtitle>
+        <:subtitle>All versions · Set where your vehicles start and end the day.</:subtitle>
         <:actions>
           <.button
             id="import-tods"
@@ -382,8 +386,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       <p :if={@garage_notice} id="garage-notice" role="status" class="mt-2 text-sm text-success">
         {@garage_notice}
       </p>
-
-      <.blocks_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:garages} />
 
       <p :if={!@garages_empty?} id="garages-status" class="mt-3 text-sm text-base-content/70">
         {@garage_count} garages · {@assigned_vehicle_count} vehicles assigned
@@ -435,7 +437,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
             </:col>
             <:action :let={{_id, garage}}>
               <.link
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/blocks/fleet?garage=#{garage.id}"}
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings/fleet?garage=#{garage.id}"}
                 class="inline-flex min-h-11 items-center whitespace-nowrap text-sm font-medium text-primary underline"
               >
                 View vehicles

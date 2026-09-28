@@ -347,6 +347,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
+      <:sub_header>
+        <.routes_tabs gtfs_version_id={@current_gtfs_version.id} active_tab={:routes} />
+      </:sub_header>
+
       <.header>
         Routes
         <:subtitle>GTFS routes for the current version</:subtitle>

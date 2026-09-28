@@ -10,7 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
 
-  @fleet_path "/blocks/fleet"
+  @fleet_path "/settings/fleet"
 
   defp editor_setup(_context) do
     organization = organization_fixture()
@@ -389,6 +389,30 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       render_hook(view, "switch_gtfs_version", %{"version" => to_string(other_version.id)})
 
       assert_redirect(view, fleet_url(other_version, query))
+    end
+
+    test "staging, foreign and absent selections neither navigate nor report a selection", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      other_organization = organization_fixture()
+      foreign_version = gtfs_version_fixture(other_organization.id)
+
+      {:ok, view, _html} = live(conn, fleet_url(version, "q=river"))
+
+      for version_id <- [staging.id, foreign_version.id, Ecto.UUID.generate()] do
+        render_hook(view, "switch_gtfs_version", %{"version" => to_string(version_id)})
+        refute_push_event(view, "gtfs_version_selected", %{version_id: _})
+        refute_redirected(view)
+
+        render_hook(view, "gtfs_version_loaded", %{"version_id" => to_string(version_id)})
+        refute_redirected(view)
+      end
     end
   end
 

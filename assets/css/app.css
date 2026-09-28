@@ -19,6 +19,33 @@
   src: url("/fonts/InterVariable.woff2") format("woff2");
 }
 
+/* The header's design-system fonts, from the TransitOps application design
+   system (OFL). Only `#app-header` and its menus reference them; page content
+   stays on Inter. */
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/Figtree-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/Figtree-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Gabarito";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/Gabarito-600.woff2") format("woff2");
+}
+
 /* Custom theme: Inter font */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
@@ -38,6 +65,31 @@
      outright.) Generates the `border-control-border` utility. Backgrounds and
      purely decorative dividers stay on `base-300`. */
   --color-control-border: color-mix(in oklab, var(--color-base-content) 50%, var(--color-base-100));
+}
+
+/* Design-system tokens for the header only, under names that do not collide with
+   daisyUI (`primary`, `base-*`) or this theme's `brand`/`control-border`. The
+   classes these generate are used exclusively inside `#app-header` and its two
+   menus, so page content keeps the daisyUI palette above. Values come from the
+   design system's application theme, as recorded in
+   `.specs/00-information-architecture/evidence/header-nav/header-tokens.css`. */
+@theme {
+  --font-ds: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Gabarito", "Figtree", ui-sans-serif, system-ui, sans-serif;
+
+  --color-strong: #0a1330;
+  --color-muted: #586479;
+  --color-subtle: #b5c0cc;
+  --color-control: #7a8698;
+  --color-canvas: #f4f6f9;
+  --color-action: #c81870;
+  --color-selection: #fef1f6;
+  --color-focus: #96305f;
+  --color-navy-100: #d6dae8; /* avatar */
+
+  --radius-control: 6px;
+  --radius-card: 8px;
+  --shadow-float: 0 4px 18px #0a133017;
 }
 
 /* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
@@ -152,6 +204,14 @@ body {
 
 #app-header {
   overflow: visible;
+}
+
+/* The design system's focus indicator, scoped to the header. Page controls keep
+   their own daisyUI rings; this rule is deliberately unlayered so it wins over
+   the header's utility classes without `!important`. */
+#app-header :is(a, button, summary):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 #station-sub-nav {

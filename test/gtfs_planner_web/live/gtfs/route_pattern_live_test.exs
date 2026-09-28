@@ -145,6 +145,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
     position
   end
 
+  defp assert_single_h1(html, expected_text) do
+    h1s = Regex.scan(~r/<h1[^>]*>(.*?)<\/h1>/s, html)
+
+    assert length(h1s) == 1, "expected exactly one H1, got #{length(h1s)}"
+
+    [[_full, inner]] = h1s
+    assert strip_tags(inner) == expected_text
+  end
+
+  defp strip_tags(html) do
+    html
+    |> String.replace(~r/<[^>]+>/, "")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
   defp patterns_path(version, route), do: "/gtfs/#{version.id}/routes/#{route.route_id}/patterns"
 
   defp new_pattern_path(version, route),
@@ -719,6 +735,121 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert Repo.get!(RoutePattern, pattern.id).route_pattern_name == "Mine after"
       assert Repo.get!(RoutePattern, other.id).route_pattern_name == "Theirs"
+    end
+  end
+
+  describe "pattern alignment task" do
+    setup :editor_scope
+
+    test "an existing pattern lists four ordered tasks and patches to the Alignment placeholder",
+         %{conn: conn, organization: organization, version: version} do
+      route = route(organization, version, "ALIGN1")
+      stops = Enum.map(1..3, &stop(organization, version, "ALIGN1", &1))
+
+      pattern =
+        pattern(organization, version, route, "P-ALIGN", route_pattern_name: "Alignment target")
+
+      pattern_occurrences = occurrences(pattern, stops)
+      selected_timing = timing(pattern, pattern_occurrences, %{name: "Weekday"})
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern))
+
+      html = render(view)
+
+      assert index(html, "pattern-task-stops") < index(html, "pattern-task-timings")
+      assert index(html, "pattern-task-timings") < index(html, "pattern-task-alignment")
+      assert index(html, "pattern-task-alignment") < index(html, "pattern-task-details")
+
+      assert has_element?(view, "#pattern-task-stops", "Stops")
+      assert has_element?(view, "#pattern-task-timings", "Timings")
+      assert has_element?(view, "#pattern-task-alignment", "Alignment")
+      assert has_element?(view, "#pattern-task-details", "Details")
+
+      render_click(element(view, "#pattern-task-alignment"))
+
+      assert_patched(
+        view,
+        pattern_path(version, route, pattern, "?task=alignment&timing=#{selected_timing.id}")
+      )
+
+      assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
+      assert has_element?(view, "#coming-soon")
+      assert has_element?(view, "h3#coming-soon-title", "Alignment")
+      assert has_element?(view, "#coming-soon-status", "Coming soon")
+      assert has_element?(view, "#coming-soon-scope", "This version: #{version.name}")
+      assert has_element?(view, "#coming-soon-sections", "Generate along streets")
+
+      # The destination is described, not built: the sitemap's Generate action
+      # stays absent rather than rendering a control that cannot work.
+      refute has_element?(view, "#coming-soon form")
+      refute has_element?(view, "#coming-soon button")
+
+      # Alignment has its own branch and never falls through to timings.
+      refute has_element?(view, "#timing-select")
+      refute has_element?(view, "#timing-rows")
+    end
+
+    test "direct query entry keeps one h1 and the pattern h2 above the Alignment h3",
+         %{conn: conn, organization: organization, version: version} do
+      route = route(organization, version, "ALIGN2")
+      stops = Enum.map(1..2, &stop(organization, version, "ALIGN2", &1))
+
+      pattern =
+        pattern(organization, version, route, "P-ALIGN2", route_pattern_name: "Direct alignment")
+
+      pattern_occurrences = occurrences(pattern, stops)
+      timing(pattern, pattern_occurrences, %{name: "Weekday"})
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=alignment"))
+
+      assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
+      assert has_element?(view, "#coming-soon")
+      assert has_element?(view, "h2", "Direct alignment")
+      assert has_element?(view, "h3#coming-soon-title", "Alignment")
+
+      html = render(view)
+      assert_single_h1(html, "ALIGN2 - ALIGN2 corridor")
+      assert index(html, "<h1") < index(html, "<h2")
+      assert index(html, "<h2") < index(html, "id=\"coming-soon-title\"")
+    end
+
+    test "creating with task=alignment stays in Details with only Details and Stops",
+         %{conn: conn, organization: organization, version: version} do
+      route = route(organization, version, "ALIGN3")
+
+      {:ok, view, _html} = live(conn, new_pattern_path(version, route) <> "?task=alignment")
+
+      assert has_element?(view, "#pattern-task-details[aria-current='page']")
+      assert has_element?(view, "#pattern-task-stops")
+      refute has_element?(view, "#pattern-task-alignment")
+      refute has_element?(view, "#pattern-task-timings")
+      refute has_element?(view, "#coming-soon")
+      assert has_element?(view, "#pattern-details-form")
+
+      html = render(view)
+      assert length(Regex.scan(~r/id="pattern-task-[a-z]+"/, html)) == 2
+    end
+
+    test "an unknown task still falls back to Stops and a missing pattern still redirects",
+         %{conn: conn, organization: organization, version: version} do
+      route = route(organization, version, "ALIGN4")
+      stops = Enum.map(1..2, &stop(organization, version, "ALIGN4", &1))
+      pattern = pattern(organization, version, route, "P-ALIGN4", route_pattern_name: "Fallback")
+      pattern_occurrences = occurrences(pattern, stops)
+      timing(pattern, pattern_occurrences, %{name: "Weekday"})
+
+      {:ok, view, _html} =
+        live(conn, pattern_path(version, route, pattern, "?task=alignment-typo"))
+
+      assert has_element?(view, "#pattern-task-stops[aria-current='page']")
+      refute has_element?(view, "#pattern-task-alignment[aria-current='page']")
+      refute has_element?(view, "#coming-soon")
+
+      missing_path =
+        "/gtfs/#{version.id}/routes/#{route.route_id}/patterns/P-ALIGN4-MISSING?task=alignment"
+
+      assert {:error, {:live_redirect, %{to: to}}} = live(conn, missing_path)
+      assert to == patterns_path(version, route)
     end
   end
 
