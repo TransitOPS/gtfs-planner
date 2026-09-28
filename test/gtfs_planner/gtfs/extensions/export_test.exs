@@ -2,6 +2,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Gtfs.Extensions.Export
+  alias GtfsPlanner.Gtfs.Export, as: GtfsExport
+  alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Gtfs.Extensions.Manifest
   alias GtfsPlanner.Gtfs
 
   import GtfsPlanner.OrganizationsFixtures
@@ -65,20 +68,82 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       assert coord["diagram_coordinate"] == %{"x" => 50.5, "y" => 25.0}
     end
 
-    test "includes manifest with inactive route flags", %{
+    test "produces no flags entry for inactive-only data in every ZIP profile", %{
       org_id: org_id,
       version_id: version_id
     } do
+      stop_fixture(org_id, version_id, stop_id: "S1")
+      route_fixture(org_id, version_id, route_id: "Red", route_short_name: "Red", active: false)
+
+      assert {:ok, []} = Export.build_zip_entries(org_id, version_id)
+
+      for profile <- [:full, :operations, :pathways] do
+        assert {:ok, zip_binary, _warnings} = GtfsExport.build_zip(org_id, version_id, profile)
+
+        {:ok, zip_entries} = :zip.unzip(zip_binary, [:memory])
+        names = Enum.map(zip_entries, fn {name, _content} -> to_string(name) end)
+
+        refute "_pathways_extensions.json" in names
+      end
+    end
+
+    test "mixed diagram data retains its previous bytes/structure except route flags", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      stop = stop_fixture(org_id, version_id, stop_id: "platform_north")
+      {:ok, _} = Gtfs.update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
       route_fixture(org_id, version_id, route_id: "Red", route_short_name: "Red", active: false)
       route_fixture(org_id, version_id, route_id: "Blue", route_short_name: "Blue", active: true)
 
       assert {:ok, entries} = Export.build_zip_entries(org_id, version_id)
 
-      {_, content} = Enum.find(entries, fn {n, _} -> n == ~c"_pathways_extensions.json" end)
-      manifest = Jason.decode!(content)
+      {name, content} = Enum.find(entries, fn {n, _} -> n == ~c"_pathways_extensions.json" end)
+      assert name == ~c"_pathways_extensions.json"
 
-      # Only inactive routes appear in the manifest
-      assert [%{"route_id" => "Red", "active" => false}] = manifest["route_active_flags"]
+      manifest = Jason.decode!(content)
+      %{"exported_at" => exported_at} = manifest
+      assert is_binary(exported_at)
+
+      # Same manifest map as before this change, except the route flags rows
+      # are gone.
+      assert manifest |> Map.delete("exported_at") == %{
+               "version" => 1,
+               "stop_diagram_coordinates" => [
+                 %{
+                   "stop_id" => "platform_north",
+                   "diagram_coordinate" => %{"x" => 50.5, "y" => 25.0}
+                 }
+               ],
+               "stop_levels" => [],
+               "route_active_flags" => [],
+               "diagram_images" => []
+             }
+    end
+
+    test "an older archive with route flags remains importable", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      route_fixture(org_id, version_id, route_id: "Red", route_short_name: "Red", active: true)
+
+      old_manifest =
+        Manifest.build([], [], [%{route_id: "Red", active: false}], [])
+        |> Manifest.encode()
+
+      files = [
+        %{
+          filename: "levels.txt",
+          content: "level_id,level_index,level_name\nL1,0.0,Ground Floor"
+        },
+        %{filename: "_pathways_extensions.json", content: old_manifest}
+      ]
+
+      assert {:ok, result} = Import.import_files(org_id, version_id, files)
+      assert result.counts.extensions_route_flags == 1
+
+      route = Gtfs.get_route_by_route_id(org_id, version_id, "Red")
+      assert route.active == false
     end
 
     test "serializes decimal fields as strings", %{

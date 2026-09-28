@@ -9,7 +9,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
   import Ecto.Query
 
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level, Route}
+  alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level}
   alias GtfsPlanner.Gtfs.Extensions.Manifest
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.DiagramStorage
@@ -19,15 +19,17 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
   @doc """
   Builds zip entries for extensions data.
 
+  New manifests never carry inactive route flags; when no diagram, level or
+  image data exists the manifest is omitted entirely.
+
   Returns `{:ok, entries}` where entries is a list of `{charlist_path, binary_content}` tuples,
   or `{:ok, []}` when no extensions data exists.
   """
   def build_zip_entries(organization_id, gtfs_version_id) do
     coords = query_stop_diagram_coordinates(organization_id, gtfs_version_id)
     stop_levels = query_stop_levels(organization_id, gtfs_version_id)
-    route_flags = query_route_active_flags(organization_id, gtfs_version_id)
 
-    if coords == [] and stop_levels == [] and route_flags == [] do
+    if coords == [] and stop_levels == [] do
       {:ok, []}
     else
       image_manifest_entries = build_image_manifest(stop_levels)
@@ -36,7 +38,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
         collect_image_entries(organization_id, gtfs_version_id, image_manifest_entries)
 
       manifest =
-        Manifest.build(coords, stop_levels, route_flags, image_manifest_entries)
+        Manifest.build(coords, stop_levels, [], image_manifest_entries)
         |> Manifest.encode()
 
       manifest_entry = {~c"_pathways_extensions.json", manifest}
@@ -83,21 +85,6 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
     )
     |> Repo.all()
     |> Enum.map(&serialize_stop_level/1)
-  end
-
-  defp query_route_active_flags(organization_id, gtfs_version_id) do
-    from(r in Route,
-      where:
-        r.organization_id == ^organization_id and
-          r.gtfs_version_id == ^gtfs_version_id and
-          r.active == false,
-      select: {r.route_id, r.active},
-      order_by: r.route_id
-    )
-    |> Repo.all()
-    |> Enum.map(fn {route_id, active} ->
-      %{route_id: route_id, active: active}
-    end)
   end
 
   # -- serialization helpers --------------------------------------------------
