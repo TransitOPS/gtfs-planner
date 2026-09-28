@@ -153,7 +153,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
-      live "/stops/:stop_id/evolutions", Gtfs.ComingSoonLive, :evolutions
+      live "/stops/:stop_id/evolutions", Gtfs.PathwayEvolutionsLive, :index
       live "/blocks", Gtfs.BlocksLive, :index
       # Operations placeholders. They group under the Operations area; the
       # organization-wide Garages and Fleet pages live in Settings, where the

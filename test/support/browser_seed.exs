@@ -52,6 +52,7 @@ alias GtfsPlanner.Gtfs.Flex
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
+alias GtfsPlanner.Gtfs.PathwayEvolution
 alias GtfsPlanner.Gtfs.Route
 alias GtfsPlanner.Gtfs.RoutePattern
 alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -5573,6 +5574,291 @@ case Accounts.register_first_admin(%{
     diagram_version
     |> Ecto.Changeset.change(published_at: DateTime.utc_now())
     |> Repo.update!()
+
+    # ── Scheduled pathway closures fixtures (pathway_evolutions.spec.js) ──
+    #
+    # One station with a full set of pathway types and a non-square floorplan,
+    # plus the three stations that produce the view's non-list states. All of
+    # them reuse the version's existing CAL_DAILY native calendar; no calendar
+    # identity is added, so the calendars page keeps exactly the six it had.
+    {:ok, evo_station} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_STATION",
+        stop_name: "Evolutions Test Station",
+        location_type: 1,
+        stop_lat: Decimal.new("40.7100"),
+        stop_lon: Decimal.new("-74.0060"),
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, evo_level} =
+      Gtfs.create_level(%{
+        level_id: "BROWSER_EVO_L1",
+        level_name: "Evolutions Concourse",
+        level_index: 0.0,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    # `create_stop_level/1` joins the station's own ids, not its external
+    # identifiers, which is the form the other seeded stations use.
+    {:ok, evo_stop_level} =
+      Gtfs.create_stop_level(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        stop_id: evo_station.id,
+        level_id: evo_level.id,
+        diagram_filename: "browser_seed_evo_diagram.png"
+      })
+
+    # The same 100 x 80 raster the diagram station uses, on its own file: the
+    # source image is deliberately not square, so a later floorplan view cannot
+    # pass by assuming a fixed aspect ratio.
+    :ok =
+      DiagramStorage.store_import_image(
+        org.id,
+        diagram_version.id,
+        evo_station.stop_id,
+        evo_stop_level.diagram_filename,
+        browser_floorplan_png
+      )
+
+    {:ok, evo_entrance} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_ENTRANCE",
+        stop_name: "North entrance",
+        location_type: 2,
+        parent_station: evo_station.stop_id,
+        level_id: evo_level.level_id,
+        diagram_coordinate: %{"x" => 20, "y" => 15},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, evo_mezzanine} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_MEZZANINE",
+        stop_name: "Mezzanine hall",
+        location_type: 0,
+        parent_station: evo_station.stop_id,
+        level_id: evo_level.level_id,
+        diagram_coordinate: %{"x" => 50, "y" => 30},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, evo_platform} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_PLATFORM",
+        stop_name: "Platform 1",
+        location_type: 0,
+        parent_station: evo_station.stop_id,
+        level_id: evo_level.level_id,
+        diagram_coordinate: %{"x" => 78, "y" => 55},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _evo_boarding} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_BOARDING",
+        stop_name: "Platform 1 boarding area",
+        location_type: 4,
+        parent_station: evo_station.stop_id,
+        level_id: evo_level.level_id,
+        diagram_coordinate: %{"x" => 86, "y" => 66},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    # A slash and spaces in one pathway_id, so a `?pathway=` link has to be
+    # encoded and decoded exactly rather than read as a path segment.
+    {:ok, _evo_walkway} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_EVO_PW_WALK",
+        from_stop_id: evo_entrance.stop_id,
+        to_stop_id: evo_mezzanine.stop_id,
+        pathway_mode: 1,
+        is_bidirectional: true,
+        traversal_time: 30,
+        length: Decimal.new("18.0")
+      })
+
+    {:ok, _evo_elevator} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_EVO/PW LIFT 1",
+        from_stop_id: evo_mezzanine.stop_id,
+        to_stop_id: evo_platform.stop_id,
+        pathway_mode: 5,
+        is_bidirectional: true,
+        traversal_time: 45,
+        length: Decimal.new("12.5")
+      })
+
+    {:ok, _evo_stairs} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_EVO_PW_STAIR",
+        from_stop_id: evo_mezzanine.stop_id,
+        to_stop_id: evo_platform.stop_id,
+        pathway_mode: 2,
+        is_bidirectional: true,
+        traversal_time: 60,
+        length: Decimal.new("14.0")
+      })
+
+    # Two saved closures on the existing CAL_DAILY calendar: an ordinary daytime
+    # window and one that continues into the next service day, so the list shows
+    # both window notes and a pathway with and without a closure count.
+    # `Repo.insert!/1` returns the row itself, so these two are plain matches;
+    # only the `Gtfs.create_*` calls above return `{:ok, row}`.
+    _evo_closure_day =
+      %PathwayEvolution{organization_id: org.id, gtfs_version_id: diagram_version.id}
+      |> PathwayEvolution.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_EVO/PW LIFT 1",
+        service_id: "CAL_DAILY",
+        start_time: 32_400,
+        end_time: 54_000,
+        note: "Quarterly inspection."
+      })
+      |> Repo.insert!()
+
+    _evo_closure_overnight =
+      %PathwayEvolution{organization_id: org.id, gtfs_version_id: diagram_version.id}
+      |> PathwayEvolution.changeset(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_EVO_PW_STAIR",
+        service_id: "CAL_DAILY",
+        start_time: 79_200,
+        end_time: 93_600,
+        note: "Slip replacement across the overnight window."
+      })
+      |> Repo.insert!()
+
+    # A station whose pathways exist and whose version has native calendars, but
+    # with nothing scheduled yet: the first-use empty state, which is a
+    # different state from a search that matches nothing.
+    {:ok, _evo_empty_station} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_EMPTY_STATION",
+        stop_name: "Evolutions Empty Station",
+        location_type: 1,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, evo_empty_a} =
+      Gtfs.import_create_stop(%{
+        stop_id: "BROWSER_EVO_EMPTY_A",
+        stop_name: "Empty concourse",
+        location_type: 0,
+        parent_station: "BROWSER_EVO_EMPTY_STATION",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, evo_empty_b} =
+      Gtfs.import_create_stop(%{
+        stop_id: "BROWSER_EVO_EMPTY_B",
+        stop_name: "Empty platform",
+        location_type: 0,
+        parent_station: "BROWSER_EVO_EMPTY_STATION",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _evo_empty_pathway} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_EVO_EMPTY_PW",
+        from_stop_id: evo_empty_a.stop_id,
+        to_stop_id: evo_empty_b.stop_id,
+        pathway_mode: 1,
+        is_bidirectional: true
+      })
+
+    # A station with a child stop and no pathways at all: nothing can close.
+    {:ok, _evo_nopathway_station} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_NOPATHWAY_STATION",
+        stop_name: "Evolutions No Pathway Station",
+        location_type: 1,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    {:ok, _evo_nopathway_child} =
+      Gtfs.import_create_stop(%{
+        stop_id: "BROWSER_EVO_NOPATHWAY_CHILD",
+        stop_name: "Unconnected platform",
+        location_type: 0,
+        parent_station: "BROWSER_EVO_NOPATHWAY_STATION",
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    IO.puts(
+      "Browser seed: evolutions station #{evo_station.stop_id} with 3 pathways, " <>
+        "2 closures on CAL_DAILY, plus empty and no-pathway stations"
+    )
+
+    # The published version that exists precisely because it has no calendars.
+    # A station with one pathway there renders the view's no-native-calendars
+    # state, which needs a station inside a calendar-less version.
+    {:ok, _evo_nocal_station} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_NOCAL_STATION",
+        stop_name: "Evolutions No Calendar Station",
+        location_type: 1,
+        organization_id: org.id,
+        gtfs_version_id: schedules_version.id
+      })
+
+    {:ok, evo_nocal_a} =
+      Gtfs.import_create_stop(%{
+        stop_id: "BROWSER_EVO_NOCAL_A",
+        stop_name: "No calendar concourse",
+        location_type: 0,
+        parent_station: "BROWSER_EVO_NOCAL_STATION",
+        organization_id: org.id,
+        gtfs_version_id: schedules_version.id
+      })
+
+    {:ok, evo_nocal_b} =
+      Gtfs.import_create_stop(%{
+        stop_id: "BROWSER_EVO_NOCAL_B",
+        stop_name: "No calendar platform",
+        location_type: 0,
+        parent_station: "BROWSER_EVO_NOCAL_STATION",
+        organization_id: org.id,
+        gtfs_version_id: schedules_version.id
+      })
+
+    {:ok, _evo_nocal_pathway} =
+      Gtfs.create_pathway(%{
+        pathway_id: "BROWSER_EVO_NOCAL_PW",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        from_stop_id: evo_nocal_a.stop_id,
+        to_stop_id: evo_nocal_b.stop_id,
+        organization_id: org.id,
+        gtfs_version_id: schedules_version.id
+      })
+
+    IO.puts(
+      "Browser seed: evolutions station in #{schedules_version.name} with 1 pathway " <>
+        "and no native calendars"
+    )
 
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
