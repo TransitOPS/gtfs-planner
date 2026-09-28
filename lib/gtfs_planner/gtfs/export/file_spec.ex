@@ -562,6 +562,31 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
   end
 
   @doc """
+  Scheduled station closures as the six-column interchange file, in full export
+  only.
+
+  The file carries the supported subset a full import accepts: an explicit
+  `service_id`, both service times in `H:MM:SS` form with hours at or above 24
+  kept as written, `is_closed` fixed at 1 and a blank `direction`. Only the
+  closure identity and its window are exported; `note` is application-only and
+  never reaches GTFS.
+  """
+  def pathway_evolutions_spec do
+    %{
+      filename: "pathway_evolutions.txt",
+      schema: Gtfs.PathwayEvolution,
+      fields: [
+        {"pathway_id", :pathway_id},
+        {"service_id", :service_id},
+        {"start_time", {:gtfs_time, :start_time}},
+        {"end_time", {:gtfs_time, :end_time}},
+        {"is_closed", {:constant, 1}},
+        {"direction", {:constant, nil}}
+      ]
+    }
+  end
+
+  @doc """
   Returns list of file specs for the given export type.
 
   ## Export Types
@@ -605,7 +630,8 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       route_networks_spec(),
       locations_spec(),
       booking_rules_spec(),
-      translations_spec()
+      translations_spec(),
+      pathway_evolutions_spec()
     ]
   end
 

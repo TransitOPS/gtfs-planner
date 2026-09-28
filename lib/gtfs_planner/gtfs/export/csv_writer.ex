@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Gtfs.Export.CsvWriter do
   - Booleans are exported as 0 (false) or 1 (true)
   """
 
+  alias GtfsPlanner.Gtfs.GtfsTime
+
   @doc """
   Writes CSV header line to file handle.
 
@@ -61,6 +63,19 @@ defmodule GtfsPlanner.Gtfs.Export.CsvWriter do
     lookup_map = Map.get(lookup_maps, lookup_key, %{})
     Map.get(lookup_map, uuid)
   end
+
+  # Integer service-day seconds become `H:MM:SS`, so a window that continues
+  # past midnight keeps its hour of 24 or more.
+  defp extract_value(record, {:gtfs_time, field}, _lookup_maps) do
+    case Map.get(record, field) do
+      seconds when is_integer(seconds) -> GtfsTime.format(seconds)
+      _absent -> nil
+    end
+  end
+
+  # A column the interchange format fixes for every row, such as `is_closed` 1 or
+  # an always-blank direction.
+  defp extract_value(_record, {:constant, value}, _lookup_maps), do: value
 
   # Formats and escapes a value for GTFS CSV output
   defp format_and_escape(value) do

@@ -5328,7 +5328,8 @@ defmodule GtfsPlanner.Gtfs do
             {"route_networks.txt", RouteNetwork},
             {"locations.txt", Location},
             {"booking_rules.txt", BookingRule},
-            {"translations.txt", Translation}
+            {"translations.txt", Translation},
+            {"pathway_evolutions.txt", PathwayEvolution}
           ],
           fn {filename, schema} ->
             {filename, count_version_rows(schema, organization_id, gtfs_version_id)}
