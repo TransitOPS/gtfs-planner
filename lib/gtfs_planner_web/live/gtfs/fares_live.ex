@@ -18,14 +18,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   The disconnected render shows the skeleton; the connected load resolves to
   `:ready` or `:unavailable`, and `reload` re-runs the same load. The Zones tab
-  renders the version's inventory and the filter the URL asked for; the stop
-  list below the stage header is added by the following step.
+  renders the version's inventory, the filter the URL asked for and the stop
+  list below the stage header.
+
+  The stop list is the page's second URL state owner: searching patches `?q=`
+  and drops `?page=`, and pagination patches `?page=`, both keeping the current
+  filter so a control never silently changes which stops are listed. Each load
+  resets the `:stops` stream to the page `FareZones.list_stops/3` returned, so
+  the rows are data and the table itself is not re-rendered per row.
   """
 
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.FaresComponents,
-    only: [load_error: 1, loading: 1, stage_header: 1, zone_inventory: 1]
+    only: [load_error: 1, loading: 1, stage_header: 1, stop_list: 1, zone_inventory: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Versions
@@ -44,7 +50,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:stop_page, nil)
      |> assign(:filter, :all)
      |> assign(:q, nil)
-     |> assign(:page, 1)}
+     |> assign(:page, 1)
+     |> stream(:stops, [])}
   end
 
   @impl true
@@ -67,6 +74,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   @impl true
   def handle_event("reload", _params, socket), do: {:noreply, load_workspace(socket)}
+
+  # Searching patches `q` and drops `page`: a new search starts at its own first
+  # page. The filter stays, so a search inside a zone keeps listing that zone.
+  @impl true
+  def handle_event("search", %{"q" => q}, socket) do
+    {:noreply, push_patch(socket, to: zones_url(socket, search_query(q)))}
+  end
+
+  # Pagination keeps both the filter and the search, so page 2 shows the next
+  # page of the same list instead of the next page of everything.
+  @impl true
+  def handle_event("paginate", %{"page" => page}, socket) do
+    {:noreply, push_patch(socket, to: zones_url(socket, page: parse_page(page)))}
+  end
 
   # Copy of GaragesLive's version handlers, pointed at the current tab so a
   # version switch keeps the operator on the workspace view they were reading.
@@ -143,6 +164,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
               title={stage_title(@filter, @inventory)}
               subtitle={stage_subtitle(@filter, @inventory)}
             />
+
+            <.stop_list
+              stops={@streams.stops}
+              stop_page={@stop_page}
+              zones={@inventory.zones}
+              filter={@filter}
+              q={@q}
+              patch_base={zones_path(@current_gtfs_version.id)}
+            />
           </section>
         </div>
         <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2"></div>
@@ -177,6 +207,27 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp parse_page(_value), do: 1
 
+  # The stop list's search and pagination both patch the Zones path, carrying the
+  # filter that is currently selected. The filter's value is byte-exact and the
+  # query is assembled by `URI.encode_query/1`, so a zone ID with a space or a
+  # reserved character survives the round trip.
+  defp zones_url(socket, query) do
+    path = zones_path(socket.assigns.current_gtfs_version.id)
+    query = stop_filter_query(socket.assigns.filter) ++ query
+
+    case query do
+      [] -> path
+      query -> path <> "?" <> URI.encode_query(query)
+    end
+  end
+
+  defp stop_filter_query(:unassigned), do: [filter: "unassigned"]
+  defp stop_filter_query({:zone, zone_id}), do: [zone: zone_id]
+  defp stop_filter_query(:all), do: []
+
+  defp search_query(q) when is_binary(q) and q != "", do: [q: q]
+  defp search_query(_q), do: []
+
   defp load_workspace(socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -193,6 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> assign(:inventory, inventory)
         |> assign(:checks, checks)
         |> assign(:stop_page, stop_page)
+        |> stream(:stops, stop_page.entries, reset: true)
         |> assign(:load_state, :ready)
         |> resolve_zone_filter(inventory)
 

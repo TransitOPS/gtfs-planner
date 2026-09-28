@@ -308,3 +308,92 @@ test("zones inventory", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "", "ref-zones");
 });
+
+// ── stop list ─────────────────────────────────────────────────────────────
+
+// The stage's stop list: one page of rows from the version's boardable stops,
+// the subtexts that explain a row's assignment, the unlocated count that belongs
+// to the filter, pagination, and the search's own empty state. The seeded
+// "Browser Fare Zones Version" carries 27 boardable stops - 12 Eastbank, 11
+// Central (one of them without coordinates) and 4 unassigned - so one page holds
+// all of them and both pagination controls are disabled.
+test("stop list", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await openFares(page, "zones");
+
+  const rows = page.locator("#fare-zone-stops tr");
+
+  await expect(page.locator("#fare-zone-search")).toHaveValue("");
+  await expect(page.locator("#fare-zone-without-location")).toHaveText(
+    "1 without map location",
+  );
+  await expect(page.locator("#fare-zone-stop-head")).toContainText("27 shown");
+  await expect(page.locator("#fare-zone-stops")).toBeVisible();
+  await expect(rows).toHaveCount(27);
+  await expect(page.locator("#fare-zone-stops-container thead th")).toHaveText([
+    "Stop",
+    "Stop ID",
+    "Fare zone",
+  ]);
+
+  // Zone membership is rendered per row, so the count of rows naming a zone is
+  // that zone's boardable membership.
+  await expect(page.locator("#fare-zone-stops tr", { hasText: "Eastbank" })).toHaveCount(12);
+  await expect(page.locator("#fare-zone-stops tr", { hasText: "Unassigned" })).toHaveCount(4);
+
+  const depot = page.locator("#fare-zone-stops tr", { hasText: "Central Depot" });
+
+  await expect(depot).toHaveCount(1);
+  await expect(depot).toContainText("Central");
+  await expect(depot).toContainText("No map location · list selection available");
+
+  const platform = page.locator("#fare-zone-stops tr", {
+    hasText: "Central Union Platform 1",
+  });
+
+  await expect(platform).toHaveCount(1);
+  await expect(platform).toContainText("Central");
+  await expect(platform).toContainText("Platform · assigned separately");
+
+  const pagination = page.locator("#fare-zone-stops-pagination");
+
+  await expect(pagination).toContainText("Showing 1–27 of 27 stops");
+  await expect(pagination.locator("button", { hasText: "Previous" })).toBeDisabled();
+  await expect(pagination.locator("button", { hasText: "Next" })).toBeDisabled();
+
+  await capture(page, testInfo, "stop-list-1440", { fullPage: false });
+
+  // A search that matches nothing names the search, keeps the filter's unlocated
+  // count, and offers the one action that leaves both.
+  await page.fill("#fare-zone-search", "zzzz");
+
+  await expect(page).toHaveURL(/[?&]q=zzzz$/);
+  await expect(page.locator("#fare-zone-stops")).toHaveCount(0);
+  await expect(page.locator("#fare-zone-stops-empty")).toContainText(
+    "No stops match your search",
+  );
+  await expect(page.locator("#fare-zone-stops-empty")).toContainText(
+    "Try a stop name or ID, or clear your search.",
+  );
+  await expect(page.locator("#fare-zone-stops-empty-action")).toHaveText(
+    "Clear search and filters",
+  );
+  await expect(page.locator("#fare-zone-stop-head")).toContainText("0 shown");
+  await expect(page.locator("#fare-zone-without-location")).toHaveText(
+    "1 without map location",
+  );
+
+  await capture(page, testInfo, "stop-list-empty", { fullPage: false });
+
+  await page.locator("#fare-zone-stops-empty-action").click();
+  await expect(rows).toHaveCount(27);
+  await expect(page.locator("#fare-zone-search")).toHaveValue("");
+
+  // The narrow layout keeps the page inside the viewport; the table presents one
+  // labeled record per row instead of scrolling a wide grid.
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#fare-zone-stops")).toBeVisible();
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  await capture(page, testInfo, "stop-list-320", { fullPage: false });
+});

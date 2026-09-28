@@ -9,11 +9,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   that saved zones are unchanged, so a failed read is never mistaken for lost
   work.
 
-  The Zones tab's inventory panel and stage header live here too. The inventory
-  is the page's only navigation: every zone in the version is one patch link
-  that carries its filter in the URL, so a zone survives a reload, a tab change
-  and a copied link. Zone identity is byte-exact, so a link's query is built
-  with `URI.encode_query/1` and no DOM ID ever carries a zone ID.
+  The Zones tab's inventory panel, stage header and stop list live here too. The
+  inventory is the page's only navigation: every zone in the version is one patch
+  link that carries its filter in the URL, so a zone survives a reload, a tab
+  change and a copied link. Zone identity is byte-exact, so a link's query is
+  built with `URI.encode_query/1` and no DOM ID ever carries a zone ID.
+
+  The stop list renders one page of `FareZones.list_stops/3` as a `:stops`
+  stream, so the rows arrive as data and the table's own structure stays fixed
+  while a search or a page change replaces its contents.
 
   The Fare rules and Checks bodies are added beside these components by the
   following steps.
@@ -146,6 +150,183 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       </div>
     </div>
     """
+  end
+
+  @doc """
+  Renders the stage's stop list: search, the unlocated count, the rows and the
+  empty states.
+
+  The row subtexts name what an operator cannot see from the row alone: a
+  platform is assigned separately from its station, and a stop without
+  coordinates can still be selected from this list. The unlocated count is the
+  filter's own, so it stays meaningful while a search narrows the visible rows.
+
+  Each empty state names what the current filter is missing and offers the one
+  action that leaves it, which is All stops without a search.
+
+  ## Examples
+
+      <.stop_list
+        stops={@streams.stops}
+        stop_page={@stop_page}
+        zones={@inventory.zones}
+        filter={@filter}
+        q={@q}
+        patch_base={@zones_path}
+      />
+  """
+  attr :stops, :any, required: true, doc: "the `:stops` stream holding the current page"
+  attr :stop_page, :map, required: true, doc: "`FareZones.list_stops/3`'s page map"
+  attr :zones, :list, required: true, doc: "the inventory's zones, for names and colors"
+  attr :filter, :any, required: true, doc: "`:all`, `:unassigned` or `{:zone, id}`"
+  attr :q, :string, default: nil, doc: "the current search term"
+  attr :patch_base, :string, required: true, doc: "the Zones path, without a query"
+
+  def stop_list(assigns) do
+    assigns =
+      assigns
+      |> assign(:zone_lookup, Map.new(assigns.zones, &{&1.zone_id, &1}))
+      |> assign(:empty, empty_state_copy(assigns.filter, assigns.q))
+
+    ~H"""
+    <div id="fare-zone-stop-list">
+      <form
+        id="fare-zone-search-form"
+        phx-change="search"
+        class="flex flex-wrap items-end justify-between gap-3 border-b border-base-300 px-4 py-3"
+      >
+        <div class="w-full max-w-sm">
+          <.input
+            id="fare-zone-search"
+            name="q"
+            type="search"
+            value={@q}
+            label="Search stops"
+            placeholder="Search stops by name or ID"
+            phx-debounce="300"
+          />
+        </div>
+        <p id="fare-zone-without-location" class="pb-3 text-sm text-base-content/70">
+          {@stop_page.without_location_count} without map location
+        </p>
+      </form>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <p id="fare-zone-stop-head" class="text-sm">
+          <strong>Stops</strong>
+          <span class="text-base-content/70">· {@stop_page.total_count} shown</span>
+        </p>
+      </div>
+
+      <.empty_state
+        :if={@stop_page.total_count == 0}
+        id="fare-zone-stops-empty"
+        title={@empty.title}
+        class="m-4"
+      >
+        {@empty.body}
+        <:action :if={@empty.action}>
+          <.link
+            id="fare-zone-stops-empty-action"
+            patch={@patch_base}
+            class="btn btn-outline btn-sm min-h-11"
+          >
+            {@empty.action}
+          </.link>
+        </:action>
+      </.empty_state>
+
+      <.table
+        :if={@stop_page.total_count > 0}
+        id="fare-zone-stops"
+        rows={@stops}
+        responsive="stack"
+      >
+        <:col :let={{_id, stop}} label="Stop">
+          <span class="block font-semibold">{stop.stop_name}</span>
+          <span :if={stop.parent_station} class="block text-xs text-base-content/70">
+            Platform · assigned separately
+          </span>
+          <span :if={!stop.located?} class="block text-xs text-base-content/70">
+            No map location · list selection available
+          </span>
+        </:col>
+        <:col :let={{_id, stop}} label="Stop ID">
+          <span class="font-mono tabular-nums">{stop.stop_id}</span>
+        </:col>
+        <:col :let={{_id, stop}} label="Fare zone">
+          <% zone = Map.get(@zone_lookup, stop.zone_id) %>
+          <% color = zone && FareZone.color_hex(zone.color) %>
+          <span class="flex items-center gap-2">
+            <span class={chip_class(color)} style={chip_style(color)} aria-hidden="true">
+              <span class="truncate">{stop.zone_id || "–"}</span>
+            </span>
+            <span>{stop_zone_name(zone, stop.zone_id)}</span>
+          </span>
+        </:col>
+      </.table>
+
+      <div
+        :if={@stop_page.total_count > 0}
+        id="fare-zone-stops-pagination"
+        class="border-t border-base-300 px-4"
+      >
+        <.pagination
+          page={@stop_page.page}
+          per_page={@stop_page.per_page}
+          total={@stop_page.total_count}
+          entity="stops"
+        />
+      </div>
+    </div>
+    """
+  end
+
+  # A stop's zone comes from the same inventory read as the panel beside it, so
+  # its name and color are the ones the filter list shows. A zone the inventory
+  # does not carry is rendered by its exact stored ID rather than by a made-up
+  # name, and Unassigned has no zone to name.
+  defp stop_zone_name(_zone, nil), do: "Unassigned"
+  defp stop_zone_name(nil, zone_id), do: zone_id
+  defp stop_zone_name(zone, _zone_id), do: zone.name
+
+  # The empty states AC-23 names, in the order that decides which one shows: a
+  # search that matches nothing is about the search even when a filter is also
+  # applied, because clearing only the filter would leave the search in place.
+  # Every state's single action returns to All stops without a search.
+  defp empty_state_copy(_filter, q) when is_binary(q) do
+    %{
+      title: "No stops match your search",
+      body: "Try a stop name or ID, or clear your search.",
+      action: "Clear search and filters"
+    }
+  end
+
+  defp empty_state_copy(:unassigned, nil) do
+    %{
+      title: "No unassigned stops",
+      body: "Every stop in this version has a fare zone.",
+      action: "Show all stops"
+    }
+  end
+
+  defp empty_state_copy({:zone, _zone_id}, nil) do
+    %{
+      title: "No stops in this zone yet",
+      body: "Select stops from All stops, then assign them to this zone.",
+      action: "Show all stops"
+    }
+  end
+
+  # All stops with no search is empty only when the version has no boardable
+  # stops at all. The reference's fallback copy names a zone filter, which cannot
+  # be right here, so this state reuses the stop catalog's first-use copy.
+  defp empty_state_copy(:all, nil) do
+    %{
+      title: "No stops yet",
+      body: "Stops appear here after you import a GTFS feed.",
+      action: nil
+    }
   end
 
   # The filter list in the reference's order: All stops, then every zone sorted
