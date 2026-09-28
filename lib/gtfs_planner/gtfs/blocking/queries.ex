@@ -16,6 +16,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
 
   A stop reference carries its parent station's coordinates when its own are nil,
   so a layover distance is decided from one row per stop (`Checks.handoff/2`).
+
+  `used_block_ids/3` and `lock_trips!/5` are the two reads a block command needs
+  before it writes: R8's collision set for a fresh block ID, and the one `FOR
+  UPDATE` query that takes every decision input of the command in UUID order
+  (INV-1). Both filter on the organization and the version like every other read
+  here, so a command can never see or lock another scope's rows (CR-4).
   """
 
   import Ecto.Query, warn: false
@@ -172,6 +178,50 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       )
 
     timezone_count > 1
+  end
+
+  @doc """
+  Returns every block ID used by a trip of `service_ids`, as a set of strings.
+
+  `service_ids` are the affected day types' services, so the answer is exactly the
+  set of IDs R8 must avoid: a trip that runs on a date of a changed trip. An
+  unblocked trip contributes nothing and a blank scope returns an empty set.
+  """
+  @spec used_block_ids(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: MapSet.t(String.t())
+  def used_block_ids(organization_id, gtfs_version_id, service_ids) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.service_id in ^service_ids and not is_nil(t.block_id),
+      distinct: true,
+      select: t.block_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  @doc """
+  Takes one `FOR UPDATE` lock on every command decision input and returns their UUIDs.
+
+  The rows are the changed trips (`changed_ids`) plus every trip of a touched block
+  (`block_ids`, the changed trips' old block IDs and the target) that runs in an
+  affected service (`service_ids`): exactly what `Review.build/1` and the command's
+  fingerprint read, so no writer holding a trip lock can change them between the
+  review and the commit. `ORDER BY id` makes the lock order the UUID order INV-1
+  requires, so two concurrent commands take the same rows in the same sequence.
+  """
+  @spec lock_trips!(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()], [String.t()], [String.t()]) ::
+          [Ecto.UUID.t()]
+  def lock_trips!(organization_id, gtfs_version_id, changed_ids, block_ids, service_ids) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          (t.id in ^changed_ids or (t.block_id in ^block_ids and t.service_id in ^service_ids)),
+      select: t.id,
+      order_by: t.id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
   end
 
   defp trips_filter({:services, service_ids}, organization_id, gtfs_version_id) do

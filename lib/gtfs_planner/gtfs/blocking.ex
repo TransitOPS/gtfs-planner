@@ -17,13 +17,24 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   The day also carries every type 4/5 record naming one of its trips, evaluated by
   the shared `Blocking.InSeat` rule over every day type both of the record's trips
   run in, not only the selected one (R6, AC-7, INV-2).
+
+  `apply_block_change/4` is the one write path for an `:assign` or `:unassign`
+  command. It locks the version's blocking advisory lock and every trip row its
+  decision depends on before it reviews, so the review the user confirmed and the
+  write describe the same locked state, audits one `"trip"` change log per changed
+  trip in the Schedules snapshot shape, and retries a serialization failure or
+  deadlock as a whole. It writes `trips.block_id` and the change logs only: no
+  transfer row is ever inserted, updated or deleted (INV-3).
   """
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs.Blocking.{Checks, DayTypes, InSeat, Queries, Summary}
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Blocking.{Checks, DayTypes, InSeat, Queries, Review, Summary}
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -33,6 +44,15 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The timeline chart and the Peak drawer bucket the day in 15-minute bins.
   @bin_secs 900
+
+  # One command changes at most this many trips, the same bound the Schedules
+  # series uses; the largest measured block holds 192 trips.
+  @max_command_trips 500
+
+  # The transaction boundary is retried as a whole three times, for a serialization
+  # failure or a deadlock, before the command reports `:busy` (AC-14, INV-1).
+  @write_attempts 3
+  @retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
 
   @type block :: %{
           summary: Summary.block_summary(),
@@ -70,6 +90,21 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           bins: [%{start_secs: integer(), count: non_neg_integer()}],
           axis: %{start_secs: integer(), end_secs: integer()} | nil,
           mixed_timezones?: boolean()
+        }
+
+  @type command ::
+          {:assign, [Ecto.UUID.t()], String.t() | :new}
+          | {:unassign, [Ecto.UUID.t()]}
+          | {:rename, String.t(), String.t()}
+          | {:merge, String.t(), String.t()}
+
+  @type change :: %{trip: Queries.trip_row(), from: String.t() | nil, to: String.t() | nil}
+
+  @type apply_result :: %{
+          operation_id: Ecto.UUID.t() | nil,
+          changed_trip_ids: [Ecto.UUID.t()],
+          block_id: String.t() | nil,
+          review: Review.review() | nil
         }
 
   @doc """
@@ -181,6 +216,68 @@ defmodule GtfsPlanner.Gtfs.Blocking do
          end) do
       {:ok, result} -> {:ok, result}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Takes the version's blocking advisory lock for the rest of the transaction.
+
+  `pg_advisory_xact_lock` on `hashtext('blocking:' <> version_id)` is the single
+  definition of the lock every `block_id` writer joins (INV-1, R11). It is a
+  transaction-scoped lock, so it is released by the commit or the rollback of the
+  caller's transaction and never needs an explicit release. `Schedules.update_trip/5`
+  takes it after its route and pattern locks and before the trip row lock; the Blocks
+  apply path takes it after the version `FOR SHARE` read and before its trip locks.
+  """
+  @spec lock_blocking!(Ecto.UUID.t()) :: :ok
+  def lock_blocking!(gtfs_version_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", ["blocking:" <> gtfs_version_id])
+    :ok
+  end
+
+  @doc """
+  Applies one block command on `day_type_key` inside the reviewed transaction.
+
+  The command's shape is validated before any transaction (AC-13, Mutation):
+  UUIDs are deduplicated and cast, a malformed one is `:not_found`, a block ID is
+  trimmed and must be 1–255 characters, an empty trip list is `:invalid_command`,
+  and `:rename`/`:merge` are `:invalid_command` until their own step implements
+  them.
+
+  Everything else runs in the configured transaction, in the order `spec.md`
+  Mutation prescribes: calendars and day types, `lock_blocking!/1`, the targets and
+  their eligibility (R10), the changed trips and the `@max_command_trips` bound, the
+  affected day types with R8's fresh-ID resolution, one `FOR UPDATE` read of every
+  decision input, R6's in-seat context, `Review.build/1`, the confirmation decision
+  and the write with its audit (INV-1, INV-3, INV-4).
+
+  A command with nothing to change returns
+  `{:ok, %{operation_id: nil, changed_trip_ids: [], block_id: target | nil, review: nil}}`
+  without writing and without an audit entry. A command that needs confirmation returns
+  `{:needs_confirmation, review}` from inside the transaction without writing; a
+  supplied `confirmation` is applied only when it equals the recomputed
+  `review.fingerprint`, otherwise the command returns `{:error, {:stale_review,
+  review}}` and writes nothing.
+  """
+  @spec apply_block_change(String.t(), command(), AuditContext.t(), String.t() | nil) ::
+          {:ok, apply_result()}
+          | {:needs_confirmation, Review.review()}
+          | {:error,
+             {:stale_review, Review.review()}
+             | {:ineligible, [Ecto.UUID.t()]}
+             | :not_found
+             | {:unknown_day_type, [DayTypes.day_type()]}
+             | :invalid_command
+             | :invalid_block_id
+             | :too_many_trips
+             | :busy}
+  def apply_block_change(day_type_key, command, %AuditContext{} = audit, confirmation \\ nil) do
+    case validate_command(command) do
+      {:ok, command} ->
+        run_write(fn -> apply_command!(day_type_key, command, audit, confirmation) end)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -532,4 +629,350 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       floor_hour(secs) + @seconds_per_hour
     end
   end
+
+  # -- Block commands ---------------------------------------------------------
+
+  # Shape validation is the only part of a command that runs outside the
+  # transaction, so a malformed request never opens one (Mutation).
+  defp validate_command({:assign, ids, :new}) when is_list(ids) do
+    case cast_trip_ids(ids) do
+      {:ok, ids} -> {:ok, {:assign, ids, :new}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_command({:assign, ids, target}) when is_list(ids) and is_binary(target) do
+    with {:ok, ids} <- cast_trip_ids(ids),
+         {:ok, target} <- validate_block_id(target) do
+      {:ok, {:assign, ids, target}}
+    end
+  end
+
+  defp validate_command({:unassign, ids}) when is_list(ids) do
+    case cast_trip_ids(ids) do
+      {:ok, ids} -> {:ok, {:unassign, ids}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # `:rename` and `:merge` are validated by their own step; the shape rules above
+  # already reject an empty list, a blank ID and a same-source rename.
+  defp validate_command(_command), do: {:error, :invalid_command}
+
+  defp cast_trip_ids([]), do: {:error, :invalid_command}
+
+  defp cast_trip_ids(ids) do
+    Enum.reduce_while(ids, {:ok, []}, fn id, {:ok, cast} ->
+      case Ecto.UUID.cast(id) do
+        {:ok, uuid} -> {:cont, {:ok, [uuid | cast]}}
+        :error -> {:halt, {:error, :not_found}}
+      end
+    end)
+    |> case do
+      {:ok, cast} -> {:ok, cast |> Enum.reverse() |> Enum.uniq()}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_block_id(block_id) do
+    trimmed = String.trim(block_id)
+
+    if trimmed == "" or String.length(trimmed) > 255 do
+      {:error, :invalid_block_id}
+    else
+      {:ok, trimmed}
+    end
+  end
+
+  # Mutation steps 1-10: everything the command decides happens under the version's
+  # blocking lock and the locked trip rows, and every refusal rolls the transaction
+  # back so nothing partial commits.
+  defp apply_command!(day_type_key, command, %AuditContext{} = audit, confirmation) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    calendars = load_calendars!(organization_id, version_id)
+    day_types = DayTypes.derive(calendars)
+    day_type = resolve_day_type!(day_types, day_type_key)
+    service_dates = DayTypes.service_dates(calendars)
+
+    # A version with no day type has no date scope a command could apply to; the
+    # caller gets the same recovery error as an unknown key and nothing falls back
+    # to another day type (INV-6).
+    if is_nil(day_type), do: Repo.rollback({:unknown_day_type, day_types})
+
+    lock_blocking!(version_id)
+
+    targets = load_targets!(audit, command)
+    check_eligible!(command, targets)
+    changed = expected_changes(command, targets)
+
+    if changed == [] do
+      no_change_result(command)
+    else
+      if length(changed) > @max_command_trips, do: Repo.rollback(:too_many_trips)
+
+      affected = affected_day_types(day_types, changed)
+      target = resolve_target!(command, affected, audit)
+      {rows, changes} = lock_and_reread!(audit, changed, target, affected)
+
+      if changes == [] do
+        no_change_result(command)
+      else
+        review_and_write!(
+          %{audit: audit, target: target, day_type: day_type, affected: affected, rows: rows},
+          command,
+          changes,
+          service_dates,
+          confirmation
+        )
+      end
+    end
+  end
+
+  # Step 3: the listed trips within the organization and the version, or `:not_found`
+  # for any that is missing, foreign or unpublished (AC-11, CR-4). Deduplicated IDs
+  # make the row count the completeness test.
+  defp load_targets!(audit, {:assign, ids, _target}), do: scoped_targets!(audit, ids)
+  defp load_targets!(audit, {:unassign, ids}), do: scoped_targets!(audit, ids)
+
+  defp scoped_targets!(%AuditContext{} = audit, ids) do
+    rows = Queries.trip_rows(audit.organization_id, audit.gtfs_version_id, {:uuids, ids})
+
+    if length(rows) == length(ids), do: rows, else: Repo.rollback(:not_found)
+  end
+
+  # R10: only a non-frequency trip with usable endpoint times can be assigned; both
+  # kinds can always be unassigned.
+  defp check_eligible!({:assign, ids, _target}, targets) do
+    ineligible =
+      targets
+      |> Enum.filter(&(&1.frequency? or not &1.plottable?))
+      |> MapSet.new(& &1.id)
+
+    case Enum.filter(ids, &MapSet.member?(ineligible, &1)) do
+      [] -> :ok
+      ids -> Repo.rollback({:ineligible, ids})
+    end
+  end
+
+  defp check_eligible!({:unassign, _ids}, _targets), do: :ok
+
+  # Step 4: a target that already carries the target ID is not a change. A `:new`
+  # command resolves the fresh ID only after its affected services are known (R8),
+  # and every target necessarily differs from an ID no trip on its own dates uses.
+  defp expected_changes({:assign, _ids, target}, targets) when is_binary(target) do
+    Enum.filter(targets, &(&1.block_id != target))
+  end
+
+  defp expected_changes({:assign, _ids, :new}, targets), do: targets
+
+  defp expected_changes({:unassign, _ids}, targets) do
+    Enum.filter(targets, &(not is_nil(&1.block_id)))
+  end
+
+  # Step 5: every day type a changed trip runs in, in list order (R3).
+  defp affected_day_types(day_types, changed) do
+    changed
+    |> Enum.flat_map(&DayTypes.containing(day_types, &1.service_id))
+    |> Enum.uniq_by(& &1.key)
+  end
+
+  # R8: the smallest positive integer string no trip running on an affected date
+  # uses. The used set comes from the affected day types' services, which is exactly
+  # the set of trips sharing a date with a changed trip.
+  defp resolve_target!({:assign, _ids, :new}, affected, %AuditContext{} = audit) do
+    service_ids = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+    used = Queries.used_block_ids(audit.organization_id, audit.gtfs_version_id, service_ids)
+
+    Stream.iterate(1, &(&1 + 1))
+    |> Enum.find(&(not MapSet.member?(used, Integer.to_string(&1))))
+    |> Integer.to_string()
+  end
+
+  defp resolve_target!({:assign, _ids, target}, _affected, _audit), do: target
+  defp resolve_target!({:unassign, _ids}, _affected, _audit), do: nil
+
+  # Step 6: one query locks every decision input — the changed trips and every trip
+  # of a touched block on an affected date — in UUID order, and the rows are re-read
+  # so the review and the fingerprint describe the locked state and not the pre-lock
+  # read (INV-1). A trip another writer moved into the target before the lock is no
+  # longer a change.
+  defp lock_and_reread!(%AuditContext{} = audit, changed, target, affected) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    changed_ids = Enum.map(changed, & &1.id)
+
+    touched =
+      (Enum.map(changed, & &1.block_id) ++ [target]) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    service_ids = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+
+    locked_ids =
+      Queries.lock_trips!(organization_id, version_id, changed_ids, touched, service_ids)
+
+    rows = Queries.trip_rows(organization_id, version_id, {:uuids, locked_ids})
+    changed_ids = MapSet.new(changed_ids)
+
+    changes =
+      rows
+      |> Enum.filter(&(MapSet.member?(changed_ids, &1.id) and &1.block_id != target))
+      |> Enum.map(&%{trip: &1, from: &1.block_id, to: target})
+
+    {rows, changes}
+  end
+
+  # Steps 7-9: the in-seat context over the locked rows, the review over the affected
+  # day types, and the confirmation decision. A command that needs confirmation
+  # returns it from inside the transaction without writing anything.
+  defp review_and_write!(%{audit: audit} = locked, command, changes, service_dates, confirmation) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    in_seat =
+      in_seat_context(organization_id, version_id, locked.affected, service_dates, locked.rows)
+
+    review =
+      Review.build(%{
+        command: command,
+        target: locked.target,
+        selected_key: locked.day_type.key,
+        affected: locked.affected,
+        rows: locked.rows,
+        changes: changes,
+        in_seat: in_seat,
+        service_dates: service_dates,
+        min_layover_minutes: get_settings(organization_id, version_id).min_layover_minutes
+      })
+
+    cond do
+      review.needs_confirmation? and is_nil(confirmation) ->
+        {:needs_confirmation, review}
+
+      not is_nil(confirmation) and confirmation != review.fingerprint ->
+        Repo.rollback({:stale_review, review})
+
+      true ->
+        write_changes!(audit, locked.target, changes, review)
+    end
+  end
+
+  # Step 10: one `update_all` sets the block and the clock on the changed rows, then
+  # one `"trip"` change log per changed trip carries the Schedules snapshot shape,
+  # the shared operation ID and the whole affected list (INV-4). The snapshots are
+  # built from the pre-update rows, so `before` and `after` differ only in the block
+  # ID, and an audit failure rolls the write back. No transfer row is written (INV-3).
+  defp write_changes!(%AuditContext{} = audit, target, changes, review) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    changed_ids = changes |> Enum.map(& &1.trip.id) |> Enum.sort()
+    trips = trip_structs(organization_id, version_id, changed_ids)
+    snapshots = Schedules.trip_audit_snapshots(organization_id, version_id, trips)
+    operation_id = Ecto.UUID.generate()
+
+    {count, _} =
+      Repo.update_all(
+        from(t in Trip,
+          where:
+            t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+              t.id in ^changed_ids
+        ),
+        set: [block_id: target, updated_at: DateTime.utc_now()]
+      )
+
+    if count != length(changed_ids), do: Repo.rollback(:busy)
+
+    Enum.each(trips, fn trip ->
+      snapshot = Map.fetch!(snapshots, trip.id)
+
+      case GtfsPlanner.Gtfs.record_change_in_transaction(
+             audit,
+             :trip,
+             %{trip | block_id: target},
+             "updated",
+             %{
+               before: snapshot,
+               after: Map.put(snapshot, "block_id", target),
+               operation_id: operation_id,
+               affected_trip_ids: changed_ids
+             }
+           ) do
+        {:ok, _log} -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+
+    %{
+      operation_id: operation_id,
+      changed_trip_ids: changed_ids,
+      block_id: target,
+      review: review
+    }
+  end
+
+  # The audit snapshot is built from the stored rows rather than the day read's trip
+  # rows, because the Schedules shape carries the trip columns the read does not
+  # load; the loaded structs still hold the pre-update block, which is the `before`
+  # side of the audit.
+  defp trip_structs(organization_id, version_id, ids) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          t.id in ^ids,
+      order_by: t.trip_id
+    )
+    |> Repo.all()
+  end
+
+  # Nothing to change: no write, no audit and no review, because there is no command
+  # effect to confirm.
+  defp no_change_result(command) do
+    %{
+      operation_id: nil,
+      changed_trip_ids: [],
+      block_id: resolved_block_id(command),
+      review: nil
+    }
+  end
+
+  defp resolved_block_id({:assign, _ids, target}) when is_binary(target), do: target
+  defp resolved_block_id(_command), do: nil
+
+  # The configured transaction boundary is retried as a whole: a serialization
+  # failure or a deadlock is transient, every other failure is reported or re-raised
+  # unchanged, and three failed attempts report `:busy` without raising (AC-14). The
+  # module wraps the closure's own return value, so a confirmed command reports
+  # `{:needs_confirmation, review}` and every other result is a success.
+  defp run_write(transaction, attempts \\ @write_attempts) do
+    case run_write_transaction(transaction) do
+      {:ok, {:needs_confirmation, review}} -> {:needs_confirmation, review}
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> retry_write(reason, transaction, attempts)
+    end
+  end
+
+  defp retry_write(reason, transaction, attempts) do
+    cond do
+      not retryable?(reason) -> {:error, reason}
+      attempts > 1 -> run_write(transaction, attempts - 1)
+      true -> {:error, :busy}
+    end
+  end
+
+  defp run_write_transaction(transaction) do
+    write_transaction_module().run(transaction)
+  rescue
+    error in Postgrex.Error ->
+      if retryable?(error), do: {:error, error}, else: reraise(error, __STACKTRACE__)
+  end
+
+  defp write_transaction_module do
+    Application.get_env(:gtfs_planner, :reviewed_apply_transaction, ReviewedApplyTransaction.Repo)
+  end
+
+  defp retryable?(%Postgrex.Error{postgres: %{code: code}}) when code in @retryable_codes,
+    do: true
+
+  defp retryable?(_error), do: false
 end

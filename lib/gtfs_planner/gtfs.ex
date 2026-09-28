@@ -4472,6 +4472,34 @@ defmodule GtfsPlanner.Gtfs do
     Blocking.update_settings(organization_id, gtfs_version_id, attrs)
   end
 
+  @doc """
+  Applies one block command on a day type of an organization's GTFS version.
+
+  The command is an `:assign` or `:unassign` today; the whole command runs in the
+  configured reviewed transaction (SERIALIZABLE in production). A command with
+  nothing to change returns `{:ok, result}` with no `changed_trip_ids`; a command
+  whose effects reach another date returns `{:needs_confirmation, review}` and writes
+  nothing until it is called again with the review's fingerprint. Every refusal
+  (`:not_found`, `{:ineligible, ids}`, `:too_many_trips`, `:unknown_day_type`,
+  `:invalid_command`, `:invalid_block_id`, `{:stale_review, review}`, `:busy`) is an
+  `{:error, reason}` and writes nothing.
+  """
+  @spec apply_block_change(
+          String.t(),
+          GtfsPlanner.Gtfs.Blocking.command(),
+          AuditContext.t(),
+          String.t() | nil
+        ) ::
+          {:ok, GtfsPlanner.Gtfs.Blocking.apply_result()}
+          | {:needs_confirmation, GtfsPlanner.Gtfs.Blocking.Review.review()}
+          | {:error, term()}
+  def apply_block_change(day_type_key, command, audit_context),
+    do: apply_block_change(day_type_key, command, audit_context, nil)
+
+  def apply_block_change(day_type_key, command, %AuditContext{} = audit_context, confirmation) do
+    Blocking.apply_block_change(day_type_key, command, audit_context, confirmation)
+  end
+
   # ============================================================================
   # Station Naming
   # ============================================================================
