@@ -104,10 +104,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       assert counts.stops >= 2
       assert counts.levels >= 1
 
-      # Extensions data imported
+      # Extensions data imported (new manifests carry no route flags)
       assert counts.extensions_stop_coordinates == 1
       assert counts.extensions_stop_levels == 1
-      assert counts.extensions_route_flags == 1
+      assert counts.extensions_route_flags == 0
       assert counts.extensions_images == 1
       assert import_result.extensions == :complete
       assert Import.Result.publishable?(import_result)
@@ -117,8 +117,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       assert imported_child.diagram_coordinate["x"] == 42.5
       assert imported_child.diagram_coordinate["y"] == 18.3
 
-      imported_route = Gtfs.get_route_by_route_id(org_b.id, version_b.id, "Red")
-      assert imported_route.active == false
+      # New archives omit inactive routes and their flags entirely (R6).
+      refute Gtfs.get_route_by_route_id(org_b.id, version_b.id, "Red")
 
       imported_station = Gtfs.get_stop_by_stop_id(org_b.id, version_b.id, "station_main")
       imported_level = Gtfs.get_level_by_level_id(org_b.id, version_b.id, "L1")

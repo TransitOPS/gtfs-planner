@@ -374,7 +374,7 @@ defmodule GtfsPlanner.Gtfs.Export do
         {filename, file_content}
       end)
 
-    # Append extensions entries (diagram coordinates, stop levels, route flags, images)
+    # Append extensions entries (diagram coordinates, stop levels, images)
     files = files ++ extensions_zip_entries(organization_id, gtfs_version_id)
 
     # Create ZIP in memory, with explicit error handling

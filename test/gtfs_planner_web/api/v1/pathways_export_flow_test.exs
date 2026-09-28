@@ -518,7 +518,9 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
              }
            ]
 
-    assert manifest["route_active_flags"] == [%{"route_id" => @route_off_id, "active" => false}]
+    # New manifests carry no inactive route flags (spec 16, step 15).
+    assert manifest["route_active_flags"] == []
+    refute manifest_text =~ @route_off_id
 
     assert manifest["diagram_images"] == [
              %{
