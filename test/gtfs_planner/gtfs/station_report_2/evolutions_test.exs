@@ -14,6 +14,10 @@ defmodule GtfsPlanner.Gtfs.StationReport2.EvolutionsTest do
   - A pair the base graph never reached is a `baseline_gap`, never a loss, and
     missing entrances, missing platforms and a pathway leaving the station make
     the evaluation `:incomplete` while keeping the pairs that can be computed.
+  - A closed pathway that carries no entrance/platform connection produces an
+    empty comparison, and an incomplete station still names the losses its
+    closures really cause, so a range check can omit a period that changes
+    nothing and can report findings beside an incomplete status.
 
   Every expected pair and finding is hand-enumerated from the fixture graph
   below rather than computed by the module under test. `Graph` is the shared
@@ -154,6 +158,32 @@ defmodule GtfsPlanner.Gtfs.StationReport2.EvolutionsTest do
 
       assert Evolutions.evaluate(snapshot, MapSet.new(["PW_NOT_IN_STATION"])) ==
                Evolutions.evaluate(snapshot, MapSet.new())
+    end
+
+    test "reports no loss when the closed pathway carries no connection" do
+      # A closed walkway between two passages removes an edge no entrance or
+      # platform route can use, so the comparison stays empty. This is what lets a
+      # range check omit a period whose closures change nothing.
+      snapshot = %{
+        station: station(),
+        child_stops: [entrance("ENT_A"), passage("NODE_1"), passage("NODE_2"), platform("PLAT_1")],
+        pathways: [
+          pathway("PW_ENTRANCE", "ENT_A", "NODE_1", @walkway),
+          pathway("PW_DEAD_END", "NODE_1", "NODE_2", @walkway),
+          pathway("PW_PLATFORM", "NODE_1", "PLAT_1", @walkway)
+        ]
+      }
+
+      base = Evolutions.evaluate(snapshot, MapSet.new())
+      assert base.status == :complete
+      assert [%{walking_to_platform: true, step_free_to_platform: true}] = base.pairs
+
+      comparison =
+        Evolutions.compare(base, Evolutions.evaluate(snapshot, MapSet.new(["PW_DEAD_END"])))
+
+      assert comparison.lost == []
+      assert comparison.baseline_gaps == []
+      assert comparison.platforms_without_step_free == %{to_platform: [], to_exit: []}
     end
 
     test "is incomplete without entrances and keeps no pairs" do
@@ -359,6 +389,50 @@ defmodule GtfsPlanner.Gtfs.StationReport2.EvolutionsTest do
                lost: [],
                baseline_gaps: [],
                platforms_without_step_free: %{to_platform: [], to_exit: []}
+             }
+    end
+
+    test "still names the losses of an incomplete station beside its incomplete status" do
+      # A walkway that leaves the station keeps the evaluation incomplete for ever,
+      # and closing the entrance's only elevator still names every direction it
+      # removes. A range report takes its status from this base evaluation and its
+      # findings from this comparison, so the two are decided by different calls
+      # and neither softens the other.
+      snapshot = %{
+        station: station(),
+        child_stops: [entrance("ENT_A"), passage("NODE_1"), platform("PLAT_1")],
+        pathways: [
+          pathway("PW_ELEVATOR", "ENT_A", "NODE_1", @elevator),
+          pathway("PW_PLATFORM", "NODE_1", "PLAT_1", @walkway),
+          pathway("PW_ACROSS_THE_TRACKS", "PLAT_1", "OTHER_STATION_PLATFORM", @walkway)
+        ]
+      }
+
+      base = Evolutions.evaluate(snapshot, MapSet.new())
+      assert base.status == :incomplete
+      assert base.incomplete_reasons == [{:cross_station_pathways, ["PW_ACROSS_THE_TRACKS"]}]
+      assert [base_pair] = base.pairs
+      assert base_pair.step_free_to_platform
+      assert base_pair.step_free_to_exit
+
+      comparison =
+        Evolutions.compare(base, Evolutions.evaluate(snapshot, MapSet.new(["PW_ELEVATOR"])))
+
+      # The elevator is the entrance's only edge, so all four directions go with
+      # it, and no direction becomes a base gap: everything the closure removed
+      # was reachable before it.
+      assert comparison.lost == [
+               finding("ENT_A", "PLAT_1", :step_free, :to_exit),
+               finding("ENT_A", "PLAT_1", :step_free, :to_platform),
+               finding("ENT_A", "PLAT_1", :walking, :to_exit),
+               finding("ENT_A", "PLAT_1", :walking, :to_platform)
+             ]
+
+      assert comparison.baseline_gaps == []
+
+      assert comparison.platforms_without_step_free == %{
+               to_platform: ["PLAT_1"],
+               to_exit: ["PLAT_1"]
              }
     end
   end

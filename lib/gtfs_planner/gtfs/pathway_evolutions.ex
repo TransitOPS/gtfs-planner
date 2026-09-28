@@ -46,6 +46,16 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   service-day origins all describe one committed revision. Time-aware evaluation
   never uses DisplayClock's UTC fallback: a missing, invalid or conflicting
   agency zone is refused with its reason while closure authoring still works.
+
+  `analyze_closures/5` reuses that one snapshot and sweeps the same station over
+  a bounded range of service dates. The covered span is
+  `[origin(first), max(origin(last + 1), the latest end of an instance on
+  last))`, so a `00:00:00` window on a daylight-saving service date and a
+  `25:00:00` window on the last service date are both inside it. Every instance
+  boundary is swept rather than sampled, and only the periods whose comparison
+  differs from the base graph are returned, each with the exact active instances
+  that caused it. A limit is never reported as a complete answer: an incomplete
+  base evaluation keeps the report incomplete whatever the findings are.
   """
 
   import Ecto.Query, warn: false
@@ -70,9 +80,10 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   # Fixed local resource bounds, not configuration. The candidate-date ceiling
   # keeps a pathological integer service time from generating a span to query,
   # and the instance ceiling is integer arithmetic checked before any instance is
-  # built. The 31-service-day range ceiling belongs to `analyze_closures/5`.
+  # built. The range ceiling bounds the service dates one request may ask about.
   @max_instances 200_000
   @max_candidate_dates 100_000
+  @max_range_days 31
 
   # A `before` action sits 60 seconds before its instance starts (AC-38).
   @before_offset_seconds 60
@@ -103,6 +114,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   @type boundary_target :: :before | :closes | :during | :reopens
   @type analysis_error ::
           :not_found
+          | :range_invalid
           | {:timezone_unavailable, DisplayClock.fallback_reason()}
           | :analysis_too_large
   @type preview :: %{
@@ -125,6 +137,31 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
           base: Evolutions.evaluation(),
           effective: Evolutions.evaluation(),
           comparison: Evolutions.comparison(),
+          computed_at: DateTime.t()
+        }
+  @type range_finding :: %{
+          starts_at: DateTime.t(),
+          ends_at: DateTime.t(),
+          local_start: NaiveDateTime.t(),
+          local_end: NaiveDateTime.t(),
+          start_utc_offset: integer(),
+          end_utc_offset: integer(),
+          preview_target: %{date: Date.t(), time: non_neg_integer()},
+          instances: [Schedule.instance()],
+          comparison: Evolutions.comparison()
+        }
+  @type range_report :: %{
+          first_date: Date.t(),
+          last_date: Date.t(),
+          status: :complete | :incomplete,
+          incomplete_reasons: [Evolutions.incomplete_reason()],
+          horizon_start: DateTime.t(),
+          horizon_end: DateTime.t(),
+          local_start: NaiveDateTime.t(),
+          local_end: NaiveDateTime.t(),
+          timezone: String.t(),
+          base: Evolutions.evaluation(),
+          findings: [range_finding()],
           computed_at: DateTime.t()
         }
 
@@ -266,6 +303,65 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
         _service_time
       ),
       do: {:error, :not_found}
+
+  @doc """
+  Reports every access loss one station suffers over `first_date..last_date`.
+
+  This is the range form of `preview_closures/5`: it loads the same inputs
+  inside the same read snapshot, then sweeps every instance boundary in the
+  covered span instead of sampling instants. A reversed range and a span over 31
+  requested service days are refused before a single row is read, because the
+  range check cannot answer them.
+
+  The covered span is `[origin(first_date), max(origin(last_date + 1), the
+  latest end of an instance on last_date))`, so a `00:00:00` window on a
+  daylight-saving service date and a `25:00:00` window on the last service date
+  are both inside it. `findings` holds only the periods whose comparison differs
+  from the base graph - a lost pair or a platform that lost every step-free
+  route - each with its exact active instances, its local endpoints, both UTC
+  offsets and the `preview_target` that names its start instant. Periods whose
+  active closure identities changed are kept apart, so a cause change is never
+  erased; presentation groups these exact periods, it never recomputes them.
+
+  `status` and `incomplete_reasons` come from the base evaluation and are never
+  softened: an empty `findings` list beside an `:incomplete` base is not
+  "no connection lost".
+
+  Refusals are `{:error, :not_found}` for a foreign, unpublished, non-station or
+  malformed scope, `{:error, {:timezone_unavailable, reason}}` when the agency
+  zone is missing, invalid or conflicting, `{:error, :range_invalid}` for a
+  reversed or over-long range, and `{:error, :analysis_too_large}` when the
+  candidate span or the instance count exceeds its bound.
+  """
+  @spec analyze_closures(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), Date.t(), Date.t()) ::
+          {:ok, range_report()} | {:error, analysis_error()}
+  def analyze_closures(
+        organization_id,
+        gtfs_version_id,
+        stop_id,
+        %Date{} = first_date,
+        %Date{} = last_date
+      )
+      when is_binary(stop_id) do
+    with :ok <- within_range_limit(first_date, last_date),
+         {:ok, inputs} <-
+           load_station_analysis(organization_id, gtfs_version_id, stop_id, fn station ->
+             load_range_inputs(station, first_date, last_date)
+           end) do
+      {:ok, build_range_report(inputs, first_date, last_date)}
+    end
+  end
+
+  def analyze_closures(_organization_id, _gtfs_version_id, _stop_id, _first, _last),
+    do: {:error, :not_found}
+
+  # A reversed range and a span over the requested-day ceiling are refused here,
+  # before any row is read. `Date.diff/2` is negative for a reversed range, so one
+  # integer comparison covers both refusals.
+  defp within_range_limit(%Date{} = first_date, %Date{} = last_date) do
+    days = Date.diff(last_date, first_date) + 1
+    if days in 1..@max_range_days, do: :ok, else: {:error, :range_invalid}
+  end
 
   @doc """
   Returns the fingerprint of one persisted closure row.
@@ -741,58 +837,64 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
     Map.new(rows, fn [date, origin] -> {date, origin} end)
   end
 
-  # -- preview inputs ---------------------------------------------------------
+  # -- analysis inputs --------------------------------------------------------
 
   defp load_preview_inputs(station, service_date, service_time) do
-    dates = Schedule.preview_dates(station.evolutions, service_date, service_time)
-
-    # `Date.diff/2` is integer arithmetic on the lazy range, so the candidate bound
-    # is checked before a single date is generated or queried.
-    if Date.diff(dates.last, dates.first) + 1 > @max_candidate_dates do
-      {:error, :analysis_too_large}
-    else
-      envelope = %{
-        first: dates.first,
-        last: dates.last,
-        loaded: nil,
-        origins: %{},
-        active_dates: %{}
-      }
-
-      with {:ok, envelope} <-
-             expand_preview_envelope(station, service_date, service_time, envelope) do
-        {:ok, Map.merge(station, envelope)}
-      end
+    with {:ok, envelope} <-
+           sized_envelope(Schedule.preview_dates(station.evolutions, service_date, service_time)),
+         {:ok, envelope} <-
+           expand_envelope(
+             station,
+             envelope,
+             &bounds_preview_interval?(&1, station.evolutions, service_date, service_time)
+           ) do
+      {:ok, Map.merge(station, envelope)}
     end
   end
 
-  # `Schedule.preview_dates/3` sizes the candidate envelope with 23 elapsed hours
-  # per service date, which is only an estimate: a zone whose offset moves far can
-  # leave the initial edges unable to bound the displayed interval. Each pass
-  # checks the instance bound and then the exact origin inequalities, widening the
-  # envelope by one civil date per edge and querying only the dates it has not
-  # loaded. The candidate bound stops the loop, so the envelope is never silently
-  # incomplete.
-  defp expand_preview_envelope(station, service_date, service_time, envelope) do
+  defp load_range_inputs(station, %Date{} = first_date, %Date{} = last_date) do
+    with {:ok, envelope} <-
+           sized_envelope(Schedule.range_dates(station.evolutions, first_date, last_date)),
+         {:ok, envelope} <-
+           expand_envelope(
+             station,
+             envelope,
+             &bounds_range_interval?(&1, station.evolutions, first_date, last_date)
+           ) do
+      {:ok, Map.merge(station, envelope)}
+    end
+  end
+
+  # `Date.diff/2` is integer arithmetic on the lazy candidate range, so the
+  # candidate bound is checked before a single date is generated or queried.
+  defp sized_envelope(dates) do
+    if Date.diff(dates.last, dates.first) + 1 > @max_candidate_dates do
+      {:error, :analysis_too_large}
+    else
+      {:ok, %{first: dates.first, last: dates.last, loaded: nil, origins: %{}, active_dates: %{}}}
+    end
+  end
+
+  # `Schedule.preview_dates/3` and `Schedule.range_dates/3` size the candidate
+  # envelope with 23 elapsed hours per service date, which is only an estimate: a
+  # zone whose offset moves far can leave the initial edges unable to bound the
+  # displayed interval. Each pass checks the instance bound and then the exact
+  # origin inequalities, widening the envelope by one civil date per edge and
+  # querying only the dates it has not loaded. The candidate bound stops the loop,
+  # so the envelope is never silently incomplete.
+  defp expand_envelope(station, envelope, bounds) do
     with {:ok, active_dates} <- active_dates_within(station, envelope.first, envelope.last),
          :ok <- check_instance_bound(station.evolutions, active_dates),
          {:ok, envelope} <- load_envelope_origins(station.zone, envelope) do
       envelope = %{envelope | active_dates: active_dates}
-      resolve_preview_envelope(station, service_date, service_time, envelope)
+
+      if bounds.(envelope), do: {:ok, envelope}, else: widen_and_retry(station, envelope, bounds)
     end
   end
 
-  defp resolve_preview_envelope(station, service_date, service_time, envelope) do
-    if bounds_preview_interval?(envelope, station.evolutions, service_date, service_time) do
-      {:ok, envelope}
-    else
-      widen_and_retry(station, service_date, service_time, envelope)
-    end
-  end
-
-  defp widen_and_retry(station, service_date, service_time, envelope) do
+  defp widen_and_retry(station, envelope, bounds) do
     with {:ok, widened} <- widen_envelope(envelope) do
-      expand_preview_envelope(station, service_date, service_time, widened)
+      expand_envelope(station, widened, bounds)
     end
   end
 
@@ -837,6 +939,57 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
         DateTime.compare(Map.fetch!(origins, last), required_end) != :lt
 
     lower_reaches_start? and upper_reaches_end?
+  end
+
+  # The range check has the same shape: it must cover
+  # `[origin(first_date), horizon end)`, where the horizon end is the later of
+  # the origin after `last_date` and the latest end of an instance on
+  # `last_date`. The last date's own instances establish that end, so they are
+  # the only ones the envelope has to bound before the sweep runs.
+  # `Schedule.range_dates/3` always includes `last_date + 1`, so the origin
+  # `Schedule.horizon/4` needs is loaded from the first pass on.
+  defp bounds_range_interval?(
+         %{origins: origins, active_dates: active_dates, first: first, last: last},
+         evolutions,
+         %Date{} = first_date,
+         %Date{} = last_date
+       ) do
+    max_end = longest_window(evolutions)
+    start_at = Map.fetch!(origins, first_date)
+    next_date = Date.add(last_date, 1)
+
+    {_start_at, required_end} =
+      Schedule.horizon(
+        origins,
+        last_date_instances(evolutions, active_dates, origins, last_date),
+        first_date,
+        last_date
+      )
+
+    lower_reaches_start? =
+      DateTime.compare(
+        DateTime.add(Map.fetch!(origins, first), max_end, :second),
+        start_at
+      ) != :gt
+
+    upper_reaches_end? =
+      Date.compare(last, next_date) != :lt and
+        DateTime.compare(Map.fetch!(origins, last), required_end) != :lt
+
+    lower_reaches_start? and upper_reaches_end?
+  end
+
+  # The instances of the requested last service date only, for the horizon
+  # calculation the envelope must be wide enough for. Building them through
+  # `Schedule.instances/3` keeps the origin requirement in one place: a date with
+  # no loaded origin contributes nothing, exactly as it does in the full sweep.
+  defp last_date_instances(evolutions, active_dates, origins, %Date{} = last_date) do
+    on_last_date =
+      Map.new(active_dates, fn {service_id, dates} ->
+        {service_id, if(last_date in dates, do: [last_date], else: [])}
+      end)
+
+    Schedule.instances(evolutions, on_last_date, origins)
   end
 
   # One civil date per edge, with the candidate bound rechecked before the dates
@@ -982,6 +1135,148 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
       during: DateTime.add(starts_at, midpoint, :second),
       reopens: instance.ends_at
     ]
+  end
+
+  # -- range result -----------------------------------------------------------
+
+  defp build_range_report(
+         %{
+           snapshot: snapshot,
+           evolutions: evolutions,
+           zone: zone,
+           origins: origins,
+           active_dates: active_dates
+         },
+         first_date,
+         last_date
+       ) do
+    instances = Schedule.instances(evolutions, active_dates, origins)
+    {horizon_start, horizon_end} = Schedule.horizon(origins, instances, first_date, last_date)
+    base = Evolutions.evaluate(snapshot, MapSet.new())
+
+    losses =
+      loss_periods(Schedule.segments(instances, horizon_start, horizon_end), snapshot, base)
+
+    # Every local label the report shows comes from one conversion, so the
+    # offsets below are the difference between the converted wall clock and the
+    # UTC instant it names, and not arithmetic the caller repeats.
+    [local_start, local_end | period_locals] =
+      DisplayClock.localize_many(
+        [horizon_start, horizon_end] ++ Enum.flat_map(losses, &period_endpoints/1),
+        zone
+      )
+
+    findings =
+      losses
+      |> Enum.zip(Enum.chunk_every(period_locals, 2, 2, :discard))
+      |> Enum.map(fn {{segment, comparison}, [local_start, local_end]} ->
+        range_finding(segment, comparison, local_start, local_end, origins)
+      end)
+
+    %{
+      first_date: first_date,
+      last_date: last_date,
+      # The base evaluation's own status. An incomplete station is never softened
+      # into a complete answer by an empty findings list.
+      status: base.status,
+      incomplete_reasons: base.incomplete_reasons,
+      horizon_start: horizon_start,
+      horizon_end: horizon_end,
+      local_start: local_start,
+      local_end: local_end,
+      timezone: zone.timezone,
+      base: base,
+      findings: findings,
+      computed_at: DateTime.utc_now()
+    }
+  end
+
+  # The periods of the sweep whose comparison differs from the base graph: a lost
+  # pair, or a platform that lost every step-free route. A period that loses no
+  # connection is not a finding, and an unchanged graph is never a finding.
+  # `Schedule.segments/3` already keeps periods apart when their active closure
+  # identities differ, so a cause change survives the filter and no second merge
+  # is needed here.
+  #
+  # Two periods with the same closed pathway set are the same graph, so the
+  # comparison is computed once per closed set within this call and never cached
+  # across calls.
+  defp loss_periods(segments, snapshot, base) do
+    {losses, _cache} =
+      Enum.reduce(segments, {[], %{}}, fn segment, {losses, cache} ->
+        comparison =
+          Map.get_lazy(cache, segment.closed_pathway_ids, fn ->
+            Evolutions.compare(base, Evolutions.evaluate(snapshot, segment.closed_pathway_ids))
+          end)
+
+        if reports_loss?(comparison) do
+          {[{segment, comparison} | losses],
+           Map.put(cache, segment.closed_pathway_ids, comparison)}
+        else
+          {losses, cache}
+        end
+      end)
+
+    Enum.reverse(losses)
+  end
+
+  defp reports_loss?(comparison) do
+    comparison.lost != [] or
+      comparison.platforms_without_step_free.to_platform != [] or
+      comparison.platforms_without_step_free.to_exit != []
+  end
+
+  defp period_endpoints({segment, _comparison}), do: [segment.starts_at, segment.ends_at]
+
+  defp range_finding(segment, comparison, local_start, local_end, origins) do
+    %{
+      starts_at: segment.starts_at,
+      ends_at: segment.ends_at,
+      local_start: local_start,
+      local_end: local_end,
+      start_utc_offset: utc_offset(segment.starts_at, local_start),
+      end_utc_offset: utc_offset(segment.ends_at, local_end),
+      preview_target: preview_target(segment, origins),
+      instances: segment.instances,
+      comparison: comparison
+    }
+  end
+
+  # The zone offset of one instant, from the converted wall clock the shared
+  # localization returned. Repeated civil clock hours stay distinguishable
+  # because each endpoint keeps its own offset next to its absolute instant.
+  defp utc_offset(%DateTime{} = instant, %NaiveDateTime{} = local) do
+    NaiveDateTime.diff(local, DateTime.to_naive(instant), :second)
+  end
+
+  # The service date and elapsed seconds naming a loss period's start instant.
+  defp preview_target(segment, origins) do
+    Schedule.preview_target(segment.starts_at, latest_service_date(segment, origins), origins)
+  end
+
+  # The active instances are preferred, so a `25:00:00` window keeps its own
+  # service date instead of being reparsed as a clock label, and their origin is
+  # always at or before the instant they cover. A period with no instance cannot
+  # report a loss, so the fallback is the latest loaded origin at or before the
+  # instant, which `Schedule.preview_target/3` would choose for itself.
+  defp latest_service_date(%{instances: [_ | _] = instances}, _origins) do
+    instances |> Enum.map(& &1.service_date) |> Enum.reduce(&later/2)
+  end
+
+  defp latest_service_date(%{starts_at: starts_at}, origins) do
+    Enum.reduce(origins, nil, fn {candidate, origin}, latest ->
+      if DateTime.compare(origin, starts_at) != :gt do
+        later_or_nil(candidate, latest)
+      else
+        latest
+      end
+    end)
+  end
+
+  defp later_or_nil(candidate, nil), do: candidate
+
+  defp later_or_nil(candidate, latest) do
+    if Date.compare(candidate, latest) == :gt, do: candidate, else: latest
   end
 
   defp latest_instant([instant | rest]) do
