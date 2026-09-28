@@ -7,6 +7,20 @@ defmodule GtfsPlanner.Gtfs.Route do
   @foreign_key_type :binary_id
 
   @route_types [0, 1, 2, 3, 4, 5, 6, 7, 11, 12]
+  @editor_fields [
+    :route_short_name,
+    :route_long_name,
+    :route_type,
+    :agency_id,
+    :route_desc,
+    :route_url,
+    :route_color,
+    :route_text_color,
+    :route_sort_order,
+    :continuous_pickup,
+    :continuous_drop_off,
+    :network_id
+  ]
   @text_fields [
     :route_id,
     :route_short_name,
@@ -87,27 +101,33 @@ defmodule GtfsPlanner.Gtfs.Route do
       :gtfs_version_id
     ])
     |> trim_string_fields()
-    # The route text columns are varchar(255), and Postgres counts code points.
-    |> then(fn changeset ->
-      Enum.reduce(
-        @text_fields,
-        changeset,
-        &validate_length(&2, &1, max: 255, count: :codepoints)
-      )
-    end)
-    |> validate_required([:route_id, :route_type, :organization_id, :gtfs_version_id])
-    |> validate_route_name()
-    |> validate_inclusion(:route_type, @route_types)
-    |> validate_inclusion(:continuous_pickup, 0..3)
-    |> validate_inclusion(:continuous_drop_off, 0..3)
-    |> validate_number(:route_sort_order, greater_than_or_equal_to: 0)
-    |> validate_hex_color(:route_color)
-    |> validate_hex_color(:route_text_color)
-    # routes_organization_id_gtfs_version_id_route_id_index binds to :route_id.
-    |> unique_constraint([:organization_id, :gtfs_version_id, :route_id],
-      error_key: :route_id
-    )
-    |> foreign_key_constraint(:organization_id)
+    |> validate_route_fields()
+    |> route_constraints()
+  end
+
+  @doc """
+  Creates the editor changeset for a route create or edit.
+
+  `mode` is `:create`, which casts the natural ID, or `:edit`, where `route_id`
+  stays fixed. Only the editor allowlist is cast, so forged scope, identity,
+  active and derivation keys never reach the struct. Transient `text_mode`
+  metadata (`"automatic"` or `"custom"`) is stripped before the persisted-field
+  cast and automatic text hex is recomputed server-side. Only new/changed blank
+  colors normalize to FFFFFF/000000, preserving untouched imported values.
+  """
+  @spec editor_changeset(t(), map(), :create | :edit) :: Ecto.Changeset.t()
+  def editor_changeset(route, attrs, mode) when mode in [:create, :edit] do
+    {text_mode, attrs} = pop_text_mode(attrs)
+    fields = if mode == :create, do: [:route_id | @editor_fields], else: @editor_fields
+
+    route
+    |> cast(attrs, fields)
+    |> trim_string_fields()
+    |> normalize_changed_blank_colors()
+    |> apply_text_mode(text_mode)
+    |> validate_route_fields()
+    |> validate_route_url()
+    |> route_constraints()
   end
 
   @doc "Returns human-readable label for route_type."
@@ -133,11 +153,40 @@ defmodule GtfsPlanner.Gtfs.Route do
 
   # Private validation functions
 
+  defp validate_route_fields(changeset) do
+    # The route text columns are varchar(255), and Postgres counts code points.
+    changeset
+    |> then(fn changeset ->
+      Enum.reduce(
+        @text_fields,
+        changeset,
+        &validate_length(&2, &1, max: 255, count: :codepoints)
+      )
+    end)
+    |> validate_required([:route_id, :route_type, :organization_id, :gtfs_version_id])
+    |> validate_route_name()
+    |> validate_inclusion(:route_type, @route_types)
+    |> validate_inclusion(:continuous_pickup, 0..3)
+    |> validate_inclusion(:continuous_drop_off, 0..3)
+    |> validate_number(:route_sort_order, greater_than_or_equal_to: 0)
+    |> validate_hex_color(:route_color)
+    |> validate_hex_color(:route_text_color)
+  end
+
+  defp route_constraints(changeset) do
+    # routes_organization_id_gtfs_version_id_route_id_index binds to :route_id.
+    changeset
+    |> unique_constraint([:organization_id, :gtfs_version_id, :route_id],
+      error_key: :route_id
+    )
+    |> foreign_key_constraint(:organization_id)
+  end
+
   defp validate_route_name(changeset) do
     route_short_name = get_field(changeset, :route_short_name)
     route_long_name = get_field(changeset, :route_long_name)
 
-    if is_nil(route_short_name) && is_nil(route_long_name) do
+    if blank_value?(route_short_name) && blank_value?(route_long_name) do
       add_error(
         changeset,
         :route_short_name,
@@ -158,5 +207,104 @@ defmodule GtfsPlanner.Gtfs.Route do
           message: "must be a valid 6-character hex color code"
         )
     end
+  end
+
+  defp blank_value?(value), do: is_nil(value) or String.trim(value) == ""
+
+  # Editor-only rule: an optional URL is blank or an HTTP(S) URL with a host.
+  defp validate_route_url(changeset) do
+    validate_change(changeset, :route_url, fn :route_url, url ->
+      if blank_value?(url) or valid_route_url?(url) do
+        []
+      else
+        [route_url: "must be an http(s) URL with a nonempty host"]
+      end
+    end)
+  end
+
+  defp valid_route_url?(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] ->
+        is_binary(host) and host != ""
+
+      _other ->
+        false
+    end
+  end
+
+  # Only new/changed blank colors normalize to the defaults; untouched colors
+  # keep their raw imported values.
+  defp normalize_changed_blank_colors(changeset) do
+    changeset
+    |> normalize_blank_change(:route_color, "FFFFFF")
+    |> normalize_blank_change(:route_text_color, "000000")
+  end
+
+  defp normalize_blank_change(changeset, field, default) do
+    update_change(changeset, field, fn
+      blank when blank in [nil, ""] -> default
+      value -> value
+    end)
+  end
+
+  # text_mode is transient form transport metadata; it is stripped before the
+  # cast and never persisted.
+  defp pop_text_mode(attrs) do
+    key = Enum.find(["text_mode", :text_mode], &Map.has_key?(attrs, &1))
+    {value, attrs} = if key, do: Map.pop(attrs, key), else: {nil, attrs}
+
+    mode =
+      case value do
+        v when v in [nil, ""] -> nil
+        v when v in ["automatic", :automatic] -> :automatic
+        v when v in ["custom", :custom] -> :custom
+        _other -> :invalid
+      end
+
+    {mode, attrs}
+  end
+
+  defp apply_text_mode(changeset, nil), do: changeset
+  defp apply_text_mode(changeset, :custom), do: changeset
+
+  defp apply_text_mode(changeset, :invalid) do
+    add_error(changeset, :text_mode, "must be automatic or custom")
+  end
+
+  defp apply_text_mode(changeset, :automatic) do
+    case changed_or_current_hex(changeset, :route_color) do
+      {:ok, background} -> put_change(changeset, :route_text_color, auto_text_color(background))
+      :error -> changeset
+    end
+  end
+
+  defp changed_or_current_hex(changeset, field) do
+    value = get_change(changeset, field) || get_field(changeset, field)
+
+    if is_binary(value) and Regex.match?(~r/^[0-9A-Fa-f]{6}$/, value) do
+      {:ok, value}
+    else
+      :error
+    end
+  end
+
+  # Same WCAG pick as RouteIdentity's fallback: black unless the background
+  # luminance gives white more contrast.
+  defp auto_text_color(background) do
+    luminance = relative_luminance(background)
+    black_contrast = (luminance + 0.05) / 0.05
+    white_contrast = 1.05 / (luminance + 0.05)
+    if black_contrast >= white_contrast, do: "000000", else: "FFFFFF"
+  end
+
+  defp relative_luminance(<<red::binary-size(2), green::binary-size(2), blue::binary-size(2)>>) do
+    [red, green, blue]
+    |> Enum.map(&linear_channel/1)
+    |> then(fn [r, g, b] -> 0.2126 * r + 0.7152 * g + 0.0722 * b end)
+  end
+
+  defp linear_channel(hex) do
+    channel = String.to_integer(hex, 16) / 255
+    if channel <= 0.04045, do: channel / 12.92, else: :math.pow((channel + 0.055) / 1.055, 2.4)
   end
 end
