@@ -153,17 +153,36 @@ test.describe("generation", () => {
     await captureViewport(page, "generate-empty-1440");
 
     // The in-flight overlay renders before the routed legs arrive; the
-    // saved paths stay unchanged and Cancel stays available.
-    await page.locator("#alignment-generate-all").click();
-    await expect(page.locator("#alignment-generating")).toBeVisible({
-      timeout: 5000,
+    // saved paths stay unchanged and Cancel stays available. The fake
+    // router resolves in milliseconds, so a post-click poll can miss the
+    // panel entirely on a fast server: observe it with a MutationObserver
+    // that clicks and reads the panel text synchronously at its
+    // appearance edge, even if it vanishes a frame later.
+    const inflightText = await page.evaluate(() => {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("in-flight panel never appeared")),
+          5000,
+        );
+        const read = () => {
+          const panel = document.querySelector("#alignment-generating");
+          if (panel) {
+            clearTimeout(timer);
+            observer.disconnect();
+            resolve(panel.innerText);
+          }
+        };
+        const observer = new MutationObserver(read);
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+        document.querySelector("#alignment-generate-all").click();
+        read();
+      });
     });
-    await expect(page.locator("#alignment-generating")).toContainText(
-      "Finding a street path…",
-    );
-    await expect(page.locator("#alignment-cancel-generation")).toContainText(
-      "Cancel generation",
-    );
+    expect(inflightText).toContain("Finding a street path…");
+    expect(inflightText).toContain("Cancel generation");
     await captureViewport(page, "generate-inflight-1440");
 
     // The routed legs land as a dirty draft awaiting review before saving.
@@ -482,6 +501,210 @@ test.describe("bulk generation", () => {
     });
     await expect(page.locator("#alignment-section-1")).toContainText(
       "Unsaved",
+      { timeout: 15000 },
+    );
+
+    expect(problems).toEqual([]);
+  });
+});
+
+/**
+ * Generation journeys (spec 12, step 37).
+ *
+ * `test.describe("generation journeys")` proves the full production
+ * composition end to end: GEN-2 (AL_S3 → AL_S4, every section missing)
+ * generates a street path, saves it through the shared-pair scope dialog
+ * (S3 → S4 is also used by A, A-B and LONG, so "Only this pattern" is
+ * the default), and exports; GEN-1 (touches the 40.7500 stop, so
+ * BrowserStreetRouting reports :no_route) proves the phone-width routing
+ * failure; the bulk dialog proves its phone-width layout without routing
+ * (nothing here confirms, so no paths change). This block runs last in
+ * the file because the save journey commits GEN-2's sections. The server
+ * is the Playwright webServer block (BROWSER_E2E=true,
+ * BrowserStreetRouting — no live Geoapify calls); only tiles are stubbed.
+ *
+ * NOTE: the subspec names BROWSER-ALIGN-GEN-1 for the save journey, but
+ * the seeds prove GEN-1 touches the unroutable 40.7500 stop and GEN-2 is
+ * the routable pattern (steps 32/36 precedent) — the journey runs on
+ * GEN-2 and the failure journey on GEN-1.
+ */
+test.describe("generation journeys", () => {
+  const SAVE_PATTERN = "BROWSER-ALIGN-GEN-2";
+  const NOROUTE_PATTERN = "BROWSER-ALIGN-GEN-1";
+
+  // The save dialog animates its panel opacity; wait for it to settle so
+  // captures never catch it mid-fade (pattern_alignment.spec.js precedent).
+  async function settleDialog(page, dialogId) {
+    await page.waitForFunction(
+      (id) => {
+        const panel = document.querySelector(`#${id} > div > div`);
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      dialogId,
+      { timeout: 5000 },
+    );
+  }
+
+  async function openPatternsList(page, _versionId) {
+    await page.goto(`/gtfs/${_versionId}/routes/${ALIGN_ROUTE}/patterns`);
+    await page.waitForSelector("#patterns-list", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(page.locator("#patterns-bulk-generate")).toBeVisible({
+      timeout: 15000,
+    });
+  }
+
+  test("generates, saves and exports the street path at desktop and phone widths", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, versionId, SAVE_PATTERN);
+
+    // The first-alignment overlay offers generation for the missing section.
+    await expect(page.locator("#alignment-generate-overlay")).toBeVisible({
+      timeout: 15000,
+    });
+    // The in-flight panel is proven in the "generation" block above; the
+    // instant fake may finish before any poll observes it here, so wait
+    // for the settled draft directly (a click that starts nothing still
+    // fails at the Unsaved assertion below).
+    await page.locator("#alignment-generate-all").click();
+    await expect(page.locator("#alignment-generating")).toBeHidden({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "◷ Unsaved",
+    );
+    await expect(page.locator("#alignment-section-status-1")).toHaveClass(
+      /badge-warning/,
+    );
+    await expect(page.locator("#status")).toContainText(
+      "Suggested path ready. Review the streets before saving.",
+      { timeout: 15000 },
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "gen-journey-generated-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // The S3 → S4 pair is shared, so saving asks for scope with
+    // "Only this pattern" checked; confirming writes the override.
+    await expect(page.locator("#alignment-save")).toBeEnabled();
+    await page.locator("#alignment-save").click();
+    await expect(page.locator("#alignment-save-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-save-dialog")).toContainText(
+      "Who should use this path?",
+    );
+    await expect(
+      page.locator("#alignment-save-scope-1-local"),
+    ).toBeChecked();
+    await settleDialog(page, "alignment-save-dialog");
+    await captureViewport(page, "gen-journey-scope-1440");
+    await page.locator("#alignment-save-dialog-confirm").click();
+
+    // The save materializes the now-complete pattern: sections read Saved
+    // and the header reads Exported.
+    await expect(page.locator("#status")).toContainText(
+      "Alignment saved.",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "✓ Saved",
+    );
+    await expect(page.locator("#alignment-status")).toContainText(
+      "✓ Exported",
+    );
+    // The save consumed the draft: Discard hides and Save disables.
+    await expect(page.locator("#alignment-discard")).toHaveCount(0);
+    await expect(page.locator("#alignment-save")).toBeDisabled();
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "gen-journey-saved-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // A phone-width load keeps the saved state without overflow (drafts
+    // never persist, so the generated draft itself is covered by the
+    // existing generated-320 capture).
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openAlignment(page, versionId, SAVE_PATTERN);
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "✓ Saved",
+    );
+    await expect(page.locator("#alignment-status")).toContainText(
+      "✓ Exported",
+    );
+    await captureFullPage(page, "gen-journey-saved-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+
+  test("shows the routing failure at phone width", async ({ page }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openAlignment(page, versionId, NOROUTE_PATTERN);
+
+    await page.locator("#alignment-generate-all").click();
+    await expect(page.locator("#alignment-generate-notice")).toContainText(
+      "No street path found",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-generate-notice")).toContainText(
+      "Draw manually",
+    );
+    // The failure drafts nothing: the section stays missing.
+    await expect(page.locator("#alignment-section-1")).toContainText(
+      "Missing",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureFullPage(page, "gen-journey-route-error-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+
+  test("opens the bulk confirmation at phone width without routing", async ({
+    page,
+  }) => {
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    // The dialog opens over the default preselection and is dismissed
+    // without confirming: no routing call runs and no path changes.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openPatternsList(page, versionId);
+    await page.locator("#patterns-bulk-generate").click();
+    await expect(page.locator("#alignment-bulk-dialog")).toContainText(
+      "Create suggestions for",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-bulk-dialog")).toContainText(
+      "Review the results before saving.",
+    );
+    await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
+    await captureFullPage(page, "gen-journey-bulk-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.locator("#alignment-bulk-dialog-cancel").click();
+    await expect(page.locator("#alignment-bulk-dialog")).toHaveAttribute(
+      "data-open",
+      "false",
       { timeout: 15000 },
     );
 

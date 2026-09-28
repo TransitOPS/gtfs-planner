@@ -218,8 +218,8 @@ const PatternAlignment = {
     // it here so a misshapen payload fails loudly in _draw, never as an
     // empty map.
     this.handleEvent("alignment:load", (payload) => {
-      this._settleSave();
       this._draw(payload.model);
+      this._settleSave();
     });
     this.handleEvent("alignment:select", ({ position }) =>
       this._select(position, true),
@@ -1814,7 +1814,11 @@ const PatternAlignment = {
 
   _settleSave() {
     this._savePending = false;
-    this._setSaveDisabled(false);
+    // The in-flight guard above disables Save client-side; restore it
+    // from the drafts actually held. A fresh load drops them (Save
+    // stays off over the server's fresh render) while a rebase or a
+    // dialog/notice settle keeps them (Save returns for the live draft).
+    this._setSaveDisabled(this.dirtyPositions().length === 0);
   },
 
   _setSaveDisabled(disabled) {

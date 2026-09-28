@@ -298,3 +298,43 @@ describe("pattern_alignment_hook teardown", () => {
     expect(ctx.hook._map).toBeNull();
   });
 });
+
+describe("pattern_alignment_hook save settle", () => {
+  // The Save control lives outside the hook root (server-rendered task
+  // header); the hook toggles its disabled flag client-side around the
+  // in-flight save guard (step 28).
+  function saveButton() {
+    let save = document.getElementById("alignment-save");
+    if (!save) {
+      save = document.createElement("button");
+      save.id = "alignment-save";
+      document.body.appendChild(save);
+    }
+    return save;
+  }
+
+  it("disables Save when a fresh load carries no drafts", () => {
+    const { hook, handlers } = mountTracked();
+    const save = saveButton();
+    save.disabled = false;
+
+    load(handlers);
+
+    expect(hook.dirtyPositions()).toEqual([]);
+    expect(save.disabled).toBe(true);
+  });
+
+  it("keeps Save enabled when a load embeds bulk suggestions", () => {
+    const { hook, handlers } = mountTracked();
+    const save = saveButton();
+    save.disabled = true;
+
+    const fixture = model();
+    fixture.route_pattern_id = "BROWSER-ALIGN-GEN-2";
+    fixture.suggestions = [{ position: 3, points: [[-74.0, 40.015]] }];
+    load(handlers, fixture);
+
+    expect(hook.dirtyPositions()).toEqual([3]);
+    expect(save.disabled).toBe(false);
+  });
+});
