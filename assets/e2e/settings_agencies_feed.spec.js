@@ -11,7 +11,7 @@ import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bodyFitsViewport } from "./browser_helpers";
+import { bodyFitsViewport, readPendingStates, watchPendingState } from "./browser_helpers";
 
 // The Playwright runner starts in `assets/`, so repository-relative paths are
 // resolved from the checkout root the way `playwright.config.js` does.
@@ -59,6 +59,14 @@ const MIXED_TIMEZONE_VERSION = "Browser Mixed Timezone Version";
 const AGENCIES_CAPTURE_DIR =
   process.env.AGENCIES_CAPTURE_DIR ||
   resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/agencies-list");
+
+// The version timezone drawer block's own evidence folder (EV-19).
+const TIMEZONE_CAPTURE_DIR =
+  process.env.AGENCIES_TIMEZONE_CAPTURE_DIR ||
+  resolve(
+    REPO_ROOT,
+    ".specs/13-agencies-and-feed-details/evidence/visual/agencies-timezone",
+  );
 
 // ── shared helpers ─────────────────────────────────────────────────────────
 
@@ -652,5 +660,171 @@ test.describe("@agencies-list", () => {
         "agencies-mixed-1280",
       );
     });
+  });
+});
+
+// Settings › Agencies version timezone (EV-18, EV-19; step 16).
+//
+// The drawer the band's Change timezone action and the callout's Resolve
+// timezones action open: choose a zone, review what it rewrites, acknowledge and
+// apply. The journey runs on "Browser Mixed Timezone Version" (North Coast
+// Transit America/New_York, Lakefront Transit America/Chicago, one route each)
+// and applies America/Chicago, so the band resolves afterwards.
+//
+// Declared last on purpose: this block mutates the version the `@agencies-list`
+// block reads earlier in the same file, and the suite runs one worker with no
+// retries, so the declared order is the seeding order (CR-10).
+//
+// Captures land in this block's own evidence folder as
+// `timezone-choose-{1280,375}.png`, `timezone-review-{1280,375}.png`,
+// `timezone-ack-error-1280.png` and `timezone-applied-1280.png`.
+test.describe("@agencies-timezone", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("resolves a mixed-timezone version through choose, review and apply", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const mixedId = await versionId(page, MIXED_TIMEZONE_VERSION);
+    await page.goto(`/gtfs/${mixedId}/settings/agencies`);
+    await page.waitForSelector("#agencies");
+    await waitForLiveView(page);
+
+    const overlay = page.locator("#agency-timezone-drawer-overlay");
+    const zone = page.locator("#agency-timezone-zone");
+
+    // The unresolved version explains itself and offers the resolve action.
+    await expect(page.locator("#agencies-timezone-callout")).toContainText(
+      "Agencies use different timezones",
+    );
+
+    await page.click("#agencies-resolve-timezones");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#agency-timezone-drawer-title")).toHaveText(
+      "Resolve agency timezones",
+    );
+
+    // The choose step: a blank zone, the accepted names in the datalist, and the
+    // agencies the change rewrites.
+    await expect(zone).toHaveValue("");
+    await expect(zone).toHaveAttribute("list", "agency-timezone-zone-zones");
+    await expect(zone).toHaveAttribute("autocomplete", "off");
+    await expect(
+      page.locator("#agency-timezone-zone-zones option[value='America/New_York']"),
+    ).toHaveCount(1);
+    await expect(
+      page.locator("#agency-timezone-zone-zones option[value='Not/a_zone']"),
+    ).toHaveCount(0);
+    await expect(page.locator("#agency-timezone-impact")).toContainText(
+      `This affects every agency in ${MIXED_TIMEZONE_VERSION}`,
+    );
+    await expect(page.locator("#agency-timezone-current li")).toHaveCount(2);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-choose-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-choose-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    // A zone the catalog does not hold marks the field and opens no review.
+    await zone.fill("Not/a_zone");
+    await page.locator("#agency-timezone-review").click();
+
+    await expect(page.locator("#agency-timezone-zone-error")).toContainText(
+      "Choose a valid timezone, such as America/New_York.",
+    );
+    await expect(page.locator("#agency-timezone-review-form")).toHaveCount(0);
+    await expect(zone).toHaveValue("Not/a_zone");
+
+    await zone.fill("America/Chicago");
+    await page.locator("#agency-timezone-review").click();
+
+    // The review names every agency, the zone it holds now, the zone it will
+    // hold and the routes it operates.
+    await expect(page.locator("#agency-timezone-drawer-title")).toHaveText(
+      "Review timezone change",
+    );
+    await expect(page.locator("#agency-timezone-review-summary")).toContainText(
+      "2 agencies will use America/Chicago",
+    );
+    await expect(page.locator("#agency-timezone-review-summary")).toContainText(
+      `Only ${MIXED_TIMEZONE_VERSION} changes. Other versions keep their current timezone.`,
+    );
+
+    const reviewRows = page.locator("#agency-timezone-review-list li");
+
+    await expect(reviewRows).toHaveCount(2);
+    await expect(reviewRows.nth(0)).toContainText(
+      "Lakefront Transit America/Chicago → America/Chicago 1 route",
+    );
+    await expect(reviewRows.nth(1)).toContainText(
+      "North Coast Transit America/New_York → America/Chicago 2 routes",
+    );
+    await expect(page.locator("#agency-timezone-not-converted")).toContainText(
+      "Route and trip clock times are not converted. Check calendars, schedules, and overnight service after this change.",
+    );
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-review-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    await expect(page.locator("#agency-timezone-apply")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-review-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    // Applying without the acknowledgement writes nothing: the drawer names the
+    // missing confirmation and lands focus on the checkbox.
+    await watchPendingState(page, "#agency-timezone-apply");
+    await page.locator("#agency-timezone-apply").click();
+
+    const pendingStates = await readPendingStates(page);
+
+    expect(
+      pendingStates.some((state) => state.disabled && state.text === "Applying…"),
+    ).toBe(true);
+
+    await expect(page.locator("#agency-timezone-ack-error")).toContainText(
+      "Confirm that the selected timezone is used by these schedules before applying it.",
+    );
+    await expect(page.locator("#agency-timezone-ack")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    await expect(page.locator("#agency-timezone-ack")).toBeFocused();
+    await expect(page.locator("#agency-timezone-review-form")).toHaveCount(1);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-ack-error-1280");
+
+    // The acknowledged apply rewrites every agency and reloads the band.
+    await page.check("#agency-timezone-ack");
+    await page.locator("#agency-timezone-apply").click();
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#flash-info")).toContainText(
+      "Timezone updated for 2 agencies. Review affected schedules before exporting.",
+    );
+    await expect(page.locator("#agencies-timezone-callout")).toHaveCount(0);
+    await expect(page.locator("#agencies-timezone-band")).toContainText(
+      "America/Chicago · Used by all agencies and their schedules.",
+    );
+
+    const zones = await page
+      .locator("#agencies tr td[data-label='Timezone']")
+      .allInnerTexts();
+
+    expect(zones.map((cell) => cell.trim())).toEqual([
+      "America/Chicago",
+      "America/Chicago",
+    ]);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-applied-1280");
   });
 });

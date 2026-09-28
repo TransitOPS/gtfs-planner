@@ -18,6 +18,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   `beforeunload` listener that asks the browser's own leave-page question while
   a draft is unsaved (AC-6). Server-side close protection stays with the page,
   which owns what "changed" means.
+
+  `timezone_input/1` renders the schedule timezone field with the datalist of
+  names PostgreSQL accepts, so the version timezone is chosen from one list in
+  both the timezone drawer and the first-agency drawer.
   """
 
   use GtfsPlannerWeb, :html
@@ -89,6 +93,37 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
         }
       }
     </script>
+    """
+  end
+
+  @doc """
+  Renders the schedule timezone field with its datalist of accepted names.
+
+  `zones` is `GtfsPlanner.Gtfs.DisplayClock.zone_names/0`, the same list the
+  server validates a submitted name against, so a suggestion and an accepted
+  value cannot disagree (INV-4). The control stays free text: a datalist
+  suggests, and the server decides whether the name is a zone, which keeps one
+  validation rule instead of a browser rule beside it.
+  """
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :zones, :list, required: true
+  attr :id, :string, required: true
+
+  def timezone_input(assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      id={@id}
+      type="text"
+      label="Schedule timezone"
+      list={"#{@id}-zones"}
+      autocomplete="off"
+      help="Search by city or enter an IANA timezone, such as America/New_York."
+    />
+
+    <datalist id={"#{@id}-zones"}>
+      <option :for={zone <- @zones} value={zone}></option>
+    </datalist>
     """
   end
 
