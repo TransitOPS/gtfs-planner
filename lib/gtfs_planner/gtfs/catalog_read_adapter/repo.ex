@@ -25,7 +25,16 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   @behaviour GtfsPlanner.Gtfs.CatalogReadAdapter
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{Calendars, DisplayClock, Route, RoutePatterns, Schedules, Stop}
+
+  alias GtfsPlanner.Gtfs.{
+    Calendars,
+    DisplayClock,
+    Route,
+    RoutePatterns,
+    Schedules,
+    Stop,
+    Transfers
+  }
 
   @default_per_page 25
 
@@ -143,6 +152,11 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end
+  end
+
+  @impl true
+  def load_transfer_catalog(organization_id, gtfs_version_id, opts) do
+    run(fn -> Transfers.load_catalog(organization_id, gtfs_version_id, opts) end)
   end
 
   @impl true

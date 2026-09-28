@@ -69,6 +69,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Validations.WalkabilityTest
@@ -224,6 +225,40 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, [Calendars.summary()]} | {:error, :not_found | :unavailable}
   def load_calendar_catalog(organization_id, gtfs_version_id, opts \\ []) do
     catalog_read_adapter().load_calendar_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Loads a version's transfer catalog through the configured catalog read adapter.
+
+  `opts` are `GtfsPlanner.Gtfs.Transfers.load_catalog/3`'s page options (`:view`,
+  `:search`, `:stop`, `:route`, `:type`, `:attention`, `:sort_by`, `:sort_dir`,
+  `:page`, `:per_page`, `:rule`). The catalog is scoped to the organization and
+  version, lists general (types 0–3) rules by default and type 4/5 rows only in
+  the in-seat view, and annotates every row with its R11 attention reasons. A lost
+  database connection is `{:error, :unavailable}`.
+  """
+  @spec load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Transfers.catalog()} | {:error, :unavailable}
+  def load_transfer_catalog(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_transfer_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Counts a version's general transfer rules for a related page.
+
+  Delegates to `GtfsPlanner.Gtfs.Transfers.count_general/3` directly, not through
+  `CatalogReadAdapter` (spec Design decisions: only the page's catalog load uses the
+  adapter). `filter` is `[stop: stop_id]` or `[route: route_id]`; the count shares the
+  list's own stop and route predicates, so it equals the matching filtered catalog's
+  `total_count` and never covers type 4/5 rows.
+  """
+  @spec count_general_transfers(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          [stop: String.t()] | [route: String.t()]
+        ) :: non_neg_integer()
+  def count_general_transfers(organization_id, gtfs_version_id, filter) do
+    Transfers.count_general(organization_id, gtfs_version_id, filter)
   end
 
   @doc """
