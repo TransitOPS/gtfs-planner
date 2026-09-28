@@ -135,8 +135,8 @@ defmodule GtfsPlannerWeb.Router do
       ] do
       # GTFS routes (viewer or editor roles required)
       live "/routes", Gtfs.RoutesLive, :index
-      # Transfers joins the routes area as a placeholder until that feature ships.
-      live "/transfers", Gtfs.ComingSoonLive, :transfers
+      # Transfers is the Routes area's second tab, beside the routes list.
+      live "/transfers", Gtfs.TransfersLive, :index
       live "/calendars", Gtfs.CalendarsLive, :index
       # Calendar detail carries its service ID as a query parameter, so imported
       # IDs containing slashes, percent signs, spaces or the words new/show can

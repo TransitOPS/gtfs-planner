@@ -9,15 +9,9 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
   alias GtfsPlannerWeb.ComingSoon
 
   # Literal expectations transcribed from the finalized content table. They are
-  # written here rather than read back from the catalog under test.
+  # written here rather than read back from the catalog under test. Transfers is
+  # absent: the destination ships as a working page, so it has no catalog entry.
   @catalog [
-    transfers: %{
-      title: "Transfers",
-      scope: :version,
-      summary:
-        "Tell trip planners where riders can change vehicles: between stops, routes or two specific trips.",
-      section_names: ["Transfer list", "New transfer", "In-seat transfers"]
-    },
     blocks: %{
       title: "Blocks",
       scope: :version,
@@ -101,7 +95,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 12
+      assert length(@catalog) == 11
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -114,18 +108,20 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       end)
     end
 
-    test "raises for a key outside the catalog" do
+    test "raises for a key outside the catalog, including the shipped Transfers key" do
       # `Function.identity/1` passes the value through while keeping it out of the
       # compiler's type checker, which would otherwise warn that the literal
       # cannot match the closed clause set. The call under test is unchanged.
-      assert_raise FunctionClauseError, fn ->
-        ComingSoon.feature(Function.identity(:unbuilt))
+      for key <- [:transfers, :unbuilt] do
+        assert_raise FunctionClauseError, fn ->
+          ComingSoon.feature(Function.identity(key))
+        end
       end
     end
 
     test "does not convert a string into a catalog key" do
       assert_raise FunctionClauseError, fn ->
-        ComingSoon.feature(Function.identity("transfers"))
+        ComingSoon.feature(Function.identity("blocks"))
       end
     end
   end
@@ -153,7 +149,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
     test "renders exactly one title element at the requested heading level" do
       for level <- [1, 2, 3] do
-        doc = render_doc(ComingSoon.feature(:transfers), "All versions", level)
+        doc = render_doc(ComingSoon.feature(:blocks), "All versions", level)
 
         assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
         assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1

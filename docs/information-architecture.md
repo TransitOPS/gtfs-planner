@@ -47,7 +47,7 @@ Org name                                        [Version ▾]   [Initials ▾]
 | Destination | Holds | Scope | Status |
 |---|---|---|---|
 | Home (`/`) | Organization tasks for the signed-in user | Organization | Live |
-| Routes | Route catalog, transfers, route and pattern pages | This version | Live; Transfers Proposed |
+| Routes | Route catalog, transfers, route and pattern pages | This version | Live |
 | Calendars | Service calendars | This version | Live |
 | Operations | Blocks · Runs · Rosters | This version | Planned; grouping Proposed |
 | Stops & stations | Stops, stations, floorplans, reports, closures | This version | Live |
@@ -143,7 +143,7 @@ flowchart LR
 ```
 Routes                              /gtfs/:version/routes
 ├── Routes (list)                   Live
-├── Transfers (list)                Proposed
+├── Transfers (list)                Live
 └── Route                           /routes/:route_id
     ├── Details                     Live (read-only) → Proposed (editable)
     ├── Patterns                    Live
@@ -159,7 +159,7 @@ badges; New route drawer.
   a new organization, the empty state and the New route drawer ask for agency name, website and
   timezone before the first route. Imported versions take their agency from `agency.txt`.
 
-**Routes › Transfers** (Proposed): a list for the whole version, beside the Routes list.
+**Routes › Transfers** (Live): a list for the whole version, beside the Routes list.
 - Columns: From, To, Type, Min time. Filters for type, stop and route, plus search.
 - "New transfer" asks for the scope first (stop pair, route pair or trip pair), then shows only
   that scope's fields.
@@ -474,7 +474,7 @@ its feature is specified.
 | Trips and frequencies | [Trips](requirements/trips-requirements.md) | Route › Schedules | Planned / Proposed |
 | In-seat transfers | AC-TRIP-041, AC-TRIP-042 | Operations › Blocks › block drawer | Proposed |
 | Blocks | [Schedules and blocks](requirements/schedules-and-blocks-requirements.md) | Operations › Blocks | Planned |
-| Transfers | [Transfers](requirements/transfers-requirements.md) | Routes › Transfers | Proposed |
+| Transfers | [Transfers](requirements/transfers-requirements.md) | Routes › Transfers | Live |
 | Fare zones | [Stops and stations](requirements/stops-and-stations-requirements.md) AC-STOP-023 to AC-STOP-026 | Settings › Fares › Zones | Proposed |
 | Agencies and feed info | [System configuration](requirements/system-configuration-requirements.md) AC-CONFIG-001 to AC-CONFIG-017, AC-CONFIG-040 | Settings › Agencies, Feed details; Route › Details | Proposed |
 | Export settings | AC-CONFIG-030, AC-CONFIG-031 | Settings › Export defaults | Proposed |

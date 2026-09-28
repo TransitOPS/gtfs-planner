@@ -227,13 +227,9 @@ for (const { width, height, label } of VIEWPORTS) {
       await expect(
         page.locator("#routes-tabs a[aria-current='page']"),
       ).toHaveText("Transfers");
+      await expect(page.locator("#transfers-page")).toBeVisible();
       await expect(page.locator("h1")).toHaveText("Transfers");
-      await expect(page.locator("#coming-soon-status")).toHaveText(
-        /Coming soon/,
-      );
-      await expect(
-        page.locator("#coming-soon form, #coming-soon button"),
-      ).toHaveCount(0);
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
       await expect(
         page.locator("#main-navigation #nav-routes"),
       ).toHaveAttribute("aria-current", "page");

@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the twelve catalog keys only. Any other key raises, so a
+  `feature/1` answers for the eleven catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -33,26 +33,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
   content table in the information-architecture spec.
   """
   @spec feature(atom()) :: feature()
-  def feature(:transfers) do
-    %{
-      title: "Transfers",
-      scope: :version,
-      summary:
-        "Tell trip planners where riders can change vehicles: between stops, routes or two specific trips.",
-      sections: [
-        %{name: "Transfer list", text: "Review transfers in this version."},
-        %{
-          name: "New transfer",
-          text: "Choose a stop, route or trip pair, then set its type and minimum time."
-        },
-        %{
-          name: "In-seat transfers",
-          text: "Review connections where riders stay on board, set on Operations › Blocks."
-        }
-      ]
-    }
-  end
-
   def feature(:blocks) do
     %{
       title: "Blocks",
