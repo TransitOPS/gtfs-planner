@@ -570,7 +570,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       |> assign(:outside_lines, outside_lines(assigns.detail))
 
     ~H"""
-    <div id="calendar-coverage-details-body" class="space-y-6">
+    <div id="calendar-coverage-details-content" class="space-y-6">
       <div>
         <p id="calendar-coverage-details-identity">
           <code class="font-mono">{@row.service_id}</code>

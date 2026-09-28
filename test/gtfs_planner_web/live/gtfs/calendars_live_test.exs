@@ -113,6 +113,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
   # weekday the suite runs, so every fixture date is derived from next week's Monday.
   defp next_monday(today), do: Date.add(today, rem(8 - Date.day_of_week(today), 7) + 7)
 
+  # A fixed offset from today can land on a weekend, so a weekly fixture's first
+  # regular service day is the first Mon–Fri date on or after it.
+  defp first_service_day(date) do
+    if Date.day_of_week(date) <= 5, do: date, else: Date.add(date, 8 - Date.day_of_week(date))
+  end
+
   defp postgres_local_today(timezone) do
     %{rows: [[%Date{} = date]]} = Repo.query!("SELECT (now() AT TIME ZONE $1)::date", [timezone])
 
@@ -136,8 +142,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
   # plain row list is wrapped in a screen built from those rows, which keeps the
   # existing cases readable while the seam matches the production read.
   defp stub_screen(result_fn) do
-    stub(CatalogReadAdapterMock, :load_calendar_screen, fn _org, _version, _opts ->
-      case result_fn.() do
+    stub(CatalogReadAdapterMock, :load_calendar_screen, fn _org, _version, opts ->
+      case result_fn.(opts) do
         {:ok, %{rows: _rows} = screen} -> {:ok, screen}
         {:ok, rows} -> {:ok, screen(rows)}
         error -> error
@@ -677,7 +683,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       assert whole =~ "Timeline starts"
       assert whole =~ "is hidden"
       assert has_element?(view, "#calendar-coverage-show-all")
-      assert whole =~ "#{Calendar.strftime(Date.add(today, -3_200), "%b %-d, %Y")}"
+
+      assert whole =~
+               "#{Calendar.strftime(first_service_day(Date.add(today, -3_200)), "%b %-d, %Y")}"
 
       # Every year is the same axis without the window, and it can be restored.
       all = render_patch(view, list_path(version, %{"range" => "all"}))
@@ -895,10 +903,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       # to return focus to the control that opened it.
       assert has_element?(view, "#calendar-coverage-details-overlay[data-open=true]")
 
+      # The dialog — the element the overlay hook reads — carries the exact id of the
+      # control that opened this inspector, so Escape can return focus to it, and that
+      # control is the element with that id.
       assert has_element?(
                view,
-               "#calendar-coverage-details[data-return-focus-id='calendar-coverage-open-DETAIL_WEEK']"
+               "#calendar-coverage-details-overlay" <>
+                 "[data-return-focus-id='calendar-coverage-open-DETAIL_WEEK']"
              )
+
+      assert has_element?(view, "button#calendar-coverage-open-DETAIL_WEEK")
 
       assert has_element?(view, "#calendar-coverage-details-title", "Detailed weekdays")
 
@@ -956,12 +970,22 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
                Calendar.strftime(outside_last, "%b %-d, %Y")
              )
 
-      # Next service is the first loaded date on or after the agency-local today, and
-      # the usage strip names the real trip count and route IDs.
+      # Next service is the first loaded date on or after the agency-local today,
+      # skipping the fixture's own removals: Monday next week, its two following
+      # regular days and the single day off the week after. On a weekend run day the
+      # removed Monday is the first candidate, so the expectation walks past it.
+      removals = [
+        monday,
+        Date.add(monday, 1),
+        Date.add(monday, 2),
+        Date.add(monday, 7)
+      ]
+
       expected_next =
-        if Date.day_of_week(today) <= 5,
-          do: today,
-          else: Date.add(today, 8 - Date.day_of_week(today))
+        Enum.find(
+          Stream.iterate(today, &Date.add(&1, 1)),
+          &(Date.day_of_week(&1) <= 5 and &1 not in removals)
+        )
 
       expected_label =
         if expected_next == today do
@@ -984,7 +1008,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       closed = render_click(view, "close_coverage_details", %{})
       assert has_element?(view, "#calendar-coverage-details-overlay[data-open=false]")
       refute closed =~ "3 service days removed"
-      refute has_element?(view, "#calendar-coverage-details-body")
+      refute has_element?(view, "#calendar-coverage-details-content")
       assert has_element?(view, "button#calendar-coverage-open-DETAIL_WEEK")
     end
 
@@ -1094,7 +1118,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       for service_id <- ["DETAIL_REVERSED", "NO_SUCH_CALENDAR"] do
         render_click(view, "open_coverage_details", %{"service-id" => service_id})
         assert has_element?(view, "#calendar-coverage-details-overlay[data-open=false]")
-        refute has_element?(view, "#calendar-coverage-details-body")
+        refute has_element?(view, "#calendar-coverage-details-content")
       end
 
       # The reviewed date change evaluates every target, so the unreadable identity is

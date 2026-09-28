@@ -2587,13 +2587,19 @@ case Accounts.register_first_admin(%{
 
     # Three consecutive removed regular days are a break; one removed day is a day
     # off; the added date inside the weekly range is regular extra service and the
-    # two after it are the additions outside the range.
+    # two after it are the additions outside the range. The break has to be three
+    # consecutive Mon–Fri dates whatever weekday the seed runs and it has to sit
+    # clear of the next-weekday date the date-change journey picks, so it is anchored
+    # on the Monday two weeks out (a regular service day) and the single day off on
+    # the Monday after it.
+    break_monday = Date.add(details_today, rem(8 - Date.day_of_week(details_today), 7) + 14)
+
     [
-      {"DETAIL_SCHOOL", Date.add(details_today, 1), 2},
-      {"DETAIL_SCHOOL", Date.add(details_today, 2), 2},
-      {"DETAIL_SCHOOL", Date.add(details_today, 3), 2},
-      {"DETAIL_SCHOOL", Date.add(details_today, 10), 2},
-      {"DETAIL_SCHOOL", Date.add(details_today, 5), 1},
+      {"DETAIL_SCHOOL", break_monday, 2},
+      {"DETAIL_SCHOOL", Date.add(break_monday, 1), 2},
+      {"DETAIL_SCHOOL", Date.add(break_monday, 2), 2},
+      {"DETAIL_SCHOOL", Date.add(break_monday, 7), 2},
+      {"DETAIL_SCHOOL", Date.add(break_monday, 5), 1},
       {"DETAIL_SCHOOL", Date.add(details_today, 45), 1},
       {"DETAIL_SCHOOL", Date.add(details_today, 46), 1},
       # Past the near-range window, so the inspector has an exact date outside the

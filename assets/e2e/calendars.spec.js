@@ -531,11 +531,14 @@ test.describe("calendar coverage details", () => {
     await expect(details).toContainText("DETAIL_SCHOOL");
 
     // The three removed regular service days are stated as a break with its exact
-    // range, and the additions that sit after the weekly range are named exactly.
+    // range, and the additions that sit after the weekly range are named exactly. The
+    // pattern tolerates the whitespace the template leaves between the break label,
+    // the range and the removed-day count, because a regular expression is matched
+    // against the element's raw text.
     await expect(details).toContainText(
-      /Break · [A-Z][a-z]{2} \d{1,2}, \d{4} – [A-Z][a-z]{2} \d{1,2}, \d{4} · 3 service days removed/,
+      /Break ·\s+[A-Z][a-z]{2} \d{1,2}, \d{4} – [A-Z][a-z]{2} \d{1,2}, \d{4}\s+·\s+3 service days removed/,
     );
-    await expect(details).toContainText(/Extra service: .*outside the regular schedule/);
+    await expect(details).toContainText(/Extra service:[\s\S]*outside the regular schedule/);
     await expect(details).toContainText("Single days off:");
     await expect(details.locator("#calendar-coverage-details-dates li")).toHaveCount(8);
     await expect(details).toContainText("Service added");
