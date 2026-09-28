@@ -1563,7 +1563,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     ~H"""
     <div
       id="transfer-editor"
-      phx-hook="FormErrorFocus"
+      phx-hook="DraftGuard"
+      data-dirty={to_string(@editor.dirty?)}
+      data-depart-event="transfer_depart"
+      data-discard-message="Discard unsaved transfer changes? Cancel to keep editing."
       data-focus-on-mount="transfer-editor-title"
       class="p-4 sm:p-6"
     >
@@ -1770,6 +1773,41 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   # collision whose row vanished, or a type 4/5 record, offers no such action.
   defp open_existing_id({:duplicate, %{id: id}}), do: id
   defp open_existing_id(_error), do: nil
+
+  @doc """
+  Renders the confirmation that guards a dirty draft's departure (AC-20).
+
+  The draft is what the operator typed, and every way out of the editor — Back,
+  Cancel, "Open existing rule", a link departure and a version switch — runs
+  through the same question, so none of them silently discards it. The confirm is
+  the destructive one and names it; "Keep editing" returns to the draft with focus
+  on the save button.
+
+  ## Examples
+
+      <.discard_dialog open={@pending_discard != nil} />
+  """
+  attr :open, :boolean, required: true, doc: "whether a departure is waiting for an answer"
+
+  def discard_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="transfer-discard-dialog"
+      open={@open}
+      title="Discard unsaved changes?"
+      confirm_label="Discard changes"
+      cancel_label="Keep editing"
+      pending_label="Discarding…"
+      on_confirm="discard_changes"
+      on_cancel="keep_editing"
+      confirm_variant="danger"
+      described_by="transfer-discard-dialog-body"
+      return_focus_id="transfer-save"
+    >
+      <p>Your saved transfer will stay as it was. The changes in this form will be lost.</p>
+    </.confirm_dialog>
+    """
+  end
 
   defp editor_title(%{mode: :edit}), do: "Edit transfer"
   defp editor_title(_editor), do: "Create transfer"

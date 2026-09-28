@@ -159,6 +159,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:checked, %{})
      |> assign(:delete_dialog, nil)
      |> assign(:editor, nil)
+     |> assign(:pending_discard, nil)
      |> assign(:open_editor_for, nil)
      |> assign(:map_generation, Ecto.UUID.generate())
      |> assign(:map_extent, map_extent(socket))
@@ -365,7 +366,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     id = Map.get(params, "id")
 
     case socket.assigns.editor do
-      %{error: {:duplicate, %{id: ^id}}} -> {:noreply, open_rule(socket, id)}
+      %{error: {:duplicate, %{id: ^id}}} -> guard(socket, {:open_existing, id})
       _editor -> {:noreply, socket}
     end
   end
@@ -415,14 +416,31 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   def handle_event("retry_save", params, socket), do: {:noreply, submit_draft(socket, params)}
 
   @impl true
-  def handle_event("cancel_editor", _params, socket) do
-    socket =
-      socket
-      |> assign(:editor, nil)
-      |> end_pick()
-      |> show_selected_map(socket.assigns.selected)
+  def handle_event("cancel_editor", _params, socket), do: guard(socket, :cancel)
 
-    {:noreply, socket}
+  # The client half of the guard: the `DraftGuard` hook intercepts a same-origin
+  # link click while the draft is dirty and sends the path here instead of
+  # navigating. A path this page did not author is refused (R10).
+  @impl true
+  def handle_event("transfer_depart", %{"path" => path}, socket) do
+    if String.starts_with?(path, "/") and not String.starts_with?(path, "//") do
+      guard(socket, {:navigate, path})
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("discard_changes", _params, socket) do
+    case socket.assigns.pending_discard do
+      nil -> {:noreply, socket}
+      action -> {:noreply, socket |> assign(:pending_discard, nil) |> discard_action(action)}
+    end
+  end
+
+  @impl true
+  def handle_event("keep_editing", _params, socket) do
+    {:noreply, assign(socket, :pending_discard, nil)}
   end
 
   @impl true
@@ -431,8 +449,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
          socket.assigns.current_organization.id,
          version_id
        ) do
-      socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: transfers_target(version_id))}
+      guard(socket, {:switch_version, version_id})
     else
       {:noreply, socket}
     end
@@ -833,6 +850,41 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     |> push_patch(
       to: list_path(socket, view: :general, filters: @empty_filters, page: 1, rule: id)
     )
+  end
+
+  # Every way out of a dirty draft waits behind the same question (AC-20). The
+  # action runs immediately when there is no draft to lose, so Cancel and the
+  # departure paths keep their ordinary behavior for a clean editor.
+  defp guard(socket, action) do
+    if dirty_draft?(socket) do
+      {:noreply, assign(socket, :pending_discard, action)}
+    else
+      {:noreply, discard_action(socket, action)}
+    end
+  end
+
+  defp dirty_draft?(socket) do
+    case socket.assigns.editor do
+      %{dirty?: true} -> true
+      _editor -> false
+    end
+  end
+
+  defp discard_action(socket, :cancel), do: close_editor(socket)
+  defp discard_action(socket, {:open_existing, id}), do: open_rule(socket, id)
+  defp discard_action(socket, {:navigate, path}), do: push_navigate(socket, to: path)
+
+  defp discard_action(socket, {:switch_version, version_id}) do
+    socket
+    |> push_event("gtfs_version_selected", %{version_id: version_id})
+    |> push_navigate(to: transfers_target(version_id))
+  end
+
+  defp close_editor(socket) do
+    socket
+    |> assign(:editor, nil)
+    |> end_pick()
+    |> show_selected_map(socket.assigns.selected)
   end
 
   # The rules the compare view lists: the selected rule and its competitors.
@@ -1336,6 +1388,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
               dialog={@delete_dialog}
               version_name={@current_gtfs_version.name}
             />
+            <.discard_dialog open={not is_nil(@pending_discard)} />
           </:context>
         </.workspace>
       </div>
