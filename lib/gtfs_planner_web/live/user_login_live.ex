@@ -2,13 +2,16 @@ defmodule GtfsPlannerWeb.UserLoginLive do
   use GtfsPlannerWeb, :live_view
 
   # Fixed presentation for the bounded recovery codes issued by
-  # UserSessionController. Unknown or missing codes render no callout; the
-  # controller never passes prose or markup to this view.
+  # UserSessionController. Each code maps to a tone plus a fixed title and
+  # body. Unknown or missing codes render no callout; the controller never
+  # passes prose or markup to this view.
   @recovery_messages %{
-    "invalid_credentials" => {"Log in failed", "Check your email and password, then try again."},
-    "deactivated" => {"Account deactivated", "Contact an administrator to restore access."},
+    "invalid_credentials" =>
+      {"error", "Email or password is incorrect", "Check both and try again."},
+    "deactivated" =>
+      {"warning", "Account deactivated", "Contact an administrator to restore access."},
     "organization_required" =>
-      {"Organization access required",
+      {"warning", "Organization access required",
        "Contact an administrator to add this account to an organization."}
   }
 
@@ -16,60 +19,94 @@ defmodule GtfsPlannerWeb.UserLoginLive do
     ~H"""
     <Layouts.auth flash={@flash}>
       <div id="login-page" phx-hook="FormErrorFocus" data-focus-on-mount="login-recovery">
-        <.header class="text-center">
+        <h1
+          id="login-title"
+          class="text-[28px] font-semibold leading-[1.08] tracking-[-0.035em] text-strong"
+        >
           Log in
-        </.header>
+        </h1>
 
-        <div :if={@recovery} class="mb-6">
-          <.callout kind="error" id="login-recovery" title={@recovery.title} tabindex="-1">
-            {@recovery.body}
-          </.callout>
+        <div
+          :if={@recovery}
+          id="login-recovery"
+          tabindex="-1"
+          class={[
+            "mt-5 flex items-start gap-3 rounded-card px-4 py-3.5 text-sm",
+            recovery_tone_class(@recovery.tone)
+          ]}
+        >
+          <.icon name={recovery_icon(@recovery.tone)} class="mt-px size-5 shrink-0" />
+          <div class="min-w-0">
+            <p class="font-semibold">{@recovery.title}</p>
+            <p class="text-pretty">{@recovery.body}</p>
+          </div>
         </div>
 
-        <.simple_form
-          for={@form}
-          id="login_form"
-          action={~p"/users/log_in"}
-          phx-update="ignore"
-          class="phx-submit-loading:opacity-60"
-        >
-          <.input field={@form[:email]} id="login-email" type="email" label="Email" required />
-          <.input
-            field={@form[:password]}
-            id="login-password"
-            type="password"
-            label="Password"
-            required
-          />
+        <.form for={@form} id="login_form" action={~p"/users/log_in"} phx-update="ignore" class="mt-6">
+          <div class="grid gap-5">
+            <div class="grid gap-1.5">
+              <label for="login-email" class="text-sm font-semibold text-strong">Email</label>
+              <input
+                id="login-email"
+                name="user[email]"
+                type="email"
+                value={@form[:email].value}
+                autocomplete="username"
+                autocapitalize="none"
+                spellcheck="false"
+                required
+                class="h-11 w-full min-w-0 rounded-control border border-control bg-white px-3 text-base text-strong focus-visible:outline-offset-0"
+              />
+            </div>
+            <div class="grid gap-1.5">
+              <label for="login-password" class="text-sm font-semibold text-strong">Password</label>
+              <input
+                id="login-password"
+                name="user[password]"
+                type="password"
+                autocomplete="current-password"
+                required
+                class="h-11 w-full min-w-0 rounded-control border border-control bg-white px-3 text-base text-strong focus-visible:outline-offset-0"
+              />
+            </div>
+          </div>
 
-          <.input
-            field={@form[:remember_me]}
-            id="login-remember-me"
-            type="checkbox"
-            label="Keep me logged in for 60 days"
-          />
+          <label
+            for="login-remember-me"
+            class="mt-2 flex min-h-11 cursor-pointer items-center gap-2.5 text-sm text-default"
+          >
+            <input type="hidden" name="user[remember_me]" value="false" />
+            <input
+              id="login-remember-me"
+              name="user[remember_me]"
+              type="checkbox"
+              value="true"
+              checked={@form[:remember_me].value in ["true", true]}
+              class="size-[17px] shrink-0 accent-action"
+            /> Keep me logged in for 60 days
+          </label>
 
-          <:actions>
-            <.link
-              navigate={~p"/users/reset_password"}
-              class="text-sm font-semibold link link-hover text-base-content/70"
-            >
-              Forgot your password?
-            </.link>
-          </:actions>
+          <button
+            id="login-submit"
+            type="submit"
+            phx-disable-with="Logging in…"
+            class="mt-4 min-h-11 w-full rounded-control bg-action text-sm font-semibold text-white hover:bg-action-hover"
+          >
+            Log in
+          </button>
+        </.form>
 
-          <:actions>
-            <.button
-              id="login-submit"
-              type="submit"
-              phx-disable-with="Logging in…"
-              variant="primary"
-            >
-              Log in
-            </.button>
-          </:actions>
-        </.simple_form>
+        <p class="-mb-2.5 mt-3">
+          <.link
+            navigate={~p"/users/reset_password"}
+            class="inline-flex min-h-11 items-center text-sm font-semibold text-action"
+          >
+            Forgot your password?
+          </.link>
+        </p>
       </div>
+
+      <:footer>No account? Ask your organization administrator for an invitation.</:footer>
     </Layouts.auth>
     """
   end
@@ -88,10 +125,16 @@ defmodule GtfsPlannerWeb.UserLoginLive do
 
   defp recovery_message(code) when is_binary(code) do
     case @recovery_messages do
-      %{^code => {title, body}} -> %{title: title, body: body}
+      %{^code => {tone, title, body}} -> %{tone: tone, title: title, body: body}
       _unknown -> nil
     end
   end
 
   defp recovery_message(_missing), do: nil
+
+  defp recovery_tone_class("error"), do: "bg-error-bg text-error-fg"
+  defp recovery_tone_class(_warning), do: "bg-warning-bg text-warning-fg"
+
+  defp recovery_icon("error"), do: "hero-exclamation-circle"
+  defp recovery_icon(_warning), do: "hero-exclamation-triangle"
 end
