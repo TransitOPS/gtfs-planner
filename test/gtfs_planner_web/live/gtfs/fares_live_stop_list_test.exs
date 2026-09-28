@@ -128,6 +128,60 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       assert has_element?(view, "#fare-zone-stage-title", "Eastbank")
     end
 
+    test "submitting the search form keeps the filter instead of reloading the page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      stop_id_by_row_id: stop_id_by_row_id
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+
+      # Pressing Enter in the search field is a form submit. It has to reach this
+      # LiveView: a native GET would replace the whole query string and drop the
+      # zone, so the form carries the same `search` event as its change event.
+      view
+      |> form("#fare-zone-search-form", %{"q" => "Riverside"})
+      |> render_submit()
+
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&q=Riverside")
+
+      assert has_element?(view, "#fare-zone-stage-title", "Eastbank")
+      assert has_element?(view, "#fare-zone-row-3[aria-current='page']")
+      assert search_value(view) == "Riverside"
+      assert has_element?(view, "#fare-zone-stop-head", "150 shown")
+      assert has_element?(view, "#fare-zone-stops-pagination", "Showing 1–100 of 150 stops")
+      assert length(visible_stop_ids(view, stop_id_by_row_id)) == 100
+    end
+
+    test "a submit that does not change the query keeps the page it was reading", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      stop_id_by_row_id: stop_id_by_row_id
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+
+      # Enter in an untouched field: nothing about the URL state changes, so the
+      # list stays on the page the operator was reading.
+      view
+      |> form("#fare-zone-search-form", %{"q" => ""})
+      |> render_submit()
+
+      assert has_element?(view, "#fare-zone-stops-pagination", "Showing 101–150 of 150 stops")
+      assert length(visible_stop_ids(view, stop_id_by_row_id)) == 50
+      assert List.first(visible_stop_ids(view, stop_id_by_row_id)) == "STOP_B_101"
+      assert has_element?(view, "#fare-zone-stage-title", "Eastbank")
+      assert search_value(view) == ""
+    end
+
     test "a search term is matched literally and kept byte-for-byte", %{
       conn: conn,
       user: user,

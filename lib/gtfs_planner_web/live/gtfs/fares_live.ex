@@ -23,17 +23,41 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   The stop list is the page's second URL state owner: searching patches `?q=`
   and drops `?page=`, and pagination patches `?page=`, both keeping the current
-  filter so a control never silently changes which stops are listed. Each load
-  resets the `:stops` stream to the page `FareZones.list_stops/3` returned, so
-  the rows are data and the table itself is not re-rendered per row.
+  filter so a control never silently changes which stops are listed. The search
+  field handles its form's change and submit events alike, so pressing Enter
+  cannot hand the form to the browser and reload the page with the filter
+  dropped. Each load resets the `:stops` stream to the page
+  `FareZones.list_stops/3` returned, so the rows are data and the table itself is
+  not re-rendered per row.
+
+  The selection is the opposite: `@selection` is a `MapSet` of stop UUIDs held in
+  the socket and deliberately kept out of the URL, so it survives a search, a
+  filter and a page (AC-24) without ever being shareable as a stale link. The
+  page's rows, `select_page` and `select_matching` all join it, `clear_selection`
+  empties it, and a checkbox sends the one ID it toggles. That ID comes from the
+  browser, so it is validated against this version's own boardable stops before
+  it joins the selection: an ID of another organization, another version, a
+  station or a malformed value changes nothing. `@matching_ids` holds the whole
+  match of the current filter and search, refreshed by every load, so the head can
+  offer "Select all N matching" and the bar can count what the filter cannot show.
+  The rows are re-streamed when the selection changes, so a checkbox rendered by
+  the server and the state behind it never disagree.
   """
 
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.FaresComponents,
-    only: [load_error: 1, loading: 1, stage_header: 1, stop_list: 1, zone_inventory: 1]
+    only: [
+      load_error: 1,
+      loading: 1,
+      selection_bar: 1,
+      stage_header: 1,
+      stop_list: 1,
+      zone_inventory: 1
+    ]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -51,6 +75,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:filter, :all)
      |> assign(:q, nil)
      |> assign(:page, 1)
+     |> assign(:selection, MapSet.new())
+     |> assign(:matching_ids, MapSet.new())
      |> stream(:stops, [])}
   end
 
@@ -77,9 +103,22 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   # Searching patches `q` and drops `page`: a new search starts at its own first
   # page. The filter stays, so a search inside a zone keeps listing that zone.
+  #
+  # The form's `phx-submit` sends this same event, so pressing Enter is handled
+  # here instead of letting the browser make its own GET request, which would
+  # replace the whole query string and silently drop the zone, the unassigned
+  # filter and the page the operator was reading. A submit that does not change
+  # the query - Enter after the debounced change has already patched, or Enter in
+  # an untouched field - keeps the page it was reading.
   @impl true
   def handle_event("search", %{"q" => q}, socket) do
-    {:noreply, push_patch(socket, to: zones_url(socket, search_query(q)))}
+    query = search_query(q)
+
+    if query == search_query(socket.assigns.q) do
+      {:noreply, socket}
+    else
+      {:noreply, push_patch(socket, to: zones_url(socket, query))}
+    end
   end
 
   # Pagination keeps both the filter and the search, so page 2 shows the next
@@ -87,6 +126,37 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
     {:noreply, push_patch(socket, to: zones_url(socket, page: parse_page(page)))}
+  end
+
+  # One checkbox. The ID arrives from the browser, so it is validated against
+  # this version's own boardable stops before it can join the selection; a
+  # malformed value, a stopped row of another organization or version, or a
+  # station of this one leaves the selection exactly as it was (CR-5, INV-1).
+  # Deselecting needs no read: removing an ID can never add a stop the version
+  # does not have.
+  @impl true
+  def handle_event("toggle_stop", %{"id" => id}, socket) do
+    {:noreply, toggle_stop(socket, id)}
+  end
+
+  def handle_event("toggle_stop", _params, socket), do: {:noreply, socket}
+
+  # The page's own rows, already read as boardable stops of this version, so the
+  # selection grows by one page and one stream re-render.
+  @impl true
+  def handle_event("select_page", _params, socket) do
+    {:noreply, select(socket, page_ids(socket))}
+  end
+
+  # The whole match of the current filter and search, from the load's own read.
+  @impl true
+  def handle_event("select_matching", _params, socket) do
+    {:noreply, select(socket, socket.assigns.matching_ids)}
+  end
+
+  @impl true
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, socket |> assign(:selection, MapSet.new()) |> restream_page()}
   end
 
   # Copy of GaragesLive's version handlers, pointed at the current tab so a
@@ -151,7 +221,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         <div
           :if={@live_action == :zones}
           id="fare-zones-panel"
-          class="mt-2 overflow-hidden rounded-box border border-base-300 bg-base-100 md:grid md:grid-cols-[240px_minmax(0,1fr)]"
+          class="mt-2 overflow-clip rounded-box border border-base-300 bg-base-100 md:grid md:grid-cols-[240px_minmax(0,1fr)]"
         >
           <.zone_inventory
             inventory={@inventory}
@@ -172,7 +242,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
               filter={@filter}
               q={@q}
               patch_base={zones_path(@current_gtfs_version.id)}
+              selection={@selection}
+              matching_count={MapSet.size(@matching_ids)}
             />
+
+            <.selection_bar selection={@selection} matching_ids={@matching_ids} />
           </section>
         </div>
         <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2"></div>
@@ -244,6 +318,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> assign(:inventory, inventory)
         |> assign(:checks, checks)
         |> assign(:stop_page, stop_page)
+        |> assign(:matching_ids, matching_ids(organization_id, gtfs_version_id, socket))
         |> stream(:stops, stop_page.entries, reset: true)
         |> assign(:load_state, :ready)
         |> resolve_zone_filter(inventory)
@@ -254,6 +329,84 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         assign(socket, :load_state, :unavailable)
     end
   end
+
+  # The current filter and search match as UUIDs, kept beside the page so the
+  # head can offer "Select all N matching" without a second round trip per click,
+  # and so the bar can count the selection the filter cannot show. One scoped
+  # read per load: a page of 10,000 stops is one 222 ms query (EV-11), and the
+  # selection itself holds UUIDs only.
+  defp matching_ids(organization_id, gtfs_version_id, socket) do
+    organization_id
+    |> FareZones.matching_stop_ids(gtfs_version_id,
+      filter: socket.assigns.filter,
+      q: socket.assigns.q
+    )
+    |> MapSet.new()
+  end
+
+  # The rows this browser rendered, which the load already restricted to the
+  # version's boardable stops, so no second read is needed to select the page.
+  defp page_ids(%{assigns: %{stop_page: %{entries: entries}}}), do: MapSet.new(entries, & &1.id)
+  defp page_ids(_socket), do: MapSet.new()
+
+  defp toggle_stop(socket, id) do
+    cond do
+      MapSet.member?(socket.assigns.selection, id) ->
+        socket
+        |> assign(:selection, MapSet.delete(socket.assigns.selection, id))
+        |> restream_stop(id)
+
+      known_stop?(socket, id) ->
+        socket
+        |> assign(:selection, MapSet.put(socket.assigns.selection, id))
+        |> restream_stop(id)
+
+      true ->
+        socket
+    end
+  end
+
+  # The one read a checkbox can cause: a valid UUID that this version's own
+  # boardable stops contain. Anything else - an ID from another organization or
+  # version, a station, or a value that is not a UUID at all - is dropped before
+  # it reaches the query, so a crafted event cannot select a row of another tenant
+  # or raise on the cast.
+  defp known_stop?(socket, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} ->
+        FareZones.matching_stop_ids(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id,
+          ids: [uuid]
+        ) == [uuid]
+
+      :error ->
+        false
+    end
+  end
+
+  defp select(socket, ids) do
+    socket
+    |> assign(:selection, MapSet.union(socket.assigns.selection, ids))
+    |> restream_page()
+  end
+
+  # Re-sending the page's rows keeps each rendered checkbox with the state behind
+  # it. The toggled row is inserted in place, so the browser keeps the focus the
+  # operator toggled it with.
+  defp restream_stop(socket, id) do
+    case Enum.find(page_entries(socket), &(&1.id == id)) do
+      nil -> socket
+      stop -> stream_insert(socket, :stops, stop)
+    end
+  end
+
+  defp restream_page(socket) do
+    stream(socket, :stops, page_entries(socket), reset: true)
+  end
+
+  defp page_entries(%{assigns: %{stop_page: %{entries: entries}}}), do: entries
+  defp page_entries(_socket), do: []
 
   # A `zone` value the inventory does not carry - a stale link, or a zone renamed
   # or deleted since the URL was made - shows All stops rather than a filter that

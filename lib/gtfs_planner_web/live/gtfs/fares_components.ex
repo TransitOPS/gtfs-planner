@@ -17,7 +17,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   The stop list renders one page of `FareZones.list_stops/3` as a `:stops`
   stream, so the rows arrive as data and the table's own structure stays fixed
-  while a search or a page change replaces its contents.
+  while a search or a page change replaces its contents. Its first column is the
+  row's selection checkbox, and the head's two actions select the page or every
+  stop the filter and search match. The search field is handled on change and on
+  submit alike: pressing Enter must not hand the form to the browser, because a
+  native GET would replace the whole query string and drop the filter the
+  operator is reading.
+
+  The selection bar states what the server currently holds selected and how much
+  of it the current filter cannot show, and it is the stage's sticky footer, so a
+  selection stays readable and clearable while a long list scrolls.
 
   The Fare rules and Checks bodies are added beside these components by the
   following steps.
@@ -182,17 +191,27 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   attr :q, :string, default: nil, doc: "the current search term"
   attr :patch_base, :string, required: true, doc: "the Zones path, without a query"
 
+  attr :selection, :any,
+    required: true,
+    doc: "the `MapSet` of selected stop UUIDs the server holds"
+
+  attr :matching_count, :integer,
+    required: true,
+    doc: "how many stops the current filter and search match"
+
   def stop_list(assigns) do
     assigns =
       assigns
       |> assign(:zone_lookup, Map.new(assigns.zones, &{&1.zone_id, &1}))
       |> assign(:empty, empty_state_copy(assigns.filter, assigns.q))
+      |> assign(:shown_count, length(assigns.stop_page.entries))
 
     ~H"""
     <div id="fare-zone-stop-list">
       <form
         id="fare-zone-search-form"
         phx-change="search"
+        phx-submit="search"
         class="flex flex-wrap items-end justify-between gap-3 border-b border-base-300 px-4 py-3"
       >
         <div class="w-full max-w-sm">
@@ -216,6 +235,30 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           <strong>Stops</strong>
           <span class="text-base-content/70">· {@stop_page.total_count} shown</span>
         </p>
+        <div :if={@stop_page.total_count > 0} class="flex flex-wrap items-center gap-2">
+          <%!-- The page's own rows, and the whole match the filter and search
+          have, so a 100-row page of 150 stops can be selected either way. --%>
+          <.button
+            id="fare-zone-select-shown"
+            type="button"
+            variant="quiet"
+            size="sm"
+            class="min-h-11 text-primary underline-offset-2 hover:underline"
+            phx-click="select_page"
+          >
+            Select {@shown_count} shown
+          </.button>
+          <.button
+            id="fare-zone-select-matching"
+            type="button"
+            variant="quiet"
+            size="sm"
+            class="min-h-11 text-primary underline-offset-2 hover:underline"
+            phx-click="select_matching"
+          >
+            Select all {@matching_count} matching
+          </.button>
+        </div>
       </div>
 
       <.empty_state
@@ -242,6 +285,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
         rows={@stops}
         responsive="stack"
       >
+        <:col :let={{_id, stop}} label="Select">
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            checked={MapSet.member?(@selection, stop.id)}
+            aria-label={select_label(stop)}
+            phx-click="toggle_stop"
+            phx-value-id={stop.id}
+          />
+        </:col>
         <:col :let={{_id, stop}} label="Stop">
           <span class="block font-semibold">{stop.stop_name}</span>
           <span :if={stop.parent_station} class="block text-xs text-base-content/70">
@@ -281,6 +334,87 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     </div>
     """
   end
+
+  # The checkbox's own name is the row's stop, so an operator reading the row and
+  # an operator moving through the column both know what each box selects.
+  defp select_label(stop), do: "Select #{stop.stop_name}"
+
+  @doc """
+  Renders the selection bar: how many stops are selected, how much of that the
+  current filter cannot show, and the action that clears the selection.
+
+  Nothing selected renders the reference's hint in the stage's footer instead of
+  the bar. Both counts are the server's own: the size of the selection, and the
+  size of the selection the current filter and search do not match. The action
+  row holds Clear; the assignment actions join it in step 19.
+
+  ## Examples
+
+      <.selection_bar selection={@selection} matching_ids={@matching_ids} />
+  """
+  attr :selection, :any, required: true, doc: "the `MapSet` of selected stop UUIDs"
+
+  attr :matching_ids, :any,
+    required: true,
+    doc: "the stop UUIDs the current filter and search match"
+
+  def selection_bar(assigns) do
+    selected_count = MapSet.size(assigns.selection)
+
+    assigns =
+      assigns
+      |> assign(:selected_count, selected_count)
+      |> assign(:empty?, selected_count == 0)
+      |> assign(
+        :outside_count,
+        MapSet.size(MapSet.difference(assigns.selection, assigns.matching_ids))
+      )
+
+    ~H"""
+    <div id="fare-zone-selection-bar" class={selection_bar_class(@empty?)}>
+      <p :if={@empty?} id="fare-zone-selection-hint" class="text-sm text-base-content/70">
+        Select stops to assign or remove a fare zone.
+      </p>
+
+      <div :if={!@empty?} class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p id="fare-zone-selection-count" class="font-semibold">
+            {selected_count_copy(@selected_count)}
+          </p>
+          <p :if={@outside_count > 0} id="fare-zone-selection-outside" class="text-xs">
+            {@outside_count} outside current filter
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <.button
+            id="fare-zone-clear-selection"
+            type="button"
+            variant="quiet"
+            size="sm"
+            class="min-h-11 text-neutral-content underline-offset-2 hover:bg-transparent hover:underline"
+            phx-click="clear_selection"
+          >
+            Clear
+          </.button>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # The hint is the reference's line under the list. The bar is the stage's
+  # sticky footer, so a selection made in a list taller than the viewport stays
+  # visible and clearable while the rows scroll past it.
+  defp selection_bar_class(true), do: "px-4 py-3"
+
+  defp selection_bar_class(false) do
+    "sticky bottom-0 z-10 bg-neutral px-4 py-3 text-neutral-content"
+  end
+
+  # The reference writes the count in the plural for every size; a count of one
+  # stop is a sentence about a single stop, so it reads singular.
+  defp selected_count_copy(1), do: "1 stop selected"
+  defp selected_count_copy(count), do: "#{count} stops selected"
 
   # A stop's zone comes from the same inventory read as the panel beside it, so
   # its name and color are the ones the filter list shows. A zone the inventory

@@ -330,7 +330,10 @@ test("stop list", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-stop-head")).toContainText("27 shown");
   await expect(page.locator("#fare-zone-stops")).toBeVisible();
   await expect(rows).toHaveCount(27);
+  // The checkbox column is the table's first one: step 18 added it, so the stop
+  // list's own columns now follow it.
   await expect(page.locator("#fare-zone-stops-container thead th")).toHaveText([
+    "Select",
     "Stop",
     "Stop ID",
     "Fare zone",
@@ -396,4 +399,128 @@ test("stop list", async ({ page }, testInfo) => {
   expect(await bodyFitsViewport(page), "body overflows").toBe(true);
 
   await capture(page, testInfo, "stop-list-320", { fullPage: false });
+
+  // Pressing Enter in the search field must not hand the form to the browser: a
+  // native GET would replace the whole query string, and the filter the operator
+  // is reading would be gone. The zone key has to survive the submit.
+  await page.setViewportSize(DESKTOP);
+  await openFares(page, "zones");
+  await page.locator("#fare-zone-row-2").click();
+  await expect(page).toHaveURL(/zone=B$/);
+
+  await page.fill("#fare-zone-search", "Riverside");
+  await page.press("#fare-zone-search", "Enter");
+
+  await expect(page).toHaveURL(/zone=B&q=Riverside$/);
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Eastbank");
+  await expect(page.locator("#fare-zone-row-2")).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#fare-zone-search")).toHaveValue("Riverside");
+  await expect(rows).toHaveCount(12);
+});
+
+// ── selection bar ─────────────────────────────────────────────────────────
+
+// The table's checkbox column, the head's two select actions and the sticky
+// selection bar. The selection is the server's own state and stays out of the
+// URL, so a filter change keeps it: the seeded version's 4 unassigned stops are
+// selected on the Unassigned filter and then hidden by the Eastbank filter,
+// which the bar counts out loud instead of dropping.
+test("selection bar", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await openFares(page, "zones");
+
+  const bar = page.locator("#fare-zone-selection-bar");
+  const checkboxes = page.locator('#fare-zone-stops input[type="checkbox"]');
+
+  // Nothing selected: the reference's hint sits where the bar will be.
+  await expect(bar).toContainText("Select stops to assign or remove a fare zone.");
+  await expect(page.locator("#fare-zone-selection-count")).toHaveCount(0);
+
+  // The checkbox column is the table's first one, and every row has a box.
+  await expect(page.locator("#fare-zone-stops-container thead th")).toHaveText([
+    "Select",
+    "Stop",
+    "Stop ID",
+    "Fare zone",
+  ]);
+  await expect(checkboxes).toHaveCount(27);
+
+  await page.locator("#fare-zone-row-unassigned").click();
+  await expect(page).toHaveURL(/[?&]filter=unassigned$/);
+  await expect(checkboxes).toHaveCount(4);
+
+  await checkboxes.nth(0).check();
+  await checkboxes.nth(1).check();
+
+  await expect(checkboxes.nth(0)).toBeChecked();
+  await expect(checkboxes.nth(1)).toBeChecked();
+  await expect(page.locator("#fare-zone-selection-count")).toHaveText("2 stops selected");
+  await expect(page.locator("#fare-zone-selection-outside")).toHaveCount(0);
+
+  await capture(page, testInfo, "selection-bar-1440", { fullPage: false });
+
+  // A filter that holds neither selected stop keeps the selection and discloses
+  // both hidden stops.
+  await page.locator("#fare-zone-row-2").click();
+  await expect(page.locator("#fare-zone-stage-title")).toHaveText("Eastbank");
+  await expect(checkboxes).toHaveCount(12);
+  await expect(page.locator("#fare-zone-selection-count")).toHaveText("2 stops selected");
+  await expect(page.locator("#fare-zone-selection-outside")).toHaveText(
+    "2 outside current filter",
+  );
+
+  // The head selects the page or the whole match: this filter matches 12 stops
+  // and its page holds all 12, so selecting the page adds them to the 2 stops the
+  // filter cannot show.
+  await expect(page.locator("#fare-zone-select-shown")).toHaveText("Select 12 shown");
+  await expect(page.locator("#fare-zone-select-matching")).toHaveText(
+    "Select all 12 matching",
+  );
+
+  await page.locator("#fare-zone-select-shown").click();
+  await expect(page.locator("#fare-zone-selection-count")).toHaveText("14 stops selected");
+  await expect(page.locator("#fare-zone-selection-outside")).toHaveText(
+    "2 outside current filter",
+  );
+
+  // Clear empties it and the hint returns.
+  await page.locator("#fare-zone-clear-selection").click();
+  await expect(page.locator("#fare-zone-selection-hint")).toHaveText(
+    "Select stops to assign or remove a fare zone.",
+  );
+  await expect(checkboxes).toHaveCount(12);
+  await expect(
+    page.locator('#fare-zone-stops input[type="checkbox"]:checked'),
+  ).toHaveCount(0);
+
+  // The narrow layout keeps the bar inside the viewport, and it stays pinned to
+  // the bottom of the viewport while the page scrolls under it.
+  await checkboxes.nth(0).check();
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#fare-zone-selection-count")).toHaveText("1 stop selected");
+  expect(await bodyFitsViewport(page), "body overflows").toBe(true);
+
+  const pinned = await bar.boundingBox();
+
+  expect(Math.round(pinned.y + pinned.height)).toBeLessThanOrEqual(NARROW.height);
+
+  await capture(page, testInfo, "selection-bar-320", { fullPage: false });
+
+  await page.evaluate(() => window.scrollTo(0, 600));
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+  const scrolled = await bar.boundingBox();
+
+  expect(Math.round(scrolled.y)).toBe(Math.round(pinned.y));
+
+  // At the end of the page the bar sits below the pagination, so it never
+  // covers the last table row.
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+
+  const barBox = await bar.boundingBox();
+  const paginationBox = await page.locator("#fare-zone-stops-pagination").boundingBox();
+
+  expect(Math.round(paginationBox.y + paginationBox.height)).toBeLessThanOrEqual(
+    Math.round(barBox.y) + 1,
+  );
 });
