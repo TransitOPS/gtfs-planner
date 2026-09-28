@@ -4597,7 +4597,17 @@ defmodule GtfsPlanner.Gtfs do
   def review_calendar_change(command, source_fingerprints, %AuditContext{} = audit_context),
     do: Calendars.review_calendar_change(command, source_fingerprints, audit_context)
 
-  @doc "Applies a previously reviewed calendar command under the write lock."
+  @doc """
+  Applies a previously reviewed calendar command under the write lock.
+
+  A retained-form command recomputes the reviewed source from current rows and refuses a mismatch
+  with `:stale_review`. A reviewed `{:combine, destination_id, source_ids, decisions}` applies in
+  one ordinary read-committed transaction and returns
+  `%{action: :combined | :unchanged, operation_id: uuid | nil, destination_id: id,
+  moved_trip_count: n, changed_trip_ids: [uuid], affected_service_ids: [id]}`; a no-op has a nil
+  `operation_id` and writes nothing. A serialization failure or deadlock retries the whole
+  transaction at most three times and then returns `:busy`.
+  """
   def apply_calendar_change(command, fingerprint, %AuditContext{} = audit_context),
     do: Calendars.apply_calendar_change(command, fingerprint, audit_context)
 
@@ -6188,11 +6198,13 @@ defmodule GtfsPlanner.Gtfs do
   # Calendar diffs are already explicit aggregate before/after snapshots.
   defp audited_attrs_for(type, attrs) when type in [:calendar, "calendar"], do: attrs
 
-  # A trip update carries the explicit before/after snapshots and its operation
-  # scope; no trip column is diffed field-by-field.
+  # A trip update carries the explicit before/after snapshots, its operation scope and - for a
+  # reviewed calendar combination - the one optional combination envelope; no trip column is diffed
+  # field-by-field. The per-trip `affected_trip_ids` list is deliberately unused by a combination,
+  # whose complete member list lives once in the envelope (AC-26).
   defp audited_attrs_for(type, attrs) when type in [:trip, "trip"] do
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(before after operation_id affected_trip_ids)
+      to_string(key) in ~w(before after operation_id affected_trip_ids combination)
     end)
   end
 
@@ -6317,7 +6329,9 @@ defmodule GtfsPlanner.Gtfs do
   # per-calendar before/after snapshots, so one log per changed calendar can be
   # reconstructed into the whole command.
   defp put_calendar_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_service_ids, :selected_dates], changed, fn key, acc ->
+    keys = [:operation_id, :affected_service_ids, :selected_dates, :combination]
+
+    Enum.reduce(keys, changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
@@ -6329,7 +6343,7 @@ defmodule GtfsPlanner.Gtfs do
   # UUIDs alongside the per-trip before/after snapshot, so one log per affected
   # trip can be reconstructed into the whole command.
   defp put_trip_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_trip_ids], changed, fn key, acc ->
+    Enum.reduce([:operation_id, :affected_trip_ids, :combination], changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))

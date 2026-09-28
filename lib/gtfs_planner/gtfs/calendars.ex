@@ -53,6 +53,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -75,6 +76,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @weekly_day_fields ~w(monday tuesday wednesday thursday friday saturday sunday)a
   @weekly_fields @weekly_day_fields ++ [:start_date, :end_date]
   @combination_decisions %{"run" => :run, "no_service" => :no_service}
+  @combination_attempts 3
+  @combination_trip_batch 500
+  @combination_retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
   @type kind :: :weekly | :dates_only
   @type coverage_error :: %{service_id: String.t(), reason: :reversed_range}
   @type command ::
@@ -147,6 +151,8 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | :stale_review
           | :invalid_command
           | :invalid_input
+          | :busy
+          | :native_service_required
           | {:in_use, non_neg_integer(), [String.t()]}
   @type write_error :: Ecto.Changeset.t() | error()
   @type feed_gap :: %{first_date: Date.t(), last_date: Date.t()}
@@ -167,6 +173,14 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           retained_sources: [String.t()],
           block_effects: Blocking.combination_projection() | nil,
           plan: Combination.plan()
+        }
+  @type combination_apply_result :: %{
+          action: :combined | :unchanged,
+          operation_id: Ecto.UUID.t() | nil,
+          destination_id: String.t(),
+          moved_trip_count: non_neg_integer(),
+          changed_trip_ids: [Ecto.UUID.t()],
+          affected_service_ids: [String.t()]
         }
 
   @doc """
@@ -455,18 +469,43 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   command before anything changes, so another committed change or a different
   command returns `{:error, :stale_review}` with no writes. A command whose stored
   rows do not change writes nothing and adds no audit record.
+
+  The combination command `{:combine, destination_id, source_ids, decisions}` applies the
+  reviewed move in one ordinary read-committed transaction: the scoped loader of
+  `review_calendar_change/3` runs once, the review is recomputed from the map it returned and
+  compared with the submitted token, and only then are the destination's native rows, every
+  source trip, the reviewed block clears and their audit logs written together. The result is
+  `%{action: :combined | :unchanged, operation_id: uuid | nil, destination_id: id,
+  moved_trip_count: n, changed_trip_ids: [uuid], affected_service_ids: [id]}`; a no-op has a
+  nil `operation_id` and writes no anchor, row or log. A serialization failure or deadlock
+  retries the whole transaction at most three times and then returns `{:error, :busy}`; every
+  domain refusal is returned unchanged without retrying.
   """
   @spec apply_calendar_change(term(), term(), AuditContext.t()) ::
-          {:ok, map()} | {:error, write_error()}
+          {:ok, map() | combination_apply_result()} | {:error, write_error()}
   def apply_calendar_change(command, review_fingerprint, %AuditContext{} = audit_context) do
     with {:ok, normalized} <- normalize_command(command),
          :ok <- validate_review_fingerprint(review_fingerprint) do
-      transact(fn ->
-        authorize_editor!(audit_context)
-        lock_published_version!(audit_context)
-        apply!(normalized, review_fingerprint, audit_context)
-      end)
+      dispatch_calendar_change(normalized, review_fingerprint, audit_context)
     end
+  end
+
+  # A combination has its own retried read-committed transaction; every retained-form command
+  # keeps the shared version-share write body below.
+  defp dispatch_calendar_change(
+         {:combine, _destination_id, _source_ids, _decisions} = normalized,
+         review_fingerprint,
+         audit_context
+       ) do
+    apply_combination(normalized, review_fingerprint, audit_context)
+  end
+
+  defp dispatch_calendar_change(normalized, review_fingerprint, audit_context) do
+    transact(fn ->
+      authorize_editor!(audit_context)
+      lock_published_version!(audit_context)
+      apply!(normalized, review_fingerprint, audit_context)
+    end)
   end
 
   # The internal entrypoint a calendar combination is reviewed and applied from. It is not a
@@ -1753,7 +1792,417 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end)
   end
 
-  # -- Review and apply ------------------------------------------------------
+  # -- Applying a reviewed combination ---------------------------------------
+
+  # One reviewed combination's write path. The whole transaction is retried only for a
+  # serialization failure or a deadlock and never for a domain refusal (AC-19, `:busy`); the scoped
+  # loader runs exactly once per attempt and the step-15 review is recomputed from the map it
+  # returned, so the submitted token is always compared with the rows this transaction holds.
+  defp apply_combination(
+         normalized,
+         review_fingerprint,
+         audit_context,
+         attempts \\ @combination_attempts
+       ) do
+    case combination_transaction(normalized, review_fingerprint, audit_context) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, reason} ->
+        retry_combination(reason, normalized, review_fingerprint, audit_context, attempts)
+    end
+  end
+
+  defp combination_transaction(normalized, review_fingerprint, audit_context) do
+    Repo.transaction(fn ->
+      {:combine, destination_id, source_ids, decisions} = normalized
+      inputs = load_combination_inputs!(normalized, audit_context)
+
+      case Combination.plan(
+             inputs.raw.selected_calendars,
+             destination_id,
+             source_ids,
+             decisions,
+             inputs.today
+           ) do
+        {:ok, plan} ->
+          write_reviewed_combination!(normalized, inputs, plan, review_fingerprint, audit_context)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  rescue
+    # The transaction is rolled back before this clause runs, and a serialization failure or
+    # deadlock is retried as a whole with the rest of the operation.
+    error in [Postgrex.Error] -> {:error, error}
+  end
+
+  # The review is recomputed from the one loaded input set instead of trusting the drawer: the
+  # destination must still be natively encodable, and only a secure-equal token over the current
+  # rows may write. An incomplete review has no applicable token, so any submitted fingerprint is
+  # stale rather than addressable.
+  defp write_reviewed_combination!(normalized, inputs, plan, review_fingerprint, audit_context) do
+    if plan.ready? do
+      review = combination_review(normalized, inputs, plan, audit_context)
+
+      if secure_equal?(review.fingerprint, review_fingerprint) do
+        write_combination!(normalized, inputs, plan, review, audit_context)
+      else
+        Repo.rollback(:stale_review)
+      end
+    else
+      Repo.rollback(:stale_review)
+    end
+  end
+
+  # AC-12 first: a combination that moves no trip and leaves the destination's effective dates
+  # unchanged returns `:unchanged` with a nil operation UUID and writes no anchor, row or log. Any
+  # real change gets one operation UUID and one envelope carrying the complete selection, the
+  # changed trip IDs and the decisions.
+  defp write_combination!(normalized, inputs, plan, review, audit_context) do
+    {:combine, destination_id, source_ids, decisions} = normalized
+    source = Map.fetch!(inputs.raw.selected_calendars, destination_id)
+    moved = moved_trip_count(inputs, source_ids)
+
+    encoded =
+      case Combination.encode(source, plan.result_dates, source.trip_count + moved) do
+        {:ok, encoded} -> encoded
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+    if moved == 0 and not encoded.changed? do
+      unchanged_combination(destination_id)
+    else
+      operation_id = Ecto.UUID.generate()
+      trips = load_combination_trips!(inputs, source_ids, audit_context)
+
+      envelope = %{
+        destination_id: destination_id,
+        selected_service_ids: Enum.sort([destination_id | source_ids]),
+        changed_trip_ids: Enum.map(trips, & &1.id),
+        decisions: decisions
+      }
+
+      # The envelope belongs on the destination calendar log when that calendar actually changes,
+      # because that is the one real log carrying the command. A trip-only combination has no
+      # calendar log at all, so the lowest changed-trip UUID log hosts it instead; no destination
+      # log is fabricated for metadata.
+      if encoded.changed? do
+        write_combination_destination!(
+          destination_id,
+          source,
+          encoded,
+          %{operation_id: operation_id, combination: envelope},
+          audit_context
+        )
+      end
+
+      move_combination_trips!(
+        trips,
+        destination_id,
+        source_ids,
+        review.block_effects.cleared_trip_ids,
+        %{
+          operation_id: operation_id,
+          combination: envelope,
+          envelope_on_lowest_trip?: not encoded.changed?
+        },
+        audit_context
+      )
+
+      combined_combination(destination_id, trips, operation_id, moved, encoded)
+    end
+  end
+
+  defp unchanged_combination(destination_id) do
+    %{
+      action: :unchanged,
+      operation_id: nil,
+      destination_id: destination_id,
+      moved_trip_count: 0,
+      changed_trip_ids: [],
+      affected_service_ids: []
+    }
+  end
+
+  defp combined_combination(destination_id, trips, operation_id, moved, encoded) do
+    affected =
+      if encoded.changed? or trips != [] do
+        [destination_id | Enum.map(trips, & &1.service_id)] |> Enum.uniq() |> Enum.sort()
+      else
+        []
+      end
+
+    %{
+      action: :combined,
+      operation_id: operation_id,
+      destination_id: destination_id,
+      moved_trip_count: moved,
+      changed_trip_ids: Enum.map(trips, & &1.id),
+      affected_service_ids: affected
+    }
+  end
+
+  # The moved rows are loaded once, in UUID order, for the audit snapshots and the exact count
+  # checks. AC-11 moves every trip of every source service, so the loaded count must equal the
+  # count the review read; a difference is a count error and rolls the whole operation back.
+  defp load_combination_trips!(inputs, source_ids, audit_context) do
+    trips =
+      Repo.all(
+        from(t in Trip,
+          where:
+            t.organization_id == ^audit_context.organization_id and
+              t.gtfs_version_id == ^audit_context.gtfs_version_id and
+              t.service_id in ^source_ids,
+          order_by: [asc: t.id]
+        )
+      )
+
+    expected = moved_trip_count(inputs, source_ids)
+
+    if length(trips) != expected, do: Repo.rollback({:count_mismatch, expected, length(trips)})
+
+    trips
+  end
+
+  # The destination's own rows through the shared calendar writer: the weekly row keeps its kind
+  # and mask and moves only its endpoints, the exception rows become exactly the encoded result,
+  # and an imported identity's missing audit anchor is created in the same transaction. The
+  # operation attrs put the combination envelope on this one real calendar log, and the stored
+  # exception rows are compared with the encoded result so a partial write is a count error.
+  defp write_combination_destination!(destination_id, source, encoded, operation, audit_context) do
+    plan = destination_combination_plan(destination_id, source, encoded)
+    result = apply_single_plan!(plan, source, destination_id, audit_context, operation)
+
+    expected = exception_pairs(encoded.exceptions)
+    stored = exception_pairs(result.exceptions)
+
+    if stored != expected, do: Repo.rollback({:count_mismatch, length(expected), length(stored)})
+
+    result
+  end
+
+  # The internal plan shape `apply_single_plan!/5` consumes, derived from the encoded result rather
+  # than planned again: only the endpoints of a retained weekly row and the exception rows can
+  # change, and the anchor is kept (or created when missing).
+  defp destination_combination_plan(destination_id, source, encoded) do
+    stored = Map.new(source.exceptions, &{&1.date, &1.exception_type})
+    planned = Map.new(encoded.exceptions, &{&1.date, &1.exception_type})
+
+    remove_dates =
+      stored
+      |> Enum.reject(fn {date, _type} -> Map.has_key?(planned, date) end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort(Date)
+
+    put_entries =
+      planned
+      |> Enum.reject(fn {date, type} -> Map.get(stored, date) == type end)
+      |> Enum.sort_by(&elem(&1, 0), Date)
+
+    {weekly_action, weekly_changes} = destination_weekly_action(source.calendar, encoded.calendar)
+
+    %{
+      action: :combine,
+      service_id: destination_id,
+      anchor_action: :keep,
+      anchor_changeset: nil,
+      anchor_struct: source.attributes,
+      weekly_action: weekly_action,
+      remove_exception_dates: remove_dates,
+      put_exceptions: put_entries,
+      projected_calendar: encoded.calendar,
+      projected_exceptions: exception_maps(encoded.exceptions),
+      active_date_count: length(ServiceDates.active_dates(encoded.calendar, encoded.exceptions)),
+      changed_count: length(remove_dates) + length(put_entries) + weekly_changes,
+      warnings: [],
+      changes: %{}
+    }
+  end
+
+  # `Combination.encode/3` keeps the destination's kind, so a weekly row only moves its endpoints
+  # and a dates-only destination keeps no weekly row.
+  defp destination_weekly_action(nil, nil), do: {:keep, 0}
+
+  defp destination_weekly_action(%Calendar{} = stored, %Calendar{} = projected) do
+    if {stored.start_date, stored.end_date} == {projected.start_date, projected.end_date} do
+      {:keep, 0}
+    else
+      changeset =
+        Calendar.editor_changeset(stored, %{
+          start_date: projected.start_date,
+          end_date: projected.end_date
+        })
+
+      {{:update, changeset}, 1}
+    end
+  end
+
+  # AC-11/AC-19: every source trip moves exactly once in bounded SQL batches inside the one
+  # transaction, with the exact number of updated rows checked per batch and again at the end, and
+  # one `"trip"` log per moved trip carrying only the operation UUID and its own before/after
+  # snapshot. The complete member list lives in the single envelope, never in every trip log
+  # (AC-26).
+  defp move_combination_trips!(
+         trips,
+         destination_id,
+         source_ids,
+         cleared_trip_ids,
+         operation,
+         audit_context
+       ) do
+    cleared = MapSet.new(cleared_trip_ids)
+    moved = MapSet.new(trips, & &1.id)
+
+    unless MapSet.subset?(cleared, moved) do
+      Repo.rollback({:count_mismatch, :cleared_trips, MapSet.size(cleared)})
+    end
+
+    snapshots =
+      Schedules.trip_audit_snapshots(
+        audit_context.organization_id,
+        audit_context.gtfs_version_id,
+        trips
+      )
+
+    now = DateTime.utc_now()
+
+    trips
+    |> Enum.chunk_every(@combination_trip_batch)
+    |> Enum.each(fn batch ->
+      move_trip_batch!(Enum.map(batch, & &1.id), destination_id, now, audit_context)
+
+      cleared_batch = Enum.filter(batch, &MapSet.member?(cleared, &1.id))
+
+      if cleared_batch != [] do
+        clear_trip_blocks!(Enum.map(cleared_batch, & &1.id), now, audit_context)
+      end
+    end)
+
+    # AC-11 at commit: the moving services hold no trip any more.
+    remaining =
+      Repo.aggregate(
+        from(t in Trip,
+          where:
+            t.organization_id == ^audit_context.organization_id and
+              t.gtfs_version_id == ^audit_context.gtfs_version_id and
+              t.service_id in ^source_ids
+        ),
+        :count
+      )
+
+    if remaining != 0, do: Repo.rollback({:count_mismatch, 0, remaining})
+
+    trips
+    |> Enum.with_index()
+    |> Enum.each(fn {trip, index} ->
+      audit_moved_trip!(trip, snapshots, destination_id, cleared, index, operation, audit_context)
+    end)
+
+    Enum.map(trips, & &1.id)
+  end
+
+  defp move_trip_batch!(ids, destination_id, now, audit_context) do
+    {count, _rows} =
+      Repo.update_all(moved_trips_query(ids, audit_context),
+        set: [service_id: destination_id, updated_at: now]
+      )
+
+    if count != length(ids), do: Repo.rollback({:count_mismatch, length(ids), count})
+
+    :ok
+  end
+
+  defp clear_trip_blocks!(ids, now, audit_context) do
+    {count, _rows} =
+      Repo.update_all(moved_trips_query(ids, audit_context),
+        set: [block_id: nil, updated_at: now]
+      )
+
+    if count != length(ids), do: Repo.rollback({:count_mismatch, length(ids), count})
+
+    :ok
+  end
+
+  defp moved_trips_query(ids, audit_context) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^audit_context.organization_id and
+          t.gtfs_version_id == ^audit_context.gtfs_version_id and t.id in ^ids
+    )
+  end
+
+  # One `"trip"` log per moved trip, in the Schedules snapshot shape the trip edit path stores,
+  # with its own before/after and the shared operation UUID. The `after` snapshot is the stored
+  # `before` with the destination service and the reviewed clear, so one log is exactly one moved
+  # trip. Any audit error rolls the whole combination back.
+  defp audit_moved_trip!(
+         trip,
+         snapshots,
+         destination_id,
+         cleared,
+         index,
+         operation,
+         audit_context
+       ) do
+    before = Map.fetch!(snapshots, trip.id)
+    block_id = if MapSet.member?(cleared, trip.id), do: nil, else: before["block_id"]
+
+    attrs =
+      %{
+        before: before,
+        after: before |> Map.put("service_id", destination_id) |> Map.put("block_id", block_id),
+        operation_id: operation.operation_id
+      }
+      |> put_envelope(operation, index)
+
+    case Gtfs.record_change_in_transaction(
+           audit_context,
+           :trip,
+           %{trip | service_id: destination_id, block_id: block_id},
+           "updated",
+           attrs
+         ) do
+      {:ok, _log} -> :ok
+      {:error, reason} -> Repo.rollback({:audit_failed, reason})
+    end
+  rescue
+    error in [Postgrex.Error] ->
+      if retryable_combination_error?(error) do
+        reraise error, __STACKTRACE__
+      else
+        Repo.rollback({:audit_failed, error})
+      end
+
+    error in [Ecto.ConstraintError, DBConnection.ConnectionError] ->
+      Repo.rollback({:audit_failed, error})
+  end
+
+  defp put_envelope(attrs, %{envelope_on_lowest_trip?: true, combination: combination}, 0) do
+    Map.put(attrs, :combination, combination)
+  end
+
+  defp put_envelope(attrs, _operation, _index), do: attrs
+
+  defp retry_combination(reason, normalized, review_fingerprint, audit_context, attempts) do
+    cond do
+      not retryable_combination_error?(reason) ->
+        {:error, reason}
+
+      attempts > 1 ->
+        apply_combination(normalized, review_fingerprint, audit_context, attempts - 1)
+
+      true ->
+        {:error, :busy}
+    end
+  end
+
+  defp retryable_combination_error?(%Postgrex.Error{postgres: %{code: code}})
+       when code in @combination_retryable_codes,
+       do: true
+
+  defp retryable_combination_error?(_reason), do: false
 
   # -- Review and apply ------------------------------------------------------
 
@@ -1784,15 +2233,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     review!(normalized, source_fingerprints, audit_context)
   end
 
-  # A combination's write path is the next step's; a reviewed combination is refused here rather
-  # than reaching the single-service plan clauses with a different command shape.
-  defp apply!(
-         {:combine, _destination_id, _source_ids, _decisions},
-         _review_fingerprint,
-         _audit_context
-       ),
-       do: Repo.rollback(:invalid_command)
-
+  # A retained-form command's write path: the reviewed sources are re-read under the write lock
+  # and the reviewed token is recomputed from them before any plan is applied. A combination never
+  # reaches this clause; it has its own transaction in `apply_combination/4`.
   defp apply!(normalized, review_fingerprint, audit_context) do
     sources = current_sources!(command_targets(normalized), audit_context)
 
