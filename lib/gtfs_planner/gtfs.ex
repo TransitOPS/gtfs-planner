@@ -3596,17 +3596,29 @@ defmodule GtfsPlanner.Gtfs do
         {:error, :not_found}
 
       stop ->
-        Ecto.Multi.new()
-        |> lock_input_write_multi(organization_id, gtfs_version_id)
-        |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-        |> Ecto.Multi.delete(:stop, stop)
-        |> Repo.transaction()
-        |> case do
-          {:ok, %{stop: deleted_stop}} ->
-            broadcast({:ok, deleted_stop}, [:stops, :deleted])
+        with :ok <-
+               check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
+          try do
+            Ecto.Multi.new()
+            |> lock_input_write_multi(organization_id, gtfs_version_id)
+            |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
+            |> Ecto.Multi.delete(:stop, stop)
+            |> Repo.transaction()
+            |> case do
+              {:ok, %{stop: deleted_stop}} ->
+                broadcast({:ok, deleted_stop}, [:stops, :deleted])
 
-          {:error, _step, reason, _changes} ->
-            {:error, reason}
+              {:error, _step, reason, _changes} ->
+                {:error, reason}
+            end
+          rescue
+            e in [Ecto.ConstraintError, Postgrex.Error] ->
+              if closure_reference_violation?(e) do
+                {:error, :pathway_in_use}
+              else
+                reraise(e, __STACKTRACE__)
+              end
+          end
         end
     end
   end
@@ -3656,23 +3668,35 @@ defmodule GtfsPlanner.Gtfs do
         update_query =
           from(s in Stop, where: s.id == ^stop_id)
 
-        Ecto.Multi.new()
-        |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-        |> Ecto.Multi.update_all(:stop, update_query,
-          set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
-        )
-        |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
-          record_diagram_removal(audit_ctx, stop, deleted_pathways)
-        end)
-        |> Repo.transaction()
-        |> case do
-          {:ok, _} ->
-            Repo.get!(Stop, stop_id)
-            |> then(&{:ok, &1})
-            |> broadcast([:stops, :updated])
+        with :ok <-
+               check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
+          try do
+            Ecto.Multi.new()
+            |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
+            |> Ecto.Multi.update_all(:stop, update_query,
+              set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
+            )
+            |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
+              record_diagram_removal(audit_ctx, stop, deleted_pathways)
+            end)
+            |> Repo.transaction()
+            |> case do
+              {:ok, _} ->
+                Repo.get!(Stop, stop_id)
+                |> then(&{:ok, &1})
+                |> broadcast([:stops, :updated])
 
-          {:error, _step, reason, _changes} ->
-            {:error, reason}
+              {:error, _step, reason, _changes} ->
+                {:error, reason}
+            end
+          rescue
+            e in [Ecto.ConstraintError, Postgrex.Error] ->
+              if closure_reference_violation?(e) do
+                {:error, :pathway_in_use}
+              else
+                reraise(e, __STACKTRACE__)
+              end
+          end
         end
     end
   end
@@ -4353,17 +4377,54 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Deletes a pathway.
 
+  Returns `{:error, :pathway_in_use}` when a scheduled closure references the
+  pathway instead of raising the step-1 `ON DELETE RESTRICT` violation.
+
   ## Examples
 
       iex> delete_pathway(pathway)
       {:ok, %Pathway{}}
 
       iex> delete_pathway(pathway)
-      {:error, %Ecto.Changeset{}}
+      {:error, :pathway_in_use}
   """
+  @spec delete_pathway(Pathway.t()) ::
+          {:ok, Pathway.t()} | {:error, :pathway_in_use | Ecto.Changeset.t()}
   def delete_pathway(%Pathway{} = pathway) do
-    Repo.delete(pathway)
+    delete_pathway_record(pathway)
     |> broadcast([:pathways, :deleted])
+  end
+
+  # Shared step-6 deletion guard (R1-F4): scoped closure precheck plus a
+  # named-FK-mapped delete, so a closure inserted after the check still
+  # returns :pathway_in_use instead of raising. No broadcast here, so import
+  # apply can reuse it inside its own fenced transaction.
+  defp delete_pathway_record(%Pathway{} = pathway) do
+    if pathway_closure_exists?(
+         pathway.organization_id,
+         pathway.gtfs_version_id,
+         pathway.pathway_id
+       ) do
+      {:error, :pathway_in_use}
+    else
+      pathway
+      |> Ecto.Changeset.change()
+      |> Ecto.Changeset.foreign_key_constraint(:pathway_id,
+        name: :pathway_evolutions_pathway_fkey
+      )
+      |> Repo.delete()
+      |> case do
+        {:ok, _deleted} = ok ->
+          ok
+
+        {:error, %Ecto.Changeset{} = changeset} ->
+          if closure_constraint_error?(changeset) do
+            {:error, :pathway_in_use}
+          else
+            {:error, changeset}
+          end
+      end
+    end
   end
 
   # Agency functions
@@ -5423,16 +5484,93 @@ defmodule GtfsPlanner.Gtfs do
 
   defp delete_pathways_for_stop_multi(multi, organization_id, gtfs_version_id, stop_id) do
     pathway_query =
-      from(p in Pathway,
-        where:
-          p.organization_id == ^organization_id and
-            p.gtfs_version_id == ^gtfs_version_id and
-            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
-        select: p
-      )
+      organization_id
+      |> pathways_for_stop_query(gtfs_version_id, stop_id)
+      |> select([p], p)
 
     Ecto.Multi.delete_all(multi, :pathways, pathway_query)
   end
+
+  # Step-6 precheck (R1-F4) shared by delete_child_stop/4 and
+  # remove_child_stop_from_diagram/4. It runs before the Multi because a
+  # failing Multi.run step rolls back the ambient outer transaction. A
+  # closure inserted after this check still surfaces as :pathway_in_use
+  # through the named-FK rescue at the outer boundary.
+  defp check_pathways_closure_free(organization_id, gtfs_version_id, stop_id) do
+    pathway_ids =
+      Repo.all(
+        from(p in Pathway,
+          where:
+            p.organization_id == ^organization_id and
+              p.gtfs_version_id == ^gtfs_version_id and
+              (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
+          select: p.pathway_id
+        )
+      )
+
+    closure_exists? =
+      pathway_ids != [] and
+        Repo.exists?(
+          from(e in PathwayEvolution,
+            where:
+              e.organization_id == ^organization_id and
+                e.gtfs_version_id == ^gtfs_version_id and e.pathway_id in ^pathway_ids
+          )
+        )
+
+    if closure_exists?, do: {:error, :pathway_in_use}, else: :ok
+  end
+
+  defp pathways_for_stop_query(organization_id, gtfs_version_id, stop_id) do
+    from(p in Pathway,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and
+          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
+    )
+  end
+
+  defp pathway_closure_exists?(organization_id, gtfs_version_id, pathway_id) do
+    from(e in PathwayEvolution,
+      where:
+        e.organization_id == ^organization_id and
+          e.gtfs_version_id == ^gtfs_version_id and e.pathway_id == ^pathway_id
+    )
+    |> Repo.exists?()
+  end
+
+  defp closure_constraint_error?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {:pathway_id, {_message, opts}} ->
+        Keyword.get(opts, :constraint) == :foreign_key and
+          Keyword.get(opts, :constraint_name) == "pathway_evolutions_pathway_fkey"
+
+      _other ->
+        false
+    end)
+  end
+
+  # Matches only the step-1 closure FK after the owning transaction has
+  # rolled back. Any other constraint or driver error is reraised. The code
+  # allowlist covers both historic 23503 and the newer 23001
+  # restrict_violation that ON DELETE RESTRICT now reports.
+  defp closure_reference_violation?(%Ecto.ConstraintError{
+         type: :foreign_key,
+         constraint: constraint
+       }),
+       do: to_string(constraint) == "pathway_evolutions_pathway_fkey"
+
+  defp closure_reference_violation?(%Postgrex.Error{postgres: postgres}),
+    do:
+      Map.get(postgres, :constraint) == "pathway_evolutions_pathway_fkey" and
+        to_string(Map.get(postgres, :code)) in [
+          "restrict_violation",
+          "foreign_key_violation",
+          "23001",
+          "23503"
+        ]
+
+  defp closure_reference_violation?(_other), do: false
 
   # ============================================================================
   # Blocks
@@ -6288,6 +6426,9 @@ defmodule GtfsPlanner.Gtfs do
   def apply_import_entity(action, :pathway, %Pathway{} = current, attrs)
       when action in [:modify, :conflict],
       do: current |> Pathway.changeset(attrs) |> Repo.update()
+
+  def apply_import_entity(:remove, :pathway, %Pathway{} = current, _attrs),
+    do: delete_pathway_record(current)
 
   def apply_import_entity(:remove, _entity_type, current, _attrs) when not is_nil(current),
     do: Repo.delete(current)
