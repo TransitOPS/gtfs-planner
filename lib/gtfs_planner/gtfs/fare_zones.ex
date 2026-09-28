@@ -50,6 +50,21 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   inventory validation, so a zone that left the inventory when its last stop
   moved is restored byte-for-byte. Only boardable stops are assignable and only
   a zone in the inventory can be an assignment target.
+
+  Zone metadata is written by `create_zone/3` and `update_zone/4`, both inside
+  the same version-locked transaction. `update_zone/4` edits only a zone that is
+  still in the inventory: a metadata edit keeps the stored ID bytes and inserts a
+  record for an implicit zone under exactly that ID, while an ID change (a form
+  `zone_id` that differs from the stored ID both byte-for-byte and after
+  trimming) moves the exact new ID on stops of every location type and in all
+  three fare-rule zone columns and then rewrites the record. A form value that is
+  the stored bytes or trims back to them is no change at all, so the drawer can
+  re-send the untouched field, an imported `" A"` included. An ID the inventory
+  already carries - a record, a stop of any location type or a fare-rule
+  reference - is rejected with the in-use message, so a rename can neither merge
+  two zones nor duplicate a rule row. `change_zone/2` is the drawer's form
+  changeset and makes the same byte-for-byte decision, so a form validates what
+  the write will do.
   """
 
   import Ecto.Query, warn: false
@@ -478,6 +493,91 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     write_assignment(organization_id, gtfs_version_id, changes, validate_targets?: false)
   end
 
+  @doc """
+  The zone drawer's changeset for a create or an edit form.
+
+  `nil` starts a new zone: the ID is cast, trimmed and validated. For an
+  existing zone the form's `zone_id` is an ID change only when neither its exact
+  bytes nor its trimmed bytes are the stored ID. Otherwise it is a metadata edit,
+  and `:keep` never casts the ID: the drawer can re-send an imported `" A"` or
+  `"Zone 1"` verbatim, padding included, and those bytes are neither trimmed nor
+  revalidated. A rename is trimmed and validated like a new ID. `create_zone/3`
+  and `update_zone/4` make the same decision from the same form values.
+  """
+  @spec change_zone(FareZone.t() | nil, map()) :: Ecto.Changeset.t()
+  def change_zone(nil, attrs), do: FareZone.changeset(%FareZone{}, attrs, :new)
+
+  def change_zone(%FareZone{} = zone, attrs) do
+    case changed_zone_id(zone.zone_id, attrs) do
+      :same -> FareZone.changeset(zone, attrs, :keep)
+      {:change, _zone_id} -> FareZone.changeset(zone, attrs, :new)
+    end
+  end
+
+  @doc """
+  Creates a zone in a published version of an organization.
+
+  The name is trimmed and must be 1-60 characters, the ID is trimmed and must
+  match `[A-Za-z0-9_-]{1,64}`, and the color must be a palette key. An ID that
+  any inventory source already carries - a `fare_zones` record, a stop zone ID
+  of any location type or a fare-rule reference - is rejected with the in-use
+  message on `zone_id`, so a new zone never adopts the identity of an imported
+  one. The check and the insert run in one version-locked transaction, and the
+  returned zone is that version's inventory entry. A pair that is not a
+  published version of the organization returns `:not_found` and writes nothing.
+  """
+  @spec create_zone(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
+  def create_zone(organization_id, gtfs_version_id, attrs) do
+    transact(organization_id, gtfs_version_id, fn ->
+      changeset =
+        %FareZone{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+        |> FareZone.changeset(attrs, :new)
+        |> reject_used_zone_id(organization_id, gtfs_version_id)
+
+      if changeset.valid? do
+        new_zone_id = Ecto.Changeset.get_change(changeset, :zone_id)
+        persist_zone(changeset, nil, organization_id, gtfs_version_id, new_zone_id)
+      else
+        Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  @doc """
+  Edits a zone's metadata and, when the form changes it, its ID.
+
+  The edit applies only while `current_zone_id` is in the version's inventory -
+  a record, a stop zone ID of any location type or a fare-rule reference -
+  otherwise it returns `:not_found` and writes nothing, so an edit that lost a
+  race with the change that removed the zone never recreates it. A metadata edit
+  keeps the stored ID bytes and updates the record, or inserts one for an
+  implicit zone under exactly that ID, colored with the palette key the
+  inventory already showed for it.
+
+  A form `zone_id` that differs from `current_zone_id` both byte-for-byte and
+  after trimming is a rename. The trimmed new ID is validated, rejected with the
+  in-use message when the inventory already carries it, and otherwise written in
+  one transaction to `stops.zone_id` of every location type, to
+  `fare_rules.origin_id`, `destination_id` and `contains_id`, and to the metadata
+  record; no row keeps the old ID, and every one of those writes uses the
+  trimmed new ID. A form value that is the stored bytes or trims back to them is
+  a metadata edit, not a rename. The returned zone is the inventory entry under
+  the final ID. A pair that is not a published version of the organization
+  returns `:not_found` and writes nothing.
+  """
+  @spec update_zone(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map()) ::
+          {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
+  def update_zone(organization_id, gtfs_version_id, current_zone_id, attrs) do
+    transact(organization_id, gtfs_version_id, fn ->
+      if zone_exists?(organization_id, gtfs_version_id, current_zone_id) do
+        update_zone_write(organization_id, gtfs_version_id, current_zone_id, attrs)
+      else
+        Repo.rollback(:not_found)
+      end
+    end)
+  end
+
   defp write_assignment(organization_id, gtfs_version_id, changes, opts) do
     changes = Enum.uniq_by(changes, & &1.id)
 
@@ -693,6 +793,152 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       |> where([s], s.id in ^ids)
       |> Repo.update_all(set: [zone_id: target, updated_at: now])
     end)
+  end
+
+  # Only a form `zone_id` that is a different ID after trimming is an ID change;
+  # a missing or non-string value is a metadata edit, which never casts
+  # `zone_id`. The exact bytes are compared first, so the stored ID of an
+  # imported zone such as `" A"` survives the drawer re-sending it verbatim or
+  # with padding, while `"A"` and `" A"` stay different zones that rename each
+  # other.
+  defp changed_zone_id(current_zone_id, attrs) do
+    case Map.get(attrs, "zone_id", Map.get(attrs, :zone_id)) do
+      ^current_zone_id ->
+        :same
+
+      value when is_binary(value) ->
+        case String.trim(value) do
+          ^current_zone_id -> :same
+          trimmed -> {:change, trimmed}
+        end
+
+      _other ->
+        :same
+    end
+  end
+
+  defp update_zone_write(organization_id, gtfs_version_id, current_zone_id, attrs) do
+    record = zone_record(organization_id, gtfs_version_id, current_zone_id)
+
+    struct =
+      record ||
+        %FareZone{
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          zone_id: current_zone_id,
+          color: FareZone.default_color(current_zone_id)
+        }
+
+    case changed_zone_id(current_zone_id, attrs) do
+      :same ->
+        changeset = FareZone.changeset(struct, attrs, :keep)
+
+        if changeset.valid? do
+          persist_zone(changeset, record, organization_id, gtfs_version_id, current_zone_id)
+        else
+          Repo.rollback(changeset)
+        end
+
+      {:change, new_zone_id} ->
+        # The same `new_zone_id` reaches the stops, the fare rules and the
+        # record: `:new` validates the form, and the change is pinned to the
+        # trimmed value so Ecto cannot drop it as "unchanged" and leave the
+        # record on the old ID.
+        changeset =
+          struct
+          |> FareZone.changeset(attrs, :new)
+          |> Ecto.Changeset.put_change(:zone_id, new_zone_id)
+          |> reject_used_zone_id(organization_id, gtfs_version_id)
+
+        if changeset.valid? do
+          rewrite_zone_id(organization_id, gtfs_version_id, current_zone_id, new_zone_id)
+          persist_zone(changeset, record, organization_id, gtfs_version_id, new_zone_id)
+        else
+          Repo.rollback(changeset)
+        end
+    end
+  end
+
+  # An ID is in use when any inventory source already carries it: a record, a
+  # stop of any location type or a fare-rule reference. The unique index covers
+  # only the record, so this check is what rejects an ID carried by stops alone.
+  defp reject_used_zone_id(changeset, organization_id, gtfs_version_id) do
+    case Ecto.Changeset.get_change(changeset, :zone_id) do
+      zone_id when is_binary(zone_id) ->
+        if zone_exists?(organization_id, gtfs_version_id, zone_id) do
+          Ecto.Changeset.add_error(changeset, :zone_id, FareZone.zone_id_in_use_message())
+        else
+          changeset
+        end
+
+      _other ->
+        changeset
+    end
+  end
+
+  # An ID change moves the exact new ID on every location type - a station or
+  # entrance carries a zone ID too - and in all three fare-rule zone columns. The
+  # new ID was not in the inventory, so no rewritten fare rule can become
+  # identical to another row and hit the unique row index.
+  defp rewrite_zone_id(organization_id, gtfs_version_id, current_zone_id, new_zone_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.zone_id == ^current_zone_id
+    )
+    |> Repo.update_all(set: [zone_id: new_zone_id, updated_at: now])
+
+    organization_id
+    |> rule_scope(gtfs_version_id)
+    |> where([r], r.origin_id == ^current_zone_id)
+    |> Repo.update_all(set: [origin_id: new_zone_id, updated_at: now])
+
+    organization_id
+    |> rule_scope(gtfs_version_id)
+    |> where([r], r.destination_id == ^current_zone_id)
+    |> Repo.update_all(set: [destination_id: new_zone_id, updated_at: now])
+
+    organization_id
+    |> rule_scope(gtfs_version_id)
+    |> where([r], r.contains_id == ^current_zone_id)
+    |> Repo.update_all(set: [contains_id: new_zone_id, updated_at: now])
+  end
+
+  defp rule_scope(organization_id, gtfs_version_id) do
+    from(r in FareRule,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
+    )
+  end
+
+  defp zone_record(organization_id, gtfs_version_id, zone_id) do
+    Repo.one(
+      from(z in FareZone,
+        where:
+          z.organization_id == ^organization_id and z.gtfs_version_id == ^gtfs_version_id and
+            z.zone_id == ^zone_id
+      )
+    )
+  end
+
+  defp persist_zone(changeset, record, organization_id, gtfs_version_id, zone_id) do
+    result = if record, do: Repo.update(changeset), else: Repo.insert(changeset)
+
+    case result do
+      {:ok, _zone} -> zone_map(organization_id, gtfs_version_id, zone_id)
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  # The write in this transaction put the ID in the inventory, so the lookup
+  # always resolves; name, color and counts come from the same projection the
+  # workspace reads.
+  defp zone_map(organization_id, gtfs_version_id, zone_id) do
+    organization_id
+    |> inventory(gtfs_version_id)
+    |> Map.fetch!(:zones)
+    |> Enum.find(&(&1.zone_id == zone_id))
   end
 
   defp boardable_query(organization_id, gtfs_version_id) do

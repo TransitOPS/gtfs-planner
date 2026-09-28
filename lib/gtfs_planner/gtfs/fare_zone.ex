@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs.FareZone do
   @palette_by_key Map.new(@palette, fn {key, _label, hex} -> {key, hex} end)
 
   @zone_id_format ~r/\A[A-Za-z0-9_-]{1,64}\z/
+  @zone_id_in_use_message "That zone ID is already in use. Choose another."
 
   schema "fare_zones" do
     field :zone_id, :string
@@ -62,6 +63,15 @@ defmodule GtfsPlanner.Gtfs.FareZone do
   @doc "The prototype hex value of a palette key."
   @spec color_hex(String.t()) :: String.t()
   def color_hex(key), do: Map.fetch!(@palette_by_key, key)
+
+  @doc """
+  The `zone_id` field error shown when an ID is already in use.
+
+  `GtfsPlanner.Gtfs.FareZones` uses it when an ID is carried by a stop or a fare
+  rule rather than a `fare_zones` record, which the unique index cannot reject.
+  """
+  @spec zone_id_in_use_message() :: String.t()
+  def zone_id_in_use_message, do: @zone_id_in_use_message
 
   @doc """
   A deterministic palette key for a zone that has no metadata record.
@@ -109,7 +119,7 @@ defmodule GtfsPlanner.Gtfs.FareZone do
     |> validate_inclusion(:color, @palette_keys)
     |> unique_constraint([:organization_id, :gtfs_version_id, :zone_id],
       name: :fare_zones_organization_id_gtfs_version_id_zone_id_index,
-      message: "That zone ID is already in use. Choose another."
+      message: @zone_id_in_use_message
     )
   end
 
