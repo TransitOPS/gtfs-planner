@@ -418,7 +418,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:ok, values} <- normalize_pattern_attrs(attrs),
          {:ok, stops} <- normalize_stop_ids(attrs),
          :ok <- validate_occurrence_list(stops) do
-      transact(fn ->
+      run_serializable_write(fn ->
         route = lock_published_route!(audit_context, route_id)
         eligible_stops = load_eligible_stops!(route, stops)
 
@@ -495,16 +495,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   def apply_review(pattern_id, operation, review_fingerprint, %AuditContext{} = audit_context)
       when is_binary(pattern_id) and is_binary(review_fingerprint) do
-    with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context),
-         do:
-           apply_review_with_retries(
-             pattern_id,
-             operation,
-             route_id,
-             review_fingerprint,
-             audit_context,
-             3
-           )
+    with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
+      run_serializable_write(fn ->
+        apply_review_transaction(
+          pattern_id,
+          operation,
+          route_id,
+          review_fingerprint,
+          audit_context
+        )
+      end)
+    end
   end
 
   def apply_review(_, _, _, _), do: {:error, :invalid_input}
@@ -803,24 +804,56 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     )
   end
 
-  defp apply_review_with_retries(
-         pattern_id,
-         operation,
-         route_id,
-         fingerprint,
-         audit_context,
-         attempts
-       ) do
-    result =
-      run_apply_transaction(fn ->
-        apply_review_transaction(pattern_id, operation, route_id, fingerprint, audit_context)
-      end)
+  # R5 M1's bounded retry convention: a serialization failure (40001) or
+  # deadlock (40P01) reruns the whole transaction closure, at most three times,
+  # then returns `:busy`. Every other failure is returned unchanged.
+  defp run_serializable_write(transaction, attempts \\ 3) do
+    case run_apply_transaction(transaction) do
+      {:ok, result} ->
+        {:ok, result}
 
-    handle_review_result(
-      result,
-      {pattern_id, operation, route_id, fingerprint, audit_context, attempts}
-    )
+      {:retryable_conflict, _error} ->
+        retry_serializable_write(transaction, attempts)
+
+      {:error, reason} ->
+        retry_serializable_write_error(reason, transaction, attempts)
+    end
   end
+
+  defp retry_serializable_write(transaction, attempts) when attempts > 1,
+    do: run_serializable_write(transaction, attempts - 1)
+
+  defp retry_serializable_write(_transaction, _attempts), do: {:error, :busy}
+
+  defp retry_serializable_write_error(reason, transaction, attempts) do
+    if retryable_conflict?(reason),
+      do: retry_serializable_write(transaction, attempts),
+      else: {:error, reason}
+  end
+
+  defp run_apply_transaction(transaction) do
+    Application.get_env(
+      :gtfs_planner,
+      :reviewed_apply_transaction,
+      ReviewedApplyTransaction.Repo
+    ).run(transaction)
+  rescue
+    error in Postgrex.Error ->
+      if retryable_conflict?(error),
+        do: {:retryable_conflict, error},
+        else: reraise(error, __STACKTRACE__)
+  end
+
+  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
+       when code in [
+              :serialization_failure,
+              "40001",
+              :deadlock_detected,
+              "40P01"
+            ],
+       do: true
+
+  defp retryable_conflict?(_), do: false
 
   defp apply_review_transaction(pattern_id, operation, route_id, fingerprint, audit_context) do
     route = lock_published_route!(audit_context, route_id)
@@ -864,51 +897,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       {:error, reason} -> Repo.rollback(reason)
     end
   end
-
-  defp handle_review_result({:ok, result}, _retry), do: {:ok, result}
-
-  defp handle_review_result({:serialization_failure, _error}, retry),
-    do: retry_review(retry)
-
-  defp handle_review_result({:error, %Postgrex.Error{} = error}, retry) do
-    if serialization_failure?(error), do: retry_review(retry), else: {:error, error}
-  end
-
-  defp handle_review_result({:error, reason}, _retry), do: {:error, reason}
-
-  defp retry_review({pattern_id, operation, route_id, fingerprint, audit_context, attempts})
-       when attempts > 1 do
-    apply_review_with_retries(
-      pattern_id,
-      operation,
-      route_id,
-      fingerprint,
-      audit_context,
-      attempts - 1
-    )
-  end
-
-  defp retry_review({_pattern_id, _operation, _route_id, _fingerprint, _audit_context, 1}),
-    do: {:error, :busy}
-
-  defp run_apply_transaction(transaction) do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    ).run(transaction)
-  rescue
-    error in Postgrex.Error ->
-      if serialization_failure?(error),
-        do: {:serialization_failure, error},
-        else: reraise(error, __STACKTRACE__)
-  end
-
-  defp serialization_failure?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [:serialization_failure, "40001"],
-       do: true
-
-  defp serialization_failure?(_), do: false
 
   # `opts` carries `require_acknowledgements: false` for the read-only preview, so
   # the editor can show proposed values before staff acknowledge them.
@@ -2386,13 +2374,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     case Repo.update(changeset) do
       {:ok, struct} -> struct
       {:error, error} -> Repo.rollback(error)
-    end
-  end
-
-  defp transact(fun) do
-    case Repo.transaction(fun) do
-      {:ok, result} -> {:ok, result}
-      {:error, reason} -> {:error, reason}
     end
   end
 end

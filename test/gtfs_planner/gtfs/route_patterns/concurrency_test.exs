@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
+  import Mox
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.User
@@ -32,6 +33,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -395,7 +398,310 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
     end
   end
 
+  describe "create_pattern/3 serializable boundary" do
+    setup :verify_on_exit!
+
+    setup do
+      previous = Application.fetch_env(:gtfs_planner, :reviewed_apply_transaction)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, adapter} ->
+            Application.put_env(:gtfs_planner, :reviewed_apply_transaction, adapter)
+
+          :error ->
+            Application.delete_env(:gtfs_planner, :reviewed_apply_transaction)
+        end
+      end)
+
+      :ok
+    end
+
+    test "persists pattern descendants and audit under the production transaction adapter" do
+      put_transaction_adapter(ReviewedApplyTransaction.Repo)
+
+      fixture = unboxed(fn -> create_pattern_fixture() end)
+      on_exit(fn -> cleanup_create_fixture(fixture) end)
+
+      handler_id = {__MODULE__, make_ref()}
+      owner = self()
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:gtfs_planner, :repo, :query],
+          fn _event, _measurements, metadata, destination ->
+            if metadata.query == "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE" do
+              send(destination, :serializable_boundary)
+            end
+          end,
+          owner
+        )
+
+      try do
+        assert {:ok, pattern} =
+                 unboxed(fn ->
+                   Gtfs.create_pattern(
+                     fixture.route.route_id,
+                     pattern_attrs(fixture),
+                     fixture.audit
+                   )
+                 end)
+
+        assert_received :serializable_boundary
+
+        state = unboxed(fn -> created_pattern_state(fixture) end)
+
+        assert [%RoutePattern{id: pattern_id}] = state.patterns
+        assert pattern_id == pattern.id
+
+        assert Enum.map(state.occurrences, & &1.stop_id) ==
+                 Enum.map(fixture.stops, & &1.stop_id)
+
+        assert [%TimedPattern{name: "Timing A"}] = state.timings
+        assert length(state.timing_stops) == length(fixture.stops)
+
+        assert [%ChangeLog{} = log] = state.audits
+        assert log.entity_type == "route_pattern"
+        assert log.entity_id == pattern.id
+        assert log.action == "created"
+        assert log.actor_email == fixture.audit.actor_email
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+
+    test "forced deadlock then serialization conflicts rerun the whole closure and commit once" do
+      put_transaction_adapter(ReviewedApplyTransactionMock)
+
+      fixture = unboxed(fn -> create_pattern_fixture() end)
+      on_exit(fn -> cleanup_create_fixture(fixture) end)
+
+      owner = self()
+      attempts = start_supervised!({Agent, fn -> 0 end})
+
+      expect(ReviewedApplyTransactionMock, :run, 3, fn transaction ->
+        attempt = Agent.get_and_update(attempts, fn count -> {count + 1, count + 1} end)
+
+        case attempt do
+          1 ->
+            # The closure completes and its transaction aborts like a commit-time
+            # deadlock: none of this attempt's rows survive.
+            Repo.transaction(fn ->
+              result = transaction.()
+              send(owner, {:closure_completed, attempt, result})
+              raise postgrex_error("40P01", "deadlock detected")
+            end)
+
+          2 ->
+            case Repo.transaction(fn ->
+                   result = transaction.()
+                   send(owner, {:closure_completed, attempt, result})
+                   Repo.rollback(:forced_40001)
+                 end) do
+              {:error, :forced_40001} ->
+                {:error, postgrex_error("40001", "serialization failure")}
+            end
+
+          3 ->
+            ReviewedApplyTransaction.Repo.run(transaction)
+        end
+      end)
+
+      assert {:ok, pattern} =
+               unboxed(fn ->
+                 Gtfs.create_pattern(
+                   fixture.route.route_id,
+                   pattern_attrs(fixture),
+                   fixture.audit
+                 )
+               end)
+
+      assert_received {:closure_completed, 1, %RoutePattern{id: first_id}}
+      assert_received {:closure_completed, 2, %RoutePattern{id: second_id}}
+      assert first_id != pattern.id
+      assert second_id != pattern.id
+      assert first_id != second_id
+
+      state = unboxed(fn -> created_pattern_state(fixture) end)
+
+      assert [%RoutePattern{id: pattern_id}] = state.patterns
+      assert pattern_id == pattern.id
+      assert Enum.map(state.occurrences, & &1.stop_id) == Enum.map(fixture.stops, & &1.stop_id)
+      assert length(state.timing_stops) == length(fixture.stops)
+      assert [%ChangeLog{action: "created"}] = state.audits
+      assert Agent.get(attempts, & &1) == 3
+    end
+
+    test "exhausted retries return busy with no partial rows" do
+      put_transaction_adapter(ReviewedApplyTransactionMock)
+
+      fixture = unboxed(fn -> create_pattern_fixture() end)
+      on_exit(fn -> cleanup_create_fixture(fixture) end)
+
+      owner = self()
+      attempts = start_supervised!({Agent, fn -> 0 end})
+
+      expect(ReviewedApplyTransactionMock, :run, 3, fn transaction ->
+        attempt = Agent.get_and_update(attempts, fn count -> {count + 1, count + 1} end)
+
+        Repo.transaction(fn ->
+          result = transaction.()
+          send(owner, {:closure_completed, attempt, result})
+          raise postgrex_error("40001", "serialization failure")
+        end)
+      end)
+
+      assert {:error, :busy} =
+               unboxed(fn ->
+                 Gtfs.create_pattern(
+                   fixture.route.route_id,
+                   pattern_attrs(fixture),
+                   fixture.audit
+                 )
+               end)
+
+      for attempt <- 1..3 do
+        assert_received {:closure_completed, ^attempt, %RoutePattern{}}
+      end
+
+      assert unboxed(fn -> created_pattern_state(fixture) end) == %{
+               patterns: [],
+               occurrences: [],
+               timings: [],
+               timing_stops: [],
+               audits: []
+             }
+
+      assert Agent.get(attempts, & &1) == 3
+    end
+  end
+
   defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
+
+  defp put_transaction_adapter(adapter),
+    do: Application.put_env(:gtfs_planner, :reviewed_apply_transaction, adapter)
+
+  defp postgrex_error(code, message) do
+    Postgrex.Error.exception(
+      postgres: %{
+        code: code,
+        severity: "ERROR",
+        message: message
+      }
+    )
+  end
+
+  defp create_pattern_fixture do
+    stamp = System.system_time(:nanosecond)
+
+    organization =
+      organization_fixture(%{alias: "route-pattern-create-serializable-#{stamp}"})
+
+    version = gtfs_version_fixture(organization.id)
+    route = route_fixture(organization.id, version.id)
+
+    actor =
+      user_fixture(%{email: "route-pattern-create-serializable-#{stamp}@example.com"})
+
+    stops = [
+      stop_fixture(organization.id, version.id),
+      stop_fixture(organization.id, version.id)
+    ]
+
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    %{
+      organization: organization,
+      version: version,
+      route: route,
+      actor: actor,
+      stops: stops,
+      audit: audit
+    }
+  end
+
+  defp pattern_attrs(fixture) do
+    %{
+      route_pattern_name: "Serialized Create",
+      direction_id: 0,
+      stops: Enum.map(fixture.stops, & &1.stop_id)
+    }
+  end
+
+  defp created_pattern_state(fixture) do
+    pattern_ids =
+      Repo.all(
+        from p in RoutePattern,
+          where:
+            p.organization_id == ^fixture.organization.id and
+              p.route_id == ^fixture.route.route_id,
+          select: p.id
+      )
+
+    timing_ids =
+      Repo.all(from t in TimedPattern, where: t.route_pattern_id in ^pattern_ids, select: t.id)
+
+    %{
+      patterns: Repo.all(from p in RoutePattern, where: p.id in ^pattern_ids, order_by: p.id),
+      occurrences:
+        Repo.all(
+          from o in RoutePatternStop,
+            where: o.route_pattern_id in ^pattern_ids,
+            order_by: [asc: o.position, asc: o.id]
+        ),
+      timings: Repo.all(from t in TimedPattern, where: t.id in ^timing_ids, order_by: t.id),
+      timing_stops:
+        Repo.all(
+          from r in TimedPatternStop,
+            where: r.timed_pattern_id in ^timing_ids,
+            order_by: r.id
+        ),
+      audits:
+        Repo.all(
+          from l in ChangeLog,
+            where: l.organization_id == ^fixture.organization.id,
+            order_by: l.id
+        )
+    }
+  end
+
+  defp cleanup_create_fixture(fixture) do
+    unboxed(fn ->
+      pattern_ids =
+        Repo.all(
+          from p in RoutePattern,
+            where: p.organization_id == ^fixture.organization.id,
+            select: p.id
+        )
+
+      timing_ids =
+        Repo.all(from t in TimedPattern, where: t.route_pattern_id in ^pattern_ids, select: t.id)
+
+      Repo.delete_all(from r in TimedPatternStop, where: r.timed_pattern_id in ^timing_ids)
+      Repo.delete_all(from t in TimedPattern, where: t.id in ^timing_ids)
+      Repo.delete_all(from o in RoutePatternStop, where: o.route_pattern_id in ^pattern_ids)
+      Repo.delete_all(from p in RoutePattern, where: p.id in ^pattern_ids)
+      Repo.delete_all(from l in ChangeLog, where: l.organization_id == ^fixture.organization.id)
+      Repo.delete_all(from r in Route, where: r.id == ^fixture.route.id)
+      Repo.delete_all(from s in Stop, where: s.id in ^Enum.map(fixture.stops, & &1.id))
+
+      Repo.delete_all(
+        from m in UserOrgMembership,
+          where: m.organization_id == ^fixture.organization.id or m.user_id == ^fixture.actor.id
+      )
+
+      Repo.delete_all(from v in GtfsVersion, where: v.id == ^fixture.version.id)
+      Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
+      Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
+      :ok
+    end)
+  end
 
   defp persisted_state(pattern_id) do
     timing_ids =
