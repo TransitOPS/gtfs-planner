@@ -3292,6 +3292,29 @@ defmodule GtfsPlanner.Gtfs do
     do: PathwayEvolutions.count_closures(organization_id, gtfs_version_id)
 
   @doc """
+  Previews one station's closure effect at a single service date and service time.
+
+  Every input is loaded inside the export read snapshot, so the station snapshot,
+  the station's closures, the referenced native calendars and the agency zone
+  describe one committed revision. `service_time` is added to the
+  PostgreSQL-derived service-day origin, so `00:15:00` on a New York
+  spring-forward date is `2027-03-14T04:15:00Z` and a value above `24:00:00`
+  stays above it. Returns the exact closed instances, the selected date's
+  instances, the intersecting timeline instances with their span and boundary
+  action targets, and the base/effective comparison, or `:not_found`,
+  `{:timezone_unavailable, reason}` or `:analysis_too_large`.
+  """
+  def preview_closures(organization_id, gtfs_version_id, stop_id, service_date, service_time),
+    do:
+      PathwayEvolutions.preview_closures(
+        organization_id,
+        gtfs_version_id,
+        stop_id,
+        service_date,
+        service_time
+      )
+
+  @doc """
   Creates one validated closure under the published-version write lock.
 
   The actor's active editor membership is rechecked and the scoped published

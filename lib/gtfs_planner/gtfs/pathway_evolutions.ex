@@ -39,6 +39,13 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   persisted row without touching `updated_at` or writing audit. The update log
   carries explicit `before`/`after` snapshots, the delete log `before` only.
   Delete removes only the closure row and is independent of calendar activity.
+
+  `preview_closures/5` loads one station's analysis inputs inside
+  `Export.with_read_snapshot/1`, so the station snapshot, the station's closures,
+  the referenced native calendars and exceptions, the agency zone and the
+  service-day origins all describe one committed revision. Time-aware evaluation
+  never uses DisplayClock's UTC fallback: a missing, invalid or conflicting
+  agency zone is refused with its reason while closure authoring still works.
   """
 
   import Ecto.Query, warn: false
@@ -50,11 +57,25 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
+  alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Gtfs.PathwayEvolutions.Schedule
+  alias GtfsPlanner.Gtfs.StationReport2.Evolutions
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
+
+  # Fixed local resource bounds, not configuration. The candidate-date ceiling
+  # keeps a pathological integer service time from generating a span to query,
+  # and the instance ceiling is integer arithmetic checked before any instance is
+  # built. The 31-service-day range ceiling belongs to `analyze_closures/5`.
+  @max_instances 200_000
+  @max_candidate_dates 100_000
+
+  # A `before` action sits 60 seconds before its instance starts (AC-38).
+  @before_offset_seconds 60
 
   @type fingerprint :: String.t()
   @type calendar_option :: %{
@@ -78,6 +99,33 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
           evolution: PathwayEvolution.t(),
           fingerprint: fingerprint(),
           notices: [notice()]
+        }
+  @type boundary_target :: :before | :closes | :during | :reopens
+  @type analysis_error ::
+          :not_found
+          | {:timezone_unavailable, DisplayClock.fallback_reason()}
+          | :analysis_too_large
+  @type preview :: %{
+          service_date: Date.t(),
+          service_time: non_neg_integer(),
+          instant: DateTime.t(),
+          local_time: NaiveDateTime.t(),
+          timezone: String.t(),
+          closed: [Schedule.instance()],
+          day_instances: [Schedule.instance()],
+          timeline_instances: [Schedule.instance()],
+          timeline_start: DateTime.t(),
+          timeline_end: DateTime.t(),
+          boundary_targets: %{
+            {Ecto.UUID.t(), Date.t(), boundary_target} => %{
+              date: Date.t(),
+              time: non_neg_integer()
+            }
+          },
+          base: Evolutions.evaluation(),
+          effective: Evolutions.evaluation(),
+          comparison: Evolutions.comparison(),
+          computed_at: DateTime.t()
         }
 
   @doc """
@@ -155,6 +203,69 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
       0
     end
   end
+
+  @doc """
+  Previews one station's closure effect at a single service date and service time.
+
+  Every input is loaded inside `Export.with_read_snapshot/1` - the production
+  `Export.Snapshot.Repo` adapter establishes a repeatable-read transaction before
+  the first query - so the station snapshot, the station's closures, the
+  referenced native calendars and exceptions, the agency zone and the service-day
+  origins all describe one committed revision. Graph evaluation, comparison and
+  localization run after that transaction is released.
+
+  Service-day time is exact: `service_time` is added to the PostgreSQL-derived
+  origin of `service_date` (local noon in the single valid agency zone minus 12
+  elapsed hours), so `00:15:00` on a New York spring-forward date resolves to
+  `2027-03-14T04:15:00Z` and a value above `24:00:00` stays above it.
+  `closed` names every instance covering the instant from any service date, so a
+  Monday `25:00:00` window closes its pathway on Tuesday `01:00`. `day_instances`
+  are the selected service date's instances and `timeline_instances` adds every
+  earlier or later instance intersecting
+  `[origin(service_date), max(origin(service_date + 1), latest end on
+  service_date))`, so previous-service-date spill-over is visible while the
+  boundary targets stay unclipped. `boundary_targets` carries the exact
+  `{date, time}` for each selected-date instance's `before`, `closes`, `during`
+  and `reopens` action.
+
+  Refusals are `{:error, :not_found}` for a foreign, unpublished, non-station or
+  malformed scope, `{:error, {:timezone_unavailable, reason}}` when the agency
+  zone is missing, invalid or conflicting (the UTC fallback is never used, and
+  authoring still works), and `{:error, :analysis_too_large}` when the candidate
+  span or the instance count exceeds its bound. Both bounds are checked before any
+  instance is built.
+
+  A non-binary `stop_id` is refused as `:not_found`, matching
+  `station_closures/3`. A non-`Date` service date or a negative or non-integer
+  service time is a function-clause error, matching `Schedule.preview_dates/3`:
+  a caller parses the request before it reaches the loader.
+  """
+  @spec preview_closures(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), Date.t(), non_neg_integer()) ::
+          {:ok, preview()} | {:error, analysis_error()}
+  def preview_closures(
+        organization_id,
+        gtfs_version_id,
+        stop_id,
+        %Date{} = service_date,
+        service_time
+      )
+      when is_binary(stop_id) and is_integer(service_time) and service_time >= 0 do
+    with {:ok, inputs} <-
+           load_station_analysis(organization_id, gtfs_version_id, stop_id, fn station ->
+             load_preview_inputs(station, service_date, service_time)
+           end) do
+      {:ok, build_preview(inputs, service_date, service_time)}
+    end
+  end
+
+  def preview_closures(
+        _organization_id,
+        _gtfs_version_id,
+        _stop_id,
+        _service_date,
+        _service_time
+      ),
+      do: {:error, :not_found}
 
   @doc """
   Returns the fingerprint of one persisted closure row.
@@ -518,15 +629,372 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
     end
   end
 
-  defp closures_for(snapshot, organization_id, gtfs_version_id) do
-    pathway_by_id = Map.new(snapshot.pathways, &{&1.pathway_id, &1})
+  # The station's own closure rows, in the deterministic closure-row order. The
+  # list read and the analysis snapshot share it, so both name the same rows.
+  defp station_evolutions(snapshot, organization_id, gtfs_version_id) do
+    pathway_ids = snapshot.pathways |> Enum.map(& &1.pathway_id) |> Enum.uniq()
 
-    evolutions =
-      scoped_evolutions(organization_id, gtfs_version_id)
-      |> where([e], e.pathway_id in ^Map.keys(pathway_by_id))
-      |> order_by([e], asc: e.pathway_id, asc: e.start_time, asc: e.service_id, asc: e.end_time)
-      |> order_by([e], asc: e.id)
+    scoped_evolutions(organization_id, gtfs_version_id)
+    |> where([e], e.pathway_id in ^pathway_ids)
+    |> order_by([e], asc: e.pathway_id, asc: e.start_time, asc: e.service_id, asc: e.end_time)
+    |> order_by([e], asc: e.id)
+    |> Repo.all()
+  end
+
+  # -- analysis snapshot ------------------------------------------------------
+
+  # One station's analysis inputs, loaded inside a single repeatable-read
+  # transaction and handed to `continue`, which resolves the date-dependent part
+  # (the preview's candidate envelope, the range check's horizon) against the same
+  # revision. Returning early does not roll back: this is a read.
+  defp load_station_analysis(organization_id, gtfs_version_id, stop_id, continue)
+       when is_binary(stop_id) do
+    loaded =
+      Export.with_read_snapshot(fn ->
+        with :ok <- validate_scope(organization_id, gtfs_version_id),
+             %Stop{location_type: 1} <-
+               Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id),
+             {:ok, snapshot} <-
+               Gtfs.get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
+          snapshot
+          |> station_inputs(organization_id, gtfs_version_id)
+          |> usable_zone(continue)
+        else
+          _other -> {:error, :not_found}
+        end
+      end)
+
+    case loaded do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp station_inputs(snapshot, organization_id, gtfs_version_id) do
+    evolutions = station_evolutions(snapshot, organization_id, gtfs_version_id)
+
+    %{
+      snapshot: snapshot,
+      evolutions: evolutions,
+      natives: native_calendars(organization_id, gtfs_version_id, evolutions),
+      zone: DisplayClock.resolve_zone(organization_id, gtfs_version_id)
+    }
+  end
+
+  # Time-aware evaluation never uses DisplayClock's UTC fallback, so a missing,
+  # invalid or conflicting agency zone is refused with its reason before any
+  # candidate date is generated. Closure authoring is unaffected.
+  defp usable_zone(%{zone: %{fallback?: true, fallback_reason: reason}}, _continue),
+    do: {:error, {:timezone_unavailable, reason}}
+
+  defp usable_zone(station, continue), do: continue.(station)
+
+  # `%{service_id => {Calendar.t() | nil, [CalendarDate.t()]}}` for the services
+  # the station's closures actually reference. A service with no native row maps to
+  # `{nil, []}`, which `ServiceDates` treats as an always-inactive service rather
+  # than as a second calendar rule.
+  defp native_calendars(_organization_id, _gtfs_version_id, []), do: %{}
+
+  defp native_calendars(organization_id, gtfs_version_id, evolutions) do
+    service_ids = evolutions |> Enum.map(& &1.service_id) |> Enum.uniq() |> Enum.sort()
+
+    calendars =
+      from(c in Calendar,
+        where:
+          c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id and
+            c.service_id in ^service_ids
+      )
       |> Repo.all()
+      |> Map.new(&{&1.service_id, &1})
+
+    exceptions =
+      from(d in CalendarDate,
+        where:
+          d.organization_id == ^organization_id and d.gtfs_version_id == ^gtfs_version_id and
+            d.service_id in ^service_ids,
+        order_by: [asc: d.service_id, asc: d.date]
+      )
+      |> Repo.all()
+
+    grouped = Enum.group_by(exceptions, & &1.service_id)
+
+    Map.new(service_ids, fn service_id ->
+      {service_id, {Map.get(calendars, service_id), Map.get(grouped, service_id, [])}}
+    end)
+  end
+
+  # PostgreSQL owns the service-day origin: local noon on the date in the agency
+  # zone minus 12 elapsed hours, so a DST transition and a value above 24:00:00
+  # need no Elixir timezone database. `interval '12 hours'` is deliberate; '1 day'
+  # would be 23 or 25 elapsed hours across a transition.
+  defp service_day_origins(timezone, %Date{} = first, %Date{} = last) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        """
+        SELECT ($1::date + n)::date,
+               (($1::date + n)::timestamp + interval '12 hours') AT TIME ZONE $2 - interval '12 hours'
+        FROM generate_series(0, $3::date - $1::date) AS n
+        """,
+        [first, timezone, last]
+      )
+
+    Map.new(rows, fn [date, origin] -> {date, origin} end)
+  end
+
+  # -- preview inputs ---------------------------------------------------------
+
+  defp load_preview_inputs(station, service_date, service_time) do
+    dates = Schedule.preview_dates(station.evolutions, service_date, service_time)
+
+    # `Date.diff/2` is integer arithmetic on the lazy range, so the candidate bound
+    # is checked before a single date is generated or queried.
+    if Date.diff(dates.last, dates.first) + 1 > @max_candidate_dates do
+      {:error, :analysis_too_large}
+    else
+      envelope = %{
+        first: dates.first,
+        last: dates.last,
+        loaded: nil,
+        origins: %{},
+        active_dates: %{}
+      }
+
+      with {:ok, envelope} <-
+             expand_preview_envelope(station, service_date, service_time, envelope) do
+        {:ok, Map.merge(station, envelope)}
+      end
+    end
+  end
+
+  # `Schedule.preview_dates/3` sizes the candidate envelope with 23 elapsed hours
+  # per service date, which is only an estimate: a zone whose offset moves far can
+  # leave the initial edges unable to bound the displayed interval. Each pass
+  # checks the instance bound and then the exact origin inequalities, widening the
+  # envelope by one civil date per edge and querying only the dates it has not
+  # loaded. The candidate bound stops the loop, so the envelope is never silently
+  # incomplete.
+  defp expand_preview_envelope(station, service_date, service_time, envelope) do
+    with {:ok, active_dates} <- active_dates_within(station, envelope.first, envelope.last),
+         :ok <- check_instance_bound(station.evolutions, active_dates),
+         {:ok, envelope} <- load_envelope_origins(station.zone, envelope) do
+      envelope = %{envelope | active_dates: active_dates}
+      resolve_preview_envelope(station, service_date, service_time, envelope)
+    end
+  end
+
+  defp resolve_preview_envelope(station, service_date, service_time, envelope) do
+    if bounds_preview_interval?(envelope, station.evolutions, service_date, service_time) do
+      {:ok, envelope}
+    else
+      widen_and_retry(station, service_date, service_time, envelope)
+    end
+  end
+
+  defp widen_and_retry(station, service_date, service_time, envelope) do
+    with {:ok, widened} <- widen_envelope(envelope) do
+      expand_preview_envelope(station, service_date, service_time, widened)
+    end
+  end
+
+  # The envelope is adequate when its loaded origins bound the absolute interval
+  # the preview displays, `[a, b)`: `a` is the selected date's origin and `b` is
+  # the later of the next date's origin, the longest closure window on the
+  # selected date and the requested instant plus one second. An instance can
+  # intersect the interval only when `origin(lower) + max_end <= a`, and can start
+  # inside it only when `origin(upper) >= b`. The upper edge also requires the next
+  # date's origin to be loaded, because the displayed span ends there.
+  defp bounds_preview_interval?(
+         %{origins: origins, first: first, last: last},
+         evolutions,
+         service_date,
+         service_time
+       ) do
+    max_end = longest_window(evolutions)
+    start_at = Map.fetch!(origins, service_date)
+    instant = DateTime.add(start_at, service_time, :second)
+    next_date = Date.add(service_date, 1)
+
+    required_end =
+      latest_instant(
+        Enum.reject(
+          [
+            Map.get(origins, next_date),
+            DateTime.add(start_at, max_end, :second),
+            DateTime.add(instant, 1, :second)
+          ],
+          &is_nil/1
+        )
+      )
+
+    lower_reaches_start? =
+      DateTime.compare(
+        DateTime.add(Map.fetch!(origins, first), max_end, :second),
+        start_at
+      ) != :gt
+
+    upper_reaches_end? =
+      Date.compare(last, next_date) != :lt and
+        DateTime.compare(Map.fetch!(origins, last), required_end) != :lt
+
+    lower_reaches_start? and upper_reaches_end?
+  end
+
+  # One civil date per edge, with the candidate bound rechecked before the dates
+  # are queried.
+  defp widen_envelope(%{first: first, last: last} = envelope) do
+    if Date.diff(last, first) + 3 > @max_candidate_dates do
+      {:error, :analysis_too_large}
+    else
+      {:ok, %{envelope | first: Date.add(first, -1), last: Date.add(last, 1)}}
+    end
+  end
+
+  # Each pass widens the envelope by one civil date per edge, so only the dates
+  # outside the already loaded range are queried: widening a long-running loop
+  # stays proportional to the envelope rather than to the passes. The loaded range
+  # is the envelope, so each slice re-reads at most one date it already has.
+  defp load_envelope_origins(zone, %{first: first, last: last, loaded: nil} = envelope) do
+    origins = service_day_origins(zone.timezone, first, last)
+    {:ok, %{envelope | loaded: {first, last}, origins: origins}}
+  end
+
+  defp load_envelope_origins(zone, %{first: first, last: last, loaded: {from, to}} = envelope) do
+    origins =
+      [{first, from}, {to, last}]
+      |> Enum.reject(fn {added_first, added_last} ->
+        Date.compare(added_first, added_last) == :gt
+      end)
+      |> Enum.flat_map(fn {added_first, added_last} ->
+        service_day_origins(zone.timezone, added_first, added_last) |> Map.to_list()
+      end)
+      |> Enum.reduce(envelope.origins, fn {date, origin}, acc -> Map.put(acc, date, origin) end)
+
+    {:ok, %{envelope | loaded: {earlier(first, from), later(last, to)}, origins: origins}}
+  end
+
+  defp earlier(left, right) do
+    if Date.compare(left, right) == :lt, do: left, else: right
+  end
+
+  defp later(left, right) do
+    if Date.compare(left, right) == :gt, do: left, else: right
+  end
+
+  defp active_dates_within(station, %Date{} = first, %Date{} = last) do
+    {:ok,
+     Map.new(station.natives, fn {service_id, {calendar, exceptions}} ->
+       {service_id, ServiceDates.active_dates_between(calendar, exceptions, first, last)}
+     end)}
+  end
+
+  # `Schedule.instance_count/2` is integer arithmetic over the supplied date
+  # lists, so the bound holds before a single instance is built. Every candidate
+  # date in the final envelope has a loaded origin, so the count and the built
+  # instance set agree here.
+  defp check_instance_bound(evolutions, active_dates) do
+    if Schedule.instance_count(evolutions, active_dates) > @max_instances do
+      {:error, :analysis_too_large}
+    else
+      :ok
+    end
+  end
+
+  defp longest_window(evolutions) do
+    Enum.reduce(evolutions, 0, fn evolution, max_end ->
+      max(evolution.end_time, max_end)
+    end)
+  end
+
+  # -- preview result ---------------------------------------------------------
+
+  defp build_preview(
+         %{
+           snapshot: snapshot,
+           evolutions: evolutions,
+           zone: zone,
+           origins: origins,
+           active_dates: active_dates
+         },
+         service_date,
+         service_time
+       ) do
+    instances = Schedule.instances(evolutions, active_dates, origins)
+    start_at = Map.fetch!(origins, service_date)
+    instant = DateTime.add(start_at, service_time, :second)
+    day_instances = Enum.filter(instances, &(&1.service_date == service_date))
+
+    # With `first == last` this is the preview's displayed span: the selected
+    # date's origin through the later of the next origin and the latest end on
+    # that date.
+    {timeline_start, timeline_end} =
+      Schedule.horizon(origins, day_instances, service_date, service_date)
+
+    closed = Schedule.closed_at(instances, instant)
+    base = Evolutions.evaluate(snapshot, MapSet.new())
+    effective = Evolutions.evaluate(snapshot, MapSet.new(closed, & &1.pathway_id))
+    [local_time] = DisplayClock.localize_many([instant], zone)
+
+    %{
+      service_date: service_date,
+      service_time: service_time,
+      instant: instant,
+      local_time: local_time,
+      timezone: zone.timezone,
+      closed: closed,
+      day_instances: day_instances,
+      timeline_instances: Enum.filter(instances, &intersects?(&1, timeline_start, timeline_end)),
+      timeline_start: timeline_start,
+      timeline_end: timeline_end,
+      boundary_targets: boundary_targets(day_instances, origins),
+      base: base,
+      effective: effective,
+      comparison: Evolutions.compare(base, effective),
+      computed_at: DateTime.utc_now()
+    }
+  end
+
+  defp intersects?(instance, starts_at, ends_at) do
+    DateTime.compare(instance.starts_at, ends_at) == :lt and
+      DateTime.compare(instance.ends_at, starts_at) == :gt
+  end
+
+  # The four action instants for each selected-date instance, named as exact
+  # service-day seconds from an origin at or before the target. A `before` target
+  # that falls before its own origin walks back to the previous loaded origin, and
+  # a `reopens` target past midnight keeps its elapsed seconds (`25:00:00`) rather
+  # than being reparsed as a clock label.
+  defp boundary_targets(day_instances, origins) do
+    for instance <- day_instances,
+        {phase, instant} <- boundary_instants(instance),
+        into: %{} do
+      {{instance.evolution_id, instance.service_date, phase},
+       Schedule.preview_target(instant, instance.service_date, origins)}
+    end
+  end
+
+  defp boundary_instants(instance) do
+    starts_at = instance.starts_at
+    midpoint = div(DateTime.diff(instance.ends_at, starts_at, :second), 2)
+
+    [
+      before: DateTime.add(starts_at, -@before_offset_seconds, :second),
+      closes: starts_at,
+      during: DateTime.add(starts_at, midpoint, :second),
+      reopens: instance.ends_at
+    ]
+  end
+
+  defp latest_instant([instant | rest]) do
+    Enum.reduce(rest, instant, &later_instant/2)
+  end
+
+  defp later_instant(instant, current) do
+    if DateTime.compare(instant, current) == :gt, do: instant, else: current
+  end
+
+  defp closures_for(snapshot, organization_id, gtfs_version_id) do
+    evolutions = station_evolutions(snapshot, organization_id, gtfs_version_id)
+    pathway_by_id = Map.new(snapshot.pathways, &{&1.pathway_id, &1})
 
     with {:ok, options} <-
            calendar_options(
