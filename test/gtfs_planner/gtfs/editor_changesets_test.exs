@@ -118,6 +118,22 @@ defmodule GtfsPlanner.Gtfs.EditorChangesetsTest do
       assert changeset.changes == %{agency_phone: "(212) 555-RIDE"}
     end
 
+    test "accepts a phone change on a stored row whose timezone does not resolve", context do
+      agency =
+        agency_fixture(context.organization_id, context.gtfs_version_id, %{
+          agency_timezone: "Not/a_zone"
+        })
+
+      changeset = Agency.editor_changeset(agency, %{agency_phone: "(212) 555-RIDE"})
+
+      assert changeset.valid?
+      assert changeset.changes == %{agency_phone: "(212) 555-RIDE"}
+
+      assert {:ok, updated} = Repo.update(changeset)
+      assert updated.agency_timezone == "Not/a_zone"
+      assert Repo.get!(Agency, agency.id).agency_phone == "(212) 555-RIDE"
+    end
+
     test "does not cast organization_id, gtfs_version_id or agency_id", context do
       other_organization = organization_fixture()
       other_version = gtfs_version_fixture(other_organization.id)
@@ -191,6 +207,37 @@ defmodule GtfsPlanner.Gtfs.EditorChangesetsTest do
                errors_on(
                  FeedInfo.editor_changeset(feed_info_struct(), %{feed_contact_email: "a.example"})
                )
+    end
+
+    test "rejects a publisher website that is not an absolute web address" do
+      assert %{feed_publisher_url: [@url_message]} =
+               errors_on(
+                 FeedInfo.editor_changeset(feed_info_struct(), %{
+                   feed_publisher_url: "www.example.com"
+                 })
+               )
+    end
+
+    test "rejects a 256-codepoint publisher name and accepts 255" do
+      assert %{feed_publisher_name: ["should be at most 255 character(s)"]} =
+               errors_on(
+                 FeedInfo.editor_changeset(feed_info_struct(), %{
+                   feed_publisher_name: String.duplicate("é", 256)
+                 })
+               )
+
+      assert FeedInfo.editor_changeset(feed_info_struct(), %{
+               feed_publisher_name: String.duplicate("é", 255)
+             }).valid?
+    end
+
+    test "trims surrounding whitespace from a feed text change" do
+      changeset =
+        FeedInfo.editor_changeset(feed_info_struct(), %{
+          feed_publisher_name: "  Metro Transit Two  "
+        })
+
+      assert changeset.changes.feed_publisher_name == "Metro Transit Two"
     end
 
     test "rejects an end date before the start date when either date changed" do
