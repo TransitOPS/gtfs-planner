@@ -384,6 +384,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
   describe "an unavailable database" do
     setup :editor_scope
+    # Only this describe reads through the mock: the page resolves its adapter
+    # from application config, so a stub alone would never be called.
+    setup :substitute_read_adapter
 
     test "an outage shows the callout and Retry loads the same URL again",
          %{version: version} = context do
@@ -452,8 +455,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       html = render(view)
 
-      assert String.index(html, "checks-drawer-problems") <
-               String.index(html, "checks-drawer-notices")
+      # `:binary.match/2` returns each id's byte offset, so the problem group must
+      # start before the notice group and a missing id fails the match.
+      {problems_at, _length} = :binary.match(html, "checks-drawer-problems")
+      {notices_at, _length} = :binary.match(html, "checks-drawer-notices")
+
+      assert problems_at < notices_at
 
       problems =
         LazyHTML.from_fragment(html)
