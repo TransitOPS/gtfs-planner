@@ -12,6 +12,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   The component carries no state: the caller supplies the form field, and the
   current value is read from it, so an imported code outside the list stays
   selected when the drawer opens.
+
+  `unsaved_guard/1` renders the browser-level half of a drawer's dirty state: a
+  hidden element whose `data-dirty` the caller owns, with a colocated
+  `beforeunload` listener that asks the browser's own leave-page question while
+  a draft is unsaved (AC-6). Server-side close protection stays with the page,
+  which owns what "changed" means.
   """
 
   use GtfsPlannerWeb, :html
@@ -49,6 +55,40 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
       prompt="Choose language"
       help={@help}
     />
+    """
+  end
+
+  @doc """
+  Renders the change-guard hook a drawer needs to protect an unsaved draft.
+
+  The element is inert and invisible: it carries `id` only so the hook has a
+  stable DOM node, and `dirty` so the page decides when a draft counts as
+  changed. While `data-dirty` is "true" the hook answers `beforeunload` with
+  `preventDefault()` and an empty `returnValue`, which is how Chromium, Firefox
+  and Safari raise their own leave-page prompt; the listener is removed when the
+  element goes away. Reachable back-button traversal is not guarded.
+  """
+  attr :id, :string, required: true
+  attr :dirty, :boolean, required: true
+
+  def unsaved_guard(assigns) do
+    ~H"""
+    <div id={@id} phx-hook=".UnsavedChangesGuard" data-dirty={to_string(@dirty)} hidden></div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".UnsavedChangesGuard">
+      export default {
+        mounted() {
+          this.beforeUnload = (event) => {
+            if (this.el.dataset.dirty !== "true") return
+            event.preventDefault()
+            event.returnValue = ""
+          }
+          window.addEventListener("beforeunload", this.beforeUnload)
+        },
+        destroyed() {
+          window.removeEventListener("beforeunload", this.beforeUnload)
+        }
+      }
+    </script>
     """
   end
 

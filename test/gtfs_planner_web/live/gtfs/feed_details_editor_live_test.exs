@@ -529,6 +529,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
       |> element("#feed-details-form button[phx-click='close_editor']")
       |> render_click()
 
+      # The typed draft is the only thing standing between Cancel and the close,
+      # so the question comes first and the confirmed discard writes nothing
+      # (step 8).
+      assert has_element?(view, "#feed-details-discard")
+      view |> element("#feed-details-discard-confirm") |> render_click()
+
       assert has_element?(view, "#feed-details-drawer-overlay[data-open='false']")
       assert feed_info_rows(organization) == 0
       assert has_element?(view, "#feed-details-set", "Set feed details")
@@ -545,6 +551,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
       view
       |> element("#feed-details-form button[phx-click='close_editor']")
       |> render_click()
+
+      # Discarding the draft is what returns the drawer to the stored values.
+      assert has_element?(view, "#feed-details-discard")
+      view |> element("#feed-details-discard-confirm") |> render_click()
 
       open_drawer(view, "#feed-details-edit")
 

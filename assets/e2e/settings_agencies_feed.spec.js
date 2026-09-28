@@ -45,6 +45,11 @@ const EDITOR_CAPTURE_DIR =
   process.env.FEED_EDITOR_CAPTURE_DIR ||
   resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/feed-editor");
 
+// The unsaved-draft block's own evidence folder (EV-9).
+const DRAFT_CAPTURE_DIR =
+  process.env.FEED_DRAFTS_CAPTURE_DIR ||
+  resolve(REPO_ROOT, ".specs/13-agencies-and-feed-details/evidence/visual/feed-drafts");
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -329,5 +334,129 @@ test.describe("@feed-editor", () => {
       "Feed details saved.",
     );
     await expect(page.locator("#feed-details-edit")).toBeVisible();
+  });
+});
+
+// Settings › Feed details unsaved drafts (EV-9; step 8).
+//
+// One journey on the version this block owns. It changes one field, then asks
+// the three questions AC-6 answers in a real browser: does the drawer say the
+// draft is unsaved, does Escape on that draft ask before discarding rather than
+// closing, and does a reload raise the browser's own leave-page prompt. Nothing
+// is ever saved, so the seeded row stays as prepared: the journey ends by
+// discarding and reading the stored value back.
+test.describe("@feed-drafts", () => {
+  test.use({ viewport: { width: DESKTOP.width, height: DESKTOP.height } });
+
+  test("shows the unsaved state, asks before discarding and warns on reload", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    await waitForLiveView(page);
+
+    const summaryId = await versionId(page, SUMMARY_VERSION);
+    await page.goto(`/gtfs/${summaryId}/settings/feed-details`);
+    await page.waitForSelector("#feed-details-summary");
+    await waitForLiveView(page);
+
+    await page.click("#feed-details-edit");
+
+    const overlay = page.locator("#feed-details-drawer-overlay");
+    const discard = page.locator("#feed-details-discard");
+    const guard = page.locator("#feed-details-unsaved-guard");
+    const publisherName = page.locator("#feed_info_feed_publisher_name");
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#feed-details-unsaved")).toHaveCount(0);
+    await expect(guard).toHaveAttribute("data-dirty", "false");
+
+    await publisherName.fill("Browser Regional Partnership draft");
+
+    // The draft is named in the drawer header and armed in the hidden hook.
+    await expect(page.locator("#feed-details-unsaved")).toHaveText(
+      "Unsaved changes",
+    );
+    await expect(guard).toHaveAttribute("data-dirty", "true");
+    await expect(page.locator("#feed-details-drawer-close")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DRAFT_CAPTURE_DIR, "feed-draft-1280");
+
+    // Escape reaches the drawer's dismiss control through OverlayDialog, which
+    // sends the close event that asks about the draft.
+    await page.keyboard.press("Escape");
+
+    await expect(discard).toBeVisible();
+    await expect(discard).toHaveAttribute("role", "alertdialog");
+    await expect(page.locator("#feed-details-discard-title")).toHaveText(
+      "Discard unsaved changes?",
+    );
+    await expect(page.locator("#feed-details-discard-body")).toHaveText(
+      "Your edits will be lost. The saved details stay unchanged.",
+    );
+    await expect(page.locator("#feed-details-discard-cancel")).toHaveText(
+      "Keep editing",
+    );
+    await expect(page.locator("#feed-details-discard-confirm")).toHaveText(
+      "Discard changes",
+    );
+    await expect(page.locator("#feed-details-discard-cancel")).toBeFocused();
+    // The question is the topmost surface: the drawer stays behind it.
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DRAFT_CAPTURE_DIR, "feed-draft-discard-1280");
+
+    await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
+    // The phone drawer keeps its own close control and its own dirty label, and
+    // the question stays inside the 375 layout viewport (AC-30).
+    await expect(page.locator("#feed-details-unsaved")).toBeVisible();
+    await expect(page.locator("#feed-details-drawer-close")).toBeVisible();
+    await expect(page.locator("#feed-details-discard-cancel")).toBeVisible();
+    await expect(page.locator("#feed-details-discard-confirm")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureIn(page, testInfo, DRAFT_CAPTURE_DIR, "feed-draft-discard-375");
+    await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+
+    // Keep editing keeps the draft, and the drawer still knows it is dirty.
+    await page.click("#feed-details-discard-cancel");
+
+    await expect(discard).toHaveCount(0);
+    await expect(publisherName).toHaveValue("Browser Regional Partnership draft");
+    await expect(guard).toHaveAttribute("data-dirty", "true");
+
+    // A reload with a changed draft raises the browser's leave-page prompt. The
+    // prompt is browser chrome, so it is asserted through the dialog event
+    // rather than captured. Dismissing it cancels the navigation, which leaves
+    // the editor and the draft in place.
+    const dialogPromise = page.waitForEvent("dialog");
+    // Dismissing the prompt cancels the navigation, so Playwright's reload never
+    // finishes: the short timeout keeps this journey from waiting the default
+    // 30 s for a navigation that is deliberately not happening.
+    const reload = page.reload({ timeout: 5_000 }).catch(() => undefined);
+    const leaveDialog = await dialogPromise;
+
+    expect(leaveDialog.type()).toBe("beforeunload");
+    await leaveDialog.dismiss();
+    await reload;
+
+    await expect(overlay).toHaveAttribute("data-open", "true");
+    await expect(publisherName).toHaveValue("Browser Regional Partnership draft");
+
+    // Discarding is the only way out of the draft, and it writes nothing: the
+    // summary shows the stored publisher name again.
+    await page.click("#feed-details-drawer-close");
+
+    await expect(discard).toBeVisible();
+    await page.click("#feed-details-discard-confirm");
+
+    await expect(overlay).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#feed-details-unsaved")).toHaveCount(0);
+    await expect(guard).toHaveAttribute("data-dirty", "false");
+    await expect(page.locator("#feed-details-summary")).toBeVisible();
+    await expect(page.locator("#feed-details-publisher dl")).toContainText(
+      "Browser Regional Partnership",
+    );
+    await expect(page.locator("#feed-details-publisher dl")).not.toContainText(
+      "draft",
+    );
   });
 });

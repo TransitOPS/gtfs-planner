@@ -22,6 +22,14 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   form (AC-7, CR-9). "Use date label" is an explicit action that reads
   `GtfsPlanner.Gtfs.DisplayClock.today/2`, never an automatic fill (AC-5).
 
+  A draft is protected on both sides of the boundary. Every close route the
+  drawer offers — Cancel, the close button, Escape and the backdrop — asks
+  "Discard unsaved changes?" while the form differs from the stored row, and the
+  hidden `unsaved_guard/1` hook raises the browser's leave-page prompt on reload
+  (AC-6). The same `FeedSettings.change_feed_info/2` changeset decides what
+  "differs" means, so a whitespace-only edit, a value re-typed unchanged or an
+  untouched imported value is not a draft.
+
   Access follows the other Settings pages through the `:gtfs_routes` session, and
   version switching keeps the section: only a published version of the current
   organization navigates, and the target is always `/settings/feed-details` of
@@ -30,7 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.Gtfs.FeedSettingsComponents, only: [language_select: 1]
+  import GtfsPlannerWeb.Gtfs.FeedSettingsComponents, only: [language_select: 1, unsaved_guard: 1]
 
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
@@ -58,6 +66,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
      |> assign(:loaded_token, nil)
      |> assign(:form, feed_details_form(nil, %{}))
      |> assign(:drawer_open?, false)
+     |> assign(:dirty?, false)
+     |> assign(:confirm_close?, false)
      |> assign(:conflict?, false)
      |> assign(:conflict_reloaded?, false)
      |> assign(:return_focus_id, nil)
@@ -122,6 +132,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
      |> assign(:feed_info, feed_info)
      |> assign(:loaded_token, token(feed_info))
      |> assign(:form, feed_details_form(feed_info, %{}))
+     |> assign(:dirty?, false)
+     |> assign(:confirm_close?, false)
      |> assign(:conflict?, false)
      |> assign(:conflict_reloaded?, false)
      |> assign(:return_focus_id, params["opener_id"])
@@ -129,15 +141,31 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
      |> assign(:drawer_open?, true)}
   end
 
+  # Every route out of the drawer — Cancel, the close button and, through the
+  # `OverlayDialog` hook's dismiss control, Escape and the backdrop — lands on
+  # this event, so a changed draft is asked about exactly once (AC-6).
   @impl true
   def handle_event("close_editor", _params, socket) do
+    {:noreply, request_close(socket)}
+  end
+
+  @impl true
+  def handle_event("cancel_discard", _params, socket) do
+    {:noreply, assign(socket, :confirm_close?, false)}
+  end
+
+  # Discarding drops the draft and closes: the row is untouched, so reopening
+  # shows the stored values again.
+  @impl true
+  def handle_event("discard_changes", _params, socket) do
     {:noreply, close_editor(socket)}
   end
 
   @impl true
   def handle_event("validate", %{"feed_info" => params}, socket) do
-    {:noreply,
-     assign(socket, :form, validated_feed_details_form(socket.assigns.feed_info, params))}
+    changeset = FeedSettings.change_feed_info(socket.assigns.feed_info, params)
+
+    {:noreply, assign_draft(socket, changeset, :validate)}
   end
 
   # The suggestion the button applies is the label the drawer prints, so the two
@@ -146,9 +174,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   @impl true
   def handle_event("use_date_label", _params, socket) do
     params = Map.put(draft_params(socket), "feed_version", socket.assigns.date_label)
+    changeset = FeedSettings.change_feed_info(socket.assigns.feed_info, params)
 
-    {:noreply,
-     assign(socket, :form, validated_feed_details_form(socket.assigns.feed_info, params))}
+    {:noreply, assign_draft(socket, changeset, :validate)}
   end
 
   @impl true
@@ -165,7 +193,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          socket
-         |> assign(:form, to_form(changeset, as: :feed_info))
+         |> assign_draft(changeset)
          |> push_event("focus_form_error", %{
            form_id: @form_id,
            fallback_id: @form_error_id
@@ -174,9 +202,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       {:error, :stale} ->
         # The base moved while the drawer was open: keep the draft, keep the
         # values the editor typed, and write nothing (AC-7).
+        changeset = FeedSettings.change_feed_info(socket.assigns.feed_info, params)
+
         {:noreply,
          socket
-         |> assign(:form, feed_details_form(socket.assigns.feed_info, params))
+         |> assign_draft(changeset)
          |> assign(:conflict?, true)
          |> assign(:conflict_reloaded?, false)}
 
@@ -203,12 +233,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   @impl true
   def handle_event("load_latest", _params, socket) do
     feed_info = load_feed_info(socket)
+    changeset = FeedSettings.change_feed_info(feed_info, draft_params(socket))
 
     {:noreply,
      socket
      |> assign(:feed_info, feed_info)
      |> assign(:loaded_token, token(feed_info))
-     |> assign(:form, feed_details_form(feed_info, draft_params(socket)))
+     |> assign_draft(changeset)
      |> assign(:conflict?, true)
      |> assign(:conflict_reloaded?, true)}
   end
@@ -274,6 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         open={@drawer_open?}
         feed_info={@feed_info}
         form={@form}
+        dirty?={@dirty?}
         conflict?={@conflict?}
         conflict_reloaded?={@conflict_reloaded?}
         return_focus_id={@return_focus_id}
@@ -281,6 +313,29 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         version={@current_gtfs_version}
         organization={@current_organization}
       />
+
+      <%!--
+        The discard question is the only exit from a changed draft, so the drawer
+        stays open and visible behind it. Escape belongs to the dialog while it
+        is up: the `OverlayDialog` hook turns it into a click on "Keep editing".
+        `described_by` names `.confirm_dialog`'s own `#feed-details-discard-body`
+        wrapper, so the paragraph inside it carries no id of its own.
+      --%>
+      <.confirm_dialog
+        :if={@confirm_close?}
+        id="feed-details-discard"
+        open={true}
+        title="Discard unsaved changes?"
+        confirm_label="Discard changes"
+        pending_label="Discarding…"
+        cancel_label="Keep editing"
+        on_confirm="discard_changes"
+        on_cancel="cancel_discard"
+        confirm_variant="danger"
+        described_by="feed-details-discard-body"
+      >
+        <p>Your edits will be lost. The saved details stay unchanged.</p>
+      </.confirm_dialog>
     </Layouts.app>
     """
   end
@@ -291,6 +346,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   attr :open, :boolean, required: true
   attr :feed_info, :any, required: true
   attr :form, :any, required: true
+  attr :dirty?, :boolean, required: true
   attr :conflict?, :boolean, required: true
   attr :conflict_reloaded?, :boolean, required: true
   attr :return_focus_id, :string, default: nil
@@ -307,7 +363,25 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       title={drawer_title(@feed_info)}
       return_focus_id={@return_focus_id}
     >
+      <%!--
+        The prototype's dirty line sits in the drawer header, and the shared
+        header slot is where the repository already places this exact state
+        (`#pathway-dirty-indicator`). The badge names the state in words, so the
+        warning is readable without its colour.
+      --%>
+      <:header_actions>
+        <span
+          :if={@dirty?}
+          id="feed-details-unsaved"
+          class="badge badge-warning badge-sm whitespace-nowrap"
+        >
+          Unsaved changes
+        </span>
+      </:header_actions>
+
       <div id="feed-details-form-panel" phx-hook="FormErrorFocus">
+        <.unsaved_guard id="feed-details-unsaved-guard" dirty={@dirty?} />
+
         <p id="feed-details-drawer-scope" class="text-xs text-base-content/70">
           {scope_line(@version, @organization)}
         </p>
@@ -571,9 +645,18 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   defp close_editor(socket) do
     socket
     |> assign(:drawer_open?, false)
+    |> assign(:dirty?, false)
+    |> assign(:confirm_close?, false)
     |> assign(:conflict?, false)
     |> assign(:conflict_reloaded?, false)
   end
+
+  # A changed draft is never discarded by accident: every close route lands
+  # here, and only "Discard changes" reaches `close_editor/1`.
+  defp request_close(%{assigns: %{dirty?: true}} = socket),
+    do: assign(socket, :confirm_close?, true)
+
+  defp request_close(socket), do: close_editor(socket)
 
   defp feed_details_form(feed_info, attrs) do
     feed_info
@@ -581,15 +664,26 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     |> to_form(as: :feed_info)
   end
 
-  # `action: :validate` marks the round trip as a keystroke, so `used_input?/1`
-  # shows an error beside the field the editor has touched and the save-failure
-  # callout stays for saves only.
-  defp validated_feed_details_form(feed_info, attrs) do
-    feed_info
-    |> FeedSettings.change_feed_info(attrs)
-    |> Map.put(:action, :validate)
-    |> to_form(as: :feed_info)
+  # The form, the action it reports and the dirty state always move together, so
+  # one helper binds them: a handler cannot show a draft the guard would ignore,
+  # or guard a form that shows nothing. `action: :validate` marks the round trip
+  # as a keystroke, so `used_input?/1` shows an error beside the field the editor
+  # has touched and the save-failure callout stays for saves only.
+  defp assign_draft(socket, changeset, action \\ nil) do
+    changeset = if action, do: Map.put(changeset, :action, action), else: changeset
+
+    socket
+    |> assign(:form, to_form(changeset, as: :feed_info))
+    |> assign(:dirty?, dirty?(changeset))
   end
+
+  # `FeedSettings.change_feed_info/2` owns what "changed" means, so the dirty
+  # state and the saved result cannot disagree: `cast/3` records nothing for a
+  # value equal to the stored row, `trim_string_fields/1` drops a
+  # whitespace-only edit, and Ecto's empty values turn a blank field into nil.
+  # An imported value the editor rules reject is therefore not a draft until the
+  # editor touches it, and the guard and the discard dialog always agree.
+  defp dirty?(%Ecto.Changeset{} = changeset), do: changeset.changes != %{}
 
   defp draft_params(socket), do: socket.assigns.form.source.params || %{}
 
