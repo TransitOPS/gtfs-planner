@@ -40,6 +40,16 @@ defmodule GtfsPlanner.Gtfs.Routes do
   editor changeset (seam `S-2`) and writes the route audit in the same
   transaction. `reconcile_creation/2` reports an attempt's committed result
   without ever inserting.
+
+  `update_route/5` is the R4 reviewed detail-edit command. It reauthorizes,
+  locks the scoped published version and then the route row, compares the
+  trusted base source `B`, the submitted draft `D` and the freshly locked
+  current `C`, and validates only the accepted combined result through the
+  shared `Route` editor changeset. An unchanged `C` applies only `D` minus `B`;
+  a changed `C` returns a fresh source and the comparison before any write, and
+  a deliberate merge is bound to the displayed current revision so a third
+  intervening save returns a fresh conflict instead of a stale write. Changed
+  fields and the route audit commit together; a no-op writes nothing.
   """
 
   import Ecto.Changeset, only: [add_error: 3]
@@ -157,6 +167,9 @@ defmodule GtfsPlanner.Gtfs.Routes do
         }
   @type create_result :: %{route: Route.t(), replayed?: boolean()}
   @type result_link :: %{route_uuid: Ecto.UUID.t(), route_id: String.t()}
+
+  @type conflict :: %{source: source(), comparison: edit_result()}
+  @type update_result :: %{route: Route.t(), source: source()}
 
   @doc """
   Projects a persisted route into the trusted edit source (R2).
@@ -325,7 +338,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
     with {:ok, attempt_id} <- verify_creation_attempt(attempt, audit) do
       digest = request_digest(attrs)
 
-      run_creation_transaction(fn ->
+      run_command_transaction(fn ->
         :ok = authorize_editor!(audit)
         _version = lock_published_version!(audit)
 
@@ -366,6 +379,60 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   def reconcile_creation(_attempt, _audit), do: {:error, :not_found}
+
+  @doc """
+  Applies reviewed route detail edits (R4).
+
+  `source` is the trusted base `B` (a `source/1` map) minted when the editor
+  loaded, `attrs` the submitted draft `D`, and `choices` the deliberate merge
+  confirmations: `confirm_merge: true`, per-field `"mine"`/`"theirs"` values
+  for divergent fields and the displayed-current-revision binding
+  `current_updated_at`. One serializable transaction reauthorizes the active
+  editor, locks the scoped published version and then the route row, and
+  validates only the accepted combined result through the shared `Route` editor
+  changeset, so forged scope/identity/active keys and a replaced UUID can never
+  mutate.
+
+  An unchanged current applies only `D` minus `B` directly. A changed current
+  never writes on a plain submission: the call returns `{:error, {:conflict,
+  payload}}` with a fresh source and the comparison and no stale draft is
+  written. A deliberate merge applies only when its choices are bound to the
+  displayed current revision (`current_updated_at` matching the freshly locked
+  revision); every submission is rechecked against the locked row, so a third
+  intervening save returns a fresh conflict payload. No-op saves write nothing
+  and add no audit; applied edits write the changed fields and their route audit
+  atomically. A source identity mismatch (including a replaced UUID) is
+  `:stale`, a missing or foreign route is `:not_found`, and the base is never
+  implicitly replaced. A submitted agency is re-resolved under the lock (seam
+  `S-1`).
+  """
+  @spec update_route(String.t(), map(), map(), map(), AuditContext.t()) ::
+          {:ok, update_result()}
+          | {:error,
+             :not_found
+             | :stale
+             | :forbidden
+             | :busy
+             | :failed_audit
+             | :invalid_input
+             | {:conflict, conflict()}
+             | {:invalid_choice, atom(), term()}
+             | {:coupled_choice_conflict, [atom()]}
+             | Ecto.Changeset.t()}
+  def update_route(route_id, attrs, base, choices, %AuditContext{} = audit)
+      when is_binary(route_id) and is_map(attrs) and is_map(base) and is_map(choices) do
+    run_command_transaction(fn ->
+      :ok = authorize_editor!(audit)
+      _version = lock_published_version!(audit)
+
+      case lock_scoped_route(route_id, audit) do
+        nil -> Repo.rollback(:not_found)
+        current_route -> apply_reviewed_edit(current_route, attrs, base, choices, audit)
+      end
+    end)
+  end
+
+  def update_route(_route_id, _attrs, _base, _choices, _audit), do: {:error, :invalid_input}
 
   defp agency_options(organization_id, gtfs_version_id) do
     Enum.map(Gtfs.list_agencies(organization_id, gtfs_version_id), fn agency ->
@@ -806,33 +873,174 @@ defmodule GtfsPlanner.Gtfs.Routes do
     end)
   end
 
-  # R3's bounded retry convention (the route-pattern/schedule rule): rerun the
-  # whole serializable closure on a transient serialization failure (40001),
-  # deadlock (40P01) or an explicitly identified generated-ID collision, at
-  # most three attempts. Manual overrides and every other failure return
-  # unchanged; exhausted retries are `:busy`.
-  defp run_creation_transaction(transaction, attempts \\ 3) do
+  # --- reviewed update internals -------------------------------------------
+
+  defp lock_scoped_route(route_id, audit) do
+    from(route in Route,
+      where:
+        route.organization_id == ^audit.organization_id and
+          route.gtfs_version_id == ^audit.gtfs_version_id and
+          route.route_id == ^route_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  # Compares the trusted base, the submitted draft and the freshly locked
+  # current, then either refuses before any write (identity mismatch, bad
+  # choices, or a changed current without a confirmed merge bound to the
+  # displayed revision) or applies the accepted write set. `:source_mismatch`
+  # — including a replaced UUID — is `:stale` and never a rebase of the base.
+  defp apply_reviewed_edit(current_route, attrs, base, choices, audit) do
+    current = source(current_route)
+
+    case compare_edit(base, attrs, current, choices) do
+      {:error, :source_mismatch} ->
+        Repo.rollback(:stale)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+
+      {:ok, %{status: status} = comparison} when status != :applied ->
+        Repo.rollback({:conflict, %{source: current, comparison: comparison}})
+
+      {:ok, %{write: write} = comparison} ->
+        if changed_since_base?(base, current) and
+             not bound_to_displayed_current?(choices, current_route) do
+          # The choices were bound to another revision: re-present the merge as
+          # undecided and never write the stale draft.
+          Repo.rollback(
+            {:conflict, %{source: current, comparison: unresolved_comparison(comparison)}}
+          )
+        else
+          write_reviewed_edit(current_route, write, attrs, audit)
+        end
+    end
+  end
+
+  # A re-displayed comparison is always undecided: divergent fields need fresh
+  # per-field choices and everything else needs fresh merge confirmation.
+  defp unresolved_comparison(%{conflicting: conflicting} = comparison) do
+    %{
+      comparison
+      | status: if(conflicting == [], do: :confirmation_required, else: :choices_required),
+        write: %{},
+        merged: nil
+    }
+  end
+
+  # A changed current means the submission is a deliberate merge: its choices
+  # must be bound to the revision that was actually displayed.
+  defp changed_since_base?(base, current) do
+    base_normalized = side(base).normalized
+
+    Enum.any?(@edit_fields, fn field ->
+      Map.get(base_normalized, field) != Map.get(current.normalized, field)
+    end)
+  end
+
+  defp bound_to_displayed_current?(choices, current_route) do
+    binding = Map.get(choices, :current_updated_at) || Map.get(choices, "current_updated_at")
+
+    case Ecto.Type.cast(:utc_datetime_usec, binding) do
+      {:ok, bound} -> DateTime.compare(bound, current_route.updated_at) == :eq
+      :error -> false
+    end
+  end
+
+  # Only the accepted write set is cast (untouched raw imported values stay
+  # outside normalization) and the shared editor changeset validates the
+  # accepted combined result. A submitted agency is re-resolved under the
+  # version lock (seam `S-1`). A changeset with nothing left to change is a
+  # no-op: no write, no timestamp touch and no audit.
+  defp write_reviewed_edit(current_route, write, attrs, audit) do
+    write_attrs = stringify_keys(write)
+
+    agency =
+      if Map.has_key?(write, :agency_id),
+        do: resolve_agency(write_attrs, audit),
+        else: {:ok, %{}}
+
+    final_attrs =
+      write_attrs
+      |> put_resolution(agency)
+      |> put_text_mode(attrs)
+
+    changeset = Route.editor_changeset(current_route, final_attrs, :edit)
+
+    changeset =
+      case agency do
+        {:error, {field, message}} -> add_error(changeset, field, message)
+        _outcome -> changeset
+      end
+
+    cond do
+      not changeset.valid? ->
+        Repo.rollback(changeset)
+
+      changeset.changes == %{} ->
+        %{route: current_route, source: source(current_route)}
+
+      true ->
+        case Repo.update(changeset) do
+          {:ok, updated} ->
+            audit_updated!(current_route, updated, audit)
+            %{route: updated, source: source(updated)}
+
+          {:error, failed} ->
+            Repo.rollback(failed)
+        end
+    end
+  end
+
+  # text_mode is transient form transport metadata (R1): forwarded so the
+  # editor changeset recomputes automatic text server-side and rejects invalid
+  # values, never persisted.
+  defp put_text_mode(final_attrs, attrs) do
+    key = Enum.find(["text_mode", :text_mode], &Map.has_key?(attrs, &1))
+    if key, do: Map.put(final_attrs, "text_mode", Map.fetch!(attrs, key)), else: final_attrs
+  end
+
+  # Mutation and audit commit together (INV-3); an unrecordable audit rolls the
+  # edit back. Route diffs are the explicit before/after snapshots in the
+  # shared snapshot shape.
+  defp audit_updated!(before_route, updated_route, audit) do
+    case Gtfs.record_change_in_transaction(audit, :route, updated_route, "updated", %{
+           before: Gtfs.route_audit_snapshot(before_route),
+           after: Gtfs.route_audit_snapshot(updated_route)
+         }) do
+      {:ok, log} -> log
+      {:error, _changeset} -> Repo.rollback(:failed_audit)
+    end
+  end
+
+  # The route command bounded-retry convention (the route-pattern/schedule
+  # rule): rerun the whole serializable closure on a transient serialization
+  # failure (40001), deadlock (40P01) or an explicitly identified generated-ID
+  # collision, at most three attempts. Manual overrides and every other failure
+  # return unchanged; exhausted retries are `:busy`.
+  defp run_command_transaction(transaction, attempts \\ 3) do
     case run_apply_transaction(transaction) do
       {:ok, result} ->
         {:ok, result}
 
       {:retryable_conflict, _error} ->
-        retry_creation_transaction(transaction, attempts)
+        retry_command_transaction(transaction, attempts)
 
       {:error, :generated_collision} ->
-        retry_creation_transaction(transaction, attempts)
+        retry_command_transaction(transaction, attempts)
 
       {:error, reason} ->
         if retryable_conflict?(reason),
-          do: retry_creation_transaction(transaction, attempts),
+          do: retry_command_transaction(transaction, attempts),
           else: {:error, reason}
     end
   end
 
-  defp retry_creation_transaction(transaction, attempts) when attempts > 1,
-    do: run_creation_transaction(transaction, attempts - 1)
+  defp retry_command_transaction(transaction, attempts) when attempts > 1,
+    do: run_command_transaction(transaction, attempts - 1)
 
-  defp retry_creation_transaction(_transaction, _attempts), do: {:error, :busy}
+  defp retry_command_transaction(_transaction, _attempts), do: {:error, :busy}
 
   defp run_apply_transaction(transaction) do
     Application.get_env(
