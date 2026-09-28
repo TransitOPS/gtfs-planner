@@ -294,12 +294,15 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   The dialog names the count and calendar for a bulk delete and the trip's start
   and pattern for a single delete, states that the trips leave the published
-  version and that this cannot be undone, and keeps any delete failure on screen
-  with a retry.
+  version and that this cannot be undone, names the transfer records the deletion
+  also removes when any exist, and keeps any delete failure on screen with a
+  retry.
   """
   attr :dialog, :any, required: true
 
   def delete_dialog(assigns) do
+    assigns = assign(assigns, :transfer_notice, transfer_notice(assigns.dialog))
+
     ~H"""
     <.confirm_dialog
       id="delete-dialog"
@@ -317,9 +320,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         <p class={["text-base-content/70", @dialog.detail && "mt-2"]}>
           <%= if @dialog.frequency? do %>
             This removes the trips and their stop times from this published version, including
-            frequency service. You cannot undo this.
+            frequency service.
+            <span :if={@transfer_notice} id="delete-dialog-transfers">{@transfer_notice}</span>
+            You cannot
+            undo this.
           <% else %>
-            This removes the trips and their stop times from this published version. You cannot
+            This removes the trips and their stop times from this published version.
+            <span :if={@transfer_notice} id="delete-dialog-transfers">{@transfer_notice}</span>
+            You cannot
             undo this.
           <% end %>
         </p>
@@ -330,6 +338,28 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     </.confirm_dialog>
     """
   end
+
+  # The confirmation states the transfer consequence only when a transfer names
+  # one of the dialog's trips. A dialog map without a transfer count is a caller
+  # defect and raises rather than silently omitting the sentence.
+  defp transfer_notice(nil), do: nil
+  defp transfer_notice(%{transfer_count: 0}), do: nil
+
+  defp transfer_notice(%{transfer_count: transfer_count, ids: ids}),
+    do: transfer_sentence(transfer_count, length(ids))
+
+  # The sentence states how many transfer records the deletion removes, in the
+  # number of the count and of the trips the dialog names.
+  defp transfer_sentence(1, 1), do: "It also removes 1 transfer record that names this trip."
+
+  defp transfer_sentence(1, _trip_count),
+    do: "It also removes 1 transfer record that names these trips."
+
+  defp transfer_sentence(transfer_count, 1),
+    do: "It also removes #{transfer_count} transfer records that name this trip."
+
+  defp transfer_sentence(transfer_count, _trip_count),
+    do: "It also removes #{transfer_count} transfer records that name these trips."
 
   defp dialog_title(nil), do: "Delete trips?"
   defp dialog_title(%{title: title}), do: title

@@ -14,6 +14,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Repo
 
   @doc """
@@ -415,6 +416,23 @@ defmodule GtfsPlanner.GtfsFixtures do
 
     %Frequency{}
     |> Frequency.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  @doc "Generate a transfers.txt row; attrs replace the `transfer_type: 0` default."
+  def transfer_fixture(organization_id, gtfs_version_id, attrs) do
+    attrs =
+      Map.merge(
+        %{
+          transfer_type: 0,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        Map.new(attrs)
+      )
+
+    %Transfer{}
+    |> Transfer.changeset(attrs)
     |> Repo.insert!()
   end
 

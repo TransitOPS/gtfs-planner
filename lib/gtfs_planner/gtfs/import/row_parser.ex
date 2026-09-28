@@ -1031,6 +1031,11 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   @doc """
   Converts a transfer CSV row to attributes map.
 
+  Applies the GTFS endpoint rule: `transfer_type` is parsed first, then types 4
+  and 5 (in-seat and not-in-seat linked trips) require both trip IDs and may omit
+  both stops, while every other type requires both stop IDs. Every stop, route and
+  trip value is normalized with `empty_to_nil/1`, so an empty column stores NULL.
+
   ## Parameters
 
     * `row_map` - Map of CSV column names to values
@@ -1043,16 +1048,15 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
     * `{:error, reason}` - Validation failure
   """
   def transfer_row_to_attrs(row_map, organization_id, gtfs_version_id) do
-    with {:ok, from_stop_id} <- extract_required(row_map, "from_stop_id"),
-         {:ok, to_stop_id} <- extract_required(row_map, "to_stop_id"),
-         {:ok, transfer_type_str} <- extract_required(row_map, "transfer_type"),
-         {:ok, transfer_type} <- parse_transfer_type(transfer_type_str) do
+    with {:ok, transfer_type_str} <- extract_required(row_map, "transfer_type"),
+         {:ok, transfer_type} <- parse_transfer_type(transfer_type_str),
+         :ok <- require_transfer_endpoints(row_map, transfer_type) do
       {:ok, min_transfer_time} = parse_integer(row_map["min_transfer_time"])
 
       {:ok,
        %{
-         from_stop_id: from_stop_id,
-         to_stop_id: to_stop_id,
+         from_stop_id: empty_to_nil(row_map["from_stop_id"]),
+         to_stop_id: empty_to_nil(row_map["to_stop_id"]),
          from_route_id: empty_to_nil(row_map["from_route_id"]),
          to_route_id: empty_to_nil(row_map["to_route_id"]),
          from_trip_id: empty_to_nil(row_map["from_trip_id"]),
@@ -1062,6 +1066,22 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          organization_id: organization_id,
          gtfs_version_id: gtfs_version_id
        }}
+    end
+  end
+
+  # Types 4 and 5 identify the transfer by its trip pair, so their stops are
+  # optional; every other type identifies it by its stops.
+  defp require_transfer_endpoints(row_map, transfer_type) when transfer_type in [4, 5] do
+    with {:ok, _from_trip_id} <- extract_required(row_map, "from_trip_id"),
+         {:ok, _to_trip_id} <- extract_required(row_map, "to_trip_id") do
+      :ok
+    end
+  end
+
+  defp require_transfer_endpoints(row_map, _transfer_type) do
+    with {:ok, _from_stop_id} <- extract_required(row_map, "from_stop_id"),
+         {:ok, _to_stop_id} <- extract_required(row_map, "to_stop_id") do
+      :ok
     end
   end
 
