@@ -767,6 +767,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   defp assign_applying(socket, value), do: Component.assign(socket, :applying?, value)
 
+  # A successful apply persists the drafts the hook pushed for review, so
+  # the server's dirty/flagged mirror is definitionally clean once the fresh
+  # model loads. The hook drops its drafts on that load (CR-5) without
+  # pushing, so without this reset the badges would read ◷ Unsaved until the
+  # next hook gesture. Discard keeps its confirmed-clean handshake (the
+  # guards suite pins it); rebase keeps the mirror because the hook keeps
+  # its points.
+  defp clear_draft_mirror(socket) do
+    mirror = %{dirty_positions: [], flagged_positions: []}
+
+    case socket.assigns[:alignment_state] do
+      state when is_map(state) ->
+        Component.assign(socket, :alignment_state, Map.merge(state, mirror))
+
+      _ ->
+        Component.assign(socket, :alignment_state, mirror)
+    end
+  end
+
   defp handle_save_result(socket, result) do
     trips = Map.get(result, :trips_updated, 0)
 
@@ -776,6 +795,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_forced_local, [])
     |> Component.assign(:alignment_save_notice, nil)
     |> Component.assign(:status_message, "Alignment saved. #{trips} #{trip_noun(trips)} updated.")
+    |> clear_draft_mirror()
     |> reload_alignment_model()
   end
 

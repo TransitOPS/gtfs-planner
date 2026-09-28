@@ -433,11 +433,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           Draw manually
         </button>
       </div>
-      <%!-- The keyboard point list (step 25): the button dispatches a DOM
+      <%!-- The keyboard point list (steps 25, 30): the button dispatches a DOM
         action to the PatternAlignment hook, which owns the ignored list
-        container below (CR-5). Rendered only for editable non-missing
-        sections; step 26 adds the remaining section actions here. --%>
-      <div :if={@editable? and @section.kind != :missing} class="mt-3 flex flex-wrap gap-2">
+        container below (CR-5). Rendered for every editable section, including
+        missing ones: after Draw manually the hook holds a `set` draft, so the
+        list offers "No interior points yet. Use Add midpoint to start." and
+        keyboard users can complete a drawn section. Before the draw the hook
+        no-ops the toggle, since a missing section without a draft is not
+        editable. Step 26 adds the remaining section actions here. --%>
+      <div :if={@editable?} class="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
           id="alignment-point-list-toggle"
@@ -455,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         </button>
       </div>
       <div
-        :if={@editable? and @section.kind != :missing}
+        :if={@editable?}
         id="alignment-point-list"
         phx-update="ignore"
       >

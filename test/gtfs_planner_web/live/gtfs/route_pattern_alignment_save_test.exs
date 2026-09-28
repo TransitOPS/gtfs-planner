@@ -266,6 +266,34 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       refute save_open?(view)
     end
 
+    test "a direct apply clears the dirty mirror the hook drops on load", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      base_stops(organization, version)
+      route_one = route(organization, version, "SV0C")
+      solo = pattern(organization, version, route_one, "P-SV-SOLO-CLEAR")
+      occurrences(solo, ["S1", "S2"])
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route_one, solo))
+
+      # The hook drops its drafts on the pushed load without pushing, so the
+      # server must reset its own mirror when the apply persists them.
+      render_hook(view, "alignment_draft_state", %{"dirty_positions" => [1]})
+      assert has_element?(view, "#alignment-status", "◷ Unsaved changes")
+      assert_push_event(view, "route_pattern_dirty", %{dirty: true})
+
+      draft = [set_entry(section_at(Repo.reload!(solo), 1), [[-74.005500, 40.713100]])]
+      render_hook(view, "alignment_save_requested", save_params(draft))
+
+      assert has_element?(view, "#status", "Alignment saved. 0 trips updated.")
+      assert_push_event(view, "alignment:load", %{model: _model})
+      assert_push_event(view, "route_pattern_dirty", %{dirty: false})
+      assert has_element?(view, "#alignment-section-status-1", "✓ Saved")
+      refute has_element?(view, "#alignment-status", "◷ Unsaved changes")
+    end
+
     test "a shared-section edit opens the scope dialog defaulting to local", %{
       conn: conn,
       organization: organization,

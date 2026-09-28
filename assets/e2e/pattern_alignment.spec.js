@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { bodyFitsViewport } from "./browser_helpers";
-import { mkdirSync } from "node:fs";
+import { bodyFitsViewport, readZipTextMember } from "./browser_helpers";
+import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -1017,6 +1017,648 @@ test.describe("imported shapes", () => {
 
     await page.setViewportSize({ width: 320, height: 900 });
     await captureFullPage(page, "imported-320");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+});
+
+/**
+ * Manual editing journeys (spec 12, step 30, EV-29).
+ *
+ * One Playwright journey through the REAL production composition
+ * (Playwright → local Phoenix server on 4002 with BROWSER_E2E=true →
+ * RoutePatternLive → PatternAlignment hook → review/apply → exporter
+ * download): draw the missing section, edit points, use the keyboard list,
+ * take section actions, save through the scope dialog, and prove the drawn
+ * midpoint lands axis-ordered in the exported shapes.txt. Tiles are stubbed
+ * at the browser boundary; the midpoint and scope assertions run against
+ * the real server and database.
+ *
+ * The 1440 px journey mutates BROWSER-ALIGN-A (sections 1–3); the 320 px
+ * journey uses the BROWSER-ALIGN-A-B copy so viewports never share modified
+ * records. Read-only states reuse BROWSER-ALIGN-IMPORTED, BROWSER-ALIGN-LOOP
+ * and BROWSER-ALIGN-LONG. Tests run in file order (workers: 1) and build on
+ * each other's saved state; do not reorder them.
+ */
+test.describe("manual editing journeys", () => {
+  // Seed stops (test/support/browser_seed.exs): AL_S3 is
+  // (40.714800, -74.004000), AL_S4 is (40.715800, -74.003000). Add midpoint
+  // averages the anchors, the materializer rounds to 6 decimals, and the
+  // exporter writes the Decimals verbatim — so the drawn point lands in
+  // shapes.txt as lat 40.715300 / lon -74.003500 when axis order holds.
+  const MID_LAT = "40.715300";
+  const MID_LON = "-74.003500";
+
+  const JOURNEY_PATTERN = "BROWSER-ALIGN-A";
+  const JOURNEY_SIBLING = "BROWSER-ALIGN-B";
+  // The -B copy of A for the 320 px run: same visits, but its first two
+  // sections resolve through the shared paths, so only its third section
+  // is missing for the phone draw-and-save journey.
+  const JOURNEY_NARROW = "BROWSER-ALIGN-A-B";
+
+  // Full-version export download, copied from route_patterns.spec.js. The
+  // export link changes only once the rebuilt archive is ready, so the
+  // poll doubles as build completion.
+  async function downloadExport(page) {
+    await page.goto("/gtfs/" + (await getVersionId(page)) + "/export");
+    await page.waitForSelector("#start-export", { timeout: 15000 });
+    await waitForLiveView(page);
+
+    const previousHref = await page
+      .locator("#export-download-link")
+      .getAttribute("href");
+
+    await page.locator("#start-export").click();
+    await expect
+      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
+        timeout: 120000,
+      })
+      .not.toBe(previousHref);
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#export-download-link").click();
+    const download = await downloadPromise;
+    return readFileSync(await download.path());
+  }
+
+  function findShapeRow(shapesText, lat, lon) {
+    const lines = shapesText.trim().split("\n");
+    const header = lines[0].split(",");
+    const latIdx = header.indexOf("shape_pt_lat");
+    const lonIdx = header.indexOf("shape_pt_lon");
+    if (latIdx === -1 || lonIdx === -1) {
+      throw new Error("shapes.txt is missing its axis columns");
+    }
+    return lines
+      .slice(1)
+      .map((line) => line.split(","))
+      .find((cols) => cols[latIdx] === lat && cols[lonIdx] === lon);
+  }
+
+  // The confirm panel plays a 150 ms entry fade; capture only once it
+  // settles at full opacity, never mid-animation.
+  async function settleDialog(page, dialogId) {
+    await page.waitForFunction(
+      (id) => {
+        const panel = document.querySelector(`#${id} > div > div`);
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      dialogId,
+      { timeout: 5000 },
+    );
+  }
+
+  async function openAlignment(page, patternId) {
+    const versionId = await getVersionId(page);
+    await page.goto(
+      `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/${patternId}?task=alignment`,
+    );
+    await page.waitForSelector("#alignment-task", { timeout: 15000 });
+    await page.waitForSelector("#alignment-sections", { timeout: 15000 });
+    await waitForLiveView(page);
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+    // Stop pins render only once the hook has drawn its model, so this is
+    // the readiness signal for hook-dispatched actions (Draw, Clear):
+    // without it a fast click can land before the model arrives and
+    // silently no-op.
+    await expect(
+      page.locator("#alignment-map-root .pa-stop-pin").first(),
+    ).toBeVisible({ timeout: 15000 });
+  }
+
+  // Clicks Save and confirms through the scope dialog when the review
+  // needs one (a pair used by several patterns does). The dialog keeps
+  // "Only this pattern" checked by default; the caller asserts that
+  // default before confirming when the journey owns it.
+  async function saveThroughScope(page, position) {
+    await page.locator("#alignment-save").click();
+    await expect(page.locator("#alignment-save-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(
+      page.locator(`#alignment-save-scope-${position}-local`),
+    ).toBeChecked();
+    await page.locator("#alignment-save-dialog-confirm").click();
+    await expect(page.locator("#status")).toContainText(
+      "Alignment saved.",
+      { timeout: 15000 },
+    );
+  }
+
+  test("draws the missing section, adds its midpoint and saves it", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+
+    // Section 3 (Align Market → Align Harbor) is the pattern's only
+    // missing section: the detail offers Draw manually as its primary
+    // action and no Generate control renders (CR-10).
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, JOURNEY_PATTERN);
+    await page.locator("#alignment-section-3").click();
+    await expect(page.locator("#alignment-draw")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-draw")).toContainText(
+      "Draw manually",
+    );
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "journey-partial-1440");
+
+    // Draw manually drops a straight set draft and enters Edit points;
+    // the keyboard list (now rendered for editable missing sections too)
+    // offers Add midpoint as the first interior point.
+    await page.locator("#alignment-draw").click();
+    await expect(page.locator("#alignment-map-root")).toContainText(
+      "Click the line to add a point",
+    );
+    await expect(page.locator("#alignment-point-list-toggle")).toBeVisible({
+      timeout: 15000,
+    });
+    await page.locator("#alignment-point-list-toggle").click();
+    await expect(page.locator("#alignment-point-list")).toContainText(
+      "No interior points yet",
+    );
+    await page.locator("#alignment-point-list [data-add-midpoint]").click();
+    await expect(
+      page.locator("#alignment-point-list .pa-point-row"),
+    ).toHaveCount(1);
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-3")).toContainText(
+      "Unsaved",
+    );
+    await expect(page.locator("#alignment-save")).toBeEnabled();
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "journey-editing-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // The S3 → S4 pair is also used by the -B copy, GEN-2 and the long
+    // pattern, so the review asks for scope with "Only this pattern"
+    // checked; the dialog names a sibling user of the shared pair.
+    await page.locator("#alignment-save").click();
+    await expect(page.locator("#alignment-save-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-save-dialog")).toContainText(
+      "Who should use this path?",
+    );
+    await expect(
+      page.locator("#alignment-save-scope-3-local"),
+    ).toBeChecked();
+    await expect(page.locator("#alignment-save-dialog")).toContainText(
+      "BROWSER-ALIGN-A-B",
+    );
+    await settleDialog(page, "alignment-save-dialog");
+    await captureViewport(page, "journey-scope-dialog-1440");
+    await page.locator("#alignment-save-dialog-confirm").click();
+    await expect(page.locator("#status")).toContainText(
+      "Alignment saved.",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-3")).toContainText(
+      "✓ Saved",
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  test("exports the drawn midpoint with axis-ordered coordinates", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // The full-version export carries the drawn shape: one shapes.txt row
+    // holds the midpoint with the latitude in the latitude column (INV-1).
+    const zip = await downloadExport(page);
+    const shapes = readZipTextMember(zip, "shapes.txt");
+    const header = shapes.trim().split("\n")[0].split(",");
+    expect(header).toContain("shape_pt_lat");
+    expect(header).toContain("shape_pt_lon");
+    expect(findShapeRow(shapes, MID_LAT, MID_LON)).toBeTruthy();
+
+    expect(problems).toEqual([]);
+  });
+
+  test("inserts a point by clicking the line and restores it with Undo", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+
+    // Section 1's saved interior differs between a fresh seed (one point)
+    // and a full-file run (the save-dialogs journey leaves it straight),
+    // so straighten it through the real section action only when handles
+    // exist: the insert must start from zero either way.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, JOURNEY_PATTERN);
+    await page.locator("#alignment-section-1").click();
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    const handles = page.locator("#alignment-map-root .alignment-handle");
+    if ((await handles.count()) > 0) {
+      await page.locator("#alignment-detail summary").click();
+      await expect(page.locator("#alignment-clear")).toBeVisible({
+        timeout: 15000,
+      });
+      await page.locator("#alignment-clear").click();
+      await expect(page.locator("#alignment-section-status-1")).toContainText(
+        "Unsaved",
+        { timeout: 15000 },
+      );
+    }
+    await expect(handles).toHaveCount(0);
+
+    // The map renders vectors on canvas (`preferCanvas`), so the click
+    // target is the stop-1 → stop-2 pin midpoint. Click only when two
+    // consecutive reads agree: right after a fit or zoom the pins and the
+    // canvas line disagree for a frame while the animation settles, and a
+    // click in that window can land on the neighbouring section's
+    // sweeping line (selecting it instead of inserting). Both pins must
+    // also be on screen, or the midpoint slides off the section's edge.
+    async function pinEdge() {
+      return page.evaluate(() => {
+        const root = document.querySelector("#alignment-map-root");
+        const icons = [...root.querySelectorAll(".pa-div-icon")];
+        const center = (rect) => ({
+          x: (rect.left + rect.right) / 2,
+          y: (rect.top + rect.bottom) / 2,
+        });
+        const at = (text) => {
+          const el = icons.find(
+            (node) =>
+              node.querySelector(".pa-stop-pin")?.textContent.trim() === text,
+          );
+          return el ? center(el.getBoundingClientRect()) : null;
+        };
+        const a = at("1");
+        const b = at("2");
+        if (!a || !b) return null;
+        const stage = root.querySelector("[data-pa-stage]");
+        const stageRect = stage.getBoundingClientRect();
+        const stageAt = center(stageRect);
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const under = document.elementFromPoint(mid.x, mid.y);
+        const onScreen = (p) =>
+          p.x > stageRect.left &&
+          p.x < stageRect.right &&
+          p.y > stageRect.top &&
+          p.y < stageRect.bottom;
+        return {
+          stage: stageAt,
+          mid,
+          gap: Math.hypot(a.x - b.x, a.y - b.y),
+          pinsVisible: onScreen(a) && onScreen(b),
+          midClear: Boolean(
+            under?.closest?.("[data-pa-stage]") &&
+              !under?.closest?.(".alignment-handle") &&
+              !under?.closest?.(".pa-div-icon"),
+          ),
+        };
+      });
+    }
+
+    async function settledEdge() {
+      let prev = null;
+      for (let i = 0; i < 8; i++) {
+        const cur = await pinEdge();
+        if (
+          cur &&
+          cur.midClear &&
+          cur.pinsVisible &&
+          prev &&
+          Math.hypot(cur.mid.x - prev.mid.x, cur.mid.y - prev.mid.y) < 2
+        ) {
+          return cur;
+        }
+        prev = cur;
+        await page.waitForTimeout(400);
+      }
+      return null;
+    }
+
+    // Drags the pin midpoint toward the stage center so the next zoom
+    // spreads the edge around the viewport middle. The press always
+    // travels a real pan leg: releasing where it pressed would
+    // synthesize a map click on the line.
+    async function centerPinMid() {
+      const g = await pinEdge();
+      if (!g) return;
+      const clamp = (v) => Math.max(-300, Math.min(300, v));
+      const dx = clamp(g.stage.x - g.mid.x);
+      const dy = clamp(g.stage.y - g.mid.y);
+      if (Math.hypot(dx, dy) < 50) return;
+      await page.mouse.move(g.stage.x, g.stage.y);
+      await page.mouse.down();
+      await page.mouse.move(g.stage.x + dx, g.stage.y + dy, { steps: 10 });
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+    }
+
+    let clicked = false;
+    for (let i = 0; i < 10 && !clicked; i++) {
+      const found = await settledEdge();
+      if (found && found.gap >= 140) {
+        await page.mouse.click(found.mid.x, found.mid.y);
+        clicked = true;
+      } else {
+        await centerPinMid();
+        await page.locator("#alignment-map-root [data-pa-zoom-in]").click();
+        await page.waitForTimeout(600);
+      }
+    }
+    expect(clicked).toBe(true);
+
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle"),
+    ).toHaveCount(1, { timeout: 15000 });
+    // The click must have hit section 1's own line: a neighbouring
+    // section's line would have selected that section instead.
+    await expect(page.locator("#alignment-section-1")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await page.locator("#alignment-map-root [data-pa-undo]").click();
+    // Undo removes the inserted point and the handle count returns to the
+    // straight baseline (a prior clear draft, if any, stays on the stack,
+    // so only the count is asserted).
+    await expect(handles).toHaveCount(0, { timeout: 15000 });
+
+    expect(problems).toEqual([]);
+  });
+
+  test("saves the shared section locally and keeps the sibling exported", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+
+    // Section 1 shares its straight path with the sibling pattern: add a
+    // midpoint through the keyboard list and save it as this pattern's own.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, JOURNEY_PATTERN);
+    await page.locator("#alignment-section-1").click();
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    await page.locator("#alignment-point-list-toggle").click();
+    // The saved interior count differs between a fresh seed and a full-file
+    // run, so the midpoint assertion is relative: exactly one row added.
+    const sharedRows = page.locator("#alignment-point-list .pa-point-row");
+    const sharedBefore = await sharedRows.count();
+    await page.locator("#alignment-point-list [data-add-midpoint]").click();
+    await expect(sharedRows).toHaveCount(sharedBefore + 1);
+    await expect(page.locator("#alignment-status")).toContainText(
+      "Unsaved changes",
+      { timeout: 15000 },
+    );
+
+    await saveThroughScope(page, 1);
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "✓ Saved",
+    );
+
+    // The sibling keeps its shared straight path and stays exported.
+    await openAlignment(page, JOURNEY_SIBLING);
+    await expect(page.locator("#alignment-status")).toContainText(
+      "✓ Exported",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-1")).toContainText(
+      "✓ Saved",
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  test("moves a focused point with the keyboard and restores it with Undo", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+
+    // Section 1 holds saved interior points in every run state; if a
+    // previous journey left it straight, seed one draft midpoint first.
+    // Locate focuses the first handle, one ArrowRight commits a single
+    // 2 px draft move, and one Undo restores exactly.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, JOURNEY_PATTERN);
+    await page.locator("#alignment-section-1").click();
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    await page.locator("#alignment-point-list-toggle").click();
+    const keyRows = page.locator("#alignment-point-list .pa-point-row");
+    if ((await keyRows.count()) === 0) {
+      await page.locator("#alignment-point-list [data-add-midpoint]").click();
+      await expect(keyRows).toHaveCount(1);
+    }
+    await page.locator('#alignment-point-list [data-point-check="0"]').check();
+    await page.locator('#alignment-point-list [data-focus-point="0"]').click();
+    await expect(
+      page.locator("#alignment-map-root .alignment-handle:focus"),
+    ).toHaveCount(1);
+
+    const handleCenter = () =>
+      page.evaluate(() => {
+        const rect = document
+          .querySelector("#alignment-map-root .alignment-handle")
+          .getBoundingClientRect();
+        return { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 };
+      });
+
+    const before = await handleCenter();
+    const handle = page.locator("#alignment-map-root .alignment-handle").first();
+    await handle.press("ArrowRight");
+    await expect(page.locator("#alignment-map-root [data-pa-undo]")).toBeEnabled();
+    const moved = await handleCenter();
+    expect(moved.x - before.x).toBeGreaterThan(1);
+    expect(moved.x - before.x).toBeLessThan(3.5);
+    expect(Math.abs(moved.y - before.y)).toBeLessThan(1);
+
+    await page.locator("#alignment-map-root [data-pa-undo]").click();
+    const restored = await handleCenter();
+    expect(Math.abs(restored.x - before.x)).toBeLessThan(1.5);
+    expect(Math.abs(restored.y - before.y)).toBeLessThan(1.5);
+    await expect(
+      page.locator("#alignment-map-root [data-pa-undo]"),
+    ).toBeDisabled();
+
+    expect(problems).toEqual([]);
+  });
+
+  test("keeps the draft offline and saves it after reconnect", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+
+    // Section 2 holds saved local points: another midpoint dirties
+    // the draft, then the socket drops with the draft intact.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAlignment(page, JOURNEY_PATTERN);
+    await page.locator("#alignment-section-2").click();
+    const edit = page.locator("#alignment-map-root [data-pa-edit]");
+    await expect(edit).toBeEnabled({ timeout: 15000 });
+    await edit.click();
+    await page.locator("#alignment-point-list-toggle").click();
+    const offlineRows = page.locator("#alignment-point-list .pa-point-row");
+    const offlineBefore = await offlineRows.count();
+    await page.locator("#alignment-point-list [data-add-midpoint]").click();
+    await expect(offlineRows).toHaveCount(offlineBefore + 1);
+    await expect(page.locator("#alignment-section-status-2")).toContainText(
+      "Unsaved",
+      { timeout: 15000 },
+    );
+
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await expect(page.locator("#alignment-save")).toBeDisabled({
+      timeout: 15000,
+    });
+    // The draft badge survives the disconnect: no server roundtrip runs
+    // while the socket is down, so nothing can clean it.
+    await expect(page.locator("#alignment-section-status-2")).toContainText(
+      "Unsaved",
+    );
+    await expect(page.locator("#pattern-connectivity")).toBeVisible();
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "journey-offline-1440");
+
+    await page.evaluate(() => window.liveSocket.connect());
+    await waitForLiveView(page);
+    await expect(page.locator("#alignment-save")).toBeEnabled({
+      timeout: 15000,
+    });
+    // Section 2 is a pattern-local override, so the review applies
+    // directly with no scope dialog; the reconnect announcement already
+    // proved the roundtrip above.
+    await expect(page.locator("#status")).toContainText(
+      "Reconnected. Your edits are ready to save.",
+      { timeout: 15000 },
+    );
+    await page.locator("#alignment-save").click();
+    await expect(page.locator("#status")).toContainText(
+      "Alignment saved.",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-section-status-2")).toContainText(
+      "✓ Saved",
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  test("renders the imported, loop and long patterns", async ({ page }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // The divergent imported pattern keeps its notice and dialog.
+    await openAlignment(page, "BROWSER-ALIGN-IMPORTED");
+    await expect(page.locator("#alignment-notice")).toContainText(
+      "This pattern uses 2 imported shapes",
+    );
+    await page.locator("#alignment-review-import").click();
+    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+      { timeout: 15000 },
+    );
+    await expect(page.locator("#alignment-import-dialog")).toContainText(
+      "Choose an imported path",
+    );
+    await settleDialog(page, "alignment-import-dialog");
+    await captureViewport(page, "journey-imported-dialog-1440");
+    await page.locator("#alignment-import-dialog-cancel").click();
+    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
+      "data-open",
+      "false",
+      { timeout: 15000 },
+    );
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // The loop's repeated stop shares one pin labelled with both visits.
+    await openAlignment(page, "BROWSER-ALIGN-LOOP");
+    await expect(page.locator("#alignment-map-root")).toContainText("1 / 4", {
+      timeout: 15000,
+    });
+    await page.locator("#alignment-task").scrollIntoViewIfNeeded();
+    await captureViewport(page, "journey-loop-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    // The 200-visit pattern renders one row per section.
+    await openAlignment(page, "BROWSER-ALIGN-LONG");
+    await expect(
+      page.locator("#alignment-sections > button[id^='alignment-section-']"),
+    ).toHaveCount(199, { timeout: 30000 });
+    await captureViewport(page, "journey-long-1440");
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    expect(problems).toEqual([]);
+  });
+
+  test("draws and saves the missing section at phone width", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const problems = collectPageErrors(page);
+    await stubTiles(page);
+    await logIn(page);
+
+    // The -B copy shares the first two sections' saved paths, so its
+    // third section is the missing one — and the phone journey never
+    // touches the records the desktop journey saved.
+    await page.setViewportSize({ width: 320, height: 900 });
+    await openAlignment(page, JOURNEY_NARROW);
+    await page.locator("#alignment-section-3").click();
+    await expect(page.locator("#alignment-draw")).toContainText(
+      "Draw manually",
+      { timeout: 15000 },
+    );
+    await captureFullPage(page, "journey-partial-320");
+
+    await page.locator("#alignment-draw").click();
+    await expect(page.locator("#alignment-point-list-toggle")).toBeVisible({
+      timeout: 15000,
+    });
+    await page.locator("#alignment-point-list-toggle").click();
+    await page.locator("#alignment-point-list [data-add-midpoint]").click();
+    await expect(
+      page.locator("#alignment-point-list .pa-point-row"),
+    ).toHaveCount(1);
+    await saveThroughScope(page, 3);
+    await expect(page.locator("#alignment-section-status-3")).toContainText(
+      "✓ Saved",
+    );
+    await captureFullPage(page, "journey-saved-320");
     expect(await bodyFitsViewport(page)).toBe(true);
 
     expect(problems).toEqual([]);

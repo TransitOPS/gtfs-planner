@@ -664,7 +664,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("alignment_save_requested", params, socket) do
-    {:noreply, RoutePatternAlignmentEvents.save_requested(socket, params)}
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.save_requested(params)
+     |> assign_dirty()}
   end
 
   @impl true
@@ -674,7 +677,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("confirm_alignment_save", params, socket) do
-    {:noreply, RoutePatternAlignmentEvents.confirm_save(socket, params)}
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.confirm_save(params)
+     |> assign_dirty()}
   end
 
   @impl true
