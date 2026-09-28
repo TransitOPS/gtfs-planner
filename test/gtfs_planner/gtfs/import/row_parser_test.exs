@@ -510,6 +510,299 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
     end
   end
 
+  describe "pathway_evolution_row_to_attrs/3" do
+    test "converts a supported closure row to integer service-day seconds", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "pathway_id" => "P1",
+        "service_id" => "S1",
+        "start_time" => "23:00:00",
+        "end_time" => "26:00:00",
+        "is_closed" => "1"
+      }
+
+      assert {:ok, attrs} = RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+
+      assert attrs == %{
+               pathway_id: "P1",
+               service_id: "S1",
+               start_time: 82_800,
+               end_time: 93_600,
+               note: nil,
+               organization_id: org_id,
+               gtfs_version_id: version_id
+             }
+    end
+
+    test "accepts a blank direction column and H:MM service times", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      for direction <- ["", "   "] do
+        row = %{
+          "pathway_id" => "P1",
+          "service_id" => "S1",
+          "start_time" => "9:00",
+          "end_time" => "15:30",
+          "is_closed" => "1",
+          "direction" => direction
+        }
+
+        assert {:ok, attrs} = RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+
+        assert attrs.start_time == 32_400
+        assert attrs.end_time == 55_800
+      end
+    end
+
+    test "accepts a midnight and 24:00:00 window as service-day seconds", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "pathway_id" => "P1",
+        "service_id" => "S1",
+        "start_time" => "00:00:00",
+        "end_time" => "24:00:00",
+        "is_closed" => "1"
+      }
+
+      assert {:ok, attrs} = RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+
+      assert attrs.start_time == 0
+      assert attrs.end_time == 86_400
+    end
+
+    test "preserves exact reference IDs and takes scope from the arguments", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "pathway_id" => "P 1",
+        "service_id" => "S 1",
+        "start_time" => "09:00:00",
+        "end_time" => "10:00:00",
+        "is_closed" => "1",
+        "organization_id" => "forged-organization",
+        "gtfs_version_id" => "forged-version"
+      }
+
+      assert {:ok, attrs} = RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+
+      assert attrs.pathway_id == "P 1"
+      assert attrs.service_id == "S 1"
+      assert attrs.organization_id == org_id
+      assert attrs.gtfs_version_id == version_id
+      refute inspect(attrs) =~ "forged-organization"
+      refute inspect(attrs) =~ "forged-version"
+    end
+
+    test "rejects an absent, empty or whitespace-only pathway_id", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      for pathway_id <- [nil, "", "   "] do
+        row = %{
+          "pathway_id" => pathway_id,
+          "service_id" => "S1",
+          "start_time" => "09:00:00",
+          "end_time" => "10:00:00",
+          "is_closed" => "1"
+        }
+
+        assert {:error, {:evolution_rejected, :evolution_pathway_required}} =
+                 RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+      end
+
+      row = %{
+        "service_id" => "S1",
+        "start_time" => "09:00:00",
+        "end_time" => "10:00:00",
+        "is_closed" => "1"
+      }
+
+      assert {:error, {:evolution_rejected, :evolution_pathway_required}} =
+               RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+    end
+
+    test "rejects an absent, empty or whitespace-only service_id", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      for service_id <- [nil, "", "  "] do
+        row = %{
+          "pathway_id" => "P1",
+          "service_id" => service_id,
+          "start_time" => "09:00:00",
+          "end_time" => "10:00:00",
+          "is_closed" => "1"
+        }
+
+        assert {:error, {:evolution_rejected, :evolution_service_required}} =
+                 RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+      end
+    end
+
+    test "rejects every opening row value other than is_closed 1", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      for is_closed <- ["0", "true", "yes", "", " 1 ", nil] do
+        row = %{
+          "pathway_id" => "P1",
+          "service_id" => "S1",
+          "start_time" => "09:00:00",
+          "end_time" => "10:00:00",
+          "is_closed" => is_closed
+        }
+
+        assert {:error, {:evolution_rejected, :evolution_opening_unsupported}} =
+                 RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+      end
+
+      row = %{
+        "pathway_id" => "P1",
+        "service_id" => "S1",
+        "start_time" => "09:00:00",
+        "end_time" => "10:00:00"
+      }
+
+      assert {:error, {:evolution_rejected, :evolution_opening_unsupported}} =
+               RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+    end
+
+    test "rejects any nonblank direction, including 0", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      for direction <- ["0", "1", "2", " 2 "] do
+        row = %{
+          "pathway_id" => "P1",
+          "service_id" => "S1",
+          "start_time" => "09:00:00",
+          "end_time" => "10:00:00",
+          "is_closed" => "1",
+          "direction" => direction
+        }
+
+        assert {:error, {:evolution_rejected, :evolution_direction_unsupported}} =
+                 RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+      end
+    end
+
+    test "rejects a malformed, absent or non-increasing time", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      bad_windows = [
+        {"09:00:00", "10:0:0"},
+        {"09:00:00", "10:00:0"},
+        {"09:00:00", ""},
+        {"09:00:00", nil},
+        {"", "10:00:00"},
+        {nil, "10:00:00"},
+        {"09:00:00", "09:00:00"},
+        {"23:00:00", "02:00:00"},
+        {"10:00:00", "09:00:00"},
+        {"-1:00:00", "10:00:00"}
+      ]
+
+      for {start_time, end_time} <- bad_windows do
+        row = %{
+          "pathway_id" => "P1",
+          "service_id" => "S1",
+          "start_time" => start_time,
+          "end_time" => end_time,
+          "is_closed" => "1"
+        }
+
+        assert {:error, {:evolution_rejected, :evolution_time_invalid}} =
+                 RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id),
+               "expected a time rejection for #{inspect({start_time, end_time})}"
+      end
+    end
+
+    test "reports the first violated rule in the documented order", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      everything_wrong = %{
+        "pathway_id" => "",
+        "service_id" => "",
+        "start_time" => "nope",
+        "end_time" => "nope",
+        "is_closed" => "0",
+        "direction" => "2"
+      }
+
+      assert {:error, {:evolution_rejected, :evolution_pathway_required}} =
+               RowParser.pathway_evolution_row_to_attrs(everything_wrong, org_id, version_id)
+
+      no_pathway_rejection = %{
+        everything_wrong
+        | "pathway_id" => "P1",
+          "start_time" => "09:00:00",
+          "end_time" => "10:00:00"
+      }
+
+      assert {:error, {:evolution_rejected, :evolution_service_required}} =
+               RowParser.pathway_evolution_row_to_attrs(no_pathway_rejection, org_id, version_id)
+
+      no_service_rejection = %{no_pathway_rejection | "service_id" => "S1"}
+
+      assert {:error, {:evolution_rejected, :evolution_opening_unsupported}} =
+               RowParser.pathway_evolution_row_to_attrs(no_service_rejection, org_id, version_id)
+
+      closed = %{no_service_rejection | "is_closed" => "1"}
+
+      assert {:error, {:evolution_rejected, :evolution_direction_unsupported}} =
+               RowParser.pathway_evolution_row_to_attrs(closed, org_id, version_id)
+
+      no_direction = %{closed | "direction" => "", "start_time" => "nope"}
+
+      assert {:error, {:evolution_rejected, :evolution_time_invalid}} =
+               RowParser.pathway_evolution_row_to_attrs(no_direction, org_id, version_id)
+    end
+
+    test "returns a bounded rejection that never carries row values", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "pathway_id" => "P1",
+        "service_id" => "S1",
+        "start_time" => "not-a-time",
+        "end_time" => "10:00:00",
+        "is_closed" => "1"
+      }
+
+      assert {:error, {:evolution_rejected, :evolution_time_invalid} = error} =
+               RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+
+      refute inspect(error) =~ "not-a-time"
+    end
+
+    test "does not resolve references, so an unknown pathway still parses", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "pathway_id" => "P_MISSING",
+        "service_id" => "S_MISSING",
+        "start_time" => "09:00:00",
+        "end_time" => "10:00:00",
+        "is_closed" => "1"
+      }
+
+      assert {:ok, attrs} = RowParser.pathway_evolution_row_to_attrs(row, org_id, version_id)
+
+      assert attrs.pathway_id == "P_MISSING"
+      assert attrs.service_id == "S_MISSING"
+    end
+  end
+
   describe "parse_float/1" do
     test "parses valid float" do
       assert {:ok, 1.5} = RowParser.parse_float("1.5")

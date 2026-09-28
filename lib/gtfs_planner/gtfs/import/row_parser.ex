@@ -10,6 +10,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   are processed without creating dynamic atoms or individual changesets.
   """
 
+  alias GtfsPlanner.Gtfs.PathwayEvolution
+
   # The GTFS spec leaves `transfer_type` optional and defines an empty value as
   # a recommended transfer point between routes.
   @default_transfer_type 0
@@ -1240,6 +1242,120 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
       {:error, _} -> {:error, "#{field_name} not found: #{stop_id}"}
     end
   end
+
+  @doc """
+  Converts a `pathway_evolutions.txt` row to closure attributes.
+
+  Only the supported interchange subset is accepted. `pathway_id` and
+  `service_id` must be present, `is_closed` must be `"1"`, `direction` must be
+  blank or absent, and both service times must parse with
+  `PathwayEvolution.parse_service_time/1` and satisfy `end_time > start_time`. A
+  window may therefore continue past midnight (`23:00:00`-`26:00:00`) but may
+  not wrap around.
+
+  Reference IDs are preserved exactly as written, and the scope columns are
+  taken from the function arguments so no row value can choose them. Resolving
+  an unknown pathway, a service without native calendar rows, and a repeated
+  closure tuple belong to the registered import pass, which already loads those
+  sets; this parser reports only the row's own shape.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, {:evolution_rejected, code}}` - One bounded, sanitized code
+      naming why the row is not in the supported subset
+  """
+  @spec pathway_evolution_row_to_attrs(map(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, map()} | {:error, {:evolution_rejected, atom()}}
+  def pathway_evolution_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, pathway_id} <-
+           required_reference(row_map, "pathway_id", :evolution_pathway_required),
+         {:ok, service_id} <-
+           required_reference(row_map, "service_id", :evolution_service_required),
+         :ok <- require_closed(row_map),
+         :ok <- require_absent_direction(row_map),
+         {:ok, start_time} <- evolution_service_time(row_map, "start_time"),
+         {:ok, end_time} <- evolution_service_time(row_map, "end_time"),
+         :ok <- require_ordered_window(start_time, end_time) do
+      {:ok,
+       %{
+         pathway_id: pathway_id,
+         service_id: service_id,
+         start_time: start_time,
+         end_time: end_time,
+         # Application-only: the interchange format carries no note, so every
+         # imported row stores NULL rather than a value from the file.
+         note: nil,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  defp required_reference(row_map, field, code) do
+    case row_map[field] do
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          evolution_rejection(code)
+        else
+          {:ok, value}
+        end
+
+      _missing ->
+        evolution_rejection(code)
+    end
+  end
+
+  defp require_closed(row_map) do
+    case row_map["is_closed"] do
+      "1" -> :ok
+      _opening -> evolution_rejection(:evolution_opening_unsupported)
+    end
+  end
+
+  defp require_absent_direction(row_map) do
+    case row_map["direction"] do
+      nil ->
+        :ok
+
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: :ok, else: reject_direction()
+
+      _other ->
+        reject_direction()
+    end
+  end
+
+  defp reject_direction, do: evolution_rejection(:evolution_direction_unsupported)
+
+  defp evolution_service_time(row_map, field) do
+    case row_map[field] do
+      value when is_binary(value) ->
+        case PathwayEvolution.parse_service_time(String.trim(value)) do
+          {:ok, seconds} -> {:ok, seconds}
+          {:error, :invalid_time} -> evolution_rejection(:evolution_time_invalid)
+        end
+
+      _missing ->
+        evolution_rejection(:evolution_time_invalid)
+    end
+  end
+
+  defp require_ordered_window(start_time, end_time) do
+    if end_time > start_time do
+      :ok
+    else
+      evolution_rejection(:evolution_time_invalid)
+    end
+  end
+
+  defp evolution_rejection(code), do: {:error, {:evolution_rejected, code}}
 
   # Parsing helper functions
 
