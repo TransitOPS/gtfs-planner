@@ -126,8 +126,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("filter", params, socket) do
     status = if params["status"] == "problems", do: :problems, else: :all
+    route = blank_to_nil(params["route"])
 
-    patch(socket, %{route: blank_to_nil(params["route"]), status: status, page: 1, pool_page: 1})
+    # AC-24: a route filter keeps only the selected trips that run on that route.
+    # The selection is not in the URL, so it is pruned before the patch and both
+    # stream keys carry it, which re-sends the page with its new checked state.
+    socket =
+      socket
+      |> assign(:selection, retain_on_route(socket, route))
+      |> assign_selected_trips()
+
+    patch(socket, %{route: route, status: status, page: 1, pool_page: 1})
   end
 
   def handle_event("set_panel", %{"panel" => "blocks"}, socket) do
@@ -180,11 +189,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(socket, %{pool_page: page_number(page)})
   end
 
-  # The row checkbox is inert until step 26 owns the cross-page selection state.
+  # The row checkbox toggles one trip by its UUID, so the selection survives a
+  # page change and a trip that leaves the page keeps its place in it (AC-24).
+  def handle_event("toggle_trip", %{"trip" => trip_id}, socket) do
+    case find_day_trip(socket.assigns.day, trip_id) do
+      nil ->
+        {:noreply, socket}
+
+      trip ->
+        {:noreply, put_selection(socket, toggle_selection(socket.assigns.selection, trip.id))}
+    end
+  end
+
   def handle_event("toggle_trip", _params, socket), do: {:noreply, socket}
 
-  # “Select this page” selects the whole page in step 26's bulk selection.
-  def handle_event("select_page", _params, socket), do: {:noreply, socket}
+  # “Select this page” adds every trip the current pool page or List page holds
+  # to the selection, so a large selection is built a page at a time (AC-24).
+  def handle_event("select_page", _params, socket) do
+    selection = MapSet.union(socket.assigns.selection, visible_page_ids(socket.assigns))
+
+    {:noreply, put_selection(socket, selection)}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, put_selection(socket, MapSet.new())}
+  end
 
   # The assignment form lives in the trip drawer, so opening it from a pool row
   # patches `trip=` to open that drawer; a trip already in the URL keeps its URL,
@@ -203,6 +232,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         else
           patch(socket, %{trip: trip.trip_id, gap: nil, block: nil})
         end
+    end
+  end
+
+  # The bulk bar opens the same form for the whole selection. The selection scope
+  # previews its ineligible trips from their own flags, so a repeating or untimed
+  # trip is named before the reader submits rather than silently dropped — and
+  # the apply still refuses the command if eligibility is all that changed
+  # (R10, FH-18). “Use eligible trips” drops them and keeps the dialog open on
+  # what remains (AC-24).
+  def handle_event("open_assign", %{"scope" => "selection", "eligible" => "true"}, socket) do
+    {:noreply, use_eligible_selection(socket)}
+  end
+
+  def handle_event("open_assign", %{"scope" => "selection"}, socket) do
+    case socket.assigns.selected_trips do
+      [] -> {:noreply, socket}
+      trips -> {:noreply, assign(socket, :assign, new_selection_assign(trips))}
     end
   end
 
@@ -236,11 +282,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # “Remove from block” runs the same reviewed command path as an assignment, so
-  # a removal that adds a problem opens the review too (R10, AC-26).
+  # a removal that adds a problem opens the review too (R10, AC-26). The bulk bar
+  # removes every blocked trip of the selection; the ones already in the pool are
+  # not part of the command (AC-24).
   def handle_event("unassign", %{"scope" => "trip", "trip" => trip_id}, socket) do
     case find_day_trip(socket.assigns.day, trip_id) do
       nil -> {:noreply, socket}
       trip -> run_command(socket, {:unassign, [trip.id]}, nil)
+    end
+  end
+
+  def handle_event("unassign", %{"scope" => "selection"}, socket) do
+    case blocked_selected_ids(socket) do
+      [] -> {:noreply, socket}
+      ids -> run_command(socket, {:unassign, ids}, nil)
     end
   end
 
@@ -290,6 +345,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # opens alongside whichever URL drawer the page had.
   def handle_event("close_drawer", _params, socket) do
     socket = assign(socket, :open_drawer, nil)
+
+    socket =
+      if match?(%{scope: :selection}, socket.assigns.assign),
+        do: assign(socket, :assign, nil),
+        else: socket
 
     if socket.assigns.state.trip || socket.assigns.state.gap || socket.assigns.state.block do
       patch(socket, %{trip: nil, gap: nil, block: nil}, clear_command: true)
@@ -363,9 +423,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp patch(socket, overrides, opts \\ []) do
     socket =
-      if Keyword.get(opts, :clear_selection, false),
-        do: assign(socket, :selection, MapSet.new()),
-        else: socket
+      if Keyword.get(opts, :clear_selection, false) do
+        socket
+        |> assign(:selection, MapSet.new())
+        |> assign_selected_trips()
+      else
+        socket
+      end
 
     socket =
       if Keyword.get(opts, :close_drawer, false),
@@ -536,26 +600,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # chosen sort over the whole day type, then one page of 100 rows. The timeline
   # and the List view are two densities of the same page, so each has its own
   # stream (a stream belongs to one container) and one key gates both. The key
-  # holds the panel and the view as well as the filters and the page: a container
-  # the client holds is replaced when any of them changes, and a replaced stream
-  # container is empty until the page is sent again, so the reset must happen on
-  # that change too. `load_day/1` and the empty states clear the key, so a reload
-  # always resends.
+  # holds the panel and the view as well as the filters, the page and the
+  # selection: a container the client holds is replaced when any of them changes,
+  # and a replaced stream container is empty until the page is sent again, so the
+  # reset must happen on that change too. The selection is in the key because a
+  # checkbox is rendered inside its row, so a selection change re-sends the page
+  # with the new checked state (AGENTS.md streams rule). `load_day/1` and the
+  # empty states clear the key, so a reload always resends.
   defp assign_timeline(socket) do
     %{state: state} = socket.assigns
     visible = visible_blocks(socket.assigns.day.blocks, state)
     page = effective_page(state.page, length(visible))
+    rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
 
     key =
-      {state.panel, state.view, state.route, state.status, state.sort, state.dir, page}
+      {state.panel, state.view, state.route, state.status, state.sort, state.dir, page,
+       socket.assigns.selection}
 
-    socket = assign(socket, :visible_count, length(visible))
+    socket =
+      assign(socket,
+        visible_count: length(visible),
+        timeline_page_ids: page_trip_ids(rows, state.route)
+      )
 
     if socket.assigns.timeline_key == key do
       socket
     else
-      rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
-
       socket
       |> assign(:timeline_key, key)
       |> stream(:block_rows, rows, reset: true)
@@ -565,22 +635,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The visible page of the pool: the route filter over the pool's own order
   # (first departure, then untimed trips by trip ID), then one page of 100 rows,
-  # streamed so a filter or page change replaces the container. The key holds the
-  # panel because the pool table exists only while the Unassigned panel is shown,
-  # and a stream container that is replaced must be filled again.
+  # streamed so a filter, a page or the selection replaces the container. The key
+  # holds the panel because the pool table exists only while the Unassigned panel
+  # is shown, and a stream container that is replaced must be filled again; the
+  # selection is in the key for the same reason as the List view's rows.
   defp assign_pool(socket) do
     %{state: state} = socket.assigns
     visible = visible_pool(socket.assigns.day.pool, state.route)
     page = effective_page(state.pool_page, length(visible))
-    key = {state.panel, state.route, page}
+    rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
+    key = {state.panel, state.route, page, socket.assigns.selection}
 
-    socket = assign(socket, :pool_visible_count, length(visible))
+    socket =
+      assign(socket,
+        pool_visible_count: length(visible),
+        pool_page_ids: MapSet.new(rows, & &1.id)
+      )
 
     if socket.assigns.pool_key == key do
       socket
     else
-      rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
-
       socket
       |> assign(:pool_key, key)
       |> stream(:pool_rows, rows, reset: true)
@@ -590,9 +664,142 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp visible_pool(pool, nil), do: pool
   defp visible_pool(pool, route_id), do: Enum.filter(pool, &(&1.route_id == route_id))
 
+  # The page's own trip UUIDs: every trip of the page's blocks the route filter
+  # keeps, which is exactly the List view's rows. A trip of another route is not
+  # a row on the page, so it is neither selected nor counted as elsewhere.
+  defp page_trip_ids(blocks, route_id) do
+    blocks
+    |> Enum.flat_map(& &1.trips)
+    |> Enum.filter(&(is_nil(route_id) or &1.route_id == route_id))
+    |> MapSet.new(& &1.id)
+  end
+
   # Both streamed pages are re-derived together, so the timeline, the List view
-  # and the pool stay in step on a day, filter or page change.
+  # and the pool stay in step on a day, filter, page or selection change.
   defp assign_page_rows(socket), do: socket |> assign_timeline() |> assign_pool()
+
+  # --- the cross-page selection (step 26) --------------------------------------
+
+  # The selection is a MapSet of trip UUIDs, so it survives a page change, a
+  # panel change and a sort; it is not in the URL, so a reload starts empty and
+  # the page clears it on a day or version change (AC-24). `selected_trips` is the
+  # same selection resolved against the loaded day, which is what the bar counts,
+  # the eligibility preview and the bulk commands read — an id the day no longer
+  # holds is never counted, and every streamed row is re-sent when the selection
+  # changes because the checkbox is rendered inside its row (AGENTS.md streams
+  # rule).
+  defp put_selection(%{assigns: %{day: nil}} = socket, _selection), do: socket
+
+  defp put_selection(socket, selection) do
+    socket
+    |> assign(:selection, selection)
+    |> assign_selected_trips()
+    |> assign_page_rows()
+  end
+
+  defp assign_selected_trips(socket) do
+    assign(socket, :selected_trips, selected_trips(socket.assigns.day, socket.assigns.selection))
+  end
+
+  defp selected_trips(nil, _selection), do: []
+
+  defp selected_trips(day, selection) do
+    day
+    |> day_trips()
+    |> Enum.filter(&MapSet.member?(selection, &1.id))
+  end
+
+  # A day holds every trip of its day type exactly once: in the block named by
+  # its `block_id` or in the pool (AC-2).
+  defp day_trips(day), do: Enum.flat_map(day.blocks, & &1.trips) ++ day.pool
+
+  defp toggle_selection(selected, id) do
+    if MapSet.member?(selected, id),
+      do: MapSet.delete(selected, id),
+      else: MapSet.put(selected, id)
+  end
+
+  # A route filter keeps only the selected trips that run on that route; clearing
+  # the filter keeps the whole selection (AC-24).
+  defp retain_on_route(socket, nil), do: socket.assigns.selection
+
+  defp retain_on_route(socket, route_id) do
+    socket.assigns.selected_trips
+    |> Enum.filter(&(&1.route_id == route_id))
+    |> MapSet.new(& &1.id)
+  end
+
+  # A selection only ever resolves against a loaded day, but a reload can drop a
+  # trip the previous day type held; the pruned set is what the bar then counts.
+  defp retain_in_day(selection, day) do
+    if MapSet.size(selection) == 0 do
+      selection
+    else
+      MapSet.intersection(selection, MapSet.new(day_trips(day), & &1.id))
+    end
+  end
+
+  # The trips the current page holds: the pool's own page in the Unassigned panel
+  # and the page's blocks' trips in the Blocks panel, where the List view's rows
+  # and the timeline's bars are the same page of blocks (AC-24).
+  defp visible_page_ids(%{state: %{panel: :pool}} = assigns), do: assigns.pool_page_ids
+  defp visible_page_ids(assigns), do: assigns.timeline_page_ids
+
+  # What the selection bar prints: the whole selection, how much of it the
+  # current page does not hold (“1 on other pages”), and whether any selected
+  # trip still has a block, because only those can be removed.
+  defp bulk_summary(assigns) do
+    selected = assigns.selected_trips
+    visible = visible_page_ids(assigns)
+
+    %{
+      count: length(selected),
+      elsewhere: Enum.count(selected, &(not MapSet.member?(visible, &1.id))),
+      removable?: Enum.any?(selected, & &1.block_id)
+    }
+  end
+
+  # The selection's affected dates: every date of every day type one of the
+  # selected trips runs in, summed the way the review's effect cards count them,
+  # so the bulk form's scope line means the same thing as the trip form's
+  # (AC-24).
+  defp selection_dates(assigns) do
+    services = MapSet.new(assigns.selected_trips, & &1.service_id)
+
+    assigns.day_types
+    |> Enum.filter(fn day_type ->
+      Enum.any?(day_type.service_ids, &MapSet.member?(services, &1))
+    end)
+    |> Enum.map(& &1.date_count)
+    |> Enum.sum()
+  end
+
+  # The trips of the selection that still have a block on this day type: the bulk
+  # bar's “Remove from block” command names exactly those (AC-24).
+  defp blocked_selected_ids(socket) do
+    socket.assigns.selected_trips
+    |> Enum.filter(& &1.block_id)
+    |> Enum.map(& &1.id)
+  end
+
+  # “Change selection” returns focus to whichever opener the reader used: the
+  # bulk bar's “Assign N trips” for a selection, the trip drawer's own control
+  # for one trip.
+  defp review_focus(%{scope: :selection}), do: "bulk-assign"
+  defp review_focus(_assign), do: "trip-change-assignment"
+
+  # “Use eligible trips” drops every ineligible trip from the selection and keeps
+  # the dialog open on the rest; a selection left with nothing to assign closes
+  # the dialog, because there is nothing left to choose a destination for.
+  defp use_eligible_selection(socket) do
+    eligible = Enum.filter(socket.assigns.selected_trips, &BlocksComponents.eligible?/1)
+    socket = put_selection(socket, MapSet.new(eligible, & &1.id))
+
+    case eligible do
+      [] -> assign(socket, :assign, nil)
+      trips -> assign(socket, :assign, new_selection_assign(trips))
+    end
+  end
 
   # The drawer stack of the current URL: a trip sits on top of a gap, which sits
   # on top of a block, and only the top one renders open. The block is resolved
@@ -734,15 +941,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp find_day_trip(nil, _trip_id), do: nil
 
   defp find_day_trip(day, trip_id) do
-    (Enum.flat_map(day.blocks, & &1.trips) ++ day.pool)
-    |> Enum.find(&(&1.trip_id == trip_id))
+    day |> day_trips() |> Enum.find(&(&1.trip_id == trip_id))
   end
 
   defp find_day_trip_by_id(nil, _id), do: nil
 
   defp find_day_trip_by_id(day, id) do
-    (Enum.flat_map(day.blocks, & &1.trips) ++ day.pool)
-    |> Enum.find(&(&1.id == id))
+    day |> day_trips() |> Enum.find(&(&1.id == id))
   end
 
   # The page holding the trip: its block's own page for a blocked trip, the pool's
@@ -858,7 +1063,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp source_label(%{changes: changes}) do
     case changes |> Enum.map(& &1.from) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
       [block_id] -> "block #{block_id}"
-      _other -> "its block"
+      [_first | _rest] -> "their blocks"
+      [] -> "its block"
     end
   end
 
@@ -923,16 +1129,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # --- the assignment form (step 25) -----------------------------------------
 
-  defp new_assign(trip) do
+  defp new_assign(trip), do: new_assign(:trip, [trip])
+
+  # A selection-scoped form holds the whole selection: its trip count (which the
+  # form's own line already prints), whether any of its trips has a block to
+  # remove, and the ineligible trips their own flags refuse, named before any
+  # submit (AC-24).
+  defp new_selection_assign(trips), do: new_assign(:selection, trips)
+
+  defp new_assign(scope, trips) do
     %{
-      scope: :trip,
-      trips: [trip],
-      trip_ids: [trip.id],
-      blocked?: not is_nil(trip.block_id),
+      scope: scope,
+      trips: trips,
+      trip_ids: Enum.map(trips, & &1.id),
+      blocked?: Enum.any?(trips, & &1.block_id),
       target: nil,
       search: "",
       error: nil,
-      ineligible: []
+      ineligible: trips |> Enum.reject(&BlocksComponents.eligible?/1) |> Enum.map(& &1.id)
     }
   end
 
@@ -1074,7 +1288,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp assign_derived(socket, day) do
-    assign(socket,
+    selection = retain_in_day(socket.assigns.selection, day)
+
+    socket
+    |> assign(:selection, selection)
+    |> assign(:selected_trips, selected_trips(day, selection))
+    |> assign(
       day_types: day.day_types,
       day_type: day.day_type,
       counts: day.counts,
@@ -1113,6 +1332,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings_by_trip: %{},
       destination_blocks: [],
       untimed_trips: [],
+      selected_trips: [],
+      pool_page_ids: MapSet.new(),
+      timeline_page_ids: MapSet.new(),
       visible_count: 0,
       timeline_key: nil,
       pool_visible_count: 0,
@@ -1143,6 +1365,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:assign_form, assign_form(assigns.assign))
       |> assign(:destination_options, options)
       |> assign(:destination_total, total)
+      |> assign(:bulk, bulk_summary(assigns))
+      |> assign(:selection_dates, selection_dates(assigns))
 
     ~H"""
     <Layouts.app
@@ -1242,6 +1466,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   findings_by_trip={@findings_by_trip}
                   axis={@axis}
                   routes={@routes}
+                  selected_ids={@selection}
+                  bulk={@bulk}
                 />
 
                 <BlocksComponents.service_dates_drawer
@@ -1315,12 +1541,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   />
                 <% end %>
 
+                <%!-- The selection-scoped form sits in its own dialog (the trip
+                drawer holds the single-trip one); the review renders after it, so
+                a confirmation is the top of the stack. --%>
+                <BlocksComponents.assign_dialog
+                  :if={@assign && @assign.scope == :selection}
+                  assign={@assign}
+                  form={@assign_form}
+                  options={@destination_options}
+                  total={@destination_total}
+                  total_dates={@selection_dates}
+                />
+
                 <BlocksComponents.review_dialog
                   review={@review}
                   stale?={@review_stale?}
                   error={@assign && @assign.error}
                   day_type={@day_type}
                   version_name={@current_gtfs_version.name}
+                  return_focus_id={review_focus(@assign)}
                 />
               <% true -> %>
             <% end %>

@@ -624,7 +624,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </div>
 
       <.assign_form
-        :if={@assign && @trip.id in @assign.trip_ids}
+        :if={@assign && @assign.scope == :trip && @trip.id in @assign.trip_ids}
         assign={@assign}
         form={@assign_form}
         options={@destination_options}
@@ -672,6 +672,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     assigns =
       assign(assigns,
         trip_count: length(assigns.assign.trip_ids),
+        ineligible: ineligible_trips(assigns.assign),
         search_summary: destination_summary(assigns.options, assigns.total)
       )
 
@@ -704,13 +705,33 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         />
       </div>
 
+      <%!-- An ineligible trip is named with its own reason, never skipped
+      silently (FH-18). A selection gets its own callout: the reason per trip
+      and “Use eligible trips”, which drops the ineligible trips and keeps the
+      dialog open on what remains (AC-24). --%>
       <.callout
-        :if={@assign.ineligible != []}
-        id="assign-ineligible"
+        :if={@ineligible != []}
+        id={ineligible_callout_id(@assign)}
         kind="warning"
-        title={ineligible_title(@assign)}
+        title={ineligible_title(@assign, @ineligible)}
       >
-        No trips will be changed until the selection is eligible.
+        <ul :if={@assign.scope == :selection} class="list-disc pl-5">
+          <li :for={trip <- @ineligible} data-role="ineligible-trip" data-trip={trip.trip_id}>
+            {trip.trip_id} · {bulk_ineligibility_reason(trip)}
+          </li>
+        </ul>
+        <p>No trips will be changed until the selection is eligible.</p>
+        <button
+          :if={@assign.scope == :selection}
+          id="bulk-use-eligible"
+          type="button"
+          phx-click="open_assign"
+          phx-value-scope="selection"
+          phx-value-eligible="true"
+          class="link link-primary mt-1 inline-flex min-h-11 items-center"
+        >
+          Use eligible trips
+        </button>
       </.callout>
 
       <fieldset>
@@ -795,6 +816,48 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
+  Renders the selection-scoped assignment form in a dialog.
+
+  A selection of trips has no single trip drawer to hold the form, so the bulk
+  bar opens it here: the same `assign_form/1` with the selection's trip count and
+  affected dates, and one dismiss control that leaves the selection untouched.
+  The form is its own submit surface, so the dialog renders a single action
+  (`single_action`); closing it through “Cancel” or the backdrop fires
+  `close_drawer`, which drops the selection-scoped form.
+  """
+  attr :assign, :map, required: true
+  attr :form, :any, required: true
+  attr :options, :list, required: true
+  attr :total, :integer, required: true
+  attr :total_dates, :integer, required: true
+
+  def assign_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="bulk-assign-dialog"
+      open={true}
+      title="Assign selected trips"
+      confirm_label="Save assignment"
+      pending_label="Saving…"
+      on_confirm="submit_assign"
+      on_cancel="close_drawer"
+      cancel_label="Cancel"
+      size="lg"
+      return_focus_id="bulk-assign"
+      single_action
+    >
+      <.assign_form
+        assign={@assign}
+        form={@form}
+        options={@options}
+        total={@total}
+        total_dates={@total_dates}
+      />
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
   Renders the block-change review: the day type and version, the preview counts,
   the assignment changes table and one effect card per affected day type with its
   added problems, plus the existing problems and new notices.
@@ -812,6 +875,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :error, :string, default: nil
   attr :day_type, :map, default: nil
   attr :version_name, :string, default: nil
+  attr :return_focus_id, :string, default: "trip-change-assignment"
 
   def review_dialog(assigns) do
     assigns =
@@ -834,7 +898,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       described_by="block-review-body"
       size="lg"
       confirm_variant="primary"
-      return_focus_id="trip-change-assignment"
+      return_focus_id={@return_focus_id}
       data-initial-focus-id="block-review-changes"
     >
       <div :if={@review}>
@@ -1288,6 +1352,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :findings_by_trip, :map, required: true
   attr :axis, :map, default: nil
   attr :routes, :map, required: true
+  attr :selected_ids, :any, required: true
+  attr :bulk, :map, required: true
 
   def workspace(assigns) do
     assigns = assign(assigns, :filtered?, filtered?(assigns.state))
@@ -1374,6 +1440,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         {workspace_note(@state, @filtered?)}
       </p>
 
+      <%!-- The bar sits between the toolbar and the records, so it stays in view
+      while the reader pages through the selection (AC-24, UX obligations). --%>
+      <.bulk_bar
+        :if={@bulk.count > 0}
+        count={@bulk.count}
+        elsewhere={@bulk.elsewhere}
+        removable?={@bulk.removable?}
+      />
+
       <%= cond do %>
         <% @state.panel == :pool -> %>
           <p
@@ -1393,6 +1468,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             page={@state.pool_page}
             page_size={@page_size}
             version_id={@state.version_id}
+            selected_ids={@selected_ids}
           />
         <% @counts.blocks == 0 -> %>
           <p id="blocks-workspace-guidance" class="text-sm text-base-content/70">
@@ -1425,6 +1501,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             routes={@routes}
             findings_by_trip={@findings_by_trip}
             route_filter={@state.route}
+            selected_ids={@selected_ids}
           />
       <% end %>
 
@@ -1479,6 +1556,71 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     """
   end
 
+  @doc """
+  Renders the selection bar: the count, how many of the selected trips are on
+  another page, and the three bulk actions.
+
+  The count is the whole selection, so a selection that spans pages reports how
+  many of its trips the current page does not hold (“2 selected · 1 on other
+  pages”) and keeps saying so while the reader pages (AC-24). “Clear selection”
+  empties the set; “Assign N trips” opens the selection-scoped assignment form;
+  “Remove from block” is offered only when a selected trip has a block, because
+  the others are already in the pool (the reference hides it the same way).
+  """
+  attr :count, :integer, required: true
+  attr :elsewhere, :integer, required: true
+  attr :removable?, :boolean, required: true
+
+  def bulk_bar(assigns) do
+    ~H"""
+    <div
+      id="blocks-bulk-bar"
+      role="region"
+      aria-label="Selected trips"
+      class="mx-4 my-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border border-primary/30 bg-primary/10 px-4 py-2.5"
+    >
+      <strong id="bulk-count">{bulk_count_label(@count, @elsewhere)}</strong>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          id="bulk-clear"
+          type="button"
+          phx-click="clear_selection"
+          class="btn btn-sm min-h-11"
+        >
+          Clear selection
+        </button>
+        <button
+          :if={@removable?}
+          id="bulk-remove"
+          type="button"
+          phx-click="unassign"
+          phx-value-scope="selection"
+          class="btn btn-sm min-h-11"
+        >
+          Remove from block
+        </button>
+        <button
+          id="bulk-assign"
+          type="button"
+          phx-click="open_assign"
+          phx-value-scope="selection"
+          class="btn btn-sm btn-primary min-h-11"
+        >
+          Assign {count_label(@count, "trip", "trips")}
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  # “2 selected · 1 on other pages”; a selection the page holds entirely says
+  # only its count.
+  defp bulk_count_label(count, 0), do: "#{count} selected"
+
+  defp bulk_count_label(count, elsewhere),
+    do: "#{count} selected · #{elsewhere} on other pages"
+
   # The pool and the List view carry the reference's “Select this page” control
   # where their records are; the timeline has no selection column, so it does
   # not offer it. An empty page has nothing to select, so neither empty state
@@ -1512,6 +1654,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :routes, :map, required: true
   attr :findings_by_trip, :map, required: true
   attr :route_filter, :string, default: nil
+  attr :selected_ids, :any, required: true, doc: "the UUIDs the page has selected"
 
   def block_list(assigns) do
     ~H"""
@@ -1523,6 +1666,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         routes={@routes}
         findings_by_trip={@findings_by_trip}
         route_filter={@route_filter}
+        selected_ids={@selected_ids}
       />
     </div>
     """
@@ -1535,6 +1679,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :routes, :map, required: true
   attr :findings_by_trip, :map, required: true
   attr :route_filter, :string, default: nil
+  attr :selected_ids, :any, required: true
 
   defp block_list_table(assigns) do
     assigns =
@@ -1564,7 +1709,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
       <.table id={"block-list-" <> @dom} rows={@rows} responsive="stack">
         <:col :let={trip} label="Select">
-          <.select_trip trip={trip} />
+          <.select_trip trip={trip} checked={MapSet.member?(@selected_ids, trip.id)} />
         </:col>
         <:col :let={trip} label="Trip">
           <div>
@@ -1622,6 +1767,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :page, :integer, required: true
   attr :page_size, :integer, required: true
   attr :version_id, :string, required: true
+  attr :selected_ids, :any, required: true
 
   def pool(%{total: 0} = assigns) do
     ~H"""
@@ -1649,7 +1795,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.table id="blocks-pool-table" rows={@pool_rows} responsive="stack">
       <:col :let={{_dom, trip}} label="Select">
-        <.select_trip trip={trip} />
+        <.select_trip trip={trip} checked={MapSet.member?(@selected_ids, trip.id)} />
       </:col>
       <:col :let={{_dom, trip}} label="Route / trip">
         <div class="flex items-center gap-2">
@@ -1768,9 +1914,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   # The row's selection control: a 44px target around a daisyUI checkbox, and
-  # the trip's natural ID in the event. Step 26 owns the selection state; the
-  # control emits its fixed event today (CR-8).
+  # the trip's natural ID in the event. The checked state is the page's own
+  # selection, so a re-streamed row shows the state the reader last set (AC-24).
   attr :trip, :map, required: true
+  attr :checked, :boolean, required: true
 
   defp select_trip(assigns) do
     ~H"""
@@ -1783,6 +1930,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         id={"select-" <> dom_token(@trip.trip_id)}
         data-role="select-trip"
         data-trip={@trip.trip_id}
+        checked={@checked}
         phx-click="toggle_trip"
         phx-value-trip={@trip.trip_id}
         aria-label={"Select trip " <> @trip.trip_id}
@@ -1866,7 +2014,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp eligibility_text(%{plottable?: false}), do: "Time missing"
   defp eligibility_text(_trip), do: nil
 
-  defp eligible?(trip), do: trip.plottable? and not trip.frequency?
+  @doc """
+  Whether a trip can be assigned to a block: it needs usable endpoint times and
+  a single trip, not a repeating one (README, R10).
+
+  The pool's actionable rows, the bulk bar's assignment form and the LiveView's
+  eligibility preview of a selection all read this one rule, so the page never
+  offers an assignment the `Blocking` context would refuse.
+  """
+  def eligible?(trip), do: trip.plottable? and not trip.frequency?
 
   # A List view row is one of the block's trips the route filter keeps, in the
   # block's own order, so the table reads top to bottom like the block's work.
@@ -2579,20 +2735,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   # An ineligible trip is named with its own reason rather than silently dropped
-  # (FH-18).
-  defp ineligible_title(%{ineligible: ids, trips: trips}) do
-    reasons =
-      trips
-      |> Enum.filter(&(&1.id in ids))
-      |> Enum.map(&eligibility_text/1)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
+  # (FH-18). The selection scope gets its own callout and one line per trip,
+  # because a bulk selection can hold several reasons at once (AC-24).
+  defp ineligible_trips(%{ineligible: ids, trips: trips}),
+    do: Enum.filter(trips, &(&1.id in ids))
 
-    case reasons do
+  defp ineligible_callout_id(%{scope: :selection}), do: "bulk-ineligible"
+  defp ineligible_callout_id(_assign), do: "assign-ineligible"
+
+  defp ineligible_title(%{scope: :selection}, ineligible),
+    do: "#{count_label(length(ineligible), "selected trip", "selected trips")} can't be assigned."
+
+  defp ineligible_title(_assign, ineligible) do
+    case ineligible |> Enum.map(&eligibility_text/1) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
       [] -> "This trip can't be assigned to a block."
       reasons -> "This trip can't be assigned to a block · " <> Enum.join(reasons, ", ")
     end
   end
+
+  # The bulk callout's per-trip reason: the rule that refused it, in the pool's
+  # own words (“repeats” for a frequency trip, “time missing” for one whose
+  # endpoint time is missing).
+  defp bulk_ineligibility_reason(%{frequency?: true} = trip),
+    do: "repeats every #{div(trip.headway_secs, 60)} min"
+
+  defp bulk_ineligibility_reason(_trip), do: "time missing"
 
   # The confirm button repeats the verb and its object (AC-26).
   defp confirm_label(%{command: {:rename, _source, _target}}), do: "Rename block"
