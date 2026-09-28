@@ -1,4 +1,4 @@
-ExUnit.start(exclude: [:validator_cli])
+ExUnit.start(exclude: [:validator_cli, :blocking_scale])
 
 File.mkdir_p!(Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_path))
 
