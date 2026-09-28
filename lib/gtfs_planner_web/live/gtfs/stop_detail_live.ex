@@ -76,6 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           socket
           |> assign(:stop, stop)
           |> assign(:stop_state, :ready)
+          |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, stop))
 
         socket = load_regions(socket)
 
@@ -171,6 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           socket
           |> assign(:stop, stop)
           |> assign(:stop_state, :ready)
+          |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, stop))
 
         socket = load_regions(socket)
 
@@ -277,6 +279,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # The related-transfer count is a direct facade call, never the catalog adapter
+  # (CR-15): this page's own read may be a substituted adapter, but the count is
+  # the same predicate the filtered list uses (CR-4), so a station counts its
+  # children exactly as the list's stop filter does.
+  defp related_transfers(organization_id, gtfs_version_id, stop) do
+    Gtfs.count_general_transfers(organization_id, gtfs_version_id, stop: stop.stop_id)
   end
 
   defp load_regions(socket) do
@@ -789,6 +799,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   <dt class="text-sm font-medium text-base-content/70">Diagram</dt>
                   <dd class="mt-1 text-base" id="diagram-status">
                     {diagram_status_text(@stop.diagram_coordinate)}
+                  </dd>
+                </div>
+
+                <div>
+                  <dt class="text-sm font-medium text-base-content/70">Transfers</dt>
+                  <dd class="mt-1 text-base">
+                    <.link
+                      id="stop-transfers-link"
+                      navigate={
+                        ~p"/gtfs/#{@current_gtfs_version.id}/transfers?#{[stop: @stop.stop_id]}"
+                      }
+                      class="link link-primary"
+                    >
+                      Transfers here ({@transfer_count})
+                    </.link>
                   </dd>
                 </div>
               </dl>

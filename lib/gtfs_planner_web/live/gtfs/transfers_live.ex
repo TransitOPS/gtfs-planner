@@ -339,7 +339,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     id = Map.get(params, "id")
 
     case socket.assigns.editor do
-      %{error: {:duplicate, %{id: ^id}}} -> open_rule(socket, id)
+      %{error: {:duplicate, %{id: ^id}}} -> {:noreply, open_rule(socket, id)}
       _editor -> {:noreply, socket}
     end
   end
@@ -349,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     id = Map.get(params, "id")
 
     if socket.assigns.compare_open? and known_rule_id?(socket, id) do
-      open_rule(socket, id)
+      {:noreply, open_rule(socket, id)}
     else
       {:noreply, socket}
     end
