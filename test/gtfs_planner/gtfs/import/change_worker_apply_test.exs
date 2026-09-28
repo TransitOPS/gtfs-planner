@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
   use GtfsPlanner.DataCase, async: false
 
-  alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog}
+  alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog, Stop}
 
   alias GtfsPlanner.Gtfs.Import.{
     ChangeDecision,
@@ -190,6 +190,49 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
              )
 
     assert %{stop_name: "Central Station"} =
+             GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert %ChangeRun{state: :completed, summary: %{"applied" => 1, "unapplied" => 0}} =
+             Repo.get!(ChangeRun, run.id)
+  end
+
+  test "a reviewed station change leaves the stored zone when its attrs carry zone_id: nil" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop = stop_fixture(organization.id, version.id, %{stop_id: "central", stop_name: "Central"})
+
+    {1, _} = Repo.update_all(from(s in Stop, where: s.id == ^stop.id), set: [zone_id: "A"])
+
+    current_values = %{"stop_name" => "Central"}
+
+    run =
+      review_run!(organization.id, version.id, [
+        %{
+          decision(
+            :stop,
+            :modify,
+            "central",
+            %{stop_name: "Central Station", zone_id: nil},
+            [],
+            "stop:central"
+          )
+          | current_values: current_values,
+            current_fingerprint: ChangeDecisionSerializer.current_fingerprint(current_values)
+        }
+      ])
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    assert %{stop_name: "Central Station", zone_id: "A"} =
              GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
 
     assert %ChangeRun{state: :completed, summary: %{"applied" => 1, "unapplied" => 0}} =
