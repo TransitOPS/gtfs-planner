@@ -623,7 +623,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       assert html =~ "3 calendars selected"
       assert html =~ "Keeps 2 + 2 trips"
       assert html =~ "Fall shuttle"
-      assert html =~ "leave block CLEAR"
+
+      assert has_element?(
+               view,
+               "#calendar-combine-impacts-cleared-blocks",
+               "1 moved trip leaves its block and goes to the unassigned pool on Blocks."
+             )
+
       assert String.downcase(html) =~ "in-seat transfer"
       assert html =~ "stays in the list with 0 trips"
       assert has_element?(view, "#calendar-combine-result-moved")
@@ -906,12 +912,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
       moving = render(element(view, "#calendar-combine-effects-SEASON_SAT"))
       assert moving =~ "Also run on"
-      assert moving =~ "If these trips should keep their own dates, don't combine."
+
+      assert has_element?(
+               view,
+               "#calendar-combine-effects-SEASON_SAT",
+               "If these trips should keep their own dates, don't combine."
+             )
 
       # The warning is about the dates a calendar's trips would gain, so the calendar that stays
       # does not carry it.
-      staying = render(element(view, "#calendar-combine-effects-SEASON_DEST"))
-      refute staying =~ "don't combine"
+      refute has_element?(view, "#calendar-combine-effects-SEASON_DEST", "don't combine")
     end
   end
 
@@ -944,8 +954,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
       assert pending =~ "Combining…"
       assert pending =~ "Moving 1 trip into Saturday service…"
-      assert pending =~ ~r/id="calendar-combine-apply"[^>]*disabled/
-      assert pending =~ ~r/id="calendar-combine-close"[^>]*disabled/
+
+      # The controls are disabled by the server's own in-flight state. HEEx emits `@rest`
+      # attributes in atom-term order (`disabled` before `id`), so the check parses the rendered
+      # patch instead of matching one fixed attribute order.
+      pending_document = LazyHTML.from_fragment(pending)
+
+      assert pending_document
+             |> LazyHTML.query("#calendar-combine-apply[disabled]")
+             |> Enum.any?()
+
+      assert pending_document
+             |> LazyHTML.query("#calendar-combine-close[disabled]")
+             |> Enum.any?()
 
       settled = settle(view, &reloaded?(&1, "Combined into Saturday service."))
 
@@ -1140,8 +1161,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
 
         assert pending =~ "Combining…"
         assert pending =~ "Moving 1 trip into Saturday service…"
-        assert pending =~ ~r/id="calendar-combine-apply"[^>]*disabled/
-        assert pending =~ ~r/id="calendar-combine-close"[^>]*disabled/
+
+        pending_document = LazyHTML.from_fragment(pending)
+
+        assert pending_document
+               |> LazyHTML.query("#calendar-combine-apply[disabled]")
+               |> Enum.any?()
+
+        assert pending_document
+               |> LazyHTML.query("#calendar-combine-close[disabled]")
+               |> Enum.any?()
 
         apply_backend = await_blocked_backend(holder.backend)
 

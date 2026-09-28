@@ -927,9 +927,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       assert stored_layover(scope.organization.id, scope.version.id) == 5
       assert stored_layover(scope.organization.id, first_row_version.id) == nil
 
-      assert Blocking.get_settings(scope.organization.id, first_row_version.id) == %{
-               min_layover_minutes: 5
-             }
+      assert unboxed(fn -> Blocking.get_settings(scope.organization.id, first_row_version.id) end) ==
+               %{min_layover_minutes: 5}
 
       assert stored_layover(scope.organization.id, first_row_version.id) == nil
 

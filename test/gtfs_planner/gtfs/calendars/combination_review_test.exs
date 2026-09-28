@@ -211,14 +211,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
 
       assert {:ok, inputs} = load_inputs(context.audit, @command)
 
-      # The source moves onto the destination's dates, which include the companion's own day,
-      # so the moved block gains a companion it did not have before and must be cleared; the
-      # destination trip on its own block stays assigned.
+      # The source moves onto the destination's dates, which include the companion's own day
+      # (2026-03-09), so the moved block gains a companion it did not have before and must be
+      # cleared; the destination trip on its own block stays assigned.
       result =
         Blocking.project_calendar_combination(inputs, %{
           destination_id: "DEST",
           source_ids: ["SAT"],
-          result_dates: [~D[2026-03-02], ~D[2026-03-07]]
+          result_dates: [~D[2026-03-02], ~D[2026-03-07], ~D[2026-03-09]]
         })
 
       assert result.cleared_trip_ids == [scope.trips.source.id]
@@ -607,6 +607,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     end
 
     test "changes when the minimum layover changes", context do
+      seed_review_scope(context)
       token = review_token(context)
 
       assert {:ok, _setting} =
@@ -618,6 +619,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     end
 
     test "changes when a counterpart trip is retimed", context do
+      seed_review_scope(context)
       token = review_token(context)
 
       # A retime of the counterpart's first endpoint: the raw stop-time rows and every derived
@@ -634,6 +636,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     end
 
     test "changes when a stop time crosses midnight", context do
+      seed_review_scope(context)
       token = review_token(context)
 
       # The counterpart's last endpoint becomes a post-midnight time, so the stored value and
@@ -650,6 +653,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     end
 
     test "is not influenced by the client's fingerprint values", context do
+      seed_review_scope(context)
       token = review_token(context)
 
       assert {:ok, other} =

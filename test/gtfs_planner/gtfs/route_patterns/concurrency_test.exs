@@ -305,14 +305,22 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
       # The public lifecycle entrypoint keeps its return shape, its audit and its refusal for a
       # scope the shared lock accepts but this path does not publish.
       assert {:ok, %RoutePattern{} = created} =
-               Gtfs.create_pattern(scope.route.route_id, second_pattern_attrs(scope), scope.audit)
+               unboxed(fn ->
+                 Gtfs.create_pattern(
+                   scope.route.route_id,
+                   second_pattern_attrs(scope),
+                   scope.audit
+                 )
+               end)
 
       assert {:error, :not_found} =
-               Gtfs.create_pattern(
-                 scope.route.route_id,
-                 second_pattern_attrs(scope),
-                 %{scope.audit | gtfs_version_id: scope.staging_version.id}
-               )
+               unboxed(fn ->
+                 Gtfs.create_pattern(
+                   scope.route.route_id,
+                   second_pattern_attrs(scope),
+                   %{scope.audit | gtfs_version_id: scope.staging_version.id}
+                 )
+               end)
 
       assert [%ChangeLog{action: "created", entity_type: "route_pattern"}] =
                unboxed(fn ->
