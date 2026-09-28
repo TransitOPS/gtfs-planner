@@ -30,11 +30,11 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   page of them is returned with the requested rule selected when it is present.
 
   Both views are read-only here: in-seat rows carry no attention reasons and no
-  competitors. The module's two writes, `create_general/2` and `update_general/4`,
-  reach a types 0–3 rule only and never touch a type 4/5 row (R1). The filtered page
-  is a display set, never a write or delete scope, and `count_general/3` counts a
-  detail page's related rules with the same stop and route predicates this listing
-  uses.
+  competitors. The module's writes — `create_general/2`, `update_general/4`,
+  `delete_general/3` and `delete_general_many/2` — reach a types 0–3 rule only and
+  never touch a type 4/5 row (R1). The filtered page is a display set, never a write
+  or delete scope, and `count_general/3` counts a detail page's related rules with
+  the same stop and route predicates this listing uses.
 
   The editor's option queries read the same scope: `search_stops/3` matches a
   case-insensitive substring of the stop name, ID or platform code among the stops
@@ -54,16 +54,20 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   and answers at most 200 drawable stops with `truncated?`; and `version_extent/2`
   returns the version's own bounding box, or nil when no stop has coordinates.
 
-  `create_general/2` creates and `update_general/4` changes one general rule in
-  this module's own retry loop over the configured `ReviewedApplyTransaction`
-  module: the editor changeset's references are checked against the version's stops,
-  routes and trips inside the write transaction (R2/R4), one `"transfer"` change log
-  is written with the row in the same transaction (R9), and a unique-key failure is
-  reported after the rollback as `{:duplicate, %{id, transfer_type} | nil}` (R5).
-  Serialization failures and deadlocks retry up to three attempts before `:busy`
-  (R8). The update loads its target through an id-scoped types 0–3 query, refuses a
+  Every write runs in this module's own retry loop over the configured
+  `ReviewedApplyTransaction` module and audits each affected row with one
+  `"transfer"` change log in the same transaction (R9); serialization failures and
+  deadlocks retry up to three attempts before `:busy` (R8). `create_general/2` and
+  `update_general/4` check the editor changeset's references against the version's
+  stops, routes and trips inside the write transaction (R2/R4), and a unique-key
+  failure is reported after the rollback as `{:duplicate, %{id, transfer_type} | nil}`
+  (R5). The update loads its target through an id-scoped types 0–3 query, refuses a
   mismatched, missing or unparseable `expected_updated_at` as `:stale`, and returns
   the row untouched with no audit log when the submitted values change nothing.
+  `delete_general/3` deletes one target and `delete_general_many/2` deletes an exact
+  `{id, updated_at}` list all-or-nothing; both check scope, type and freshness only,
+  never references, so a damaged imported row stays deletable and is audited with its
+  stored values (R8), and a bulk batch shares one operation id across its logs.
   """
 
   import Ecto.Changeset
@@ -580,6 +584,61 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     case run_write(fn -> update_general_transaction(id, attrs, expected_updated_at, audit) end) do
       {:error, %Ecto.Changeset{} = changeset} -> duplicate_result(changeset, audit)
       result -> result
+    end
+  end
+
+  @doc """
+  Deletes one existing general (types 0–3) transfer rule from the audit context's version.
+
+  The target is loaded through a query scoped to the organization, the version and
+  `transfer_type in 0..3`, so an unknown or malformed ID, another version's or
+  organization's row and a type 4/5 row are all `:not_found` and delete nothing
+  (R1/R10). The row is deleted only when `expected_updated_at` — the stored
+  `DateTime` or its ISO 8601 string — matches the loaded row; a different, missing or
+  unparseable value is `:stale` with no delete (R8).
+
+  Deletion checks scope, type and freshness only: no reference validation and no
+  changeset run, so an imported row naming a missing stop, route or trip stays
+  deletable and is audited with its stored values (R8). The deleted row is audited
+  with one `"deleted"` `"transfer"` change log in the same transaction, whose
+  `before` snapshot is `Transfer.audit_snapshot/1` of the stored row and whose
+  `after` is nil (R9); an audit failure rolls the delete back. Serialization
+  failures and deadlocks retry up to three attempts before `:busy` (R8).
+  """
+  @spec delete_general(Ecto.UUID.t(), DateTime.t() | String.t() | nil, AuditContext.t()) ::
+          {:ok, Transfer.t()} | {:error, :not_found | :stale | :busy}
+  def delete_general(id, expected_updated_at, %AuditContext{} = audit) do
+    run_write(fn -> delete_general_transaction(id, expected_updated_at, audit) end)
+  end
+
+  @doc """
+  Deletes several existing general (types 0–3) transfer rules in one all-or-nothing write.
+
+  `pairs` is the exact list of `{id, updated_at}` pairs of the rows the caller's
+  editor shows: the list filter, a search, a sort or a page never define this scope
+  (R8), so the caller must enumerate the targets. An empty list or an element that is
+  not a `{binary, DateTime | binary}` pair is `{:error, :invalid_input}` before any
+  transaction opens. One id carrying two different timestamps is `{:error, :stale}`
+  with no write; the same id repeated with the same timestamp names one target.
+
+  Inside the write transaction every target is loaded in one query scoped to the
+  organization, the version and `transfer_type in 0..3`, so a missing, foreign,
+  other-version or type 4/5 id makes the whole request `:not_found` and deletes
+  nothing (R1/R10). One stale member makes the whole request `:stale`. Otherwise
+  every loaded row is deleted and each gets one `"deleted"` `"transfer"` change log
+  in the same transaction, all sharing one `operation_id` and listing every affected
+  id (R9); an audit failure rolls every delete back, so the batch is all-or-nothing.
+  Returns `{:ok, count}` for the number of deleted rows. Deletion checks scope, type
+  and freshness only — never references — so damaged imported rows stay deletable
+  (R8). Serialization failures and deadlocks retry up to three attempts before
+  `:busy` (R8).
+  """
+  @spec delete_general_many([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
+          {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
+  def delete_general_many(pairs, %AuditContext{} = audit) do
+    case delete_targets(pairs) do
+      {:ok, targets} -> run_write(fn -> delete_general_many_transaction(targets, audit) end)
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1709,16 +1768,31 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     end
   end
 
-  # The id-scoped load an update target goes through: another organization's or
-  # version's row and a type 4/5 row are indistinguishable from an unknown ID, so
-  # none of them can be written through this module (R1/R10).
-  defp scoped_general(organization_id, gtfs_version_id, transfer_id) do
+  # R1/R10: every general-rule write target is loaded through this organization,
+  # version and type scope, so another organization's or version's row, a type 4/5
+  # row and an unknown ID are all indistinguishable from a missing row.
+  defp general_scope(organization_id, gtfs_version_id) do
     from(t in Transfer,
       where:
         t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-          t.id == ^transfer_id and t.transfer_type in ^@general_types
+          t.transfer_type in ^@general_types
     )
   end
+
+  # The id-scoped load an update or a single delete goes through.
+  defp scoped_general(organization_id, gtfs_version_id, transfer_id) do
+    general_scope(organization_id, gtfs_version_id)
+    |> where([t], t.id == ^transfer_id)
+  end
+
+  # The bulk delete loads every target in one scoped query.
+  defp scoped_general_ids(organization_id, gtfs_version_id, transfer_ids) do
+    general_scope(organization_id, gtfs_version_id)
+    |> where([t], t.id in ^transfer_ids)
+  end
+
+  defp load_general_rows(audit, transfer_ids),
+    do: Repo.all(scoped_general_ids(audit.organization_id, audit.gtfs_version_id, transfer_ids))
 
   defp update_general_transaction(id, attrs, expected_updated_at, audit) do
     case load_general(audit, id) do
@@ -1781,6 +1855,152 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       {:ok, _log} -> transfer
       {:error, changeset} -> Repo.rollback(changeset)
     end
+  end
+
+  defp delete_general_transaction(id, expected_updated_at, audit) do
+    case load_general(audit, id) do
+      {:ok, transfer} ->
+        if stale?(transfer, expected_updated_at),
+          do: Repo.rollback(:stale),
+          else: delete_audited_transfer(transfer, audit)
+
+      :error ->
+        Repo.rollback(:not_found)
+    end
+  end
+
+  # R8: deletion never validates references, so the stored row is deleted exactly as
+  # it is and audited with its own snapshot.
+  defp delete_audited_transfer(transfer, audit) do
+    before_snapshot = Transfer.audit_snapshot(transfer)
+
+    case Repo.delete(transfer) do
+      {:ok, deleted} ->
+        audit_deleted_transfer(
+          deleted,
+          before_snapshot,
+          [transfer.id],
+          Ecto.UUID.generate(),
+          audit
+        )
+
+      {:error, changeset} ->
+        Repo.rollback(changeset)
+    end
+  end
+
+  defp audit_deleted_transfer(transfer, before_snapshot, affected_ids, operation_id, audit) do
+    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, "deleted", %{
+           before: before_snapshot,
+           after: nil,
+           operation_id: operation_id,
+           affected_transfer_ids: affected_ids
+         }) do
+      {:ok, _log} -> transfer
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp delete_general_many_transaction(targets, audit) do
+    case cast_targets(targets) do
+      {:ok, canonical} ->
+        ids = Map.keys(canonical)
+        rows = load_general_rows(audit, ids)
+
+        cond do
+          length(rows) != length(ids) ->
+            Repo.rollback(:not_found)
+
+          Enum.any?(rows, &stale?(&1, Map.fetch!(canonical, &1.id))) ->
+            Repo.rollback(:stale)
+
+          true ->
+            delete_audited_transfers(rows, audit)
+        end
+
+      :error ->
+        Repo.rollback(:not_found)
+    end
+  end
+
+  # The batch deletes every loaded row and then writes one log per row in the same
+  # transaction, all sharing one operation id and listing every affected id (R9).
+  # An audit failure rolls the whole batch back, so no partial delete survives.
+  defp delete_audited_transfers(rows, audit) do
+    operation_id = Ecto.UUID.generate()
+    affected_ids = Enum.map(rows, & &1.id)
+    snapshots = Map.new(rows, &{&1.id, Transfer.audit_snapshot(&1)})
+
+    {count, _deleted} = Repo.delete_all(from(t in Transfer, where: t.id in ^affected_ids))
+
+    Enum.each(rows, fn row ->
+      audit_deleted_transfer(
+        row,
+        Map.fetch!(snapshots, row.id),
+        affected_ids,
+        operation_id,
+        audit
+      )
+    end)
+
+    count
+  end
+
+  # R8: the bulk input is the caller's exact target list. The shape is checked before
+  # the transaction so a malformed request cannot open one, and grouping by id turns
+  # a repeated id into one target or a conflicting-timestamp `:stale`.
+  defp delete_targets(pairs) when is_list(pairs) and pairs != [] do
+    Enum.reduce_while(pairs, {:ok, %{}}, &accumulate_delete_target/2)
+  end
+
+  defp delete_targets(_pairs), do: {:error, :invalid_input}
+
+  defp accumulate_delete_target(pair, {:ok, targets}) do
+    case delete_target(pair) do
+      {:ok, id, timestamp} -> continue_delete_target(targets, id, timestamp)
+      :error -> {:halt, {:error, :invalid_input}}
+    end
+  end
+
+  defp continue_delete_target(targets, id, timestamp) do
+    case put_delete_target(targets, id, timestamp) do
+      {:ok, targets} -> {:cont, {:ok, targets}}
+      :stale -> {:halt, {:error, :stale}}
+    end
+  end
+
+  defp delete_target({id, timestamp}) when is_binary(id) and is_binary(timestamp),
+    do: {:ok, id, normalize_timestamp(timestamp)}
+
+  defp delete_target({id, %DateTime{} = timestamp}) when is_binary(id),
+    do: {:ok, id, timestamp}
+
+  defp delete_target(_pair), do: :error
+
+  defp put_delete_target(targets, id, timestamp) do
+    case Map.fetch(targets, id) do
+      :error ->
+        {:ok, Map.put(targets, id, timestamp)}
+
+      {:ok, existing} ->
+        if same_timestamp?(existing, timestamp), do: {:ok, targets}, else: :stale
+    end
+  end
+
+  defp same_timestamp?(nil, nil), do: true
+  defp same_timestamp?(%DateTime{} = a, %DateTime{} = b), do: DateTime.compare(a, b) == :eq
+  defp same_timestamp?(_a, _b), do: false
+
+  # The loaded rows are matched back to their timestamps by canonical UUID, so a
+  # caller's differently cased id cannot break the lookup; an id that is not a UUID
+  # cannot match any row and is therefore `:not_found`.
+  defp cast_targets(targets) do
+    Enum.reduce_while(targets, {:ok, %{}}, fn {id, timestamp}, {:ok, acc} ->
+      case Ecto.UUID.cast(id) do
+        {:ok, uuid} -> {:cont, {:ok, Map.put(acc, uuid, timestamp)}}
+        :error -> {:halt, :error}
+      end
+    end)
   end
 
   # R8: the caller's expected timestamp may be the stored DateTime or its ISO 8601

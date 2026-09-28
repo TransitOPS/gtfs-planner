@@ -413,6 +413,52 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Deletes one existing general (types 0–3) transfer rule through
+  `GtfsPlanner.Gtfs.Transfers.delete_general/3`.
+
+  The organization and version come from the context (R10). The target is loaded
+  through an id-scoped types 0–3 query, so an unknown or malformed ID, another
+  version's or organization's row and a type 4/5 row are `:not_found` (R1).
+  `expected_updated_at` — the stored `DateTime` or its ISO 8601 string — must match
+  the loaded row, otherwise `{:error, :stale}` is returned with no delete (R8).
+  Deletion checks scope, type and freshness only and never validates references, so
+  a damaged imported row stays deletable; it is audited with one in-transaction
+  `"deleted"` `"transfer"` change log carrying its stored snapshot as `before` and
+  nil as `after` (R9). Serialization failures and deadlocks retry up to three
+  attempts before `:busy` (R8).
+  """
+  @spec delete_general_transfer(
+          Ecto.UUID.t(),
+          DateTime.t() | String.t() | nil,
+          AuditContext.t()
+        ) :: {:ok, Transfer.t()} | {:error, :not_found | :stale | :busy}
+  def delete_general_transfer(id, expected_updated_at, %AuditContext{} = audit) do
+    Transfers.delete_general(id, expected_updated_at, audit)
+  end
+
+  @doc """
+  Deletes several general (types 0–3) transfer rules through
+  `GtfsPlanner.Gtfs.Transfers.delete_general_many/2`.
+
+  `pairs` is the exact list of `{id, updated_at}` pairs the editor's checked rows
+  resolve to; a list filter, search, sort or page never defines this scope (R8). An
+  empty list or a malformed element is `{:error, :invalid_input}`. The organization
+  and version come from the context (R10); every target is loaded through one query
+  scoped to them and to `transfer_type in 0..3`, so a missing, foreign, other-version
+  or type 4/5 id makes the whole request `:not_found` and one stale member makes it
+  `:stale`, both with nothing deleted (R1/R8). Otherwise the rows are deleted and
+  each is audited with one in-transaction `"deleted"` `"transfer"` change log
+  sharing one `operation_id` and listing every affected id, so the batch is
+  all-or-nothing (R9). Returns `{:ok, count}`. Serialization failures and deadlocks
+  retry up to three attempts before `:busy` (R8).
+  """
+  @spec delete_general_transfers([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
+          {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
+  def delete_general_transfers(pairs, %AuditContext{} = audit) do
+    Transfers.delete_general_many(pairs, audit)
+  end
+
+  @doc """
   Fetches one calendar identity through the configured catalog read adapter.
 
   Returns the weekly row (or `nil`), the metadata anchor (or `nil`), the sorted
