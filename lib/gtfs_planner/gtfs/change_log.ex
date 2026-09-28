@@ -63,7 +63,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       "route_pattern_build",
       "calendar",
       "trip",
-      "transfer"
+      "transfer",
+      "alignment_segment",
+      "pattern_shape"
     ])
     |> validate_inclusion(:action, ["created", "updated", "deleted", "rolled_back"])
     |> validate_rollback_reference()

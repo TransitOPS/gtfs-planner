@@ -23,6 +23,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
@@ -5854,6 +5855,34 @@ defmodule GtfsPlanner.Gtfs do
   # complete before/after snapshots are passed explicitly by Transfers, so the
   # entity itself never yields a snapshot.
   defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
+  # Alignment segments snapshot their scope, stop-pair identity, override
+  # linkage, optimistic-lock revision and interior points. Pattern shapes
+  # snapshot the owning pattern's shape identity; the replaced-shape detail
+  # travels in the explicit before/after maps (INV-5).
+  defp build_snapshot(type, %AlignmentSegment{} = segment)
+       when type in [:alignment_segment, "alignment_segment"] do
+    %{
+      id: segment.id,
+      scope: %{
+        organization_id: segment.organization_id,
+        gtfs_version_id: segment.gtfs_version_id
+      },
+      from_stop_id: segment.from_stop_id,
+      to_stop_id: segment.to_stop_id,
+      from_occurrence_id: segment.from_occurrence_id,
+      lock_version: segment.lock_version,
+      points: normalize_value(segment.points)
+    }
+  end
+
+  defp build_snapshot(type, %RoutePattern{} = pattern)
+       when type in [:pattern_shape, "pattern_shape"] do
+    %{
+      route_pattern_id: pattern.route_pattern_id,
+      shape_id: pattern.shape_id,
+      alignment_digest: pattern.alignment_digest
+    }
+  end
 
   defp build_snapshot(_, _), do: nil
 
@@ -5944,6 +5973,23 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_external_id_for(type, %Transfer{} = transfer, _attrs)
        when type in [:transfer, "transfer"],
        do: Transfer.audit_external_id(transfer)
+  # A shared segment is addressed by its stop pair; an override also names the
+  # visit it belongs to (INV-6). A pattern shape is addressed by the pattern's
+  # natural GTFS ID.
+  defp entity_external_id_for(type, %AlignmentSegment{} = segment, _attrs)
+       when type in [:alignment_segment, "alignment_segment"] do
+    pair = "#{segment.from_stop_id}>#{segment.to_stop_id}"
+
+    if is_nil(segment.from_occurrence_id) do
+      pair
+    else
+      "#{pair}@#{segment.from_occurrence_id}"
+    end
+  end
+
+  defp entity_external_id_for(type, %RoutePattern{} = pattern, _attrs)
+       when type in [:pattern_shape, "pattern_shape"],
+       do: pattern.route_pattern_id
 
   defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
 
@@ -5992,6 +6038,15 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  # Alignment entries carry explicit before/after aggregates like trips and
+  # calendars; no segment or shape column is diffed field-by-field.
+  defp audited_attrs_for(type, attrs)
+       when type in [:alignment_segment, "alignment_segment", :pattern_shape, "pattern_shape"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(before after)
+    end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -6031,6 +6086,21 @@ defmodule GtfsPlanner.Gtfs do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_transfer_operation(attrs)
+  end
+
+  # Alignment entries, like trips, store the explicit before/after aggregates
+  # (including INV-5 replaced-shape detail) rather than a column diff.
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [
+              :alignment_segment,
+              "alignment_segment",
+              :pattern_shape,
+              "pattern_shape"
+             ] and action in ["created", "updated", "deleted"] do
+    %{
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
