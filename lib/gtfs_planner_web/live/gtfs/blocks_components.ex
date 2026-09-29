@@ -1240,7 +1240,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       assign(assigns,
         confirm_label: confirm_label(assigns.review),
         notices: added_notices(assigns.review),
-        existing: existing_problem_count(assigns.review)
+        existing: existing_problem_count(assigns.review),
+        attributes?: attributes?(assigns.review)
       )
 
     ~H"""
@@ -1276,8 +1277,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <.status_badge status="warning" label="Preview · not saved" />
         </div>
 
-        <div class="mt-3 grid grid-cols-3 gap-2">
-          <div>
+        <div class={["mt-3 grid gap-2", (@attributes? && "grid-cols-2") || "grid-cols-3"]}>
+          <div :if={not @attributes?}>
             <strong>{length(@review.changes)}</strong>
             <span class="block text-base-content/70">trips changing block</span>
           </div>
@@ -1292,10 +1293,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </div>
 
         <h3 id="block-review-changes" tabindex="-1" class="mt-4 text-sm font-semibold">
-          Assignment changes
+          {if @attributes?, do: "Garage and type", else: "Assignment changes"}
         </h3>
 
-        <.table id="block-review-changes-table" rows={@review.changes}>
+        <p :if={@attributes?} id="block-review-attributes" class="text-sm">
+          No trip changes block. The block's garage and type are saved for every calendar it runs
+          on, and the dates below are the ones that changes.
+        </p>
+
+        <.table :if={not @attributes?} id="block-review-changes-table" rows={@review.changes}>
           <:col :let={change} label="Trip">{change.trip.trip_id}</:col>
           <:col :let={change} label="Current block">{change.from || "Unassigned"}</:col>
           <:col :let={change} label="Proposed block">
@@ -1303,7 +1309,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </:col>
         </.table>
 
-        <h3 class="mt-4 text-sm font-semibold">Affected dates</h3>
+        <h3 class="mt-4 text-sm font-semibold">
+          {if @attributes?, do: "Affected calendars", else: "Affected dates"}
+        </h3>
 
         <div class="mt-2 space-y-3">
           <div
@@ -1356,7 +1364,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </details>
 
         <p class="mt-3 text-sm text-base-content/70">
-          Trip times, stop order, and transfer records stay unchanged by this assignment.
+          {if @attributes?,
+            do:
+              "Trip times, stop order, block IDs, and transfer records stay unchanged by this save.",
+            else: "Trip times, stop order, and transfer records stay unchanged by this assignment."}
         </p>
       </div>
     </.confirm_dialog>
@@ -1541,6 +1552,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   attr :merge_total, :integer, default: 0, doc: "the merge search's match count before the cap"
 
+  attr :attributes, :map,
+    default: nil,
+    doc: "the garage and type form's state, nil while the drawer is closed"
+
+  attr :attributes_form, :any, default: nil, doc: "the two pickers' form"
+
+  attr :garages, :list, default: [], doc: "the organization's garages, by name"
+
+  attr :vehicle_types, :list, default: [], doc: "the organization's vehicle types, by name"
+
+  attr :route_settings, :map,
+    default: %{},
+    doc: "per-route home garage and required type, read only to explain a value (R4)"
+
+  attr :day_types, :list,
+    default: [],
+    doc:
+      "every day type the version derives, so the preview can name the other ones the save reaches"
+
+  attr :selected_day_type, :map,
+    default: nil,
+    doc: "the day type the page is showing; the preview never names it as “also”"
+
   def block_drawer(assigns) do
     assigns =
       assigns
@@ -1556,6 +1590,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         )
       )
       |> assign(:estimated?, estimated_leg?(assigns.movements))
+      |> assign(
+        :also_changes,
+        also_changes(
+          assigns.attributes,
+          assigns.block,
+          assigns.day_types,
+          assigns.garages,
+          assigns.vehicle_types,
+          assigns.selected_day_type
+        )
+      )
 
     ~H"""
     <.drawer id="block-drawer" open={@open} title={"Block " <> @summary.block_id}>
@@ -1589,6 +1634,89 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             Open this connection
           </button>
         </.callout>
+      </div>
+
+      <%!-- The hook is the page's existing scoped `FormErrorFocus` hook, and it
+      is scoped to this form on purpose: a refusal here pushes a focus target
+      that only the form's own hook can reach, so the reader's focus never
+      crosses into the timeline behind the drawer. --%>
+      <div
+        :if={@attributes}
+        id="block-attributes"
+        phx-hook="FormErrorFocus"
+        class="mt-5 border-t border-base-300 pt-4"
+      >
+        <.form
+          for={@attributes_form}
+          id="block-attributes-form"
+          phx-change="block_attributes_change"
+          phx-submit="save_block_attributes"
+          class="grid gap-4"
+        >
+          <.input
+            id="block-garage"
+            field={@attributes_form[:garage_id]}
+            type="select"
+            label="Garage"
+            options={Enum.map(@garages, &{&1.name, &1.id})}
+            prompt={garage_prompt(@block)}
+            errors={attribute_errors(@attributes)}
+            help={garage_help(@block, @garages, @route_settings, @routes, @day_types)}
+          />
+
+          <.input
+            id="block-vehicle-type"
+            field={@attributes_form[:vehicle_type_id]}
+            type="select"
+            label="Vehicle type (optional)"
+            options={Enum.map(@vehicle_types, &{&1.name, &1.id})}
+            prompt="Any type"
+            help={vehicle_type_help(@block, @route_settings, @vehicle_types, @routes)}
+          />
+
+          <div :if={@also_changes != []} id="block-also-changes" class="grid gap-2">
+            <p class="text-sm font-semibold">Also changes</p>
+            <div
+              :for={change <- @also_changes}
+              data-role="block-also-changes"
+              data-day-type={change.key}
+              class="rounded-box border border-base-300 bg-base-200/40 px-4 py-3 text-sm"
+            >
+              <p class="font-semibold">
+                {change.label} · {date_count_label(change.date_count)}
+              </p>
+              <p class="mt-1">{change.sentence}</p>
+            </div>
+          </div>
+
+          <p
+            :if={@also_changes != []}
+            id="block-attributes-note"
+            role="status"
+            class="text-sm text-base-content/70"
+          >
+            Also changes {Enum.map_join(@also_changes, ", ", & &1.label)}
+          </p>
+
+          <div class="flex flex-wrap gap-3">
+            <button
+              type="button"
+              id="block-attributes-cancel"
+              phx-click="close_drawer"
+              class="btn min-h-11"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              id="block-attributes-submit"
+              phx-disable-with="Saving…"
+              class="btn btn-primary min-h-11"
+            >
+              Save block settings
+            </button>
+          </div>
+        </.form>
       </div>
 
       <h3 class="mt-6 border-t border-base-300 pt-4 text-sm font-semibold">Vehicle’s day</h3>
@@ -1751,6 +1879,222 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # field of its own and prints under the picker instead.
   defp rename_errors(%{kind: :rename, error: error}) when is_binary(error), do: [error]
   defp rename_errors(_action), do: []
+
+  # --- the block's garage and vehicle type (step 38) ---------------------------
+
+  # A block whose calendars disagree has no garage to show, so the picker opens
+  # on the prompt rather than on one of the two answers (AC-37, R4). Every other
+  # block opens on the resolution the day load already made.
+  defp garage_prompt(%{resolution: %{conflict: conflict}}) when conflict in [nil, []],
+    do: nil
+
+  defp garage_prompt(_block), do: "Choose one garage"
+
+  # The refusal under the garage picker. It is the field's own error, so the
+  # select is marked invalid and the form's focus hook lands on it.
+  defp attribute_errors(%{error: error}) when is_binary(error), do: [error]
+  defp attribute_errors(_attributes), do: []
+
+  # The garage's help names where the value comes from, in the reference's three
+  # cases: the calendars disagree and the picker has to settle it; the block
+  # takes its first trip's route's home garage; or the route's home garage is
+  # named as the answer the block currently resolves to. The route and its
+  # setting are read off the loaded day, never re-resolved here (R4, INV-9).
+  defp garage_help(block, garages, route_settings, routes, day_types) do
+    case block.resolution.conflict do
+      [_ | _] = rows ->
+        "Set differently per calendar: " <>
+          Enum.map_join(rows, ", ", &conflict_row_sentence(&1, garages, day_types)) <>
+          ". Saving sets one garage for every calendar in this block."
+
+      _none ->
+        case route_garage(block, route_settings) do
+          nil ->
+            "No route on this block names a home garage."
+
+          garage_id ->
+            "Route #{route_label(routes, first_route(block))}'s home garage is " <>
+              "#{garage_name(garages, garage_id)}."
+        end
+    end
+  end
+
+  # A conflict row names the calendar by the same rule every other surface uses:
+  # the day type whose only service is this row's service, or the service ID.
+  defp conflict_row_sentence(row, garages, day_types) do
+    "#{garage_name(garages, row.garage_id)} on #{service_label(row.service_id, day_types)}"
+  end
+
+  defp service_label(service_id, day_types) do
+    case Enum.find(day_types, &(&1.service_ids == [service_id])) do
+      %{label: label} -> label
+      nil -> service_id
+    end
+  end
+
+  # The first trip's route is the route R4 resolves the block from, so the help
+  # names the same one the resolution read.
+  defp first_route(%{trips: trips}) do
+    case Checks.sequence(trips) do
+      [first | _rest] -> first.route_id
+      [] -> trips |> List.first() |> then(&(&1 && &1.route_id))
+    end
+  end
+
+  defp route_garage(block, route_settings) do
+    case first_route(block) do
+      nil -> nil
+      route_id -> get_in(route_settings, [route_id, :garage_id])
+    end
+  end
+
+  # The type's help names the requirement and the limits, as the reference does:
+  # a route that requires a type says so and then lists what every type allows,
+  # and a route that requires nothing lists the limits on their own.
+  defp vehicle_type_help(block, route_settings, types, routes) do
+    limits = Enum.map_join(types, " · ", &"#{&1.name} #{limit_label(&1.max_out_minutes)}")
+
+    case required_type(block, route_settings) do
+      nil ->
+        "Limits: #{limits}."
+
+      type_id ->
+        "Route #{route_label(routes, first_route(block))} requires #{type_name(types, type_id)}. " <>
+          "Limits: #{limits}."
+    end
+  end
+
+  # The route is named the way this page names it everywhere else — the short
+  # name, then the long one, then the ID — so the help reads “Route 12”, not the
+  # route's long name.
+  defp route_label(routes, route_id),
+    do: route_option_label(route_id, Map.get(routes, route_id, %{}))
+
+  defp limit_label(nil), do: "no set limit"
+
+  defp limit_label(minutes) do
+    if rem(minutes, 60) == 0,
+      do: "#{div(minutes, 60)} h limit",
+      else: "#{minutes} min limit"
+  end
+
+  defp required_type(block, route_settings) do
+    case first_route(block) do
+      nil -> nil
+      route_id -> get_in(route_settings, [route_id, :required_vehicle_type_id])
+    end
+  end
+
+  defp garage_name(_garages, nil), do: "no garage"
+
+  defp garage_name(garages, garage_id) do
+    case Enum.find(garages, &(&1.id == garage_id)) do
+      nil -> "a garage that no longer exists"
+      garage -> garage.name
+    end
+  end
+
+  defp type_name(_types, nil), do: "any type"
+
+  defp type_name(types, type_id) do
+    case Enum.find(types, &(&1.id == type_id)) do
+      nil -> "a type that no longer exists"
+      type -> type.name
+    end
+  end
+
+  # The “Also changes” preview: every other day type the same block number runs
+  # on, with the value this save gives it. The block's own services are the ones
+  # its rows are keyed by, so another day type is reached when it contains one of
+  # them *and* holds a trip of this block (AC-19, R12) — the same two conditions
+  # the context's own affected list applies, read here off the loaded day so the
+  # reader sees the reach before saving rather than only in the review.
+  defp also_changes(nil, _block, _day_types, _garages, _types, _day_type), do: []
+
+  defp also_changes(
+         %{garage_id: garage, vehicle_type_id: type},
+         block,
+         day_types,
+         garages,
+         types,
+         selected_day_type
+       ) do
+    resolution = block.resolution
+    change = change_parts(garage, type, resolution, garages, types)
+
+    # A block whose calendars disagree has no single garage to compare a choice
+    # against, so the reader has not decided anything yet and the preview stays
+    # out of the way until the picker holds a garage (AC-37, R4).
+    if change == [] or (undecided?(resolution) and blank_choice(garage) == nil) do
+      []
+    else
+      services = block.trips |> Enum.map(& &1.service_id) |> MapSet.new()
+      block_id = block.summary.block_id
+
+      day_types
+      |> Enum.reject(&(&1.key == selected_day_type_key(selected_day_type)))
+      |> Enum.filter(&holds_block?(&1, services))
+      |> Enum.map(&also_change_row(&1, block_id, services, day_types, change))
+    end
+  end
+
+  # One “Also changes” card: the other day type's own label and date count, and
+  # the sentence naming the trips the two share and the value this save gives it.
+  defp also_change_row(day_type, block_id, services, day_types, change) do
+    shared = Enum.map_join(shared_service_names(day_type, services, day_types), " and ", & &1)
+
+    %{
+      key: day_type.key,
+      label: day_type.label,
+      date_count: day_type.date_count,
+      sentence:
+        "Block #{block_id} runs the same #{shared} trips there. " <> change_sentence(change)
+    }
+  end
+
+  defp blank_choice(""), do: nil
+  defp blank_choice(value), do: value
+
+  defp undecided?(%{conflict: conflict}), do: conflict not in [nil, []]
+  defp undecided?(_resolution), do: false
+
+  defp selected_day_type_key(nil), do: nil
+  defp selected_day_type_key(day_type), do: day_type.key
+
+  # Another day type is reached when it holds a trip of this block, which is a
+  # day type whose services include one of the block's own services: the block
+  # runs on those services, so it runs there too (AC-19, R12).
+  defp holds_block?(day_type, services) do
+    Enum.any?(day_type.service_ids, &MapSet.member?(services, &1))
+  end
+
+  defp shared_service_names(day_type, services, day_types) do
+    day_type.service_ids
+    |> Enum.filter(&MapSet.member?(services, &1))
+    |> Enum.map(&service_label(&1, day_types))
+  end
+
+  # The value this save gives the other day type, in the reference's words: a
+  # garage that becomes the chosen one, a type that becomes the chosen one (or
+  # “any type” when the reader cleared it), and both joined when both changed.
+  defp change_sentence([]), do: "Its garage and type stay the same."
+  defp change_sentence([one]), do: "Its #{one} too."
+  defp change_sentence([first, second]), do: "Its #{first} and its #{second} too."
+
+  defp change_parts(garage, type, resolution, garages, types) do
+    []
+    |> then(
+      &if blank_choice(garage) != resolution.garage_id,
+        do: ["garage becomes #{garage_name(garages, blank_choice(garage))}" | &1],
+        else: &1
+    )
+    |> then(
+      &if blank_choice(type) != resolution.vehicle_type_id,
+        do: ["type becomes #{type_name(types, blank_choice(type))}" | &1],
+        else: &1
+    )
+    |> Enum.reverse()
+  end
 
   # The vehicle's day, as the reference's “Vehicle's day” table reads it: the
   # pull-out from the resolved garage, the block's `Checks.sequence/1` trips each
@@ -4044,6 +4388,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp bulk_ineligibility_reason(_trip), do: "time missing"
 
   # The confirm button repeats the verb and its object (AC-26).
+  defp confirm_label(%{command: {:attributes, _block, _garage, _type}}),
+    do: "Save block settings"
+
   defp confirm_label(%{command: {:rename, _source, _target}}), do: "Rename block"
   defp confirm_label(%{command: {:merge, _source, _target}}), do: "Merge blocks"
 
@@ -4054,6 +4401,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     do: "Assign " <> count_label(length(changes), "trip", "trips")
 
   defp confirm_label(_review), do: "Save changes"
+
+  # An attribute save moves no trip, so the dialog names what it does write and
+  # the affected calendars rather than a table of assignments that would be empty
+  # (AC-19, AC-37).
+  defp attributes?(%{command: {:attributes, _block, _garage, _type}}), do: true
+  defp attributes?(_review), do: false
+
+  defp effect_sentence(_effect, %{command: {:attributes, _block, _garage, _type}}) do
+    "The block's garage and type are saved here and apply to every calendar it runs on."
+  end
 
   defp effect_sentence(effect, review) do
     count = length(effect.changed_trip_ids)

@@ -120,6 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:review, nil)
      |> assign(:review_stale?, false)
      |> assign(:layover, %{params: %{}, error: nil})
+     |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
 
@@ -331,6 +332,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
+  # A change recomputes the preview from the loaded day types and drops the
+  # refusal, so a reader who answers the inline error sees the preview for the
+  # value they just chose rather than a stale sentence.
+  def handle_event("block_attributes_change", params, socket) do
+    {:noreply, put_block_attributes(socket, params, nil)}
+  end
+
+  # The one attribute write this drawer offers (AC-37). The form exists only on a
+  # loaded day type with a block open, so a submit from another page state is not
+  # a save; the context then validates, locks and decides the confirmation.
+  def handle_event("save_block_attributes", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_block_attributes", params, socket) do
+    socket = put_block_attributes(socket, params, nil)
+
+    case socket.assigns.block_attributes do
+      nil -> {:noreply, socket}
+      attributes -> submit_block_attributes(socket, attributes)
+    end
+  end
+
   # “Remove from block” runs the same reviewed command path as an assignment, so
   # a removal that adds a problem opens the review too (R10, AC-26). The bulk bar
   # removes every blocked trip of the selection; the ones already in the pool are
@@ -354,7 +377,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("confirm_review", _params, socket) do
     case socket.assigns.review do
       %{command: command, fingerprint: fingerprint} ->
-        run_command(socket, command, fingerprint)
+        run_reviewed(socket, command, fingerprint)
 
       _other ->
         {:noreply, socket}
@@ -884,6 +907,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp review_focus(%{assign: %{scope: :trip}}), do: "trip-change-assignment"
   defp review_focus(%{block_action: %{kind: :rename}}), do: "block-rename-id"
   defp review_focus(%{block_action: %{kind: :merge}}), do: "block-merge-search"
+  defp review_focus(%{block_attributes: %{block_id: _}}), do: "block-garage"
   defp review_focus(%{block_action: %{kind: :remove_all}}), do: "block-remove-all"
   defp review_focus(_assigns), do: "trip-change-assignment"
 
@@ -921,6 +945,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
         |> assign(:back_block, if(block, do: block.summary.block_id))
         |> assign(:block_action, block_action_state(socket.assigns.block_action, block))
+        |> assign(
+          :block_attributes,
+          block_attributes_state(socket.assigns.block_attributes, block)
+        )
 
       _other ->
         assign(socket,
@@ -928,7 +956,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           gap_view: nil,
           block_view: nil,
           back_block: nil,
-          block_action: nil
+          block_action: nil,
+          block_attributes: nil
         )
     end
   end
@@ -1102,6 +1131,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # --- reviewed block commands (step 25) --------------------------------------
 
+  # A confirmed review re-runs the command the review carries, so a confirmation
+  # writes exactly what was reviewed. An attribute save is one of those commands
+  # (`{:attributes, block_id, garage_id, vehicle_type_id}`, R12), so it takes the
+  # same path as an assignment rather than a second reviewed implementation.
+  defp run_reviewed(socket, {:attributes, block_id, garage_id, vehicle_type_id}, confirmation) do
+    run_attributes(socket, block_id, garage_id, vehicle_type_id, confirmation)
+  end
+
+  defp run_reviewed(socket, command, confirmation), do: run_command(socket, command, confirmation)
+
   # Every apply on this page goes through here (CR-8): the editor role is
   # re-read from the membership first, so a role revoked while the page is open
   # refuses the next write, and the audit context is built from the socket rather
@@ -1198,9 +1237,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         assign -> assign(socket, :assign, %{assign | error: nil, ineligible: []})
       end
 
-    case socket.assigns.block_action do
+    socket =
+      case socket.assigns.block_action do
+        nil -> socket
+        action -> assign(socket, :block_action, %{action | error: nil})
+      end
+
+    case socket.assigns.block_attributes do
       nil -> socket
-      action -> assign(socket, :block_action, %{action | error: nil})
+      attributes -> assign(socket, :block_attributes, %{attributes | error: nil})
     end
   end
 
@@ -1272,7 +1317,164 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # pending form's own failure, whichever form opened the review (AC-26, AC-27).
   defp pending_error(%{assign: %{error: error}}) when is_binary(error), do: error
   defp pending_error(%{block_action: %{error: error}}) when is_binary(error), do: error
+  defp pending_error(%{block_attributes: %{error: error}}) when is_binary(error), do: error
   defp pending_error(_assigns), do: nil
+
+  # --- the block's garage and vehicle type (step 38) --------------------------
+
+  # The drawer's own state, rebuilt from the loaded block whenever that block
+  # changes (a day-type switch, a reload or another writer's trip), so the two
+  # pickers start on the resolution the day load already made and never on a
+  # previous block's values. A block whose calendars disagree has no single
+  # garage to start on, so the picker starts on the prompt and the save asks for
+  # one (AC-37, R4).
+  defp block_attributes_state(_state, nil), do: nil
+
+  defp block_attributes_state(%{block_id: block_id} = state, %{summary: %{block_id: block_id}}),
+    do: state
+
+  defp block_attributes_state(_state, %{summary: %{block_id: block_id}} = block) do
+    %{garage_id: garage_id, vehicle_type_id: type_id} = block.resolution
+
+    %{
+      block_id: block_id,
+      garage_id: if(block.resolution.conflict, do: "", else: garage_id || ""),
+      vehicle_type_id: type_id || "",
+      error: nil
+    }
+  end
+
+  defp block_attributes_form(nil), do: nil
+
+  defp block_attributes_form(attributes) do
+    to_form(
+      %{"garage_id" => attributes.garage_id, "vehicle_type_id" => attributes.vehicle_type_id},
+      as: :block_attributes
+    )
+  end
+
+  # A block whose calendars name different garages has no garage to save, and the
+  # context would store `nil` for it and resolve the block from its route instead.
+  # That is a different plan from the one on screen, so the save is refused here
+  # with the sentence under the field and focus on the picker (AC-37). Every
+  # other value goes to the context, which owns the validation, the lock and the
+  # confirmation decision (AC-19, INV-7).
+  defp submit_block_attributes(
+         %{assigns: %{block_view: %{resolution: %{conflict: [_ | _]}}}} = socket,
+         %{garage_id: ""}
+       ) do
+    {:noreply,
+     socket
+     |> assign(
+       :block_attributes,
+       %{socket.assigns.block_attributes | error: "Choose one garage for this block."}
+     )
+     |> push_event("focus_scoped_target", %{id: "block-garage"})}
+  end
+
+  defp submit_block_attributes(socket, attributes) do
+    run_attributes(
+      socket,
+      attributes.block_id,
+      attributes.garage_id,
+      attributes.vehicle_type_id,
+      nil
+    )
+  end
+
+  defp run_attributes(
+         %{assigns: %{day_type: nil}} = socket,
+         _block,
+         _garage,
+         _type,
+         _confirmation
+       ),
+       do: {:noreply, socket}
+
+  # The one attribute write this drawer offers (AC-37). It runs on the same
+  # reviewed path as every other apply on the page: the editor role is re-read
+  # from the membership first, the audit context comes from the socket and the
+  # block from the loaded drawer's own resolution, so a crafted event can never
+  # name another block (CR-4). The context then takes the version lock, rebuilds
+  # the context under it and decides the confirmation (AC-19, INV-7).
+  defp run_attributes(socket, block_id, garage_id, vehicle_type_id, confirmation) do
+    if editor_access?(socket) do
+      case Gtfs.set_block_attributes(
+             socket.assigns.day_type.key,
+             block_id,
+             %{"garage_id" => garage_id, "vehicle_type_id" => vehicle_type_id},
+             audit_context(socket),
+             confirmation
+           ) do
+        {:ok, _result} -> {:noreply, attributes_applied(socket, block_id)}
+        {:needs_confirmation, review} -> {:noreply, show_review(socket, review, false)}
+        {:error, {:stale_review, review}} -> {:noreply, show_review(socket, review, true)}
+        {:error, reason} -> {:noreply, refuse_attributes(socket, reason)}
+      end
+    else
+      {:noreply, put_flash(socket, :error, @permission_message)}
+    end
+  end
+
+  # A saved attribute reloads the day so the block's own resolution, its garage
+  # travel and the row's Garage · type cell all read the row that was just
+  # written (INV-9), and drops the review. The patch takes the block out of the
+  # URL, which closes the drawer and leaves the reader looking at the row the
+  # flash names; the reference has no post-save state of its own, so closing is
+  # this page's existing rule for a command the drawer owns (AC-37).
+  #
+  # This pushes the patch itself rather than going through `patch/3`, which
+  # returns the `{:noreply, socket}` tuple its callers hand straight back to
+  # `handle_event/3`; wrapping that again crashes the LiveView after the write
+  # has already landed.
+  defp attributes_applied(socket, block_id) do
+    socket
+    |> load_day()
+    |> resolve_drawers()
+    |> assign(:review, nil)
+    |> assign(:review_stale?, false)
+    |> assign(:block_attributes, nil)
+    |> put_flash(:info, "Block #{block_id} saved")
+    |> then(&push_patch(&1, to: blocks_path(Map.merge(&1.assigns.state, %{block: nil}))))
+  end
+
+  # A refused save keeps the form, its values and its review, so a retry repeats
+  # exactly the reviewed save; only the sentence changes (AC-26, AC-37).
+  defp refuse_attributes(socket, reason) do
+    message = command_error(reason, nil)
+
+    case socket.assigns.block_attributes do
+      nil -> put_flash(socket, :error, message)
+      attributes -> assign(socket, :block_attributes, %{attributes | error: message})
+    end
+  end
+
+  # The form sends its two fields as `block_attributes[...]`; a value that is not
+  # a string (a crafted event, or a repeated parameter) keeps the one on screen
+  # rather than reaching the context.
+  defp put_block_attributes(socket, params, error) do
+    case socket.assigns.block_attributes do
+      nil ->
+        socket
+
+      attributes ->
+        values = block_attributes_params(params)
+
+        assign(socket, :block_attributes, %{
+          attributes
+          | garage_id: block_attributes_string(values["garage_id"], attributes.garage_id),
+            vehicle_type_id:
+              block_attributes_string(values["vehicle_type_id"], attributes.vehicle_type_id),
+            error: error
+        })
+    end
+  end
+
+  defp block_attributes_params(%{"block_attributes" => values}) when is_map(values), do: values
+  defp block_attributes_params(params), do: params
+
+  defp block_attributes_string(value, _current) when is_binary(value), do: value
+  defp block_attributes_string(_value, current), do: current
 
   # --- the assignment form (step 25) -----------------------------------------
 
@@ -1636,8 +1838,33 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings_by_trip: findings_by_trip(day.findings),
       destination_blocks: Enum.map(day.blocks, &destination_option/1),
       min_layover_minutes: day.settings.min_layover_minutes,
-      untimed_trips: Enum.filter(day.unplottable, & &1.block_id)
+      untimed_trips: Enum.filter(day.unplottable, & &1.block_id),
+      # The Garage and Vehicle type form's pickers read the planning inputs the
+      # day load already gathered, in the order a reader scans them (INV-9).
+      garages: garage_options(day.context.garages),
+      vehicle_types: vehicle_type_options(day.context.vehicle_types),
+      # The per-route requirements behind the form's two help lines. They are
+      # planning inputs like the rest of the context and are read here only to
+      # explain a value, never to resolve one (R4).
+      route_settings: day.context.route_settings
     )
+  end
+
+  # The garage picker lists the organization's garages by name, the vehicle type
+  # picker its types with the limit each one carries, so the form's help line can
+  # name the hours a type allows without a second read.
+  defp garage_options(garages) do
+    garages
+    |> Map.values()
+    |> Enum.map(&%{id: &1.id, name: &1.name})
+    |> Enum.sort_by(&{String.downcase(&1.name), &1.id})
+  end
+
+  defp vehicle_type_options(types) do
+    types
+    |> Map.values()
+    |> Enum.map(&%{id: &1.id, name: &1.name, max_out_minutes: &1.max_out_minutes})
+    |> Enum.sort_by(&{String.downcase(&1.name), &1.id})
   end
 
   # The timeline's axis spans the day's *platform* spans, not only its trips, so
@@ -1705,6 +1932,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       destination_blocks: [],
       min_layover_minutes: nil,
       untimed_trips: [],
+      garages: [],
+      vehicle_types: [],
+      route_settings: %{},
       selected_trips: [],
       pool_page_ids: MapSet.new(),
       timeline_page_ids: MapSet.new(),
@@ -2066,6 +2296,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     form={@block_action_form}
                     merge_options={@merge_options}
                     merge_total={@merge_total}
+                    attributes={@block_attributes}
+                    attributes_form={block_attributes_form(@block_attributes)}
+                    garages={@garages}
+                    vehicle_types={@vehicle_types}
+                    route_settings={@route_settings}
+                    day_types={@day_types}
+                    selected_day_type={@day_type}
                   />
                 <% end %>
 
