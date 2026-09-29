@@ -141,6 +141,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:range_report, nil)
      |> assign(:range_view, :grouped)
      |> assign(:range_timer, nil)
+     |> assign(:floorplan, nil)
+     |> assign(:floorplan_view, :diagram)
+     |> assign(:floorplan_level_id, nil)
      |> stream_configure(:closures, dom_id: &"closure-#{&1.id}")
      |> stream(:closures, [])}
   end
@@ -171,6 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             station_data: station_data,
             calendars: calendars
           )
+          |> assign_floorplan()
 
         case socket.assigns.live_action do
           :access -> {:noreply, mount_access(socket, params)}
@@ -201,6 +205,30 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:status_message, "Search cleared. Showing every closure at this station.")
      |> render_closures()}
   end
+
+  # The locator's Floorplan/List choice is view state only; it never changes the
+  # selected pathway, the station data or the URL.
+  def handle_event("floorplan_view", %{"view" => "diagram"}, socket),
+    do: {:noreply, socket |> assign(:floorplan_view, :diagram) |> render_closures()}
+
+  def handle_event("floorplan_view", %{"view" => "list"}, socket),
+    do: {:noreply, socket |> assign(:floorplan_view, :list) |> render_closures()}
+
+  def handle_event("floorplan_view", _params, socket), do: {:noreply, socket}
+
+  # A level switch is accepted only for a level of this station's own snapshot,
+  # so a client cannot name a level outside the mounted scope. The chosen level
+  # is kept until a pathway selection asks the floorplan to follow it again.
+  def handle_event("select_floorplan_level", %{"level" => level_id}, socket)
+      when is_binary(level_id) do
+    if floorplan_level?(socket, level_id) do
+      {:noreply, socket |> assign(:floorplan_level_id, level_id) |> render_closures()}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("select_floorplan_level", _params, socket), do: {:noreply, socket}
 
   def handle_event("select_closure", %{"id" => id}, socket) when is_binary(id) do
     case find_closure_row(socket, id) do
@@ -1758,6 +1786,51 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:closure_counts, closure_counts(rows))
     |> assign(:rows, rows)
     |> stream(:closures, matches, reset: true)
+    |> assign_floorplan()
+  end
+
+  # -- floorplan -------------------------------------------------------------
+
+  # Recomputes the static floorplan for the current snapshot, level choice and
+  # selection. The island the page renders is a read of these stored values:
+  # the level's published image URL, every plotted coordinate, and the pathway
+  # order the locator list already uses.
+  defp assign_floorplan(socket) do
+    data = socket.assigns.station_data
+
+    display =
+      floorplan_display(
+        data,
+        floorplan_pathway_order(data.pathways),
+        organization_id: socket.assigns.current_organization.id,
+        gtfs_version_id: socket.assigns.current_gtfs_version.id,
+        station_stop_id: socket.assigns.stop_id,
+        selected_level_id: socket.assigns.floorplan_level_id,
+        selected_pathway: floorplan_selected_pathway(socket),
+        closure_counts: socket.assigns.closure_counts || %{}
+      )
+
+    assign(socket, :floorplan, display)
+  end
+
+  # The locator list's own order: mode group, then `pathway_id`. The overlay's
+  # roving arrow order reads this array, so an arrow step and a list step land
+  # on the same pathway.
+  defp floorplan_pathway_order(pathways),
+    do: pathways |> mode_groups() |> Enum.flat_map(& &1.pathways)
+
+  # The floorplan marks whichever pathway the editor holds, exactly as the
+  # locator list and the reference do; the explicit list selection is the
+  # fallback while the editor is idle.
+  defp floorplan_selected_pathway(socket) do
+    editor_pathway(socket.assigns) ||
+      Enum.find(socket.assigns.station_data.pathways, fn pathway ->
+        to_string(pathway.id) == socket.assigns.selected_pathway_id
+      end)
+  end
+
+  defp floorplan_level?(socket, level_id) do
+    Enum.any?(socket.assigns.station_data.levels, &(&1.level.level_id == level_id))
   end
 
   # A selection changes the styling of at most two rows and never the visible
@@ -1810,6 +1883,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:selected_pathway_id, pathway && pathway.id)
     |> assign(:selected_closure_id, nil)
     |> assign(:search, "")
+    |> assign(:floorplan_level_id, nil)
     |> assign(:status_message, "Scheduling a new closure.")
     |> render_closures()
     |> focus_new_closure(pathway)
@@ -1822,7 +1896,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     socket
     |> put_editor(edit_editor(row))
     |> assign(:selected_closure_id, row.evolution.id)
+    |> assign(:floorplan_level_id, nil)
     |> assign(:status_message, message || "Selected closure on #{pathway_label(row.pathway)}.")
+    |> assign_floorplan()
     |> refresh_rows()
     |> focus_scoped("closure-editor-title")
   end
@@ -1832,7 +1908,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> put_editor(nil)
     |> assign(:selected_closure_id, nil)
     |> assign(:selected_pathway_id, nil)
+    |> assign(:floorplan_level_id, nil)
     |> assign(:status_message, message)
+    |> assign_floorplan()
     |> refresh_rows()
     |> focus_scoped("closure-idle-title")
   end
@@ -2946,6 +3024,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 moment={@preview_short_moment}
                 incomplete?={not is_nil(@preview_incomplete_reasons)}
                 lost?={@preview_lost?}
+                floorplan_missing?={is_nil(@floorplan)}
+                floorplan_href={"/gtfs/#{@current_gtfs_version.id}/stops/#{URI.encode(@stop_id)}/diagram"}
               />
 
               <.preview_timeline
@@ -3207,6 +3287,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 </p>
               </div>
             </section>
+
+            <%!--
+            The moment's own floorplan is context for the findings: it is a
+            read of the same stored coordinates the picker uses, its closed set
+            is the preview's closed set, and activating a pathway only
+            highlights the causes already listed. Below `md` the findings list
+            already carries the same answer, so the region is hidden there like
+            the reference.
+            --%>
+            <.preview_floorplan
+              :if={@preview && @floorplan}
+              display={@floorplan}
+              snapshot={@station_data}
+              closed_instances={@preview.closed}
+              moment={service_clock(@preview.service_time)}
+            />
           </div>
         <% end %>
 
@@ -3868,20 +3964,79 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             aria-labelledby="closure-locator-title"
             class="min-w-0 rounded-card border border-subtle bg-white lg:col-start-1 lg:row-start-2"
           >
-            <div class="border-b border-subtle px-4 py-4 md:px-5">
-              <h2
-                id="closure-locator-title"
-                class="font-sans text-[18px] font-[650] leading-snug tracking-normal"
+            <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-3 border-b border-subtle px-4 py-4 md:px-5">
+              <div class="min-w-0 self-center">
+                <h2
+                  id="closure-locator-title"
+                  class="font-sans text-[18px] font-[650] leading-snug tracking-normal"
+                >
+                  Choose a pathway
+                </h2>
+                <p class="text-[13px] text-muted">Any pathway type can close.</p>
+              </div>
+
+              <div
+                :if={@floorplan}
+                id="locator-toggle"
+                role="group"
+                aria-label="Pathway locator view"
+                class="inline-flex h-11 shrink-0 overflow-hidden rounded-control border border-control bg-white max-md:hidden"
               >
-                Choose a pathway
-              </h2>
-              <p class="text-[13px] text-muted">Any pathway type can close.</p>
+                <button
+                  :for={
+                    {view, label, icon} <- [
+                      {"diagram", "Floorplan", "hero-map"},
+                      {"list", "List", "hero-list-bullet"}
+                    ]
+                  }
+                  id={"locator-view-#{view}"}
+                  type="button"
+                  phx-click="floorplan_view"
+                  phx-value-view={view}
+                  aria-pressed={to_string(@floorplan_view == view)}
+                  class={[
+                    "inline-flex items-center gap-1.5 px-3.5 text-[13px] font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white",
+                    view == "list" && "border-l border-control"
+                  ]}
+                >
+                  <.icon name={icon} class="size-4" />{label}
+                </button>
+              </div>
             </div>
+
+            <%!--
+            A station with no published floorplan file renders the list alone
+            with the reason in view; when a floorplan exists the same note stays
+            hidden until the client hook reports that the image could not load,
+            so a broken image falls back to the same visible list.
+            --%>
+            <.floorplan_missing_note
+              id="closure-floorplan-missing"
+              hidden={not is_nil(@floorplan)}
+            />
+
+            <%= if @floorplan && @floorplan_view == :diagram do %>
+              <.closure_floorplan
+                id="closure-floorplan"
+                levels={@floorplan.levels}
+                selected_level_id={@floorplan.selected_level_id}
+                selected_level_label={@floorplan.selected_level_label}
+                levels_without_image={@floorplan.levels_without_image}
+                image_url={@floorplan.image_url}
+                image_alt={@floorplan.image_alt}
+                stops={@floorplan.stops}
+                pathways={@floorplan.pathways}
+                closed_pathway_ids={[]}
+                selected_pathway_id={@floorplan.selected_id}
+                select_event="select_pathway"
+              />
+            <% end %>
 
             <.pathway_list
               groups={@pathway_groups}
               closure_counts={@closure_counts}
               selected_id={@selected_pathway_id}
+              class={if @floorplan && @floorplan_view == :diagram, do: "md:hidden"}
             />
           </section>
         </div>

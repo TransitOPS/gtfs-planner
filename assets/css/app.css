@@ -3768,6 +3768,17 @@ body:has(#home-page) {
 @theme {
   --color-evo-action-hover: #a50f5b; /* filled action hover; 5.6:1 with white text */
   --radius-evo-badge: 999px; /* count chip on a pathway option */
+  /* Static floorplan inks, taken from the design system's own navy/cyan/error
+     scale so the overlay's lines, markers and closed marks are the reference's
+     values without introducing a second palette. */
+  --color-evo-pathway: #2a3870; /* open pathway line and marker outline */
+  --color-evo-pathway-hover: #0a1330; /* the same line under the pointer */
+  --color-evo-node: #0f1a3d; /* stops and the continues-to-another-level arrows */
+  --color-evo-entrance: #0a1330; /* entrance squares and their names */
+  --color-evo-dot: #1e6868; /* the has-closures dot */
+  --color-evo-closed: #d33a3a; /* a closed pathway's dashed line and cross */
+  --color-evo-closed-bg: #fbe3e3; /* the closed cross's fill */
+  --color-evo-closed-ink: #9b1c1c; /* the Closed word and its cross */
 }
 
 #evolutions {
@@ -3854,6 +3865,33 @@ body:has(#home-page) {
 
 #evolutions .evo-axis-grid {
   background-color: var(--color-subtle);
+}
+
+/* ── Evolutions floorplan: the access preview's highlighted causes ──
+   Activating a pathway on the preview floorplan highlights the closure rows
+   the preview already computed for that pathway; it selects nothing and writes
+   nothing. The row keeps its text, so the highlight is an addition, never the
+   only indication. */
+#evolutions .evo-cause-highlight {
+  background-color: var(--color-selection);
+  box-shadow: inset 3px 0 0 var(--color-action);
+}
+
+/* The floorplan's roving tab stop is a real button; the browser's default
+   focus ring is painted on the whole `<g>` bounding box, which the reference
+   replaces with the line/marker's own focus outline. The outline is removed
+   here and the `stroke-focus` class on the focus shape provides it. */
+#evolutions .evo-fp-group:focus {
+  outline: none;
+}
+
+/* Stop names and the Closed word carry their font size and outline as
+   attributes in user units, computed from the rendered width, because an SVG
+   length is a user unit and the viewBox scales it. Their font family stays the
+   feature's design-system face here. */
+#evolutions .evo-fp-stop-name,
+#evolutions .evo-fp-closed-word {
+  font-family: var(--font-ds);
 }
 
 /* ── Floorplan pathway drawer: the bidirectional checkbox label ──
