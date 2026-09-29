@@ -2448,6 +2448,91 @@ defmodule GtfsPlanner.GtfsTest do
       assert Repo.get!(Stop, target.child.id).level_id == target.level.level_id
       assert Repo.get!(Stop, foreign.child.id).level_id == foreign.level.level_id
     end
+
+    test "clears boarding areas under the station's platforms on the removed level only", %{
+      organization: org,
+      version_1: version
+    } do
+      seed = seed_station_with_boarding_areas(org.id, version.id, "RB")
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version.id,
+                 seed.station.id,
+                 seed.station.stop_id,
+                 seed.level.id
+               )
+
+      removed_boarding = Repo.get!(Stop, seed.boarding_on_level.id)
+      assert removed_boarding.level_id == nil
+      assert removed_boarding.diagram_coordinate == nil
+
+      kept_boarding = Repo.get!(Stop, seed.boarding_on_other_level.id)
+      assert kept_boarding.level_id == seed.other_level.level_id
+      assert kept_boarding.diagram_coordinate == %{"x" => 30.0, "y" => 40.0}
+    end
+
+    test "stops listing the removed level for the station once its boarding areas are cleared",
+         %{organization: org, version_1: version} do
+      seed = seed_station_with_boarding_areas(org.id, version.id, "RL")
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version.id,
+                 seed.station.id,
+                 seed.station.stop_id,
+                 seed.level.id
+               )
+
+      remaining_level_ids =
+        org.id
+        |> Gtfs.list_levels_for_station(version.id, seed.station.id)
+        |> Enum.map(& &1.level.level_id)
+
+      assert remaining_level_ids == [seed.other_level.level_id]
+    end
+
+    test "leaves boarding areas of another station on the same level untouched", %{
+      organization: org,
+      version_1: version
+    } do
+      target = seed_station_with_boarding_areas(org.id, version.id, "RT")
+
+      other_station =
+        stop_fixture(org.id, version.id, %{stop_id: "RO_STATION", location_type: 1})
+
+      other_platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "RO_PLATFORM",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: target.level.level_id
+        })
+
+      other_boarding =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "RO_BOARDING",
+          location_type: 4,
+          parent_station: other_platform.stop_id,
+          level_id: target.level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 60.0}
+        })
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 target.level.id
+               )
+
+      untouched = Repo.get!(Stop, other_boarding.id)
+      assert untouched.level_id == target.level.level_id
+      assert untouched.diagram_coordinate == %{"x" => 50.0, "y" => 60.0}
+    end
   end
 
   describe "list_child_stops_for_level/2" do
@@ -5347,6 +5432,74 @@ defmodule GtfsPlanner.GtfsTest do
       })
 
     %{station: station, level: level, child: child}
+  end
+
+  # A station with two levels and one platform on the first, whose boarding areas sit on
+  # each level. `prefix` keeps GTFS ids unique when a test seeds more than one station.
+  defp seed_station_with_boarding_areas(organization_id, gtfs_version_id, prefix) do
+    station =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_STATION",
+        location_type: 1
+      })
+
+    level =
+      level_fixture(organization_id, gtfs_version_id, %{
+        level_id: "#{prefix}_LEVEL",
+        level_index: 0.0
+      })
+
+    other_level =
+      level_fixture(organization_id, gtfs_version_id, %{
+        level_id: "#{prefix}_OTHER_LEVEL",
+        level_index: 1.0
+      })
+
+    for attached <- [level, other_level] do
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: attached.id,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        })
+    end
+
+    platform =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_PLATFORM",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      })
+
+    boarding_on_level =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_BOARDING",
+        location_type: 4,
+        parent_station: platform.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+      })
+
+    boarding_on_other_level =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_BOARDING_OTHER",
+        location_type: 4,
+        parent_station: platform.stop_id,
+        level_id: other_level.level_id,
+        diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+      })
+
+    %{
+      station: station,
+      level: level,
+      other_level: other_level,
+      platform: platform,
+      boarding_on_level: boarding_on_level,
+      boarding_on_other_level: boarding_on_other_level
+    }
   end
 
   defp preview_alignment_attrs do
