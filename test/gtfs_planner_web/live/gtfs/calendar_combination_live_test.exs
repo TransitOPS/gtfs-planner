@@ -354,14 +354,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
   defp flat(html), do: String.replace(html, ~r/\s+/, " ")
 
   # The tinted rows the confirmed summary explains, read from the list itself rather than from an
-  # internal assign. The rendered class is exact: the shared row class plus the highlight.
+  # internal assign: a row the combination touched carries `data-marked`.
   defp highlighted_rows(view) do
     view
-    |> element("#calendars-list")
     |> render()
-    |> String.split("hover:bg-base-200 bg-success/10")
-    |> length()
-    |> Kernel.-(1)
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#calendars-list tr[data-marked]")
+    |> Enum.count()
   end
 
   defp list_row_trips(view, service_id) do
@@ -372,7 +371,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       |> String.split("<tr", trim: true)
       |> Enum.find(&String.contains?(&1, service_id))
 
-    case row && Regex.run(~r/class="tabular-nums">(\d+)</, row) do
+    case row && Regex.run(~r/data-label="Trips"[^>]*>\s*(\d+)\s*</, row) do
       [_, count] -> String.to_integer(count)
       _missing -> flunk("no loaded list row with trips for #{service_id}")
     end

@@ -2252,36 +2252,333 @@ dialog[role="alertdialog"][open] > div > div {
   }
 }
 
-/* ── Calendar coverage axis ──
-   The Calendars list plots each row's effective dates on one axis shared by the
-   second header row and every body row (`CalendarComponents.coverage_axis/1` and
-   `GtfsPlannerWeb.Gtfs.CalendarCoverage`). Only presentation lives here: the
-   axis cell and the row cell it scales keep the same inner box, so a tick lines
-   up with the day it names and two calendars can be compared by eye.
+/* ── calendars (design system) ──
+   /gtfs/:version/calendars moves onto the application design system on the terms
+   the other design-system pages do: it carries `.ds-page` (fonts, ink, the action
+   colour, fields, buttons, focus) and this block holds only what utilities cannot
+   express. It is the list's own, so it replaces the daisyUI-palette coverage rules
+   that were here.
+
+   Two things are drawn here. The table: one semantic table from 1024px up, whose
+   header stays in view while the page scrolls, and the same rows as cards below
+   it. The timeline: the "When it runs" column plots each calendar's dates on one
+   axis (`CalendarComponents.coverage_axis/1`, `coverage_bar/1` and
+   `GtfsPlannerWeb.Gtfs.CalendarCoverage`). The axis cell in the header and the bar
+   cell in every row share one inner box, so a month tick lines up with the day it
+   names and two calendars compare by eye.
 
    Dates never depend on this file. The lane is `aria-hidden` decoration and the
-   caption under each bar states the exact first/last date and the break, day-off
-   and added-date counts in text. */
+   caption under each bar states the exact first and last date and the break,
+   day-off and added-date counts in text. */
 
-/* The axis cell in the header and the bar cell in the body must share one inner
-   box, so both take the same horizontal padding. Contexts come from the production
-   theme: primary for regular service, success for an added date, warning for a day
-   off and for a version-wide gap, base-content for today. */
-#calendars-list td[data-label="Service dates"],
-#calendars-list-container td.ds-table-axis-cell {
-  padding-inline: 1rem 1.25rem;
+#calendars-page {
+  --calendar-service: #2c8888; /* cyan-600: regular service and its legend swatch */
+  --calendar-gap-hatch: repeating-linear-gradient(
+    135deg,
+    var(--color-warning-bg) 0 3px,
+    color-mix(in srgb, var(--color-warning-line) 45%, var(--color-warning-bg)) 3px 5px
+  );
+  /* The horizontal inset of the bar cell and of the axis cell above it. */
+  --calendar-inset-start: 1rem;
+  --calendar-inset-end: 1.25rem;
 }
 
-#calendars-list-container tr.ds-table-axis-row > td {
-  padding-block: 0;
-  border-bottom: 1px solid var(--color-base-300);
+/* Table. Separate borders keep a sticky heading's hairline with the heading. */
+.calendar-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  text-align: left;
+  font-size: 0.875rem;
+}
+
+.calendar-table th,
+.calendar-table td {
+  border-bottom: 1px solid var(--color-subtle);
+  padding: 0;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+.calendar-table thead th,
+.calendar-table thead td {
+  background: var(--color-canvas);
+}
+
+.calendar-table thead th {
+  height: 2.75rem;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--color-default);
+}
+
+.calendar-table tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+.calendar-table tbody tr:hover {
+  background: color-mix(in oklab, var(--color-canvas) 70%, transparent);
+}
+
+/* A selected row is tinted by the checkbox it carries, because the stream owns the
+   <tr>; a row the last combination touched keeps its tint until the summary is
+   dismissed. */
+.calendar-table tbody tr:has(input[data-calendar-selected="true"]) {
+  background: var(--color-selection);
+}
+
+.calendar-table tbody tr[data-marked] {
+  background: var(--color-soft);
+}
+
+.calendar-col-calendar {
+  width: 19.5rem;
+}
+
+.calendar-col-trips {
+  width: 5.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-col-status {
+  width: 10.5rem;
+}
+
+.calendar-table th.calendar-col-trips {
+  padding-inline: 0.75rem;
+}
+
+.calendar-table td.calendar-col-trips {
+  padding: 0.625rem 0.75rem;
+  font-weight: 650;
+  color: var(--color-strong);
+}
+
+.calendar-table td.calendar-col-trips[data-empty] {
+  color: var(--color-muted);
+}
+
+.calendar-table th.calendar-col-status,
+.calendar-table td.calendar-col-status {
+  padding: 0 1.25rem 0 0.75rem;
+}
+
+.calendar-table td.calendar-col-calendar {
+  padding: 0.25rem 0.75rem 0.25rem 0;
+}
+
+/* The heading and the axis row are the table's only sticky parts. */
+@media (min-width: 1024px) {
+  .calendar-table thead tr:first-child > th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+  }
+
+  .calendar-table thead tr:last-child > td {
+    position: sticky;
+    top: 2.75rem;
+    z-index: 3;
+  }
+}
+
+.calendar-sort {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.375rem;
+  color: inherit;
+}
+
+.calendar-sort:hover {
+  color: var(--color-strong);
+  text-decoration: underline;
+}
+
+.calendar-sort:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* A checkbox is 18px, its target the 44px label around it. */
+.calendar-check {
+  display: flex;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  flex: none;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+}
+
+.calendar-check:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.calendar-check input {
+  width: 1.125rem;
+  height: 1.125rem;
+  accent-color: var(--color-action);
+}
+
+.calendar-check input:disabled {
+  opacity: 0.5;
+}
+
+
+/* A name that opens the calendar reads as the design system's link. */
+.calendar-name {
+  font-weight: 650;
+  color: var(--color-strong);
+  text-decoration: underline;
+  text-decoration-color: var(--color-subtle);
+  text-underline-offset: 4px;
+  overflow-wrap: anywhere;
+}
+
+.calendar-name:hover {
+  color: var(--color-action);
+  text-decoration-color: var(--color-action);
+}
+
+/* The bar cell and the axis cell share one inner box. The cell is the positioning
+   context of the layers that run behind its bar, so past shading, gaps and the
+   Today line cross the whole row instead of only the 16px lane. */
+.calendar-table td.calendar-dates-cell {
+  position: relative;
+  padding: 0.625rem var(--calendar-inset-end) 0.625rem var(--calendar-inset-start);
+}
+
+.calendar-table td.calendar-axis-cell {
+  padding: 0 var(--calendar-inset-end) 0 var(--calendar-inset-start);
+}
+
+.calendar-coverage-back {
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--calendar-inset-start);
+  right: var(--calendar-inset-end);
+}
+
+/* Cards. Below 1024px the axis needs the whole width, so each row is a card: the
+   name and its facts, the status and trips at the right, and the bar full width
+   under them. The heading keeps only "Select all" and the axis. */
+@media (max-width: 1023.98px) {
+  #calendars-page {
+    --calendar-inset-start: 1rem;
+    --calendar-inset-end: 1rem;
+  }
+
+  .calendar-table,
+  .calendar-table thead,
+  .calendar-table tbody {
+    display: block;
+  }
+
+  .calendar-table thead tr:first-child {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    border-bottom: 1px solid var(--color-subtle);
+    background: var(--color-canvas);
+  }
+
+  .calendar-table thead tr:first-child > th {
+    width: auto;
+    height: auto;
+    border-bottom: 0;
+    padding-right: 0.75rem;
+  }
+
+  /* Trips and Status are not sortable, and every card carries them. */
+  .calendar-table thead tr:first-child > th:nth-child(n + 3) {
+    display: none;
+  }
+
+  .calendar-table thead tr:last-child {
+    display: block;
+    border-bottom: 1px solid var(--color-subtle);
+    background: var(--color-canvas);
+  }
+
+  .calendar-table thead tr:last-child > td {
+    display: none;
+    border-bottom: 0;
+  }
+
+  .calendar-table thead tr:last-child > td.calendar-axis-cell {
+    display: block;
+  }
+
+  .calendar-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    padding: 0.25rem 0 0.875rem;
+    border-bottom: 1px solid var(--color-subtle);
+  }
+
+  .calendar-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .calendar-table tbody td {
+    display: block;
+    border-bottom: 0;
+  }
+
+  .calendar-table td.calendar-col-calendar {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    padding: 0 0.75rem 0 0;
+  }
+
+  .calendar-table td.calendar-col-status {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 0.5rem 1rem 0 0;
+    text-align: right;
+  }
+
+  .calendar-table td.calendar-col-trips {
+    grid-column: 2;
+    grid-row: 2;
+    width: auto;
+    padding: 0 1rem 0 0;
+    font-weight: 400;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+  }
+
+  .calendar-table td.calendar-col-trips::after {
+    content: " trips";
+  }
+
+  .calendar-table td.calendar-col-trips[data-count="1"]::after {
+    content: " trip";
+  }
+
+  .calendar-table td.calendar-dates-cell {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    padding-block: 0.25rem 0;
+  }
+
+  .calendar-col-calendar,
+  .calendar-col-status {
+    width: auto;
+  }
 }
 
 /* The bar and its caption are one keyboard control, so the whole cell is the target,
    the lane and caption are its own block children, and the focus ring follows the
-   control's geometry. The button stays unstyled apart from that: the cell padding is
-   the table's, so the lane keeps the axis scale. */
+   control's geometry. */
 .calendar-coverage-trigger {
+  position: relative;
   display: block;
   width: 100%;
   text-align: left;
@@ -2293,21 +2590,35 @@ dialog[role="alertdialog"][open] > div > div {
    strengthens and underlines the same text that names the control. */
 @media (hover: hover) {
   .calendar-coverage-trigger:hover .calendar-coverage-caption {
-    color: var(--color-base-content);
+    color: var(--color-strong);
     text-decoration: underline;
     text-underline-offset: 4px;
   }
 }
 
 .calendar-coverage-trigger:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
+  outline: 2px solid var(--color-focus);
+  outline-offset: 4px;
 }
 
 .calendar-coverage-lane {
   position: relative;
   display: block;
   height: 1rem;
+}
+
+.calendar-coverage-caption {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  color: var(--color-muted);
+}
+
+.calendar-coverage-repair {
+  padding: 0.625rem var(--calendar-inset-end) 0.625rem var(--calendar-inset-start);
+  font-size: 0.8125rem;
+  color: var(--color-default);
 }
 
 /* The axis adds its label band above the marker band, and it is the container the
@@ -2325,24 +2636,31 @@ dialog[role="alertdialog"][open] > div > div {
   width: 0;
 }
 
+/* Only the top of a month line is drawn on the axis; the rows carry the rest. */
 .calendar-coverage-tick-line {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 0.375rem;
   left: 0;
   width: 1px;
-  background-color: color-mix(in oklab, var(--color-base-content) 22%, transparent);
+  height: 0.75rem;
+  background-color: var(--color-control);
 }
 
 .calendar-coverage-tick-label {
   position: absolute;
-  top: 0;
+  top: 0.25rem;
   left: 0;
   padding-left: 0.25rem;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
+  font-weight: 650;
   line-height: 1rem;
   white-space: nowrap;
-  color: color-mix(in oklab, var(--color-base-content) 75%, transparent);
+  color: var(--color-default);
+}
+
+.calendar-coverage-tick-label.font-semibold {
+  font-weight: 700;
+  color: var(--color-strong);
 }
 
 /* A label needs about 36 px, so a label thins by rank rather than by a fixed month
@@ -2359,13 +2677,17 @@ dialog[role="alertdialog"][open] > div > div {
   }
 }
 
-/* Past service is shaded; today is the only line that crosses every row. */
+/* Past service is shaded; today is the one line that crosses every row. */
 .calendar-coverage-past {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
-  background-color: color-mix(in oklab, var(--color-base-content) 6%, transparent);
+  background-color: var(--color-canvas);
+}
+
+.calendar-coverage-back .calendar-coverage-past {
+  background-color: color-mix(in oklab, var(--color-canvas) 90%, var(--color-subtle));
 }
 
 .calendar-coverage-today-line {
@@ -2374,39 +2696,36 @@ dialog[role="alertdialog"][open] > div > div {
   bottom: 0;
   width: 2px;
   transform: translateX(-50%);
-  background-color: color-mix(in oklab, var(--color-base-content) 85%, transparent);
+  background-color: var(--color-strong);
 }
 
 .calendar-coverage-today {
   position: absolute;
-  bottom: 0.125rem;
+  bottom: 0.375rem;
   transform: translateX(-50%);
   padding: 0 0.375rem;
-  border-radius: 9999px;
-  background-color: var(--color-base-content);
-  color: var(--color-base-100);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  line-height: 1rem;
+  border-radius: var(--radius-badge);
+  background-color: var(--color-strong);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.125rem;
   white-space: nowrap;
 }
 
 /* A version-wide gap is hatched, not filled: it repeats behind bars and captions
-   without competing with the row's own bars. The hatch stays light enough that a
-   month label in the axis and a caption below the lane both stay readable. */
+   without competing with the row's own bars. */
 .calendar-coverage-band {
   position: absolute;
   top: 0;
   bottom: 0;
-  background-color: color-mix(in oklab, var(--color-warning) 10%, transparent);
-  background-image: repeating-linear-gradient(
-    135deg,
-    color-mix(in oklab, var(--color-warning) 22%, transparent) 0 1px,
-    transparent 1px 6px
-  );
+  min-width: 4px;
+  background: var(--calendar-gap-hatch);
+  opacity: 0.4;
 }
 
 .calendar-coverage-band--axis {
+  opacity: 0.9;
   top: 0;
   bottom: 0;
 }
@@ -2421,14 +2740,14 @@ dialog[role="alertdialog"][open] > div > div {
   top: 0.125rem;
   height: 0.75rem;
   border-radius: 2px;
-  background-color: var(--color-primary);
+  background-color: var(--calendar-service);
 }
 
 .calendar-coverage-mark--added {
   top: 0;
   height: 1rem;
   border-radius: 1px;
-  background-color: var(--color-success);
+  background-color: var(--color-action);
 }
 
 /* A day off reads as a notch through the bar, outlined so it stays visible where
@@ -2437,25 +2756,21 @@ dialog[role="alertdialog"][open] > div > div {
   top: 0.125rem;
   height: 0.75rem;
   border-radius: 2px;
-  background-color: var(--color-base-100);
-  box-shadow: inset 0 0 0 1px var(--color-warning);
+  background-color: #fff;
+  box-shadow: inset 0 0 0 1px var(--color-warning-line);
 }
 
 /* A break is the dashed connector between two periods, not a bar. */
 .calendar-coverage-mark--break {
   top: 0.5rem;
   height: 0;
-  border-top: 1px dashed var(--color-warning);
+  border-top: 1px dashed var(--calendar-service);
 }
 
 /* A compressed bin holds more than one kind, so it is an approximation: the hatch
    says so, and the exact dates stay on the row and in the caption. */
 .calendar-coverage-mark.is-approximate {
-  background-image: repeating-linear-gradient(
-    135deg,
-    transparent 0 2px,
-    var(--color-base-100) 2px 4px
-  );
+  background-image: repeating-linear-gradient(135deg, transparent 0 2px, #fff 2px 4px);
 }
 
 .calendar-coverage-outside {
@@ -2465,9 +2780,12 @@ dialog[role="alertdialog"][open] > div > div {
   display: flex;
   align-items: center;
   gap: 0.125rem;
+  padding-inline: 0.25rem;
+  border-radius: var(--radius-badge);
+  background: #fff;
   font-size: 0.75rem;
-  font-weight: 600;
-  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  font-weight: 650;
+  color: var(--color-muted);
 }
 
 .calendar-coverage-outside--before {
@@ -2478,35 +2796,22 @@ dialog[role="alertdialog"][open] > div > div {
   right: 0;
 }
 
-.calendar-coverage-caption {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.8125rem;
-  line-height: 1.25rem;
-  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
-}
-
-.calendar-coverage-repair {
-  font-size: 0.8125rem;
-  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
-}
-
-/* ── Coverage legend ── */
+/* Legend. Every swatch carries its word, so the encoding reads without colour. */
 .calendar-coverage-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 0.375rem 1.25rem;
   margin: 0;
-  border-top: 1px solid var(--color-base-300);
+  border-top: 1px solid var(--color-subtle);
   padding: 0.75rem 1.25rem;
   font-size: 0.8125rem;
-  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  color: var(--color-muted);
 }
 
 .calendar-coverage-legend li {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.375rem;
 }
 
 .calendar-coverage-swatch {
@@ -2517,149 +2822,113 @@ dialog[role="alertdialog"][open] > div > div {
   width: 1.25rem;
   height: 0.75rem;
   border-radius: 2px;
-  background-color: var(--color-primary);
+  background-color: var(--calendar-service);
 }
 
 .calendar-coverage-swatch--removed {
   width: 1.25rem;
   height: 0.75rem;
   border-radius: 2px;
-  background-color: var(--color-base-100);
-  box-shadow: inset 0 0 0 1px var(--color-warning);
+  background-color: #fff;
+  box-shadow: inset 0 0 0 1px var(--color-warning-line);
 }
 
 .calendar-coverage-swatch--break {
   width: 1.25rem;
   height: 0;
-  border-top: 1px dashed var(--color-warning);
+  border-top: 1px dashed var(--calendar-service);
 }
 
 .calendar-coverage-swatch--added {
   width: 0.1875rem;
   height: 1rem;
   border-radius: 1px;
-  background-color: var(--color-success);
+  background-color: var(--color-action);
 }
 
 .calendar-coverage-swatch--gap {
-  width: 1rem;
+  width: 1.25rem;
   height: 0.75rem;
-  background-color: color-mix(in oklab, var(--color-warning) 10%, transparent);
-  background-image: repeating-linear-gradient(
-    135deg,
-    color-mix(in oklab, var(--color-warning) 22%, transparent) 0 1px,
-    transparent 1px 6px
-  );
+  border-radius: 2px;
+  background: var(--calendar-gap-hatch);
+  box-shadow: inset 0 0 0 1px var(--color-warning-line);
 }
 
 .calendar-coverage-swatch--today {
   width: 0.125rem;
   height: 0.875rem;
-  background-color: color-mix(in oklab, var(--color-base-content) 85%, transparent);
+  background-color: var(--color-strong);
 }
 
-/* ── Timeline range control ──
-   The range is a view of the same snapshot, not a filter, so it is a labelled
-   group of links that carries its own URL state instead of a form value. */
+/* Timeline range. The range is a view of the same snapshot, not a filter, so it is
+   a labelled group of links that carries its own URL state instead of a form value.
+   The current option takes the design system's inverse fill. */
 .calendar-coverage-range {
-  display: flex;
+  display: inline-flex;
   height: 2.75rem;
   overflow: hidden;
-  border: 1px solid var(--color-control-border);
-  border-radius: var(--radius-selector);
+  border-radius: var(--radius-control);
 }
 
 .calendar-coverage-range-option {
   display: inline-flex;
   align-items: center;
+  border: 1px solid var(--color-control);
   padding: 0 0.75rem;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 650;
   text-decoration: none;
   white-space: nowrap;
-  color: var(--color-base-content);
+  color: var(--color-strong);
 }
 
-.calendar-coverage-range-option + .calendar-coverage-range-option {
-  border-left: 1px solid var(--color-control-border);
+.calendar-coverage-range-option:first-child {
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+}
+
+.calendar-coverage-range-option:last-child {
+  margin-left: -1px;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
 }
 
 .calendar-coverage-range-option:hover {
-  background-color: var(--color-base-200);
+  background-color: var(--color-canvas);
 }
 
 .calendar-coverage-range-option[aria-current="true"] {
-  background-color: var(--color-base-content);
-  color: var(--color-base-100);
+  border-color: var(--color-navy-800);
+  background-color: var(--color-navy-800);
+  color: #fff;
 }
 
-/* ── Coverage on a phone ──
-   The stacked presentation drops the column labels, but the shared axis has to
-   survive: it is the only thing that makes two rows comparable. The column-label
-   row stays in the DOM for assistive technology, the axis row becomes one
-   full-width cell, and the bar cell becomes a full-width block so its bar keeps
-   the axis scale. */
-@media (max-width: 640px) {
-  #calendars-list-container > table.ds-stack-table > thead {
-    position: static;
-    width: auto;
-    height: auto;
-    margin: 0;
-    overflow: visible;
-    clip: auto;
-    white-space: normal;
-    border-width: 0;
-  }
-
-  #calendars-list-container > table.ds-stack-table > thead > tr:not(.ds-table-axis-row) {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border-width: 0;
-  }
-
-  #calendars-list-container > table.ds-stack-table > thead > tr.ds-table-axis-row {
-    display: flex;
-  }
-
-  #calendars-list-container > table.ds-stack-table > thead > tr.ds-table-axis-row > td {
-    display: none;
-  }
-
-  #calendars-list-container > table.ds-stack-table > thead > tr.ds-table-axis-row > td.ds-table-axis-cell {
-    display: block;
-    width: auto;
-    flex: 1 1 auto;
-    padding-inline: 0;
-  }
-
-  #calendars-list td[data-label="Service dates"] {
-    display: block;
-    padding-inline: 0;
-  }
-
-  #calendars-list td[data-label="Service dates"]::before {
-    display: block;
-    margin-bottom: 0.375rem;
-  }
+.calendar-coverage-range-option:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
-/* ── Calendar selection ──
-   The selection belongs to the row, but the shared table owns the <tr>: the row
-   checkbox carries the state and the row reads it, so a selected row is tinted
-   the way the packaged reference tints it. The bar and the row controls are one
-   surface, and the tint is the only per-row affordance, so it must not depend on
-   the coverage CSS above. */
-tbody#calendars-list tr:has(input[data-calendar-selected="true"]) {
-  background-color: color-mix(in oklab, var(--color-secondary) 6%, transparent);
+/* Details. The drawer reuses the calendar editor's period timeline; its bars take
+   the same service colour as the list instead of the action colour. */
+#calendar-coverage-details-content .bg-primary {
+  background-color: var(--calendar-service);
 }
 
-#calendar-selection-bar {
-  border-color: var(--color-base-300);
+#calendar-coverage-details-content .bg-warning {
+  background-color: var(--color-warning-line);
+}
+
+/* `.ds-page` drops the ring on a checkbox or radio so a choice card can draw it. The
+   list's boxes and its drawers' options are not cards, so their own control shows it. */
+#calendars-page :is(input[type="checkbox"], input[type="radio"]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* A message or summary that takes focus programmatically must show where it landed. */
+#calendars-page :is([role="status"], [role="alert"])[tabindex="-1"]:focus {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 /* ── Homepage theme ──

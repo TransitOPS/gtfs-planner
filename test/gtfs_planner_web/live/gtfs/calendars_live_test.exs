@@ -109,6 +109,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     |> Enum.map(&LazyHTML.text/1)
   end
 
+  defp squish(text), do: text |> String.replace(~r/\s+/, " ") |> String.trim()
+
   # The break and the single day off have to land on regular service days whatever
   # weekday the suite runs, so every fixture date is derived from next week's Monday.
   defp next_monday(today), do: Date.add(today, rem(8 - Date.day_of_week(today), 7) + 7)
@@ -241,7 +243,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
 
       # Grouped usage and the agency-local date both come from the real read.
       assert html =~ "Today · #{Calendar.strftime(today, "%b %-d, %Y")}"
-      assert html =~ ~s{<span class="tabular-nums">2</span>}
+
+      assert html
+             |> text_of(~s(#calendars-list td[data-label="Trips"]))
+             |> Enum.map(&String.trim/1) ==
+               ["0", "0", "2"]
+
       assert html =~ "Ends today"
       assert html =~ "run today"
       assert html =~ "ending soon"
@@ -276,13 +283,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
   describe "agency timezone disclosure" do
     setup :use_real_adapter
 
-    for {reason, zones} <- [
-          {:missing, []},
-          {:invalid, ["Not/AZone"]},
-          {:conflicting, ["Etc/UTC", "America/New_York"]}
+    for {reason, zones, sentence} <- [
+          {:missing, [], "time zone is missing"},
+          {:invalid, ["Not/AZone"], "isn’t a valid time zone"},
+          {:conflicting, ["Etc/UTC", "America/New_York"], "different time zones"}
         ] do
       @reason reason
       @zones zones
+      @sentence sentence
       test "discloses #{@reason} timezone on ordinary list entry", context do
         calendar_attribute_fixture(context.organization.id, context.version.id, %{
           service_id: "ZONE",
@@ -300,8 +308,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
           )
 
         loaded(view)
-        assert has_element?(view, "#calendars-timezone-fallback", to_string(@reason))
-        assert has_element?(view, "#calendars-timezone-fallback", "UTC")
+        assert has_element?(view, "#calendars-timezone-fallback", @sentence)
+        assert has_element?(view, "#calendars-timezone-fallback", "use UTC")
       end
     end
   end
@@ -1186,7 +1194,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       refreshing = render_click(view, "refresh")
 
       assert refreshing =~ "calendars-refreshing"
-      assert refreshing =~ "Refreshing calendars"
+      assert refreshing =~ "The list stays as it was."
       assert refreshing =~ "Weekday service"
       assert render(view) =~ "Weekday service"
 
@@ -1215,7 +1223,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       empty = loaded(view)
 
       assert empty =~ "calendars-first-use-empty"
-      assert empty =~ "No calendars yet"
+      assert empty =~ "No calendars in"
       refute empty =~ "Calendars couldn’t be loaded"
 
       # A connection outage through the adapter seam is never an empty list.
@@ -1581,10 +1589,25 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       html = render_click(view, "date_change_review", %{})
       assert html =~ "calendar-date-change-review-panel"
       assert html =~ "Result after applying"
-      assert html =~ "Stop Every day service"
-      assert html =~ "Run Extra dates service"
-      assert html =~ "calendar-date-change-review-count"
-      assert view |> render() =~ "rows change across"
+
+      # Each line names the calendar, the exact date it changes on and what that means.
+      day = Calendar.strftime(holiday, "%a, %b %-d")
+
+      assert [stop_line, run_line] =
+               html
+               |> text_of("#calendar-date-change-review-lines li")
+               |> Enum.map(&squish/1)
+
+      assert stop_line =~ "Stop Every day service stops running on #{day}."
+      assert stop_line =~ "affected."
+      assert run_line =~ "Run Extra dates service runs on #{day}."
+      assert run_line =~ "will run."
+
+      assert [count_line] =
+               html |> text_of("#calendar-date-change-review-count") |> Enum.map(&squish/1)
+
+      assert count_line =~ "This changes 2 calendars."
+      assert count_line =~ "GTFS: 2 rows change."
 
       assert render_click(view, "date_change_apply", %{}) =~ "Applied the date change"
       assert render(view) =~ "Applied the date change"
@@ -1648,6 +1671,97 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       render_click(view, "date_change_apply", %{})
       assert render(view) =~ "Applied the date change"
       assert scoped_date_count(organization, version) == 1
+    end
+  end
+
+  describe "design-system list presentation" do
+    setup :use_real_adapter
+
+    test "leads each row with its regular days and gives a calendar ending tomorrow a singular day",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+      today = postgres_local_today("Etc/UTC")
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "WEEKD",
+        start_date: Date.add(today, -60),
+        end_date: Date.add(today, 1)
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "WEEKD",
+        service_description: "Alpha weekdays"
+      })
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "DATES",
+        date: Date.add(today, 30),
+        exception_type: 1
+      })
+
+      calendar_attribute_fixture(organization.id, version.id, %{
+        service_id: "DATES",
+        service_description: "Beta dates"
+      })
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      html = loaded(view)
+
+      assert [weekly, dates] =
+               html
+               |> text_of(~s(#calendars-list td[data-label="Calendar"]))
+               |> Enum.map(&squish/1)
+
+      assert weekly =~ "Alpha weekdays Runs Mon–Fri · WEEKD"
+      assert dates =~ "Beta dates Runs on specific dates · DATES"
+
+      assert text_of(html, ~s(#calendars-list td[data-label="Status"])) |> Enum.map(&squish/1) ==
+               ["Ends in 1 day", "Not used by trips"]
+    end
+
+    test "carries the one way forward in the first-use panel and offers no header actions",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      assert has_element?(view, "#calendars-first-use-empty #calendars-create")
+      refute has_element?(view, "#calendar-date-change")
+      refute has_element?(view, "#calendars-workbench")
+      assert has_element?(view, "#calendars-first-use-empty", "No calendars in")
+    end
+
+    test "swaps the result count for the selection actions while a calendar is ticked",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      for {service_id, name} <- [{"ONE", "First calendar"}, {"TWO", "Second calendar"}] do
+        calendar_attribute_fixture(organization.id, version.id, %{
+          service_id: service_id,
+          service_description: name
+        })
+      end
+
+      {:ok, view, _html} = live(conn, list_path(version))
+      loaded(view)
+
+      assert has_element?(view, "#result-count", "2 calendars")
+      assert has_element?(view, "#calendar-selection-hint")
+      refute has_element?(view, "#calendar-selection-bar")
+
+      render_click(view, "toggle_calendar_selection", %{"service-id" => "ONE"})
+
+      assert has_element?(view, "#calendar-selection-bar #calendar-selection-count", "1 calendar")
+      assert has_element?(view, "#calendar-selection-bar #calendar-combine-open[disabled]")
+      assert has_element?(view, "#calendar-combine-hint")
+      refute has_element?(view, "#result-count")
+      refute has_element?(view, "#calendar-selection-hint")
+
+      render_click(view, "clear_calendar_selection", %{})
+
+      assert has_element?(view, "#result-count", "2 calendars")
+      refute has_element?(view, "#calendar-selection-bar")
     end
   end
 end
