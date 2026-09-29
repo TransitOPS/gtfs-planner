@@ -436,9 +436,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     assigns =
       assigns
       |> assign(:weekly?, weekly?)
-      |> assign(:weeks, effective_weeks(assigns.month_grid.weeks, weekly?))
-      |> assign(:cell_tones, @cell_tones)
-      |> assign(:weekdays, Enum.map(@weekdays, &elem(&1, 1)))
 
     ~H"""
     <aside
@@ -497,66 +494,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
           </button>
         </div>
 
-        <div
+        <.month_table
           id="months"
-          tabindex="0"
-          role="group"
-          aria-label={"Service preview for #{@month_grid.title}"}
-          phx-keydown="preview_keys"
-          class="mt-3 rounded-control focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-        >
-          <table
-            id={"months-#{@month_grid.year}-#{@month_grid.month}"}
-            class="w-full table-fixed border-separate border-spacing-0.5"
-          >
-            <caption class="sr-only">{@month_grid.title}</caption>
-            <thead>
-              <tr>
-                <th
-                  :for={day <- @weekdays}
-                  scope="col"
-                  class="pb-1 text-center text-[13px] font-semibold text-muted"
-                >
-                  <span aria-hidden="true">{String.slice(day, 0, 3)}</span>
-                  <span class="sr-only">{day}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr :for={week <- @weeks}>
-                <td
-                  :for={cell <- week}
-                  id={cell && "month-cell-#{Date.to_iso8601(cell.date)}"}
-                  aria-label={cell && cell_label(cell, @today)}
-                  class="p-0"
-                >
-                  <span
-                    :if={cell}
-                    class={[
-                      "relative flex min-h-11 w-full items-center justify-center rounded-control text-sm tabular-nums",
-                      Map.fetch!(@cell_tones, cell.state)
-                    ]}
-                  >
-                    {cell.day}
-                    <span
-                      :if={cell.state in [:removed, :added]}
-                      aria-hidden="true"
-                      class="absolute right-1 top-0.5 text-[11px] font-bold leading-none"
-                    >
-                      {if cell.state == :removed, do: "×", else: "+"}
-                    </span>
-                    <span
-                      :if={cell.date == @today}
-                      aria-hidden="true"
-                      class="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 rounded-full bg-strong"
-                    >
-                    </span>
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+          month_grid={@month_grid}
+          weekly?={@weekly?}
+          today={@today}
+          label={"Service preview for #{@month_grid.title}"}
+        />
         <p id="preview-date-status" class="mt-2 text-[13px] text-muted">
           Click the preview, then use the left and right arrow keys to change month.
         </p>
@@ -597,6 +541,92 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
         </ul>
       </div>
     </aside>
+    """
+  end
+
+  @doc """
+  One read-only month grid: the days a calendar runs, its days off and its extra
+  service, Monday first.
+
+  The container takes the keyboard: the left and right arrows move a month and
+  Home returns to today, through the caller's `preview_keys` handler. The calendar
+  editor's preview and the closure editor's date disclosure both render it, so the
+  two cannot describe the same month differently.
+  """
+  attr :id, :string, required: true
+  attr :month_grid, :map, required: true
+  attr :weekly?, :boolean, required: true
+  attr :today, :any, required: true
+  attr :label, :string, required: true
+
+  def month_table(assigns) do
+    assigns =
+      assigns
+      |> assign(:weeks, effective_weeks(assigns.month_grid.weeks, assigns.weekly?))
+      |> assign(:cell_tones, @cell_tones)
+      |> assign(:weekdays, Enum.map(@weekdays, &elem(&1, 1)))
+
+    ~H"""
+    <div
+      id={@id}
+      tabindex="0"
+      role="group"
+      aria-label={@label}
+      phx-keydown="preview_keys"
+      class="mt-3 rounded-control focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+    >
+      <table
+        id={"#{@id}-#{@month_grid.year}-#{@month_grid.month}"}
+        class="w-full table-fixed border-separate border-spacing-0.5"
+      >
+        <caption class="sr-only">{@month_grid.title}</caption>
+        <thead>
+          <tr>
+            <th
+              :for={day <- @weekdays}
+              scope="col"
+              class="pb-1 text-center text-[13px] font-semibold text-muted"
+            >
+              <span aria-hidden="true">{String.slice(day, 0, 3)}</span>
+              <span class="sr-only">{day}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={week <- @weeks}>
+            <td
+              :for={cell <- week}
+              id={cell && "month-cell-#{Date.to_iso8601(cell.date)}"}
+              aria-label={cell && cell_label(cell, @today)}
+              class="p-0"
+            >
+              <span
+                :if={cell}
+                class={[
+                  "relative flex min-h-11 w-full items-center justify-center rounded-control text-sm tabular-nums",
+                  Map.fetch!(@cell_tones, cell.state)
+                ]}
+              >
+                {cell.day}
+                <span
+                  :if={cell.state in [:removed, :added]}
+                  aria-hidden="true"
+                  class="absolute right-1 top-0.5 text-[11px] font-bold leading-none"
+                >
+                  {if cell.state == :removed, do: "×", else: "+"}
+                </span>
+                <span
+                  :if={cell.date == @today}
+                  aria-hidden="true"
+                  class="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 rounded-full bg-strong"
+                >
+                </span>
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     """
   end
 

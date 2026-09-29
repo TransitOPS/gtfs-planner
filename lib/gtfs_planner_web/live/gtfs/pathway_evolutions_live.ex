@@ -43,6 +43,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   whose calendar and agency zone allow a date to be chosen, and it carries the
   exact `HH:MM:SS` service time. Everything else states why the preview is not
   available instead of offering a link that cannot answer.
+
+  The calendar field carries the calendar's read-only service dates as a
+  disclosure. Opening it loads the selected native calendar through
+  `Gtfs.get_calendar/3` and renders one month at a time from
+  `ServiceDates.month_grid/3`, so the grid, the evaluator and the calendar page
+  cannot disagree. Nothing in it writes: the month navigation and the exact link
+  to the calendar page are its only controls, and a calendar that has left the
+  version is reported while the form keeps every entered value.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -51,9 +59,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Gtfs.CalendarComponents
+  alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -94,6 +105,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:delete_pending?, false)
      |> assign(:preview_href, nil)
      |> assign(:preview_reason, nil)
+     |> assign(:dates_open?, false)
+     |> assign(:dates_month, nil)
+     |> assign(:dates_calendar, nil)
+     |> assign(:dates_service_id, nil)
+     |> assign(:dates_missing?, false)
      |> stream_configure(:closures, dom_id: &"closure-#{&1.id}")
      |> stream(:closures, [])}
   end
@@ -193,6 +209,33 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   def handle_event("validate_closure", %{"closure" => params}, socket) when is_map(params) do
     {:noreply, assign_entered_params(socket, params)}
   end
+
+  # The read-only service dates of the selected calendar. Opening it reads the
+  # calendar once through the read contract and starts on the month that matters
+  # to the reader; closing it writes nothing and leaves the form untouched.
+  def handle_event("toggle_dates", _params, socket) do
+    if socket.assigns.dates_open? do
+      {:noreply, assign(socket, :dates_open?, false)}
+    else
+      {:noreply, open_dates(socket)}
+    end
+  end
+
+  def handle_event("dates_step", %{"step" => step}, socket) when step in ["prev", "next"] do
+    offset = if step == "prev", do: -1, else: 1
+    {:noreply, assign(socket, :dates_month, shifted_dates_month(socket, offset))}
+  end
+
+  def handle_event("dates_step", _params, socket), do: {:noreply, socket}
+
+  # The read-only preview's own keyboard binding: the arrows step one month and
+  # Home returns to the agency's month, exactly as the buttons do.
+  def handle_event("preview_keys", %{"key" => key}, socket)
+      when key in ["ArrowLeft", "ArrowRight", "Home"] do
+    {:noreply, assign(socket, :dates_month, dates_key_month(socket, key))}
+  end
+
+  def handle_event("preview_keys", _params, socket), do: {:noreply, socket}
 
   def handle_event("save_closure", %{"closure" => params}, socket) when is_map(params) do
     # The outcome of this attempt replaces whatever the editor said before it,
@@ -784,6 +827,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:dirty?, editor != nil and dirty?(editor.values, editor.saved))
     |> assign(:preview_href, preview_href)
     |> assign(:preview_reason, preview_reason)
+    |> reset_dates()
   end
 
   # A form change keeps every entered string and re-checks the fields only once
@@ -803,7 +847,114 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:dirty?, dirty?(params, socket.assigns.saved_values))
     |> assign(:duplicate_id, nil)
     |> assign(:notices, [])
+    |> sync_dates()
   end
+
+  # -- read-only service dates ------------------------------------------------
+
+  # Opening the disclosure reads the selected calendar once through the same
+  # contract the calendar page uses. Nothing here writes: a calendar that has
+  # gone from the version is reported, and the form keeps every entered value.
+  defp open_dates(socket) do
+    case selected_service_id(socket) do
+      nil -> assign(socket, :dates_open?, false)
+      service_id -> socket |> assign(:dates_open?, true) |> load_dates(service_id)
+    end
+  end
+
+  defp load_dates(socket, service_id) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_calendar(organization_id, gtfs_version_id, service_id) do
+      {:ok, calendar} ->
+        socket
+        |> assign(:dates_service_id, service_id)
+        |> assign(:dates_calendar, calendar)
+        |> assign(:dates_missing?, false)
+        |> assign(:dates_month, initial_dates_month(calendar))
+
+      {:error, :not_found} ->
+        socket
+        |> assign(:dates_service_id, service_id)
+        |> assign(:dates_calendar, nil)
+        |> assign(:dates_missing?, true)
+        |> assign(:dates_month, nil)
+    end
+  end
+
+  # A newly opened editor starts with the dates closed and forgotten, so no
+  # loaded calendar can describe a different row's selection.
+  defp reset_dates(socket) do
+    socket
+    |> assign(:dates_open?, false)
+    |> forget_dates()
+  end
+
+  defp forget_dates(socket) do
+    socket
+    |> assign(:dates_service_id, nil)
+    |> assign(:dates_calendar, nil)
+    |> assign(:dates_missing?, false)
+    |> assign(:dates_month, nil)
+  end
+
+  # The dates describe the selected calendar. A selection that changes while the
+  # disclosure is open is loaded once; while it is closed nothing is read until
+  # the reader asks to see it; clearing the calendar puts the disclosure away,
+  # because there is no calendar whose service days could be shown.
+  defp sync_dates(socket) do
+    case selected_service_id(socket) do
+      nil ->
+        reset_dates(socket)
+
+      service_id ->
+        cond do
+          socket.assigns.dates_service_id == service_id -> socket
+          socket.assigns.dates_open? -> load_dates(socket, service_id)
+          true -> forget_dates(socket)
+        end
+    end
+  end
+
+  # The month the disclosure opens on: the calendar's earliest active date on or
+  # after the agency's today, its earliest active date when it has ended, and the
+  # agency's own month when it has none. That is the same date rule the access
+  # preview uses to name an instant.
+  defp initial_dates_month(calendar) do
+    calendar
+    |> preview_date()
+    |> Kernel.||(calendar.today)
+    |> first_of_month()
+  end
+
+  defp first_of_month(%Date{year: year, month: month}), do: Date.new!(year, month, 1)
+
+  defp shifted_dates_month(%{assigns: %{dates_month: nil}}, _offset), do: nil
+
+  defp shifted_dates_month(socket, offset),
+    do: CalendarComponents.shift_month(socket.assigns.dates_month, offset)
+
+  defp dates_key_month(socket, "Home") do
+    case socket.assigns.dates_calendar do
+      %{today: %Date{} = today} -> first_of_month(today)
+      _other -> nil
+    end
+  end
+
+  defp dates_key_month(socket, "ArrowLeft"), do: shifted_dates_month(socket, -1)
+  defp dates_key_month(socket, "ArrowRight"), do: shifted_dates_month(socket, 1)
+
+  # The form's own selection: the calendar the editor is working on, or nil while
+  # no calendar is chosen. The value keeps the exact stored `service_id`.
+  defp selected_service_id(%{assigns: %{form: %{params: params}}}) when is_map(params) do
+    case params["service_id"] do
+      service_id when is_binary(service_id) and service_id != "" -> service_id
+      _other -> nil
+    end
+  end
+
+  defp selected_service_id(_socket), do: nil
 
   defp show_form_errors(socket, params, %Ecto.Changeset{} = changeset) do
     socket
@@ -1253,6 +1404,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       |> assign(:dirty_baseline, dirty_baseline(assigns.saved_values))
       |> assign(:dirty_dialog_body, dirty_dialog_body(assigns))
       |> assign(:delete_target, delete_target(assigns))
+      |> assign(:calendar_href, calendar_href(assigns))
+      |> assign(:dates_month_grid, dates_month_grid(assigns))
+      |> assign(:dates_month_label, dates_month_label(assigns))
+      |> assign(:dates_prev_label, dates_step_label(assigns, -1))
+      |> assign(:dates_next_label, dates_step_label(assigns, 1))
+      |> assign(:dates_no_active?, dates_no_active?(assigns))
 
     ~H"""
     <Layouts.app
@@ -1634,16 +1791,111 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   class={control_class()}
                 />
 
-                <.input
-                  field={@form[:service_id]}
-                  id="closure-calendar"
-                  type="select"
-                  label="Calendar"
-                  prompt="Choose a calendar"
-                  options={calendar_options(@calendars)}
-                  help={calendar_usage_line(@editor_calendar)}
-                  class={control_class()}
-                />
+                <div class="grid gap-1.5">
+                  <.input
+                    field={@form[:service_id]}
+                    id="closure-calendar"
+                    type="select"
+                    label="Calendar"
+                    prompt="Choose a calendar"
+                    options={calendar_options(@calendars)}
+                    help={calendar_usage_line(@editor_calendar)}
+                    class={control_class()}
+                  />
+
+                  <%!--
+                  The read-only service dates of the chosen calendar. They are a
+                  disclosure, not an editor: the grid is a preview of the saved
+                  calendar, and the only controls are the month navigation and
+                  the link to the calendar page that owns any date change.
+                  --%>
+                  <div
+                    :if={@editor_calendar}
+                    id="closure-calendar-actions"
+                    class="-mt-1 flex flex-wrap items-center gap-x-5"
+                  >
+                    <button
+                      id="closure-dates-toggle"
+                      type="button"
+                      phx-click="toggle_dates"
+                      aria-expanded={to_string(@dates_open?)}
+                      aria-controls="closure-dates"
+                      class="inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+                    >
+                      <.icon
+                        name="hero-chevron-right"
+                        class={["size-4 transition-transform", @dates_open? && "rotate-90"]}
+                      />
+                      {if @dates_open?, do: "Hide service dates", else: "Show service dates"}
+                    </button>
+                    <a
+                      :if={@calendar_href}
+                      id="closure-calendar-link"
+                      href={@calendar_href}
+                      class="inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action no-underline hover:underline"
+                    >
+                      Open calendar<.icon name="hero-arrow-top-right-on-square" class="size-4" />
+                    </a>
+                  </div>
+
+                  <div
+                    :if={@editor_calendar}
+                    id="closure-dates"
+                    hidden={not @dates_open?}
+                    class="rounded-control border border-subtle p-3"
+                  >
+                    <div :if={@dates_month} class="flex items-center justify-between gap-2">
+                      <button
+                        id="closure-dates-prev"
+                        type="button"
+                        phx-click="dates_step"
+                        phx-value-step="prev"
+                        aria-label={"Show " <> @dates_prev_label}
+                        class="inline-flex size-11 items-center justify-center rounded-control border border-control bg-white text-strong hover:bg-canvas"
+                      >
+                        <.icon name="hero-chevron-left" class="size-4" />
+                      </button>
+                      <p id="closure-dates-month" class="text-sm font-[650] text-strong">
+                        {@dates_month_label}
+                      </p>
+                      <button
+                        id="closure-dates-next"
+                        type="button"
+                        phx-click="dates_step"
+                        phx-value-step="next"
+                        aria-label={"Show " <> @dates_next_label}
+                        class="inline-flex size-11 items-center justify-center rounded-control border border-control bg-white text-strong hover:bg-canvas"
+                      >
+                        <.icon name="hero-chevron-right" class="size-4" />
+                      </button>
+                    </div>
+
+                    <p
+                      :if={@dates_missing?}
+                      id="closure-dates-missing"
+                      class="text-sm text-muted"
+                    >
+                      This calendar is no longer in this service version. Choose another calendar before saving; your entries are kept.
+                    </p>
+
+                    <CalendarEditorComponents.month_table
+                      :if={@dates_month_grid}
+                      id="closure-dates-months"
+                      month_grid={@dates_month_grid}
+                      weekly?={not is_nil(@dates_calendar.calendar)}
+                      today={@dates_calendar.today}
+                      label={"Read-only service dates for " <> @editor_calendar.label}
+                    />
+
+                    <p
+                      :if={@dates_no_active?}
+                      id="closure-dates-none"
+                      class="mt-2 text-sm text-muted"
+                    >
+                      This calendar has no active service dates.
+                    </p>
+                  </div>
+                </div>
 
                 <fieldset class="min-w-0">
                   <legend class="text-[13px] font-[650] text-base-content">Closure window</legend>
@@ -1887,6 +2139,50 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       true -> assigns.preview_reason
     end
   end
+
+  # The calendar page's own address, encoded the way its own links are, so a
+  # service ID with a slash, a percent sign or a space stays one exact value.
+  # Like the other render helpers, it derives the chosen calendar from the raw
+  # assigns rather than from a value the same render is still computing.
+  defp calendar_href(assigns) do
+    case editor_calendar(assigns) do
+      %{service_id: service_id} ->
+        "/gtfs/#{assigns.current_gtfs_version.id}/calendars/show?service_id=" <>
+          URI.encode_www_form(service_id)
+
+      _other ->
+        nil
+    end
+  end
+
+  # One read-only month, built by the same native evaluator the calendar page
+  # uses. The grid exists only while the disclosure is open on a loaded calendar,
+  # so a closed disclosure renders no dates at all.
+  defp dates_month_grid(%{
+         dates_open?: true,
+         dates_month: %Date{} = month,
+         dates_calendar: %{} = calendar
+       }) do
+    ServiceDates.month_grid(calendar.calendar, calendar.exceptions, month)
+  end
+
+  defp dates_month_grid(_assigns), do: nil
+
+  defp dates_month_label(%{dates_open?: true, dates_month: %Date{} = month}),
+    do: CalendarComponents.month_title(month)
+
+  defp dates_month_label(_assigns), do: nil
+
+  # The next and previous buttons name the month they would show, so a reader who
+  # cannot see the grid still learns what the control does.
+  defp dates_step_label(%{dates_open?: true, dates_month: %Date{} = month}, offset) do
+    month |> CalendarComponents.shift_month(offset) |> CalendarComponents.month_title()
+  end
+
+  defp dates_step_label(_assigns, _offset), do: nil
+
+  defp dates_no_active?(%{dates_open?: true, dates_calendar: %{active_dates: []}}), do: true
+  defp dates_no_active?(_assigns), do: false
 
   defp station_name(%{stop_name: name}) when is_binary(name) and name != "", do: name
   defp station_name(%{stop_id: stop_id}), do: stop_id

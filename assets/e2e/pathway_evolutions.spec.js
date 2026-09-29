@@ -145,6 +145,28 @@ function evolutionsPath(versionId, stopId, query = "") {
   return `/gtfs/${versionId}/stops/${stopId}/evolutions${query}`;
 }
 
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+// The read-only grid renders exactly one cell per civil day, so a month title
+// names how many cells it must hold.
+function daysInNamedMonth(label) {
+  const [name, year] = label.split(" ");
+  return new Date(Date.UTC(Number(year), MONTH_NAMES.indexOf(name) + 1, 0)).getUTCDate();
+}
+
 // The real beforeunload listener the editor mounts guards unsaved input; the
 // only way to observe it without leaving the browser is to dispatch the event
 // in the page and read whether the listener refused it.
@@ -1604,6 +1626,321 @@ test.describe("merge-results", () => {
       await page.waitForSelector("#diff-run-state");
       await page.screenshot({
         path: capturePath(testInfo, "step-017-reference-mobile.png"),
+        fullPage: true,
+      });
+    });
+  });
+});
+
+// Step 21 / EV-23. The selected calendar's read-only service dates: the
+// disclosure behind #closure-dates-toggle, one month at a time from the native
+// evaluator, its month navigation, the exact `Open calendar` address and the
+// guard around leaving with unsaved input. The cases only read the seeded
+// version, so the authoring and delete groups keep their rows.
+test.describe("calendars", () => {
+  test.beforeEach(async ({ page }) => {
+    await logIn(page);
+  });
+
+  test("opens the saved closure's calendar one month at a time and keeps its exact address", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    const lift = page
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: PUNCTUATED_PATHWAY });
+
+    await lift.locator("button").first().click();
+    await expect(page.locator("#closure-calendar")).toHaveValue("CAL_DAILY");
+
+    // A freshly opened row shows the toggle closed, and it says so in text and
+    // in `aria-expanded` rather than by color.
+    await expect(page.locator("#closure-dates-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await expect(page.locator("#closure-dates-toggle")).toContainText(
+      "Show service dates",
+    );
+    await expect(page.locator("#closure-dates")).toBeHidden();
+
+    await page.locator("#closure-dates-toggle").click();
+
+    await expect(page.locator("#closure-dates-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(page.locator("#closure-dates-toggle")).toContainText(
+      "Hide service dates",
+    );
+    await expect(page.locator("#closure-dates")).toBeVisible();
+
+    // One month, named by the navigator and by the buttons that move it.
+    const month = (await page.locator("#closure-dates-month").textContent()).trim();
+    expect(month).toMatch(/^[A-Z][a-z]+ \d{4}$/);
+
+    const nextMonth = (
+      await page.locator("#closure-dates-next").getAttribute("aria-label")
+    ).replace(/^Show /, "");
+    const previousMonth = (
+      await page.locator("#closure-dates-prev").getAttribute("aria-label")
+    ).replace(/^Show /, "");
+    expect(nextMonth).not.toBe(month);
+    expect(previousMonth).not.toBe(month);
+
+    // The everyday seeded calendar serves every day, so every cell of the
+    // displayed month is a service day and the legend names all four native
+    // states in words.
+    const cells = page.locator('#closure-dates-months [id^="month-cell-"]');
+    const labels = await cells.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("aria-label")),
+    );
+
+    expect(labels).toHaveLength(daysInNamedMonth(month));
+    expect(labels.every((label) => label.includes("Regular service"))).toBe(
+      true,
+    );
+
+    for (const word of [
+      "Regular service",
+      "Service removed",
+      "Service added",
+      "No service scheduled",
+    ]) {
+      await expect(page.locator("#closure-dates-months-legend")).toContainText(
+        word,
+      );
+    }
+
+    // Dates are read-only: no field, no select, no cell event.
+    await expect(
+      page.locator("#closure-dates input, #closure-dates select, #closure-dates textarea"),
+    ).toHaveCount(0);
+    await expect(page.locator("#closure-dates-months [phx-click]")).toHaveCount(
+      0,
+    );
+
+    // The exact calendar address, and the calendar page's own encoded shape.
+    await expect(page.locator("#closure-calendar-link")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/calendars/show?service_id=CAL_DAILY`,
+    );
+
+    // The buttons and the grid's own keyboard binding move the same month, and
+    // the entered window is still the saved one.
+    await page.locator("#closure-dates-next").click();
+    await expect(page.locator("#closure-dates-month")).toHaveText(nextMonth);
+
+    await page.locator("#closure-dates-prev").click();
+    await expect(page.locator("#closure-dates-month")).toHaveText(month);
+
+    await page.locator("#closure-dates-months").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#closure-dates-month")).toHaveText(nextMonth);
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("#closure-dates-month")).toHaveText(month);
+
+    await expect(page.locator("#closure-start")).toHaveValue("09:00");
+    await expect(page.locator("#closure-end")).toHaveValue("15:00");
+    await expect(page.locator("#closure-dirty-chip")).toHaveCount(0);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-021-production-desktop.png"),
+      fullPage: true,
+    });
+
+    // The same disclosure at the phone and the narrow width, with no
+    // horizontal page overflow at either.
+    for (const [viewport, name] of [
+      [MOBILE, "mobile"],
+      [NARROW, "320"],
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.reload();
+      await waitForLiveView(page);
+
+      await page
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: PUNCTUATED_PATHWAY })
+        .locator("button")
+        .first()
+        .click();
+      await page.locator("#closure-dates-toggle").click();
+      await expect(page.locator("#closure-dates")).toBeVisible();
+      await expect(page.locator("#closure-dates-month")).toHaveText(month);
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await page.screenshot({
+        path: capturePath(testInfo, `step-021-production-${name}.png`),
+        fullPage: true,
+      });
+    }
+
+    // A clean departure follows the exact address the link carries.
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    await page
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: PUNCTUATED_PATHWAY })
+      .locator("button")
+      .first()
+      .click();
+
+    await page.locator("#closure-calendar-link").click();
+
+    await expect(page).toHaveURL(
+      `/gtfs/${versionId}/calendars/show?service_id=CAL_DAILY`,
+    );
+    await expect(page.locator("h1")).toContainText("Every day service");
+  });
+
+  test("a dates-only calendar shows its added day, its exact encoded ID and the exit guard", async ({
+    page,
+  }) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, EMPTY_STATION));
+    await waitForLiveView(page);
+
+    // The station has no closures, so this form stays a draft and the seeded
+    // closures the other groups read are untouched.
+    await page.locator("#closures-empty #new-closure").click();
+    await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
+    await page.selectOption("#closure-calendar", "svc/odd name");
+
+    // The slash and the space are one value in the query, exactly as the
+    // calendars list writes this address.
+    await expect(page.locator("#closure-calendar-link")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/calendars/show?service_id=svc%2Fodd+name`,
+    );
+
+    await page.locator("#closure-dates-toggle").click();
+    await expect(page.locator("#closure-dates")).toBeVisible();
+
+    // A dates-only calendar has no weekly row, so only its added day is a
+    // service day in the month the grid opens on.
+    const cells = page.locator('#closure-dates-months [id^="month-cell-"]');
+    const labels = await cells.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("aria-label")),
+    );
+
+    expect(labels).toHaveLength(
+      daysInNamedMonth(
+        (await page.locator("#closure-dates-month").textContent()).trim(),
+      ),
+    );
+    expect(labels.filter((label) => label.includes("Service added"))).toHaveLength(
+      1,
+    );
+    expect(
+      labels.filter((label) => label.includes("No service scheduled")),
+    ).toHaveLength(labels.length - 1);
+    await expect(page.locator("#closure-dates-none")).toHaveCount(0);
+
+    // Leaving with the draft is not silent: the calendar link waits for the
+    // same discard choice every other in-app link does.
+    await page.locator("#closure-calendar-link").click();
+
+    await expect(page.locator("#closure-dirty-dialog")).toBeVisible();
+    await expect(page.locator("#closure-dirty-body")).toContainText(
+      "This new closure is not saved",
+    );
+    expect(page.url()).toContain("/evolutions");
+
+    await page.locator("#closure-dirty-dialog-cancel").click();
+    await expect(page.locator("#closure-dirty-dialog")).toBeHidden();
+    await expect(page.locator("#closure-calendar")).toHaveValue("svc/odd name");
+    await expect(page.locator("#closure-dates")).toBeVisible();
+  });
+
+  test("reads the weekly calendar's released days from the native evaluator", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, EMPTY_STATION));
+    await waitForLiveView(page);
+
+    await page.locator("#closures-empty #new-closure").click();
+    await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
+    await page.selectOption("#closure-calendar", "CAL_SCHOOL");
+    await page.locator("#closure-dates-toggle").click();
+    await expect(page.locator("#closure-dates")).toBeVisible();
+
+    // The weekday calendar serves weekdays and not weekends in the displayed
+    // month, and the legend names every state rather than relying on color.
+    const labels = async () =>
+      page
+        .locator('#closure-dates-months [id^="month-cell-"]')
+        .evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute("aria-label")),
+        );
+
+    const initial = await labels();
+    expect(initial.some((label) => label.includes("Regular service"))).toBe(true);
+    expect(
+      initial.some((label) => label.includes("No service scheduled")),
+    ).toBe(true);
+
+    // The seeded school calendar removes three consecutive days from its
+    // weekly schedule. They span at most two consecutive months, so the open
+    // month and its two neighbours hold exactly three removed cells.
+    let removed = 0;
+
+    for (const step of ["prev", "next", "next"]) {
+      await page.locator(`#closure-dates-${step}`).click();
+      removed += await page
+        .locator('#closure-dates-months [aria-label*="Service removed"]')
+        .count();
+    }
+
+    expect(removed).toBe(3);
+
+    await page
+      .locator('#closure-dates-months [aria-label*="Service removed"]')
+      .first()
+      .waitFor();
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-021-production-removed-desktop.png"),
+      fullPage: true,
+    });
+  });
+
+  // The reference is a self-contained file in the gitignored `.specs/`
+  // workspace, so this case skips (rather than fails) in a checkout without it.
+  test.describe("reference capture", () => {
+    test.skip(() => !fs.existsSync(REFERENCE_PATH), "reference file not present");
+
+    test("captures the reference editing state with the dates open", async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize(DESKTOP);
+      await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=editing`);
+      await expect(page.locator("#closure-editor")).toBeVisible();
+      await page.locator("#closure-dates-toggle").click();
+      await expect(page.locator("#closure-dates")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-021-reference-desktop.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=editing`);
+      await page.locator("#closure-dates-toggle").click();
+      await expect(page.locator("#closure-dates")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-021-reference-mobile.png"),
         fullPage: true,
       });
     });
