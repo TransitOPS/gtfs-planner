@@ -44,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :state, :map, required: true
   attr :min_layover_minutes, :integer, required: true
   attr :estimated_pairs, :integer, default: 0
+  attr :preview?, :boolean, default: false
 
   def scope_header(assigns) do
     assigns =
@@ -54,8 +55,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <div id="blocks-scope" class="flex flex-wrap items-end gap-x-6 gap-y-3">
       <form id="blocks-day-form" phx-change="select_day" class="min-w-0 max-w-full">
-        <.day_select id="blocks-day" day_types={@day_types} selected={@day_type.key} />
+        <.day_select
+          id="blocks-day"
+          day_types={@day_types}
+          selected={@day_type.key}
+          disabled={@preview?}
+        />
       </form>
+
+      <p
+        :if={@preview?}
+        id="blocks-preview-hint"
+        class="pb-2 text-[13px] text-base-content/70"
+      >
+        Discard the suggestion to change the day type, the rules or the driving times.
+      </p>
 
       <form
         id="blocks-filter-form"
@@ -100,7 +114,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           type="button"
           phx-click="open_drawer"
           phx-value-key="block_rules"
-          class="btn btn-sm min-h-11"
+          disabled={@preview?}
+          title={preview_title(@preview?, "Block rules change the plan the suggestion was built on")}
+          class={["btn btn-sm min-h-11", @preview? && "btn-disabled"]}
         >
           Block rules · {@min_layover_minutes} min layover
         </button>
@@ -109,7 +125,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           type="button"
           phx-click="open_drawer"
           phx-value-key="driving_times"
-          class="btn btn-sm min-h-11"
+          disabled={@preview?}
+          title={
+            preview_title(@preview?, "Driving times change the plan the suggestion was built on")
+          }
+          class={["btn btn-sm min-h-11", @preview? && "btn-disabled"]}
         >
           Driving times{@estimated_label}
         </button>
@@ -128,6 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :id, :string, required: true
   attr :day_types, :list, required: true
   attr :selected, :string, default: nil
+  attr :disabled, :boolean, default: false
 
   def day_select(assigns) do
     assigns = assign(assigns, :options, day_type_options(assigns.day_types))
@@ -140,6 +161,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       label="Day type"
       value={@selected}
       options={@options}
+      disabled={@disabled}
+      title={
+        if @disabled,
+          do: "The suggestion was built on this day type. Discard it to change the day type."
+      }
       class="select select-lg w-full sm:w-80"
     />
     """
@@ -156,12 +182,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   drawer step 36 names `plan_summary`, which is why they send that one value
   rather than their own keys. The items whose key names no target (`blocks`,
   `notices`) are ignored by the handler.
+
+  `preview?` adds the reference's “Showing the suggestion” chip: while a plan is
+  being previewed every figure in the strip is the proposal's, not the saved day's,
+  and the strip is the first place a reader looks to discover that (AC-44).
   """
   attr :day_type, :map, required: true
   attr :counts, :map, required: true
   attr :figures, :map, required: true
   attr :peak, :map, required: true
   attr :open_drawer, :atom, default: nil
+  attr :preview?, :boolean, default: false
 
   def summary_strip(assigns) do
     assigns =
@@ -197,6 +228,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       />
       <span id="blocks-peak-detail" class="text-sm text-base-content/70">
         {peak_detail(@peak)}
+      </span>
+      <span
+        :if={@preview?}
+        id="blocks-preview-chip"
+        class="rounded-badge bg-primary/15 px-2 py-1 text-[13px] font-semibold text-primary"
+      >
+        Showing the suggestion
       </span>
       <span id="blocks-summary-note" class="ml-auto text-sm text-base-content/70">
         Whole day type · {date_count_label(@day_type.date_count)}
@@ -491,6 +529,299 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             <span class="text-base-content/70">{uuid}</span>
           <% end %>
         </span>
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the Suggested blocks panel: the plan a reader is looking at before
+  anything is saved (AC-44).
+
+  The panel is the reference's `#suggestion` section, placed between the page's
+  notices and the workbench so the proposal, the workbench it changes and the
+  counts above all stay on one screen: “existing content stays visible” is the
+  point of a preview, so nothing here replaces or hides the page.
+
+  Every number is the plan's own. The four metrics read `Blocking.Plan`'s before
+  and after figures, the moves and the review's added-problem count, and the panel
+  adds the two counts a `current → proposed` pair cannot give on its own: the
+  problems that were there before and remain (the review's own `existing` list) and
+  the ones the plan removes, which are the saved day's findings the previewed day's
+  no longer has, keyed by `Checks.finding_key/1` — the same key the review and the
+  day load count problems by, so “2 fixed” is never a second opinion about what a
+  problem is.
+
+  The day-type cards are `review_effect/1`, shared with the review dialog rather
+  than copied, so a day type says the same thing wherever a plan is read. The
+  scope sentence is the reference's per scope, and the repeating-service and
+  estimate notes are the day's own counts: repeating service is never blocked, and
+  an estimated driving time is still an estimate inside a plan that has not been
+  applied.
+
+  Focus lands on the heading when the panel arrives, through the page's existing
+  scoped `FormErrorFocus` hook and its `data-focus-on-mount`, so a keyboard
+  reader's next stop is the proposal rather than the button they pressed (UX
+  obligations).
+  """
+  attr :plan, :map, required: true
+  attr :day_type, :map, required: true
+  attr :scope, :atom, required: true
+  attr :picked, :list, default: []
+  attr :minimum, :integer, default: 0
+  attr :existing_problems, :integer, default: 0
+  attr :fixed_problems, :integer, default: 0
+  attr :repeating_trip_ids, :list, default: []
+  attr :estimated_pairs, :integer, default: 0
+
+  def suggestion_panel(assigns) do
+    assigns =
+      assigns
+      |> assign(:moves, assigns.plan.moves)
+      |> assign(:metrics, suggestion_metrics(assigns))
+      |> assign(:scope_note, scope_note(assigns))
+      |> assign(:facts_note, facts_note(assigns))
+
+    ~H"""
+    <section
+      id="suggestion"
+      aria-labelledby="suggestion-title"
+      phx-hook="FormErrorFocus"
+      data-focus-on-mount="suggestion-title"
+      class="mt-4 rounded-box border border-primary/30 bg-base-100"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-base-300 px-5 py-4">
+        <div>
+          <h2 id="suggestion-title" tabindex="-1" class="text-xl font-semibold">
+            Suggested blocks
+          </h2>
+          <p class="mt-1 text-[13px] text-base-content/70">
+            {@day_type.label} · {scope_name(@scope)}
+          </p>
+        </div>
+        <.status_badge status="warning" label="Preview · not saved" />
+      </div>
+
+      <div class="flex flex-wrap border-b border-base-300 py-2">
+        <.suggestion_metric
+          :for={metric <- @metrics}
+          label={metric.label}
+          value={metric.value}
+          note={metric.note}
+        />
+      </div>
+
+      <div class="grid gap-3 px-5 py-4">
+        <p id="suggestion-scope-note" class="text-sm">
+          {@scope_note}
+          <span :if={@facts_note}>{@facts_note}</span>
+        </p>
+
+        <details open class="group">
+          <summary class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold">
+            Inspect {length(@moves)} affected {word(length(@moves), "trip", "trips")} and dates
+          </summary>
+          <div class="mt-2 grid gap-3">
+            <div
+              id="suggestion-moves"
+              class="max-h-[260px] overflow-auto rounded-box border border-base-300"
+            >
+              <.table :if={@moves != []} id="suggestion-moves-table" rows={@moves}>
+                <:col :let={move} label="Trip">{move.trip.trip_id}</:col>
+                <:col :let={move} label="Departs">{clock(move.trip.first_departure)}</:col>
+                <:col :let={move} label="Current block">{move.from || "Unassigned"}</:col>
+                <:col :let={move} label="Proposed block">
+                  <strong data-role="suggestion-proposed">{move.to || "Unassigned"}</strong>
+                </:col>
+                <:col :let={move} label="Change">
+                  <span
+                    data-role="suggestion-change"
+                    data-change={if is_nil(move.from), do: "added", else: "moved"}
+                    class="inline-flex items-center rounded-badge bg-primary/15 px-1.5 py-0.5 text-[13px] font-semibold text-primary"
+                  >
+                    {if is_nil(move.from), do: "Added", else: "Moved"}
+                  </span>
+                </:col>
+              </.table>
+            </div>
+            <div class="grid gap-2">
+              <.review_effect
+                :for={effect <- @plan.review.effects}
+                effect={effect}
+                review={@plan.review}
+              />
+            </div>
+          </div>
+        </details>
+
+        <div class="flex flex-wrap items-center gap-3 pt-1">
+          <button
+            id="apply-suggestion"
+            type="button"
+            disabled
+            title="Applying a suggestion is not available in this build."
+            class="btn btn-sm btn-primary btn-disabled min-h-11"
+          >
+            Apply suggestion
+          </button>
+          <button
+            id="discard-suggestion"
+            type="button"
+            phx-click="discard_suggestion"
+            class="btn btn-sm min-h-11"
+          >
+            Discard suggestion
+          </button>
+          <button
+            id="suggest-again"
+            type="button"
+            phx-click="suggest_again"
+            class="btn btn-sm min-h-11"
+          >
+            Suggest again
+          </button>
+          <span :if={@scope == :replace_all} class="text-[13px] text-base-content/70">
+            Applying asks you to confirm, because hand-tuned blocks may change.
+          </span>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  # The four headline figures, in the reference's order. Three read the plan's own
+  # before and after pairs; the two that cannot be a pair — the trips that change
+  # block and the problems the plan adds — are single numbers, because there is
+  # no "before" for a move and the problems a plan fixes are counted beside the
+  # ones it leaves.
+  defp suggestion_metrics(assigns) do
+    plan = assigns.plan
+    before = plan.before
+    proposed = plan.after
+
+    [
+      %{
+        label: "Vehicles · current → proposed",
+        value: "#{before.vehicles} → #{proposed.vehicles}",
+        note: "minimum possible #{assigns.minimum}"
+      },
+      %{
+        label: "Driving without riders · h",
+        value: "#{hours_text(before.drive_secs)} → #{hours_text(proposed.drive_secs)}",
+        note: if(assigns.estimated_pairs > 0, do: "estimated", else: "entered")
+      },
+      %{
+        label: "Trips changing block",
+        value: Integer.to_string(length(plan.moves)),
+        note: nil
+      },
+      %{
+        label: "New problems",
+        value: Integer.to_string(plan.review.added_problem_count),
+        note: problem_note(assigns)
+      }
+    ]
+  end
+
+  # The panel's existing count is the saved day's own problems the plan does not
+  # add, so it is derived where the preview is derived rather than read off the
+  # review's `existing` list, which covers only the blocks the plan touches.
+  defp problem_note(%{existing_problems: 0, fixed_problems: 0}), do: "none existing"
+
+  defp problem_note(assigns) do
+    existing = assigns.existing_problems
+
+    [
+      if(existing > 0,
+        do: "#{existing} existing #{word(existing, "problem remains", "problems remain")}"
+      ),
+      if(assigns.fixed_problems > 0, do: "#{assigns.fixed_problems} fixed")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  # The reference's per-scope sentence: what the scope left alone, which is the
+  # thing a reader cannot see in the numbers.
+  defp scope_note(%{scope: :unassigned_only}) do
+    "Existing assignments stay; their problems are listed as existing, not caused by this suggestion."
+  end
+
+  defp scope_note(%{scope: :replace_all}) do
+    "Every scheduled trip in this day type was planned again. Hand-tuned blocks may change."
+  end
+
+  defp scope_note(%{scope: :selected, picked: []}) do
+    "Only the selected blocks were planned again. Other blocks and unassigned trips don't change."
+  end
+
+  defp scope_note(%{scope: :selected, picked: picked}) do
+    "Only blocks #{Enum.join(picked, " and ")} were planned again. " <>
+      "Other blocks and unassigned trips don't change."
+  end
+
+  defp scope_name(:unassigned_only), do: "Unassigned trips only"
+  defp scope_name(:selected), do: "Selected blocks"
+  defp scope_name(:replace_all), do: "Rebuild the day type"
+
+  # The two facts that bound what a proposal can be trusted to say, and that hold
+  # inside a plan as much as outside one: repeating service is never blocked, and
+  # a driving time the version estimated is still an estimate. They name the day's
+  # own trips and pairs rather than a count, so a reader can go and look.
+  defp facts_note(assigns) do
+    Enum.reject(
+      [repeats_note(assigns.repeating_trip_ids), estimate_note(assigns.estimated_pairs)],
+      &is_nil/1
+    )
+    |> Enum.join(" ")
+  end
+
+  defp repeats_note([]), do: nil
+
+  defp repeats_note(ids) do
+    "#{Enum.join(ids, ", ")} #{word(length(ids), "repeats", "repeat")} " <>
+      "without individual departures and #{word(length(ids), "stays", "stay")} unassigned."
+  end
+
+  defp estimate_note(0), do: nil
+
+  defp estimate_note(count) do
+    "#{count} #{word(count, "driving time is", "driving times are")} still " <>
+      "#{word(count, "an estimate", "estimates")}."
+  end
+
+  defp word(1, singular, _plural), do: singular
+  defp word(_count, _singular, plural), do: plural
+
+  # The reference prints its deadhead figure in hours to one decimal; a plan's
+  # drive seconds are whole minutes, so the same shape is one decimal of an hour.
+  defp hours_text(secs) when is_integer(secs),
+    do: :erlang.float_to_binary(secs / 3600, decimals: 1)
+
+  defp hours_text(_no_seconds), do: "—"
+
+  # One headline figure of the Suggested blocks panel: its label, its value and
+  # the note beneath it. The value is the panel's own typography rather than the
+  # count strip's, so a two-number `current → proposed` pair reads as one figure
+  # and not as two counts in a row (reference, functionalist-design).
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+  attr :note, :string, default: nil
+
+  defp suggestion_metric(assigns) do
+    ~H"""
+    <div
+      data-role="suggestion-metric"
+      class="min-w-[170px] flex-1 border-l border-base-300 px-4 py-2 first:border-l-0 first:pl-0"
+    >
+      <p data-role="suggestion-metric-label" class="text-[13px] text-base-content/70">
+        {@label}
+      </p>
+      <p data-role="suggestion-metric-value" class="mt-0.5 text-[22px] font-semibold tabular-nums">
+        {@value}
+      </p>
+      <p :if={@note} data-role="suggestion-metric-note" class="text-[13px] text-base-content/70">
+        {@note}
       </p>
     </div>
     """
@@ -2017,40 +2348,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </h3>
 
         <div class="mt-2 space-y-3">
-          <div
+          <.review_effect
             :for={effect <- @review.effects}
-            id={"review-effect-" <> effect.day_type.key}
-            data-role="review-effect"
-            data-selected={to_string(effect.selected?)}
-            class="border border-base-300 px-3 py-2"
-          >
-            <strong>
-              {if effect.selected?, do: "Current view", else: "Also changes"} · {effect.day_type.label} · {date_count_label(
-                effect.day_type.date_count
-              )}
-            </strong>
-            <p class="mt-1">{effect_sentence(effect, @review)}</p>
-            <p :for={split <- effect.splits}>
-              Block {split.block_id} splits: {split.remaining} {if split.remaining == 1,
-                do: "trip stays",
-                else: "trips stay"} on {split.block_id}.
-            </p>
-            <p
-              :for={finding <- added_problems(effect)}
-              data-role="review-added"
-              class="mt-1 flex flex-wrap items-center gap-2"
-            >
-              <span class="font-medium">Added</span>
-              <.status_badge
-                status={severity_status(finding.severity)}
-                label={code_label(finding.code)}
-              />
-              <span>{finding_detail(finding)}</span>
-            </p>
-            <p :if={added_problems(effect) == []} class="mt-1 text-base-content/70">
-              No new timing or transfer problems on these dates.
-            </p>
-          </div>
+            effect={effect}
+            review={@review}
+          />
         </div>
 
         <details class="mt-4 border-t border-base-300 pt-2">
@@ -2074,6 +2376,58 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </p>
       </div>
     </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders one affected day type of a review: its heading, what the change does
+  there, the block it splits and the problems it adds.
+
+  The markup is the reference's and is shared, not copied: the review dialog and
+  the Suggested blocks panel read the same `Review.effects`, so a day type says
+  the same thing in both places and a change to the sentence is one change. The
+  selected day type reads “Current view” and the others “Also changes”, and each
+  card carries its own date count, because a reader reading the plan on one day
+  type still has to know what the same plan does on the others (AC-44).
+  """
+  attr :effect, :map, required: true
+  attr :review, :map, required: true
+
+  def review_effect(assigns) do
+    ~H"""
+    <div
+      id={"review-effect-" <> @effect.day_type.key}
+      data-role="review-effect"
+      data-selected={to_string(@effect.selected?)}
+      class="border border-base-300 px-3 py-2"
+    >
+      <strong>
+        {if @effect.selected?, do: "Current view", else: "Also changes"} · {@effect.day_type.label} · {date_count_label(
+          @effect.day_type.date_count
+        )}
+      </strong>
+      <p class="mt-1">{effect_sentence(@effect, @review)}</p>
+      <p :for={split <- @effect.splits}>
+        Block {split.block_id} splits: {split.remaining} {if split.remaining == 1,
+          do: "trip stays",
+          else: "trips stay"} on {split.block_id}.
+      </p>
+      <p
+        :for={finding <- added_problems(@effect)}
+        data-role="review-added"
+        class="mt-1 flex flex-wrap items-center gap-2"
+      >
+        <span class="font-medium">Added</span>
+        <.status_badge
+          status={severity_status(finding.severity)}
+          label={code_label(finding.code)}
+        />
+        <span>{finding_detail(finding)}</span>
+      </p>
+      <p :if={added_problems(@effect) == []} class="mt-1 text-base-content/70">
+        No new timing or transfer problems on these dates.
+      </p>
+    </div>
     """
   end
 
@@ -3420,6 +3774,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :block_selected_count, :integer, required: true
   attr :bulk, :map, required: true
 
+  attr :changed_block_ids, :any,
+    default: MapSet.new(),
+    doc: "the blocks the previewed plan changes"
+
+  attr :preview?, :boolean, default: false
+
   def workspace(assigns) do
     assigns = assign(assigns, :filtered?, filtered?(assigns.state))
 
@@ -3509,7 +3869,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       while the reader pages through the selection (AC-24, UX obligations). The
       block bar is the Blocks tab's own: it counts blocks, not trips, and its two
       events never touch the Unassigned panel's trip selection (AC-42). --%>
-      <.block_selection_bar :if={@block_selected_count > 0} count={@block_selected_count} />
+      <.block_selection_bar
+        :if={@block_selected_count > 0 and not @preview?}
+        count={@block_selected_count}
+      />
 
       <.bulk_bar
         :if={@bulk.count > 0}
@@ -3566,6 +3929,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             max_piece_minutes={@max_piece_minutes}
             selected_block_ids={@selected_block_ids}
             page_block_ids={@page_block_ids}
+            changed_block_ids={@changed_block_ids}
           />
         <% true -> %>
           <.block_list
@@ -4076,6 +4440,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # never share state (AC-42).
   attr :block_id, :string, required: true
   attr :checked, :boolean, required: true
+  attr :disabled, :boolean, default: false
 
   defp select_block(assigns) do
     ~H"""
@@ -4089,6 +4454,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         data-role="select-block"
         data-block={@block_id}
         checked={@checked}
+        disabled={@disabled}
         phx-click="toggle_block"
         phx-value-block={@block_id}
         aria-label={"Select block " <> @block_id}
@@ -4104,6 +4470,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # is named on the page rather than only in its accessible name (Accessibility
   # posture, AC-42).
   attr :checked, :boolean, required: true
+  attr :disabled, :boolean, default: false
 
   defp select_page_blocks(assigns) do
     ~H"""
@@ -4116,6 +4483,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         id="blocks-select-all-blocks"
         data-role="select-all-blocks"
         checked={@checked}
+        disabled={@disabled}
         phx-click="select_block_page"
         aria-label="Select all blocks on this page"
         class="checkbox checkbox-xs"
@@ -4257,6 +4625,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
   attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
 
+  attr :changed_block_ids, :any,
+    default: MapSet.new(),
+    doc: "the blocks the previewed plan changes"
+
   def timeline(assigns) do
     assigns =
       assigns
@@ -4264,9 +4636,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:ticks, axis_ticks(assigns.axis))
       |> assign(:track_style, track_style(assigns.axis))
       |> assign(:page_all_selected?, page_all_selected?(assigns))
+      |> assign(:changed?, MapSet.size(assigns.changed_block_ids) > 0)
 
     ~H"""
-    <.timeline_legend relief?={not is_nil(@max_piece_minutes)} />
+    <.timeline_legend relief?={not is_nil(@max_piece_minutes)} changed?={@changed?} />
     <div id="blocks-timeline-scroll">
       <table
         id="blocks-timeline"
@@ -4285,7 +4658,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <thead>
           <tr>
             <th scope="col" class="blocks-meta blocks-meta-select">
-              <.select_page_blocks checked={@page_all_selected?} />
+              <.select_page_blocks checked={@page_all_selected?} disabled={@changed?} />
             </th>
             <th
               :for={column <- @columns}
@@ -4329,6 +4702,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             route_filter={@state.route}
             max_piece_minutes={@max_piece_minutes}
             selected?={MapSet.member?(@selected_block_ids, block.summary.block_id)}
+            changed?={MapSet.member?(@changed_block_ids, block.summary.block_id)}
           />
         </tbody>
       </table>
@@ -4368,6 +4742,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :route_filter, :string, default: nil
   attr :max_piece_minutes, :integer, default: nil
   attr :selected?, :boolean, default: false, doc: "whether the block is in the reader's selection"
+  attr :changed?, :boolean, default: false, doc: "whether the previewed plan changes this block"
 
   def block_row(assigns) do
     movements = assigns.block.movements
@@ -4383,9 +4758,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:relief, relief_gaps(assigns.block, assigns.max_piece_minutes))
 
     ~H"""
-    <tr id={@dom} data-block={@summary.block_id} class="blocks-row">
+    <tr
+      id={@dom}
+      data-block={@summary.block_id}
+      data-changed={to_string(@changed?)}
+      class={["blocks-row", @changed? && "blocks-row-changed"]}
+    >
       <td class={["blocks-meta", "blocks-meta-select"]}>
-        <.select_block block_id={@summary.block_id} checked={@selected?} />
+        <.select_block block_id={@summary.block_id} checked={@selected?} disabled={@changed?} />
       </td>
       <td class={["blocks-meta", "blocks-meta-block"]}>
         <button
@@ -4406,6 +4786,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </td>
       <td class={["blocks-meta", "blocks-meta-hours"]}>{hours(@summary.hours)}</td>
       <td class={["blocks-meta", "blocks-meta-status"]}>
+        <span
+          :if={@changed?}
+          data-role="block-changed"
+          class="mr-1 inline-flex items-center rounded-badge bg-primary/15 px-1 text-[12px] font-semibold text-primary"
+        >
+          Changed
+        </span>
         <span data-role="block-status" class="inline-flex items-center gap-1">
           <.icon name={@status.icon} class="size-3.5 shrink-0" /> {@status.label}
         </span>
@@ -4471,6 +4858,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   there is no operator change to place and no `⇄` can appear on a row.
   """
   attr :relief?, :boolean, required: true
+  attr :changed?, :boolean, default: false
 
   def timeline_legend(assigns) do
     ~H"""
@@ -4478,7 +4866,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       id="blocks-timeline-legend"
       class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-base-300 bg-canvas px-4 py-2 text-[13px] text-base-content"
     >
-      <span :for={{class, label} <- legend_keys(@relief?)} class="inline-flex items-center gap-1.5">
+      <span
+        :for={{class, label} <- legend_keys(@relief?, @changed?)}
+        class="inline-flex items-center gap-1.5"
+      >
         <span class={["blocks-legend-key", class]} aria-hidden="true">{legend_mark(class)}</span>
         <span>{label}</span>
       </span>
@@ -4486,12 +4877,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     """
   end
 
-  defp legend_keys(relief?) do
+  defp legend_keys(relief?, changed?) do
     [
       {"blocks-pull", "Garage travel"},
       {"blocks-drive", "Driving without riders"},
       {"blocks-wait", "Waiting · minutes"}
-    ] ++ if(relief?, do: [{"blocks-legend-relief", "Operators can change"}], else: [])
+    ] ++
+      if(relief?, do: [{"blocks-legend-relief", "Operators can change"}], else: []) ++
+      if(changed?, do: [{"blocks-legend-changed", "Changed · not saved"}], else: [])
   end
 
   # Each key paints the mark it names, so the legend cannot drift from the
@@ -4764,6 +5157,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # as one sentence.
   defp estimated_label(0), do: ""
   defp estimated_label(count), do: " · #{count} estimated"
+
+  # A control that is off during a preview says why in its own title, so a
+  # reader who reaches for it is told the plan would no longer be the one on
+  # screen rather than left to guess (UX obligations, AC-44).
+  defp preview_title(false, _reason), do: nil
+  defp preview_title(true, reason), do: reason <> ". Discard the suggestion to change it."
 
   defp day_type_options(day_types) do
     {special, regular} = Enum.split_with(day_types, & &1.special?)
@@ -5466,6 +5865,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp effect_sentence(_effect, %{command: {:attributes, _block, _garage, _type}}) do
     "The block's garage and type are saved here and apply to every calendar it runs on."
+  end
+
+  # A plan's effects are read in the panel and in the dialog together, and a plan
+  # moves trips between blocks rather than to or from one target, so it says what
+  # it does in its own words rather than borrowing the block command's sentence.
+  defp effect_sentence(effect, %{command: {:plan, _mode}}) do
+    count = length(effect.changed_trip_ids)
+
+    "#{count} #{if count == 1, do: "trip changes", else: "trips change"} block."
   end
 
   defp effect_sentence(effect, review) do
