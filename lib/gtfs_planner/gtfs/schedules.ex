@@ -660,12 +660,15 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `:needs_decision` change (or a review with column issues and no plan) rolls
   back `:blocking_issues`.
 
-  Writes share one `operation_id`. This step writes the `:remove` changes via
-  `remove_locked_trips!/3` with one `'deleted'` audit per removed trip;
-  steps 17 (changed trips and new timings) and 18 (added trips) extend the
-  write sequence at the marked points, so `added`/`changed` are 0,
-  `new_timings` is `[]` and `trip_ids` is `[]` here. `vehicles_before/after`
-  come from the locked plan.
+  Writes share one `operation_id`. Removals go through `remove_locked_trips!/3`
+  with one `'deleted'` audit per removed trip; pending timings are created via
+  `RoutePatterns.create_pasted_timing!/5` before the `:change` trips that
+  reference them, and each changed trip keeps its `trip_id` while its times
+  are rematerialized (or its stop times re-inserted when its stop count
+  differs) with one `'updated'` audit carrying the before/after
+  `trip_snapshot/6`. Step 18 (added trips) extends the write sequence at the
+  marked point, so `added` is 0 here. `vehicles_before/after` come from the
+  locked plan.
 
   A foreign, invalid or unpublished organization, version, route or calendar,
   and a pattern outside the direction, roll back to `{:error, :not_found}`;
@@ -733,23 +736,31 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     result = remove_locked_trips!(organization_id, version_id, remove_trips)
     audit_removed_trips!(audit_context, remove_trips, snapshots, operation_id)
 
-    # Step 17 extension point: create each pending timing via
-    # RoutePatterns.create_pasted_timing!/5 (mapping name → id) and
-    # rematerialize the :change trips here, with 'updated' audits under the
-    # same operation_id.
+    timings_by_name = create_paste_timings!(route, review.plan, audit_context)
+
+    {changed_count, changed_ids} =
+      apply_paste_changes!(
+        route,
+        review.plan,
+        locked_trips,
+        timings_by_name,
+        operation_id,
+        audit_context
+      )
+
     # Step 18 extension point: insert the :add trips via allocate_trip_ids/5,
     # insert_trip!/1, stop_time_rows/3 and insert_stop_times!/1 here, with
-    # 'created' audits under the same operation_id, and report the full
-    # summary (added/changed counts, new timing names, added/changed IDs).
+    # 'created' audits under the same operation_id, and extend the summary
+    # (added count and added IDs).
     %{
       added: 0,
-      changed: 0,
+      changed: changed_count,
       removed: result.trips,
       transfers_removed: result.transfers,
-      new_timings: [],
+      new_timings: paste_timing_names(review.plan),
       vehicles_before: review.plan.vehicles.before,
       vehicles_after: review.plan.vehicles.after,
-      trip_ids: []
+      trip_ids: changed_ids
     }
   end
 
@@ -830,6 +841,224 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       )
     end)
   end
+
+  # Step 17: pending timings first (AC-19), in plan order, before the trip
+  # updates that reference them. Entries sharing a name reuse the single
+  # created row through the returned name → id map. New timings carry no
+  # headsign, so trips keep falling through to the pattern default exactly
+  # as Plan's effective-default rule assumes (a pending timing has no
+  # headsign yet).
+  defp create_paste_timings!(route, plan, audit_context) do
+    Enum.reduce(paste_timing_entries(plan), %{}, fn entry, by_name ->
+      name = attr(entry, :name)
+
+      if Map.has_key?(by_name, name) do
+        by_name
+      else
+        pattern = lock_paste_pattern!(route, attr(entry, :pattern_id))
+
+        timing =
+          RoutePatterns.create_pasted_timing!(
+            pattern,
+            name,
+            attr(entry, :timing_rows) || [],
+            nil,
+            audit_context
+          )
+
+        Map.put(by_name, name, timing.id)
+      end
+    end)
+  end
+
+  defp lock_paste_pattern!(route, pattern_id) when is_binary(pattern_id),
+    do: RoutePatterns.lock_pattern!(route, pattern_id)
+
+  defp lock_paste_pattern!(_route, _pattern_id), do: Repo.rollback(:stale_plan)
+
+  # Step 17: one rematerialized write per :change, in plan order. The trip
+  # keeps its `trip_id`, transfers and every field outside the plan's
+  # metadata (R13); only `timed_pattern_id`, the linkage, `trip_short_name`,
+  # `block_id` and `trip_headsign` move, and an empty headsign never writes
+  # (the stored value stays). Stop counts matching the pattern rewrite rows
+  # in place via `rematerialize_trip!/4`; a differing count deletes and
+  # re-inserts from `Materializer.materialize/3` (R9 timepoints included).
+  # Each change audits 'updated' with the before/after `trip_snapshot/6`
+  # under the shared operation id and bumps `updated_at` (AC-22).
+  defp apply_paste_changes!(
+         route,
+         plan,
+         locked_trips,
+         timings_by_name,
+         operation_id,
+         audit_context
+       ) do
+    changes = plan |> paste_changes() |> Enum.filter(&(attr(&1, :op) == :change))
+    by_id = Map.new(locked_trips, &{&1.id, &1})
+    affected = Enum.map(changes, &locked_change_uuid!(&1, by_id))
+
+    changed_ids =
+      Enum.map(changes, fn change ->
+        apply_paste_change!(
+          route,
+          change,
+          by_id,
+          timings_by_name,
+          operation_id,
+          affected,
+          audit_context
+        )
+      end)
+
+    {length(changes), changed_ids}
+  end
+
+  # A :change names a locked scope trip by UUID. A change naming no locked
+  # trip means the scope moved under the locks, so the plan is stale rather
+  # than partially applied (the same rule as removals).
+  defp locked_change_uuid!(change, by_id) do
+    uuid = attr(attr(change, :trip), :id)
+
+    if is_binary(uuid) and Map.has_key?(by_id, uuid),
+      do: uuid,
+      else: Repo.rollback(:stale_plan)
+  end
+
+  defp apply_paste_change!(
+         route,
+         change,
+         by_id,
+         timings_by_name,
+         operation_id,
+         affected,
+         audit_context
+       ) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    trip = Map.fetch!(by_id, locked_change_uuid!(change, by_id))
+    row = attr(change, :row)
+    unless is_map(row), do: Repo.rollback(:stale_plan)
+
+    start_secs = attr(row, :start_secs)
+    unless is_integer(start_secs), do: Repo.rollback(:stale_plan)
+
+    timing_rows = attr(row, :timing_rows)
+    unless is_list(timing_rows) and timing_rows != [], do: Repo.rollback(:stale_plan)
+
+    timed_pattern_id = paste_change_timing_id!(change, timings_by_name)
+    pattern = lock_paste_pattern!(route, attr(row, :pattern_id))
+    occurrences = pattern_occurrences(pattern)
+
+    unless length(timing_rows) == length(occurrences), do: Repo.rollback(:stale_plan)
+
+    old_stop_times = trip_stop_times(organization_id, version_id, trip.trip_id)
+    frequencies = trip_frequencies(organization_id, version_id, trip.trip_id)
+
+    before =
+      trip_snapshot(
+        trip,
+        timing_name(organization_id, version_id, trip.timed_pattern_id),
+        first_departure_secs(old_stop_times),
+        old_stop_times,
+        frequencies,
+        trip.pattern_derivation_state != "linked"
+      )
+
+    rewrite_paste_stop_times!(trip, pattern, occurrences, old_stop_times, timing_rows, start_secs)
+    updated = update_paste_trip_row!(trip, change, timed_pattern_id)
+    new_stop_times = trip_stop_times(organization_id, version_id, trip.trip_id)
+
+    after_snapshot =
+      trip_snapshot(
+        updated,
+        timing_name(organization_id, version_id, timed_pattern_id),
+        start_secs,
+        new_stop_times,
+        frequencies,
+        updated.pattern_derivation_state != "linked"
+      )
+
+    audit_trip!(audit_context, updated, "updated", before, after_snapshot, operation_id, affected)
+
+    updated.trip_id
+  end
+
+  # An {:existing, id} timing is already stored; a {:new, name} timing was
+  # created above, so its mapped id applies. Anything else means the plan no
+  # longer fits the locked state.
+  defp paste_change_timing_id!(change, timings_by_name) do
+    case attr(change, :timing) do
+      {:existing, id} when is_binary(id) ->
+        id
+
+      {:new, name} when is_binary(name) ->
+        case Map.fetch(timings_by_name, name) do
+          {:ok, id} -> id
+          :error -> Repo.rollback(:stale_plan)
+        end
+
+      _timing ->
+        Repo.rollback(:stale_plan)
+    end
+  end
+
+  defp rewrite_paste_stop_times!(
+         trip,
+         pattern,
+         occurrences,
+         old_stop_times,
+         timing_rows,
+         start_secs
+       ) do
+    if length(old_stop_times) == length(occurrences) do
+      RoutePatterns.rematerialize_trip!(trip, occurrences, timing_rows, start_secs)
+    else
+      materialized =
+        case Materializer.materialize(start_secs, occurrences, timing_rows) do
+          {:ok, rows} -> rows
+          {:error, _reason} -> Repo.rollback(:stale_plan)
+        end
+
+      delete_children!(:stop_times, trip.organization_id, trip.gtfs_version_id, [trip.trip_id])
+
+      shape_attrs = Alignments.trip_shape_attrs(pattern)
+
+      trip
+      |> stop_time_rows(materialized, shape_attrs.visit_distances, DateTime.utc_now())
+      |> insert_stop_times!()
+    end
+  end
+
+  # Linkage plus the plan's R13 metadata, nothing else: `trip_id`, transfers,
+  # accessibility and every unrelated field stay on the locked row. A blank
+  # headsign keeps the stored value, so an empty headsign never writes.
+  defp update_paste_trip_row!(trip, change, timed_pattern_id) do
+    headsign = attr(change, :trip_headsign)
+
+    headsign =
+      if is_binary(headsign) and String.trim(headsign) == "",
+        do: trip.trip_headsign,
+        else: headsign
+
+    trip
+    |> Ecto.Changeset.change(%{
+      timed_pattern_id: timed_pattern_id,
+      pattern_derivation_state: "linked",
+      pattern_derivation_reason: nil,
+      trip_short_name: attr(change, :trip_short_name),
+      block_id: attr(change, :block_id),
+      trip_headsign: headsign
+    })
+    |> Ecto.Changeset.force_change(:updated_at, DateTime.utc_now())
+    |> update_trip_row!()
+  end
+
+  defp paste_changes(plan), do: attr(plan, :changes) || []
+
+  defp paste_timing_entries(plan), do: attr(plan, :new_timings) || []
+
+  defp paste_timing_names(plan), do: Enum.map(paste_timing_entries(plan), &attr(&1, :name))
 
   # The blocking advisory lock joins spec 05's block guarantee (R16): any paste
   # whose input maps a Block column — an explicit "block_id" override, carried
