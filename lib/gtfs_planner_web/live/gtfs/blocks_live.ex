@@ -97,6 +97,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     error: nil
   }
 
+  # The Driving times drawer's transient state: the version and day type the
+  # rows were read for, the rows themselves, the minutes the reader typed keyed by
+  # the `from|to` reference pair, the row errors of a refused save, whether the
+  # “Estimated only” filter is on, and a drawer-level sentence.
+  @empty_driving_times %{
+    key: nil,
+    pairs: [],
+    params: %{},
+    errors: %{},
+    estimated_only?: false,
+    error: nil
+  }
+
+  # The drawer's own sentences. It is a top-layer `<dialog>`, so the page flash
+  # renders behind it and cannot carry a refusal the reader is looking at (AC-31).
+  @driving_times_unreadable "These driving times couldn't be read. Your entries are kept."
+  @driving_times_unknown_pair "That driving time isn't in this day type."
+  @driving_times_nothing_to_reset "That driving time had nothing to reset."
+
+  @driving_times_save_failed "These driving times could not be saved. Your entries are retained. Try again."
+
+  # The reference's own row error, over the range the context's changeset
+  # enforces on a driving time.
+  @driving_minutes_error "Enter 0–600 min."
+
   @sort_keys %{
     "block" => :block,
     "garage" => :garage,
@@ -150,6 +175,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:review, nil)
      |> assign(:review_stale?, false)
      |> assign(:block_rules, @empty_block_rules)
+     |> assign(:driving_times, @empty_driving_times)
      |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
@@ -542,6 +568,92 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # The refusal is the drawer's own sentence: the drawer is a top-layer
       # `<dialog>` and the page flash renders behind it (AC-31).
       {:noreply, put_block_rules(socket, params, @permission_message)}
+    end
+  end
+
+  # The Driving times drawer's three events, all in the loaded day type's scope
+  # (AC-3). None of them is a save on its own: the filter only narrows what the
+  # drawer shows, a reset writes one row, and the save writes the rows whose
+  # minutes differ from the ones the drawer listed.
+  def handle_event("filter_driving_times", params, socket) do
+    state = socket.assigns.driving_times
+    estimated_only? = params["estimated_only"] == "true"
+
+    # The checkbox and the rows share one form, so its change event carries every
+    # row the reader typed as well as the filter: hiding the entered rows must not
+    # discard an entry someone has not saved yet (AC-3).
+    {:noreply,
+     assign(socket, :driving_times, %{
+       put_driving_draft(state, driving_times_params(params))
+       | estimated_only?: estimated_only?
+     })}
+  end
+
+  def handle_event("reset_driving_time", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("reset_driving_time", %{"pair" => pair}, socket) do
+    state = socket.assigns.driving_times
+
+    with true <- editor_access?(socket),
+         {from_ref, to_ref} <- listed_pair(state, pair),
+         :ok <-
+           Gtfs.clear_deadhead_time(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             {from_ref, to_ref}
+           ) do
+      {:noreply,
+       socket
+       |> redraw_driving_times(state)
+       |> put_flash(:info, "Driving time reset to its estimate.")}
+    else
+      false ->
+        {:noreply, put_driving_error(socket, state, @permission_message)}
+
+      nil ->
+        {:noreply, put_driving_error(socket, state, @driving_times_unknown_pair)}
+
+      {:error, :not_found} ->
+        {:noreply, put_driving_error(socket, state, @driving_times_nothing_to_reset)}
+
+      {:error, _reason} ->
+        {:noreply, put_driving_error(socket, state, @driving_times_save_failed)}
+    end
+  end
+
+  def handle_event("reset_driving_time", _params, socket), do: {:noreply, socket}
+
+  def handle_event("save_driving_times", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_driving_times", params, socket) do
+    state = socket.assigns.driving_times
+    submitted = driving_times_params(params)
+    {entries, errors} = driving_time_entries(state, submitted)
+
+    cond do
+      not editor_access?(socket) ->
+        {:noreply,
+         put_driving_error(socket, put_driving_draft(state, submitted), @permission_message)}
+
+      errors != %{} ->
+        # A bad entry stores nothing at all: the drawer keeps every value the
+        # reader typed, each refused row prints its own message, and focus lands
+        # on the first input the shared component marked invalid.
+        {:noreply,
+         socket
+         |> assign(:driving_times, %{state | params: submitted, errors: errors})
+         |> push_event("focus_form_error", %{form_id: "driving-times-form"})}
+
+      entries == [] ->
+        {:noreply,
+         socket
+         |> assign(:driving_times, %{state | params: %{}, errors: %{}})
+         |> put_flash(:info, "No changes")}
+
+      true ->
+        save_driving_entries(socket, state, entries)
     end
   end
 
@@ -1031,6 +1143,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           :block_attributes,
           block_attributes_state(socket.assigns.block_attributes, block)
         )
+        |> resolve_driving_times(day, Map.get(@drawers, state.drawer))
 
       _other ->
         assign(socket,
@@ -1979,6 +2092,246 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end)
   end
 
+  # One writer call per changed row, in the order the drawer listed them, and the
+  # day reloads once at the end so the blocks, the gap bars and the scope button
+  # are drawn under the new times. A row the context refuses keeps the drawer's
+  # own sentence, so the page says what actually happened rather than claiming a
+  # whole failed save.
+  defp save_driving_entries(socket, state, entries) do
+    result =
+      Enum.reduce_while(entries, {:ok, 0}, fn {_key, pair, minutes}, {:ok, count} ->
+        case Gtfs.put_deadhead_time(
+               socket.assigns.current_organization.id,
+               socket.assigns.current_gtfs_version.id,
+               pair,
+               minutes
+             ) do
+          {:ok, _row} -> {:cont, {:ok, count + 1}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    case result do
+      {:ok, count} when count > 0 ->
+        {:noreply,
+         socket
+         |> redraw_driving_times(state)
+         |> put_flash(:info, driving_times_entered(count))}
+
+      {:ok, 0} ->
+        {:noreply,
+         socket
+         |> assign(:driving_times, %{state | params: %{}, errors: %{}})
+         |> put_flash(:info, "No changes")}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_driving_error(socket, state, @driving_times_save_failed)}
+
+      {:error, _reason} ->
+        {:noreply, put_driving_error(socket, state, @driving_times_save_failed)}
+    end
+  end
+
+  defp driving_times_entered(1), do: "1 driving time entered"
+  defp driving_times_entered(count), do: "#{count} driving times entered"
+
+  # The reload after a stored change: the day redraws and the rows are read
+  # again, so the row a reader just entered shows its Entered badge and its reset
+  # button. The draft goes with them, because those minutes are the version's
+  # now; the “Estimated only” filter is the reader's own choice rather than a
+  # value, so it survives the reload.
+  defp redraw_driving_times(socket, state) do
+    only = state.estimated_only?
+
+    socket
+    |> assign(:driving_times, %{@empty_driving_times | estimated_only?: only})
+    |> load_day()
+    |> resolve_drawers()
+    |> assign_page_rows_if_loaded()
+    |> keep_driving_filter(only)
+  end
+
+  defp keep_driving_filter(socket, estimated_only?) do
+    assign(socket, :driving_times, %{
+      socket.assigns.driving_times
+      | estimated_only?: estimated_only?
+    })
+  end
+
+  defp put_driving_error(socket, state, message) do
+    assign(socket, :driving_times, %{state | error: message})
+  end
+
+  defp put_driving_draft(state, submitted) do
+    %{state | params: Map.merge(state.params, submitted)}
+  end
+
+  # Only the drawer's own inputs are read, and only the rows it listed are looked
+  # up, so a crafted event cannot name a reference the day type does not drive.
+  defp driving_times_params(%{"minutes" => values}) when is_map(values) do
+    Map.new(values, fn {key, value} -> {key, to_string(value)} end)
+  end
+
+  defp driving_times_params(_params), do: %{}
+
+  # The ordered pair of one listed row, in the stored `from|to` form
+  # `list_deadhead_pairs/3` hands out. A pair the drawer does not show is `nil`,
+  # so neither a reset nor a save can write a reference from the payload (CR-4).
+  defp listed_pair(state, key) do
+    case Enum.find(state.pairs, &(pair_key(&1) == key)) do
+      %{from: from, to: to} -> {from, to}
+      _other -> nil
+    end
+  end
+
+  # One entry per row whose minutes differ from the ones the drawer listed, and
+  # one error per row whose value is not a whole number of minutes in 0–600. A
+  # row the version cannot measure lists no minutes at all, so a blank input
+  # there is a row with no entry rather than a refused one — otherwise one
+  # unmeasurable pair would block every other row of the day.
+  defp driving_time_entries(state, submitted) do
+    {entries, errors} =
+      Enum.reduce(state.pairs, {[], %{}}, fn pair, {entries, errors} ->
+        key = pair_key(pair)
+
+        # A row the filter is hiding is not in the payload at all, so the value
+        # to judge is the one the reader typed for it earlier, not the listed
+        # value: hiding a row must not throw away an entry (AC-3).
+        value =
+          Map.get(submitted, key) || Map.get(state.params, key) || minutes_text(pair.minutes)
+
+        if String.trim(value) == "" and is_nil(pair.minutes) do
+          {entries, errors}
+        else
+          reduce_minutes_entry({entries, errors}, key, pair, value)
+        end
+      end)
+
+    {Enum.reverse(entries), errors}
+  end
+
+  defp reduce_minutes_entry({entries, errors}, key, pair, value) do
+    case minutes_entry(value) do
+      {:ok, minutes} when minutes == pair.minutes ->
+        {entries, errors}
+
+      {:ok, minutes} ->
+        {[{key, {pair.from, pair.to}, minutes} | entries], errors}
+
+      :error ->
+        {entries, Map.put(errors, key, @driving_minutes_error)}
+    end
+  end
+
+  defp minutes_entry(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      not Regex.match?(~r/\A\d+\z/, trimmed) -> :error
+      String.to_integer(trimmed) > 600 -> :error
+      true -> {:ok, String.to_integer(trimmed)}
+    end
+  end
+
+  defp pair_key(%{from: from, to: to}), do: from <> "|" <> to
+
+  # The Driving times drawer lists the loaded day type's pairs through the
+  # context's own `list_deadhead_pairs/3`, so a row's minutes and source are the
+  # ones the day's movements were built from (AC-3). The read happens here, in
+  # the URL change that opens the drawer, and never in `render/1` (CR-4). A draft
+  # is kept while the same version and day type stay on screen, so opening the
+  # drawer again, filtering it or pressing a gap drawer's link does not discard
+  # what was typed; a day type or version change drops it, because those minutes
+  # belonged to another day's pairs.
+  defp resolve_driving_times(
+         %{assigns: %{driving_times: %{key: key}}} = socket,
+         day,
+         :driving_times
+       )
+       when not is_nil(key) and not is_nil(day) do
+    if key == driving_times_key(socket, day) do
+      socket
+    else
+      load_driving_times(socket, day)
+    end
+  end
+
+  defp resolve_driving_times(%{assigns: %{day: day}} = socket, day, :driving_times)
+       when not is_nil(day),
+       do: load_driving_times(socket, day)
+
+  defp resolve_driving_times(socket, _day, _drawer), do: socket
+
+  defp load_driving_times(socket, day) do
+    key = driving_times_key(socket, day)
+
+    case Gtfs.list_deadhead_pairs(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           day.day_type && day.day_type.key
+         ) do
+      {:ok, pairs} ->
+        assign(socket, :driving_times, %{@empty_driving_times | key: key, pairs: pairs})
+
+      {:error, _reason} ->
+        assign(socket, :driving_times, %{
+          @empty_driving_times
+          | key: key,
+            error: @driving_times_unreadable
+        })
+    end
+  end
+
+  defp driving_times_key(socket, day),
+    do: {socket.assigns.state.version_id, day.day_type && day.day_type.key}
+
+  # One row per listed pair, in the context's own order, with the index the input
+  # id and the row id use. The index is assigned before the “Estimated only” filter
+  # narrows the rows, so a filter change never renames an input the reader is
+  # typing into. The minutes shown are the ones the reader typed for this row, or
+  # the listed value, or a blank for a pair the version cannot measure.
+  defp driving_times_rows(assigns) do
+    state = assigns.driving_times
+    highlight = blank_to_nil(assigns.state.pair)
+
+    state.pairs
+    |> Enum.with_index()
+    |> Enum.map(fn {pair, index} -> driving_time_row(pair, index, state, highlight) end)
+    |> Enum.filter(fn row -> not state.estimated_only? or row.source == :estimated end)
+  end
+
+  defp driving_time_row(pair, index, state, highlight) do
+    key = pair_key(pair)
+
+    %{
+      key: key,
+      dom_id: "driving-time-row-#{index}",
+      input_id: "driving-minutes-#{index}",
+      from_label: pair.from_label,
+      to_label: pair.to_label,
+      uses: pair.uses,
+      source: pair.source,
+      value: Map.get(state.params, key) || minutes_text(pair.minutes),
+      error: Map.get(state.errors, key),
+      highlighted?: key == highlight
+    }
+  end
+
+  defp minutes_text(nil), do: ""
+  defp minutes_text(minutes), do: Integer.to_string(minutes)
+
+  # The drawer focuses the row a link named, and the first field otherwise.
+  defp driving_times_focus_id(rows) do
+    case Enum.find(rows, & &1.highlighted?) do
+      nil -> nil
+      row -> row.input_id
+    end
+  end
+
+  defp driving_times_estimated_count(pairs) do
+    Enum.count(pairs, &(&1.source == :estimated))
+  end
+
   # --- editor authority ------------------------------------------------------
 
   # The role is re-read from the membership on every mutating event, so a role
@@ -2068,6 +2421,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       longest_stretch: day.longest_stretch,
       relief_stop_count: MapSet.size(day.context.relief_stop_ids),
       estimated?: day.estimated_pairs > 0,
+      estimated_pairs: day.estimated_pairs,
       repeating?: day.peak.excluded_frequency > 0,
       errors?: Enum.any?(day.findings, &(&1.severity == :error)),
       garages?: map_size(day.context.garages) > 0,
@@ -2159,6 +2513,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       longest_stretch: nil,
       relief_stop_count: 0,
       estimated?: false,
+      estimated_pairs: 0,
       repeating?: false,
       errors?: false,
       garages?: false,
@@ -2332,9 +2687,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {merge_options, merge_total} = merge_destinations(assigns)
 
     block_rules_form = block_rules_form(assigns)
+    driving_rows = driving_times_rows(assigns)
 
     assigns =
       assigns
+      |> assign(:driving_times_rows, driving_rows)
       |> assign(:assign_form, assign_form(assigns.assign))
       |> assign(:block_action_form, block_action_form(assigns.block_action))
       |> assign(:block_rules_form, block_rules_form)
@@ -2418,6 +2775,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   routes={@routes}
                   state={@state}
                   min_layover_minutes={@min_layover_minutes}
+                  estimated_pairs={@estimated_pairs}
                 />
 
                 <.callout
@@ -2499,6 +2857,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   vehicle_types={@vehicle_types}
                   error={@block_rules.error}
                   error_count={@block_rules_error_count}
+                />
+
+                <BlocksComponents.driving_times_drawer
+                  open={@open_drawer == :driving_times}
+                  rows={@driving_times_rows}
+                  day_label={@day_type.label}
+                  circuity={@settings.deadhead_circuity}
+                  speed={@settings.deadhead_speed_kmh}
+                  estimated_only?={@driving_times.estimated_only?}
+                  estimated_count={driving_times_estimated_count(@driving_times.pairs)}
+                  total_count={length(@driving_times.pairs)}
+                  focus_id={driving_times_focus_id(@driving_times_rows)}
+                  error={@driving_times.error}
                 />
 
                 <%= case @trip_view do %>
