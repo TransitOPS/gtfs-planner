@@ -4,11 +4,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
   import GtfsPlannerWeb.AuthComponents
 
   alias GtfsPlanner.Accounts
-
-  # Failed submits must not return secrets to the browser: both password keys
-  # (string and atom) are dropped from params and changes.
-  @secret_keys ["password", "password_confirmation", :password, :password_confirmation]
-  @secret_changes [:password, :password_confirmation]
+  alias GtfsPlannerWeb.AuthForm
 
   def render(assigns) do
     ~H"""
@@ -19,20 +15,16 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
         <%!-- A rejected save clears both fields, because the server never sends a
               password back to the browser. The banner says so; the fields say
               what to fix, and FormErrorFocus moves focus to the first one. --%>
-        <div
+        <.auth_error
           :if={@submit_failed}
           id="reset-password-banner"
           role="alert"
-          class="mt-5 flex items-start gap-3 rounded-card border border-error-line bg-error-bg px-4 py-3.5 text-sm text-error-fg"
+          title="We couldn't save your new password"
         >
-          <.icon name="hero-exclamation-circle" class="mt-px size-5 shrink-0" />
-          <div class="min-w-0">
-            <p class="font-semibold">We couldn't save your new password</p>
-            <p class="text-pretty">
-              Fix the highlighted fields, then type the new password again. We clear both fields after an error to keep them private.
-            </p>
-          </div>
-        </div>
+          <p class="text-pretty">
+            Fix the highlighted fields, then type the new password again. We clear both fields after an error to keep them private.
+          </p>
+        </.auth_error>
 
         <.form
           for={@form}
@@ -111,7 +103,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
   def handle_event("validate", %{"user" => user_params}, socket) do
     changeset =
       socket.assigns.user
-      |> Accounts.change_user_password(user_params)
+      |> Accounts.change_user_password(AuthForm.defer_blank_errors(user_params))
       |> Map.put(:action, :validate)
 
     {:noreply, assign_form(socket, changeset)}
@@ -134,7 +126,11 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
          |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->
-        changeset = sanitize_secrets(changeset)
+        # Read the errors before the passwords are dropped: a failed submit has
+        # no used-field state, so they come from the changeset directly, and the
+        # confirmation copy depends on the params as submitted.
+        params = changeset.params
+        changeset = AuthForm.sanitize_secrets(changeset)
 
         {:noreply,
          socket
@@ -147,7 +143,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
            password_confirmation_errors:
              for(
                {:password_confirmation, error} <- changeset.errors,
-               do: confirmation_error(error)
+               do: AuthForm.confirmation_error(error, params)
              )
          )
          |> push_event("focus_form_error", %{form_id: "reset_password_form", fallback_id: nil})}
@@ -159,48 +155,15 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
 
     socket
     |> assign(form: form)
-    |> assign(password_errors: used_errors(form[:password], &password_error/1))
+    |> assign(password_errors: AuthForm.used_errors(form[:password], &password_error/1))
     |> assign(
       password_confirmation_errors:
-        used_errors(form[:password_confirmation], &confirmation_error/1)
+        AuthForm.used_errors(
+          form[:password_confirmation],
+          &AuthForm.confirmation_error(&1, form.params)
+        )
     )
   end
 
-  # Errors show only once the field has been used, as `<.input>` does by
-  # default; a failed submit drops the params, so it reads the changeset directly.
-  defp used_errors(field, to_message) do
-    if Phoenix.Component.used_input?(field), do: Enum.map(field.errors, to_message), else: []
-  end
-
-  # Plain-language versions of the password changeset's messages, chosen by the
-  # rule that failed rather than by its text. The length limits come from the
-  # changeset, so the copy cannot drift from the rule.
-  defp password_error({_message, opts} = error) do
-    case {opts[:validation], opts[:kind]} do
-      {:required, _kind} -> "Enter a new password."
-      {:length, :min} -> "Use at least #{opts[:count]} characters."
-      {:length, :max} -> "Use #{opts[:count]} characters or fewer."
-      _other -> translate_error(error)
-    end
-  end
-
-  # A blank confirmation reaches here as a mismatch: the form always submits
-  # both keys, and Ecto only reports `:required` when the key is absent.
-  defp confirmation_error({_message, opts} = error) do
-    case opts[:validation] do
-      :confirmation -> "The two passwords don't match. Type the same one in both fields."
-      _other -> translate_error(error)
-    end
-  end
-
-  # Drops the secret keys from a failed-submit changeset while retaining the
-  # errors, the action, and every non-secret value, so the rendered form keeps
-  # the actionable correction context without returning either password.
-  defp sanitize_secrets(%Ecto.Changeset{} = changeset) do
-    %{
-      changeset
-      | params: changeset.params && Map.drop(changeset.params, @secret_keys),
-        changes: Map.drop(changeset.changes, @secret_changes)
-    }
-  end
+  defp password_error(error), do: AuthForm.password_error(error, "Enter a new password.")
 end

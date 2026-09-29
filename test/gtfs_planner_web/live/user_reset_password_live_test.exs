@@ -184,10 +184,24 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-confirmation-error",
-               "The two passwords don't match. Type the same one in both fields."
+               "Passwords don't match. Type the same password in both fields."
              )
 
       refute_push_event(view, "focus_form_error", @focus_payload)
+    end
+
+    test "blur on an empty field waits for submit instead of showing an error", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/reset_password/#{token}")
+
+      view
+      |> element("#reset-password-new-password")
+      |> render_blur(%{"user" => %{"password" => "", "password_confirmation" => ""}})
+
+      assert has_element?(view, ~s(#reset-password-new-password[aria-invalid="false"]))
+      refute has_element?(view, "#reset-password-new-password-error")
     end
 
     test "blur with a password over 72 characters states the limit", %{conn: conn, token: token} do
@@ -266,7 +280,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-confirmation-error",
-               "The two passwords don't match. Type the same one in both fields."
+               "Passwords don't match. Type the same password in both fields."
              )
 
       assert has_element?(

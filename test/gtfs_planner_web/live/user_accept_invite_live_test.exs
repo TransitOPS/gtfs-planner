@@ -35,29 +35,35 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
 
       assert has_element?(
                view,
-               ~s(#accept_invite_form[phx-change="validate"][phx-submit="accept_invite"])
+               ~s(#accept_invite_form[phx-change="validate"][phx-submit="accept_invite"][novalidate])
              )
 
       assert has_element?(view, ~s(#accept_invite_form[class~="phx-submit-loading:opacity-60"]))
 
       assert has_element?(
                view,
-               ~s(#invite-password[name="user[password]"][type="password"][required][phx-debounce="blur"][phx-blur="validate"][aria-describedby="invite-password-help"])
+               ~s(#invite-password[name="user[password]"][type="password"][autocomplete="new-password"][required][phx-debounce="blur"][phx-blur="validate"][aria-describedby="invite-password-help"])
              )
 
       assert has_element?(
                view,
-               ~s(#invite-password-confirmation[name="user[password_confirmation]"][type="password"][required][phx-debounce="blur"][phx-blur="validate"][aria-describedby="invite-password-confirmation-help"])
+               ~s(#invite-password-confirmation[name="user[password_confirmation]"][type="password"][autocomplete="new-password"][required][phx-debounce="blur"][phx-blur="validate"])
              )
+
+      refute has_element?(view, "#invite-password-confirmation[aria-describedby]")
 
       assert has_element?(view, "#accept-invite-submit")
 
-      assert has_element?(view, "#invite-password-help")
-      assert has_element?(view, "#invite-password-confirmation-help")
+      assert has_element?(
+               view,
+               "#invite-password-help",
+               "At least 12 characters. A short phrase of a few words works well."
+             )
+
+      refute has_element?(view, "#invite-password-confirmation-help")
+      refute has_element?(view, "#accept-invite-banner")
 
       html = render(view)
-      assert html =~ "Use 12–72 characters."
-      assert html =~ "Must match the password above."
 
       submit = element(view, "#accept-invite-submit")
       assert render(submit) =~ "Set password"
@@ -70,6 +76,13 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
         |> LazyHTML.to_tree()
 
       assert length(h1s) == 1
+      assert has_element?(view, "h1#accept-invite-title", "Set password")
+
+      assert has_element?(
+               view,
+               ~s(#accept-invite-login[href="/users/log_in"]),
+               "Already set a password? Log in"
+             )
     end
   end
 
@@ -112,6 +125,61 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
 
       assert has_element?(view, ~s(#invite-password[aria-invalid="true"]))
       assert has_element?(view, ~s(#invite-password-confirmation[aria-invalid="false"]))
+    end
+
+    test "blur on an empty field waits for submit instead of showing an error", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#invite-password")
+      |> render_blur(%{
+        "user" => %{
+          "password" => "",
+          "password_confirmation" => "",
+          "_unused_password_confirmation" => ""
+        }
+      })
+
+      assert has_element?(view, ~s(#invite-password[aria-invalid="false"]))
+      refute has_element?(view, "#invite-password-error")
+    end
+
+    test "blur with a short password says how many characters to use", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#invite-password")
+      |> render_blur(%{"user" => %{"password" => "short"}})
+
+      assert has_element?(view, "#invite-password-error", "Use at least 12 characters.")
+    end
+
+    test "blur with a mismatched confirmation asks for the same password in both fields", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#invite-password-confirmation")
+      |> render_blur(%{
+        "user" => %{
+          "password" => "a long enough password",
+          "password_confirmation" => "a different password"
+        }
+      })
+
+      assert has_element?(
+               view,
+               "#invite-password-confirmation-error",
+               "Passwords don't match. Type the same password in both fields."
+             )
     end
 
     test "metadata-only blur is a safe no-op", %{conn: conn, token: token} do
@@ -164,6 +232,100 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
 
       refute has_element?(view, "#flash-info")
       refute has_element?(view, "#flash-error")
+    end
+
+    test "explains in plain language what failed and why the fields are empty", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#accept_invite_form")
+      |> render_submit(%{
+        "user" => %{"password" => "secret-1", "password_confirmation" => "secret-2"}
+      })
+
+      assert has_element?(
+               view,
+               ~s(#accept-invite-banner[role="alert"]),
+               "Your password wasn't saved"
+             )
+
+      assert has_element?(view, "#accept-invite-banner", "We clear both password fields")
+      assert has_element?(view, "#invite-password-error", "Use at least 12 characters.")
+
+      assert has_element?(
+               view,
+               "#invite-password-confirmation-error",
+               "Passwords don't match. Type the same password in both fields."
+             )
+    end
+
+    test "a blank password asks for one", %{conn: conn, token: token} do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#accept_invite_form")
+      |> render_submit(%{"user" => %{"password" => "", "password_confirmation" => ""}})
+
+      assert has_element?(view, "#invite-password-error", "Enter a password.")
+    end
+
+    test "a blank confirmation asks for the password again", %{conn: conn, token: token} do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#accept_invite_form")
+      |> render_submit(%{
+        "user" => %{"password" => "a long enough password", "password_confirmation" => ""}
+      })
+
+      assert has_element?(
+               view,
+               "#invite-password-confirmation-error",
+               "Enter the password again."
+             )
+
+      assert has_element?(view, ~s(#invite-password[aria-invalid="false"]))
+    end
+
+    test "a password over 72 characters states the limit", %{conn: conn, token: token} do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+      too_long = String.duplicate("a", 73)
+
+      view
+      |> element("#accept_invite_form")
+      |> render_submit(%{
+        "user" => %{"password" => too_long, "password_confirmation" => too_long}
+      })
+
+      assert has_element?(view, "#invite-password-error", "Use 72 characters or fewer.")
+    end
+
+    test "the banner stays while the person retypes, so the form does not shift", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#accept_invite_form")
+      |> render_submit(%{
+        "user" => %{"password" => "secret-1", "password_confirmation" => "secret-2"}
+      })
+
+      view
+      |> element("#accept_invite_form")
+      |> render_change(%{
+        "user" => %{
+          "password" => "valid-password-123",
+          "password_confirmation" => "valid-password-123"
+        }
+      })
+
+      assert has_element?(view, "#accept-invite-banner")
+      refute has_element?(view, "#invite-password-error")
     end
 
     test "correcting the secrets after a failed submit clears the errors", %{

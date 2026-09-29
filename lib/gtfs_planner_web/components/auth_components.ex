@@ -1,7 +1,8 @@
 defmodule GtfsPlannerWeb.AuthComponents do
   @moduledoc """
   Building blocks for the signed-out pages that sit inside `Layouts.auth`:
-  the card heading, the one primary action, and the text link beside it.
+  the card heading, the view-level error, the one primary action, and the text
+  link beside it.
 
   They carry the design system's signed-out grammar (28px heading over a 15px
   lede, a full-width 44px primary button, a 44px text link) so login and the
@@ -9,6 +10,8 @@ defmodule GtfsPlannerWeb.AuthComponents do
   are `<.input>` inside a `.auth-form`, restyled by `app.css`.
   """
   use Phoenix.Component
+
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
   @doc """
   The card heading, with an optional one-sentence lede under it.
@@ -37,6 +40,40 @@ defmodule GtfsPlannerWeb.AuthComponents do
     <p :if={@lede != []} class="mt-2 text-[15px] leading-relaxed text-default">
       {render_slot(@lede)}
     </p>
+    """
+  end
+
+  @doc """
+  The view-level error: what failed and what to do, above the form. Field
+  errors stay under their fields. The panel is labelled by its title, and
+  callers add `role="alert"` when it should be announced or `tabindex="-1"`
+  when focus moves to it.
+
+  ## Examples
+
+      <.auth_error id="reset-password-banner" title="We couldn't save your new password" role="alert">
+        <p class="text-pretty">Fix the highlighted fields, then type it again.</p>
+      </.auth_error>
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  def auth_error(assigns) do
+    ~H"""
+    <section
+      id={@id}
+      aria-labelledby={"#{@id}-title"}
+      class="mt-5 flex items-start gap-3 rounded-card border border-error-line bg-error-bg px-4 py-3.5 text-sm text-error-fg"
+      {@rest}
+    >
+      <.icon name="hero-exclamation-circle" class="mt-px size-5 shrink-0" />
+      <div class="min-w-0">
+        <p id={"#{@id}-title"} class="font-semibold">{@title}</p>
+        {render_slot(@inner_block)}
+      </div>
+    </section>
     """
   end
 
