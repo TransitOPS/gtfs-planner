@@ -1907,159 +1907,163 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                    the badge, name and mode preview a draft (with the Unsaved tag)
                    while the identifying line stays the saved attribution
                    (AC-19, INV-6). --%>
-            <.route_header
-              route={@draft_route}
-              gtfs_version_id={@current_gtfs_version.id}
-              active_tab={@active_tab}
-              identifier={saved_identity(@route, @agencies, @last_saved)}
-              preview={preview?(@changed_fields)}
-              dirty={@changed_fields != [] or @merge != nil}
-              focus_title={@focus_heading?}
-              trip_count={@usage && Map.get(@usage, :trips)}
-            />
+            <div
+              id="route-details-workspace"
+              phx-hook="FormErrorFocus"
+              data-focus-on-mount={if @focus_heading?, do: "route-title", else: nil}
+            >
+              <.route_header
+                route={@draft_route}
+                gtfs_version_id={@current_gtfs_version.id}
+                active_tab={@active_tab}
+                identifier={saved_identity(@route, @agencies, @last_saved)}
+                preview={preview?(@changed_fields)}
+                dirty={@changed_fields != [] or @merge != nil}
+                focus_title={@focus_heading?}
+                trip_count={@usage && Map.get(@usage, :trips)}
+              />
 
-            <%= cond do %>
-              <% @active_tab == :details -> %>
-                <div
-                  id="route-details-workspace"
-                  phx-hook="FormErrorFocus"
-                  data-focus-on-mount={if @focus_heading?, do: "route-title", else: nil}
-                  class="mt-6 grid items-start gap-6 pb-10 lg:grid-cols-[minmax(0,600px)_minmax(0,1fr)] xl:gap-8"
-                >
-                  <div class="min-w-0">
-                    <.form
-                      :if={@route_form}
-                      for={@route_form}
-                      id="route-details-form"
-                      novalidate
-                      phx-change="validate_route_details"
-                      phx-submit="save_route_details"
-                      data-recovery="true"
-                      data-recovery-event="recover_route_details"
-                      class="rounded-card border border-subtle bg-white"
-                    >
-                      <div class="grid grid-cols-1 gap-8 p-5 sm:p-6">
-                        <%!-- Connectivity state the client hook owns: hidden while
+              <%= cond do %>
+                <% @active_tab == :details -> %>
+                  <div
+                    id="route-details-columns"
+                    class="mt-6 grid items-start gap-6 pb-10 lg:grid-cols-[minmax(0,600px)_minmax(0,1fr)] xl:gap-8"
+                  >
+                    <div class="min-w-0">
+                      <.form
+                        :if={@route_form}
+                        for={@route_form}
+                        id="route-details-form"
+                        novalidate
+                        phx-change="validate_route_details"
+                        phx-submit="save_route_details"
+                        data-recovery="true"
+                        data-recovery-event="recover_route_details"
+                        class="rounded-card border border-subtle bg-white"
+                      >
+                        <div class="grid grid-cols-1 gap-8 p-5 sm:p-6">
+                          <%!-- Connectivity state the client hook owns: hidden while
                            connected, filled locally while offline and with the
                            server's revalidation outcome after reconnect. The
                            server never writes it, so a queued stale event
                            cannot present a stale connectivity state. --%>
-                        <p
-                          id="route-details-recovery"
-                          role="status"
-                          hidden
-                          class="text-[13px] text-default"
-                        >
-                        </p>
-                        <%!-- One announcement region for the outcomes a save can
+                          <p
+                            id="route-details-recovery"
+                            role="status"
+                            hidden
+                            class="text-[13px] text-default"
+                          >
+                          </p>
+                          <%!-- One announcement region for the outcomes a save can
                            have: a saved confirmation, a rejected-save error,
                            or the merge comparison another editor's save
                            produced. It takes focus so the result is announced
                            and reachable from the keyboard (AC-28). --%>
-                        <div
-                          :if={@merge || @save_outcome}
-                          id="route-details-form-message"
-                          tabindex="-1"
-                          class="grid gap-3 outline-none"
-                        >
-                          <RouteFormComponents.merge_conflict
-                            :if={@merge}
-                            merge={@merge}
-                            saved_by={conflict_saved_by(@merge, @last_saved, @current_user)}
-                            intro={conflict_intro(@merge.comparison.status)}
-                            rows={conflict_rows(@merge, @changed_fields, @draft_route)}
-                            groups={choice_groups(@merge.comparison.conflicting)}
-                          />
-                          <.message
-                            :if={match?({:saved, _}, @save_outcome)}
-                            id="route-details-saved"
-                            kind="success"
-                            title={elem(@save_outcome, 1)}
-                          />
-                          <.form_error_summary
-                            :if={match?({:invalid, _}, @save_outcome)}
-                            id="route-details-save-error"
-                            title={elem(@save_outcome, 1)}
-                            failures={
-                              RouteFormComponents.error_failures(@route_form, "route-details")
+                          <div
+                            :if={@merge || @save_outcome}
+                            id="route-details-form-message"
+                            tabindex="-1"
+                            class="grid gap-3 outline-none"
+                          >
+                            <RouteFormComponents.merge_conflict
+                              :if={@merge}
+                              merge={@merge}
+                              saved_by={conflict_saved_by(@merge, @last_saved, @current_user)}
+                              intro={conflict_intro(@merge.comparison.status)}
+                              rows={conflict_rows(@merge, @changed_fields, @draft_route)}
+                              groups={choice_groups(@merge.comparison.conflicting)}
+                            />
+                            <.message
+                              :if={match?({:saved, _}, @save_outcome)}
+                              id="route-details-saved"
+                              kind="success"
+                              title={elem(@save_outcome, 1)}
+                            />
+                            <.form_error_summary
+                              :if={match?({:invalid, _}, @save_outcome)}
+                              id="route-details-save-error"
+                              title={elem(@save_outcome, 1)}
+                              failures={
+                                RouteFormComponents.error_failures(@route_form, "route-details")
+                              }
+                              class=""
+                            />
+                            <.message
+                              :if={match?({:error, _}, @save_outcome)}
+                              id="route-details-save-error"
+                              kind="error"
+                              title={elem(@save_outcome, 1)}
+                            />
+                          </div>
+
+                          <section
+                            aria-labelledby="route-details-identity-title"
+                            class="grid gap-6"
+                          >
+                            <div>
+                              <h2
+                                id="route-details-identity-title"
+                                class="text-base font-bold tracking-normal text-strong"
+                              >
+                                Name and appearance
+                              </h2>
+                              <p class="mt-1 text-[13px] text-muted">
+                                What riders see in trip planners and on signs.
+                              </p>
+                            </div>
+
+                            <RouteFormComponents.identity_fields
+                              form={@route_form}
+                              prefix="route-details"
+                              mode_counts={@mode_counts}
+                              agency_options={@agencies}
+                              short_warning={@field_warnings[:short]}
+                            />
+
+                            <RouteFormComponents.color_fields
+                              form={@route_form}
+                              prefix="route-details"
+                              text_mode={@route_text_mode}
+                              heading_badge_id="route-badge"
+                              nav_guard
+                              nav_dirty={@changed_fields != [] or @merge != nil}
+                              similar_warning={@field_warnings[:similar]}
+                            />
+                          </section>
+
+                          <section
+                            aria-labelledby="route-details-rider-title"
+                            class="grid gap-6 border-t border-subtle pt-6"
+                          >
+                            <h2
+                              id="route-details-rider-title"
+                              class="text-base font-bold tracking-normal text-strong"
+                            >
+                              Rider information
+                            </h2>
+
+                            <RouteFormComponents.rider_fields
+                              form={@route_form}
+                              prefix="route-details"
+                              url_warning={@field_warnings[:url]}
+                            />
+                          </section>
+
+                          <RouteFormComponents.additional_details
+                            form={@route_form}
+                            prefix="route-details"
+                            route_id={@route.route_id}
+                            boarding_warning={
+                              boarding_href(
+                                @field_warnings[:boarding],
+                                @current_gtfs_version.id,
+                                @route.route_id
+                              )
                             }
-                            class=""
-                          />
-                          <.message
-                            :if={match?({:error, _}, @save_outcome)}
-                            id="route-details-save-error"
-                            kind="error"
-                            title={elem(@save_outcome, 1)}
                           />
                         </div>
 
-                        <section
-                          aria-labelledby="route-details-identity-title"
-                          class="grid gap-6"
-                        >
-                          <div>
-                            <h2
-                              id="route-details-identity-title"
-                              class="text-base font-bold tracking-normal text-strong"
-                            >
-                              Name and appearance
-                            </h2>
-                            <p class="mt-1 text-[13px] text-muted">
-                              What riders see in trip planners and on signs.
-                            </p>
-                          </div>
-
-                          <RouteFormComponents.identity_fields
-                            form={@route_form}
-                            prefix="route-details"
-                            mode_counts={@mode_counts}
-                            agency_options={@agencies}
-                            short_warning={@field_warnings[:short]}
-                          />
-
-                          <RouteFormComponents.color_fields
-                            form={@route_form}
-                            prefix="route-details"
-                            text_mode={@route_text_mode}
-                            nav_guard
-                            nav_dirty={@changed_fields != [] or @merge != nil}
-                            similar_warning={@field_warnings[:similar]}
-                          />
-                        </section>
-
-                        <section
-                          aria-labelledby="route-details-rider-title"
-                          class="grid gap-6 border-t border-subtle pt-6"
-                        >
-                          <h2
-                            id="route-details-rider-title"
-                            class="text-base font-bold tracking-normal text-strong"
-                          >
-                            Rider information
-                          </h2>
-
-                          <RouteFormComponents.rider_fields
-                            form={@route_form}
-                            prefix="route-details"
-                            url_warning={@field_warnings[:url]}
-                          />
-                        </section>
-
-                        <RouteFormComponents.additional_details
-                          form={@route_form}
-                          prefix="route-details"
-                          route_id={@route.route_id}
-                          boarding_warning={
-                            boarding_href(
-                              @field_warnings[:boarding],
-                              @current_gtfs_version.id,
-                              @route.route_id
-                            )
-                          }
-                        />
-                      </div>
-
-                      <%!-- The design system's save bar, the last row of the form
+                        <%!-- The design system's save bar, the last row of the form
                              card and sticky at the bottom of the window: status
                              text at the left, Discard changes, then the one
                              primary. It shows only while a draft differs from
@@ -2067,291 +2071,292 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                              change. Save is an ordinary submit, so Ctrl/Cmd+S
                              (wired in the route details editor hook) submits the
                              same way. --%>
-                      <div
-                        id="route-details-save-bar"
-                        hidden={@changed_fields == []}
-                        class="sticky bottom-0 z-20 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-b-card border-t border-subtle bg-white px-5 py-3 shadow-[0_-8px_24px_#0a13300d] sm:px-6"
-                      >
-                        <p
-                          id="route-details-save-bar-text"
-                          class="min-w-0 basis-full text-[13px] text-default sm:basis-0 sm:flex-1"
+                        <div
+                          id="route-details-save-bar"
+                          hidden={@changed_fields == []}
+                          class="sticky bottom-0 z-20 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-b-card border-t border-subtle bg-white px-5 py-3 shadow-[0_-8px_24px_#0a13300d] sm:px-6"
                         >
-                          <span class="font-[650] text-strong">Unsaved:</span>
-                          {changed_fields_summary(@changed_fields)}.
-                          <span class="text-muted">Press Ctrl+S or ⌘S to save.</span>
-                        </p>
-                        <div class="flex shrink-0 items-center gap-3 max-sm:ml-auto">
-                          <.button
-                            id="route-details-discard"
-                            type="button"
-                            variant="secondary"
-                            class="min-h-11"
-                            phx-click="discard_route_details"
+                          <p
+                            id="route-details-save-bar-text"
+                            class="min-w-0 basis-full text-[13px] text-default sm:basis-0 sm:flex-1"
                           >
-                            Discard changes
-                          </.button>
-                          <.button
-                            type="submit"
-                            id="route-save"
-                            class="min-h-11"
-                            disabled={@details_blocked?}
-                            phx-disable-with="Saving…"
-                          >
-                            Save changes
-                          </.button>
+                            <span class="font-[650] text-strong">Unsaved:</span>
+                            {changed_fields_summary(@changed_fields)}.
+                            <span class="text-muted">Press Ctrl+S or ⌘S to save.</span>
+                          </p>
+                          <div class="flex shrink-0 items-center gap-3 max-sm:ml-auto">
+                            <.button
+                              id="route-details-discard"
+                              type="button"
+                              variant="secondary"
+                              class="min-h-11"
+                              phx-click="discard_route_details"
+                            >
+                              Discard changes
+                            </.button>
+                            <.button
+                              type="submit"
+                              id="route-save"
+                              class="min-h-11"
+                              disabled={@details_blocked?}
+                              phx-disable-with="Saving…"
+                            >
+                              Save changes
+                            </.button>
+                          </div>
                         </div>
-                      </div>
-                    </.form>
+                      </.form>
 
-                    <%!-- The design system's lifecycle card, last in reading order:
+                      <%!-- The design system's lifecycle card, last in reading order:
                            row one is the saved eligibility with its one next
                            action, row two the reviewed deletion. Deactivate
                            confirms first and names the consequence; Reactivate
                            and Undo act at once because they are the safe
                            direction. --%>
-                    <section
-                      id="route-status-section"
-                      aria-labelledby="route-status-title"
-                      class="mt-6"
-                    >
-                      <h2 id="route-status-title" class="text-base font-bold text-strong">
-                        Status and removal
-                      </h2>
-                      <%!-- The outcome a status action can have: a deactivation
+                      <section
+                        id="route-status-section"
+                        aria-labelledby="route-status-title"
+                        class="mt-6"
+                      >
+                        <h2 id="route-status-title" class="text-base font-bold text-strong">
+                          Status and removal
+                        </h2>
+                        <%!-- The outcome a status action can have: a deactivation
                              with its real Undo action, a reactivation, or a
                              truthful refusal. Focus lands here so the result is
                              announced (AC-28). --%>
-                      <.message
-                        :if={@status_outcome}
-                        id="route-status-outcome"
-                        tabindex="-1"
-                        kind={Map.get(@status_outcome, :kind, "success")}
-                        title={@status_outcome.message}
-                        class="mt-3 outline-none"
-                      >
-                        <:action :if={@status_outcome.undo?}>
-                          <.button
-                            id="route-status-undo"
-                            type="button"
-                            variant="secondary"
-                            class="min-h-11"
-                            phx-click="reactivate_route"
-                          >
-                            Undo
-                          </.button>
-                        </:action>
-                      </.message>
-                      <div class="mt-3 divide-y divide-subtle rounded-card border border-subtle bg-white">
-                        <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
-                          <div class="min-w-0 flex-1 basis-[260px]">
-                            <p class="flex items-center gap-2 text-sm font-[650] text-strong">
-                              <%= if @active_state == :inactive do %>
-                                <.icon name="hero-eye-slash" class="size-4 shrink-0 text-muted" />Inactive
-                              <% else %>
-                                <span
-                                  aria-hidden="true"
-                                  class="size-2.5 shrink-0 rounded-full bg-success-line"
-                                >
-                                </span>
-                                Active
-                              <% end %>
-                            </p>
-                            <p class="mt-1 text-[13px] text-muted">
-                              {route_status_help(@active_state)}
-                            </p>
+                        <.message
+                          :if={@status_outcome}
+                          id="route-status-outcome"
+                          tabindex="-1"
+                          kind={Map.get(@status_outcome, :kind, "success")}
+                          title={@status_outcome.message}
+                          class="mt-3 outline-none"
+                        >
+                          <:action :if={@status_outcome.undo?}>
+                            <.button
+                              id="route-status-undo"
+                              type="button"
+                              variant="secondary"
+                              class="min-h-11"
+                              phx-click="reactivate_route"
+                            >
+                              Undo
+                            </.button>
+                          </:action>
+                        </.message>
+                        <div class="mt-3 divide-y divide-subtle rounded-card border border-subtle bg-white">
+                          <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
+                            <div class="min-w-0 flex-1 basis-[260px]">
+                              <p class="flex items-center gap-2 text-sm font-[650] text-strong">
+                                <%= if @active_state == :inactive do %>
+                                  <.icon name="hero-eye-slash" class="size-4 shrink-0 text-muted" />Inactive
+                                <% else %>
+                                  <span
+                                    aria-hidden="true"
+                                    class="size-2.5 shrink-0 rounded-full bg-success-line"
+                                  >
+                                  </span>
+                                  Active
+                                <% end %>
+                              </p>
+                              <p class="mt-1 text-[13px] text-muted">
+                                {route_status_help(@active_state)}
+                              </p>
+                            </div>
+                            <.button
+                              :if={@active_state != :inactive}
+                              id="route-deactivate"
+                              type="button"
+                              variant="secondary"
+                              class="min-h-11"
+                              phx-click="open_deactivate_route"
+                              disabled={@details_blocked?}
+                            >
+                              Deactivate route
+                            </.button>
+                            <.button
+                              :if={@active_state == :inactive}
+                              id="route-reactivate-details"
+                              type="button"
+                              variant="secondary"
+                              class="min-h-11"
+                              phx-click="reactivate_route"
+                              disabled={@details_blocked?}
+                            >
+                              Reactivate route
+                            </.button>
                           </div>
-                          <.button
-                            :if={@active_state != :inactive}
-                            id="route-deactivate"
-                            type="button"
-                            variant="secondary"
-                            class="min-h-11"
-                            phx-click="open_deactivate_route"
-                            disabled={@details_blocked?}
-                          >
-                            Deactivate route
-                          </.button>
-                          <.button
-                            :if={@active_state == :inactive}
-                            id="route-reactivate-details"
-                            type="button"
-                            variant="secondary"
-                            class="min-h-11"
-                            phx-click="reactivate_route"
-                            disabled={@details_blocked?}
-                          >
-                            Reactivate route
-                          </.button>
-                        </div>
 
-                        <%!-- The reviewed deletion row: the button opens the
+                          <%!-- The reviewed deletion row: the button opens the
                                step-11 review first, so this help line counts what
                                the page already read and the review confirms the
                                exact impact. --%>
-                        <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
-                          <div class="min-w-0 flex-1 basis-[260px]">
-                            <p class="text-sm font-[650] text-strong">Delete route</p>
-                            <p class="mt-1 text-[13px] text-muted">
-                              {delete_row_help(assigns)}
-                            </p>
+                          <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
+                            <div class="min-w-0 flex-1 basis-[260px]">
+                              <p class="text-sm font-[650] text-strong">Delete route</p>
+                              <p class="mt-1 text-[13px] text-muted">
+                                {delete_row_help(assigns)}
+                              </p>
+                            </div>
+                            <.button
+                              id="route-delete"
+                              type="button"
+                              variant="secondary"
+                              class="btn-outline-danger min-h-11"
+                              phx-click="open_delete_route"
+                              disabled={@details_blocked?}
+                            >
+                              <.icon name="hero-trash" class="size-4" />Delete route
+                            </.button>
                           </div>
-                          <.button
-                            id="route-delete"
-                            type="button"
-                            variant="secondary"
-                            class="btn-outline-danger min-h-11"
-                            phx-click="open_delete_route"
-                            disabled={@details_blocked?}
-                          >
-                            <.icon name="hero-trash" class="size-4" />Delete route
-                          </.button>
                         </div>
-                      </div>
-                    </section>
+                      </section>
 
-                    <%!-- The deactivate confirmation the review opens: what the
+                      <%!-- The deactivate confirmation the review opens: what the
                            next export leaves out, and the honest note that
                            exports already run still include the route. Keep
                            active is the safe default focus. --%>
-                    <.confirm_dialog
-                      id="route-status-confirm"
-                      chrome="planner"
-                      open={@status_dialog != nil}
-                      title={if @status_dialog, do: "Deactivate #{@status_dialog.ref}?", else: ""}
-                      cancel_label="Keep active"
-                      cancel_id="route-status-keep"
-                      on_cancel="cancel_deactivate_route"
-                      confirm_label="Deactivate route"
-                      confirm_id="route-status-confirm-go"
-                      pending_label="Deactivating…"
-                      on_confirm="confirm_deactivate_route"
-                      described_by="route-status-confirm-body"
-                    >
-                      <div :if={@status_dialog} class="grid gap-2">
-                        <p>{deactivate_consequence(@status_dialog)}</p>
-                        <p>
-                          Patterns and schedules stay in this version and you can keep editing
-                          them. Exports you already ran keep the route. Reactivate it at any time
-                          to include it again.
-                        </p>
-                      </div>
-                    </.confirm_dialog>
+                      <.confirm_dialog
+                        id="route-status-confirm"
+                        chrome="planner"
+                        open={@status_dialog != nil}
+                        title={if @status_dialog, do: "Deactivate #{@status_dialog.ref}?", else: ""}
+                        cancel_label="Keep active"
+                        cancel_id="route-status-keep"
+                        on_cancel="cancel_deactivate_route"
+                        confirm_label="Deactivate route"
+                        confirm_id="route-status-confirm-go"
+                        pending_label="Deactivating…"
+                        on_confirm="confirm_deactivate_route"
+                        described_by="route-status-confirm-body"
+                      >
+                        <div :if={@status_dialog} class="grid gap-2">
+                          <p>{deactivate_consequence(@status_dialog)}</p>
+                          <p>
+                            Patterns and schedules stay in this version and you can keep editing
+                            them. Exports you already ran keep the route. Reactivate it at any time
+                            to include it again.
+                          </p>
+                        </div>
+                      </.confirm_dialog>
 
-                    <%!-- The reviewed-deletion dialog the delete row opens: the
+                      <%!-- The reviewed-deletion dialog the delete row opens: the
                            step-11 impact, what stays and Deactivate instead for
                            an active route, and a fresh acknowledgement that every
                            stale apply re-clears. The empty entire plan gets the
                            simple confirmation (R5). Keep route is the safe
                            default focus; Delete route stays unavailable until the
                            acknowledgement is checked. --%>
-                    <.confirm_dialog
-                      id="route-delete-review"
-                      chrome="planner"
-                      size="xl"
-                      open={@delete_review != nil}
-                      title={if @delete_review, do: delete_dialog_title(@route), else: ""}
-                      cancel_label="Keep route"
-                      cancel_id="route-delete-keep"
-                      on_cancel="cancel_delete_route"
-                      confirm_label="Delete route"
-                      confirm_id="route-delete-go"
-                      pending_label="Deleting…"
-                      on_confirm="confirm_delete_route_simple"
-                      confirm_form={
-                        if @delete_review && not @delete_review.empty?, do: "route-delete-form"
-                      }
-                      confirm_disabled={
-                        @delete_review != nil and not @delete_review.empty? and
-                          not @delete_acknowledged?
-                      }
-                      pending={@delete_pending}
-                      return_focus_id="route-delete"
-                      described_by={delete_dialog_describedby(@delete_review)}
-                    >
-                      <RouteFormComponents.delete_review_panel
-                        :if={@delete_review && not @delete_review.empty?}
-                        rows={delete_impact_rows(assigns)}
-                        stays={delete_stays_sentence(@delete_review)}
-                        retained_lines={delete_retained_lines(@delete_review)}
-                        blocks_note={delete_blocks_note(@delete_review)}
-                        banner={delete_banner(@delete_changes)}
-                        ack_label={delete_ack_label(@delete_review, @route)}
-                        ack_error={@delete_ack_error}
-                        acknowledged={@delete_acknowledged?}
-                        error={@delete_error}
+                      <.confirm_dialog
+                        id="route-delete-review"
+                        chrome="planner"
+                        size="xl"
+                        open={@delete_review != nil}
+                        title={if @delete_review, do: delete_dialog_title(@route), else: ""}
+                        cancel_label="Keep route"
+                        cancel_id="route-delete-keep"
+                        on_cancel="cancel_delete_route"
+                        confirm_label="Delete route"
+                        confirm_id="route-delete-go"
+                        pending_label="Deleting…"
+                        on_confirm="confirm_delete_route_simple"
+                        confirm_form={
+                          if @delete_review && not @delete_review.empty?, do: "route-delete-form"
+                        }
+                        confirm_disabled={
+                          @delete_review != nil and not @delete_review.empty? and
+                            not @delete_acknowledged?
+                        }
                         pending={@delete_pending}
-                        deactivate_instead?={@active_state != :inactive}
-                      />
+                        return_focus_id="route-delete"
+                        described_by={delete_dialog_describedby(@delete_review)}
+                      >
+                        <RouteFormComponents.delete_review_panel
+                          :if={@delete_review && not @delete_review.empty?}
+                          rows={delete_impact_rows(assigns)}
+                          stays={delete_stays_sentence(@delete_review)}
+                          retained_lines={delete_retained_lines(@delete_review)}
+                          blocks_note={delete_blocks_note(@delete_review)}
+                          banner={delete_banner(@delete_changes)}
+                          ack_label={delete_ack_label(@delete_review, @route)}
+                          ack_error={@delete_ack_error}
+                          acknowledged={@delete_acknowledged?}
+                          error={@delete_error}
+                          pending={@delete_pending}
+                          deactivate_instead?={@active_state != :inactive}
+                        />
 
-                      <RouteFormComponents.delete_simple_panel
-                        :if={@delete_review && @delete_review.empty?}
-                        label={route_label(@route)}
-                        error={@delete_error}
-                      />
-                    </.confirm_dialog>
+                        <RouteFormComponents.delete_simple_panel
+                          :if={@delete_review && @delete_review.empty?}
+                          label={route_label(@route)}
+                          error={@delete_error}
+                        />
+                      </.confirm_dialog>
 
-                    <%!-- The leave dialog the client guard opens: tabs, internal
+                      <%!-- The leave dialog the client guard opens: tabs, internal
                            links, browser back and version selection hold here
                            while a draft is dirty. Keep editing restores the page
                            untouched, Discard leaves writing nothing, and Save and
                            continue commits the server-held draft and only then
                            navigates (AC-22). --%>
-                    <.confirm_dialog
-                      id="route-details-leave"
-                      chrome="planner"
-                      size="lg"
-                      open={@pending_navigation != nil}
-                      title="Leave without saving?"
-                      cancel_label="Keep editing"
-                      cancel_id="route-details-leave-cancel"
-                      on_cancel="leave_keep_editing"
-                      confirm_label="Save and continue"
-                      confirm_id="route-details-leave-save"
-                      pending_label="Saving…"
-                      on_confirm="leave_save_route"
-                      confirm_variant="primary"
-                      described_by="route-details-leave-body"
-                    >
-                      {leave_message(@merge, @route, @changed_fields)}
-                      <:extra_action>
-                        <.button
-                          id="route-details-leave-discard"
-                          type="button"
-                          variant="secondary"
-                          class="min-h-11"
-                          phx-click="leave_discard"
-                        >
-                          Discard changes
-                        </.button>
-                      </:extra_action>
-                    </.confirm_dialog>
-                  </div>
+                      <.confirm_dialog
+                        id="route-details-leave"
+                        chrome="planner"
+                        size="lg"
+                        open={@pending_navigation != nil}
+                        title="Leave without saving?"
+                        cancel_label="Keep editing"
+                        cancel_id="route-details-leave-cancel"
+                        on_cancel="leave_keep_editing"
+                        confirm_label="Save and continue"
+                        confirm_id="route-details-leave-save"
+                        pending_label="Saving…"
+                        on_confirm="leave_save_route"
+                        confirm_variant="primary"
+                        described_by="route-details-leave-body"
+                      >
+                        {leave_message(@merge, @route, @changed_fields)}
+                        <:extra_action>
+                          <.button
+                            id="route-details-leave-discard"
+                            type="button"
+                            variant="secondary"
+                            class="min-h-11"
+                            phx-click="leave_discard"
+                          >
+                            Discard changes
+                          </.button>
+                        </:extra_action>
+                      </.confirm_dialog>
+                    </div>
 
-                  <%!-- The saved route map (step 30): the step-17 projection drawn
+                    <%!-- The saved route map (step 30): the step-17 projection drawn
                        by the RouteDetailsMap hook beside the pattern list that
                        is the map's text equivalent. The panel renders the
                        truth the map read returned: real geometry, the empty
                        state, or an honest failure. --%>
-                  <aside
-                    id="route-details-map-region"
-                    class="min-w-0 lg:sticky lg:top-4 lg:self-start"
-                  >
-                    <.route_map_panel
-                      route_map_data={@route_map_data}
-                      route={@route}
-                      draft_route={@draft_route}
-                      usage={@usage}
-                      transfer_count={@transfer_count}
-                      gtfs_version_id={@current_gtfs_version.id}
-                      show_context={@show_context}
-                      route_context={@route_context}
-                      route_context_status={@route_context_status}
-                    />
-                  </aside>
-                </div>
-              <% true -> %>
-                <div></div>
-            <% end %>
+                    <aside
+                      id="route-details-map-region"
+                      class="min-w-0 lg:sticky lg:top-4 lg:self-start"
+                    >
+                      <.route_map_panel
+                        route_map_data={@route_map_data}
+                        route={@route}
+                        draft_route={@draft_route}
+                        usage={@usage}
+                        transfer_count={@transfer_count}
+                        gtfs_version_id={@current_gtfs_version.id}
+                        show_context={@show_context}
+                        route_context={@route_context}
+                        route_context_status={@route_context_status}
+                      />
+                    </aside>
+                  </div>
+                <% true -> %>
+                  <div></div>
+              <% end %>
+            </div>
           <% _ -> %>
             <p
               id="route-loading"
