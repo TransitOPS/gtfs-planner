@@ -49,6 +49,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
     Transfers
   }
 
+  alias GtfsPlanner.Gtfs.Runs
+
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
 
   @type unavailable :: {:error, :unavailable}
@@ -131,4 +133,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   @callback load_flex_list(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, flex_list()} | unavailable()
   @callback load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, Transfers.catalog()} | unavailable()
+  @callback load_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+              {:ok, Runs.runs_day()}
+              | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]} | :unavailable}
 end
