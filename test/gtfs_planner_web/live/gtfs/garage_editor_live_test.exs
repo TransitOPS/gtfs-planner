@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.AdvancedBlockingFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -397,7 +398,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(
                view,
                "#garage-in-use-dialog-body",
-               "2 vehicles use this garage. Move them to another garage in Fleet, then delete this garage."
+               "Main garage is used by 2 vehicles. Change those first."
              )
 
       refute has_element?(view, "#garage-delete-confirm")
@@ -428,6 +429,52 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       refute has_element?(view, "tr#garages-#{unused.id}")
       assert has_element?(view, "#garage-notice", "Riverside storage deleted.")
       assert Enum.map(Operations.list_garages(organization.id), & &1.id) == [in_use.id]
+    end
+
+    test "a garage a block and a route name is refused and the page names both", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      in_use =
+        garage_fixture(organization.id, %{"garage_id" => "garage_main", "name" => "Main"})
+
+      unused =
+        garage_fixture(organization.id, %{"garage_id" => "garage_river", "name" => "Riverside"})
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "12",
+        garage_id: in_use.id
+      })
+
+      route_operating_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        garage_id: in_use.id
+      })
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+
+      open_edit(view, in_use)
+      view |> element("#garage-delete") |> render_click()
+
+      assert has_element?(
+               view,
+               "#garage-in-use-dialog",
+               "Main is used by 1 block and 1 route. Change those first."
+             )
+
+      refute has_element?(view, "#garage-delete-confirm")
+
+      # Both references and the garage itself survive the refusal.
+      assert Operations.garage_in_use_counts(organization.id, in_use.id) ==
+               %{vehicles: 0, blocks: 1, routes: 1}
+
+      view |> element("#garage-in-use-dialog-cancel") |> render_click()
+
+      assert Operations.list_garages(organization.id) |> Enum.map(& &1.id) |> Enum.sort() ==
+               Enum.sort([in_use.id, unused.id])
     end
   end
 
