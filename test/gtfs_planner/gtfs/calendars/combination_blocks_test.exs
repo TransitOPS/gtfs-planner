@@ -15,7 +15,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
   - A companion on a calendar that is not selected clears the moved block when it runs on
     a gained destination date, and a type-4/5 counterpart on another such calendar is
     reported `{:stale, {:not_next, ...}}` after the move where it was
-    `{:stale, :no_shared_date}` before.
+    `{:stale, :no_shared_date}` before, naming the trip the moved trip's block runs
+    after it.
   - A trip whose service moves is decided whether or not the selection named it, an
     unblocked moving trip is never a clear, and a transfer record naming trips the
     projection does not hold is reported `{:stale, :trip_missing}`.
@@ -30,7 +31,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
   clock, files or network, so no sandbox or fixture cleanup is involved.
 
   The focused gate command is deferred to branch review:
-  `mix test test/gtfs_planner/gtfs/calendars/combination_blocks_test.exs`.
+  `MIX_TEST_PARTITION=_seat11 mix test
+  test/gtfs_planner/gtfs/calendars/combination_blocks_test.exs`.
   """
   use ExUnit.Case, async: true
 
@@ -181,7 +183,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
 
       assert failure.key == counterpart_key
       assert failure.date_count == 1
-      assert Enum.sort(Map.keys(failure)) == [:date_count, :key, :label]
+      # The counterpart trip "X" is blocked on its own block, so the record is not
+      # next on the moved trip's block either, and the day type's own order runs
+      # destination trip "D" after "S" on block "700".
+      assert failure.next_trip_id == "D"
+
+      assert Enum.sort(Map.keys(failure)) == [:date_count, :key, :label, :next_trip_id]
 
       before_finding = in_seat_finding(result.before_findings)
       after_finding = in_seat_finding(result.after_findings)
@@ -193,6 +200,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationBlocksTest do
 
       assert {:not_next, [reason_failure]} = after_finding.detail.reason
       assert reason_failure.key == counterpart_key
+      assert reason_failure.next_trip_id == "D"
       assert after_finding.day_type_keys == [counterpart_key]
       assert after_finding.dates == [~D[2026-03-09]]
       assert after_finding.block_id == "700"

@@ -681,7 +681,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
   defp effect(review, day_type), do: Enum.find(review.effects, &(&1.day_type.key == day_type.key))
 
   defp empty_context do
-    %{trips: %{}, service_dates: %{}, day_types: [], sequences: %{}}
+    %{trips: %{}, service_dates: %{}, day_types: [], sequences: %{}, trip_ids_by_uuid: %{}}
   end
 
   defp context(trips, day_type, service_dates, sequences) do
@@ -689,7 +689,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
       trips: Map.new(trips, &{&1.trip_id, &1}),
       service_dates: service_dates,
       day_types: [day_type],
-      sequences: sequences
+      sequences: sequences,
+      trip_ids_by_uuid: Map.new(trips, &{&1.id, &1.trip_id})
     }
   end
 
