@@ -1832,7 +1832,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
           draft_route: nil,
           usage: %{trips: 2},
           transfer_count: 1,
-          gtfs_version_id: Ecto.UUID.generate()
+          gtfs_version_id: Ecto.UUID.generate(),
+          show_context: false,
+          route_context: nil,
+          route_context_status: nil
         })
 
       assert html =~ "Map geometry unavailable"
@@ -1842,6 +1845,174 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       refute html =~ ~s(id="route-map")
       refute html =~ "data-map-payload"
       refute html =~ "No patterns yet"
+    end
+  end
+
+  describe "other-route context" do
+    setup :shared_setup
+
+    # The ordinary boundary: the hook's pushed event, handled by the live
+    # process, reading through Gtfs.route_context_map/4 over real rows.
+    test "context stays off until Show other routes is reported enabled, then loads the viewport's other routes",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      seed_context_map(organization.id, version.id)
+
+      foreign_org = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_org.id)
+      seed_context_route(foreign_org.id, foreign_version.id, "FOREIGN_CTX", "40.05", "-75.05")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/CTXMAP1")
+
+      # Off by default: the checkbox exists but nothing is loaded.
+      assert has_element?(view, "#route-map-context-toggle")
+      refute has_element?(view, "#route-map-context-status")
+      refute map_attribute(view, "data-map-context")
+
+      assert {:ok, view, _html} =
+               render_click_route_context(view, %{
+                 "north" => 40.2,
+                 "south" => 39.9,
+                 "east" => -74.9,
+                 "west" => -75.3
+               })
+
+      payload = context_payload(view)
+
+      # Only this version's other routes, deterministic order, current route
+      # excluded; the foreign tenant's route over the same coordinates never
+      # appears.
+      assert Enum.map(payload["routes"], & &1["route_id"]) == ["CTX_A", "CTX_B"]
+      assert Enum.all?(payload["routes"], &(&1["route_id"] != "CTXMAP1"))
+
+      assert has_element?(view, "#route-map-context-toggle[checked]")
+
+      assert has_element?(
+               view,
+               "#route-map-context-status",
+               "Showing all 2 nearby routes in this view."
+             )
+
+      # The current route's own read is untouched: both patterns remain.
+      assert length(map_payload(view)["patterns"]) == 2
+    end
+
+    test "the newest viewport event wins and turning context off discards the layer",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      seed_context_map(organization.id, version.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/CTXMAP1")
+
+      # Viewport A, then viewport B: B's answer replaces A's in order, so a
+      # stale response can never displace a newer viewport's state.
+      {:ok, view, _html} =
+        render_click_route_context(view, %{
+          "north" => 40.2,
+          "south" => 39.9,
+          "east" => -74.9,
+          "west" => -75.3
+        })
+
+      assert length(context_payload(view)["routes"]) == 2
+
+      {:ok, view, _html} =
+        render_click_route_context(view, %{
+          "north" => 40.06,
+          "south" => 40.0,
+          "east" => -75.03,
+          "west" => -75.1
+        })
+
+      assert Enum.map(context_payload(view)["routes"], & &1["route_id"]) == ["CTX_A"]
+
+      # Off clears everything: no payload attribute, no strip, unchecked box.
+      {:ok, view, _html} = render_click_route_context(view, nil)
+
+      refute map_attribute(view, "data-map-context")
+      refute has_element?(view, "#route-map-context-status")
+      refute has_element?(view, "#route-map-context-toggle[checked]")
+    end
+
+    test "more than one page shows the partial status and Show more routes appends the rest",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      seed_context_map(organization.id, version.id)
+
+      for index <- 1..55 do
+        route_id = "CTX_P#{String.pad_leading(Integer.to_string(index), 2, "0")}"
+        seed_context_route(organization.id, version.id, route_id, "40.05", "-75.05")
+      end
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/CTXMAP1")
+
+      {:ok, view, _html} =
+        render_click_route_context(view, %{
+          "north" => 40.2,
+          "south" => 39.9,
+          "east" => -74.9,
+          "west" => -75.3
+        })
+
+      assert has_element?(
+               view,
+               "#route-map-context-status",
+               "Showing the first 50 nearby routes. More are in this view."
+             )
+
+      assert has_element?(view, "#route-map-context-more", "Show more routes")
+      assert length(context_payload(view)["routes"]) == 50
+
+      view
+      |> element("#route-map-context-more")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#route-map-context-status",
+               "Showing all 57 nearby routes in this view."
+             )
+
+      payload = context_payload(view)
+      assert length(payload["routes"]) == 57
+      assert Enum.uniq_by(payload["routes"], & &1["route_id"]) == payload["routes"]
+      refute "CTXMAP1" in Enum.map(payload["routes"], & &1["route_id"])
+
+      # The current route never truncates: its two patterns are still there.
+      assert length(map_payload(view)["patterns"]) == 2
+    end
+
+    test "a rejected viewport keeps the page honest, and Retry repeats the last good bounds",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      seed_context_map(organization.id, version.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/CTXMAP1")
+
+      good = %{"north" => 40.2, "south" => 39.9, "east" => -74.9, "west" => -75.3}
+      {:ok, view, _html} = render_click_route_context(view, good)
+      assert length(context_payload(view)["routes"]) == 2
+
+      # Malformed bounds are rejected, never coerced: the strip explains, the
+      # last loaded page and the last good bounds stay.
+      {:ok, view, _html} =
+        render_click_route_context(view, %{
+          "north" => "somewhere",
+          "south" => 39.9,
+          "east" => -74.9,
+          "west" => -75.3
+        })
+
+      assert has_element?(view, "#route-map-context-status", "Couldn't load nearby routes")
+      assert has_element?(view, "#route-map-context-retry", "Retry")
+
+      view
+      |> element("#route-map-context-retry")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#route-map-context-status",
+               "Showing all 2 nearby routes in this view."
+             )
+
+      assert length(context_payload(view)["routes"]) == 2
     end
   end
 
@@ -2596,6 +2767,102 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("a")
     |> LazyHTML.attribute("href")
+    |> List.first()
+  end
+
+  # -- other-route context fixtures ---------------------------------------------
+
+  # The current route CTXMAP1 with two located patterns; the context helpers
+  # build other routes over the same corner of the map.
+  defp seed_context_map(organization_id, gtfs_version_id) do
+    route =
+      details_route(organization_id, gtfs_version_id, %{
+        route_id: "CTXMAP1",
+        route_short_name: "CX"
+      })
+
+    one =
+      route_pattern_fixture(organization_id, gtfs_version_id, %{
+        route_pattern_id: "CTX1A",
+        route_id: "CTXMAP1",
+        route_pattern_name: "Context current one",
+        direction_id: 0
+      })
+
+    two =
+      route_pattern_fixture(organization_id, gtfs_version_id, %{
+        route_pattern_id: "CTX1B",
+        route_id: "CTXMAP1",
+        route_pattern_name: "Context current two",
+        direction_id: 1
+      })
+
+    located_stop(organization_id, gtfs_version_id, "CS1", "40.0", "-75.05")
+    located_stop(organization_id, gtfs_version_id, "CS2", "40.1", "-75.05")
+
+    route_pattern_stop_fixture(one, "CS1", 1)
+    route_pattern_stop_fixture(one, "CS2", 2)
+    route_pattern_stop_fixture(two, "CS2", 1)
+    route_pattern_stop_fixture(two, "CS1", 2)
+
+    seed_context_route(organization_id, gtfs_version_id, "CTX_A", "40.02", "-75.06")
+    seed_context_route(organization_id, gtfs_version_id, "CTX_B", "40.05", "-75.02")
+
+    route
+  end
+
+  defp seed_context_route(organization_id, gtfs_version_id, route_id, lat, lon) do
+    route = details_route(organization_id, gtfs_version_id, %{route_id: route_id})
+
+    stop_id = "#{route_id}_S"
+    located_stop(organization_id, gtfs_version_id, stop_id, lat, lon)
+
+    pattern =
+      route_pattern_fixture(organization_id, gtfs_version_id, %{
+        route_pattern_id: "#{route_id}_P",
+        route_id: route_id,
+        route_pattern_name: "Context #{route_id}"
+      })
+
+    route_pattern_stop_fixture(pattern, stop_id, 1)
+
+    route
+  end
+
+  defp render_click_route_context(view, nil) do
+    render_with_target(view, "route_context_viewport", %{"enabled" => false})
+  end
+
+  defp render_click_route_context(view, bounds) do
+    render_with_target(view, "route_context_viewport", %{"enabled" => true, "bounds" => bounds})
+  end
+
+  defp render_with_target(view, event, params) do
+    case render_click(view, event, params) do
+      {:ok, view, html} -> {:ok, view, html}
+      other -> {:ok, view, other}
+    end
+  end
+
+  defp context_payload(view) do
+    view
+    |> element("#route-map")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute("data-map-context")
+    |> List.first()
+    |> case do
+      nil -> flunk("data-map-context attribute is absent")
+      raw -> Jason.decode!(raw)
+    end
+  end
+
+  defp map_attribute(view, name) do
+    view
+    |> element("#route-map")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute(name)
     |> List.first()
   end
 

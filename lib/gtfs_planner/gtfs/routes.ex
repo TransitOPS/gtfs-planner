@@ -346,6 +346,40 @@ defmodule GtfsPlanner.Gtfs.Routes do
     do: GtfsPlanner.Gtfs.Routes.Map.route_map(organization_id, gtfs_version_id, route_id)
 
   @doc """
+  Pages one published route's viewport context geometry (R7, seam `S-3`).
+
+  Thin scoped facade for
+  `GtfsPlanner.Gtfs.Routes.Map.route_context_map/4`: the other routes of the
+  same version whose saved geometry falls inside `bounds`, paged 50 routes at
+  a time over a deterministic cursor, with the current route excluded (its
+  complete geometry comes from `route_map/3`). Malformed bounds or cursors are
+  rejected; a foreign or unpublished scope is `{:error, :not_found}`.
+  """
+  @spec route_context_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), %{
+          bounds: term(),
+          cursor: term()
+        }) ::
+          {:ok, map()}
+          | {:error, :not_found | :invalid_bounds | :invalid_cursor | :unavailable}
+  def route_context_map(organization_id, gtfs_version_id, route_id, %{
+        bounds: bounds,
+        cursor: cursor
+      }),
+      do:
+        GtfsPlanner.Gtfs.Routes.Map.route_context_map(
+          organization_id,
+          gtfs_version_id,
+          route_id,
+          %{
+            bounds: bounds,
+            cursor: cursor
+          }
+        )
+
+  def route_context_map(_organization_id, _gtfs_version_id, _route_id, _opts),
+    do: {:error, :invalid_bounds}
+
+  @doc """
   Infers the creation route identifier (R3, pure precursor).
 
   `candidates` are the same-mode example routes: each carries the natural

@@ -3505,3 +3505,28 @@ body:has(#home-page) {
 #route-details-map-region {
   min-width: 0;
 }
+
+/* Context badges (spec 16, step 31): each "Show other routes" line carries a
+   small plate naming its route — the prototype's other-route layer. The hook
+   draws these as Leaflet divIcons in the dedicated context pane; the label
+   text and colors come from each context route's own saved fields. */
+.route-map-context-badge {
+  background: none;
+  border: 0;
+}
+
+.route-map-context-badge span {
+  display: inline-block;
+  max-width: 120px;
+  overflow: hidden;
+  padding: 1px 6px;
+  border: 1.5px solid #fff;
+  border-radius: var(--radius-badge);
+  box-shadow: 0 2px 6px #0a133026;
+  font-family: var(--font-ds);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

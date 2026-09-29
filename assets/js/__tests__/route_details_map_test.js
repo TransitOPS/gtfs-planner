@@ -2,13 +2,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import RouteDetailsMapHook, {
   casingFor,
+  contextBadge,
+  contextRoutePaths,
   isZoomWheel,
   leafletLatLng,
   lineColorFor,
   nextMapAction,
   occurrenceMarkers,
   parseColors,
+  parseContext,
   parsePayload,
+  roundBounds,
+  sameViewportBounds,
   sectionPaths,
   swatchColorFor,
   unlocatedPhrase,
@@ -347,6 +352,194 @@ describe("nextMapAction", () => {
 
   it("does nothing without a payload", () => {
     expect(nextMapAction(PAYLOAD.route_uuid, null)).toBe("none");
+  });
+});
+
+describe("context routes (spec 16, step 31)", () => {
+  const CONTEXT = {
+    routes: [
+      {
+        route_id: "C1",
+        route_short_name: "12",
+        route_long_name: "Crosstown",
+        route_color: "0B6E4F",
+        route_text_color: "FFFFFF",
+        active: true,
+        sections: [
+          {
+            source: "stop_pair",
+            status: "saved",
+            coordinates: [
+              [-75.0, 40.0],
+              [-75.1, 40.1],
+            ],
+          },
+        ],
+        imported_shape_variants: [
+          {
+            source: "imported_shape",
+            status: "saved",
+            shape_id: "sh1",
+            coordinates: [
+              [-75.2, 40.2],
+              [-75.3, 40.3],
+            ],
+          },
+        ],
+      },
+      {
+        route_id: "C2",
+        route_short_name: "",
+        route_long_name: "Night loop",
+        route_color: "",
+        route_text_color: "",
+        active: false,
+        sections: [
+          {
+            source: "stop_pair",
+            status: "missing",
+            unlocated: [{ ref: "X", reason: "coordinates_absent" }],
+          },
+        ],
+        imported_shape_variants: [],
+      },
+    ],
+  };
+
+  it("parseContext accepts the route_context_map payload and rejects garbage", () => {
+    expect(parseContext(JSON.stringify(CONTEXT))).toEqual(CONTEXT);
+    expect(parseContext('{"routes":[]}')).toEqual({ routes: [] });
+    expect(parseContext("not json")).toBeNull();
+    expect(parseContext('{"patterns":[]}')).toBeNull();
+    expect(parseContext("")).toBeNull();
+    expect(parseContext(null)).toBeNull();
+  });
+
+  it("contextRoutePaths draws only saved geometry with fully valid coordinates", () => {
+    const paths = contextRoutePaths(CONTEXT.routes[0]);
+    expect(paths).toHaveLength(2);
+    expect(paths[0].latlngs).toEqual([
+      [40.0, -75.0],
+      [40.1, -75.1],
+    ]);
+    expect(paths[1].latlngs).toEqual([
+      [40.2, -75.2],
+      [40.3, -75.3],
+    ]);
+  });
+
+  it("contextRoutePaths never draws missing or unavailable entries (INV-5)", () => {
+    expect(contextRoutePaths(CONTEXT.routes[1])).toEqual([]);
+  });
+
+  it("contextRoutePaths drops an entry whose coordinate is corrupt instead of drawing part of it", () => {
+    const route = {
+      route_id: "C3",
+      sections: [
+        {
+          source: "stop_pair",
+          status: "saved",
+          coordinates: [
+            [-75.0, 40.0],
+            [null, null],
+          ],
+        },
+      ],
+      imported_shape_variants: [],
+    };
+    expect(contextRoutePaths(route)).toEqual([]);
+  });
+
+  it("contextRoutePaths ignores malformed routes", () => {
+    expect(contextRoutePaths(null)).toEqual([]);
+    expect(contextRoutePaths({})).toEqual([]);
+  });
+
+  it("contextBadge prefers the short name and trades white plates for the grey fallback", () => {
+    expect(contextBadge(CONTEXT.routes[0])).toEqual({
+      label: "12",
+      background: "#0B6E4F",
+      color: "#FFFFFF",
+    });
+
+    const badge = contextBadge(CONTEXT.routes[1]);
+    expect(badge.label).toBe("Night loop");
+    // Blank color: the white default draws as the grey plate, text automatic.
+    expect(badge.background).toBe("#7A8698");
+    expect(["#000000", "#FFFFFF"]).toContain(badge.color);
+  });
+
+  it("viewport bounds are rounded to one stable precision and compared exactly", () => {
+    const bounds = roundBounds({
+      north: 40.20000001,
+      south: 39.90000004,
+      east: -74.9,
+      west: -75.30000009,
+    });
+    expect(bounds).toEqual({
+      north: 40.2,
+      south: 39.9,
+      east: -74.9,
+      west: -75.3,
+    });
+    expect(sameViewportBounds(bounds, { ...bounds })).toBe(true);
+    expect(sameViewportBounds(bounds, { ...bounds, north: 40.3 })).toBe(false);
+    expect(sameViewportBounds(bounds, null)).toBe(false);
+    expect(sameViewportBounds(null, bounds)).toBe(false);
+  });
+
+  it("reports the toggle and its viewport to the server, and identical bounds are not re-sent", () => {
+    const hook = Object.create(RouteDetailsMapHook);
+    hook._destroyed = false;
+    hook._lastContextBounds = null;
+    hook.pushEvent = vi.fn();
+    const bounds = { north: 40.2, south: 39.9, east: -74.9, west: -75.3 };
+    hook._viewportBounds = () => bounds;
+
+    hook._pushContextViewport(bounds);
+    expect(hook.pushEvent).toHaveBeenCalledTimes(1);
+    expect(hook.pushEvent).toHaveBeenCalledWith("route_context_viewport", {
+      enabled: true,
+      bounds,
+    });
+
+    // The same view again (the settle after a fit) re-sends nothing.
+    hook._pushContextViewport(roundBounds(bounds));
+    expect(hook.pushEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("turning the checkbox off tells the server to clear, before anything older can win", () => {
+    document.body.innerHTML = "";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.id = "route-map-context-toggle";
+    document.body.appendChild(toggle);
+
+    const hook = Object.create(RouteDetailsMapHook);
+    hook.el = document.createElement("div");
+    hook._destroyed = false;
+    hook._cleanup = [];
+    hook._map = { zoomIn() {}, zoomOut() {} };
+    hook.pushEvent = vi.fn();
+    hook._viewportBounds = () => ({ north: 1, south: 0, east: 1, west: 0 });
+
+    hook._bindControls();
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change"));
+    expect(hook.pushEvent).toHaveBeenCalledWith("route_context_viewport", {
+      enabled: true,
+      bounds: { north: 1, south: 0, east: 1, west: 0 },
+    });
+
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change"));
+    expect(hook.pushEvent).toHaveBeenLastCalledWith("route_context_viewport", {
+      enabled: false,
+    });
+
+    hook.destroyed();
+    expect(hook._cleanup).toEqual([]);
   });
 });
 

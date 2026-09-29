@@ -1,6 +1,8 @@
 defmodule GtfsPlanner.Gtfs.Routes.MapTest do
   use GtfsPlanner.DataCase
 
+  import Ecto.Query
+
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -372,6 +374,473 @@ defmodule GtfsPlanner.Gtfs.Routes.MapTest do
       # more patterns cannot trigger per-pattern (or per-editor) reads.
       assert small_queries == big_queries
       assert big_queries <= 5
+    end
+  end
+
+  describe "route context map through the ordinary public entrypoint" do
+    # Scenario 1 through the production composition:
+    # Gtfs.route_context_map/4 -> Routes.route_context_map/4 ->
+    # GtfsPlanner.Gtfs.Routes.Map.route_context_map/4 (seam S-3, direct call).
+    test "pages other routes in the viewport with deduplicated geometry, excluding the current route and foreign versions",
+         %{organization: org, version: version} do
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+
+      current_pattern =
+        route_pattern_fixture(org.id, version.id, %{route_pattern_id: "p1", route_id: "r1"})
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "a",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "b",
+        stop_lat: Decimal.new("1.5"),
+        stop_lon: Decimal.new("2.5")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "c",
+        stop_lat: Decimal.new("1.8"),
+        stop_lon: Decimal.new("3.0")
+      })
+
+      route_pattern_stop_fixture(current_pattern, "a", 1)
+      route_pattern_stop_fixture(current_pattern, "b", 2)
+
+      # Two context routes whose geometry sits in the viewport box, plus a
+      # foreign tenant's route over the very same coordinates.
+      route_fixture(org.id, version.id, %{route_id: "c1"})
+
+      context_pattern =
+        route_pattern_fixture(org.id, version.id, %{
+          route_pattern_id: "cp1",
+          route_id: "c1",
+          route_pattern_name: "Context one"
+        })
+
+      route_pattern_stop_fixture(context_pattern, "b", 1)
+      route_pattern_stop_fixture(context_pattern, "c", 2)
+
+      shape_point_fixture(org, version, "csh1", 1, "1.1", "2.1")
+      shape_point_fixture(org, version, "csh1", 2, "1.2", "2.2")
+
+      # Two trips repeating one imported shape: geometry stays one entry.
+      trip_for_pattern(org, version, "c1", "cp1", "csh1")
+      trip_for_pattern(org, version, "c1", "cp1", "csh1")
+
+      route_fixture(org.id, version.id, %{route_id: "c2"})
+
+      context_pattern_two =
+        route_pattern_fixture(org.id, version.id, %{
+          route_pattern_id: "cp2",
+          route_id: "c2"
+        })
+
+      route_pattern_stop_fixture(context_pattern_two, "a", 1)
+      route_pattern_stop_fixture(context_pattern_two, "b", 2)
+
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+      route_fixture(other_org.id, other_version.id, %{route_id: "f1"})
+
+      foreign_pattern =
+        route_pattern_fixture(other_org.id, other_version.id, %{
+          route_pattern_id: "fp1",
+          route_id: "f1"
+        })
+
+      stop_fixture(other_org.id, other_version.id, %{
+        stop_id: "a",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(other_org.id, other_version.id, %{
+        stop_id: "b",
+        stop_lat: Decimal.new("1.5"),
+        stop_lon: Decimal.new("2.5")
+      })
+
+      route_pattern_stop_fixture(foreign_pattern, "a", 1)
+      route_pattern_stop_fixture(foreign_pattern, "b", 2)
+
+      bounds = %{north: 2.0, south: 1.0, east: 3.5, west: 2.0}
+
+      assert {:ok, context} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+
+      assert context.status == :ok
+      assert context.partial == false
+      assert context.next_cursor == nil
+
+      # Deterministic id order; the current route and the foreign tenant's
+      # route never appear, no matter whose geometry sits in the box.
+      assert Enum.map(context.routes, & &1.route_id) == ["c1", "c2"]
+
+      [one, two] = context.routes
+
+      assert %{
+               route_uuid: _,
+               route_id: "c1",
+               route_short_name: route_short_name,
+               route_long_name: route_long_name,
+               route_color: route_color,
+               route_text_color: route_text_color,
+               active: true,
+               sections: sections,
+               imported_shape_variants: variants
+             } = one
+
+      assert is_binary(route_short_name) or is_nil(route_short_name)
+      assert is_binary(route_long_name) or is_nil(route_long_name)
+      assert is_binary(route_color) or is_nil(route_color)
+      assert is_binary(route_text_color) or is_nil(route_text_color)
+
+      # Connector sections keep the same source/status truthfulness; the
+      # repeated trips' shared shape contributes exactly one variant entry.
+      assert [%{source: :stop_pair, status: :saved, coordinates: coordinates}] = sections
+      assert coordinates == [[2.5, 1.5], [3.0, 1.8]]
+
+      assert [
+               %{
+                 source: :imported_shape,
+                 status: :saved,
+                 shape_id: "csh1",
+                 coordinates: [[2.1, 1.1], [2.2, 1.2]]
+               }
+             ] = variants
+
+      assert [%{source: :stop_pair, status: :saved}] = two.sections
+      assert two.imported_shape_variants == []
+
+      # A foreign scope is not found, exactly like route_map/3.
+      assert Gtfs.route_context_map(org.id, version.id, "ghost", %{bounds: bounds, cursor: nil}) ==
+               {:error, :not_found}
+    end
+
+    test "pagination is a deterministic keyset: partial pages continue without overlap",
+         %{organization: org, version: version} do
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+
+      pattern =
+        route_pattern_fixture(org.id, version.id, %{route_pattern_id: "p1", route_id: "r1"})
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "a",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "b",
+        stop_lat: Decimal.new("1.5"),
+        stop_lon: Decimal.new("2.5")
+      })
+
+      route_pattern_stop_fixture(pattern, "a", 1)
+      route_pattern_stop_fixture(pattern, "b", 2)
+
+      for index <- 1..55 do
+        route_id = "ctx_#{String.pad_leading(Integer.to_string(index), 2, "0")}"
+        route_fixture(org.id, version.id, %{route_id: route_id})
+
+        context_pattern =
+          route_pattern_fixture(org.id, version.id, %{
+            route_pattern_id: "#{route_id}_p",
+            route_id: route_id
+          })
+
+        route_pattern_stop_fixture(context_pattern, "a", 1)
+        route_pattern_stop_fixture(context_pattern, "b", 2)
+      end
+
+      bounds = %{north: 2.0, south: 1.0, east: 3.0, west: 2.0}
+
+      assert {:ok, first} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+
+      assert length(first.routes) == 50
+      assert first.partial == true
+      first_ids = Enum.map(first.routes, & &1.route_id)
+      assert first_ids == Enum.sort(first_ids)
+      assert List.first(first_ids) == "ctx_01"
+      assert List.last(first_ids) == "ctx_50"
+      assert first.next_cursor == "ctx1:ctx_50"
+
+      # Re-asking for the same page returns the same page: the cursor is a
+      # stable keyset over deterministic ids, not a sliding offset.
+      assert {:ok, first_again} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{
+                 bounds: bounds,
+                 cursor: nil
+               })
+
+      assert first_again.routes == first.routes
+
+      assert {:ok, second} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{
+                 bounds: bounds,
+                 cursor: first.next_cursor
+               })
+
+      second_ids = Enum.map(second.routes, & &1.route_id)
+      assert second_ids == Enum.sort(second_ids)
+      assert List.first(second_ids) == "ctx_51"
+      assert List.last(second_ids) == "ctx_55"
+      assert second.partial == false
+      assert second.next_cursor == nil
+      assert MapSet.disjoint?(MapSet.new(first_ids), MapSet.new(second_ids))
+    end
+
+    test "the current route stays complete while its context pages", %{
+      organization: org,
+      version: version
+    } do
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+
+      for index <- 1..3 do
+        pattern =
+          route_pattern_fixture(org.id, version.id, %{
+            route_pattern_id: "p#{index}",
+            route_id: "r1"
+          })
+
+        route_pattern_stop_fixture(pattern, "a", 1)
+        route_pattern_stop_fixture(pattern, "b", 2)
+      end
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "a",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "b",
+        stop_lat: Decimal.new("1.5"),
+        stop_lon: Decimal.new("2.5")
+      })
+
+      for index <- 1..55 do
+        route_id = "ctx_#{String.pad_leading(Integer.to_string(index), 2, "0")}"
+        route_fixture(org.id, version.id, %{route_id: route_id})
+
+        context_pattern =
+          route_pattern_fixture(org.id, version.id, %{
+            route_pattern_id: "#{route_id}_p",
+            route_id: route_id
+          })
+
+        route_pattern_stop_fixture(context_pattern, "a", 1)
+        route_pattern_stop_fixture(context_pattern, "b", 2)
+      end
+
+      bounds = %{north: 2.0, south: 1.0, east: 3.0, west: 2.0}
+
+      assert {:ok, context} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+
+      assert length(context.routes) == 50
+      refute "r1" in Enum.map(context.routes, & &1.route_id)
+
+      # Paging the context never truncates the current route's own read.
+      assert {:ok, route_map} = Gtfs.route_map(org.id, version.id, "r1")
+      assert length(route_map.patterns) == 3
+    end
+
+    test "malformed bounds and cursors are rejected without a read", %{
+      organization: org,
+      version: version
+    } do
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+
+      good = %{north: 2.0, south: 1.0, east: 3.0, west: 2.0}
+
+      assert Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: good, cursor: nil}) !=
+               {:error, :invalid_bounds}
+
+      for bad_bounds <- [
+            %{},
+            %{north: 2.0, south: 1.0, east: 3.0},
+            %{north: "2.0", south: 1.0, east: 3.0, west: 2.0},
+            %{north: 1.0, south: 2.0, east: 3.0, west: 2.0},
+            %{north: 2.0, south: 1.0, east: 1.0, west: 3.0},
+            %{north: 91.0, south: 1.0, east: 3.0, west: 2.0},
+            %{north: 2.0, south: -91.0, east: 3.0, west: 2.0},
+            %{north: 2.0, south: 1.0, east: 200.0, west: 2.0},
+            %{north: 2.0, south: 1.0, east: 3.0, west: -200.0}
+          ] do
+        assert Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bad_bounds, cursor: nil}) ==
+                 {:error, :invalid_bounds}
+      end
+
+      for bad_cursor <- ["junk", "ctx1:", "ctx2:ctx_01", 42, %{}] do
+        assert Gtfs.route_context_map(org.id, version.id, "r1", %{
+                 bounds: good,
+                 cursor: bad_cursor
+               }) ==
+                 {:error, :invalid_cursor}
+      end
+
+      # A shaped-but-empty opts map is malformed too.
+      assert Gtfs.route_context_map(org.id, version.id, "r1", %{}) == {:error, :invalid_bounds}
+    end
+
+    test "viewport selection returns only routes whose geometry is inside the box",
+         %{organization: org, version: version} do
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+
+      pattern =
+        route_pattern_fixture(org.id, version.id, %{route_pattern_id: "p1", route_id: "r1"})
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "a",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "b",
+        stop_lat: Decimal.new("1.5"),
+        stop_lon: Decimal.new("2.5")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "far",
+        stop_lat: Decimal.new("50.0"),
+        stop_lon: Decimal.new("20.0")
+      })
+
+      route_pattern_stop_fixture(pattern, "a", 1)
+      route_pattern_stop_fixture(pattern, "b", 2)
+
+      inside_pattern =
+        route_pattern_fixture(org.id, version.id, %{route_pattern_id: "ip", route_id: "inside"})
+
+      route_fixture(org.id, version.id, %{route_id: "inside"})
+      route_pattern_stop_fixture(inside_pattern, "a", 1)
+      route_pattern_stop_fixture(inside_pattern, "b", 2)
+
+      outside_pattern =
+        route_pattern_fixture(org.id, version.id, %{route_pattern_id: "op", route_id: "outside"})
+
+      route_fixture(org.id, version.id, %{route_id: "outside"})
+      route_pattern_stop_fixture(outside_pattern, "far", 1)
+
+      # A route with no geometry at all is never context.
+      route_fixture(org.id, version.id, %{route_id: "empty"})
+
+      bounds = %{north: 2.0, south: 1.0, east: 3.0, west: 2.0}
+
+      assert {:ok, context} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+
+      assert Enum.map(context.routes, & &1.route_id) == ["inside"]
+
+      narrow = %{north: 60.0, south: 40.0, east: 30.0, west: 10.0}
+
+      assert {:ok, shifted} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: narrow, cursor: nil})
+
+      assert Enum.map(shifted.routes, & &1.route_id) == ["outside"]
+
+      nowhere = %{north: -1.0, south: -2.0, east: -1.0, west: -2.0}
+
+      assert {:ok, empty} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: nowhere, cursor: nil})
+
+      assert empty.routes == []
+      assert empty.partial == false
+      assert empty.next_cursor == nil
+    end
+
+    test "trip multiplicity never multiplies geometry or queries on a page", %{
+      organization: org,
+      version: version
+    } do
+      route_fixture(org.id, version.id, %{route_id: "r1"})
+
+      pattern =
+        route_pattern_fixture(org.id, version.id, %{route_pattern_id: "p1", route_id: "r1"})
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "a",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "b",
+        stop_lat: Decimal.new("1.5"),
+        stop_lon: Decimal.new("2.5")
+      })
+
+      route_pattern_stop_fixture(pattern, "a", 1)
+      route_pattern_stop_fixture(pattern, "b", 2)
+
+      route_fixture(org.id, version.id, %{route_id: "few_trips"})
+
+      few_pattern =
+        route_pattern_fixture(org.id, version.id, %{
+          route_pattern_id: "few_p",
+          route_id: "few_trips"
+        })
+
+      route_pattern_stop_fixture(few_pattern, "a", 1)
+      route_pattern_stop_fixture(few_pattern, "b", 2)
+      trip_for_pattern(org, version, "few_trips", "few_p", "sh_few")
+      shape_point_fixture(org, version, "sh_few", 1, "1.1", "2.1")
+
+      route_fixture(org.id, version.id, %{route_id: "many_trips"})
+
+      many_pattern =
+        route_pattern_fixture(org.id, version.id, %{
+          route_pattern_id: "many_p",
+          route_id: "many_trips"
+        })
+
+      route_pattern_stop_fixture(many_pattern, "a", 1)
+      route_pattern_stop_fixture(many_pattern, "b", 2)
+
+      for index <- 1..3 do
+        trip_for_pattern(org, version, "many_trips", "many_p", "sh_many")
+      end
+
+      shape_point_fixture(org, version, "sh_many", 1, "1.2", "2.2")
+
+      bounds = %{north: 2.0, south: 1.0, east: 3.0, west: 2.0}
+
+      assert {:ok, context} =
+               Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+
+      many = Enum.find(context.routes, &(&1.route_id == "many_trips"))
+      few = Enum.find(context.routes, &(&1.route_id == "few_trips"))
+
+      # Three trips on one shape, one geometry entry (AC-27/AC-30 direction;
+      # step 32 measures the workload).
+      assert length(many.imported_shape_variants) == 1
+      assert length(few.imported_shape_variants) == 1
+
+      {{:ok, _}, many_trip_queries} =
+        count_queries(fn ->
+          Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+        end)
+
+      Repo.delete_all(
+        from(trip in GtfsPlanner.Gtfs.Trip,
+          where: trip.route_id == "many_trips" and trip.organization_id == ^org.id
+        )
+      )
+
+      {{:ok, _}, few_trip_queries} =
+        count_queries(fn ->
+          Gtfs.route_context_map(org.id, version.id, "r1", %{bounds: bounds, cursor: nil})
+        end)
+
+      assert few_trip_queries == many_trip_queries
+      assert many_trip_queries <= 6
     end
   end
 

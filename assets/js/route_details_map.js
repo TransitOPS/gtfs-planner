@@ -19,6 +19,21 @@
  *   data-map-colors   `{route_color, route_text_color}` — the colors the
  *                     badge preview is showing, so the lines and the badge
  *                     start coherent.
+ *   data-map-context  optional `{routes: [...]}` — the route_context_map/4
+ *                     page(s): other routes in the viewport, each with its
+ *                     own deduplicated `sections` and
+ *                     `imported_shape_variants` (same source/status labels),
+ *                     identity fields and `active`. Absent means the layer
+ *                     is off or cleared; the hook never invents geometry.
+ *
+ * The context layer ("Show other routes", AC-27) draws each other route as a
+ * thinner line in its own color below the current route's geometry, dashed
+ * only when the route is explicitly inactive, with a badge naming it. It is
+ * never interactive and never part of the fit; highlighting a current-route
+ * pattern dims the context layer so the selection still reads. The hook also
+ * owns the checkbox: toggling it — and every map move while it is on — pushes
+ * `route_context_viewport` with the map's bounds, and the server's newest
+ * event wins (the patch carries whatever state that newest event produced).
  *
  * The container is `phx-update="ignore"`, so the server never patches inside
  * it; the `data-*` attributes themselves are patched, and a hook on an ignored
@@ -46,7 +61,11 @@
  * equivalents (AC-28).
  */
 
-import { contrastRatio, normalizeHex } from "./route_identity_preview.js";
+import {
+  automaticTextColor,
+  contrastRatio,
+  normalizeHex,
+} from "./route_identity_preview.js";
 
 // The authenticated osm-bright proxy (MapTilesController keeps the key server
 // side). Same-origin, so the operator's session authorizes every tile.
@@ -63,6 +82,12 @@ const SWATCH_FALLBACK = "#7A8698";
 
 const LINE_WEIGHT = 5;
 const CASING_WEIGHT = 9;
+const CONTEXT_LINE_WEIGHT = 3.5;
+const CONTEXT_CASING_WEIGHT = 6.5;
+const CONTEXT_DASH_ARRAY = "2 6";
+const CONTEXT_OPACITY = 0.9;
+const CONTEXT_INACTIVE_OPACITY = 0.45;
+const CONTEXT_DIM_OPACITY = 0.12;
 const DASH_ARRAY = "9 7";
 const HIGHLIGHT_OPACITY = 1;
 const DIM_OPACITY = 0.28;
@@ -87,8 +112,14 @@ const ZOOM_OUT_ID = "route-map-zoom-out";
 const FIT_ID = "route-map-fit";
 const PATTERN_LIST_ID = "route-map-pattern-list";
 const VARIANT_LIST_ID = "route-map-variant-list";
+const CONTEXT_TOGGLE_ID = "route-map-context-toggle";
 const FORM_ID = "route-details-form";
 const COLOR_FIELD_SELECTOR = 'input[name="route[route_color]"]';
+
+// The LiveView event that carries the viewport to the server, and the leaflet
+// pane that keeps context geometry under the current route's own lines.
+const CONTEXT_VIEWPORT_EVENT = "route_context_viewport";
+const CONTEXT_PANE = "routeContextPane";
 
 // `[lon, lat]` at the model boundary, `[lat, lon]` for Leaflet — the explicit
 // conversion R7 asks for. Only finite JSON numbers pass: anything else
@@ -289,6 +320,110 @@ export function nextMapAction(renderedRouteUuid, payload) {
   return "refit";
 }
 
+// The "Show other routes" payload. Same contract as the main payload: parse
+// defensively and draw only what the server actually returned.
+export function parseContext(raw) {
+  if (typeof raw !== "string" || raw === "") return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.routes)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+// Every drawable path of one context route, in payload order. Only `saved`
+// geometry with fully valid coordinates draws: context sections without an
+// endpoint in the payload — and `missing`/`unavailable` entries — are never
+// fabricated (INV-5).
+export function contextRoutePaths(route) {
+  if (!route || typeof route.route_id !== "string") return [];
+
+  const paths = [];
+
+  for (const section of route.sections || []) {
+    if (section?.source !== "stop_pair" || section.status !== "saved") continue;
+    const rawCoordinates = Array.isArray(section.coordinates)
+      ? section.coordinates
+      : [];
+    const latlngs = rawCoordinates.map(leafletLatLng).filter(Boolean);
+    if (latlngs.length >= 2 && latlngs.length === rawCoordinates.length) {
+      paths.push({ latlngs });
+    }
+  }
+
+  for (const variant of route.imported_shape_variants || []) {
+    if (variant?.source !== "imported_shape" || variant.status !== "saved") {
+      continue;
+    }
+    const rawCoordinates = Array.isArray(variant.coordinates)
+      ? variant.coordinates
+      : [];
+    const latlngs = rawCoordinates.map(leafletLatLng).filter(Boolean);
+    if (latlngs.length >= 2 && latlngs.length === rawCoordinates.length) {
+      paths.push({ latlngs });
+    }
+  }
+
+  return paths;
+}
+
+// The prototype's badge: the route's color as the plate, white traded for the
+// grey fallback, and the automatic text color when no text color is usable.
+export function contextBadge(route) {
+  if (!route) return null;
+
+  const bg = normalizeHex(route.route_color) || DEFAULT_LINE_COLOR;
+  const plate = bg === WHITE ? SWATCH_FALLBACK : `#${bg}`;
+  const fg =
+    normalizeHex(route.route_text_color) ||
+    automaticTextColor(plate) ||
+    "000000";
+  const label =
+    String(
+      route.route_short_name || route.route_long_name || route.route_id,
+    ).trim() || route.route_id;
+
+  return { label, background: plate, color: `#${fg}` };
+}
+
+// Viewport bounds the server can compare across moves: rounded to the same
+// precision so a map nudge that lands on the same view never re-queries.
+export function roundBounds({ north, south, east, west }) {
+  const round = (value) => Math.round(value * 1e6) / 1e6;
+  return {
+    north: round(north),
+    south: round(south),
+    east: round(east),
+    west: round(west),
+  };
+}
+
+export function sameViewportBounds(a, b) {
+  if (!a || !b) return false;
+  return (
+    a.north === b.north &&
+    a.south === b.south &&
+    a.east === b.east &&
+    a.west === b.west
+  );
+}
+
+// Badge labels come from stored route names and reach a divIcon as HTML, so
+// they are escaped before they can become markup.
+function escapeBadgeLabel(label) {
+  const div = document.createElement("div");
+  div.textContent = String(label);
+  return div.innerHTML;
+}
+
 const RouteDetailsMapHook = {
   mounted() {
     this._destroyed = false;
@@ -298,6 +433,10 @@ const RouteDetailsMapHook = {
     this._highlight = null;
     this._lineColor = DEFAULT_LINE_COLOR;
     this._lineLayers = [];
+    this._contextRaw = "";
+    this._contextLineLayers = [];
+    this._contextBadges = [];
+    this._lastContextBounds = null;
     this._hintTimer = null;
     this._cleanup = [];
 
@@ -385,6 +524,23 @@ const RouteDetailsMapHook = {
     this._variants = L.layerGroup().addTo(this._map);
     this._markers = L.layerGroup().addTo(this._map);
 
+    // Context geometry lives in its own pane under the overlay pane, so the
+    // current route always reads on top and the context never intercepts a
+    // drag or click meant for it.
+    const contextPane = this._map.createPane(CONTEXT_PANE);
+    contextPane.style.zIndex = "350";
+    contextPane.style.pointerEvents = "none";
+    this._contexts = L.layerGroup().addTo(this._map);
+
+    // Every map move with context enabled reports the new viewport; identical
+    // bounds are skipped so settling from a fit does not re-query.
+    this._onMoveEnd = () => {
+      const toggle = document.getElementById(CONTEXT_TOGGLE_ID);
+      if (!toggle?.checked) return;
+      this._pushContextViewport(this._viewportBounds());
+    };
+    this._map.on("moveend", this._onMoveEnd);
+
     // A tile that errored is the degraded state; a later tile that loaded
     // recovers. `load` is not that signal: an errored tile counts as ready,
     // so a wholly aborted basemap would end with `load` (TransferMap's
@@ -406,6 +562,26 @@ const RouteDetailsMapHook = {
       this._setTilesUnavailable(false);
       this._tiles?.redraw();
     });
+
+    // "Show other routes" (AC-27): the checkbox stays a native checkbox (its
+    // keyboard operation included); this only reports the toggle and the
+    // viewport it applies to. Turning it off tells the server to clear, so no
+    // state older than the newest event can survive.
+    const toggle = document.getElementById(CONTEXT_TOGGLE_ID);
+    if (toggle) {
+      this._onContextToggle = (event) => {
+        if (event.target.checked) {
+          this._pushContextViewport(this._viewportBounds());
+        } else {
+          this._lastContextBounds = null;
+          this._pushEventTo("route_context_viewport", { enabled: false });
+        }
+      };
+      toggle.addEventListener("change", this._onContextToggle);
+      this._cleanup.push(() =>
+        toggle.removeEventListener("change", this._onContextToggle),
+      );
+    }
 
     // Cooperative gestures: plain wheel scrolls the page behind a hint;
     // Ctrl/Cmd + wheel zooms around the pointer (the prototype's contract).
@@ -540,6 +716,15 @@ const RouteDetailsMapHook = {
       }
     }
 
+    const rawContext =
+      typeof this.el.dataset.mapContext === "string"
+        ? this.el.dataset.mapContext
+        : "";
+    if (rawContext !== this._contextRaw) {
+      this._contextRaw = rawContext;
+      this._drawContext(rawContext === "" ? null : parseContext(rawContext));
+    }
+
     this._applyColors(parseColors(this.el.dataset.mapColors));
   },
 
@@ -632,6 +817,111 @@ const RouteDetailsMapHook = {
         lineCap: entry.kind === "dashed" ? "butt" : "round",
       });
       entry.under.setStyle({ color: casing, weight: CASING_WEIGHT, opacity });
+    }
+
+    this._paintContextLines();
+  },
+
+  // --- other-route context ---------------------------------------------------
+
+  _viewportBounds() {
+    if (!this._map) return null;
+    const bounds = this._map.getBounds();
+    return roundBounds({
+      north: bounds.getNorth(),
+      south: bounds.getSouth(),
+      east: bounds.getEast(),
+      west: bounds.getWest(),
+    });
+  },
+
+  _pushContextViewport(bounds) {
+    if (this._destroyed || typeof this.pushEvent !== "function") return;
+    if (!bounds) return;
+    if (sameViewportBounds(bounds, this._lastContextBounds)) return;
+
+    this._lastContextBounds = bounds;
+    this._pushEventTo(CONTEXT_VIEWPORT_EVENT, { enabled: true, bounds });
+  },
+
+  _pushEventTo(event, payload) {
+    if (this._destroyed || typeof this.pushEvent !== "function") return;
+    this.pushEvent(event, payload);
+  },
+
+  // Redraws the whole context layer from one parsed payload. The fit is never
+  // touched: context is added to the operator's view, not a new one.
+  _drawContext(context) {
+    if (!this._L || !this._contexts) return;
+
+    this._contexts.clearLayers();
+    this._contextLineLayers = [];
+    this._contextBadges = [];
+    if (!context) {
+      this._paintContextLines();
+      return;
+    }
+
+    for (const route of context.routes || []) {
+      const badge = contextBadge(route);
+      const paths = contextRoutePaths(route);
+      const inactive = route?.active === false;
+      const opacity = inactive ? CONTEXT_INACTIVE_OPACITY : CONTEXT_OPACITY;
+
+      for (const path of paths) {
+        const hex = badge ? badge.background.slice(1) : DEFAULT_LINE_COLOR;
+        const under = this._L.polyline(path.latlngs, {
+          pane: CONTEXT_PANE,
+          color: casingFor(hex),
+          weight: CONTEXT_CASING_WEIGHT,
+          opacity,
+          interactive: false,
+        });
+        const line = this._L.polyline(path.latlngs, {
+          pane: CONTEXT_PANE,
+          color: `#${hex}`,
+          weight: CONTEXT_LINE_WEIGHT,
+          opacity,
+          dashArray: inactive ? CONTEXT_DASH_ARRAY : null,
+          interactive: false,
+        });
+        under.addTo(this._contexts);
+        line.addTo(this._contexts);
+        this._contextLineLayers.push({ line, under, opacity });
+      }
+
+      if (badge && paths.length) {
+        const marker = this._L.marker(paths[0].latlngs[0], {
+          pane: CONTEXT_PANE,
+          interactive: false,
+          keyboard: false,
+          icon: this._L.divIcon({
+            className: "route-map-context-badge",
+            html: `<span style="background:${badge.background};color:${badge.color}">${escapeBadgeLabel(badge.label)}</span>`,
+            iconSize: null,
+          }),
+        });
+        marker.addTo(this._contexts);
+        this._contextBadges.push(marker);
+      }
+    }
+
+    this._paintContextLines();
+  },
+
+  // Highlighting a current-route pattern dims the context layer so the
+  // selection still reads; clearing restores each entry's own opacity.
+  _paintContextLines() {
+    const dim = this._highlight !== null;
+
+    for (const entry of this._contextLineLayers) {
+      const opacity = dim ? CONTEXT_DIM_OPACITY : entry.opacity;
+      entry.line.setStyle({ opacity });
+      entry.under.setStyle({ opacity });
+    }
+
+    for (const marker of this._contextBadges) {
+      marker.setOpacity(dim ? CONTEXT_DIM_OPACITY : 1);
     }
   },
 

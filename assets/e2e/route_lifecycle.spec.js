@@ -1497,3 +1497,116 @@ test.describe("Saved route map", () => {
     await expect(page.locator("#route-map")).toHaveCount(0);
   });
 });
+
+test.describe("Other routes context", () => {
+  // Local copies of the saved-route-map describe's harness helpers: describe
+  // blocks do not share function scope.
+  const TILE_PATTERN = /\/map\/tiles\//;
+
+  function pngTile() {
+    return Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP8z8DwnwEJMDEgAQBe" +
+        "4QEKd3hXFAAAAABJRU5ErkJggg==",
+      "base64",
+    );
+  }
+
+  async function openContextMap(page) {
+    await page.route(TILE_PATTERN, (route) =>
+      route.fulfill({ status: 200, body: pngTile(), contentType: "image/png" }),
+    );
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
+    await expect(page.locator("#route-map-frame")).toBeVisible();
+  }
+
+  test("show other routes draws context geometry and the current route stays complete", async ({
+    page,
+  }) => {
+    await openContextMap(page);
+
+    // Off by default: the toggle exists, nothing else does.
+    await expect(page.locator("#route-map-context-toggle")).toBeVisible();
+    await expect(page.locator("#route-map-context-toggle")).not.toBeChecked();
+    await expect(page.locator("#route-map-context-status")).toHaveCount(0);
+
+    await page.locator("#route-map-context-toggle").check();
+    await expect(page.locator("#route-map-context-status")).toContainText(
+      "Showing the first 50 nearby routes",
+    );
+
+    // The context payload carries this version's other routes only, in
+    // deterministic order, never the current route.
+    const context = JSON.parse(
+      await page.locator("#route-map").getAttribute("data-map-context"),
+    );
+    expect(context.routes.length).toBe(50);
+    expect(
+      context.routes.every((route) => route.route_id !== DETAILS_ROUTE),
+    ).toBe(true);
+    const ids = context.routes.map((route) => route.route_id);
+    expect(ids).toEqual([...ids].sort());
+
+    // Context lines and badges actually drew, including the dashed inactive
+    // route; the current route's own list is untouched beside them.
+    await expect(
+      page.locator(".route-map-context-badge").first(),
+    ).toBeVisible();
+    await expect(
+      page.locator("#route-map path[stroke-dasharray]").first(),
+    ).toBeVisible();
+    await expect(
+      page.locator("#route-map-pattern-list [data-map-highlight]"),
+    ).toHaveCount(2);
+
+    // Highlighting a current-route pattern dims the context layer.
+    const contextLine = page
+      .locator("#route-map path[stroke-dasharray]")
+      .first();
+    await page
+      .locator("#route-map-pattern-list [data-map-highlight]")
+      .first()
+      .hover();
+    await expect
+      .poll(() =>
+        contextLine.evaluate((el) => el.getAttribute("stroke-opacity")),
+      )
+      .toBe("0.12");
+
+    // Turning it off discards the layer and the strip; nothing stale survives.
+    await page.locator("#route-map-context-toggle").uncheck();
+    await expect(page.locator("#route-map-context-status")).toHaveCount(0);
+    await expect(page.locator(".route-map-context-badge")).toHaveCount(0);
+    await expect(
+      await page.locator("#route-map").getAttribute("data-map-context"),
+    ).toBeNull();
+  });
+
+  test("context pages load more routes and mark partial until exhausted", async ({
+    page,
+  }) => {
+    await openContextMap(page);
+
+    await page.locator("#route-map-context-toggle").check();
+    await expect(page.locator("#route-map-context-status")).toContainText(
+      "Showing the first 50 nearby routes. More are in this view.",
+    );
+    await expect(page.locator("#route-map-context-more")).toBeVisible();
+
+    await page.locator("#route-map-context-more").click();
+    await expect(page.locator("#route-map-context-status")).toContainText(
+      "Showing all 55 nearby routes in this view.",
+    );
+
+    const context = JSON.parse(
+      await page.locator("#route-map").getAttribute("data-map-context"),
+    );
+    expect(context.routes.length).toBe(55);
+    const ids = context.routes.map((route) => route.route_id);
+    expect(ids).toEqual([...ids].sort());
+    expect(new Set(ids).size).toBe(55);
+    await expect(page.locator("#route-map-context-more")).toHaveCount(0);
+  });
+});

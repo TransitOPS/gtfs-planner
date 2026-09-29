@@ -234,6 +234,32 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.route_map(organization_id, gtfs_version_id, route_id)
 
   @doc """
+  Pages one published route's viewport context geometry (R7, AC-27) through
+  seam `S-3` (`GtfsPlanner.Gtfs.Routes.Map.route_context_map/4`): the other
+  routes of the same version inside `bounds`, 50 per page over a deterministic
+  cursor, with the current route excluded and geometry deduplicated by shape
+  and section. Malformed bounds or cursors are rejected, never coerced.
+  """
+  @spec route_context_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), %{
+          bounds: term(),
+          cursor: term()
+        }) ::
+          {:ok, map()}
+          | {:error, :not_found | :invalid_bounds | :invalid_cursor | :unavailable}
+  def route_context_map(organization_id, gtfs_version_id, route_id, %{
+        bounds: bounds,
+        cursor: cursor
+      }),
+      do:
+        Routes.route_context_map(organization_id, gtfs_version_id, route_id, %{
+          bounds: bounds,
+          cursor: cursor
+        })
+
+  def route_context_map(_organization_id, _gtfs_version_id, _route_id, _opts),
+    do: {:error, :invalid_bounds}
+
+  @doc """
   Fetches a single stop by its GTFS `stop_id` for the station detail surface
   through the configured catalog read adapter.
 
