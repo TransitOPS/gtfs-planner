@@ -26,8 +26,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   and first stop page in one operational read, so a lost connection is reported
   once for the whole workspace, and the Flex services list resolves the version's
   services with their readiness checks, the calendars map, the organization's
-  export switch and the flex map payload (the stored areas, the route lines and
-  the connecting stops) the same way. Nothing else is rescued, so
+  export switch, the flex map payload (the stored areas, the route lines and
+  the connecting stops) and the routes the create drawer offers the same way.
+  Nothing else is rescued, so
   a malformed id, a bad query, or any other defect still raises rather than being
   reported as downtime.
   """
@@ -267,6 +268,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
           end),
         calendars: Flex.calendars_map(organization_id, gtfs_version_id),
         map: Flex.map_payload(organization_id, gtfs_version_id),
+        routes: Flex.route_choices(organization_id, gtfs_version_id),
         has_fixed_routes?: map_size(facts.routes) > 0,
         include_flex: ExportDefaults.get(organization_id).include_flex
       }

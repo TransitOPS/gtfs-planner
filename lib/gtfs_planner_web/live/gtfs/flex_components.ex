@@ -1,7 +1,8 @@
 defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   @moduledoc """
   The Flex list's surfaces: the services table, the export-state line, the
-  first-use question, the map card, and the list's loading and error states.
+  first-use question, the create drawer, the copy action, the map card, and the
+  list's loading and error states.
 
   `FlexLive` owns the load and every value; these components render what they are
   given, so the copy the prototype fixes lives in one place per state. The table
@@ -9,6 +10,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   `Flex.Checks.status/2` badge: the tone selects the badge's colour and the
   label always carries the meaning, so the status is never signalled by colour
   alone.
+
+  The create drawer is the shared `drawer/1`, because the app's own
+  `OverlayDialog` behaviour already gives a modal dialog that Esc closes, that
+  keeps focus inside it, and that returns focus to the control that opened it.
+  Its error summary follows the app's `FormErrorFocus` pattern: the summary
+  carries `tabindex="-1"` and the page moves focus to it, and each item links to
+  the field it names.
 
   The map card renders the `FlexAreaMap` hook's root (`#flex-list-map`) with the
   Leaflet stage inside it and the legend beneath it. The server never patches
@@ -20,7 +28,16 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   use GtfsPlannerWeb, :html
 
   import GtfsPlannerWeb.CoreComponents,
-    only: [button: 1, callout: 1, skeleton: 1, status_badge: 1, table: 1]
+    only: [
+      button: 1,
+      callout: 1,
+      confirm_dialog: 1,
+      drawer: 1,
+      input: 1,
+      skeleton: 1,
+      status_badge: 1,
+      table: 1
+    ]
 
   alias GtfsPlanner.Gtfs.Flex.Checks
   alias GtfsPlanner.Gtfs.Flex.RiderText
@@ -28,17 +45,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   alias GtfsPlanner.Gtfs.FlexService
 
   # The two kinds a first-time editor chooses between (AC-4). Wording is the
-  # prototype's; the drawer that these buttons open arrives in step 21, so they
-  # carry the kind as data rather than an event this page does not yet handle.
+  # prototype's. Both the first-use question and the create drawer render them,
+  # so the drawer's kind radios and the question's buttons never drift apart.
+  # `key` is the stored kind; `pattern` is the prototype's own name for the
+  # radio, which keeps the drawer's control ids the ones the reference draws.
   @kinds [
     %{
       key: "area",
+      pattern: "area",
       label: "Rides anywhere in an area",
       help:
         "Dial-a-ride or microtransit. Riders book a trip between any two places in the area, and can also ride to set stops."
     },
     %{
       key: "detour",
+      pattern: "route",
       label: "A route that detours on request",
       help:
         "Route deviation. The bus keeps its timetable and leaves the route to pick up or drop off riders who ask."
@@ -176,10 +197,22 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   @doc """
   Renders the first-use question: what kind of on-demand service the editor runs.
 
-  The two kinds are the only actions, and the pointer below them answers the
-  other question the prototype answers here: a stop served only when booked
-  belongs on the route's timetable, not in a new flex service.
+  The two kinds are the only actions, and each opens the create drawer with its
+  kind already chosen. The pointer below them answers the other question the
+  prototype answers here: a stop served only when booked belongs on the route's
+  timetable, not in a new flex service.
+
+  On a version with no services the copy action renders inside this state
+  (AC-6). `sources` are the organization's other published versions that hold a
+  service; the panel renders only when there is one to copy from, because a
+  version with no services is the only version a copy may land in (R14) and a
+  version with none to copy is no source at all.
   """
+  attr :sources, :list, default: []
+  attr :copy_form, :any, default: nil
+  attr :copy_target, :any, default: nil
+  attr :copy_error, :string, default: nil
+
   def first_use(assigns) do
     assigns = assign(assigns, :kinds, @kinds)
 
@@ -201,7 +234,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           :for={kind <- @kinds}
           id={"flex-create-#{kind.key}"}
           type="button"
-          data-kind={kind.key}
+          phx-click="open_create"
+          phx-value-kind={kind.key}
+          phx-value-opener_id={"flex-create-#{kind.key}"}
           class="flex min-h-11 items-start gap-3 rounded-card border border-subtle px-3 py-3 text-left hover:border-action hover:bg-canvas"
         >
           <span class="min-w-0 flex-1">
@@ -212,13 +247,349 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         </button>
       </div>
 
-      <p class="mt-3 rounded-card bg-canvas px-3 py-2 text-[13px] text-default">
-        <strong class="font-[650]">Stops served only when booked?</strong>
-        Request stops and trips that run only when booked go on the route’s timetable, with the boarding choice “Booking required”. On-demand trips between set stops are an area service with a list of stops.
-      </p>
+      <.booked_stops_pointer />
+
+      <.copy_panel
+        :if={@sources != []}
+        sources={@sources}
+        form={@copy_form}
+        target={@copy_target}
+        error={@copy_error}
+      />
     </section>
     """
   end
+
+  @doc """
+  Renders the create drawer (AC-4): the two kinds, the one-name question, the
+  booked-stops pointer, a detour's route and the name.
+
+  `form` is the drawer's draft, so every control carries what the editor has
+  answered; the page re-renders the drawer on each change, because choosing a
+  kind or a one-name answer adds or removes a question. `errors` are
+  `{field_id, message}` pairs for the summary and the controls it links to, and
+  `error` is a failure no field owns.
+
+  The name input takes focus when the drawer opens with a kind already chosen
+  (the first-use buttons), and the drawer's heading otherwise, so the first
+  usable control is focused rather than the form's first radio.
+  """
+  attr :open, :boolean, required: true
+  attr :version_name, :string, required: true
+  attr :form, :any, required: true
+  attr :errors, :list, default: []
+  attr :routes, :list, default: []
+  attr :error, :string, default: nil
+  attr :focus_id, :string, default: nil
+  attr :return_focus_id, :string, default: nil
+
+  def create_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:kinds, @kinds)
+      |> assign(:kind, assigns.form[:kind].value)
+      |> assign(:named, assigns.form[:named].value)
+      |> assign(:route_options, Enum.map(assigns.routes, &{&1.name, &1.id}))
+      |> assign(:error_ids, MapSet.new(Enum.map(assigns.errors, &elem(&1, 0))))
+
+    ~H"""
+    <.drawer
+      id="create-drawer"
+      open={@open}
+      on_close="close_create"
+      title="Create flex service"
+      initial_focus={if @focus_id, do: :first_field, else: :heading}
+      initial_focus_id={@focus_id}
+      return_focus_id={@return_focus_id}
+      class="max-w-[min(100vw,32.5rem)]"
+    >
+      <div id="create-drawer-content" phx-hook="FormErrorFocus">
+        <p id="create-drawer-description" class="mb-4 text-sm text-muted">
+          {@version_name}
+        </p>
+
+        <.form
+          for={@form}
+          id="create-form"
+          novalidate
+          phx-change="create_change"
+          phx-submit="create_submit"
+          class="grid gap-5"
+        >
+          <div :if={@errors != []}>
+            <div
+              id="create-error-summary"
+              tabindex="-1"
+              role="alert"
+              class="rounded-card border-2 border-error-line px-4 py-3 text-sm outline-none"
+            >
+              <p class="font-[650] text-error-fg">{summary_lead(@errors)}</p>
+              <ul class="mt-1 grid gap-0.5 pl-5 [list-style:disc]">
+                <li :for={{field_id, message} <- @errors}>
+                  <a href={"##{field_id}"} class="text-error-fg underline">{message}</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div :if={@error}>
+            <.callout id="create-save-error" kind="error" title="Nothing was created" tabindex="-1">
+              {@error}
+            </.callout>
+          </div>
+
+          <fieldset>
+            <legend class="text-sm font-[650] text-strong">How does it work?</legend>
+
+            <div class="mt-2 grid gap-2">
+              <label
+                :for={kind <- @kinds}
+                for={"create-pattern-#{kind.pattern}"}
+                class={[
+                  "flex cursor-pointer items-start gap-3 rounded-card border px-3 py-3",
+                  if(@kind == kind.key,
+                    do: "border-action shadow-[inset_0_0_0_1px_var(--color-action)]",
+                    else: "border-subtle hover:bg-canvas"
+                  )
+                ]}
+              >
+                <input
+                  type="radio"
+                  id={"create-pattern-#{kind.pattern}"}
+                  name="create[kind]"
+                  value={kind.key}
+                  checked={@kind == kind.key}
+                  aria-invalid={error_flag(@error_ids, "create-pattern-#{kind.pattern}")}
+                  class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block text-sm font-[650] text-strong">{kind.label}</span>
+                  <span class="block text-[13px] text-muted">{kind.help}</span>
+                </span>
+                <span class="shrink-0" aria-hidden="true"><.kind_diagram kind={kind.key} /></span>
+              </label>
+            </div>
+
+            <.booked_stops_pointer />
+
+            <p
+              :if={error_for(@errors, "create-pattern-area")}
+              class="mt-1 text-[13px] font-[650] text-error-fg"
+            >
+              {error_for(@errors, "create-pattern-area")}
+            </p>
+          </fieldset>
+
+          <fieldset :if={@kind == "area"}>
+            <legend class="text-sm font-[650] text-strong">
+              Do riders know the areas by one name?
+            </legend>
+
+            <div class="mt-1 grid gap-1">
+              <label
+                for="create-named-one"
+                class="flex min-h-11 cursor-pointer items-start gap-3 py-1"
+              >
+                <input
+                  type="radio"
+                  id="create-named-one"
+                  name="create[named]"
+                  value="one"
+                  checked={@named != "several"}
+                  class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                />
+                <span class="text-sm">
+                  Yes, one name
+                  <span class="block text-[13px] text-muted">
+                    Towns can still have their own hours, such as “Toledo only: weekdays 9 am–3 pm”.
+                  </span>
+                </span>
+              </label>
+
+              <label
+                for="create-named-several"
+                class="flex min-h-11 cursor-pointer items-start gap-3 py-1"
+              >
+                <input
+                  type="radio"
+                  id="create-named-several"
+                  name="create[named]"
+                  value="several"
+                  checked={@named == "several"}
+                  class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                />
+                <span class="text-sm">No, each area has its own name</span>
+              </label>
+            </div>
+
+            <p
+              :if={@named == "several"}
+              id="create-several-names-advice"
+              class="mt-1 rounded-card bg-canvas px-3 py-2 text-[13px] text-default"
+            >
+              Create one service for each name, such as Newport Dial-a-Ride and Toledo Flex, so trip planners show the names riders know. Start with the first one here.
+            </p>
+          </fieldset>
+
+          <div :if={@kind == "detour"}>
+            <.input
+              field={@form[:route_id]}
+              type="select"
+              label="Route that detours"
+              options={@route_options}
+              prompt="Choose a route"
+            />
+            <p
+              :if={error_for(@errors, "create_route_id")}
+              class="mt-1 text-[13px] font-[650] text-error-fg"
+            >
+              {error_for(@errors, "create_route_id")}
+            </p>
+          </div>
+
+          <div>
+            <.input
+              field={@form[:name]}
+              type="text"
+              label="Service name"
+              autocomplete="off"
+              phx-debounce="blur"
+              placeholder="For example, Newport Dial-a-Ride"
+              help="Riders see this name in trip planners. Use the name on your website and vehicles."
+            />
+            <p
+              :if={error_for(@errors, "create_name")}
+              class="mt-1 text-[13px] font-[650] text-error-fg"
+            >
+              {error_for(@errors, "create_name")}
+            </p>
+          </div>
+
+          <p class="text-[13px] text-muted">
+            Next you’ll add when it runs, how riders book and where it goes. Exports leave it out until those are set.
+          </p>
+        </.form>
+      </div>
+
+      <%!-- The one primary action sits in the drawer's pinned footer, so it
+      stays reachable while the answers above it scroll. The two controls
+      belong to the form through its own id. --%>
+      <:footer>
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <.button type="button" variant="secondary" class="min-h-11" phx-click="close_create">
+            Cancel
+          </.button>
+          <.button
+            id="create-submit"
+            type="submit"
+            form="create-form"
+            variant="primary"
+            class="min-h-11"
+          >
+            Create service
+          </.button>
+        </div>
+      </:footer>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the copy action for a version with no services (AC-6, R14).
+
+  The select offers the organization's other published versions that hold a flex
+  service, and the copy itself goes through the confirmation dialog, which names
+  the source version and only then calls `Flex.copy_from_version/4`. A source
+  that loses its last service between this page's load and the confirmation
+  still copies nothing; the page reports that rather than leaving an
+  unexplained empty list.
+  """
+  attr :sources, :list, required: true
+  attr :form, :any, required: true
+  attr :target, :any, default: nil
+  attr :error, :string, default: nil
+
+  def copy_panel(assigns) do
+    assigns = assign(assigns, :options, Enum.map(assigns.sources, &{&1.name, &1.id}))
+
+    ~H"""
+    <section id="flex-copy" aria-labelledby="flex-copy-title" class="mt-6 border-t border-subtle pt-5">
+      <h3 id="flex-copy-title" class="text-base font-[650] text-strong">
+        Copy flex services from another version
+      </h3>
+      <p class="mt-1 text-[13px] text-muted">
+        Copies every service and its areas, geometry included. A route, stop or calendar this version doesn’t have shows as a readiness error on the copy.
+      </p>
+
+      <.form
+        for={@form}
+        id="flex-copy-form"
+        phx-submit="copy_from_version"
+        class="mt-3 flex flex-wrap items-end gap-3"
+      >
+        <.input
+          field={@form[:source_version_id]}
+          type="select"
+          label="Copy from"
+          options={@options}
+          prompt="Choose a version"
+          class="w-full select select-lg min-w-[16rem]"
+        />
+        <.button id="copy-services" type="submit" variant="primary" class="min-h-11">
+          Copy services
+        </.button>
+      </.form>
+
+      <p
+        :if={@error}
+        id="flex-copy-error"
+        role="alert"
+        class="mt-2 text-[13px] font-[650] text-error-fg"
+      >
+        {@error}
+      </p>
+
+      <.confirm_dialog
+        id="copy-confirm"
+        open={not is_nil(@target)}
+        title="Copy flex services?"
+        confirm_label="Copy services"
+        pending_label="Copying…"
+        on_confirm="confirm_copy"
+        on_cancel="cancel_copy"
+        confirm_variant="primary"
+        described_by="copy-confirm-body"
+        return_focus_id="copy-services"
+      >
+        <p :if={@target} id="copy-confirm-body">
+          Every flex service in {@target.name}, and its areas, is copied into this version. This version has no services yet, so nothing is replaced.
+        </p>
+      </.confirm_dialog>
+    </section>
+    """
+  end
+
+  # The prototype's pointer, shared by the first-use question and the drawer so
+  # the two surfaces answer the booked-stops question with the same words.
+  defp booked_stops_pointer(assigns) do
+    ~H"""
+    <p class="mt-3 rounded-card bg-canvas px-3 py-2 text-[13px] text-default">
+      <strong class="font-[650]">Stops served only when booked?</strong>
+      Request stops and trips that run only when booked go on the route’s timetable, with the boarding choice “Booking required”. On-demand trips between set stops are an area service with a list of stops.
+    </p>
+    """
+  end
+
+  # The summary's own heading: one unanswered question stays singular, so a
+  # single missing answer never reads as a list.
+  defp summary_lead([_one]), do: "Answer one question to create the service"
+  defp summary_lead(errors), do: "Answer #{length(errors)} questions to create the service"
+
+  defp error_for(errors, field_id) do
+    Enum.find_value(errors, fn {id, message} -> if id == field_id, do: message end)
+  end
+
+  defp error_flag(error_ids, field_id), do: to_string(MapSet.member?(error_ids, field_id))
 
   @doc """
   Renders the map card, its Leaflet stage and its legend.
@@ -381,8 +752,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     """
   end
 
-  defp count_label(1), do: "1 flex service"
-  defp count_label(count), do: "#{count} flex services"
+  @doc """
+  The version's service count as riders read it, shared by the table's caption
+  and the copy action's confirmation.
+  """
+  @spec count_label(non_neg_integer()) :: String.t()
+  def count_label(1), do: "1 flex service"
+  def count_label(count), do: "#{count} flex services"
 
   # The sentence a full export writes for these services (R15, AC-24).
   defp export_sentence(false) do

@@ -145,11 +145,15 @@ function viewportLabel(page) {
   return viewport.label;
 }
 
-async function capture(page, name) {
+// The capture name carries the viewport the case set, so one case covers the
+// desktop and narrow sizes without repeating the label. A modal surface is
+// captured in the viewport only: a full-page shot of a drawer would also show
+// the page it covers, which is not what the reader is meant to compare.
+async function capture(page, name, { fullPage = true } = {}) {
   mkdirSync(CAPTURE_DIR, { recursive: true });
 
   const path = resolve(CAPTURE_DIR, `${name}-${viewportLabel(page)}.png`);
-  await page.screenshot({ path, fullPage: true });
+  await page.screenshot({ path, fullPage });
 
   return path;
 }
@@ -260,6 +264,61 @@ test("list-map", async ({ page }) => {
 
   await page.setViewportSize(DESKTOP);
   await captureReference(page, "flex-services-prototype.html", "list", "list-map");
+});
+
+// ── create ────────────────────────────────────────────────────────────────
+
+// The create drawer is the list's only way to add a service: the two kinds, the
+// one-name question with its advice, the booked-stops pointer, a detour's route
+// and the name. The capture takes the reference's "areas with their own names"
+// state — the area kind and the "No, each area has its own name" answer — which
+// is the state the prototype's own `create-several-names` state opens.
+test("create", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+
+  const versionId = await openFlex(page);
+
+  // The header's button opens the drawer on the kind question itself, and the
+  // two kinds it offers are the only ones there are.
+  await page.click("#create-service");
+
+  const drawer = page.locator("#create-drawer");
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toContainText("How does it work?");
+  await expect(page.locator("#create-pattern-area")).toBeVisible();
+  await expect(page.locator("#create-pattern-route")).toBeVisible();
+  await expect(page.locator("#create-pattern-stops")).toHaveCount(0);
+  await expect(drawer).toContainText("Booking required");
+  await expect(page.locator("#create-named-one")).toHaveCount(0);
+
+  // The one-name question follows the area kind, and its advice follows the
+  // "each area has its own name" answer.
+  await page.click("#create-pattern-area");
+  await expect(page.locator("#create_name")).toBeVisible();
+  await page.click("#create-named-several");
+  await expect(drawer).toContainText("Create one service for each name");
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "create", { fullPage: false });
+
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#create-named-several")).toBeVisible();
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "create", { fullPage: false });
+
+  await page.setViewportSize(DESKTOP);
+
+  // The footer's button belongs to the form, and an unanswered submit lists what
+  // is missing and stays on the page rather than creating anything.
+  await page.click("#create-submit");
+  await expect(page.locator("#create-error-summary")).toBeVisible();
+  await expect(page.locator("#create-error-summary")).toContainText(
+    "Enter the service name riders see.",
+  );
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex$`));
+
+  await captureReference(page, "flex-services-prototype.html", "create-several-names", "create");
 });
 
 // ── export ────────────────────────────────────────────────────────────────

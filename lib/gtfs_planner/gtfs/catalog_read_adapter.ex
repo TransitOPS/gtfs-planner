@@ -77,6 +77,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
           services: [%{service: FlexService.t(), checks: [Checks.check()]}],
           calendars: %{optional(String.t()) => %{name: String.t(), plural: String.t()}},
           map: Flex.map_payload(),
+          routes: [Flex.route_choice()],
           has_fixed_routes?: boolean(),
           include_flex: boolean()
         }

@@ -81,6 +81,12 @@ defmodule GtfsPlanner.Gtfs.Flex do
   """
   @type area_input :: map()
 
+  @typedoc """
+  One route the create drawer's detour select offers: `%{id: route_id, name:
+  "20 Valley Line"}`.
+  """
+  @type route_choice :: %{id: String.t(), name: String.t()}
+
   # --- reads ------------------------------------------------------------------
 
   @doc """
@@ -206,6 +212,56 @@ defmodule GtfsPlanner.Gtfs.Flex do
         {:ok,
          %{service | areas: areas_in_position_order(organization_id, version_id, service.id)}}
     end
+  end
+
+  @doc """
+  The version's routes as the create drawer's detour choices, in `route_id`
+  order: `%{id: route_id, name: "20 Valley Line"}`.
+
+  The name joins the route's short and long names, whichever the version has; a
+  route with neither is named by its own `route_id`. The read is scoped to the
+  organization and version (R10), like the rest of the reads the Flex pages
+  compose.
+  """
+  @spec route_choices(Ecto.UUID.t(), Ecto.UUID.t()) :: [route_choice()]
+  def route_choices(organization_id, version_id) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
+      order_by: [asc: r.route_id],
+      select: {r.route_id, r.route_short_name, r.route_long_name}
+    )
+    |> Repo.all()
+    |> Enum.map(fn {route_id, short_name, long_name} ->
+      %{id: route_id, name: route_name(route_id, short_name, long_name)}
+    end)
+  end
+
+  # The name riders read in the create drawer's select. A version that carries
+  # only one of the two names (or neither) still gets one label per route.
+  defp route_name(route_id, short_name, long_name) do
+    case Enum.reject([short_name, long_name], &blank?/1) do
+      [] -> route_id
+      names -> Enum.join(names, " ")
+    end
+  end
+
+  @doc """
+  The ids of the organization's versions that hold at least one flex service.
+
+  The copy action offers only these versions as sources: R14 copies a version's
+  whole set of services into an empty version, so a version with none is not a
+  source, and offering it would only produce an empty copy. The read is scoped
+  to the organization (R10) and spans versions, like the copy itself.
+  """
+  @spec version_ids_with_services(Ecto.UUID.t()) :: MapSet.t(Ecto.UUID.t())
+  def version_ids_with_services(organization_id) do
+    from(s in FlexService,
+      where: s.organization_id == ^organization_id,
+      select: s.gtfs_version_id,
+      distinct: true
+    )
+    |> Repo.all()
+    |> MapSet.new()
   end
 
   # --- writes -----------------------------------------------------------------
@@ -887,4 +943,6 @@ defmodule GtfsPlanner.Gtfs.Flex do
   defp attr(attrs, key) do
     Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   end
+
+  defp blank?(value), do: is_nil(value) or value == ""
 end
