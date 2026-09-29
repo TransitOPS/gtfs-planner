@@ -63,6 +63,12 @@ const FormErrorFocus = {
 
   _attemptFocus(target) {
     if (!target || typeof target.focus !== "function") return;
+
+    // A control inside a closed disclosure cannot take focus; the error is the
+    // reason to open it.
+    const closed = target.closest("details:not([open])");
+    if (closed) closed.open = true;
+
     target.focus();
 
     // A `phx-submit` round trip ends with LiveView restoring focus to the

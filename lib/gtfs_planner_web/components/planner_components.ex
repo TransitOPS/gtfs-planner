@@ -24,6 +24,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
   @message_tones %{
+    "neutral" => {"bg-canvas text-default", "text-muted", "hero-information-circle", "status"},
     "info" => {"bg-soft text-cyan-800", "text-cyan-700", "hero-information-circle", "status"},
     "success" => {"bg-soft text-cyan-800", "text-cyan-700", "hero-check-circle", "status"},
     "warning" => {"bg-warning-bg text-warning-fg", nil, "hero-exclamation-triangle", "alert"},
@@ -153,8 +154,10 @@ defmodule GtfsPlannerWeb.PlannerComponents do
         <:action><.button phx-click="resolve">Resolve timezones</.button></:action>
       </.message>
   """
-  attr :kind, :string, required: true, values: ~w(info success warning error)
+  attr :kind, :string, required: true, values: ~w(neutral info success warning error)
   attr :title, :string, required: true
+  attr :icon, :string, default: nil, doc: "a hero icon name that replaces the kind's own mark"
+  attr :class, :any, default: nil
 
   attr :role, :string,
     default: nil,
@@ -173,11 +176,15 @@ defmodule GtfsPlannerWeb.PlannerComponents do
       assigns
       |> assign(:tone, tone)
       |> assign(:icon_tone, icon_tone)
-      |> assign(:icon_name, icon_name)
+      |> assign(:icon_name, assigns.icon || icon_name)
       |> assign(:role, role)
 
     ~H"""
-    <div role={@role} class={["flex items-start gap-3 rounded-control px-4 py-3", @tone]} {@rest}>
+    <div
+      role={@role}
+      class={["flex items-start gap-3 rounded-control px-4 py-3", @tone, @class]}
+      {@rest}
+    >
       <.icon name={@icon_name} class={["mt-0.5 size-5 shrink-0", @icon_tone]} />
       <div class={[
         "min-w-0",

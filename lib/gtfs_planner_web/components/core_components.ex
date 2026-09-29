@@ -1155,10 +1155,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   Renders a full-width sub-navigation bar for route pages.
 
   Provides a back button, prominent route name, and underline-style tabs for
-  switching between views. A route whose saved `active` flag is explicitly
-  false (INV-4: only explicit false is inactive; NULL and true stay eligible)
-  also shows an Inactive chip beside the name and the shared inactive banner
-  below the tabs, with the real Reactivate action, on every route tab.
+  switching between views.
 
   ## Examples
 
@@ -1171,20 +1168,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :route, :map, required: true, doc: "the route record"
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
   attr :active_tab, :atom, values: [:details, :patterns, :schedules], default: :details
-
-  attr :inactive, :boolean,
-    default: nil,
-    doc: """
-    saved eligibility override; only explicit false is inactive (INV-4).
-    Defaults to the route row's own `active` flag.
-    """
-
-  attr :trip_count, :integer,
-    default: nil,
-    doc: """
-    the route's scoped trip count for the banner's export copy; nil keeps the
-    sentence truthful without a number.
-    """
 
   def route_sub_nav(assigns) do
     route_display =
@@ -1202,15 +1185,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           assigns.route.route_id
       end
 
-    inactive =
-      if is_nil(assigns.inactive),
-        do: Map.get(assigns.route, :active) == false,
-        else: assigns.inactive
-
-    assigns =
-      assigns
-      |> assign(:route_display, route_display)
-      |> assign(:inactive, inactive)
+    assigns = assign(assigns, :route_display, route_display)
 
     ~H"""
     <nav class="w-full" aria-label="Route navigation">
@@ -1226,13 +1201,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <h1 class="text-xl font-semibold leading-tight break-words min-w-0">
             {@route_display}
           </h1>
-          <span
-            :if={@inactive}
-            id="route-inactive-chip"
-            class="inline-flex items-center gap-1.5 rounded-badge border border-control-border bg-white px-2 py-1 text-[13px] font-[650] leading-none text-default"
-          >
-            <.icon name="hero-eye-slash" class="size-3.5" />Inactive
-          </span>
         </div>
       </div>
       <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
@@ -1260,37 +1228,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </.link>
         </div>
       </div>
-      <%!-- The inactive banner the reference shows on every route tab (AC-11):
-             only an explicitly false saved flag renders it, and Reactivate is
-             a real action the hosting LiveView handles through the step-9
-             status command. --%>
-      <div
-        :if={@inactive}
-        id="route-inactive-banner"
-        class="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-control border border-info bg-info/10 px-4 py-3 text-info"
-      >
-        <.icon name="hero-eye-slash" class="size-5 shrink-0" />
-        <p class="min-w-0 flex-1 basis-[300px] text-sm">
-          <strong class="font-bold">Inactive: left out of exports.</strong>
-          The next export skips {route_ref(@route)}{trip_count_phrase(@trip_count)}. Its patterns
-          and schedules stay here and you can keep editing them.
-        </p>
-        <.button type="button" id="route-reactivate" variant="secondary" phx-click="reactivate_route">
-          <.icon name="hero-arrow-path" class="ml-1 size-4" />Reactivate route
-        </.button>
-      </div>
     </nav>
     """
   end
-
-  defp route_ref(route) do
-    if route.route_short_name in [nil, ""], do: route.route_id, else: route.route_short_name
-  end
-
-  defp trip_count_phrase(nil), do: " and its trips"
-  defp trip_count_phrase(1), do: " and its 1 trip"
-
-  defp trip_count_phrase(count) when is_integer(count), do: " and its #{count} trips"
 
   @doc """
   Renders the Routes area tabs shared by the routes list and Transfers.
@@ -2115,6 +2055,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :on_confirm, :string, required: true
   attr :on_cancel, :string, required: true
   attr :cancel_label, :string, default: "Cancel"
+  attr :cancel_id, :string, default: nil, doc: "replaces the default `<id>-cancel`"
+  attr :confirm_id, :string, default: nil, doc: "replaces the default `<id>-confirm`"
   attr :target, :any, default: nil
   attr :pending, :boolean, default: false
   attr :return_focus_id, :string, default: nil
@@ -2151,6 +2093,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   attr :rest, :global
   slot :inner_block, required: true
+
+  slot :extra_action,
+    doc: "a third action between Cancel and the confirm, such as Discard changes"
 
   def confirm_dialog(assigns) do
     extra = Map.new(assigns.rest || %{})
@@ -2192,7 +2137,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </div>
           <div class={@ui.actions}>
             <button
-              id={"#{@id}-cancel"}
+              id={@cancel_id || "#{@id}-cancel"}
               type="button"
               class={@ui.cancel}
               phx-click={@on_cancel}
@@ -2202,9 +2147,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
             >
               {@cancel_label}
             </button>
+            {render_slot(@extra_action)}
             <button
               :if={not @single_action}
-              id={"#{@id}-confirm"}
+              id={@confirm_id || "#{@id}-confirm"}
               type={if @confirm_form, do: "submit", else: "button"}
               form={@confirm_form}
               class={@ui.confirm}

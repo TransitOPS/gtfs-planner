@@ -103,9 +103,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
       # The header is saved identity, and the form carries the same values.
-      assert has_element?(view, "#route-details-heading", "Details Route")
-      assert has_element?(view, "#route-details-badge")
-      assert has_element?(view, "#route-details-mode-label", "Bus")
+      assert has_element?(view, "#route-title", "Details Route")
+      assert has_element?(view, "#route-badge")
+      assert has_element?(view, "#route-mode", "Bus")
 
       assert has_element?(view, "#route-details-form #route-details-identity")
       assert has_element?(view, "#route-details-form #route-details-color-fields")
@@ -232,7 +232,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
-      saved = view |> element("#route-details-saved-identity") |> render()
+      saved = view |> element("#route-identifier") |> render()
       assert saved =~ "Harbor Transit"
       assert saved =~ "Route ID DETAILS4"
       assert saved =~ "Last saved"
@@ -255,7 +255,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       assert has_element?(
                view,
-               "#route-details-saved-identity",
+               "#route-identifier",
                "Last saved never — imported or unknown attribution"
              )
     end
@@ -304,7 +304,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       # A freshly loaded page is not a draft: no bar, no chip, saved identity.
       assert has_element?(view, "#route-details-save-bar[hidden]")
-      refute has_element?(view, "#route-details-unsaved-preview")
+      refute has_element?(view, "#route-unsaved-preview")
       assert render(view) =~ "background-color: #0B6E4F"
 
       view
@@ -319,11 +319,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       # always submits the checked text-mode radio, so Automatic also re-derives
       # the text color and the bar names both fields.
       assert render(view) =~ "background-color: #5BC5F2"
-      assert has_element?(view, "#route-details-unsaved-preview", "Unsaved preview")
+      assert has_element?(view, "#route-unsaved-preview", "Unsaved preview")
       refute has_element?(view, "#route-details-save-bar[hidden]")
       assert has_element?(view, "#route-details-save-bar-text", "Unsaved: Route color")
       assert has_element?(view, "#route-details-save-bar-text", "Text color")
-      assert has_element?(view, "#route-details-save-bar-text", "Ctrl+S saves")
+      assert has_element?(view, "#route-details-save-bar-text", "Press Ctrl+S or ⌘S to save.")
 
       # A preview is not a save: the row still holds the saved colour and has
       # not been touched (AC-19, AC-21).
@@ -334,7 +334,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-details-discard") |> render_click()
 
       assert render(view) =~ "background-color: #0B6E4F"
-      refute has_element?(view, "#route-details-unsaved-preview")
+      refute has_element?(view, "#route-unsaved-preview")
       assert has_element?(view, "#route-details-save-bar[hidden]")
       assert has_element?(view, "input#route-details-color[value='0B6E4F']")
       assert has_element?(view, "input#route-details-text[value='FFFFFF']")
@@ -374,7 +374,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       |> render_change()
 
       assert has_element?(view, "#route-details-save-bar[hidden]")
-      refute has_element?(view, "#route-details-unsaved-preview")
+      refute has_element?(view, "#route-unsaved-preview")
       assert render(view) =~ "background-color: #0B6E4F"
     end
 
@@ -402,11 +402,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert saved.updated_at != route.updated_at
 
       assert has_element?(view, "input#route-details-long[value='Renamed for real']")
-      assert has_element?(view, "#route-details-heading", "Renamed for real")
+      assert has_element?(view, "#route-title", "Renamed for real")
       assert has_element?(view, "#route-details-saved", "Changes to Route PREVIEW1 saved.")
       assert has_element?(view, "#route-details-save-bar[hidden]")
-      refute has_element?(view, "#route-details-unsaved-preview")
-      assert has_element?(view, "#route-details-saved-identity", user.email)
+      refute has_element?(view, "#route-unsaved-preview")
+      assert has_element?(view, "#route-identifier", user.email)
       refute has_element?(view, "#route-conflict")
     end
 
@@ -468,6 +468,35 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       refute has_element?(view, "#route-details-save-bar[hidden]")
     end
 
+    test "a rejected save lists each invalid field as a link to its control, label first",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_short_name: "", route_long_name: "", route_color: "zzz"},
+        text_mode: "custom"
+      })
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#route-details-save-error a[href='#route-details-short']",
+               "Route number or name: Enter a route number, a route name, or both."
+             )
+
+      assert has_element?(
+               view,
+               "#route-details-save-error a[href='#route-details-color']",
+               "Route color: Enter six hex digits for the route color, like 1F5FBF."
+             )
+
+      # The values that were typed stay in the form.
+      assert has_element?(view, "input#route-details-color[value='zzz']")
+    end
+
     test "an invalid draft color keeps the input and its error, and never reaches the badge", %{
       conn: conn,
       organization: organization,
@@ -492,7 +521,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       # message, and the badge keeps the neutral surface `route_badge/1` renders
       # for a value the application cannot draw (R7, AC-2).
       assert has_element?(view, "input#route-details-color[value='ZZZ']")
-      assert has_element?(view, "#route-details-color-error", "Enter six hex digits for the route color")
+
+      assert has_element?(
+               view,
+               "#route-details-color-error",
+               "Enter six hex digits for the route color"
+             )
+
       assert has_element?(view, "#route-badge span.bg-canvas")
       refute render(view) =~ "background-color: #ZZZ"
       assert saved_route(route).route_color == "0B6E4F"
@@ -561,7 +596,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert has_element?(view, "#route-details-saved", "Changes to Route PREVIEW1 saved.")
       refute has_element?(view, "#route-conflict")
       assert has_element?(view, "#route-details-save-bar[hidden]")
-      assert has_element?(view, "#route-details-saved-identity", user.email)
+      assert has_element?(view, "#route-identifier", user.email)
     end
 
     test "overlapping edits require per-field choices and the loser is never written", %{
@@ -769,7 +804,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       render_hook(view, "switch_gtfs_version", %{"version" => other_version.id})
 
       assert has_element?(view, "#route-details-leave[data-open='true']", "Leave without saving?")
-      assert has_element?(view, "#route-details-leave-body", "Route PREVIEW1")
+      assert has_element?(view, "#route-details-leave-body", "Route P1 has unsaved changes")
       assert has_element?(view, "#route-details-leave-body", "Route name")
       assert has_element?(view, "#route-details-leave-cancel", "Keep editing")
       assert has_element?(view, "#route-details-leave-save", "Save and continue")
@@ -922,7 +957,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       render_hook(view, "guard_details_navigation", %{"path" => "https://evil.example/routes"})
 
       refute has_element?(view, "#route-details-leave[data-open='true']")
-      assert has_element?(view, "#route-details-heading")
+      assert has_element?(view, "#route-title")
     end
 
     test "an open merge counts as unsaved work, and discarding it writes nothing", %{
@@ -2040,8 +2075,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
         # Only explicit false is inactive (INV-4): true and NULL are eligible
         # in the tab banner, the header chip and the status row.
         refute has_element?(view, "#route-inactive-banner")
-        refute has_element?(view, "#route-inactive-chip")
-        assert has_element?(view, "#route-status-section", "Active: included in exports")
+        refute has_element?(view, "#route-inactive")
+
+        assert has_element?(
+                 view,
+                 "#route-status-section",
+                 "Included when you export this version."
+               )
+
         assert has_element?(view, "#route-deactivate", "Deactivate route")
         refute has_element?(view, "#route-reactivate-details")
       end
@@ -2055,13 +2096,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       view |> element("#route-deactivate") |> render_click()
 
-      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
-      assert has_element?(view, "#route-status-confirm-body", "stays in this version")
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate Route P1?")
+      assert has_element?(view, "#route-status-confirm-body", "stay in this version")
 
       assert has_element?(
                view,
                "#route-status-confirm-body",
-               "Exports you already ran still include it"
+               "Exports you already ran keep the route"
              )
 
       assert has_element?(view, "#route-status-keep", "Keep active")
@@ -2070,7 +2111,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       # Keep active writes nothing and closes the review.
       view |> element("#route-status-keep") |> render_click()
 
-      refute has_element?(view, "#route-status-confirm-title")
+      refute has_element?(view, "#route-status-confirm[data-open='true']")
       assert saved_route(route).active == true
 
       # Confirming deactivates through the step-9 command and reloads the
@@ -2080,7 +2121,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-status-confirm-go") |> render_click()
 
       assert saved_route(route).active == false
-      assert has_element?(view, "#route-inactive-banner", "Inactive: left out of exports")
+      assert has_element?(view, "#route-inactive-banner", "is inactive.")
       assert has_element?(view, "#route-details-form")
       assert has_element?(view, "input#route-details-short[value='P1']")
 
@@ -2121,15 +2162,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       view |> element("#route-deactivate") |> render_click()
 
-      assert has_element?(view, "#route-status-confirm-body", "its 0 patterns")
-
       assert has_element?(
                view,
                "#route-status-confirm-body",
-               "the route and its 2 trips with their stop times"
+               "The next export leaves out Route P1, its 2 trips, and its 1 fare rule."
              )
-
-      assert has_element?(view, "#route-status-confirm-body", "1 fare rule for the route")
     end
 
     test "a dirty draft resolves save/discard/keep-editing before the status review opens",
@@ -2150,19 +2187,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-deactivate") |> render_click()
 
       assert has_element?(view, "#route-details-leave[data-open='true']", "Leave without saving?")
-      refute has_element?(view, "#route-status-confirm-title")
+      refute has_element?(view, "#route-status-confirm[data-open='true']")
 
       # Keep editing resolves nothing: no review, no write.
       view |> element("#route-details-leave-cancel") |> render_click()
 
-      refute has_element?(view, "#route-status-confirm-title")
+      refute has_element?(view, "#route-status-confirm[data-open='true']")
       assert saved_route(route).active == true
 
       # Discard resolves the draft and then opens the review.
       view |> element("#route-deactivate") |> render_click()
       view |> element("#route-details-leave-discard") |> render_click()
 
-      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate Route P1?")
       refute has_element?(view, "#route-details-leave[data-open='true']")
       assert saved_route(route).route_long_name == "Details long name"
 
@@ -2179,7 +2216,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-deactivate") |> render_click()
       view |> element("#route-details-leave-save") |> render_click()
 
-      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate Route P1?")
       assert saved_route(route).route_long_name == "Saved rename"
       assert saved_route(route).active == true
     end
@@ -2274,18 +2311,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
-      assert has_element?(view, "#route-delete", "Delete route…")
+      assert has_element?(view, "#route-delete", "Delete route")
 
       view |> element("#route-delete") |> render_click()
 
       assert has_element?(
                view,
                "#route-delete-review[data-open='true']",
-               "Delete P1 Details long name?"
+               "Delete Route P1?"
              )
 
-      assert has_element?(view, "#route-delete-review-body", "You can't undo this")
-      assert has_element?(view, "#route-delete-impact-title", "Deleted with the route")
+      assert has_element?(view, "#route-delete-review-body", "permanently deletes")
+      assert has_element?(view, "#route-delete-impact-title", "This permanently deletes:")
 
       # The categories are the review's own rows with their scoped identities.
       assert has_element?(view, "#route-delete-impact", "Trips")
@@ -2298,20 +2335,38 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       # An active route offers the reversible alternative; the acknowledgement
       # starts unchecked and is only the operator's own act.
-      assert has_element?(view, "#route-delete-deactivate", "Deactivate instead")
+      assert has_element?(view, "#route-delete-deactivate", "deactivate it instead")
 
       assert has_element?(
                view,
                "#route-delete-review-body",
-               "Delete 2 trips with this route"
+               "I understand this permanently deletes Route P1 and its 2 trips."
              )
 
       refute ack_checked?(view)
 
+      # The design system's irreversible delete: the counts an operator reads
+      # lead, every record stays inspectable behind a disclosure, and Delete
+      # route is unavailable until the acknowledgement is checked.
+      assert has_element?(view, "#route-delete-summary", "Trips")
+      assert has_element?(view, "#route-delete-summary", "Fare rules")
+      refute has_element?(view, "#route-delete-summary", "DEL_T1")
+      assert has_element?(view, "#route-delete-details", "DEL_T1, DEL_T2")
+      assert has_element?(view, "#route-delete-stays", "Stops stay")
+      assert has_element?(view, "#route-delete-go[disabled]")
+
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_change()
+
+      refute has_element?(view, "#route-delete-go[disabled]")
+
+      render_change(view, "acknowledge_delete", %{"delete" => %{}})
+
       # Keep route closes with nothing written (AC-24's reversible close).
       view |> element("#route-delete-keep") |> render_click()
 
-      refute has_element?(view, "#route-delete-review-title")
+      refute has_element?(view, "#route-delete-review[data-open='true']")
       assert saved_route(route).route_id == "DEL1"
     end
 
@@ -2435,7 +2490,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       view |> element("#route-delete") |> render_click()
 
-      assert has_element?(view, "#route-delete-review[data-open='true']", "Delete P1?")
+      assert has_element?(view, "#route-delete-review[data-open='true']", "Delete Route P1?")
       assert has_element?(view, "#route-delete-simple-body", "has no patterns or trips")
       refute has_element?(view, "#route-delete-form")
 
@@ -2465,7 +2520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert has_element?(
                view,
                "#route-delete-review[data-open='true']",
-               "Delete P1 Details long name?"
+               "Delete Route P1?"
              )
 
       assert has_element?(view, "#route-delete-impact", "Fare rules")
@@ -2474,7 +2529,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert has_element?(
                view,
                "#route-delete-review-body",
-               "Delete the route and its listed records with this route"
+               "I understand this permanently deletes Route P1 and the records listed here."
              )
 
       view
@@ -2618,12 +2673,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-delete") |> render_click()
 
       assert has_element?(view, "#route-details-leave[data-open='true']", "Leave without saving?")
-      refute has_element?(view, "#route-delete-review-title")
+      refute has_element?(view, "#route-delete-review[data-open='true']")
 
       # Keep editing resolves nothing: no review, no write.
       view |> element("#route-details-leave-cancel") |> render_click()
 
-      refute has_element?(view, "#route-delete-review-title")
+      refute has_element?(view, "#route-delete-review[data-open='true']")
       assert saved_route(route).route_id == "DEL8"
 
       # Discard resolves the draft and then opens the review.
@@ -2657,8 +2712,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-delete") |> render_click()
       view |> element("#route-delete-deactivate") |> render_click()
 
-      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
-      refute has_element?(view, "#route-delete-review-title")
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate Route P1?")
+      refute has_element?(view, "#route-delete-review[data-open='true']")
 
       # The reversible alternative writes nothing until its own confirm.
       view |> element("#route-status-keep") |> render_click()
@@ -2691,7 +2746,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       view |> element("#route-delete") |> render_click()
 
       assert has_element?(view, "#route-status-outcome", "editor access was removed")
-      refute has_element?(view, "#route-delete-review-title")
+      refute has_element?(view, "#route-delete-review[data-open='true']")
       assert saved_route(route2).route_id == "DEL11"
     end
   end

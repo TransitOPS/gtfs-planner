@@ -1046,6 +1046,35 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   end
 
   @doc """
+  The error summary's entries for a rejected submit: one per invalid field, in
+  page order, each starting with the field's label and linking to its control.
+
+  `prefix` is the namespace the form's controls were rendered with. The create
+  drawer's manual route ID control is the one field whose id does not follow the
+  prefix scheme; the summary names it only when it has an error, which only the
+  create form can produce.
+  """
+  def error_failures(%Phoenix.HTML.Form{} = form, prefix) do
+    [
+      {"Route number or name", "#{prefix}-short", shared_name_errors(form)},
+      {"Mode", "#{prefix}-mode-other", field_errors(form[:route_type])},
+      {"Agency", "#{prefix}-agency", field_errors(form[:agency_id])},
+      {"Route color", "#{prefix}-color", field_errors(form[:route_color])},
+      {"Text color", "#{prefix}-text", field_errors(form[:route_text_color])},
+      {"Description", "#{prefix}-desc", field_errors(form[:route_desc])},
+      {"Web page", "#{prefix}-url", field_errors(form[:route_url])},
+      {"Display order", "#{prefix}-sort", field_errors(form[:route_sort_order])},
+      {"Pickup between stops", "#{prefix}-pickup", field_errors(form[:continuous_pickup])},
+      {"Drop-off between stops", "#{prefix}-dropoff", field_errors(form[:continuous_drop_off])},
+      {"Network", "#{prefix}-network", field_errors(form[:network_id])},
+      {"Route ID", "#{prefix}-id-manual", field_errors(form[:route_id])}
+    ]
+    |> Enum.flat_map(fn {label, control_id, messages} ->
+      Enum.map(messages, &%{href: "##{control_id}", msg: "#{label}: #{&1}"})
+    end)
+  end
+
+  @doc """
   Returns a form field's translated errors, honoring `used_input?/1`.
 
   Public because a mounting surface that renders its own control outside this
@@ -1374,26 +1403,36 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   end
 
   @doc """
-  Renders the reviewed-deletion confirmation body (R5, AC-13/24).
+  Renders the reviewed-deletion confirmation body (R5, AC-13/24), for the
+  design system's irreversible-delete review.
 
-  The impact table is the step-11 review's own categories, counts and scoped
-  identities; after a stale apply the caller passes the changes
-  `Gtfs.deletion_review_changes/2` returned, so rows that changed while the
+  Reading order: what the deletion removes as a small table of the categories an
+  operator counts (`primary?` rows), one sentence on what stays with the
+  reversible alternative as an inline link, an acknowledgement that repeats the
+  counts, and then, closed, every record that goes with the route. The
+  disclosure holds the review's own categories with their scoped identities and
+  the kept resources, so the fingerprint the delete is bound to stays inspectable
+  without being the first thing read. After a stale apply the caller passes the
+  changes `Gtfs.deletion_review_changes/2` returned: rows that changed while the
   review was open are highlighted, equal totals still say "contents changed",
-  and the caller-supplied banner explains the refusal without inventing an
-  actor or an action. The acknowledgement checkbox starts unchecked on every
-  open and is re-cleared on every stale re-render: only a fresh acknowledgement
-  can re-apply (R5).
+  the disclosure opens when a changed row is inside it, and the caller-supplied
+  banner explains the refusal without inventing an actor or an action. The
+  acknowledgement starts unchecked on every open and is re-cleared on every
+  stale re-render: only a fresh acknowledgement can re-apply (R5).
 
-  The body owns its form, so the confirm button's submit carries the checkbox
-  state and the phx-change clears a shown acknowledgement error.
+  The body owns the acknowledgement form, and the dialog's confirm button
+  submits it through its `form` attribute, so the checkbox state travels with
+  the submit and the phx-change clears a shown acknowledgement error. The dialog
+  supplies the actions.
   """
-  attr :ref, :string, required: true, doc: "the route's display reference"
-  attr :name, :string, required: true, doc: "the route's display name"
-
   attr :rows, :list,
     required: true,
-    doc: "affected categories: label, count, previous_count, contents_changed?, identities"
+    doc:
+      "affected categories: label, count, primary?, previous_count, contents_changed?, identities"
+
+  attr :stays, :string,
+    default: nil,
+    doc: "one plain sentence on what stays (\"Stops stay: 31 stops are shared…\")"
 
   attr :retained_lines, :list,
     required: true,
@@ -1415,96 +1454,65 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   attr :deactivate_instead?, :boolean, default: true, doc: "the route is active (INV-4)"
 
   def delete_review_panel(assigns) do
+    assigns =
+      assigns
+      |> assign(:primary_rows, Enum.filter(assigns.rows, & &1.primary?))
+      |> assign(
+        :details_open?,
+        Enum.any?(assigns.rows, &(not &1.primary? and change_marked?(&1)))
+      )
+
     ~H"""
-    <div id="route-delete-review-body" class="grid gap-3 text-sm text-base-content/70">
+    <div id="route-delete-panel" class="grid gap-3 text-default">
       <div
         :if={@banner}
         id="route-delete-changed"
         role="alert"
-        class={[
-          "flex items-start gap-3 rounded-control border px-4 py-3 text-warning-fg",
-          @banner.kind == :counts && "border-warning-line bg-warning-bg",
-          @banner.kind == :contents && "border-warning bg-warning/10"
-        ]}
+        class="flex items-start gap-3 rounded-control bg-warning-bg px-4 py-3 text-warning-fg"
       >
         <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
         <p class="text-sm"><strong class="font-bold">{@banner.text}</strong> Nothing was deleted.
           Check the review below, then confirm again.</p>
       </div>
 
-      <p>
-        This permanently deletes the route and everything that belongs only to it. You can't undo
-        this.
+      <p id="route-delete-impact-title" class="font-[650] text-strong">
+        This permanently deletes:
       </p>
+      <.impact_table id="route-delete-summary" rows={@primary_rows} />
 
-      <h3 id="route-delete-impact-title" class="mt-1 text-[13px] font-[650] text-default">
-        Deleted with the route
-      </h3>
-      <table
-        id="route-delete-impact"
-        aria-labelledby="route-delete-impact-title"
-        class="w-full border-collapse overflow-hidden rounded-control border border-subtle text-sm"
-      >
-        <tbody>
-          <tr
-            :for={row <- @rows}
-            class={[
-              "border-b border-subtle last:border-0",
-              (row.previous_count != nil or row.contents_changed?) && "bg-warning-bg"
-            ]}
-          >
-            <th scope="row" class="py-2 pl-3 pr-3 text-left align-top font-normal">
-              {row.label}
-              <span
-                :if={row.identities != ""}
-                class="mt-0.5 block text-[12px] break-words text-muted"
-              >
-                {row.identities}
-              </span>
-            </th>
-            <td class="py-2 pl-3 pr-3 text-right align-top font-[650] tabular-nums text-strong">
-              <span :if={row.previous_count != nil} class="mr-1.5 font-normal text-muted line-through">
-                {row.previous_count}
-              </span>
-              {row.count}
-              <span
-                :if={row.contents_changed?}
-                class="ml-1.5 rounded-badge bg-warning/15 px-1.5 py-0.5 text-[11px] font-[650] text-warning-fg"
-              >
-                contents changed
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p
-        :if={@retained_lines != [] or @blocks_note}
-        id="route-delete-retained"
-        class="text-[13px] text-muted"
-      >
-        <span :if={@retained_lines != []}>Kept: {Enum.join(@retained_lines, ", ")}.</span>
+      <p :if={@stays || @blocks_note} id="route-delete-stays">
+        <span :if={@stays}>{@stays}</span>
         <span :if={@blocks_note}>{@blocks_note}</span>
       </p>
-
-      <div
-        :if={@deactivate_instead?}
-        class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-control bg-canvas px-4 py-3"
-      >
-        <p class="min-w-0 flex-1 basis-[260px] text-sm">
-          <strong class="font-[650] text-strong">Keep the data instead?</strong> Deactivating leaves
-          the route out of exports and can be undone.
-        </p>
-        <button
+      <p :if={@deactivate_instead?} id="route-delete-alternative">
+        If the route may come back, <button
           id="route-delete-deactivate"
           type="button"
           disabled={@pending}
           phx-click="delete_deactivate_instead"
-          class="h-[44px] min-w-[44px] border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:border-subtle disabled:text-muted"
+          class="min-h-11 font-[650] text-action underline underline-offset-2 hover:no-underline disabled:cursor-not-allowed disabled:text-muted"
         >
-          <.icon name="hero-eye-slash" class="ml-1 size-4" />Deactivate instead
-        </button>
-      </div>
+          deactivate it instead</button>.
+      </p>
+
+      <details id="route-delete-details" open={@details_open?} class="group">
+        <summary class="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-[650] text-default hover:text-strong [&::-webkit-details-marker]:hidden">
+          <.icon
+            name="hero-chevron-right"
+            class="size-4 text-muted motion-safe:transition-transform group-open:rotate-90"
+          /> Every record that goes with the route
+        </summary>
+        <div class="mt-1 grid gap-2">
+          <.impact_table id="route-delete-impact" rows={@rows} identities />
+          <p
+            :if={@retained_lines != []}
+            id="route-delete-retained"
+            class="text-[13px] text-muted"
+          >
+            Kept: {Enum.join(@retained_lines, ", ")}.
+          </p>
+        </div>
+      </details>
 
       <.form
         for={%{}}
@@ -1512,7 +1520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
         id="route-delete-form"
         phx-submit="confirm_delete_route"
         phx-change="acknowledge_delete"
-        class="mt-2 grid gap-1.5"
+        class="grid gap-1.5"
       >
         <label class="flex cursor-pointer items-start gap-3 rounded-control border border-control px-4 py-3 has-[:checked]:border-action has-[:checked]:bg-selection">
           <input
@@ -1532,41 +1540,70 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
           role="alert"
           class="flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
         >
-          {@ack_error}
+          <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />{@ack_error}
         </p>
-
-        <div class="mt-3 flex flex-wrap items-center justify-end gap-2">
-          <button
-            id="route-delete-keep"
-            type="button"
-            data-dialog-dismiss
-            disabled={@pending}
-            phx-click="cancel_delete_route"
-            class="h-[44px] min-w-[44px] border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:border-subtle disabled:text-muted"
-          >
-            Keep route
-          </button>
-          <button
-            id="route-delete-go"
-            type="submit"
-            disabled={@pending}
-            phx-disable-with="Deleting…"
-            class="h-[44px] min-w-[140px] bg-primary px-4 text-sm font-semibold text-primary-content"
-          >
-            Delete route
-          </button>
-        </div>
       </.form>
 
-      <p
-        :if={@error}
-        id="route-delete-error"
-        role="alert"
-        class="rounded-control border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
-      >
-        {@error}
-      </p>
+      <.delete_error :if={@error} error={@error} />
     </div>
+    """
+  end
+
+  defp change_marked?(row), do: row.previous_count != nil or row.contents_changed?
+
+  attr :id, :string, required: true
+  attr :rows, :list, required: true
+  attr :identities, :boolean, default: false, doc: "name the scoped identities under each label"
+
+  defp impact_table(assigns) do
+    ~H"""
+    <table id={@id} class="w-full border-collapse text-sm">
+      <tbody>
+        <tr
+          :for={row <- @rows}
+          class={[
+            "border-b border-subtle first:border-t",
+            change_marked?(row) && "bg-warning-bg"
+          ]}
+        >
+          <th scope="row" class="py-2 pr-3 text-left align-top font-normal text-default">
+            {row.label}
+            <span
+              :if={@identities and row.identities != ""}
+              class="mt-0.5 block break-words text-[12px] text-muted"
+            >
+              {row.identities}
+            </span>
+          </th>
+          <td class="py-2 text-right align-top font-[650] tabular-nums text-strong">
+            <span :if={row.previous_count != nil} class="mr-1.5 font-normal text-muted line-through">
+              {row.previous_count}
+            </span>
+            {row.count}
+            <span
+              :if={row.contents_changed?}
+              class="ml-1.5 rounded-badge bg-warning-bg px-1.5 py-0.5 text-[11px] font-[650] text-warning-fg"
+            >
+              contents changed
+            </span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    """
+  end
+
+  attr :error, :string, required: true
+
+  defp delete_error(assigns) do
+    ~H"""
+    <p
+      id="route-delete-error"
+      role="alert"
+      class="flex items-start gap-1.5 rounded-control bg-error-bg px-4 py-3 text-sm font-semibold text-error-fg"
+    >
+      <.icon name="hero-exclamation-circle" class="mt-0.5 size-4 shrink-0" />{@error}
+    </p>
     """
   end
 
@@ -1577,52 +1614,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   is nothing beyond the route row itself to name, so the confirmation is one
   sentence and one deliberate click. There is no acknowledgement checkbox —
   the confirm click is the acknowledgement, and it still goes through the
-  audited command.
+  audited command. The dialog supplies the actions.
   """
-  attr :ref, :string, required: true
-  attr :name, :string, required: true
+  attr :label, :string, required: true, doc: "how the route is named: \"Route 12\""
   attr :error, :string, default: nil
-  attr :pending, :boolean, default: false
 
   def delete_simple_panel(assigns) do
     ~H"""
-    <div id="route-delete-simple-body" class="mt-1 text-sm text-base-content/70">
+    <div id="route-delete-simple-body" class="grid gap-3 text-default">
       <p>
-        {@ref} {@name} has no patterns or trips. Deleting it removes the route from this version.
+        {@label} has no patterns or trips. Deleting it removes the route from this version.
         This can't be undone.
       </p>
-
-      <p
-        :if={@error}
-        id="route-delete-error"
-        role="alert"
-        class="mt-3 rounded-control border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
-      >
-        {@error}
-      </p>
-
-      <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <button
-          id="route-delete-keep"
-          type="button"
-          data-dialog-dismiss
-          disabled={@pending}
-          phx-click="cancel_delete_route"
-          class="h-[44px] min-w-[44px] border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:border-subtle disabled:text-muted"
-        >
-          Keep route
-        </button>
-        <button
-          id="route-delete-go"
-          type="button"
-          disabled={@pending}
-          phx-click="confirm_delete_route_simple"
-          phx-disable-with="Deleting…"
-          class="h-[44px] min-w-[44px] bg-primary px-4 text-sm font-semibold text-primary-content"
-        >
-          Delete route
-        </button>
-      </div>
+      <.delete_error :if={@error} error={@error} />
     </div>
     """
   end

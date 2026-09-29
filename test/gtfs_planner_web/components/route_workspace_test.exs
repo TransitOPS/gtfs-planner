@@ -162,6 +162,56 @@ defmodule GtfsPlannerWeb.RouteWorkspaceTest do
       assert doc(active) |> LazyHTML.query("#route-inactive") |> Enum.count() == 0
       assert doc(inactive) |> LazyHTML.query("#route-inactive") |> LazyHTML.text() =~ "Inactive"
     end
+
+    test "treats a route with no active flag as eligible, not inactive" do
+      html = render_header(route(%{active: nil}))
+
+      assert doc(html)
+             |> LazyHTML.query("#route-inactive, #route-inactive-banner")
+             |> Enum.empty?()
+    end
+
+    test "says what inactive means for exports and offers Reactivate" do
+      html = render_header(route(%{active: false}))
+
+      banner = doc(html) |> LazyHTML.query("#route-inactive-banner") |> LazyHTML.text()
+      assert banner =~ "Route 12 is inactive."
+      assert banner =~ "The next export leaves it out. Exports you already ran keep the route."
+
+      assert doc(html) |> LazyHTML.query("#route-reactivate") |> LazyHTML.text() =~
+               "Reactivate route"
+    end
+
+    test "counts the trips the next export leaves out when the page knows them" do
+      assigns = %{route: route(%{active: false})}
+
+      html =
+        rendered_to_string(~H"""
+        <.route_header route={@route} gtfs_version_id="v1" trip_count={70} />
+        """)
+
+      assert doc(html) |> LazyHTML.query("#route-inactive-banner") |> LazyHTML.text() =~
+               "The next export leaves it out with its 70 trips."
+    end
+
+    test "marks the Details tab and the title while the page holds a draft" do
+      assigns = %{route: route(%{})}
+
+      html =
+        rendered_to_string(~H"""
+        <.route_header route={@route} gtfs_version_id="v1" dirty preview />
+        """)
+
+      assert doc(html) |> LazyHTML.query("#route-tab-details-unsaved") |> LazyHTML.text() =~
+               "Unsaved"
+
+      assert doc(html) |> LazyHTML.query("#route-unsaved-preview") |> LazyHTML.text() =~
+               "Unsaved preview"
+
+      refute doc(render_header(route(%{})))
+             |> LazyHTML.query("#route-tab-details-unsaved, #route-unsaved-preview")
+             |> Enum.any?()
+    end
   end
 
   describe "badge/1" do
