@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Ecto.Query
   import Mox
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
@@ -193,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       view |> element("#transfer-delete-dialog-cancel") |> render_click()
 
       refute has_element?(view, "#transfer-delete-dialog")
-      assert Repo.aggregate(Transfer, :count) == 3
+      assert stored_transfer_count(ctx) == 3
       assert text_of(doc(view), "#transfers-count") == "2 selected · this version"
     end
 
@@ -513,7 +514,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       refute has_element?(view, "#transfer-delete-dialog")
       refute has_element?(view, "#flash-info")
-      assert Repo.aggregate(Transfer, :count) == 4
+      assert stored_transfer_count(ctx) == 4
       assert Repo.get(Transfer, plain.id) != nil
       assert Repo.get(Transfer, scoped.id) != nil
       assert Repo.get(Transfer, at_end.id) != nil
@@ -556,6 +557,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
   defp rule!(ctx, attrs), do: transfer_fixture(ctx.organization.id, ctx.version.id, attrs)
   defp in_seat!(ctx, attrs), do: rule!(ctx, Map.put_new(attrs, :transfer_type, 4))
+
+  # The test database can hold rows this case did not create, so the stored-row
+  # count reads only this case's organization and version.
+  defp stored_transfer_count(ctx) do
+    Repo.aggregate(
+      from(t in Transfer,
+        where: t.organization_id == ^ctx.organization.id and t.gtfs_version_id == ^ctx.version.id
+      ),
+      :count
+    )
+  end
 
   defp check_row(view, id), do: view |> element("#transfer-check-#{id}") |> render_click()
 

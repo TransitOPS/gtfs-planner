@@ -249,11 +249,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
                context.audit
              )
 
-    assert Repo.aggregate(RoutePattern, :count) == 0
-    assert Repo.aggregate(RoutePatternStop, :count) == 0
-    assert Repo.aggregate(TimedPattern, :count) == 0
-    assert Repo.aggregate(TimedPatternStop, :count) == 0
-    refute Repo.exists?(from log in ChangeLog, where: log.entity_type == "route_pattern")
+    tenants = [context.organization.id, foreign_org.id]
+
+    assert Repo.aggregate(tenant_rows(RoutePattern, tenants), :count) == 0
+    assert Repo.aggregate(tenant_rows(RoutePatternStop, tenants), :count) == 0
+    assert Repo.aggregate(tenant_rows(TimedPattern, tenants), :count) == 0
+
+    assert Repo.aggregate(
+             from(stop in TimedPatternStop,
+               join: timing in TimedPattern,
+               on: timing.id == stop.timed_pattern_id,
+               where: timing.organization_id in ^tenants
+             ),
+             :count
+           ) == 0
+
+    refute Repo.exists?(
+             from log in ChangeLog,
+               where: log.organization_id in ^tenants and log.entity_type == "route_pattern"
+           )
   end
 
   test "lists and loads only a pattern in the requested organization, version and route",
@@ -605,6 +619,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
              from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id),
              :count
            ) == 1
+  end
+
+  # The test database can hold rows this case did not create, so "no rows written"
+  # covers the tenants the case created rather than the whole table.
+  defp tenant_rows(schema, organization_ids) do
+    from(row in schema, where: row.organization_id in ^organization_ids)
   end
 
   defp pattern_occurrences(pattern_id) do

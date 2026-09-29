@@ -62,9 +62,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
              Repo.get!(ChangeRun, run.id)
 
     assert Enum.all?(ChangeRuns.list_decisions(organization.id, run.id), &(&1.status == :applied))
-    assert Repo.aggregate(ChangeLog, :count) == 2
+    assert change_log_count(organization) == 2
 
-    logs = Repo.all(ChangeLog)
+    logs = Repo.all(from(log in ChangeLog, where: log.organization_id == ^organization.id))
     assert Enum.any?(logs, &(&1.entity_type == "level" and is_nil(&1.station_stop_id)))
     assert Enum.any?(logs, &(&1.entity_type == "stop" and &1.station_stop_id == "central"))
   end
@@ -95,7 +95,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
              )
 
     refute GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L2")
-    assert Repo.aggregate(ChangeLog, :count) == 0
+    assert change_log_count(organization) == 0
 
     assert [%ChangeDecision{status: :approved}] =
              ChangeRuns.list_decisions(organization.id, run.id)
@@ -154,7 +154,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
              ChangeRuns.list_decisions(organization.id, run.id)
 
     assert current.stop_name == "Drifted"
-    assert Repo.aggregate(ChangeLog, :count) == 0
+    assert change_log_count(organization) == 0
   end
 
   test "applies a modification when the persisted fingerprint matches the current record" do
@@ -321,7 +321,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     assert %{stop_name: "Central"} =
              GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
 
-    assert Repo.aggregate(ChangeLog, :count) == 0
+    assert change_log_count(organization) == 0
   end
 
   test "a reviewed station change leaves the stored zone when its attrs carry zone_id: nil" do
@@ -525,7 +525,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
              )
 
     assert %ChangeRun{state: :completed, progress_current: 1} = Repo.get!(ChangeRun, run.id)
-    assert Repo.aggregate(ChangeLog, :count) == 1
+    assert change_log_count(organization) == 1
 
     assert [%ChangeDecision{status: :applied}] =
              ChangeRuns.list_decisions(organization.id, run.id)
@@ -567,7 +567,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     assert %ChangeRun{state: :cancelled} = Repo.get!(ChangeRun, cancelling.id)
     refute GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L2")
     refute GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L3")
-    assert Repo.aggregate(ChangeLog, :count) == 0
+    assert change_log_count(organization) == 0
   end
 
   describe "removing a stop or level that other records still use" do

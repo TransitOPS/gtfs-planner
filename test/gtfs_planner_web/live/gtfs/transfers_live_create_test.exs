@@ -386,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
         "min_transfer_time" => "180"
       })
 
-      assert [rule] = Repo.all(Transfer)
+      assert [rule] = stored_transfers(ctx)
 
       assert rule.from_stop_id == "CEN-A"
       assert rule.to_stop_id == "CEN-C"
@@ -420,7 +420,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       assert text_of(document, "#transfer-to-route-error") == "Choose a departing route"
       refute has_element?(view, "#transfer-from-route-error")
-      assert Repo.all(Transfer) == []
+      assert stored_transfers(ctx) == []
 
       # The draft is still open with what was entered.
       assert has_element?(view, "#transfer-editor")
@@ -446,7 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       assert text_of(doc(view), "#transfer-from-stop-error") ==
                "Choose a stop, platform or station"
 
-      assert Repo.all(Transfer) == []
+      assert stored_transfers(ctx) == []
 
       # Every entered value survives the refusal: an entrance is not a stop a rule
       # may name, but it is still the value the draft holds.
@@ -479,7 +479,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       save_draft(view, :custom, trip_draft)
 
       assert text_of(doc(view), "#transfer-from-trip-error") == "This trip doesn't stop here"
-      assert Repo.all(Transfer) == []
+      assert stored_transfers(ctx) == []
       assert has_element?(view, "#transfer-from-trip option[value='6-0815'][selected]")
     end
 
@@ -502,7 +502,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
                "Choose one of the four transfer types"
              )
 
-      assert Repo.all(Transfer) == []
+      assert stored_transfers(ctx) == []
 
       # A tenant in the payload is not a field the changeset casts, so the rule
       # lands in the page's own version and in no other organization (R10).
@@ -516,7 +516,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
         "id" => Ecto.UUID.generate()
       })
 
-      assert [rule] = Repo.all(Transfer)
+      assert [rule] = stored_transfers(ctx)
       assert rule.organization_id == ctx.organization.id
       assert rule.gtfs_version_id == ctx.version.id
 
@@ -557,7 +557,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
                  "Edit it instead of creating a second rule."
 
       refute has_element?(view, "#transfer-view-in-seat-link")
-      assert Repo.aggregate(Transfer, :count) == 1
+      assert length(stored_transfers(ctx)) == 1
 
       # The draft is kept, so the operator corrects what they entered instead of
       # retyping it.
@@ -602,7 +602,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       assert attribute(document, "#transfer-view-in-seat-link", "href") ==
                transfers_path(ctx.version, view: "in_seat")
 
-      assert Repo.aggregate(Transfer, :count) == 1
+      assert length(stored_transfers(ctx)) == 1
       assert has_element?(view, "#transfer-min-time[value='180']")
     end
 
@@ -638,7 +638,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       assert has_element?(view, "#transfer-retry-save", "Retry saving")
       assert has_element?(view, "#transfer-save[phx-disable-with='Saving…']")
-      assert Repo.all(Transfer) == []
+      assert stored_transfers(ctx) == []
 
       # The retry replays the draft the page still holds through the ordinary
       # adapter.
@@ -650,7 +650,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       view |> element("#transfer-retry-save") |> render_click()
 
-      assert [rule] = Repo.all(Transfer)
+      assert [rule] = stored_transfers(ctx)
       assert rule.from_stop_id == "CEN-A"
       assert rule.min_transfer_time == 180
       refute has_element?(view, "#transfer-editor")
@@ -693,6 +693,16 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
   end
 
   defp rule!(ctx, attrs), do: transfer_fixture(ctx.organization.id, ctx.version.id, attrs)
+
+  # The test database can hold rows this case did not create, so every stored-row
+  # assertion reads only this case's organization and version.
+  defp stored_transfers(ctx) do
+    Repo.all(
+      from(t in Transfer,
+        where: t.organization_id == ^ctx.organization.id and t.gtfs_version_id == ^ctx.version.id
+      )
+    )
+  end
 
   defp in_seat!(ctx, attrs), do: rule!(ctx, Map.put_new(attrs, :transfer_type, 4))
 

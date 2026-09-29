@@ -77,7 +77,14 @@ defmodule GtfsPlanner.Gtfs.EditorChangesetsTest do
       assert %{agency_timezone: [@timezone_message], agency_email: [@email_message]} =
                errors_on(changeset)
 
-      assert Repo.aggregate(Agency, :count) == 0
+      assert Repo.aggregate(
+               from(a in Agency,
+                 where:
+                   a.organization_id == ^context.organization_id and
+                     a.gtfs_version_id == ^context.gtfs_version_id
+               ),
+               :count
+             ) == 0
     end
 
     test "accepts clearing the optional language with an explicit nil", context do

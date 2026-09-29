@@ -317,7 +317,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert Enum.at(timing_rows(timing_b.id), 1).pickup_type == 2
     assert Enum.at(timing_rows(timing_a.id), 1).pickup_type == nil
 
-    linked_trips = Repo.all(from(t in Trip, where: t.route_id == ^"R1"))
+    linked_trips =
+      Repo.all(
+        from(t in Trip,
+          where:
+            t.organization_id == ^context.organization.id and
+              t.gtfs_version_id == ^context.version.id and t.route_id == ^"R1"
+        )
+      )
+
     assert Enum.all?(linked_trips, &(&1.pattern_derivation_state == "linked"))
     assert Enum.all?(linked_trips, &String.starts_with?(&1.route_pattern_id, "app-"))
     assert Enum.all?(linked_trips, &(not is_nil(&1.timed_pattern_id)))
@@ -563,7 +571,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert {:error, :nothing_pending} = Gtfs.build_route_patterns("R5", context.audit)
 
     assert Repo.aggregate(
-             from(log in ChangeLog, where: log.entity_type == "route_pattern_build"),
+             from(log in ChangeLog,
+               where:
+                 log.organization_id == ^context.organization.id and
+                   log.gtfs_version_id == ^context.version.id and
+                   log.entity_type == "route_pattern_build"
+             ),
              :count
            ) == 1
 

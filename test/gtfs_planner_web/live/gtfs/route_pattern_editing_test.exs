@@ -215,7 +215,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
     |> render_change(%{"_target" => ["timing", position, field]})
   end
 
-  defp audit_count, do: Repo.aggregate(ChangeLog, :count)
+  # The test database can hold change logs this case did not create, so the count
+  # covers only the case's organization.
+  defp audit_count(organization) do
+    Repo.aggregate(from(l in ChangeLog, where: l.organization_id == ^organization.id), :count)
+  end
 
   # The timing editor posts one form, so a change carries the whole row map and
   # names the changed control in `_target`.
@@ -526,7 +530,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
                Enum.at(stops, 0).stop_id
              ]
 
-      assert audit_count() == 1
+      assert audit_count(organization) == 1
     end
 
     test "an unused pattern with real times reorders after the proposed times are acknowledged",
@@ -549,7 +553,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       refute has_element?(view, "#stop-review-resequenced-#{timed.timing.id}-#{third.id}")
       assert has_element?(view, "#stop-review-dialog-confirm[disabled]")
       assert occurrence_rows(pattern) |> Enum.map(& &1.id) == [first.id, second.id, third.id]
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
 
       render_click(view, "acknowledge_review_timing", %{"timing_id" => timed.timing.id})
       refute has_element?(view, "#stop-review-dialog-confirm[disabled]")
@@ -590,7 +594,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       assert has_element?(view, "#error", "at least two stops")
       assert Enum.map(occurrence_rows(pattern), &{&1.id, &1.position}) == original
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
     end
 
     test "an added interior stop is estimated, acknowledged per timing and retains retained clocks",
@@ -723,7 +727,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       refute has_element?(view, "#stop-review-dialog[data-open='true']")
       assert Enum.map(occurrence_rows(pattern), & &1.id) == original
       assert arrival_clocks(trip) == ["08:00:00", "08:04:00", "08:10:00"]
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
       # The staged edit survives the cancellation, so the editor keeps its work.
       refute has_element?(view, "#pattern-stop-3")
       assert has_element?(view, "#pattern-stops[data-dirty='true']")
@@ -793,7 +797,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "remove_stop", %{"index" => "3"})
       assert has_element?(view, "#error", "keep their imported stop times")
       assert length(occurrence_rows(pattern)) == 3
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
     end
 
     test "an added stop on an unused pattern is reviewed without an Update trips confirmation",
@@ -872,7 +876,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert has_element?(view, "#timing-departure-1[aria-invalid='true']")
       assert_push_event(view, "focus_form_error", %{form_id: "timing-form"})
       assert has_element?(view, "#timing-pickup-2", "Phone agency")
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
       assert timing_rows(first) |> Enum.map(& &1.departure_offset) == [0, 60, 120]
     end
 
@@ -888,7 +892,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "save_timing")
 
       assert has_element?(view, "#error", "previous departure")
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
       assert timing_rows(timing_row) |> Enum.map(& &1.arrival_offset) == [0, 240, 600]
 
       change_timing(view, 2, "arrival", "04:00")
@@ -898,7 +902,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "save_timing")
 
       assert has_element?(view, "#error", "Departure must be at or after arrival")
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
     end
 
     test "a timing save updates exactly its linked trips from their existing first departure",
@@ -988,7 +992,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       change_timing(view, 2, "departure", "06:00")
       render_click(view, "save_timing")
 
-      assert audit_count() == 1
+      assert audit_count(organization) == 1
       assert has_element?(view, "#status", "Changes saved in this version.")
 
       render_click(view, "switch_task", %{"task" => "stops"})
@@ -1228,7 +1232,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
         %{"pattern" => %{"name" => "Renamed later"}}
       )
 
-      logs_before = audit_count()
+      logs_before = audit_count(organization)
 
       render_click(stale_view, "apply_timing_review")
 
@@ -1237,7 +1241,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       # The submitted rows survive the stale rejection.
       assert has_element?(stale_view, "#timing-departure-2[value='06:00']")
       assert arrival_clocks(trip) == ["08:00:00", "08:04:00", "08:10:00"]
-      assert audit_count() == logs_before
+      assert audit_count(organization) == logs_before
 
       render_click(stale_view, "refresh_timing_review")
 
@@ -1270,7 +1274,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "apply_stop_review")
       render_click(view, "apply_stop_review")
 
-      assert audit_count() == 1
+      assert audit_count(organization) == 1
       assert length(trip_clocks(trip)) == 2
     end
 
@@ -1369,7 +1373,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       assert Repo.get!(RoutePattern, pattern.id).route_pattern_name == before_name
       assert length(occurrence_rows(pattern)) == 3
-      assert audit_count() == 0
+      assert audit_count(organization) == 0
       assert arrival_clocks(trip) == ["08:00:00", "08:04:00", "08:10:00"]
 
       for view <- [stops_view, details_view, timing_view] do
