@@ -1695,6 +1695,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       current_path={@current_path}
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
+      frame={:wide}
     >
       <:sub_header>
         <.operations_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:blocks} />
@@ -1702,7 +1703,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
       <div id="blocks-page">
         <section class="min-h-screen bg-base-100">
-          <div class="mx-auto w-full max-w-7xl space-y-4">
+          <div class="w-full space-y-4">
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <.header>
                 Blocks

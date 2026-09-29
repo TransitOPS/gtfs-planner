@@ -25,6 +25,11 @@ defmodule GtfsPlannerWeb.Layouts do
     " · #{ProductSurfaces.name(:planner)} · #{ProductSurfaces.name(:pathways)}"
   end
 
+  # The Blocks workspace frame: header, sub-header and main share one width so
+  # the timeline can use the full work surface (AC-31).
+  defp frame_class(:wide), do: "max-w-[1920px]"
+  defp frame_class(:standard), do: "max-w-7xl"
+
   @doc """
   Renders your app layout.
 
@@ -65,10 +70,18 @@ defmodule GtfsPlannerWeb.Layouts do
     default: [],
     doc: "list of {id, name} tuples for GTFS version dropdown"
 
+  attr :frame, :atom,
+    default: :standard,
+    values: [:standard, :wide],
+    doc:
+      "page frame width; :standard caps the header, sub-header and main at 1280px, :wide uses the 1920px workspace frame"
+
   slot :inner_block, required: true
   slot :sub_header, doc: "optional full-width sub-header rendered between header and main content"
 
   def app(assigns) do
+    assigns = assign(assigns, :frame_class, frame_class(assigns.frame))
+
     ~H"""
     <a
       href="#main-content"
@@ -81,7 +94,7 @@ defmodule GtfsPlannerWeb.Layouts do
       class="relative z-30 border-b border-subtle bg-white font-ds text-strong"
     >
       <div class="px-4 sm:px-6 lg:px-8">
-        <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8">
+        <div class={["mx-auto flex", @frame_class, "flex-wrap items-center gap-x-8"]}>
           <.link
             id="app-brand"
             href={~p"/"}
@@ -140,7 +153,7 @@ defmodule GtfsPlannerWeb.Layouts do
     <%= if @sub_header != [] do %>
       <div id="sub-header-wrapper" class="bg-base-100 border-b border-base-300">
         <div class="px-4 sm:px-6 lg:px-8">
-          <div class="mx-auto w-full max-w-7xl">
+          <div class={["mx-auto w-full", @frame_class]}>
             {render_slot(@sub_header)}
           </div>
         </div>
@@ -149,7 +162,7 @@ defmodule GtfsPlannerWeb.Layouts do
 
     <%= if @current_user do %>
       <main id="main-content" class="px-4 py-8 sm:px-6 lg:px-8">
-        <div class="mx-auto max-w-7xl space-y-4">
+        <div class={["mx-auto", @frame_class, "space-y-4"]}>
           {render_slot(@inner_block)}
         </div>
       </main>
