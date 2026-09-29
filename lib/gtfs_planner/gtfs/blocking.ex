@@ -67,6 +67,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RouteOperatingSetting
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations
@@ -91,6 +93,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # Every settings column plus the write timestamp: an upsert that replaced only
   # some of them would leave a previous save's value behind on the same row (FH-17).
   @replace_columns BlockingSetting.settings_fields() ++ [:updated_at]
+
+  # The two value columns of one route's row plus the write timestamp: an upsert
+  # that replaced only one of them would leave a previous save's other value
+  # behind, so clearing a garage and setting a type never leaves the old garage.
+  @replace_setting_columns [:garage_id, :required_vehicle_type_id, :updated_at]
 
   @published_status "published"
   @seconds_per_hour 3600
@@ -277,6 +284,16 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           max_piece_minutes: 60..720 | nil
         }
 
+  @typedoc """
+  One route of a version and its stored operating settings. `nil` is a route the
+  planner has not set, which R4 falls back from.
+  """
+  @type route_setting :: %{
+          route_id: String.t(),
+          garage_id: Ecto.UUID.t() | nil,
+          required_vehicle_type_id: Ecto.UUID.t() | nil
+        }
+
   @doc """
   Returns every Block rules setting for one organization's GTFS version.
 
@@ -396,6 +413,201 @@ defmodule GtfsPlanner.Gtfs.Blocking do
            )}
         end
     end
+  end
+
+  @doc """
+  Returns one entry per route of a version, with its stored home garage and
+  required vehicle type.
+
+  Every route of the organization and version appears exactly once, ordered by
+  `route_short_name` and then `route_id` (the drawer lists the routes the
+  planner recognizes, not the rows that happen to exist). A route with no
+  stored row answers `nil` for both values, which is how R4 tells "no home
+  garage" from "no row" (AC-2).
+  """
+  @spec list_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: [route_setting()]
+  def list_route_operating_settings(organization_id, gtfs_version_id) do
+    from(r in Route,
+      left_join: s in RouteOperatingSetting,
+      on:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.route_id == r.route_id,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      # PostgreSQL sorts a null short name last on an ascending sort, so a route
+      # with no short name keeps the bottom of the list rather than the top.
+      order_by: [asc: r.route_short_name, asc: r.route_id],
+      select: %{
+        route_id: r.route_id,
+        garage_id: s.garage_id,
+        required_vehicle_type_id: s.required_vehicle_type_id
+      }
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Stores the home garage and required vehicle type of the given routes.
+
+  Each entry is a map with `route_id`, `garage_id` and
+  `required_vehicle_type_id`, submitted as strings or atoms; a blank garage or
+  type is stored as `nil`. The batch is all-or-nothing: every entry is
+  validated first, and one bad entry returns
+  `{:error, {:invalid, [%{route_id: id, field: field, message: message}]}}`
+  with nothing stored — a garage or type of another organization, and a route
+  the version does not have, are both invalid (AC-2, FH-18).
+
+  The save runs in one transaction whose first statement is the scoped version
+  row `FOR SHARE` and whose next is `lock_blocking!/1`, so it serializes with
+  every other block writer and cannot slip between a plan's review of the route
+  settings and its apply (INV-1, INV-7, R12). A staging version or another
+  organization's version is `{:error, :not_found}` and stores nothing.
+  """
+  @spec update_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
+          :ok | {:error, :not_found | {:invalid, [map()]}}
+  def update_route_operating_settings(organization_id, gtfs_version_id, entries) do
+    entries = Enum.map(entries, &setting_entry/1)
+
+    case Repo.transaction(fn ->
+           write_route_settings!(organization_id, gtfs_version_id, entries)
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The version share lock is the first statement of the write transaction, exactly as
+  # `write_settings!/3` takes it, and `lock_blocking!/1` follows it and nothing else,
+  # so this writer joins the same serialization point as every block writer (INV-1).
+  defp write_route_settings!(organization_id, gtfs_version_id, entries) do
+    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+
+    if version.publication_status == @published_status do
+      :ok = lock_blocking!(gtfs_version_id)
+
+      case invalid_entries(organization_id, gtfs_version_id, entries) do
+        [] -> store_route_settings!(organization_id, gtfs_version_id, entries)
+        invalid -> {:error, {:invalid, invalid}}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # One validated entry as the writer and the invalid list speak it: the route it
+  # names and the two values to store, with a blank value already `nil` (the
+  # drawer's cleared input is `""`, which the UUID cast would reject as invalid
+  # rather than read as "unset").
+  defp setting_entry(entry) do
+    %{
+      route_id: value(entry, :route_id),
+      garage_id: value(entry, :garage_id),
+      required_vehicle_type_id: value(entry, :required_vehicle_type_id)
+    }
+  end
+
+  defp value(entry, key) do
+    case Map.get(entry, Atom.to_string(key), Map.get(entry, key)) do
+      value when value in [nil, ""] -> nil
+      value -> value
+    end
+  end
+
+  # Every entry is checked before anything is written, so a rejected batch leaves
+  # the previously stored rows exactly as the last accepted save left them. The
+  # route check reads the version's own routes, so a route of another version or
+  # another organization is rejected the same way an unknown one is.
+  defp invalid_entries(organization_id, gtfs_version_id, entries) do
+    known = version_route_ids(organization_id, gtfs_version_id, entries)
+
+    Enum.flat_map(entries, fn entry ->
+      Enum.flat_map(
+        [
+          route_error(entry, known),
+          owner_error(organization_id, entry, :garage_id, &Operations.get_garage/2),
+          owner_error(
+            organization_id,
+            entry,
+            :required_vehicle_type_id,
+            &Operations.get_vehicle_type/2
+          )
+        ],
+        fn
+          nil -> []
+          error -> [error]
+        end
+      )
+    end)
+  end
+
+  defp route_error(%{route_id: nil}, _known) do
+    invalid(nil, :route_id, "is required")
+  end
+
+  defp route_error(%{route_id: route_id}, known) do
+    if route_id in known do
+      nil
+    else
+      invalid(route_id, :route_id, "is not a route of this version")
+    end
+  end
+
+  # An untouched value is never checked: `nil` is either the previous save's own
+  # already validated choice or a route the planner has not set, exactly as
+  # `check_default_garage/2` reads the settings row. A value that is set must name
+  # a garage or type of this organization, so another organization's is rejected
+  # here rather than stored and resolved later.
+  defp owner_error(organization_id, entry, field, get) do
+    case Map.fetch!(entry, field) do
+      nil ->
+        nil
+
+      id ->
+        if get.(organization_id, id) do
+          nil
+        else
+          invalid(Map.fetch!(entry, :route_id), field, "is not owned by this organization")
+        end
+    end
+  end
+
+  defp invalid(route_id, field, message) do
+    %{route_id: route_id, field: field, message: message}
+  end
+
+  defp version_route_ids(_organization_id, _gtfs_version_id, []), do: MapSet.new()
+
+  defp version_route_ids(organization_id, gtfs_version_id, entries) do
+    route_ids = entries |> Enum.map(& &1.route_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    from(r in Route,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+          r.route_id in ^route_ids,
+      select: r.route_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # One upsert per entry, replacing both value columns and the write timestamp so a
+  # second save cannot leave a previous save's garage behind on the same row. The
+  # unique index on `(organization_id, gtfs_version_id, route_id)` is the
+  # conflict target, and every value was checked in this transaction first.
+  defp store_route_settings!(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp store_route_settings!(organization_id, gtfs_version_id, entries) do
+    Enum.each(entries, fn entry ->
+      %RouteOperatingSetting{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        route_id: entry.route_id
+      }
+      |> RouteOperatingSetting.changeset(entry)
+      |> Repo.insert!(
+        on_conflict: {:replace, @replace_setting_columns},
+        conflict_target: [:organization_id, :gtfs_version_id, :route_id]
+      )
+    end)
   end
 
   defp settings_query(organization_id, gtfs_version_id) do
