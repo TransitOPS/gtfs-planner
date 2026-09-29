@@ -520,7 +520,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       reload it to see the latest.
       <:extra>
         <div
-          class="vr-indeterminate mt-5 max-w-[44rem]"
+          class="ds-indeterminate mt-5 max-w-[44rem]"
           role="progressbar"
           aria-label="Validation in progress"
         >

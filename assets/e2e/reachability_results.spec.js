@@ -41,17 +41,16 @@ test.describe("Reachability result routes", () => {
 
     await expect(page.locator("#station-reachability-results")).toBeVisible();
     await expect(page.getByText("Reachability results", { exact: true })).toBeVisible();
-
+    await expect(page.locator("#reachability-verdict")).toBeVisible();
     // The seeded station has one entrance and two platforms; an elevator joins
     // the entrance to the first platform, so exactly one entry pair is reachable.
     await expect(page.locator("#reachability-section-entry")).toBeVisible();
     await expect(page.locator("#pair-BROWSER_STOP_C-BROWSER_STOP_A")).toBeVisible();
     await expect(page.locator("#reachability-section-entry-stats")).toHaveText(
-      "1/2 on foot · 1/2 step-free",
+      "1 of 2 on foot · 1 of 2 step-free",
     );
-    await expect(page.locator("#station-reachability-results")).toContainText(
-      /4 reachable \/ 12 pairs/,
-    );
+    await expect(page.locator("#reachability-verdict-on-foot")).toContainText("2 of 6");
+    await expect(page.locator("#reachability-verdict-step-free")).toContainText("2 of 6");
   });
 
   test("renders legacy station results through the read-only boundary", async ({ page }) => {
@@ -59,7 +58,9 @@ test.describe("Reachability result routes", () => {
     await page.goto(`/gtfs/${id}/station-reachability/${LEGACY_STATION_RUN_ID}?stop_id=BROWSER_STATION`);
 
     await expect(page.locator("#legacy-reachability-results")).toBeVisible();
-    await expect(page.getByText("Retired engine", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("This check used a method we've retired.", { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("Legacy browser test", { exact: true })).toBeVisible();
   });
 
