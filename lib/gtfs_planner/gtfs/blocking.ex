@@ -3123,16 +3123,17 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         Repo.rollback({:stale_review, review})
 
       true ->
-        write_changes!(audit, locked.target, changes, review)
+        write_changes!(audit, command, locked.target, changes, review)
     end
   end
 
-  # Step 10: one `update_all` sets the block and the clock on the changed rows, then
-  # one `"trip"` change log per changed trip carries the Schedules snapshot shape,
-  # the shared operation ID and the whole affected list (INV-4). The snapshots are
-  # built from the pre-update rows, so `before` and `after` differ only in the block
-  # ID, and an audit failure rolls the write back. No transfer row is written (INV-3).
-  defp write_changes!(%AuditContext{} = audit, target, changes, review) do
+  # Step 10: one `update_all` sets the block and the clock on the changed rows, the
+  # rows that follow the moved block follow it, then one `"trip"` change log per
+  # changed trip carries the Schedules snapshot shape, the shared operation ID and
+  # the whole affected list (INV-4). The snapshots are built from the pre-update
+  # rows, so `before` and `after` differ only in the block ID, and an audit failure
+  # rolls the whole command back. No transfer row is written (INV-3).
+  defp write_changes!(%AuditContext{} = audit, command, target, changes, review) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
     changed_ids = changes |> Enum.map(& &1.trip.id) |> Enum.sort()
@@ -3152,6 +3153,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     if count != length(changed_ids), do: Repo.rollback(:busy)
 
+    carry_attributes!(audit, command, target, changes)
+
     Enum.each(trips, &audit_change!(audit, &1, target, snapshots, operation_id, changed_ids))
 
     %{
@@ -3160,6 +3163,109 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       block_id: target,
       review: review
     }
+  end
+
+  # AC-18: a rename or a merge carries the source block's attribute rows to the
+  # destination. `:assign` and `:unassign` change which trips carry an ID without
+  # moving a block's attributes, so they leave every row untouched.
+  defp carry_attributes!(%AuditContext{} = audit, command, target, changes) do
+    case command do
+      {kind, from, _to} when kind in [:rename, :merge] ->
+        move_attribute_rows!(audit, from, target, moved_services(changes))
+
+      _command ->
+        :ok
+    end
+  end
+
+  # Only the moved trips' own services are considered: a service none of the moved
+  # trips runs on has no row this command could carry, and reading it would move a
+  # row the operator never touched.
+  defp moved_services(changes) do
+    changes |> Enum.map(& &1.trip.service_id) |> Enum.uniq() |> Enum.sort()
+  end
+
+  # Each service's `(service, from)` row is copied to `(service, to)` when the
+  # destination has no row of its own, and the source row is deleted only when no
+  # trip of that service still carries `from` in the version. A rename that moves
+  # every trip of a service moves its row; a split that leaves the service's other
+  # trips on the source ID keeps that row and copies it; and a merge keeps the
+  # destination's own row, because `on_conflict: :nothing` never overwrites it.
+  defp move_attribute_rows!(%AuditContext{} = audit, from, target, services) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    now = DateTime.utc_now()
+
+    rows =
+      from(a in BlockAttribute,
+        where:
+          a.organization_id == ^organization_id and a.gtfs_version_id == ^version_id and
+            a.service_id in ^services and a.block_id == ^from,
+        select: %{
+          service_id: a.service_id,
+          garage_id: a.garage_id,
+          vehicle_type_id: a.vehicle_type_id
+        }
+      )
+      |> Repo.all()
+
+    Enum.each(rows, fn row ->
+      copy_attribute_row!(organization_id, version_id, target, row, now)
+
+      if not service_carries_block?(audit, row.service_id, from) do
+        delete_attribute_row!(organization_id, version_id, row.service_id, from)
+      end
+    end)
+
+    :ok
+  end
+
+  # The copy carries the source row's two stored values. The destination row is
+  # never overwritten: a merge into a block that already has attributes keeps them
+  # (AC-18), and the write timestamp is the command's own.
+  defp copy_attribute_row!(organization_id, version_id, target, row, now) do
+    Repo.insert_all(
+      BlockAttribute,
+      [
+        %{
+          organization_id: organization_id,
+          gtfs_version_id: version_id,
+          service_id: row.service_id,
+          block_id: target,
+          garage_id: row.garage_id,
+          vehicle_type_id: row.vehicle_type_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      ],
+      on_conflict: :nothing,
+      conflict_target: [:organization_id, :gtfs_version_id, :service_id, :block_id]
+    )
+  end
+
+  # A trip of the service still carrying the source ID anywhere in the version, on
+  # any date, is what keeps the row: the command moves the selected day type's
+  # trips, and a trip on a date it did not touch is untouched.
+  defp service_carries_block?(%AuditContext{} = audit, service_id, block_id) do
+    Repo.exists?(
+      from(t in Trip,
+        where:
+          t.organization_id == ^audit.organization_id and
+            t.gtfs_version_id == ^audit.gtfs_version_id and
+            t.service_id == ^service_id and t.block_id == ^block_id
+      )
+    )
+  end
+
+  defp delete_attribute_row!(organization_id, version_id, service_id, block_id) do
+    from(a in BlockAttribute,
+      where:
+        a.organization_id == ^organization_id and a.gtfs_version_id == ^version_id and
+          a.service_id == ^service_id and a.block_id == ^block_id
+    )
+    |> Repo.delete_all()
+
+    :ok
   end
 
   # One `"trip"` change log per changed trip, in the Schedules snapshot shape with the
