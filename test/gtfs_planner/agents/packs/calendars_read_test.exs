@@ -435,6 +435,17 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
       assert message =~ "62 days"
     end
 
+    test "refuses a calendar whose weekly range the date evaluator refuses", context do
+      add_calendar(context.organization, context.version, "REVERSED", "Reversed range", %{
+        start_date: ~D[2026-12-31],
+        end_date: ~D[2026-01-01]
+      })
+
+      assert get("REVERSED", "2026-10-12", "2026-10-18", context.scope) ==
+               {:error,
+                "The calendar REVERSED has an invalid weekly range. Fix it on the Calendars page first."}
+    end
+
     test "accepts a range of exactly 62 days", context do
       add_calendar(context.organization, context.version, "WD", "School weekdays")
 

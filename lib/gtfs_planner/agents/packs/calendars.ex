@@ -255,25 +255,26 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
     end
   end
 
+  # The single-calendar reads (`Gtfs.get_calendar/3`, `Gtfs.fetch_calendar/3`) derive
+  # dates and raise on a retained reversed weekly range, which would fail the whole
+  # turn. The catalog classifies that range as `coverage_error` instead, so this
+  # reads the same summary `prepare_date_change` validates and refuses it with the
+  # same message.
   defp read_calendar(service_id, scope, from, to) do
-    case Gtfs.get_calendar(scope.organization_id, scope.gtfs_version_id, service_id) do
-      {:ok, payload} ->
-        {:ok, calendar_result(payload, service_id, from, to)}
-
-      {:error, :not_found} ->
-        {:error, "No calendar with service_id " <> service_id <> " in this service version."}
+    with {:ok, targets} <- load_targets([service_id], scope) do
+      {:ok, calendar_result(Map.fetch!(targets, service_id), service_id, from, to)}
     end
   end
 
-  defp calendar_result(payload, service_id, from, to) do
-    exceptions = Map.new(payload.exceptions, &{&1.date, &1.exception_type})
-    active_dates = MapSet.new(payload.active_dates)
+  defp calendar_result(summary, service_id, from, to) do
+    exceptions = Map.new(summary.exceptions, &{&1.date, &1.exception_type})
+    active_dates = MapSet.new(summary.active_dates)
 
     %{
       "service_id" => service_id,
-      "name" => name(payload, service_id),
-      "kind" => Atom.to_string(payload.kind),
-      "days" => days(payload.calendar),
+      "name" => name(summary, service_id),
+      "kind" => Atom.to_string(summary.kind),
+      "days" => days(summary.calendar),
       "dates" =>
         for date <- Date.range(from, to) do
           runs = MapSet.member?(active_dates, date)
@@ -292,7 +293,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
        when is_binary(description),
        do: description
 
-  defp name(_payload, service_id), do: service_id
+  defp name(_summary, service_id), do: service_id
 
   # An exception on the date is the explicit reason; otherwise the weekly
   # baseline answers the question.
