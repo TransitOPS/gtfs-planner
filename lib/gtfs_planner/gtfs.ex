@@ -69,6 +69,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.Routes
+  alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
@@ -5907,6 +5908,48 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def update_blocking_settings(organization_id, gtfs_version_id, attrs) do
     Blocking.update_settings(organization_id, gtfs_version_id, attrs)
+  end
+
+  @doc """
+  Returns the five crew rules for an organization's GTFS version.
+
+  A version with no stored crew rules returns the researched defaults (15 minutes
+  before a block-start piece, 5 before a relief piece, 5 to sign off, a 30-minute
+  break that still counts as paid, and a 720-minute spread); the read never writes
+  a row.
+  """
+  @spec get_crew_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: Runs.crew()
+  def get_crew_settings(organization_id, gtfs_version_id) do
+    Runs.get_crew_settings(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Returns the changeset rendered by the crew rules form.
+
+  `crew` is a value map from `get_crew_settings/2` and `attrs` are the submitted
+  parameters; a value outside its range or a blank input carries the field error.
+  """
+  @spec change_crew_settings(Runs.crew(), map()) :: Ecto.Changeset.t()
+  def change_crew_settings(crew, attrs) do
+    Runs.change_crew_settings(crew, attrs)
+  end
+
+  @doc """
+  Stores the five crew rules for an organization's published version.
+
+  Every value is range-checked, and the save takes the version's `FOR SHARE` lock
+  and then `Blocking.lock_blocking!/1`, so it serializes with every other planning
+  input writer. It replaces only the five crew columns of the version's one
+  settings row, so the Block rules and the piece limit keep the values spec 07
+  stored.
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, and `{:error, changeset}` when a value is rejected.
+  """
+  @spec update_crew_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update_crew_settings(organization_id, gtfs_version_id, attrs) do
+    Runs.update_crew_settings(organization_id, gtfs_version_id, attrs)
   end
 
   @doc """
