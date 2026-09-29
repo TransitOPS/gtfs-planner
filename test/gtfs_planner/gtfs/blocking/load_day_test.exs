@@ -550,6 +550,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
                stop_id: "CA",
                name: "Platform A",
                parent_station: "PAR",
+               parent_name: "Union",
                lat: 40.7128,
                lon: -74.006
              }
@@ -635,6 +636,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
                stop_id: "UNK_A",
                name: "Test Stop",
                parent_station: nil,
+               parent_name: nil,
                lat: nil,
                lon: nil
              }
@@ -747,6 +749,60 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
 
       assert {:ok, mixed} = Gtfs.load_blocking_day(organization.id, version.id, nil)
       assert mixed.mixed_timezones? == true
+    end
+  end
+
+  describe "the trip and stop rows the day load returns" do
+    test "carry direction, the endpoint pickup and drop-off types and the parent station name",
+         %{scope: scope} do
+      %{organization: organization, version: version} = scope
+      calendar_service_fixture(organization.id, version.id, %{service_id: "WK", name: "Weekday"})
+
+      _station =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "FARRAGUT",
+          stop_name: "Farragut Square",
+          location_type: 1,
+          stop_lat: Decimal.new("38.898300"),
+          stop_lon: Decimal.new("-77.025800")
+        })
+
+      child_stop(organization.id, version.id, "FS_P3", "Platform 3", "FARRAGUT")
+
+      one_way =
+        blocked_trip(scope, %{
+          trip_id: "one_way",
+          block_id: "1",
+          direction_id: 1,
+          first_stop: "FS_P3",
+          last_stop: "FS_P3",
+          first_pickup_type: 1,
+          last_drop_off_type: 1
+        })
+
+      both_ways = blocked_trip(scope, %{trip_id: "both_ways", block_id: "1"})
+
+      assert {:ok, day} = Gtfs.load_blocking_day(organization.id, version.id, nil)
+
+      rows = all_rows(day)
+
+      one_way_row = Enum.find(rows, &(&1.trip_id == "one_way"))
+      both_ways_row = Enum.find(rows, &(&1.trip_id == "both_ways"))
+
+      assert one_way_row.direction_id == 1
+      assert one_way_row.first_pickup_type == 1
+      assert one_way_row.last_drop_off_type == 1
+      assert one_way_row.first_stop.parent_name == "Farragut Square"
+      assert one_way_row.last_stop.parent_name == "Farragut Square"
+
+      # A trip stored without a direction, with ordinary endpoints and a stop of
+      # its own that names no parent station.
+      assert both_ways_row.direction_id == nil
+      assert both_ways_row.first_pickup_type == nil
+      assert both_ways_row.last_drop_off_type == nil
+      assert both_ways_row.first_stop.parent_station == nil
+      assert both_ways_row.first_stop.parent_name == nil
+      assert both_ways_row.last_stop.parent_name == nil
     end
   end
 
