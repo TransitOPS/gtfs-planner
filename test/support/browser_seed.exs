@@ -5672,6 +5672,21 @@ case Accounts.register_first_admin(%{
         gtfs_version_id: diagram_version.id
       })
 
+    # A second entrance with no pathway at all: its pairs are unreachable even
+    # without closures, so the moment preview must list them as `No route`
+    # without ever counting them as lost or blaming a closure for them.
+    {:ok, _evo_east_entrance} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_EVO_EAST_ENTRANCE",
+        stop_name: "East entrance",
+        location_type: 2,
+        parent_station: evo_station.stop_id,
+        level_id: evo_level.level_id,
+        diagram_coordinate: %{"x" => 20, "y" => 66},
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
     # A slash and spaces in one pathway_id, so a `?pathway=` link has to be
     # encoded and decoded exactly rather than read as a path segment.
     {:ok, _evo_walkway} =
@@ -5809,7 +5824,8 @@ case Accounts.register_first_admin(%{
 
     IO.puts(
       "Browser seed: evolutions station #{evo_station.stop_id} with 3 pathways, " <>
-        "2 closures on CAL_DAILY, plus empty and no-pathway stations"
+        "2 closures on CAL_DAILY, a second entrance with no pathway, plus empty " <>
+        "and no-pathway stations"
     )
 
     # The published version that exists precisely because it has no calendars.

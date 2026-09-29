@@ -1,8 +1,9 @@
 // Scheduled pathway closures on the Evolutions station route (EV-21, step 15),
 // the station-merge closure-file disclosure (EV-20, step 16), the fingerprinted
 // delete confirmation (EV-31, step 20), the calendar reference refusals
-// (EV-24, step 22), the rejected-closure import recovery (EV-26, step 24) and
-// the Pathways export omission notice (EV-27, step 25).
+// (EV-24, step 22), the rejected-closure import recovery (EV-26, step 24), the
+// Pathways export omission notice (EV-27, step 25) and the moment access preview
+// at its own route (EV-28, step 26).
 //
 // Runs against the reset-and-seeded browser database the repository's Playwright
 // configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
@@ -66,6 +67,10 @@ const FEATURE_DIR = path.resolve(__dirname, "../../.specs/pathway-evolutions");
 const EVIDENCE_DIR = path.join(FEATURE_DIR, "evidence/browser");
 const REFERENCE_PATH = path.join(FEATURE_DIR, "references/closures.html");
 const GUARDS_REFERENCE_PATH = path.join(FEATURE_DIR, "references/guards.html");
+const ACCESS_REFERENCE_PATH = path.join(
+  FEATURE_DIR,
+  "references/access-preview.html",
+);
 
 function capturePath(testInfo, name) {
   return fs.existsSync(EVIDENCE_DIR)
@@ -146,6 +151,10 @@ async function seededVersionId(page, name = VERSION_NAME) {
 
 function evolutionsPath(versionId, stopId, query = "") {
   return `/gtfs/${versionId}/stops/${stopId}/evolutions${query}`;
+}
+
+function accessPath(versionId, stopId, query = "") {
+  return `/gtfs/${versionId}/stops/${stopId}/evolutions/access${query}`;
 }
 
 function diagramPath(versionId, stopId) {
@@ -2943,6 +2952,418 @@ test.describe("guards", () => {
       await page.screenshot({
         path: capturePath(testInfo, "step-023-reference-mobile.png"),
         fullPage: true,
+      });
+    });
+  });
+});
+
+// Step 26 / EV-28. The moment access preview through its own route. Expected
+// labels, states and IDs are literal values from the seeded fixtures: the
+// elevator carries a 09:00-15:00 closure on CAL_DAILY, the staircase a
+// 22:00-26:00 one, and the seeded East entrance has no pathway at all. The
+// group reads the shared station and writes nothing to the database, so it can
+// run on its own (`--grep preview`) or with the rest of the file.
+test.describe("preview", () => {
+  const cell = (page, platformId, entrance, connection) =>
+    page
+      .locator(`#findings-table tbody[data-platform-id="${platformId}"] tr`, {
+        hasText: entrance,
+      })
+      .locator(`td[data-connection="${connection}"]`);
+
+  // The closure view's own table is not used here; this is the browser's route
+  // back to the closure that contributed to a loss.
+  const causes = (page) => page.locator("#preview-causes");
+
+  test.describe("the moment access page", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("shows Lost step-free and Available walking for the elevator and staircase", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      // The view switch marks this route current and the station tab stays on
+      // Evolutions.
+      await expect(page.locator("#evolutions-tab-access")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      await expect(page.locator("#evolutions-tab-closures")).toHaveAttribute(
+        "aria-current",
+        "false",
+      );
+      await expect(page.locator("#station-tab-evolutions")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+
+      // The moment defaults to the agency's today at noon in its own zone.
+      await expect(page.locator("#preview-time")).toHaveValue("12:00:00");
+      await expect(page.locator("#preview-zone")).toContainText(
+        "America/New_York",
+      );
+      await expect(page.locator("#preview-zone")).toContainText(
+        "25:00 means 1 AM on the next day of this service",
+      );
+
+      // The elevator is closed 09:00-15:00: Platform 1 loses its step-free
+      // connection in both directions and keeps walking over the staircase.
+      await expect(
+        cell(page, "BROWSER_EVO_PLATFORM", "North entrance", "step_free_to_platform"),
+      ).toHaveAttribute("data-state", "lost");
+      await expect(
+        cell(page, "BROWSER_EVO_PLATFORM", "North entrance", "step_free_to_exit"),
+      ).toHaveAttribute("data-state", "lost");
+      await expect(
+        cell(page, "BROWSER_EVO_PLATFORM", "North entrance", "walking_to_platform"),
+      ).toHaveAttribute("data-state", "available");
+      await expect(
+        cell(page, "BROWSER_EVO_PLATFORM", "North entrance", "walking_to_exit"),
+      ).toHaveAttribute("data-state", "available");
+
+      // The concourse pair is untouched by the closure.
+      await expect(
+        cell(page, "BROWSER_EVO_MEZZANINE", "North entrance", "step_free_to_platform"),
+      ).toHaveAttribute("data-state", "available");
+
+      // The seeded East entrance has no pathway: every one of its cells is a
+      // No route with its own word, and the note says it is not a loss.
+      for (const connection of [
+        "step_free_to_platform",
+        "step_free_to_exit",
+        "walking_to_platform",
+        "walking_to_exit",
+      ]) {
+        const east = cell(page, "BROWSER_EVO_PLATFORM", "East entrance", connection);
+        await expect(east).toHaveAttribute("data-state", "gap");
+        await expect(east).toContainText("No route");
+      }
+
+      await expect(page.locator("#findings-gap-note")).toBeVisible();
+      await expect(page.locator("#findings-gap-note")).toContainText(
+        "Unreachable even without closures, so it is not counted as lost.",
+      );
+      await expect(page.locator("#findings-incomplete-badge")).toHaveCount(0);
+      await expect(page.locator("#analysis-incomplete")).toHaveCount(0);
+
+      // The answer names the step-free consequence and separates the closure,
+      // what still works and the baseline gap.
+      const title = page.locator("#preview-result-title");
+      await expect(title).toHaveText("No step-free route to or from Platform 1");
+      await expect(title).not.toContainText("East entrance");
+
+      const body = page.locator("#preview-result-body");
+      await expect(body).toContainText(
+        "Elevator BROWSER_EVO/PW LIFT 1 (Mezzanine hall ↔ Platform 1) is closed 09:00–15:00.",
+      );
+      await expect(body).toContainText(
+        "Walking connections to and from Platform 1 remain.",
+      );
+      await expect(body).toContainText(
+        "East entrance has no step-free route to Platform 1 even without closures.",
+      );
+
+      // The moment line and the coverage disclaimer are the page's own words.
+      await expect(page.locator("#preview-moment")).toContainText(
+        "12:00 service time",
+      );
+      await expect(page.locator("#preview-computed")).toContainText(
+        "Calculated ",
+      );
+      await expect(page.locator("#preview-coverage")).toContainText(
+        "It does not certify slopes, widths, or all wheelchair requirements.",
+      );
+
+      // Both closures are seeded, but only the elevator is active at noon.
+      await expect(causes(page)).toContainText(
+        "Active closures during this loss",
+      );
+      await expect(causes(page)).toContainText("BROWSER_EVO/PW LIFT 1");
+      await expect(causes(page)).toContainText("09:00–15:00");
+      await expect(
+        causes(page).locator('a', { hasText: "Review closure" }),
+      ).toHaveAttribute(
+        "href",
+        /\/evolutions\?closure=[0-9a-f-]{36}$/,
+      );
+
+      // Every interactive target in the feature region clears the 44px floor.
+      const targets = page.locator(
+        "#evolutions button:visible, #evolutions input:visible, #evolutions a:visible",
+      );
+      const count = await targets.count();
+
+      for (let index = 0; index < count; index += 1) {
+        const box = await targets.nth(index).boundingBox();
+        if (box) expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+
+      // Submitting a moment inside the closure keeps the same answer.
+      await page.locator("#preview-time").fill("13:00:00");
+      await page.locator("#update-preview").click();
+
+      await expect(page.locator("#preview-moment")).toContainText(
+        "13:00 service time",
+      );
+      await expect(page.locator("#preview-result-title")).toHaveText(
+        "No step-free route to or from Platform 1",
+      );
+      await expect(
+        cell(page, "BROWSER_EVO_PLATFORM", "North entrance", "step_free_to_platform"),
+      ).toHaveAttribute("data-state", "lost");
+      await expect(page.locator("#analysis-stale")).toHaveCount(0);
+    });
+
+    test("a newer check replaces the earlier answer and a failure is named with a retry", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#preview-result-title")).toHaveText(
+        "No step-free route to or from Platform 1",
+      );
+
+      // 16:00 is after the elevator window and before the staircase's, so the
+      // new check answers for its own moment and the earlier answer is gone.
+      await page.locator("#preview-time").fill("16:00:00");
+      await page.locator("#update-preview").click();
+
+      await expect(page.locator("#preview-moment")).toContainText(
+        "16:00 service time",
+      );
+      await expect(page.locator("#preview-result-title")).toHaveText(
+        "No connection lost at this time",
+      );
+      await expect(page.locator("#preview-result-body")).toContainText(
+        "No closure is active.",
+      );
+      await expect(causes(page)).toContainText("No closure is active at");
+      await expect(page.locator("#analysis-stale")).toHaveCount(0);
+
+      // A moment the loader cannot evaluate: a service date outside
+      // PostgreSQL's own date range, reachable only through a link because a
+      // browser date input cannot hold a negative year. The page names the
+      // failure, keeps its instruction line and offers a retry.
+      await page.goto(accessPath(versionId, STATION, "?date=-4714-12-31&time=12:00:00"));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#analysis-error")).toBeVisible();
+      await expect(page.locator("#analysis-error")).toContainText(
+        "The access check stopped before it finished",
+      );
+      await expect(page.locator("#analysis-error-detail")).toContainText(
+        "Nothing was changed.",
+      );
+      await expect(page.locator("#analysis-retry")).toBeVisible();
+      await expect(page.locator("#preview-result")).toHaveCount(0);
+      await expect(page.locator("#preview-findings")).toHaveCount(0);
+
+      // Recovery is one ordinary moment away.
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#analysis-error")).toHaveCount(0);
+      await expect(page.locator("#analysis-stale")).toHaveCount(0);
+      await expect(page.locator("#preview-result-title")).toHaveText(
+        "No step-free route to or from Platform 1",
+      );
+    });
+
+    test("an incomplete station is never an all-clear and an unusable version zone hides the form", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      // The seeded empty station has platforms and a pathway but no entrance,
+      // so the evaluation cannot answer and says why.
+      await page.goto(accessPath(versionId, EMPTY_STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#analysis-incomplete")).toBeVisible();
+      await expect(page.locator("#analysis-incomplete")).toContainText(
+        "Access check incomplete",
+      );
+      await expect(page.locator("#incomplete-reasons")).toContainText(
+        "no entrance",
+      );
+      await expect(
+        page.locator("#findings-incomplete-badge"),
+      ).toContainText("Incomplete");
+      await expect(page.locator("#preview-result")).toHaveCount(0);
+      await expect(page.locator("#findings-empty")).toBeVisible();
+      await expect(page.locator("#incomplete-moment")).toContainText(
+        "service time",
+      );
+
+      // The version that exists because it has no calendars also has no agency
+      // time zone, so its access route refuses to name an instant and leaves
+      // authoring reachable instead.
+      const noCalendarsVersionId = await seededVersionId(
+        page,
+        NO_CALENDARS_VERSION_NAME,
+      );
+
+      await page.goto(accessPath(noCalendarsVersionId, NO_CALENDAR_STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#analysis-timezone-unavailable")).toBeVisible();
+      await expect(page.locator("#analysis-timezone-unavailable")).toContainText(
+        "this version has no agency time zone",
+      );
+      await expect(page.locator("#tz-reason")).toContainText(
+        "No agency in this version has a time zone.",
+      );
+      await expect(page.locator("#preview-form")).toHaveCount(0);
+      await expect(page.locator("#preview-findings")).toHaveCount(0);
+      await expect(page.locator("#preview-result")).toHaveCount(0);
+      await expect(page.locator("#tz-settings")).toHaveAttribute(
+        "href",
+        `/gtfs/${noCalendarsVersionId}/settings/agencies`,
+      );
+
+      // The closure list stays reachable from the refusal.
+      await page.locator("#tz-closures").click();
+
+      await expect(page.locator("#closures-card")).toBeVisible();
+    });
+
+    test("switching version leaves the earlier version's answer behind", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+      await expect(page.locator("#preview-result-title")).toHaveText(
+        "No step-free route to or from Platform 1",
+      );
+
+      const noCalendarsVersionId = await seededVersionId(
+        page,
+        NO_CALENDARS_VERSION_NAME,
+      );
+
+      await page.locator("#gtfs-version-trigger").click();
+      await page
+        .locator(`#gtfs-version-option-${noCalendarsVersionId}`)
+        .click();
+
+      // The station does not exist in the version that was chosen, so the page
+      // refuses it rather than showing the version the reader left.
+      await page.waitForURL(`**/gtfs/${noCalendarsVersionId}/stops`);
+      await expect(page.getByText("Station not found")).toBeVisible();
+      await expect(page.locator("#preview-result")).toHaveCount(0);
+      await expect(page.locator("#preview-findings")).toHaveCount(0);
+      await expect(page.locator("#evolutions")).toHaveCount(0);
+    });
+  });
+
+  test.describe("rendered result", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("matches the reference hierarchy with production fonts and tokens at both widths", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+
+      await page.setViewportSize(DESKTOP);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#evolutions")).toHaveCSS(
+        "font-family",
+        /Figtree/,
+      );
+      await expect(page.locator("#findings-title")).toBeVisible();
+      await expect(page.locator("#preview-result-title")).toHaveCSS(
+        "font-family",
+        /Gabarito/,
+      );
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-026-production-desktop.png"),
+        fullPage: true,
+      });
+
+      // Each width re-enters the route so the state is the route's own, not a
+      // client-side reflow of the desktop render.
+      await page.setViewportSize(MOBILE);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      // Below md the table is replaced by the list form of the same answer, and
+      // the page still fits the viewport.
+      await expect(page.locator("#findings-list")).toBeVisible();
+      await expect(page.locator("#findings-table")).toBeHidden();
+      await expect(
+        page.locator(
+          '#findings-list [data-platform-id="BROWSER_EVO_PLATFORM"] [data-connection-state="lost"]',
+        ),
+      ).toHaveCount(2);
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-026-production-mobile.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(NARROW);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await page.screenshot({
+        path: capturePath(testInfo, "step-026-production-320.png"),
+        fullPage: true,
+      });
+    });
+
+    // The reference is a self-contained file in the gitignored `.specs/`
+    // workspace, so this case skips (rather than fails) in a checkout without it.
+    test.describe("reference capture", () => {
+      test.skip(() => !fs.existsSync(ACCESS_REFERENCE_PATH), "reference file not present");
+
+      test("captures the reference states at the same viewports", async ({
+        page,
+      }, testInfo) => {
+        await page.setViewportSize(DESKTOP);
+
+        for (const [state, name] of [
+          ["", "ideal"],
+          ["?state=baseline-gap", "baseline-gap"],
+          ["?state=incomplete", "incomplete"],
+          ["?state=timezone", "timezone"],
+          ["?state=error", "error"],
+        ]) {
+          await page.goto(
+            `${pathToFileURL(ACCESS_REFERENCE_PATH).href}${state}`,
+          );
+          await expect(page.locator("#evolutions-view-nav")).toBeVisible();
+          await page.screenshot({
+            path: capturePath(testInfo, `step-026-reference-${name}-desktop.png`),
+            fullPage: true,
+          });
+        }
+
+        await page.setViewportSize(MOBILE);
+        await page.goto(pathToFileURL(ACCESS_REFERENCE_PATH).href);
+        await expect(page.locator("#preview-findings")).toBeVisible();
+        await page.screenshot({
+          path: capturePath(testInfo, "step-026-reference-ideal-mobile.png"),
+          fullPage: true,
+        });
       });
     });
   });
