@@ -48,7 +48,13 @@ import LiveSelect from "../vendor/live_select"
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
-  params: {_csrf_token: csrfToken},
+  // A rejoin after a dropped socket carries the open create-route drawer's signed
+  // attempt, so RoutesLive can render the drawer again under the same attempt.
+  // The transport socket calls this without a view element.
+  params: (el) => ({
+    _csrf_token: csrfToken,
+    new_route_attempt: el?.querySelector("#new-route-attempt")?.value,
+  }),
   hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, TransferMap: TransferMapHook},
 })
 

@@ -830,6 +830,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     <details
       id={"#{@prefix}-additional"}
       open={@open?}
+      phx-mounted={JS.ignore_attributes("open")}
       class="group min-w-0 rounded-card border border-subtle"
     >
       <summary class="flex min-h-14 cursor-pointer list-none items-center gap-3 px-4 [&::-webkit-details-marker]:hidden">
@@ -1407,6 +1408,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     doc: "the stale-apply explanation: %{kind: :counts | :contents, text: binary}"
 
   attr :ack_label, :string, required: true, doc: "the acknowledgement sentence"
+  attr :acknowledged, :boolean, default: false, doc: "the server-owned checkbox state"
   attr :ack_error, :string, default: nil
   attr :error, :string, default: nil, doc: "a truthful refusal from the apply command"
   attr :pending, :boolean, default: false
@@ -1518,6 +1520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
             id="route-delete-ack"
             name="delete[acknowledged]"
             aria-describedby="route-delete-ack-error"
+            checked={@acknowledged}
             disabled={@pending}
             class="mt-0.5 size-5 shrink-0 accent-action"
           />

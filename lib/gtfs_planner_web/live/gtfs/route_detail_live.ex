@@ -136,6 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:delete_changes, [])
      |> assign(:delete_previous_categories, nil)
      |> assign(:delete_ack_error, nil)
+     |> assign(:delete_acknowledged?, false)
      |> assign(:delete_error, nil)
      |> assign(:delete_pending, false)
      |> assign(:delete_task, nil)}
@@ -357,10 +358,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   # The acknowledgement checkbox's own change event: a shown acknowledgement
   # error clears as soon as the operator acknowledges (the reference's
-  # behavior), and nothing is written.
+  # behavior), and nothing is written. The checkbox state is server-owned, so
+  # the patch that clears the error keeps the box ticked.
   @impl true
-  def handle_event("acknowledge_delete", _params, socket) do
-    {:noreply, assign(socket, :delete_ack_error, nil)}
+  def handle_event("acknowledge_delete", params, socket) do
+    {:noreply,
+     socket
+     |> assign(:delete_ack_error, nil)
+     |> assign(:delete_acknowledged?, get_in(params, ["delete", "acknowledged"]) == "on")}
   end
 
   # The review's confirm: the step-12 command with the reviewed fingerprint and
@@ -805,6 +810,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:delete_changes, [])
         |> assign(:delete_previous_categories, nil)
         |> assign(:delete_ack_error, nil)
+        |> assign(:delete_acknowledged?, false)
         |> assign(:delete_error, nil)
         |> assign(:delete_pending, false)
         |> assign(:delete_task, nil)
@@ -1177,6 +1183,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:delete_review, review)
         |> assign(:delete_changes, [])
         |> assign(:delete_ack_error, nil)
+        |> assign(:delete_acknowledged?, false)
         |> assign(:delete_error, nil)
 
       {:error, :not_found} ->
@@ -1230,6 +1237,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     |> assign(:delete_review, nil)
     |> assign(:delete_changes, [])
     |> assign(:delete_ack_error, nil)
+    |> assign(:delete_acknowledged?, false)
     |> assign(:delete_error, nil)
   end
 
@@ -1311,6 +1319,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     |> assign(:delete_changes, changes)
     |> assign(:delete_previous_categories, previous_categories)
     |> assign(:delete_ack_error, nil)
+    |> assign(:delete_acknowledged?, false)
     |> assign(:delete_error, nil)
     |> push_event("focus_scoped_target", %{id: "route-delete-ack"})
   end
@@ -2278,6 +2287,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                           banner={delete_banner(@delete_changes)}
                           ack_label={delete_ack_label(@delete_review)}
                           ack_error={@delete_ack_error}
+                          acknowledged={@delete_acknowledged?}
                           error={@delete_error}
                           pending={@delete_pending}
                           deactivate_instead?={@active_state != :inactive}

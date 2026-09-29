@@ -691,6 +691,57 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
     end
   end
 
+  describe "the text color mode" do
+    test "choosing Custom keeps the mode and reveals the text color field across validates", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+
+      assert has_element?(view, "#new-route-text-wrap.hidden")
+
+      render_change(view, "validate_new_route", %{
+        "route" => draft_params(%{"route_short_name" => "C1"}),
+        "text_mode" => "custom"
+      })
+
+      # The radios post `text_mode` beside the route fields; the reply must keep
+      # Custom checked and the field visible rather than reverting to Automatic.
+      refute has_element?(view, "#new-route-text-wrap.hidden")
+      assert has_element?(view, "#new-route-text-mode-custom[checked]")
+      refute has_element?(view, "#new-route-text-mode-automatic[checked]")
+
+      # A later validate that carries no mode change keeps the chosen one.
+      render_change(view, "validate_new_route", %{
+        "route" => draft_params(%{"route_short_name" => "C12"})
+      })
+
+      assert has_element?(view, "#new-route-text-mode-custom[checked]")
+    end
+
+    test "choosing Custom alone makes the drawer dirty so closing asks first", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+
+      render_change(view, "validate_new_route", %{
+        "route" => draft_params(%{}),
+        "text_mode" => "custom"
+      })
+
+      view |> element("#new-route-cancel") |> render_click()
+
+      assert has_element?(view, "#new-route-discard")
+    end
+  end
+
   describe "advisory warnings on new values" do
     setup :editor_scope
 
@@ -961,6 +1012,105 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       assert has_element?(view, "#new-route-failure", "no longer valid")
       assert element(view, "#new-route-submit") |> render() =~ "disabled"
       assert scoped_route_count(organization, version) == 0
+    end
+  end
+
+  describe "rejoining after a dropped socket" do
+    # A dropped socket rejoins as a new LiveView process; the client sends the
+    # open drawer's attempt as a join param (`app.js`), so the rejoin renders the
+    # drawer again under that attempt for form recovery and revalidation.
+    test "a rejoin carrying the drawer's attempt renders the drawer under the same attempt", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, first, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(first)
+      token = attempt_value(first)
+
+      {:ok, rejoined, _html} =
+        conn
+        |> put_connect_params(%{"new_route_attempt" => token})
+        |> live("/gtfs/#{version.id}/routes")
+
+      assert has_element?(rejoined, "#new-route-form")
+      assert attempt_value(rejoined) == token
+      assert has_element?(rejoined, "#new-route-recovery")
+    end
+
+    test "a rejoin's revalidation reconciles a create the dropped socket never reported", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, first, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(first)
+      token = attempt_value(first)
+
+      assert {:ok, %{route: route}} =
+               Gtfs.create_editor_route(
+                 draft_params(%{
+                   "route_short_name" => "W2",
+                   "route_type" => "3",
+                   "agency_id" => "NCT"
+                 }),
+                 verified_attempt(token),
+                 audit_context(user, organization, version)
+               )
+
+      {:ok, rejoined, _html} =
+        conn
+        |> put_connect_params(%{"new_route_attempt" => token})
+        |> live("/gtfs/#{version.id}/routes")
+
+      rejoined |> render_click("recover_new_route", %{"_attempt" => token})
+
+      # The same attempt lands on the original route rather than allocating a
+      # suffixed duplicate from a fresh drawer.
+      assert_redirect(rejoined, "/gtfs/#{version.id}/routes/#{route.route_id}?created=1")
+      assert scoped_route_count(organization, version) == 1
+    end
+
+    test "a rejoin without a valid attempt for this actor and version renders no drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+
+      forged = fn overrides ->
+        Phoenix.Token.sign(
+          GtfsPlannerWeb.Endpoint,
+          "route_creation_attempt",
+          Map.merge(
+            %{
+              creation_attempt_id: Ecto.UUID.generate(),
+              actor_id: user.id,
+              organization_id: organization.id,
+              gtfs_version_id: version.id
+            },
+            overrides
+          )
+        )
+      end
+
+      for token <- [
+            "tampered-token",
+            forged.(%{actor_id: Ecto.UUID.generate()}),
+            forged.(%{gtfs_version_id: Ecto.UUID.generate()}),
+            forged.(%{organization_id: Ecto.UUID.generate()})
+          ] do
+        {:ok, view, _html} =
+          conn
+          |> put_connect_params(%{"new_route_attempt" => token})
+          |> live("/gtfs/#{version.id}/routes")
+
+        refute has_element?(view, "#new-route-form")
+      end
     end
   end
 

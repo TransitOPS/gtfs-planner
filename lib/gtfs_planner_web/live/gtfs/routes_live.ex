@@ -100,7 +100,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:agency_setup_zone_names, [])
      |> assign(:focus_create_trigger?, false)
      |> stream(:routes, [])
-     |> stream(:routes_mobile, [])}
+     |> stream(:routes_mobile, [])
+     |> restore_new_route_drawer()}
   end
 
   @impl true
@@ -410,10 +411,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   @impl true
-  def handle_event("validate_new_route", %{"route" => params}, socket) do
+  def handle_event("validate_new_route", %{"route" => params} = event, socket) do
     if is_nil(socket.assigns.new_route_form) or socket.assigns.new_route_pending? do
       {:noreply, socket}
     else
+      # The Automatic/Custom radios post `text_mode` beside the `route` fields,
+      # as `save_new_route` reads it, so the chip survives a validate reply.
+      params = maybe_put(params, "text_mode", event["text_mode"])
+
       {:noreply, assign_new_route_draft(socket, params, :validate)}
     end
   end
@@ -1749,6 +1754,29 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     attrs = %{"agency_id" => agency_id || default_agency_id(socket, options.agencies)}
     assign_new_route_draft(socket, attrs, nil)
+  end
+
+  # A dropped socket rejoins as a new LiveView process, so an open drawer would
+  # vanish with its draft and its signed attempt (AC-23, R3). `app.js` sends the
+  # open drawer's attempt as a join param; a rejoin that carries one the actor
+  # signed for this organization and version renders the drawer again under that
+  # same attempt. LiveView's form recovery then replays the typed entries, and
+  # `recover_new_route` reconciles the attempt instead of minting a second one.
+  defp restore_new_route_drawer(socket) do
+    with true <- connected?(socket),
+         token when is_binary(token) <- (get_connect_params(socket) || %{})["new_route_attempt"],
+         %{actor_id: actor_id, organization_id: organization_id, gtfs_version_id: version_id} <-
+           verify_creation_attempt(token),
+         true <- actor_id == socket.assigns.current_user.id,
+         true <- organization_id == socket.assigns.current_organization.id,
+         true <- version_id == socket.assigns.current_gtfs_version.id,
+         true <- editor_access?(socket) do
+      socket
+      |> open_route_drawer()
+      |> assign(:new_route_attempt, token)
+    else
+      _ -> socket
+    end
   end
 
   # The draft's own changeset, in `:create` mode because this drawer is the one

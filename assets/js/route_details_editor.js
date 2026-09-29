@@ -95,6 +95,7 @@ const RouteDetailsEditor = {
     this.readableIcon = this._part("contrast-icon-ok");
     this.unreadableIcon = this._part("contrast-icon-low");
     this.verdict = this._part("contrast-verdict");
+    this.verdictText = this._part("contrast-verdict-text");
     this.ratio = this._part("contrast-ratio");
     this.advice = this._part("contrast-advice");
 
@@ -177,6 +178,9 @@ const RouteDetailsEditor = {
 
   disconnected() {
     if (!this.recoveryForm) return;
+    // The first drop's entries are the ones to keep; a further failed rejoin
+    // must not overwrite them with whatever the DOM shows by then.
+    if (!this.offline) this.entries = this._readEntries();
     this._applyOffline(true);
   },
 
@@ -185,11 +189,38 @@ const RouteDetailsEditor = {
   // form's signed attempt where the drawer renders one.
   reconnected() {
     if (!this.recoveryForm) return;
+    this._restoreEntries();
     this._announce("Connection restored. Checking your work…");
     this.pushEvent(this.recoveryEvent, {
       _attempt:
         this.recoveryForm.querySelector('input[name="_attempt"]')?.value ?? "",
     });
+  },
+
+  // The rejoin renders the form from the new server process before LiveView's
+  // form recovery replays the entries, and a field the dialog focuses on
+  // reopening is skipped by that replay. Putting back what the operator had
+  // typed keeps the draft exactly as it was (AC-23); the server revalidates the
+  // same values through the recovery event and the form's own submit.
+  _readEntries() {
+    return Array.from(this.recoveryForm.elements)
+      .filter((control) => control.name && control.type !== "hidden")
+      .map((control) => ({
+        control,
+        value: control.value,
+        checked: control.checked,
+      }));
+  },
+
+  _restoreEntries() {
+    for (const { control, value, checked } of this.entries || []) {
+      if (!control.isConnected) continue;
+      if (control.value !== value) control.value = value;
+      if (control.checked !== checked) control.checked = checked;
+    }
+
+    this.entries = null;
+    this.paint();
   },
 
   // Blocks the form's commit controls and announces the lost connection. The
@@ -393,12 +424,15 @@ const RouteDetailsEditor = {
 
   // The one-click fix: check Automatic and put focus on the chip it selected, so
   // the change is visible and the operator keeps a focus target. The hex field
-  // is left as it is — the automatic hex is resolved server-side.
+  // is left as it is — the automatic hex is resolved server-side. The change is
+  // announced like the operator's own click on the chip, so the server's draft
+  // leaves Custom too and its next render cannot put the chip back.
   _useAutomatic() {
     const automatic = this._part("text-mode-automatic");
 
     automatic.checked = true;
     automatic.focus();
+    automatic.dispatchEvent(new Event("input", { bubbles: true }));
     this.paint();
   },
 
@@ -483,6 +517,10 @@ const RouteDetailsEditor = {
     this.readableIcon.classList.toggle("hidden", warned);
     this.unreadableIcon.classList.toggle("hidden", !warned);
     this.verdict.classList.toggle("hidden", ratio === null);
+    // The verdict label follows the same ratio as the icon and the readout, so
+    // the three never disagree between server renders.
+    if (this.verdictText && ratio !== null)
+      this.verdictText.textContent = warned ? "Hard to read" : "Easy to read";
     this.advice.classList.toggle("hidden", !warned);
 
     this.ratio.textContent =

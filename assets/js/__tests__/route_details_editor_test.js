@@ -12,6 +12,8 @@ function colorPartsMarkup(prefix) {
       data-prefix="${prefix}"
     >
       <input type="color" id="${prefix}-color-picker" value="#FFFFFF" />
+      <input type="radio" name="text_mode" id="${prefix}-text-mode-automatic" value="automatic" checked />
+      <input type="radio" name="text_mode" id="${prefix}-text-mode-custom" value="custom" />
       <div id="${prefix}-text-wrap" class="hidden">
         <input type="text" id="${prefix}-text" name="route[route_text_color]" value="" />
       </div>
@@ -20,9 +22,9 @@ function colorPartsMarkup(prefix) {
         <span id="${prefix}-contrast-badge"><span>W1</span></span>
         <span id="${prefix}-contrast-icon-ok" class="hidden"></span>
         <span id="${prefix}-contrast-icon-low" class="hidden"></span>
-        <span id="${prefix}-contrast-verdict" class="hidden"></span>
+        <span id="${prefix}-contrast-verdict" class="hidden"><span id="${prefix}-contrast-verdict-text"></span></span>
         <span id="${prefix}-contrast-ratio"></span>
-        <span id="${prefix}-contrast-advice" class="hidden"></span>
+        <span id="${prefix}-contrast-advice" class="hidden"><button type="button" id="${prefix}-use-automatic">Use automatic text color</button></span>
       </div>
     </div>
   `;
@@ -38,7 +40,7 @@ function recoveryFormMarkup({ prefix, attempt, recoveryEvent }) {
       ${attempt ? `<input type="hidden" name="_attempt" value="${attempt}" />` : ""}
       <p id="${prefix}-recovery" role="status" hidden></p>
       ${colorPartsMarkup(prefix)}
-      <input type="text" id="${prefix}-short" value="W1" />
+      <input type="text" id="${prefix}-short" name="route[route_short_name]" value="W1" />
       <button type="button" id="${prefix}-discard">Discard</button>
       <button type="submit" id="${prefix}-submit">Save</button>
     </form>
@@ -78,6 +80,51 @@ function recoveryHandler(hook) {
   return call[1];
 }
 
+describe("RouteDetailsEditor local color preview", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("the verdict label follows the recomputed ratio as the operator types", () => {
+    mountHook({ prefix: "new-route" });
+    const verdict = document.getElementById("new-route-contrast-verdict-text");
+
+    document.getElementById("new-route-color").value = "5BC5F2";
+    document.getElementById("new-route-text-mode-custom").checked = true;
+    const text = document.getElementById("new-route-text");
+
+    text.value = "FFFFFF";
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(verdict.textContent).toBe("Hard to read");
+    expect(
+      document.getElementById("new-route-contrast-ratio").textContent,
+    ).toBe("2.0:1 contrast, below 4.5:1");
+
+    text.value = "000000";
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(verdict.textContent).toBe("Easy to read");
+  });
+
+  it("Use automatic text color announces the mode change so the server draft follows", () => {
+    mountHook({ prefix: "new-route" });
+    const automatic = document.getElementById("new-route-text-mode-automatic");
+    const heard = vi.fn();
+    document
+      .getElementById("new-route-form")
+      .addEventListener("input", (event) => heard(event.target.id));
+    document.getElementById("new-route-text-mode-custom").checked = true;
+
+    document.getElementById("new-route-use-automatic").click();
+
+    expect(automatic.checked).toBe(true);
+    expect(heard).toHaveBeenCalledWith("new-route-text-mode-automatic");
+  });
+});
+
 describe("RouteDetailsEditor connectivity recovery", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -108,6 +155,28 @@ describe("RouteDetailsEditor connectivity recovery", () => {
     expect(region.hidden).toBe(false);
     expect(region.textContent).toContain("Connection lost");
     expect(region.textContent).toContain("preserved");
+  });
+
+  it("reconnecting puts back the entries a rejoin render reset, without touching later ones", () => {
+    const hook = mountHook({
+      prefix: "new-route",
+      attempt: "signed-attempt-token",
+    });
+    const short = document.getElementById("new-route-short");
+    short.value = "R9";
+    hook.disconnected();
+
+    // The new server process renders the form empty, and a second failed
+    // rejoin must not replace the entries kept from the first drop.
+    short.value = "";
+    hook.disconnected();
+    hook.reconnected();
+
+    expect(short.value).toBe("R9");
+
+    short.value = "R10";
+    hook.reconnected();
+    expect(short.value).toBe("R10");
   });
 
   it("reconnecting asks the server and keeps the commit blocked until it answers", () => {
