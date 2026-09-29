@@ -67,6 +67,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.DeadheadTime
+  alias GtfsPlanner.Gtfs.ReliefPoint
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
@@ -105,6 +106,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # replaces the minutes of the same ordered pair and never writes its reverse, so
   # an entered A→B value cannot be shadowed by a later B→A save (AC-3, CR-7).
   @replace_deadhead_columns [:minutes, :updated_at]
+
+  # The one column the Operator changes drawer owns, plus the write timestamp. The
+  # relief limit shares its row with the eight Block rules settings, and a save
+  # here replaces only this one of them: writing the limit must not blank a stored
+  # layover, interlining rule or default garage (AC-4, R12).
+  @replace_piece_columns [:max_piece_minutes, :updated_at]
 
   # The pair sources a Movements leg can carry. Every leg of the day is listed for
   # the Driving times drawer; only an estimated one is counted as "N estimated"
@@ -325,6 +332,25 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           uses: pos_integer(),
           minutes: non_neg_integer() | nil,
           source: :entered | :estimated | :unknown
+        }
+
+  @typedoc """
+  One place an operator change may be made on a day type, as AC-4 lists it.
+
+  `stop_id` is the candidate's own ID — the `parent_station` where a stop has one,
+  the stop itself otherwise — so marking a station covers its bays and a mark is
+  stored under exactly the key this list hands out. `name` is the station or stop
+  name, `station?` says which, `child_names` names the day's stops under a
+  station, `waits` counts the feasible gaps whose wait happens there, and
+  `marked?` says whether the version stores a mark for this candidate.
+  """
+  @type relief_candidate :: %{
+          stop_id: String.t(),
+          name: String.t(),
+          station?: boolean(),
+          child_names: [String.t()],
+          waits: non_neg_integer(),
+          marked?: boolean()
         }
 
   @doc """
@@ -949,6 +975,332 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     case DeadheadTimes.decode_ref(ref) do
       {:ok, decoded} -> DeadheadTimes.encode_ref(decoded)
       :error -> ref
+    end
+  end
+
+  @doc """
+  Lists every place an operator change may be made on one day type of a version.
+
+  The candidates are the day type's own trip endpoints: every trip's first and
+  last stop, in the block it is in and in the pool alike, because a relief point
+  is a place a vehicle may be handed over whether or not a block has been cut
+  yet. A stop with a `parent_station` is grouped under that station, so the two
+  bays of a Riverside Station are one candidate and one mark; a stop without one
+  is its own candidate (AC-4, R5).
+
+  `waits` counts the feasible gaps of the day's movements whose wait happens at
+  that candidate, read off the movements the day load already built rather than a
+  second pass over the trips (INV-8). A layover's wait happens where the vehicle
+  stands between the two trips — the arrival stop, which is the endpoint
+  `Relief` names for a marked layover — and a drive's wait happens at both of its
+  ends, which are R5's two windows. A gap with no positive wait is not a place a
+  change can happen and is not counted, and neither is an infeasible gap or one
+  whose drive the version cannot compute.
+
+  Candidates are ordered by waits descending, then name, then ID: the places
+  where relief is most available come first, and the order never depends on the
+  order the trips arrived in.
+
+  `marked?` is the version's own answer for the candidate's ID, so a candidate
+  whose station is marked is marked and a child stop's own row — which is not a
+  candidate, and which `update_relief_settings/4` therefore leaves alone — does
+  not light this row up.
+
+  A `nil` key selects the first day type; an unknown key is
+  `{:error, {:unknown_day_type, day_types}}` and selects none (INV-6), and a
+  foreign or unpublished version is `{:error, :not_found}`.
+  """
+  @spec list_relief_candidates(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, [relief_candidate()]}
+          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+  def list_relief_candidates(organization_id, gtfs_version_id, day_type_key) do
+    case Repo.transaction(fn ->
+           day = read_day(organization_id, gtfs_version_id, day_type_key)
+           {:ok, relief_candidates(organization_id, gtfs_version_id, day)}
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Stores the relief limit and which of the day type's candidates are marked.
+
+  `attrs` is a map with `max_piece_minutes` and `marked`; the limit is 60–720 or
+  a blank, which stores `nil` and turns the `:no_relief_opportunity` checks off
+  (AC-1, AC-4). The limit is validated through `BlockingSetting.changeset/2` and
+  written to the one column this drawer owns, so saving it never disturbs the
+  other seven settings of the same row. `marked` is the list of candidate IDs
+  the drawer shows as ticked.
+
+  The save is all-or-nothing and runs in one transaction whose first statement is
+  the scoped version row `FOR SHARE` and whose next is `lock_blocking!/1`, so it
+  serializes with every other block writer and cannot slip between a plan's review
+  of the relief inputs and its apply (INV-1, INV-7, R12). The candidates are
+  recomputed inside that transaction, under the lock, from the same day load the
+  list reads: only the day's own candidates are written. An ID in `marked` that is
+  not a candidate of this day type is ignored, and a mark on a stop outside these
+  candidates stays exactly as the last save left it. An unknown day type key
+  answers `{:error, {:unknown_day_type, day_types}}` and stores nothing, because
+  the day cannot be read to learn its candidates (INV-6); a staging or foreign
+  version is `{:error, :not_found}`.
+
+  Returns `{:ok, :ok}` on success, matching the other writers' shape so a caller
+  can pattern-match one tuple.
+  """
+  @spec update_relief_settings(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t() | nil,
+          map()
+        ) ::
+          {:ok, :ok}
+          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]} | Ecto.Changeset.t()}
+  def update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs) do
+    case Repo.transaction(fn ->
+           write_relief_settings!(organization_id, gtfs_version_id, day_type_key, attrs)
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The version share lock is the first statement of the write transaction and
+  # `lock_blocking!/1` follows it and nothing else, in INV-1's order, exactly as
+  # the settings and driving-time writers take them (INV-7). The candidates are
+  # read from the day load *after* the lock, so a mark cannot be saved against a
+  # candidate list a concurrent plan has already made stale.
+  defp write_relief_settings!(organization_id, gtfs_version_id, day_type_key, attrs) do
+    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+
+    if version.publication_status == @published_status do
+      :ok = lock_blocking!(gtfs_version_id)
+
+      # An unknown key rolls the transaction back here, before the first write, so
+      # the stored limit and marks are exactly as the last accepted save left them.
+      day = read_day(organization_id, gtfs_version_id, day_type_key)
+
+      with {:ok, _setting} <- store_piece_limit!(organization_id, gtfs_version_id, attrs) do
+        save_relief_marks!(organization_id, gtfs_version_id, day, marked_ids(attrs))
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # The limit is cast and range-checked by the settings changeset itself, so the
+  # range lives in one place (AC-1). The stored row is the base rather than a bare
+  # struct, so the seven columns this drawer does not own are present and satisfy
+  # the changeset's required fields; the upsert then replaces only the limit
+  # column and the write timestamp, so writing the limit cannot blank a stored
+  # layover, interlining rule or default garage.
+  defp store_piece_limit!(organization_id, gtfs_version_id, attrs) do
+    stored = get_settings(organization_id, gtfs_version_id)
+
+    %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+    |> Ecto.Changeset.change(Map.take(stored, BlockingSetting.settings_fields()))
+    |> BlockingSetting.changeset(%{max_piece_minutes: value(attrs, :max_piece_minutes)})
+    |> Repo.insert(
+      on_conflict: {:replace, @replace_piece_columns},
+      conflict_target: [:organization_id, :gtfs_version_id]
+    )
+  end
+
+  # The ticked candidate IDs of a submitted form, as the set the two writes below
+  # compare against. A non-list (a hand-rolled or absent parameter) is no ticks at
+  # all rather than a raise, which is the same reading `update_settings/3` gives a
+  # missing optional field.
+  defp marked_ids(attrs) do
+    case Map.get(attrs, :marked, Map.get(attrs, "marked")) do
+      marked when is_list(marked) -> marked |> Enum.filter(&is_binary/1) |> MapSet.new()
+      _no_list -> MapSet.new()
+    end
+  end
+
+  # The mark write is a delete followed by an insert rather than a diff against the
+  # stored rows, because the candidate set is derived rather than stored: a row
+  # that stopped being a candidate has to go, and a row that became one has to
+  # arrive, and neither is visible as a change to the marks themselves. The delete
+  # is scoped to the candidate IDs, so a mark on a stop outside them is never
+  # touched (AC-4).
+  defp save_relief_marks!(organization_id, gtfs_version_id, day, marked) do
+    candidates = candidate_groups(relief_stops(day)) |> Map.keys()
+
+    Repo.delete_all(
+      from(r in ReliefPoint,
+        where:
+          r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+            r.stop_id in ^candidates and r.stop_id not in ^MapSet.to_list(marked)
+      )
+    )
+
+    for stop_id <- candidates,
+        MapSet.member?(marked, stop_id),
+        do: insert_relief_point!(organization_id, gtfs_version_id, stop_id)
+
+    {:ok, :ok}
+  end
+
+  # `organization_id`, `gtfs_version_id` and `stop_id` are set on the struct, never
+  # cast, and the row is inserted with the unique index as a do-nothing conflict
+  # target: a candidate that was already ticked and stayed ticked survives the
+  # delete above, so a repeated save of the same marks is a no-op rather than a
+  # constraint violation.
+  defp insert_relief_point!(organization_id, gtfs_version_id, stop_id) do
+    %ReliefPoint{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      stop_id: stop_id
+    }
+    |> ReliefPoint.changeset(%{})
+    |> Repo.insert!(
+      on_conflict: :nothing,
+      conflict_target: [:organization_id, :gtfs_version_id, :stop_id]
+    )
+  end
+
+  # One candidate per place, from the day's own endpoints. `waits` comes from the
+  # movements, `marked?` from the version's stored marks, and the name of a
+  # station is the station row's own name, read for every station of the list in
+  # one query.
+  defp relief_candidates(organization_id, gtfs_version_id, day) do
+    groups = candidate_groups(relief_stops(day))
+    stations = station_names(organization_id, gtfs_version_id, groups)
+    waits = candidate_waits(day)
+    marked = day.context.relief_stop_ids
+
+    groups
+    |> Enum.map(fn {stop_id, stops} ->
+      %{
+        stop_id: stop_id,
+        name: candidate_name(stop_id, stops, stations),
+        station?: station?(stop_id, stops),
+        child_names: child_names(stop_id, stops),
+        waits: Map.get(waits, stop_id, 0),
+        marked?: MapSet.member?(marked, stop_id)
+      }
+    end)
+    |> Enum.sort_by(&{-&1.waits, &1.name, &1.stop_id})
+  end
+
+  # Every first and last stop of every trip of the day type, blocked and pooled
+  # alike, deduplicated by stop ID: a stop two trips both end at is one candidate
+  # with two waits, not two candidates.
+  defp relief_stops(%{blocks: blocks, pool: pool}) do
+    for trip <- Enum.flat_map(blocks, & &1.trips) ++ pool,
+        stop <- [trip.first_stop, trip.last_stop],
+        stop != nil,
+        into: %{},
+        do: {stop.stop_id, stop}
+  end
+
+  # A stop with a parent station belongs to that station, so the two bays of one
+  # station are one candidate and one mark; a stop without one is its own. The
+  # station row itself is not required to exist in `stops` for the grouping to
+  # hold — the child names the station, and the name falls back below.
+  defp candidate_groups(stops) do
+    Enum.group_by(Map.values(stops), &candidate_stop_id/1)
+  end
+
+  defp candidate_stop_id(%{parent_station: parent_station})
+       when is_binary(parent_station) and parent_station != "" do
+    parent_station
+  end
+
+  defp candidate_stop_id(%{stop_id: stop_id}), do: stop_id
+
+  # A candidate is a station when any of the day's stops under it is a child, which
+  # is the same test `candidate_stop_id/1` grouped it by.
+  defp station?(stop_id, stops) do
+    Enum.any?(stops, &(&1.stop_id != stop_id))
+  end
+
+  # The station's own name where the version describes the station, so a station
+  # reads as "Riverside Station" rather than as a child bay. A station the version
+  # does not describe, and a stop with no name, fall back to the ID the mark is
+  # stored under, so a row is never blank (the same rule `ref_label/3` uses for a
+  # pair's ends).
+  defp candidate_name(stop_id, stops, stations) do
+    case Map.get(stations, stop_id) do
+      name when is_binary(name) and name != "" ->
+        name
+
+      _no_station_row ->
+        case Enum.find_value(stops, & &1.name) do
+          name when is_binary(name) and name != "" -> name
+          _no_name -> stop_id
+        end
+    end
+  end
+
+  # The names of the day's stops under a station, in name order, so the drawer can
+  # say which bays the mark covers. A plain stop has no children and names none.
+  defp child_names(stop_id, stops) do
+    stops
+    |> Enum.reject(&(&1.stop_id == stop_id))
+    |> Enum.map(& &1.name)
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # One query for every station name the list shows. A station the version does not
+  # describe is simply absent, and `candidate_name/3` falls back.
+  defp station_names(_organization_id, _gtfs_version_id, groups) when map_size(groups) == 0,
+    do: %{}
+
+  defp station_names(organization_id, gtfs_version_id, groups) do
+    station_ids =
+      groups
+      |> Enum.filter(fn {stop_id, stops} -> station?(stop_id, stops) end)
+      |> Enum.map(fn {stop_id, _stops} -> stop_id end)
+
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.stop_id in ^station_ids,
+      select: {s.stop_id, s.stop_name}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # The feasible gaps of the day's movements, counted at the candidate each gap's
+  # wait happens at. A layover's wait is one wait where the vehicle stands, which
+  # is the arrival stop `Relief` names for a marked layover; a drive's wait is
+  # R5's two windows, one at each end. An infeasible gap, an unknown drive and a
+  # gap with no positive wait are all places no change can be planned into, so
+  # they count for nobody.
+  defp candidate_waits(%{blocks: blocks}) do
+    counted =
+      for block <- blocks,
+          trips = Map.new(block.trips, &{&1.id, &1}),
+          gap <- block.movements.gaps,
+          gap.feasible? == true,
+          is_integer(gap.wait_secs),
+          gap.wait_secs > 0,
+          stop <- wait_stops(gap, trips),
+          do: candidate_stop_id(stop)
+
+    Enum.frequencies(counted)
+  end
+
+  defp wait_stops(gap, trips) do
+    from_trip = Map.get(trips, gap.from_id)
+    to_trip = Map.get(trips, gap.to_id)
+
+    cond do
+      is_nil(from_trip) ->
+        []
+
+      gap.kind == :layover ->
+        List.wrap(from_trip.last_stop)
+
+      gap.kind == :drive ->
+        Enum.filter([from_trip.last_stop, to_trip && to_trip.first_stop], &(&1 != nil))
+
+      true ->
+        []
     end
   end
 
