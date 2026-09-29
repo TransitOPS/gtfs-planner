@@ -79,6 +79,16 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
     %{id: id, trip_id: "T-#{id}", route_pattern_id: @natural_id, start_secs: start_secs}
   end
 
+  @half_past_7 7 * 3600 + 30 * 60
+
+  defp rich_trip(id, start_secs, opts \\ []) do
+    trip(id, start_secs) |> Map.merge(Map.new(opts))
+  end
+
+  defp ready_row_on(pattern_id, n, start_secs, timing_rows, fields \\ %{}) do
+    %{ready_row(n, start_secs, timing_rows, fields) | pattern_id: pattern_id}
+  end
+
   defp empty_counts do
     %{add: 0, change: 0, unchanged: 0, remove: 0, duplicate: 0, skipped: 0, needs_decision: 0}
   end
@@ -304,11 +314,301 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
       existing = scope([], [trip("trip-1", 6 * 3600)])
       assert Plan.build([blocked], existing, :add, %{}, @stamp, []).writes_blocks? == false
     end
+  end
 
-    test "replace mode raises instead of half-building" do
-      assert_raise ArgumentError, ~r/does not implement mode :replace/, fn ->
-        Plan.build([], scope(), :replace, %{}, @stamp, [])
-      end
+  describe "replace mode" do
+    test "an exact pattern and start pair keeps the existing trip as a :change" do
+      existing = rich_trip("trip-1", 6 * 3600)
+      s = scope([timing("timing-1", "Typical", base_rows())], [existing])
+      row = ready_row(1, 6 * 3600, base_rows())
+
+      plan = Plan.build([row], s, :replace, %{}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :change
+      assert change.trip == existing
+      assert change.row == row
+      assert change.timing == {:existing, "timing-1"}
+      assert change.warnings == []
+      assert plan.refusal == nil
+      assert plan.counts == %{empty_counts() | change: 1}
+      assert plan.replace_patterns == [@pattern_id]
+      assert plan.transfers_removed == 0
+      assert plan.new_timings == []
+      assert plan.trips == %{before: 1, after: 1}
+      assert plan.vehicles == %{before: nil, after: nil}
+      assert plan.writes_blocks? == false
+    end
+
+    test "a unique equal trip number pairs without a decision and removes the other" do
+      t1207 =
+        rich_trip("trip-1207", @half_past_7,
+          trip_short_name: "1207",
+          transfer_ids: ["x1", "x2"]
+        )
+
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+      row = ready_row(1, @half_past_7, base_rows(), %{trip_short_name: "1209"})
+
+      plan = Plan.build([row], s, :replace, %{}, @stamp, [])
+      assert Enum.map(plan.changes, & &1.op) == [:change, :remove]
+      [change, removal] = plan.changes
+
+      assert change.trip == t1209
+      assert change.row == row
+      assert removal.trip == t1207
+      assert removal.row == nil
+      assert plan.transfers_removed == 2
+      assert plan.counts == %{empty_counts() | change: 1, remove: 1}
+      assert plan.trips == %{before: 2, after: 1}
+      assert plan.refusal == nil
+    end
+
+    test "two 07:30 trips with a new trip number need a decision and remove nothing" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+      row = ready_row(1, @half_past_7, base_rows(), %{trip_short_name: "1227"})
+
+      plan = Plan.build([row], s, :replace, %{}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :needs_decision
+      assert change.row == row
+      assert change.trip == nil
+      assert change.candidates == [t1207, t1209]
+      assert change.timing == nil
+      assert plan.counts == %{empty_counts() | needs_decision: 1}
+      assert plan.refusal == nil
+      assert plan.replace_patterns == [@pattern_id]
+      assert plan.transfers_removed == 0
+      assert plan.trips == %{before: 2, after: 2}
+    end
+
+    test "choosing 1207 pairs it and removes the other" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+      row = ready_row(1, @half_past_7, base_rows(), %{trip_short_name: "1227"})
+
+      plan = Plan.build([row], s, :replace, %{1 => %{pair: "trip-1207"}}, @stamp, [])
+      assert Enum.map(plan.changes, & &1.op) == [:change, :remove]
+      [change, removal] = plan.changes
+
+      assert change.trip == t1207
+      assert removal.trip == t1209
+      assert plan.counts == %{empty_counts() | change: 1, remove: 1}
+      assert plan.trips == %{before: 2, after: 1}
+
+      # The natural trip_id and the LiveView JSON string form name it too.
+      by_natural =
+        Plan.build([row], s, :replace, %{1 => %{pair: "T-trip-1207"}}, @stamp, [])
+
+      assert Enum.map(by_natural.changes, & &1.op) == [:change, :remove]
+
+      as_json =
+        Plan.build([row], s, :replace, %{"1" => %{"pair" => "trip-1207"}}, @stamp, [])
+
+      assert Enum.map(as_json.changes, & &1.op) == [:change, :remove]
+    end
+
+    test "'neither' adds the row and removes both candidates" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+      row = ready_row(1, @half_past_7, base_rows(), %{trip_short_name: "1227"})
+
+      plan = Plan.build([row], s, :replace, %{1 => %{pair: "neither"}}, @stamp, [])
+      assert Enum.map(plan.changes, & &1.op) == [:add, :remove, :remove]
+
+      [added, first_removed, second_removed] = plan.changes
+      assert added.row == row
+      assert added.timing == {:new, "Pasted Sep 28 · A"}
+      assert first_removed.trip == t1207
+      assert second_removed.trip == t1209
+      assert plan.counts == %{empty_counts() | add: 1, remove: 2}
+      assert plan.trips == %{before: 2, after: 1}
+    end
+
+    test "a blank trip number cannot pair two candidates" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+
+      plan = Plan.build([ready_row(1, @half_past_7, base_rows())], s, :replace, %{}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :needs_decision
+      assert change.candidates == [t1207, t1209]
+      assert plan.counts == %{empty_counts() | needs_decision: 1}
+    end
+
+    test "a pairing choice naming no candidate stays undecided" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+      row = ready_row(1, @half_past_7, base_rows(), %{trip_short_name: "1227"})
+
+      plan = Plan.build([row], s, :replace, %{1 => %{pair: "trip-9999"}}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :needs_decision
+      assert change.candidates == [t1207, t1209]
+      assert plan.counts == %{empty_counts() | needs_decision: 1}
+    end
+
+    test "every row skipped refuses with :nothing_accepted and deletes nothing" do
+      kept = rich_trip("trip-1", 6 * 3600, transfer_ids: ["x1"])
+      s = scope([], [kept])
+
+      skipped = %{
+        ready_row(1, 6 * 3600, base_rows())
+        | status: :skipped,
+          start_secs: nil,
+          timing_rows: nil,
+          key: nil
+      }
+
+      plan = Plan.build([skipped], s, :replace, %{}, @stamp, [])
+
+      assert plan.refusal == :nothing_accepted
+      assert Enum.map(plan.changes, & &1.op) == [:skipped]
+      assert plan.counts == %{empty_counts() | skipped: 1}
+      assert plan.transfers_removed == 0
+      assert plan.replace_patterns == []
+      assert plan.trips == %{before: 1, after: 1}
+    end
+
+    test "a frequency trip in scope refuses replace without deleting" do
+      freq = rich_trip("trip-freq", 9 * 3600, frequencies: [%{headway_secs: 600}])
+      paired = rich_trip("trip-1", 6 * 3600)
+      s = scope([], [paired, freq])
+
+      plan =
+        Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
+
+      assert plan.refusal == {:frequency, freq}
+      assert Enum.map(plan.changes, & &1.op) == [:change]
+      assert plan.counts == %{empty_counts() | change: 1}
+      assert plan.transfers_removed == 0
+    end
+
+    test "a custom trip whose stops differ refuses replace" do
+      custom =
+        rich_trip("trip-custom", 9 * 3600,
+          pattern_derivation_state: "custom",
+          stops_differ?: true
+        )
+
+      paired = rich_trip("trip-1", 6 * 3600)
+      s = scope([], [paired, custom])
+
+      plan =
+        Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
+
+      assert plan.refusal == {:stops_differ, custom}
+      assert Enum.map(plan.changes, & &1.op) == [:change]
+      assert plan.transfers_removed == 0
+    end
+
+    test "a custom trip with matching stops pairs with a :custom_replaced warning" do
+      custom =
+        rich_trip("trip-custom", 6 * 3600,
+          pattern_derivation_state: "custom",
+          stops_differ?: false
+        )
+
+      s = scope([], [custom])
+
+      plan =
+        Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
+
+      [change] = plan.changes
+      assert change.op == :change
+      assert change.trip == custom
+      assert change.warnings == [:custom_replaced]
+      assert plan.refusal == nil
+    end
+
+    test "unpaired trips on pasted patterns are removed; other patterns untouched" do
+      short_id = "pattern-short"
+
+      s = %{
+        pattern_id: @pattern_id,
+        patterns: [
+          %{id: @pattern_id, route_pattern_id: @natural_id, timings: []},
+          %{id: short_id, route_pattern_id: "PAT-2", timings: []}
+        ],
+        trips: [
+          rich_trip("trip-0600", 6 * 3600),
+          rich_trip("trip-0700", 7 * 3600, transfer_ids: ["a", "b"]),
+          rich_trip("trip-0800", 8 * 3600, transfer_ids: ["c"]),
+          rich_trip("trip-short", 6 * 3600, route_pattern_id: "PAT-2")
+        ]
+      }
+
+      plan =
+        Plan.build(
+          [ready_row_on(@pattern_id, 1, 6 * 3600, base_rows())],
+          s,
+          :replace,
+          %{},
+          @stamp,
+          []
+        )
+
+      assert Enum.map(plan.changes, & &1.op) == [:change, :remove, :remove]
+      [_paired, first, second] = plan.changes
+      assert first.trip == rich_trip("trip-0700", 7 * 3600, transfer_ids: ["a", "b"])
+      assert second.trip == rich_trip("trip-0800", 8 * 3600, transfer_ids: ["c"])
+      assert plan.transfers_removed == 3
+      assert plan.counts == %{empty_counts() | change: 1, remove: 2}
+      assert plan.replace_patterns == [@pattern_id]
+      assert plan.trips == %{before: 4, after: 2}
+    end
+
+    test "paired rows mint one shared pending timing on a new vector" do
+      other = [timing_row(0, 0), timing_row(400, 400, timepoint: 0), timing_row(800, 800)]
+      s = scope([timing("timing-1", "Typical", base_rows())], [])
+
+      no_trips = Plan.build([], s, :replace, %{}, @stamp, [])
+      assert no_trips.refusal == :nothing_accepted
+
+      s2 =
+        scope([timing("timing-1", "Typical", base_rows())], [
+          rich_trip("trip-1", 6 * 3600),
+          rich_trip("trip-2", 7 * 3600)
+        ])
+
+      plan =
+        Plan.build(
+          [ready_row(1, 6 * 3600, other), ready_row(2, 7 * 3600, other)],
+          s2,
+          :replace,
+          %{},
+          @stamp,
+          []
+        )
+
+      assert Enum.map(plan.changes, & &1.op) == [:change, :change]
+      assert [%{pattern_id: @pattern_id, name: "Pasted Sep 28 · A"}] = plan.new_timings
+
+      assert Enum.map(plan.changes, & &1.timing) == [
+               new: "Pasted Sep 28 · A",
+               new: "Pasted Sep 28 · A"
+             ]
+    end
+
+    test "a paired blocked row writes blocks" do
+      s = scope([], [rich_trip("trip-1", 6 * 3600)])
+      row = ready_row(1, 6 * 3600, base_rows(), %{block_id: "101"})
+
+      plan = Plan.build([row], s, :replace, %{}, @stamp, [])
+      assert plan.writes_blocks? == true
+
+      plain = Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
+      assert plain.writes_blocks? == false
     end
   end
 
