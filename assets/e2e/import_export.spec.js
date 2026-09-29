@@ -392,8 +392,16 @@ test.describe("durable import and export browser journeys", () => {
       await openRoute(page, "export", { authenticate: false });
       await expect(page.locator("#gtfs-export-form")).toBeVisible();
       await expect(page.locator("#export-workspace")).toBeVisible();
-      await page.locator("#export-files summary").click();
-      await expect(page.locator("#export-inventory")).toBeVisible();
+      // A patch that lands after the click re-renders the closed details, so
+      // the click is repeated until the file list stays open.
+      await expect(async () => {
+        if (!(await page.locator("#export-files").evaluate((el) => el.open))) {
+          await page.locator("#export-files summary").click();
+        }
+        await expect(page.locator("#export-inventory")).toBeVisible({
+          timeout: 1_000,
+        });
+      }).toPass();
       await expect(page.locator("#export-download-link")).toBeVisible();
       await expectKeyboardAccess(page, "#export-type-full");
       await expectKeyboardAccess(page, "#start-export");
