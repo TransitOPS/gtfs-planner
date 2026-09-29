@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
-  # EV-27: the Minimum layover drawer, observed through the ordinary
-  # `/gtfs/:version/blocks` route on the production `CatalogReadAdapter.Repo` and
+  # EV-27/EV-33: the Block rules drawer's Minimum layover field, observed through
+  # the ordinary `/gtfs/:version/blocks` route on the production
+  # `CatalogReadAdapter.Repo` and
   # the scoped `Blocking` context, so a save reaches the real
   # `Gtfs.update_blocking_settings/3` → `Blocking.update_settings/3` upsert and the
   # reload that follows it. The fixture rows and the settings row the save writes
@@ -123,17 +124,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
     view
   end
 
-  defp open_layover(view), do: view |> element("#blocks-min-layover") |> render_click()
+  defp open_layover(view), do: view |> element("#blocks-block-rules") |> render_click()
 
+  # The Block rules drawer's form is the whole settings form, so a change or a
+  # submit names the form's own `block_rules` map with the one field under test.
   defp change_layover(view, value) do
     view
-    |> form("#layover-form", layover: %{min_layover_minutes: value})
+    |> form("#block-rules-form", block_rules: %{min_layover_minutes: value})
     |> render_change()
   end
 
   defp submit_layover(view, value) do
     view
-    |> form("#layover-form", layover: %{min_layover_minutes: value})
+    |> form("#block-rules-form", block_rules: %{min_layover_minutes: value})
     |> render_submit()
   end
 
@@ -163,7 +166,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
 
   defp settings_rows, do: Repo.aggregate(BlockingSetting, :count)
 
-  describe "the Minimum layover control" do
+  describe "the Block rules layover control" do
     setup :editor_scope
 
     test "prints the stored value and reads 5 without a stored row", context do
@@ -173,32 +176,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
 
       # The read never stores the default: the button prints it, the table stays
       # empty and opening the drawer shows the same value in the field.
-      assert has_element?(view, "#blocks-min-layover", "Minimum layover · 5 min")
+      assert has_element?(view, "#blocks-block-rules", "Block rules · 5 min layover")
       assert stored_minimum(context) == 5
       assert settings_rows() == 0
 
       open_layover(view)
 
-      assert has_element?(view, "#layover-drawer-overlay[data-open='true']")
-      assert has_element?(view, "#layover-drawer", "Minimum layover")
-      assert has_element?(view, "#layover-form")
+      assert has_element?(view, "#block-rules-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#block-rules-drawer", "Block rules")
+      assert has_element?(view, "#block-rules-form")
       assert has_element?(view, "#layover-minutes[value='5'][type='number']")
       assert has_element?(view, "#layover-minutes[min='0'][max='120'][step='1']")
 
       assert has_element?(
                view,
-               "#layover-form label",
-               "Minimum layover (minutes)"
+               "#block-rules-form label",
+               "Minimum layover (min)"
              )
 
       assert has_element?(
                view,
                "#layover-minutes-help",
-               "Flag connections shorter than this value. It applies to every day type in this version."
+               "Shorter waits between trips are flagged. 0–120."
              )
 
-      assert has_element?(view, "#layover-submit", "Save minimum")
-      assert has_element?(view, "#layover-cancel", "Cancel")
+      assert has_element?(view, "#block-rules-submit", "Save block rules")
+      assert has_element?(view, "#block-rules-cancel", "Cancel")
       assert settings_rows() == 0
     end
 
@@ -212,14 +215,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
       # is checked before a save is attempted.
       change_layover(view, "121")
 
-      assert has_element?(view, "#layover-form", "must be a whole number between 0 and 120")
+      assert has_element?(view, "#block-rules-form", "must be a whole number between 0 and 120")
       assert has_element?(view, "#layover-minutes[value='121'][aria-invalid='true']")
       assert settings_rows() == 0
 
       # A valid change clears the error and still writes nothing.
       change_layover(view, "10")
 
-      refute has_element?(view, "#layover-form", "must be a whole number between 0 and 120")
+      refute has_element?(view, "#block-rules-form", "must be a whole number between 0 and 120")
       assert has_element?(view, "#layover-minutes[value='10'][aria-invalid='false']")
       assert settings_rows() == 0
       assert stored_minimum(context) == 5
@@ -233,9 +236,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
 
       submit_layover(view, "121")
 
-      assert has_element?(view, "#layover-form", "must be a whole number between 0 and 120")
+      assert has_element?(view, "#block-rules-form", "must be a whole number between 0 and 120")
       assert has_element?(view, "#layover-minutes[value='121'][aria-invalid='true']")
-      assert has_element?(view, "#layover-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#block-rules-drawer-overlay[data-open='true']")
       refute has_element?(view, "#flash-info")
 
       assert settings_rows() == 0
@@ -255,21 +258,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
 
       open_layover(view)
 
-      assert submit_layover(view, "10") =~ "Minimum layover saved."
+      assert submit_layover(view, "10") =~ "Block rules saved."
 
       assert stored_minimum(context) == 10
       assert settings_rows() == 1
 
       # The value is this version's own: another version of the organization
-      # keeps the default.
+      # keeps the defaults, so the read returns the whole eight-setting map.
       assert Gtfs.get_blocking_settings(context.organization.id, other_version.id) == %{
-               min_layover_minutes: 5
+               min_layover_minutes: 5,
+               max_block_minutes: nil,
+               pull_out_buffer_minutes: 0,
+               interlining: :any,
+               default_garage_id: nil,
+               deadhead_speed_kmh: 30,
+               deadhead_circuity: 1.3,
+               max_piece_minutes: nil
              }
 
       # The save closes the drawer, and the reloaded day re-derives the warnings
       # and the button's own value from the stored minimum.
-      assert has_element?(view, "#layover-drawer-overlay[data-open='false']")
-      assert has_element?(view, "#blocks-min-layover", "Minimum layover · 10 min")
+      assert has_element?(view, "#block-rules-drawer-overlay[data-open='false']")
+      assert has_element?(view, "#blocks-block-rules", "Block rules · 10 min layover")
 
       assert strip_value(view, "problems") == "1"
       assert block_status(view, "101") == "Short layover"
@@ -310,13 +320,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
       # and not only in the page flash behind the top-layer <dialog> (AC-31).
       assert has_element?(
                view,
-               "#layover-error",
+               "#block-rules-error",
                "You don't have permission to change blocks in this version."
              )
 
       assert settings_rows() == 0
       assert stored_minimum(context) == 5
-      assert has_element?(view, "#blocks-min-layover", "Minimum layover · 5 min")
+      assert has_element?(view, "#blocks-block-rules", "Block rules · 5 min layover")
       assert strip_value(view, "problems") == "0"
       assert block_status(view, "101") == "No problems"
     end

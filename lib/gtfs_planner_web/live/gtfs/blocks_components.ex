@@ -26,13 +26,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   @doc """
   Renders the day-type scope: the day-type select, the route filter, “Problems
-  only”, the Service dates link and the Minimum layover button.
+  only”, the Service dates link and the Block rules button.
 
   The day select posts through its own form (`select_day`) so a day change is
   never mistaken for a route filter; the route and status controls post through
   the `filter` form. The scope describes the whole day type, so neither control
-  changes the whole-day counts. The Minimum layover button prints the stored
-  value the day load read, so a save shows the new one on the next render.
+  changes the whole-day counts. The Block rules button prints the stored minimum
+  layover the day load read, so a save shows the new one on the next render.
   """
   attr :day_types, :list, required: true
   attr :day_type, :map, required: true
@@ -88,13 +88,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           Service dates
         </button>
         <button
-          id="blocks-min-layover"
+          id="blocks-block-rules"
           type="button"
           phx-click="open_drawer"
-          phx-value-key="layover"
+          phx-value-key="block_rules"
           class="btn btn-sm min-h-11"
         >
-          Minimum layover · {@min_layover_minutes} min
+          Block rules · {@min_layover_minutes} min layover
         </button>
       </div>
     </div>
@@ -744,67 +744,272 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the Minimum layover drawer (AC-28, D5): the one value every short
-  layover warning on this version is measured against.
+  Renders the Block rules drawer (AC-39, D5): the settings every block of every
+  day type in this version is drawn against, and the per-route garage and
+  vehicle type the blocks resolve from.
 
-  The field is the context's own changeset, so the label, the sentence the value
-  applies to and the field error all sit together and the error text is the
-  context's (the page never re-derives the 0–120 rule). The form validates as the
-  reader types — the fixed event list names no separate validation event, so its
-  `phx-change` is the drawer's own `open_drawer` event, which re-derives this
-  drawer's state from the payload (CR-8) — and the submit saves through
-  `Gtfs.update_blocking_settings/3`. Closing the drawer returns focus to the
-  header button that opened it.
+  The settings fields are the context's own changeset, so each label, its help
+  sentence and the field error sit together and the error text is the context's
+  (the page never re-derives the 0–120, 60–1440, 0–60, 5–120 or 1.0–3.0 rules).
+  The form validates as the reader types — its `phx-change` is the drawer's own
+  event, which re-derives this drawer's state from the payload (CR-8) — and the
+  submit saves through `Gtfs.update_blocking_settings/3` and then
+  `Gtfs.update_route_operating_settings/3`.
+
+  The Route switches control is the shared `segmented_control`, which is its own
+  form, so it sits outside this drawer's `<.form>` (a nested form is not valid
+  HTML) and posts the same change event; its chosen value is the drawer's own
+  state, which the submit reads.
+
+  The Route garages table is one row per route of the version, each with the
+  home garage and required type selects the writer stores, and any refusal the
+  context returned for that row prints under its own cell. The error summary
+  counts every entry that needs fixing and says the other entries are kept.
+  Closing the drawer returns focus to the header button that opened it.
   """
   attr :open, :boolean, required: true
   attr :form, :any, required: true
+  attr :interlining, :string, required: true
+  attr :routes, :map, required: true
+  attr :route_rows, :list, required: true
+  attr :route_errors, :map, default: %{}
+  attr :garages, :list, required: true
+  attr :vehicle_types, :list, required: true
   attr :error, :string, default: nil
+  attr :error_count, :integer, default: 0
 
-  def layover_drawer(assigns) do
+  def block_rules_drawer(assigns) do
     ~H"""
     <.drawer
-      id="layover-drawer"
+      id="block-rules-drawer"
       open={@open}
-      title="Minimum layover"
+      title="Block rules"
       initial_focus={:first_field}
       initial_focus_id="layover-minutes"
-      return_focus_id="blocks-min-layover"
+      return_focus_id="blocks-block-rules"
     >
-      <.form
-        for={@form}
-        id="layover-form"
-        novalidate
-        phx-change="open_drawer"
-        phx-debounce="200"
-        phx-submit="save_layover"
-        class="space-y-2"
-      >
-        <.input
-          id="layover-minutes"
-          field={@form[:min_layover_minutes]}
-          type="number"
-          min={0}
-          max={120}
-          step={1}
-          label="Minimum layover (minutes)"
-          help="Flag connections shorter than this value. It applies to every day type in this version."
-          class="input input-lg w-full max-w-40 block"
-        />
+      <%!-- The reference's field order is the reading order, and the Route switches
+      control sits between the pull-out buffer and the default garage. The control is
+      the shared `segmented_control`, which renders its own `<form>`, so it cannot be
+      a child of the drawer's form (nested forms are not valid HTML and the browser
+      drops the inner one, taking its `phx-change` with it). This flex column lets the
+      form's own children keep that order around the control instead: the form is
+      `contents`, so its children are the flex items, and only what comes after the
+      control is ordered after it. --%>
+      <div id="block-rules-content" phx-hook="FormErrorFocus" class="flex flex-col gap-5">
+        <p id="block-rules-scope" class="text-sm text-base-content/70">
+          This version · applies to every day type
+        </p>
 
-        <p :if={@error} id="layover-error" role="alert" class="text-sm text-error">{@error}</p>
+        <.form
+          for={@form}
+          id="block-rules-form"
+          novalidate
+          phx-change="block_rules_change"
+          phx-debounce="200"
+          phx-submit="save_block_rules"
+          class="contents"
+        >
+          <.callout
+            :if={@error_count > 0}
+            id="block-rules-errors"
+            kind="error"
+            title={error_summary_title(@error_count)}
+            tabindex="-1"
+          >
+            Your other entries are kept.
+          </.callout>
 
-        <div class="flex flex-wrap items-center gap-3 pt-2">
-          <button type="submit" id="layover-submit" class="btn btn-primary min-h-11">
-            Save minimum
-          </button>
-          <button type="button" id="layover-cancel" phx-click="close_drawer" class="btn min-h-11">
-            Cancel
-          </button>
+          <p :if={@error} id="block-rules-error" role="text-error text-sm">
+            {@error}
+          </p>
+
+          <.input
+            id="layover-minutes"
+            field={@form[:min_layover_minutes]}
+            type="number"
+            min={0}
+            max={120}
+            step={1}
+            label="Minimum layover (min)"
+            help="Shorter waits between trips are flagged. 0–120."
+            class="input input-lg w-full max-w-40 block"
+          />
+
+          <.input
+            id="block-rules-max-block"
+            field={@form[:max_block_minutes]}
+            type="number"
+            min={60}
+            max={1440}
+            step={1}
+            label="Longest time out of the garage (min) (optional)"
+            help="Blank uses each vehicle type’s limit only. 60–1,440."
+            class="input input-lg w-full max-w-40 block"
+          />
+
+          <.input
+            id="block-rules-pull-out-buffer"
+            field={@form[:pull_out_buffer_minutes]}
+            type="number"
+            min={0}
+            max={60}
+            step={1}
+            label="Time before the first trip (min)"
+            help="Added to each pull-out for checks and sign-on. 0–60."
+            class="input input-lg w-full max-w-40 block"
+          />
+
+          <div class="order-2">
+            <.input
+              id="block-rules-default-garage"
+              field={@form[:default_garage_id]}
+              type="select"
+              label="Default garage"
+              prompt="No default garage"
+              options={Enum.map(@garages, &{&1.name, &1.id})}
+              help="Used when a block has no garage and its route has no home garage."
+            />
+          </div>
+
+          <fieldset id="block-rules-driving" class="order-2 grid gap-1">
+            <legend class="text-sm font-semibold">Estimated driving times</legend>
+            <div class="mt-1 flex flex-wrap gap-4">
+              <.input
+                id="block-rules-speed"
+                field={@form[:deadhead_speed_kmh]}
+                type="number"
+                min={5}
+                max={120}
+                step={1}
+                label="Speed (km/h)"
+                class="input input-lg w-full max-w-28 block"
+              />
+              <.input
+                id="block-rules-road-factor"
+                field={@form[:deadhead_circuity]}
+                type="number"
+                min={1}
+                max={3}
+                step={0.1}
+                label="Road factor"
+                class="input input-lg w-full max-w-28 block"
+              />
+            </div>
+            <p id="block-rules-driving-help" class="text-sm text-base-content/70">
+              Straight-line distance × road factor ÷ speed. Entered driving times always win.
+            </p>
+          </fieldset>
+
+          <section id="block-rules-routes" class="order-2 grid gap-2">
+            <h3 class="text-base font-semibold">Route garages</h3>
+            <p id="block-rules-routes-help" class="text-sm text-base-content/70">
+              Where each route’s blocks start and end, and the vehicle type a route must use.
+            </p>
+            <table class="table table-sm">
+              <caption class="sr-only">Home garage and required vehicle type per route</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Route</th>
+                  <th scope="col">Home garage</th>
+                  <th scope="col">Required type</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  :for={{row, index} <- Enum.with_index(@route_rows)}
+                  id={"block-rules-route-#{index}"}
+                  data-role="block-rules-route-row"
+                  data-route={row.route_id}
+                >
+                  <td class="whitespace-nowrap">
+                    <span class="inline-flex items-center gap-2">
+                      <.route_badge_for route_id={row.route_id} routes={@routes} />
+                      {route_name(@routes, row.route_id)}
+                    </span>
+                  </td>
+                  <td>
+                    <.input
+                      id={"block-rules-route-#{index}-garage"}
+                      type="select"
+                      name={"route_settings[#{row.route_id}][garage_id]"}
+                      value={row.garage_id}
+                      prompt="No home garage"
+                      options={Enum.map(@garages, &{&1.name, &1.id})}
+                      errors={List.wrap(Map.get(@route_errors, {row.route_id, :garage_id}))}
+                      class="select select-sm w-full"
+                    />
+                  </td>
+                  <td>
+                    <.input
+                      id={"block-rules-route-#{index}-type"}
+                      type="select"
+                      name={"route_settings[#{row.route_id}][required_vehicle_type_id]"}
+                      value={row.required_vehicle_type_id}
+                      prompt="Any type"
+                      options={Enum.map(@vehicle_types, &{&1.name, &1.id})}
+                      errors={
+                        List.wrap(Map.get(@route_errors, {row.route_id, :required_vehicle_type_id}))
+                      }
+                      class="select select-sm w-full"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <p id="block-rules-note" class="order-2 text-sm text-base-content/70">
+            Changing these redraws every block.
+          </p>
+
+          <div class="order-2 flex flex-wrap items-center gap-3">
+            <button type="submit" id="block-rules-submit" class="btn btn-primary min-h-11">
+              Save block rules
+            </button>
+            <button
+              type="button"
+              id="block-rules-cancel"
+              phx-click="close_drawer"
+              class="btn min-h-11"
+            >
+              Cancel
+            </button>
+          </div>
+        </.form>
+
+        <%!-- Outside the form on purpose: `segmented_control` renders its own
+        `<form phx-change>`, and a nested form is not valid HTML — the browser
+        drops the inner element and its change event with it. It posts the same
+        event, and its value is the drawer's own state, which the submit reads. --%>
+        <div class="order-1">
+          <.segmented_control
+            id="block-rules-interlining"
+            name="interlining"
+            legend="Route switches within a block"
+            options={[
+              {"Anywhere", "any"},
+              {"Same stop only", "same_stop"},
+              {"Not allowed", "none"}
+            ]}
+            value={@interlining}
+            event="block_rules_change"
+            appearance={:joined}
+          />
+          <p id="block-rules-interlining-help" class="mt-1 text-sm text-base-content/70">
+            A vehicle may finish one route and start another. “Same stop only” avoids driving
+            without riders between routes.
+          </p>
         </div>
-      </.form>
+      </div>
     </.drawer>
     """
   end
+
+  # The reference's summary counts what is wrong, not what is right, so a reader
+  # with one bad entry is not told about the seven good ones.
+  defp error_summary_title(1), do: "1 entry needs fixing."
+  defp error_summary_title(count), do: "#{count} entries need fixing."
 
   @doc """
   Renders the read-only trip drawer: the trip's identity, its stored times and
