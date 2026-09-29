@@ -75,6 +75,29 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
     %{id: id, name: name, rows: rows, trip_count: 3}
   end
 
+  defp timing_h(id, name, rows, headsign) do
+    %{id: id, name: name, rows: rows, trip_count: 3, headsign: headsign}
+  end
+
+  defp scope_h(pattern_headsign, timings, trips) do
+    %{
+      pattern_id: @pattern_id,
+      patterns: [
+        %{
+          id: @pattern_id,
+          route_pattern_id: @natural_id,
+          headsign: pattern_headsign,
+          timings: timings
+        }
+      ],
+      trips: trips
+    }
+  end
+
+  defp short_rows do
+    [timing_row(0, 0), timing_row(200, 200, timepoint: 0), timing_row(500, 500)]
+  end
+
   defp trip(id, start_secs) do
     %{id: id, trip_id: "T-#{id}", route_pattern_id: @natural_id, start_secs: start_secs}
   end
@@ -609,6 +632,360 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
 
       plain = Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
       assert plain.writes_blocks? == false
+    end
+  end
+
+  describe "metadata, headsigns, warnings and discarded decisions" do
+    defp main_and_short_scope(pattern_headsign, main_headsign) do
+      scope_h(
+        pattern_headsign,
+        [
+          timing_h("timing-main", "Main", base_rows(), main_headsign),
+          timing_h("timing-short", "Short turn", short_rows(), "Hospital")
+        ],
+        []
+      )
+    end
+
+    defp moved_row(n, fields \\ %{}) do
+      ready_row(n, @half_past_7, short_rows(), fields)
+    end
+
+    test "blank Trip number and Block keep the matched values; an exact pair is :unchanged" do
+      s =
+        scope([timing("timing-1", "Typical", base_rows())], [
+          rich_trip("trip-1", 6 * 3600,
+            timed_pattern_id: "timing-1",
+            trip_short_name: "1207",
+            block_id: "101",
+            trip_headsign: nil
+          )
+        ])
+
+      plan = Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :unchanged
+      assert change.trip_short_name == "1207"
+      assert change.block_id == "101"
+      assert change.trip_headsign == nil
+      assert change.diffs == []
+      assert change.warnings == []
+      assert change.timing == {:existing, "timing-1"}
+      assert plan.counts == %{empty_counts() | unchanged: 1}
+      assert plan.trips == %{before: 1, after: 1}
+      assert plan.discarded_decisions == []
+    end
+
+    test "a pasted Trip number overrides and lists exactly what changed" do
+      s =
+        scope([timing("timing-1", "Typical", base_rows())], [
+          rich_trip("trip-1", 6 * 3600,
+            timed_pattern_id: "timing-1",
+            trip_short_name: "1207",
+            block_id: "101"
+          )
+        ])
+
+      row = ready_row(1, 6 * 3600, base_rows(), %{trip_short_name: "1227"})
+      [change] = Plan.build([row], s, :replace, %{}, @stamp, []).changes
+
+      assert change.op == :change
+      assert change.trip_short_name == "1227"
+      assert change.block_id == "101"
+      assert change.diffs == [:trip_short_name]
+    end
+
+    test "a default-following trip moved to the short turn takes the new effective default" do
+      s = main_and_short_scope("Riverside Terminal", nil)
+
+      s = %{
+        s
+        | trips: [
+            rich_trip("trip-1", @half_past_7,
+              timed_pattern_id: "timing-main",
+              trip_headsign: "Riverside Terminal"
+            )
+          ]
+      }
+
+      [change] = Plan.build([moved_row(1)], s, :replace, %{}, @stamp, []).changes
+
+      assert change.op == :change
+      assert change.timing == {:existing, "timing-short"}
+      assert change.trip_headsign == "Hospital"
+      assert change.diffs == [:times, :trip_headsign]
+      assert change.warnings == []
+    end
+
+    test "the old default comes from the old timing headsign before the pattern headsign" do
+      s = main_and_short_scope("Riverside Terminal", "Depot")
+
+      s = %{
+        s
+        | trips: [
+            rich_trip("trip-1", @half_past_7,
+              timed_pattern_id: "timing-main",
+              trip_headsign: "Depot"
+            )
+          ]
+      }
+
+      [change] = Plan.build([moved_row(1)], s, :replace, %{}, @stamp, []).changes
+
+      assert change.op == :change
+      assert change.trip_headsign == "Hospital"
+      assert change.diffs == [:times, :trip_headsign]
+    end
+
+    test "a custom 'Express' headsign is kept with :custom_headsign_moved" do
+      s = main_and_short_scope("Riverside Terminal", nil)
+
+      s = %{
+        s
+        | trips: [
+            rich_trip("trip-1", @half_past_7,
+              timed_pattern_id: "timing-main",
+              trip_headsign: "Express"
+            )
+          ]
+      }
+
+      [change] = Plan.build([moved_row(1)], s, :replace, %{}, @stamp, []).changes
+
+      assert change.op == :change
+      assert change.trip_headsign == "Express"
+      assert change.diffs == [:times]
+      assert change.warnings == [:custom_headsign_moved]
+    end
+
+    test "an explicit headsign override applies without the moved warning" do
+      s = main_and_short_scope("Riverside Terminal", nil)
+
+      s = %{
+        s
+        | trips: [
+            rich_trip("trip-1", @half_past_7,
+              timed_pattern_id: "timing-main",
+              trip_headsign: "Express"
+            )
+          ]
+      }
+
+      row = moved_row(1, %{trip_headsign: "Downtown"})
+      [change] = Plan.build([row], s, :replace, %{}, @stamp, []).changes
+
+      assert change.op == :change
+      assert change.trip_headsign == "Downtown"
+      assert change.diffs == [:times, :trip_headsign]
+      assert change.warnings == []
+    end
+
+    test "new trips take the effective default and blanks never write empty values" do
+      s = scope_h("Hospital", [], [])
+
+      rows = [
+        ready_row(1, 6 * 3600, base_rows()),
+        ready_row(2, 7 * 3600, base_rows(), %{trip_headsign: "  "}),
+        ready_row(3, 8 * 3600, base_rows(), %{trip_headsign: "Downtown"})
+      ]
+
+      plan = Plan.build(rows, s, :add, %{}, @stamp, [])
+      assert Enum.map(plan.changes, & &1.trip_headsign) == ["Hospital", "Hospital", "Downtown"]
+      assert Enum.map(plan.changes, & &1.trip_short_name) == [nil, nil, nil]
+      assert Enum.map(plan.changes, & &1.block_id) == [nil, nil, nil]
+
+      anchorless =
+        Plan.build([ready_row(1, 6 * 3600, base_rows())], scope(), :add, %{}, @stamp, [])
+
+      [change] = anchorless.changes
+      assert change.trip_headsign == nil
+      assert change.trip_headsign != ""
+    end
+
+    test "a retimed trip with an in-seat transfer warns; an unchanged one does not" do
+      retimed_vector = [
+        timing_row(0, 0),
+        timing_row(400, 400, timepoint: 0),
+        timing_row(800, 800)
+      ]
+
+      s =
+        scope([timing("timing-1", "Typical", base_rows())], [
+          rich_trip("trip-1", 6 * 3600, timed_pattern_id: "timing-1", in_seat_transfer: true),
+          rich_trip("trip-2", 7 * 3600, timed_pattern_id: "timing-1", in_seat_transfer: true)
+        ])
+
+      rows = [
+        ready_row(1, 6 * 3600, retimed_vector),
+        ready_row(2, 7 * 3600, base_rows())
+      ]
+
+      plan = Plan.build(rows, s, :replace, %{}, @stamp, [])
+      assert Enum.map(plan.changes, & &1.op) == [:change, :unchanged]
+      assert Enum.map(plan.changes, & &1.warnings) == [[:in_seat_retimed], []]
+    end
+
+    test "a trip number duplicated on the calendar warns whether kept or pasted" do
+      s =
+        scope([timing("timing-1", "Typical", base_rows())], [
+          rich_trip("trip-1", 6 * 3600, timed_pattern_id: "timing-1", trip_short_name: "1207"),
+          rich_trip("trip-2", 7 * 3600, trip_short_name: "1207")
+        ])
+
+      plan =
+        Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, [])
+
+      assert Enum.map(plan.changes, & &1.op) == [:unchanged, :remove]
+      [kept, _removed] = plan.changes
+      assert kept.trip_short_name == "1207"
+      assert kept.warnings == [:duplicate_trip_number]
+
+      existing = scope([], [rich_trip("trip-1", 6 * 3600, trip_short_name: "1207")])
+      pasted = ready_row(1, 7 * 3600, base_rows(), %{trip_short_name: "1207"})
+      [added] = Plan.build([pasted], existing, :add, %{}, @stamp, []).changes
+
+      assert added.op == :add
+      assert added.warnings == [:duplicate_trip_number]
+    end
+
+    test "a pairing naming a deleted trip is discarded and the row needs a decision again" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      s = scope([], [t1207, t1209])
+      row = ready_row(1, @half_past_7, base_rows(), %{trip_short_name: "1227"})
+
+      plan = Plan.build([row], s, :replace, %{1 => %{pair: "trip-9999"}}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :needs_decision
+      assert change.candidates == [t1207, t1209]
+
+      assert plan.discarded_decisions == [
+               %{row: 1, kind: :pair, value: "trip-9999", reason: :unknown_trip}
+             ]
+    end
+
+    test "a pair naming a trip taken by an earlier row is superseded" do
+      t1207 = rich_trip("trip-1207", @half_past_7, trip_short_name: "1207")
+      t1209 = rich_trip("trip-1209", @half_past_7, trip_short_name: "1209")
+      t1211 = rich_trip("trip-1211", @half_past_7, trip_short_name: "1211")
+      s = scope([], [t1207, t1209, t1211])
+
+      rows = [
+        ready_row(1, @half_past_7, base_rows()),
+        ready_row(2, @half_past_7, base_rows())
+      ]
+
+      decisions = %{1 => %{pair: "trip-1207"}, 2 => %{pair: "trip-1207"}}
+      plan = Plan.build(rows, s, :replace, decisions, @stamp, [])
+      [first, second] = plan.changes
+
+      assert Enum.map(plan.changes, & &1.op) == [:change, :needs_decision]
+      assert first.trip == t1207
+      assert second.candidates == [t1209, t1211]
+
+      assert plan.discarded_decisions == [
+               %{row: 2, kind: :pair, value: "trip-1207", reason: :superseded}
+             ]
+    end
+
+    test "a keep on a non-duplicate is discarded; a keep on a duplicate applies silently" do
+      existing = scope([], [rich_trip("trip-7", 7 * 3600)])
+
+      rows = [
+        ready_row(1, 6 * 3600, base_rows()),
+        ready_row(2, 7 * 3600, base_rows())
+      ]
+
+      plan =
+        Plan.build(rows, existing, :add, %{1 => %{keep: true}, 2 => %{keep: true}}, @stamp, [])
+
+      assert Enum.map(plan.changes, & &1.op) == [:add, :add]
+
+      assert plan.discarded_decisions == [
+               %{row: 1, kind: :keep, value: true, reason: :not_a_duplicate}
+             ]
+    end
+
+    test "a pair decision in Add mode is not applicable; neither stays silent" do
+      row = ready_row(1, 6 * 3600, base_rows())
+
+      named = Plan.build([row], scope(), :add, %{1 => %{pair: "trip-1"}}, @stamp, [])
+      assert Enum.map(named.changes, & &1.op) == [:add]
+
+      assert named.discarded_decisions == [
+               %{row: 1, kind: :pair, value: "trip-1", reason: :not_applicable}
+             ]
+
+      neither = Plan.build([row], scope(), :add, %{1 => %{pair: "neither"}}, @stamp, [])
+      assert neither.discarded_decisions == []
+    end
+
+    test "an unknown pattern choice is discarded; a fitting chosen pattern applies" do
+      s = scope([timing("timing-1", "Typical", base_rows())], [rich_trip("trip-1", 6 * 3600)])
+      row = ready_row(1, 6 * 3600, base_rows())
+
+      unknown =
+        Plan.build([row], s, :replace, %{1 => %{pattern_id: "pattern-gone"}}, @stamp, [])
+
+      assert Enum.map(unknown.changes, & &1.op) == [:change]
+
+      assert unknown.discarded_decisions == [
+               %{row: 1, kind: :pattern, value: "pattern-gone", reason: :unknown_pattern}
+             ]
+
+      chosen = %{row | how: :chosen}
+
+      fitting =
+        Plan.build([chosen], s, :replace, %{1 => %{pattern_id: @pattern_id}}, @stamp, [])
+
+      assert Enum.map(fitting.changes, & &1.op) == [:change]
+      assert fitting.discarded_decisions == []
+    end
+
+    test "a chosen pattern the row no longer fits withholds the row" do
+      estimated_first = [
+        %{
+          arrival_offset: 0,
+          departure_offset: 0,
+          timepoint: 0,
+          pickup_type: 0,
+          drop_off_type: 0,
+          stop_headsign: nil
+        }
+        | tl(base_rows())
+      ]
+
+      row = %{
+        ready_row(1, 6 * 3600, estimated_first)
+        | how: :chosen,
+          key: key(estimated_first)
+      }
+
+      plan = Plan.build([row], scope(), :replace, %{1 => %{pattern_id: @pattern_id}}, @stamp, [])
+      [change] = plan.changes
+
+      assert change.op == :needs_decision
+      assert change.timing == nil
+
+      assert plan.discarded_decisions == [
+               %{row: 1, kind: :pattern, value: @pattern_id, reason: :pattern_misfit}
+             ]
+
+      add_plan = Plan.build([row], scope(), :add, %{1 => %{pattern_id: @pattern_id}}, @stamp, [])
+      assert Enum.map(add_plan.changes, & &1.op) == [:needs_decision]
+      assert add_plan.new_timings == []
+    end
+
+    test "discarded decisions are empty for plain builds" do
+      s = scope([timing("timing-1", "Typical", base_rows())], [rich_trip("trip-1", 6 * 3600)])
+
+      assert Plan.build([ready_row(1, 6 * 3600, base_rows())], scope(), :add, %{}, @stamp, []).discarded_decisions ==
+               []
+
+      assert Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, []).discarded_decisions ==
+               []
     end
   end
 
