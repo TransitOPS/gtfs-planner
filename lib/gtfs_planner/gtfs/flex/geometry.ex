@@ -31,6 +31,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   service's stretch (AC-21), one per unordered stop pair, from the route's
   active patterns. Both are recomputed from the version on every call and both
   finish through the same R8 validity and emptiness checks as stored geometry.
+  `land_boundary/2` subtracts Census water from a Census boundary (R9), so the
+  boundary picker stores land only.
 
   `put_geom/2` and `get_geojson/1` are the storage pair: `put_geom/2` replaces
   one area's geometry (a `nil` clears it) and `get_geojson/1` reads the stored
@@ -470,6 +472,54 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   ORDER BY zones.stop_a, zones.stop_b
   """
 
+  # Census land boundary (R9) for `land_boundary/2`. `$1` is the boundary
+  # GeoJSON text, `$2` the intersecting water geometries as a JSON array. The
+  # boundary is made valid before the subtraction as well as after it:
+  # TIGERweb's place rings self-touch, and ST_Difference raises on an invalid
+  # input instead of returning one. `coalesce(..., empty)` keeps a water list
+  # with no features from making the difference NULL, and the SRID keeps the two
+  # sides in the same spatial reference. `ST_CollectionExtract(..., 3)` keeps
+  # only the polygonal parts, so a make-valid result that also carries lines or
+  # points still contributes closed land only.
+  @land_boundary_cte """
+  WITH boundary AS (
+    SELECT ST_GeomFromGeoJSON($1) AS g
+  ),
+  water AS (
+    SELECT coalesce(
+             ST_Union(ST_GeomFromGeoJSON(w.geojson::text)),
+             ST_SetSRID('MULTIPOLYGON EMPTY'::geometry, 4326)
+           ) AS g
+    FROM jsonb_array_elements($2::jsonb) AS w(geojson)
+  ),
+  land AS (
+    SELECT ST_Multi(
+             ST_CollectionExtract(
+               ST_MakeValid(ST_Difference(ST_MakeValid(boundary.g), water.g)),
+               3
+             )
+           ) AS g
+    FROM boundary, water
+  )
+  """
+
+  @land_boundary_check_sql """
+  #{@land_boundary_cte}
+  SELECT coalesce(ST_IsEmpty(land.g), true),
+         detail.valid,
+         detail.reason,
+         ST_X(detail.location),
+         ST_Y(detail.location)
+  FROM land
+  LEFT JOIN LATERAL ST_IsValidDetail(land.g) detail ON true
+  """
+
+  @land_boundary_geojson_sql """
+  #{@land_boundary_cte}
+  SELECT ST_AsGeoJSON(ST_ForcePolygonCCW(ST_ReducePrecision(land.g, 0.000001)))
+  FROM land
+  """
+
   @put_geom_sql """
   UPDATE flex_areas
   SET geom = ST_Multi(ST_GeomFromGeoJSON($1))
@@ -699,6 +749,40 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   end
 
   def self_overlaps(%FlexService{}), do: []
+
+  @doc """
+  Subtracts Census water from a Census boundary, returning the land polygon (R9).
+
+  `boundary_geojson` is the boundary the picker chose and `water_geojsons` the
+  Census areal hydrography intersecting its envelope, both GeoJSON maps; neither
+  leaves SQL as a geometry struct. Both sides are made valid before the
+  difference, because TIGERweb's place rings self-touch, and the result is a
+  valid `MultiPolygon` through the same R8 output transform as `normalize/1`.
+
+  Answers `{:error, :empty}` when nothing is left of the boundary (no land, or
+  a boundary that is not polygonal), and `{:error, {:invalid, reason, [lon, lat]}}`
+  when PostGIS rejects the land that is left.
+  """
+  @spec land_boundary(map(), [map()]) ::
+          {:ok, map()} | {:error, :empty | {:invalid, String.t(), [float()]}}
+  def land_boundary(boundary_geojson, water_geojsons) do
+    params = [Jason.encode!(boundary_geojson), water_geojsons]
+
+    %Postgrex.Result{rows: [[empty, valid, reason, lon, lat]]} =
+      Repo.query!(@land_boundary_check_sql, params)
+
+    cond do
+      empty ->
+        {:error, :empty}
+
+      not valid ->
+        {:error, {:invalid, reason, [lon, lat]}}
+
+      true ->
+        %Postgrex.Result{rows: [[geojson]]} = Repo.query!(@land_boundary_geojson_sql, params)
+        {:ok, Jason.decode!(geojson)}
+    end
+  end
 
   @doc """
   Derives the buffered area around the given routes' current shapes (AC-11).

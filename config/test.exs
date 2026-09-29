@@ -62,6 +62,23 @@ street_routing_module =
 
 config :gtfs_planner, :street_routing_service, street_routing_module
 
+# Census boundary picks go through the TIGERweb adapter in ordinary ExUnit runs,
+# where responses come from recorded fixtures through a `Req.Test` plug. Browser
+# journeys drive the area editor in a real browser, where no such plug exists, so
+# they use the deterministic fixture-backed fake instead.
+boundaries_module =
+  if System.get_env("BROWSER_E2E") == "true" do
+    GtfsPlanner.BrowserBoundaries
+  else
+    GtfsPlanner.Boundaries.Tigerweb
+  end
+
+config :gtfs_planner, :boundaries_service, boundaries_module
+
+# Route Req HTTP calls in the Census TIGERweb adapter through Req.Test so tests
+# can stub upstream boundary and water responses.
+config :gtfs_planner, :boundaries_req_plug, {Req.Test, GtfsPlanner.Boundaries.Tigerweb}
+
 # Route Req HTTP calls in the street routing adapter through Req.Test so
 # tests can stub upstream routing responses.
 config :gtfs_planner, :street_routing_req_plug, {Req.Test, GtfsPlanner.StreetRouting.Geoapify}
