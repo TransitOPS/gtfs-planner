@@ -5858,6 +5858,54 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Reviews and stores one block's garage and required vehicle type.
+
+  `attrs` carries `garage_id` and `vehicle_type_id`; a blank value is stored as
+  `nil` and a value that is not a UUID is a changeset error. The save is reviewed
+  rather than applied blind: a block's row is keyed `(service_id, block_id)`, so a
+  service another day type shares is read there too, and the review lists every
+  day type the rows reach with its date count and the problems the saved value
+  adds. A save that reaches another day type or adds a problem returns
+  `{:needs_confirmation, review}` and writes nothing until it is called again
+  with `review.fingerprint`; a fingerprint whose inputs changed returns
+  `{:error, {:stale_review, review}}`, also writing nothing.
+
+  The write takes the version's `FOR SHARE` lock and `Blocking.lock_blocking!/1`
+  before deciding anything, rebuilds the planning context under that lock and
+  fingerprints it (INV-7, INV-1). A block the selected day type does not run, a
+  garage or a vehicle type of another organization and an unknown day type are
+  `{:error, :not_found}` or `{:error, {:unknown_day_type, day_types}}`; no trip
+  row changes and no `transfers` row is written (INV-3).
+  """
+  @spec set_block_attributes(
+          String.t(),
+          String.t(),
+          map(),
+          GtfsPlanner.Gtfs.AuditContext.t(),
+          String.t() | nil
+        ) ::
+          {:ok, %{review: GtfsPlanner.Gtfs.Blocking.Review.review()}}
+          | {:needs_confirmation, GtfsPlanner.Gtfs.Blocking.Review.review()}
+          | {:error,
+             {:stale_review, GtfsPlanner.Gtfs.Blocking.Review.review()}
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :not_found
+             | :busy
+             | Ecto.Changeset.t()}
+  def set_block_attributes(day_type_key, block_id, attrs, audit_context),
+    do: set_block_attributes(day_type_key, block_id, attrs, audit_context, nil)
+
+  def set_block_attributes(
+        day_type_key,
+        block_id,
+        attrs,
+        %AuditContext{} = audit_context,
+        confirmation
+      ) do
+    Blocking.set_block_attributes(day_type_key, block_id, attrs, audit_context, confirmation)
+  end
+
+  @doc """
   Applies one block command on a day type of an organization's GTFS version.
 
   The command is an `:assign` or `:unassign` of trips or a `:rename` or `:merge`
