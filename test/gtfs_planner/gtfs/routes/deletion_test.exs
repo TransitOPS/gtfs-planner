@@ -382,7 +382,9 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionTest do
 
         assert Enum.map(
                  Repo.all(
-                   from tr in Transfer, where: tr.organization_id == ^org_id, order_by: tr.id
+                   from tr in Transfer,
+                     where: tr.organization_id == ^org_id,
+                     order_by: tr.transfer_type
                  ),
                  & &1.transfer_type
                ) == [0, 1]
@@ -548,9 +550,8 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionTest do
       unboxed(fn ->
         assert Repo.exists?(from r in Route, where: r.id == ^route.id)
 
-        assert Enum.map(
-                 Repo.all(from t in Trip, where: t.organization_id == ^org_id, select: t.trip_id),
-                 & &1
+        assert Enum.sort(
+                 Repo.all(from t in Trip, where: t.organization_id == ^org_id, select: t.trip_id)
                ) == ["trip_a", "trip_b"]
 
         assert Repo.all(

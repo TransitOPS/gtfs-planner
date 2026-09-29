@@ -299,6 +299,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     default: nil,
     doc: "the draft's automatic|custom transport mode; derived from the colors when absent"
 
+  attr :nav_guard, :boolean,
+    default: false,
+    doc: "arm the RouteDetailsEditor dirty-navigation guard on this hook instance"
+
+  attr :nav_dirty, :boolean,
+    default: false,
+    doc: "the server's dirty verdict the guard mirrors; read only when nav_guard is set"
+
   def color_fields(assigns) do
     assigns = assign(assigns, :colors, color_preview(assigns.form, assigns.text_mode))
     assigns = assign(assigns, :color_errors, field_errors(assigns.form[:route_color]))
@@ -311,6 +319,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       id={"#{@prefix}-color-fields"}
       phx-hook="RouteDetailsEditor"
       data-prefix={@prefix}
+      data-nav-guard={@nav_guard && "true"}
+      data-dirty={@nav_guard && to_string(@nav_dirty)}
       class="grid gap-3"
     >
       <div class="grid gap-x-6 gap-y-4 sm:grid-cols-[auto_minmax(0,1fr)]">
