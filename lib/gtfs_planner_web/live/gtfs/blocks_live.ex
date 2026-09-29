@@ -189,6 +189,42 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # when it arrives.
   @suggest_preview_key :suggest_preview
 
+  # Applying a suggestion is the page's own state (AC-45): the result of the
+  # last attempt, and the applied message that outlives the preview it belongs
+  # to. `:none` is a preview with nothing to say, `:pending` a write in flight,
+  # and `:stale`, `:busy` and `:failed` the three answers that keep the preview
+  # and offer another attempt.
+  @empty_apply %{status: :none, title: nil, message: nil, reason: nil}
+
+  # The replace-all confirmation, its own assign rather than part of the result:
+  # it is a question the reader is asked, not an outcome (AC-45).
+  @no_replace %{open?: false, moves: 0, days: []}
+
+  # Applying is one bounded write under the blocking lock, so it runs under
+  # `start_async` the way the page's other bounded work does: the panel shows
+  # that it is working, a second click while it runs is refused, and the result
+  # is applied when it arrives.
+  @apply_suggestion_key :suggest_apply
+
+  # The reference's three answers in the page's own words. A stale plan is named
+  # by what the reader must do about it rather than by an input the page cannot
+  # see: `apply_block_plan/3` reports `:stale_plan` without saying which setting,
+  # trip or driving time moved, so the message names the class of change and
+  # turns Apply off with its reason beside it (AC-45).
+  @apply_stale_title "This suggestion is out of date."
+  @apply_stale_message "A driving time, trip, block or setting changed after this preview was built. Nothing was applied. Suggest again before applying."
+
+  @apply_stale_reason "Apply is off until the suggestion is built again from the current blocks."
+
+  @apply_busy_title "Another change to this version's blocks was saving."
+  @apply_busy_message "Nothing was applied. Apply again in a moment."
+
+  @apply_failed_title "The suggestion couldn't be saved."
+  @apply_failed_message "Your blocks are unchanged. Try again, or discard the suggestion."
+
+  @apply_pending_title "Applying the suggestion…"
+  @apply_pending_message "The trips are moving to their new blocks. Nothing is saved until this finishes."
+
   @sort_keys %{
     "block" => :block,
     "garage" => :garage,
@@ -253,6 +289,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:plan_preview, nil)
      |> assign(:preview_day, nil)
      |> assign(:suggestion, @empty_suggestion)
+     |> assign(:apply, @empty_apply)
+     |> assign(:replace, @no_replace)
+     |> assign(:applied, nil)
      |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
@@ -289,6 +328,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       clear_command: true
     )
   end
+
+  # The day select is disabled while a suggestion is previewed, so a change event
+  # from its form carries no day at all. That is not a day change and must not
+  # take the page down with it: a form that names nothing changes nothing.
+  def handle_event("select_day", _params, socket), do: {:noreply, socket}
 
   def handle_event("filter", params, socket) do
     status = if params["status"] == "problems", do: :problems, else: :all
@@ -748,6 +792,64 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(drop_preview(socket), %{trip: nil, gap: nil, block: nil, drawer: "suggest", pair: nil})
   end
 
+  # --- applying a suggestion (step 46, AC-45) ----------------------------------
+
+  # Apply writes the previewed plan, so it is refused in the states where there
+  # is nothing to write or where a write is already in flight: a second click
+  # while one runs is dropped rather than queued, and the plan's own fingerprint
+  # (INV-7) is what stops a stale preview being written twice. A rebuild is
+  # confirmed first, because it replaces hand-tuned blocks (PM-5); the other two
+  # scopes apply directly.
+  def handle_event("apply_suggestion", _params, %{assigns: %{plan_preview: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event(
+        "apply_suggestion",
+        _params,
+        %{assigns: %{apply: %{status: :pending}}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event("apply_suggestion", _params, %{assigns: %{apply: %{status: :stale}}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("apply_suggestion", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("apply_suggestion", _params, socket) do
+    if socket.assigns.suggestion.scope == :replace_all and
+         not socket.assigns.replace.open? do
+      {:noreply, assign(socket, :replace, replace_confirmation(socket))}
+    else
+      {:noreply, start_apply(socket)}
+    end
+  end
+
+  # “Keep current blocks” closes the confirmation and changes nothing: the
+  # preview, its figures and its buttons are exactly as they were.
+  def handle_event("cancel_replace", _params, socket) do
+    {:noreply, assign(socket, :replace, @no_replace)}
+  end
+
+  def handle_event("confirm_replace", _params, %{assigns: %{replace: %{open?: false}}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("confirm_replace", _params, socket) do
+    socket =
+      socket
+      |> assign(:replace, @no_replace)
+      |> start_apply()
+
+    {:noreply, socket}
+  end
+
+  # The applied message is the reader's own; it is not a route, so dismissing it
+  # is a panel-only answer and leaves the applied plan and the cleared selection
+  # where they are.
+  def handle_event("dismiss_applied", _params, socket) do
+    {:noreply, assign(socket, :applied, nil)}
+  end
+
   # The trip, gap and block drawers are part of the URL, so closing one drops the
   # parameters as well as the panel-only drawer's own state; the other drawers
   # keep the URL they had. The panel drawers render over the page, so one of them
@@ -1146,6 +1248,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:plan_preview, nil)
         |> assign(:preview_day, nil)
         |> assign(:suggestion, @empty_suggestion)
+        |> assign(:apply, @empty_apply)
+        |> assign(:replace, @no_replace)
+        |> assign(:applied, nil)
         |> assign_derived(day)
 
       {:error, {:unknown_day_type, day_types}} ->
@@ -2788,6 +2893,143 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})
   end
 
+  # The dialog names the trips the rebuild would move and the day types it would
+  # change, from the plan the reader is looking at rather than from a count typed
+  # into the dialog.
+  defp replace_confirmation(socket) do
+    plan = socket.assigns.plan_preview
+
+    %{
+      open?: true,
+      moves: length(plan.moves),
+      days: Enum.map(plan.review.effects, & &1.day_type.label)
+    }
+  end
+
+  # The write itself: one `start_async` task over the plan this page is showing,
+  # carrying the request that named it, so a result that arrives after the reader
+  # discarded the suggestion or switched day type is dropped rather than shown as
+  # this plan's outcome.
+  defp start_apply(socket) do
+    if editor_access?(socket) do
+      request = apply_request(socket)
+
+      socket =
+        socket
+        |> assign(:apply, %{
+          status: :pending,
+          title: @apply_pending_title,
+          message: @apply_pending_message,
+          reason: nil
+        })
+        |> assign(:applied, nil)
+
+      start_async(socket, @apply_suggestion_key, fn -> {request, run_apply(request)} end)
+    else
+      put_flash(socket, :error, @permission_message)
+    end
+  end
+
+  defp apply_request(socket) do
+    %{
+      organization_id: socket.assigns.current_organization.id,
+      version_id: socket.assigns.current_gtfs_version.id,
+      day_type_key: socket.assigns.day_type && socket.assigns.day_type.key,
+      plan: socket.assigns.plan_preview,
+      audit: audit_context(socket)
+    }
+  end
+
+  # The context call itself: the facade's `apply_block_plan/3`, which is the one
+  # write path for a plan (AC-27).
+  defp run_apply(request) do
+    Gtfs.apply_block_plan(request.day_type_key, request.plan, request.audit)
+  end
+
+  # The plan's own fingerprint is the identity: a preview that was discarded,
+  # rebuilt or replaced by a day switch is a different plan, and a result about
+  # the old one must not repaint the page.
+  defp request_matches?(%{plan: plan}, plan), do: true
+  defp request_matches?(_request, _plan), do: false
+
+  # The three answers and the success (AC-45):
+  #
+  #   * `:stale_plan` keeps the preview and turns Apply off, because the plan the
+  #     reader reviewed is not the plan the context would write; “Suggest again”
+  #     is the primary action and the reason is printed beside the button.
+  #   * `:busy` and `{:audit_failed, _}` keep the preview and the buttons, with
+  #     “Apply again”, because nothing was written and the same attempt is worth
+  #     repeating.
+  #   * `{:ok, _}` drops the preview, clears the block selection, reloads the day
+  #     so the rows are the applied plan's, and leaves the applied message where
+  #     the panel was.
+  defp apply_apply_result(socket, plan, {:ok, _result}) do
+    days = Enum.map_join(plan.review.effects, " and ", & &1.day_type.label)
+    moves = length(plan.moves)
+
+    socket =
+      socket
+      |> load_day()
+      |> assign(:apply, @empty_apply)
+      |> assign(:replace, @no_replace)
+      |> assign(:applied, %{
+        moves: moves,
+        message:
+          "#{moves} #{plural(moves, "trip")} changed block across #{days}. " <>
+            "Each trip's change history lists its previous block."
+      })
+      # A successful apply clears the block selection (AC-45): those blocks were
+      # rebuilt, so a selection of them describes work that is already done.
+      |> assign(:block_selection, MapSet.new())
+      |> assign(:selected_blocks, [])
+      # The reloaded day is streamed again, so the rows are the applied plan's and
+      # carry no "Changed · not saved" marker: the change is saved now.
+      |> assign_page_rows_if_loaded()
+
+    {:noreply, push_event(socket, "focus_scoped_target", %{id: "suggestion-applied"})}
+  end
+
+  defp apply_apply_result(socket, _plan, {:error, :stale_plan}) do
+    socket =
+      put_apply(
+        socket,
+        :stale,
+        @apply_stale_title,
+        @apply_stale_message,
+        @apply_stale_reason
+      )
+      |> assign(:replace, @no_replace)
+
+    {:noreply, push_event(socket, "focus_scoped_target", %{id: "suggestion-apply-message"})}
+  end
+
+  defp apply_apply_result(socket, _plan, {:error, :busy}) do
+    {:noreply,
+     push_event(
+       put_apply(socket, :busy, @apply_busy_title, @apply_busy_message),
+       "focus_scoped_target",
+       %{id: "suggestion-apply-message"}
+     )}
+  end
+
+  defp apply_apply_result(socket, _plan, {:error, _reason}) do
+    {:noreply,
+     push_event(
+       put_apply(socket, :failed, @apply_failed_title, @apply_failed_message),
+       "focus_scoped_target",
+       %{id: "suggestion-apply-message"}
+     )}
+  end
+
+  defp put_apply(socket, status, title, message, reason \\ nil) do
+    assign(socket, :apply, %{
+      status: status,
+      title: title,
+      message: message,
+      reason: reason
+    })
+  end
+
   # The three scope cards, in the reference's order. Each carries the generator's
   # own mode under the name a reader reads, the trips the scope would plan, and
   # whether it can be chosen at all on this day type. “Selected blocks” names the
@@ -3455,6 +3697,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})}
   end
 
+  # The apply's own result, in the same place as the preview's because both are
+  # this page's asynchronous work and both must be able to drop a late result.
+  def handle_async(@apply_suggestion_key, {:ok, {request, result}}, socket) do
+    if request_matches?(request, socket.assigns.plan_preview) do
+      apply_apply_result(socket, request.plan, result)
+    else
+      # The preview on the page is no longer the plan this result belongs to, so
+      # the panel drops its own pending state and nothing else.
+      {:noreply, put_apply(socket, :none, nil, nil)}
+    end
+  end
+
+  # A task that exited rather than returning wrote nothing the page can report;
+  # the failure sentence is the same one an audit failure gets.
+  def handle_async(@apply_suggestion_key, {:exit, _reason}, socket) do
+    {:noreply, put_apply(socket, :failed, @apply_failed_title, @apply_failed_message)}
+  end
+
   # Dropping the preview is one step whatever the reader does next, so the day is
   # re-derived from the loaded day rather than from the previewed one, and the
   # timeline key is cleared so the container is replaced.
@@ -3463,6 +3723,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> assign(:plan_preview, nil)
     |> assign(:preview_day, nil)
     |> assign(:suggestion, @empty_suggestion)
+    |> assign(:apply, @empty_apply)
+    |> assign(:replace, @no_replace)
     |> assign(:timeline_key, nil)
     |> assign_derived(socket.assigns.day)
     |> assign_page_rows()
@@ -3697,6 +3959,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   fixed_problems={@suggestion.fixed}
                   repeating_trip_ids={@suggest_repeating_trip_ids}
                   estimated_pairs={@estimated_pairs}
+                  apply={@apply}
+                />
+
+                <%!-- The applied message takes the panel's place once the plan is
+                saved: there is no preview left to read, and the sentence that
+                outlives it is the page's answer to what changed (AC-45). --%>
+                <BlocksComponents.suggestion_applied
+                  :if={is_nil(@plan_preview) and not is_nil(@applied)}
+                  applied={@applied}
+                />
+
+                <BlocksComponents.suggestion_replace_dialog
+                  :if={not is_nil(@plan_preview)}
+                  replace={@replace}
+                  day_type={@day_type}
+                  pending={@apply.status == :pending}
                 />
 
                 <BlocksComponents.workspace
