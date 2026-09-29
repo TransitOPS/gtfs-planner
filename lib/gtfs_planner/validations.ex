@@ -69,6 +69,24 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
+  Returns the newest completed or failed MobilityData validation run for an
+  organization and GTFS version, or `nil` when none has finished.
+
+  Reachability and pathways runs are ignored.
+  """
+  @spec latest_feed_check(Ecto.UUID.t(), Ecto.UUID.t()) :: ValidationRun.t() | nil
+  def latest_feed_check(organization_id, gtfs_version_id) do
+    ValidationRun
+    |> where([run], run.organization_id == ^organization_id)
+    |> where([run], run.gtfs_version_id == ^gtfs_version_id)
+    |> where([run], run.run_type == "mobility_data")
+    |> where([run], run.status in ["completed", "failed"])
+    |> order_by([run], desc: run.started_at, asc: run.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  @doc """
   Marks a validation run as running.
   """
   @spec mark_running(ValidationRun.t()) ::
