@@ -2401,39 +2401,96 @@ defmodule GtfsPlanner.Gtfs do
   defp decimal_to_float(_), do: nil
 
   @doc """
-  Recalculates pathway lengths for same-level pathways on a station level.
+  Recalculates same-level pathway lengths from the diagram after a scale change.
 
-  Returns `{:ok, count}` where count is the number of pathways whose lengths were updated.
+  A length is overwritten only when it is empty or equals what `previous_stop_level`
+  (the scale in force before this change) would have produced for the pathway's
+  stops. Any other length was entered or imported, so it is kept. Each overwrite
+  records an "updated" pathway change log; run this inside the caller's transaction
+  so a failed log or update rolls back the earlier writes.
+
+  Returns `{:ok, %{recalculated_count: n, kept_count: k}}`, where `k` counts pathways
+  with a computable length that was left alone because it was not derived from the plan.
   """
   def recalculate_pathway_lengths_for_level(
+        %StopLevel{} = previous_stop_level,
         %StopLevel{} = stop_level,
         organization_id,
         gtfs_version_id,
         level_id,
-        parent_station_id
+        parent_station_id,
+        %AuditContext{} = audit_ctx
       ) do
+    initial_counts = %{recalculated_count: 0, kept_count: 0}
+
     organization_id
     |> list_pathways_for_level(gtfs_version_id, level_id, parent_station_id)
     |> Enum.reject(& &1.is_cross_level)
     |> Enum.sort_by(& &1.pathway_id, :asc)
-    |> Enum.reduce_while({:ok, 0}, fn pathway, {:ok, count} ->
-      case calculate_pathway_length(stop_level, pathway.from_stop, pathway.to_stop) do
-        %Decimal{} = length ->
-          case pathway
-               |> Pathway.changeset(%{length: length})
-               |> Repo.update() do
-            {:ok, _updated_pathway} -> {:cont, {:ok, count + 1}}
-            {:error, changeset} -> {:halt, {:error, changeset}}
-          end
+    |> Enum.reduce_while({:ok, initial_counts}, fn pathway, {:ok, counts} ->
+      case recalculate_pathway_length(pathway, previous_stop_level, stop_level, audit_ctx) do
+        {:ok, :recalculated} ->
+          {:cont, {:ok, Map.update!(counts, :recalculated_count, &(&1 + 1))}}
 
-        _ ->
-          {:cont, {:ok, count}}
+        {:ok, :kept} ->
+          {:cont, {:ok, Map.update!(counts, :kept_count, &(&1 + 1))}}
+
+        {:ok, :unchanged} ->
+          {:cont, {:ok, counts}}
+
+        {:error, changeset} ->
+          {:halt, {:error, changeset}}
       end
     end)
   end
 
+  defp recalculate_pathway_length(pathway, previous_stop_level, stop_level, audit_ctx) do
+    new_length = calculate_pathway_length(stop_level, pathway.from_stop, pathway.to_stop)
+
+    cond do
+      is_nil(new_length) ->
+        {:ok, :unchanged}
+
+      not is_nil(pathway.length) and Decimal.equal?(pathway.length, new_length) ->
+        {:ok, :unchanged}
+
+      not derived_pathway_length?(pathway, previous_stop_level) ->
+        {:ok, :kept}
+
+      true ->
+        with {:ok, _pathway} <-
+               pathway
+               |> Pathway.changeset(%{length: new_length})
+               |> Repo.update(),
+             {:ok, _log} <-
+               record_change_in_transaction(audit_ctx, :pathway, pathway, "updated", %{
+                 length: new_length
+               }) do
+          {:ok, :recalculated}
+        end
+    end
+  end
+
+  # Length has no stored provenance, so a length counts as derived from the plan
+  # only when the previous scale would have produced exactly this value (both are
+  # rounded to 2 places by `calculate_pathway_length/3`). Ceiling: a derived length
+  # whose endpoints moved after it was computed no longer matches and is treated as
+  # entered. Upgrade path: store length provenance on the pathway.
+  defp derived_pathway_length?(%Pathway{length: nil}, _previous_stop_level), do: true
+
+  defp derived_pathway_length?(%Pathway{} = pathway, previous_stop_level) do
+    case calculate_pathway_length(previous_stop_level, pathway.from_stop, pathway.to_stop) do
+      %Decimal{} = previous_length -> Decimal.equal?(pathway.length, previous_length)
+      nil -> false
+    end
+  end
+
   @doc """
-  Saves stop-level calibration and recalculates same-level pathway lengths atomically.
+  Saves stop-level calibration and recalculates the pathway lengths derived from the
+  previous scale atomically, recording a change log for each recalculated pathway.
+
+  Returns `{:ok, %{stop_level:, recalculated_count:, kept_count:}}`; see
+  `recalculate_pathway_lengths_for_level/7` for which lengths are kept.
   """
   def save_scale_and_recalculate(
         %StopLevel{} = stop_level,
@@ -2441,7 +2498,8 @@ defmodule GtfsPlanner.Gtfs do
         organization_id,
         gtfs_version_id,
         level_id,
-        parent_station_id
+        parent_station_id,
+        %AuditContext{} = audit_ctx
       ) do
     transaction_result =
       Repo.transaction(fn ->
@@ -2449,15 +2507,17 @@ defmodule GtfsPlanner.Gtfs do
                stop_level
                |> StopLevel.scale_changeset(scale_attrs)
                |> Repo.update(),
-             {:ok, recalculated_count} <-
+             {:ok, counts} <-
                recalculate_pathway_lengths_for_level(
+                 stop_level,
                  updated_stop_level,
                  organization_id,
                  gtfs_version_id,
                  level_id,
-                 parent_station_id
+                 parent_station_id,
+                 audit_ctx
                ) do
-          %{stop_level: updated_stop_level, recalculated_count: recalculated_count}
+          Map.put(counts, :stop_level, updated_stop_level)
         else
           {:error, reason} ->
             Repo.rollback(reason)

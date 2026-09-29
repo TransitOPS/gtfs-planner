@@ -2664,9 +2664,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket.assigns.current_organization.id,
              socket.assigns.current_gtfs_version.id,
              socket.assigns.active_level.id,
-             socket.assigns.station.id
+             socket.assigns.station.id,
+             socket.assigns.audit_ctx
            ) do
-        {:ok, %{stop_level: updated_stop_level, recalculated_count: recalculated_count}} ->
+        {:ok,
+         %{
+           stop_level: updated_stop_level,
+           recalculated_count: recalculated_count,
+           kept_count: kept_count
+         }} ->
+          kept_status =
+            if kept_count > 0,
+              do: ", #{kept_count} entered #{pluralize(kept_count, "length")} kept",
+              else: ""
+
           {:noreply,
            socket
            |> assign(:active_stop_level, updated_stop_level)
@@ -2674,7 +2685,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> reset_ruler_state()
            |> assign(
              :scale_status,
-             "Scale updated - #{recalculated_count} pathway length(s) recalculated"
+             "Scale updated - #{recalculated_count} pathway #{pluralize(recalculated_count, "length")} recalculated" <>
+               kept_status
            )}
 
         {:error, _reason} ->

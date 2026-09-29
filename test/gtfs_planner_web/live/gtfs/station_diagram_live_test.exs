@@ -7760,22 +7760,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       existing_1 =
-        pathway_fixture(
-          organization.id,
-          gtfs_version.id,
-          stop_a.stop_id,
-          stop_b.stop_id,
-          %{length: Decimal.new("999.00")}
-        )
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
 
       existing_2 =
-        pathway_fixture(
-          organization.id,
-          gtfs_version.id,
-          stop_a.stop_id,
-          stop_c.stop_id,
-          %{length: Decimal.new("123.45")}
-        )
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_c.stop_id)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
@@ -7806,8 +7794,66 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#scale-status",
-               "Scale updated - 2 pathway length(s) recalculated"
+               "Scale updated - 2 pathway lengths recalculated"
              )
+
+      refute has_element?(view, "#scale-status", "kept")
+    end
+
+    test "editing scale keeps an entered pathway length and says so", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_C_ENTERED",
+          stop_name: "Measure Stop C Entered",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      empty_pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      entered_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_c.stop_id,
+          %{length: Decimal.new("12.50")}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "No scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#scale-status",
+               "Scale updated - 1 pathway length recalculated, 1 entered length kept"
+             )
+
+      assert Decimal.equal?(Gtfs.get_pathway!(entered_pathway.id).length, Decimal.new("12.50"))
+      refute is_nil(Gtfs.get_pathway!(empty_pathway.id).length)
     end
 
     test "editing scale does not recalculate cross-level pathway lengths", %{
