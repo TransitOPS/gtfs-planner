@@ -73,7 +73,8 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
         run_id: @check_run_id,
         errors: 0,
         warnings: 12,
-        at: ~U[2026-09-26 17:02:00Z]
+        at: ~U[2026-09-26 17:02:00Z],
+        local_at: ~N[2026-09-26 10:02:00]
       },
       overrides
     )
@@ -86,7 +87,8 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
         type: :full,
         state: :ready,
         expired?: true,
-        finished_at: ~U[2026-09-26 17:20:00Z]
+        finished_at: ~U[2026-09-26 17:20:00Z],
+        local_finished_at: ~N[2026-09-26 10:20:00]
       },
       overrides
     )
@@ -333,7 +335,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       d = doc(html)
 
-      assert text(d, "#export-meta") == "Full GTFS · Sep 26, 5:20 PM"
+      assert text(d, "#export-meta") == "Full GTFS · Sep 26, 10:20 AM"
       assert text(d, "#export-status") == "Download expired"
       assert text(d, "#export-note") =~ "9 changes since then."
       assert text(d, "#export-note") =~ "downloads stay available for 24 hours"
@@ -356,7 +358,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       d = doc(html)
 
-      assert text(d, "#export-meta") == "Pathways export · Sep 26, 5:20 PM"
+      assert text(d, "#export-meta") == "Pathways export · Sep 26, 10:20 AM"
       assert text(d, "#export-status") == "Download available"
       assert text(d, "#export-note") =~ "31 changes since then across 6 stations."
       assert text(d, "#export-link") == "Export pathways"

@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Home.CheckAndShareTest do
 
   use GtfsPlanner.DataCase, async: false
 
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -169,8 +170,31 @@ defmodule GtfsPlanner.Home.CheckAndShareTest do
              run_id: check.id,
              errors: 2,
              warnings: 3,
-             at: ~U[2026-09-20 09:00:00.000000Z]
+             at: ~U[2026-09-20 09:00:00.000000Z],
+             local_at: ~N[2026-09-20 09:00:00.000000]
            }
+  end
+
+  test "the check and export times are on the agency-local clock", context do
+    agency_fixture(context.organization.id, context.version.id, %{
+      agency_timezone: "America/New_York"
+    })
+
+    insert_check(context.organization, context.version, %{
+      started_at: ~U[2026-09-20 09:00:00.000000Z]
+    })
+
+    insert_export(context.organization, context.version, %{
+      finished_at: ~U[2026-09-20 12:00:00.000000Z]
+    })
+
+    assert %{check: check, export: export} =
+             Home.check_and_share(context.organization.id, context.version.id, :planner)
+
+    assert check.at == ~U[2026-09-20 09:00:00.000000Z]
+    assert check.local_at == ~N[2026-09-20 05:00:00.000000]
+    assert export.finished_at == ~U[2026-09-20 12:00:00.000000Z]
+    assert export.local_finished_at == ~N[2026-09-20 08:00:00.000000]
   end
 
   defp insert_export(organization, version, attrs) do

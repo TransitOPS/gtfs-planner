@@ -188,7 +188,7 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   end
 
   defp item_detail(%{kind: :check_errors} = item) do
-    "Found #{day(item.at)} when the feed was exported. Apps may reject the feed until they " <>
+    "Found #{day(item.local_at)} when the feed was exported. Apps may reject the feed until they " <>
       "are fixed. Warnings do not block anything."
   end
 
@@ -222,7 +222,7 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   defp error_count(count), do: "#{count} errors"
 
   defp day(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
-  defp day(%DateTime{} = instant), do: Calendar.strftime(instant, "%b %-d")
+  defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 
   defp primary_link do
     "inline-flex min-h-11 items-center justify-center gap-2 rounded-control bg-action px-4 py-2.5 text-sm font-[650] text-white no-underline hover:bg-action-hover max-sm:ml-[52px]"

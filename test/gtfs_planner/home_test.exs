@@ -160,6 +160,30 @@ defmodule GtfsPlanner.HomeTest do
     assert lines == %{"STA" => 2, "STB" => 0}
   end
 
+  test "station_board adds each station's last edit on the agency-local clock" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    agency_fixture(organization.id, gtfs_version.id, %{agency_timezone: "America/New_York"})
+
+    stop_fixture(organization.id, gtfs_version.id, %{stop_id: "STA", location_type: 1})
+    stop_fixture(organization.id, gtfs_version.id, %{stop_id: "STB", location_type: 1})
+
+    insert_change_log(organization, gtfs_version, %{
+      entity_type: "stop",
+      station_stop_id: "STA",
+      inserted_at: ~U[2026-09-20 02:30:00.000000Z]
+    })
+
+    assert %{stations: [edited, never_edited]} =
+             Home.station_board(organization.id, gtfs_version.id)
+
+    assert edited.last_edited_at == ~U[2026-09-20 02:30:00.000000Z]
+    assert edited.last_edited_local == ~N[2026-09-19 22:30:00.000000]
+    assert never_edited.last_edited_at == nil
+    assert never_edited.last_edited_local == nil
+  end
+
   test "station_editors returns each editor's started_at in the display zone" do
     organization = organization_fixture()
     gtfs_version = gtfs_version_fixture(organization.id)

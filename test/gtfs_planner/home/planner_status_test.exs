@@ -147,11 +147,15 @@ defmodule GtfsPlanner.Home.PlannerStatusTest do
   end
 
   test "the latest feed check with errors raises a check-errors item", context do
+    agency_fixture(context.organization.id, context.version.id, %{
+      agency_timezone: "America/New_York"
+    })
+
     check =
       insert_check(context.organization, context.version,
         run_type: "mobility_data",
         errors_count: 2,
-        started_at: ~U[2026-09-25 09:00:00.000000Z]
+        started_at: ~U[2026-09-25 02:00:00.000000Z]
       )
 
     insert_check(context.organization, context.version,
@@ -166,7 +170,8 @@ defmodule GtfsPlanner.Home.PlannerStatusTest do
              kind: :check_errors,
              run_id: check.id,
              errors: 2,
-             at: ~U[2026-09-25 09:00:00.000000Z]
+             at: ~U[2026-09-25 02:00:00.000000Z],
+             local_at: ~N[2026-09-24 22:00:00.000000]
            }
 
     assert Home.pathways_attention(context.organization.id, context.version.id) == [item]

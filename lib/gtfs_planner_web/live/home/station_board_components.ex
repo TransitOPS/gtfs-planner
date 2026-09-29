@@ -793,8 +793,8 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       <span class={@reachability_class}>{@reachability}</span>
     </td>
     <td class="px-5 py-1.5 max-sm:hidden">
-      <%= if @row.base.last_edited_at do %>
-        <span class="block text-default">{format_time(@row.base.last_edited_at)}</span>
+      <%= if @row.base.last_edited_local do %>
+        <span class="block text-default">{format_time(@row.base.last_edited_local)}</span>
         <span class="block truncate text-[13px] text-muted">{@row.base.last_edited_by}</span>
       <% else %>
         <span class="text-muted">—</span>
@@ -962,7 +962,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp item_detail(%{kind: :check_errors} = item) do
-    "Found #{day(item.at)}. Apps may reject the pathways files until they are fixed. " <>
+    "Found #{day(item.local_at)}. Apps may reject the pathways files until they are fixed. " <>
       "Warnings do not block anything."
   end
 
@@ -987,8 +987,10 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
 
   # The rail's export line: the run's local day and its download state (AC-19).
   defp export_line(%{expired?: true}), do: "download expired"
-  defp export_line(%{finished_at: nil, state: state}), do: export_state(state)
-  defp export_line(%{finished_at: at, state: state}), do: "#{day(at)} · #{export_state(state)}"
+  defp export_line(%{local_finished_at: nil, state: state}), do: export_state(state)
+
+  defp export_line(%{local_finished_at: at, state: state}),
+    do: "#{day(at)} · #{export_state(state)}"
 
   defp export_state(:ready), do: "download available"
   defp export_state(state) when state in [:pending, :building], do: "exporting…"
@@ -1008,9 +1010,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp clock_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%-I:%M %p")
-  defp clock_time(%DateTime{} = instant), do: Calendar.strftime(instant, "%-I:%M %p")
 
-  defp day(%DateTime{} = instant), do: Calendar.strftime(instant, "%b %-d")
   defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 
   defp stage_query(query, :all), do: query

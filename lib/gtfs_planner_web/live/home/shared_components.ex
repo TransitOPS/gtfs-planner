@@ -175,8 +175,12 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   """
   attr :version_id, :string, required: true
   attr :product, :atom, required: true, values: [:planner, :pathways]
-  attr :check, :map, default: nil, doc: "`%{run_id, errors, warnings, at}` or nil"
-  attr :export, :map, default: nil, doc: "`%{run_id, type, state, expired?, finished_at}` or nil"
+  attr :check, :map, default: nil, doc: "`%{run_id, errors, warnings, at, local_at}` or nil"
+
+  attr :export, :map,
+    default: nil,
+    doc: "`%{run_id, type, state, expired?, finished_at, local_finished_at}` or nil"
+
   attr :since, :map, default: nil, doc: "`%{changes, stations}` counted after the export"
 
   def check_and_share(assigns) do
@@ -189,7 +193,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
           <div>
             <h3 class="text-sm font-bold text-strong">Last check</h3>
             <p :if={@check} id="check-time" class="text-[13px] text-muted">
-              {format_time(@check.at)}
+              {format_time(@check.local_at)}
             </p>
           </div>
           <span
@@ -681,9 +685,9 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   defp export_type(nil, :pathways), do: :pathways
   defp export_type(nil, :planner), do: :full
 
-  defp export_meta(%{type: type, finished_at: nil}), do: export_type_label(type)
+  defp export_meta(%{type: type, local_finished_at: nil}), do: export_type_label(type)
 
-  defp export_meta(%{type: type, finished_at: at}),
+  defp export_meta(%{type: type, local_finished_at: at}),
     do: "#{export_type_label(type)} · #{format_time(at)}"
 
   defp export_type_label(:full), do: "Full GTFS"
@@ -747,13 +751,11 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   end
 
   @doc """
-  A run instant as its display time.
+  An agency-local wall-clock time as its display time.
 
-  The domain hands resume items an agency-local `NaiveDateTime`; the check and
-  export facts carry the run instants as stored. Both are formatted here the way
-  the export screen formats its run timestamps, so a view never converts a zone
-  itself.
+  `GtfsPlanner.Home` localizes every time the page shows (resume items, check,
+  export and board edits) with `DisplayClock`, so a view never converts a zone
+  itself and never shows a stored UTC instant as if it were local.
   """
   def format_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d, %-I:%M %p")
-  def format_time(%DateTime{} = instant), do: Calendar.strftime(instant, "%b %-d, %-I:%M %p")
 end

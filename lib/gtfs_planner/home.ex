@@ -84,9 +84,11 @@ defmodule GtfsPlanner.Home do
   @doc """
   Returns the station board's station summaries and per-station line counts.
 
-  The summaries are `StationBoard.base/2`. `lines` maps every station `stop_id`
-  to the number of routes its child platforms serve, so a station without
-  served platforms reports 0. The count comes from the board's one
+  The summaries are `StationBoard.base/2`, each with `last_edited_local`, the
+  agency-local wall clock of `last_edited_at` (nil when never edited). The UTC
+  `last_edited_at` stays for ordering and staleness. `lines` maps every station
+  `stop_id` to the number of routes its child platforms serve, so a station
+  without served platforms reports 0. The count comes from the board's one
   platform-to-route query.
   """
   @spec station_board(Ecto.UUID.t(), Ecto.UUID.t()) ::
@@ -101,6 +103,12 @@ defmodule GtfsPlanner.Home do
       Map.new(stations, fn station ->
         {station.stop_id, length(Map.get(routes_by_station, station.stop_id, []))}
       end)
+
+    local_edits =
+      local_times(organization_id, gtfs_version_id, Enum.map(stations, & &1.last_edited_at))
+
+    stations =
+      Enum.zip_with(stations, local_edits, &Map.put(&1, :last_edited_local, &2))
 
     %{stations: stations, lines: lines}
   end
@@ -156,7 +164,8 @@ defmodule GtfsPlanner.Home do
   active, so a `cleaning` run is not shown and a `failed` one is — and from the
   latest feed check when it found errors. A run outlives its version, so a
   stopped import can name a version other than this one and its item carries
-  that version's name. The calendar, count and check reads are scoped by the
+  that version's name. A check item also carries `local_at`, its start on the
+  agency-local wall clock. The calendar, count and check reads are scoped by the
   supplied organization and version ids; the import scan is scoped by the
   organization because a stopped import targets a version of its own. Nothing
   here writes or reconciles an import lease.
@@ -184,15 +193,14 @@ defmodule GtfsPlanner.Home do
       counts: counts,
       first_use?: first_use?(counts),
       attention:
-        Attention.build(
-          %{
-            coverage: coverage,
-            today: today,
-            imports: stopped_imports(organization_id),
-            check: Validations.latest_feed_check(organization_id, gtfs_version_id)
-          },
-          :planner
-        )
+        %{
+          coverage: coverage,
+          today: today,
+          imports: stopped_imports(organization_id),
+          check: Validations.latest_feed_check(organization_id, gtfs_version_id)
+        }
+        |> Attention.build(:planner)
+        |> with_local_check_time(organization_id, gtfs_version_id)
     }
   end
 
@@ -204,17 +212,16 @@ defmodule GtfsPlanner.Home do
   """
   @spec pathways_attention(Ecto.UUID.t(), Ecto.UUID.t()) :: [Attention.item()]
   def pathways_attention(organization_id, gtfs_version_id) do
-    Attention.build(
-      %{
-        # Inert for :pathways: the builder never raises a service item, and this
-        # read does not touch calendars.
-        coverage: :unknown,
-        today: Date.utc_today(),
-        imports: stopped_imports(organization_id),
-        check: Validations.latest_feed_check(organization_id, gtfs_version_id)
-      },
-      :pathways
-    )
+    %{
+      # Inert for :pathways: the builder never raises a service item, and this
+      # read does not touch calendars.
+      coverage: :unknown,
+      today: Date.utc_today(),
+      imports: stopped_imports(organization_id),
+      check: Validations.latest_feed_check(organization_id, gtfs_version_id)
+    }
+    |> Attention.build(:pathways)
+    |> with_local_check_time(organization_id, gtfs_version_id)
   end
 
   @doc """
@@ -229,6 +236,9 @@ defmodule GtfsPlanner.Home do
   reads as expired without this read changing it. The change count counts
   distinct operations (and distinct stations) logged after the export
   finished; an export that has not finished has no change count.
+
+  `local_at` and `local_finished_at` are the check's start and the export's
+  finish on the agency-local wall clock, for display.
   """
   @spec check_and_share(Ecto.UUID.t(), Ecto.UUID.t(), :planner | :pathways) :: %{
           check:
@@ -237,7 +247,8 @@ defmodule GtfsPlanner.Home do
                 run_id: Ecto.UUID.t(),
                 errors: non_neg_integer(),
                 warnings: non_neg_integer(),
-                at: DateTime.t()
+                at: DateTime.t(),
+                local_at: NaiveDateTime.t()
               },
           export:
             nil
@@ -246,16 +257,24 @@ defmodule GtfsPlanner.Home do
                 type: :full | :pathways,
                 state: atom(),
                 expired?: boolean(),
-                finished_at: DateTime.t() | nil
+                finished_at: DateTime.t() | nil,
+                local_finished_at: NaiveDateTime.t() | nil
               },
           since: nil | %{changes: non_neg_integer(), stations: non_neg_integer()}
         }
   def check_and_share(organization_id, gtfs_version_id, product) do
     run = ExportRuns.latest_for_version(organization_id, gtfs_version_id, export_type(product))
+    check = Validations.latest_feed_check(organization_id, gtfs_version_id)
+
+    [check_local_at, export_local_at] =
+      local_times(organization_id, gtfs_version_id, [
+        check && check.started_at,
+        run && run.finished_at
+      ])
 
     %{
-      check: check_facts(Validations.latest_feed_check(organization_id, gtfs_version_id)),
-      export: export_facts(run),
+      check: check_facts(check, check_local_at),
+      export: export_facts(run, export_local_at),
       since: since_facts(organization_id, gtfs_version_id, run)
     }
   end
@@ -263,26 +282,28 @@ defmodule GtfsPlanner.Home do
   defp export_type(:planner), do: :full
   defp export_type(:pathways), do: :pathways
 
-  defp check_facts(nil), do: nil
+  defp check_facts(nil, _local_at), do: nil
 
-  defp check_facts(run) do
+  defp check_facts(run, local_at) do
     %{
       run_id: run.id,
       errors: run.errors_count,
       warnings: run.warnings_count,
-      at: run.started_at
+      at: run.started_at,
+      local_at: local_at
     }
   end
 
-  defp export_facts(nil), do: nil
+  defp export_facts(nil, _local_finished_at), do: nil
 
-  defp export_facts(run) do
+  defp export_facts(run, local_finished_at) do
     %{
       run_id: run.id,
       type: run.export_type,
       state: run.state,
       expired?: expired?(run),
-      finished_at: run.finished_at
+      finished_at: run.finished_at,
+      local_finished_at: local_finished_at
     }
   end
 
@@ -338,6 +359,32 @@ defmodule GtfsPlanner.Home do
     organization_id
     |> ImportRuns.list_recoverable()
     |> Enum.filter(&(&1.state in stopped_states))
+  end
+
+  defp with_local_check_time(items, organization_id, gtfs_version_id) do
+    Enum.map(items, fn
+      %{kind: :check_errors, at: at} = item ->
+        [local_at] = local_times(organization_id, gtfs_version_id, [at])
+        Map.put(item, :local_at, local_at)
+
+      item ->
+        item
+    end)
+  end
+
+  # Stored instants are UTC; the page shows the agency's wall clock, like the
+  # resume and editing-now times. One conversion covers the whole list, `nil`
+  # stays `nil`, and a list without instants resolves no zone.
+  defp local_times(organization_id, gtfs_version_id, instants) do
+    case Enum.reject(instants, &is_nil/1) do
+      [] ->
+        Enum.map(instants, fn _instant -> nil end)
+
+      present ->
+        zone = Gtfs.resolve_display_zone(organization_id, gtfs_version_id)
+        local_by_instant = Map.new(Enum.zip(present, Gtfs.localize_display_times(present, zone)))
+        Enum.map(instants, &Map.get(local_by_instant, &1))
+    end
   end
 
   defp active_admin?(%{roles: roles, deactivated_at: deactivated_at}) do
