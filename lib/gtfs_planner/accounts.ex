@@ -310,20 +310,29 @@ defmodule GtfsPlanner.Accounts do
   end
 
   @doc """
-  Deletes all session tokens for a user.
+  Deletes all session and API session tokens for a user and returns the
+  deleted `%UserToken{}` records.
 
-  This is used when deactivating a user to force them to log out.
+  This is used when deactivating a user to force them to log out. Pass the
+  returned tokens to `GtfsPlannerWeb.UserAuth.disconnect_sessions/1` to close
+  the user's open LiveViews.
 
   ## Examples
 
       iex> delete_user_sessions(user_id)
-      :ok
+      [%UserToken{}]
 
   """
   def delete_user_sessions(user_id) do
     user = get_user!(user_id)
-    Repo.delete_all(UserToken.user_and_contexts_query(user, ["session", "api_session"]))
-    :ok
+
+    {_count, tokens} =
+      user
+      |> UserToken.user_and_contexts_query(["session", "api_session"])
+      |> select([t], t)
+      |> Repo.delete_all()
+
+    tokens
   end
 
   ## API Session

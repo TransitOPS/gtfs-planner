@@ -299,8 +299,11 @@ defmodule GtfsPlanner.Organizations do
 
         case result do
           {:ok, _membership} = success ->
-            # Invalidate all user sessions
-            GtfsPlanner.Accounts.delete_user_sessions(user_id)
+            # Invalidate all user sessions and close the user's open LiveViews
+            user_id
+            |> GtfsPlanner.Accounts.delete_user_sessions()
+            |> GtfsPlannerWeb.UserAuth.disconnect_sessions()
+
             broadcast(success, [:memberships, :deactivated])
 
           error ->

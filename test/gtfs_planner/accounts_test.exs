@@ -416,6 +416,30 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
+  describe "delete_user_sessions/1" do
+    test "deletes the user's session and api_session tokens and returns them" do
+      user = user_fixture()
+      web_token = Accounts.generate_user_session_token(user)
+      api_token = Accounts.generate_api_session_token(user)
+      _reset_token = Accounts.deliver_user_reset_password_instructions(user, &"/reset/#{&1}")
+
+      deleted = Accounts.delete_user_sessions(user.id)
+
+      assert [%UserToken{context: "api_session"}, %UserToken{context: "session"}] =
+               Enum.sort_by(deleted, & &1.context)
+
+      refute Accounts.get_user_by_session_token(web_token)
+      refute Accounts.get_user_by_api_session_token(api_token)
+      assert Repo.get_by(UserToken, user_id: user.id, context: "reset_password")
+    end
+
+    test "returns an empty list when the user has no session tokens" do
+      user = user_fixture()
+
+      assert Accounts.delete_user_sessions(user.id) == []
+    end
+  end
+
   describe "generate_api_session_token/1" do
     setup do
       %{user: user_fixture()}

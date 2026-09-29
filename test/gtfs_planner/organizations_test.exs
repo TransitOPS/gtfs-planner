@@ -1,6 +1,8 @@
 defmodule GtfsPlanner.OrganizationsTest do
   use GtfsPlanner.DataCase
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
   alias GtfsPlanner.Organizations.Organization
@@ -356,6 +358,55 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
+  describe "deactivate_user_in_organization/2" do
+    setup do
+      user = user_fixture()
+      organization = organization_fixture()
+      {:ok, _membership} = Organizations.add_user_to_organization(user.id, organization.id)
+
+      %{user: user, organization: organization}
+    end
+
+    test "disconnects each open web session and deletes the user's session tokens", %{
+      user: user,
+      organization: organization
+    } do
+      web_token_one = Accounts.generate_user_session_token(user)
+      web_token_two = Accounts.generate_user_session_token(user)
+      api_token = Accounts.generate_api_session_token(user)
+      topic_one = live_socket_topic(web_token_one)
+      topic_two = live_socket_topic(web_token_two)
+      api_topic = live_socket_topic(api_token)
+
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic_one)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic_two)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(api_topic)
+
+      assert {:ok, %{deactivated_at: %DateTime{}}} =
+               Organizations.deactivate_user_in_organization(user.id, organization.id)
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic_one}
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic_two}
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^api_topic}
+      refute Accounts.get_user_by_session_token(web_token_one)
+      refute Accounts.get_user_by_session_token(web_token_two)
+      refute Accounts.get_user_by_api_session_token(api_token)
+    end
+
+    test "sends no disconnect when the membership does not exist", %{user: user} do
+      other_organization = organization_fixture()
+      web_token = Accounts.generate_user_session_token(user)
+      topic = live_socket_topic(web_token)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+
+      assert {:error, :not_found} =
+               Organizations.deactivate_user_in_organization(user.id, other_organization.id)
+
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      assert Accounts.get_user_by_session_token(web_token)
+    end
+  end
+
   describe "update_user_roles/3" do
     setup do
       user = user_fixture()
@@ -690,6 +741,12 @@ defmodule GtfsPlanner.OrganizationsTest do
         AdminReadAdapter.Repo.list_users("not-a-uuid")
       end
     end
+  end
+
+  # The PubSub topic a LiveView socket for this session token listens on.
+  defp live_socket_topic(token) do
+    {:ok, digest} = UserToken.session_token_digest(token)
+    "users_sessions:" <> Base.url_encode64(digest, padding: false)
   end
 
   # Points the calling process at a real but unreachable Postgres pool so that
