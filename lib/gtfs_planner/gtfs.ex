@@ -5870,6 +5870,41 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Writes manual run moves and returns an undo.
+
+  Each move is `%{trip_id:, from:, to:}`, where `to` is a run ID, `nil` to
+  unassign the trip, or `:new` to create a run. Every `:new` in one call creates
+  **one** run, returned as `new_run_id`.
+
+  The write is refused and nothing is written when a named trip is not a
+  sequence trip of the day type (`{:invalid_trips, ids}`), when any trip's
+  current run differs from the `from` the editor saw (`:stale_moves`), or when a
+  `to` is not one to eight letters, digits or hyphens
+  (`{:invalid_run_id, id}`). The returned `undo` is the same list with every move
+  reversed, so undoing is this same call and is refused by the same stale check.
+  """
+  @spec apply_run_moves(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          [%{trip_id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil | :new}]
+        ) ::
+          {:ok,
+           %{
+             changed_trips: non_neg_integer(),
+             new_run_id: String.t() | nil,
+             undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]
+           }}
+          | {:error,
+             :not_found
+             | :stale_moves
+             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_run_id, term()}}
+  def apply_run_moves(organization_id, gtfs_version_id, day_type_key, moves) do
+    Runs.apply_moves(organization_id, gtfs_version_id, day_type_key, moves)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day

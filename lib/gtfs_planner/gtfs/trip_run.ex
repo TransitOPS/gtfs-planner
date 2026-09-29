@@ -28,6 +28,11 @@ defmodule GtfsPlanner.Gtfs.TripRun do
   # trailing "index" is cut. The constraint is declared against the name the
   # database actually created, because Ecto matches a violation to a declaration
   # exactly and would otherwise raise instead of returning the changeset error.
+  #
+  # This applies to `unique_constraint/3` only. A writer using
+  # `Repo.insert_all` passes `conflict_target:` the four **columns**;
+  # PostgreSQL's `ON CONFLICT (...)` resolves the index itself and does not
+  # accept an index name there.
   @day_type_index "trip_runs_organization_id_gtfs_version_id_day_type_key_trip_id_"
 
   schema "trip_runs" do
