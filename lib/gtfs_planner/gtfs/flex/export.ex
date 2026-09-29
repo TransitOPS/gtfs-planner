@@ -41,7 +41,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
 
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
-  alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.Export
@@ -135,7 +134,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
 
     calendar_rows = calendar_rows(organization_id, version_id)
     exception_rows = calendar_date_rows(organization_id, version_id)
-    names = calendars_map(calendar_rows, exception_rows, organization_id, version_id)
+    names = Flex.calendars_map(organization_id, version_id)
     agency_id = agency_id(organization_id, version_id)
 
     prepared =
@@ -686,47 +685,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
     )
     |> Repo.all()
   end
-
-  # The calendars map `RiderText` reads: the schedule name is the singular name
-  # and the description the plural one, each falling back to the other and then
-  # to the service ID, so a version without `calendar_attributes` still words
-  # the rider text with its own IDs.
-  defp calendars_map(calendar_rows, exception_rows, organization_id, version_id) do
-    attributes =
-      from(a in CalendarAttribute,
-        where: a.organization_id == ^organization_id and a.gtfs_version_id == ^version_id,
-        order_by: [asc: a.service_id],
-        select: %{
-          service_id: a.service_id,
-          schedule_name: a.service_schedule_name,
-          description: a.service_description
-        }
-      )
-      |> Repo.all()
-      |> Map.new(&{&1.service_id, &1})
-
-    service_ids =
-      (calendar_rows ++ exception_rows ++ Map.values(attributes))
-      |> Enum.map(& &1.service_id)
-      |> MapSet.new()
-
-    Map.new(service_ids, fn service_id ->
-      attribute = Map.get(attributes, service_id, %{})
-
-      name =
-        blank_to(
-          Map.get(attribute, :schedule_name),
-          blank_to(Map.get(attribute, :description), service_id)
-        )
-
-      plural = blank_to(Map.get(attribute, :description), name)
-
-      {service_id, %{name: name, plural: plural}}
-    end)
-  end
-
-  defp blank_to(value, _fallback) when is_binary(value) and value != "", do: value
-  defp blank_to(_value, fallback), do: fallback
 
   defp agency_id(organization_id, version_id) do
     from(a in Agency,

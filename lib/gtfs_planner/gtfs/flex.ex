@@ -34,6 +34,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
@@ -85,6 +86,44 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> order_by([s], asc: s.name, asc: s.id)
     |> preload([s], :areas)
     |> Repo.all()
+  end
+
+  @doc """
+  The calendars map `RiderText` reads for the version:
+  `%{service_id => %{name: name, plural: plural}}`.
+
+  The singular name is the calendar attribute's `service_schedule_name` and the
+  plural its `service_description`, each falling back to the other and then to
+  the calendar's service ID, so a version without `calendar_attributes` words
+  its rider text with its own IDs. A calendar with no attribute row is absent
+  from the map; `RiderText` falls back to its service ID for it, so the export
+  and the Flex pages word the same calendar the same way.
+
+  The read is scoped to the organization and version (R10), like every other
+  flex read.
+  """
+  @spec calendars_map(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
+          optional(String.t()) => %{name: String.t(), plural: String.t()}
+        }
+  def calendars_map(organization_id, version_id) do
+    from(a in CalendarAttribute,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^version_id,
+      select: %{
+        service_id: a.service_id,
+        schedule_name: a.service_schedule_name,
+        description: a.service_description
+      }
+    )
+    |> Repo.all()
+    |> Map.new(fn attribute ->
+      name =
+        blank_to(
+          attribute.schedule_name,
+          blank_to(attribute.description, attribute.service_id)
+        )
+
+      {attribute.service_id, %{name: name, plural: blank_to(attribute.description, name)}}
+    end)
   end
 
   @doc """
@@ -543,6 +582,9 @@ defmodule GtfsPlanner.Gtfs.Flex do
   end
 
   # --- keys -------------------------------------------------------------------
+
+  defp blank_to(value, _fallback) when is_binary(value) and value != "", do: value
+  defp blank_to(_value, fallback), do: fallback
 
   # R11: the slugified name, made unique in the version with -2, -3… suffixes.
   defp next_key(organization_id, version_id, name) do

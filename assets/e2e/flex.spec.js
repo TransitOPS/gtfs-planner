@@ -160,6 +160,39 @@ async function captureReference(page, file, state, name) {
 // soon placeholder.
 test.skip("placeholder", async () => {});
 
+// ── list ──────────────────────────────────────────────────────────────────
+
+// The Flex list is the Flex area's landing surface: the services table beside the
+// map card, with the export-state line above both. The seeded version holds the
+// two services the earlier steps read.
+test("list", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await openFlex(page);
+
+  await expect(page.locator("#flex-services-count")).toHaveText("2 flex services");
+  await expect(page.locator("#flex-services tr")).toHaveCount(2);
+  await expect(page.locator("#flex-services tr").first()).toContainText("Newport Dial-a-Ride");
+  await expect(page.locator("#flex-services tr").nth(1)).toContainText("Valley Line detours");
+  await expect(page.locator("#flex-exports")).toContainText("Exports also write a flex file");
+  await expect(page.locator("#flex-list-map")).toBeVisible();
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "list");
+
+  // The narrow view stacks the map card under the table, and the table scrolls
+  // inside its own container rather than widening the page.
+  await page.setViewportSize(NARROW);
+  await page.waitForSelector("#flex-services-count");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "list");
+
+  await page.setViewportSize(DESKTOP);
+  await captureReference(page, "flex-services-prototype.html", "list", "list");
+});
+
 // ── export ────────────────────────────────────────────────────────────────
 
 // The Export page carries no flex route, so this case logs in and resolves the

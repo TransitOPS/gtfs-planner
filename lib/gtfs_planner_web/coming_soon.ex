@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the six catalog keys only. Any other key raises, so a
+  `feature/1` answers for the five catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -90,37 +90,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
           name: "Export assignments",
           text:
             "Download planned operator assignments for other systems. The plan leaves out vacations, sick days and the extraboard."
-        }
-      ]
-    }
-  end
-
-  def feature(:flex) do
-    %{
-      title: "Flex",
-      scope: :version,
-      summary:
-        "Describe your on-demand service so trip planners can show riders where and when they can book a ride.",
-      sections: [
-        %{
-          name: "Describe each service",
-          text:
-            "Set when it runs, who can ride and how riders book. Flex writes the booking instructions in plain sentences you can review."
-        },
-        %{
-          name: "Draw the area it covers",
-          text:
-            "Start from town limits, a distance around your routes, a drawing or a file, then adjust the boundary."
-        },
-        %{
-          name: "Add detours to a fixed route",
-          text:
-            "Choose which trips can leave the route on request and how far they may go, such as up to ¾ mile."
-        },
-        %{
-          name: "Publish with your feed",
-          text:
-            "Flex service goes out as a separate file with your main feed. A problem with a flex service never holds back the main feed."
         }
       ]
     }
