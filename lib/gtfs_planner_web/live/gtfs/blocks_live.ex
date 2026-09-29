@@ -75,7 +75,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The settings save keeps the reader's value when the save is refused, so the
   # sentence names the value rather than a generic failure.
-  @layover_save_failed "The minimum could not be saved. Your value is retained. Try again."
+  @block_rules_save_failed "These block rules could not be saved. Your entries are retained. Try again."
+
+  # The two writers of the Block rules drawer run in separate transactions, so a
+  # settings save that succeeds and a route save that is refused leaves the
+  # settings stored. The flash says exactly that, rather than claiming the whole
+  # save failed.
+  @block_rules_partial "Block rules saved; route garages need fixing."
+
+  # The Block rules drawer's transient state: the settings values the reader
+  # typed, the interlining segment they chose, the per-route values the table
+  # posted, the one entry per version route the table renders, the refusals the
+  # route writer returned keyed by `{route_id, field}`, and a drawer-level
+  # sentence for a save the context cannot explain.
+  @empty_block_rules %{
+    params: %{},
+    interlining: nil,
+    routes: [],
+    route_params: %{},
+    route_errors: %{},
+    error: nil
+  }
 
   @sort_keys %{
     "block" => :block,
@@ -129,7 +149,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:assign, nil)
      |> assign(:review, nil)
      |> assign(:review_stale?, false)
-     |> assign(:layover, %{params: %{}, error: nil})
+     |> assign(:block_rules, @empty_block_rules)
      |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
@@ -401,13 +421,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, assign(socket, review: nil, review_stale?: false)}
   end
 
-  # The Minimum layover drawer's field sends its change event through the same
-  # fixed event name as its opener (CR-8): the value the reader typed is kept and
-  # re-validated, so the field error appears before a save rather than only after
-  # one (AC-28). The opener itself sends only a key and starts from the stored
-  # value, so re-opening the drawer never shows a previous refusal.
-  def handle_event("open_drawer", %{"layover" => values} = params, socket) when is_map(values) do
-    {:noreply, put_layover(socket, layover_params(params), nil)}
+  # The Block rules drawer's form sends its change event through its own name
+  # (CR-8): the values the reader typed are kept and re-validated, so a field
+  # error appears before a save rather than only after one (AC-39). The Route
+  # switches control is its own form and posts the same event with only
+  # `interlining`, so one handler covers both: a payload with the form's own
+  # `block_rules` map replaces the settings values, and one with `interlining`
+  # replaces only that segment. A crafted payload of another shape changes
+  # nothing.
+  def handle_event("block_rules_change", params, socket) do
+    {:noreply, put_block_rules(socket, params, nil)}
   end
 
   # The two planning-input drawers are part of the URL, because a link names what
@@ -436,8 +459,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           {:noreply, socket}
         end
 
-      "layover" ->
-        {:noreply, socket |> put_layover(%{}, nil) |> assign(:open_drawer, :layover)}
+      "block_rules" ->
+        {:noreply, socket |> load_block_rules() |> assign(:open_drawer, :block_rules)}
 
       key ->
         case Map.fetch(@drawers, key) do
@@ -479,23 +502,46 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # The one write in the Minimum layover drawer (AC-28). The drawer only exists
-  # on a loaded day type and only its own field is read, so a submit from another
-  # page state or without a value is not a save. `save_layover/2` then re-reads
-  # the role first, like `run_command/3` (AC-31), lets the context validate the
-  # value rather than re-deriving that here, and reloads the day so the layover
-  # warnings and the Problems count use the new minimum (AC-5). A field error
-  # keeps the drawer and the reader's value; a version that is no longer
-  # published keeps both with the drawer's own sentence.
-  def handle_event("save_layover", _params, %{assigns: %{day_type: nil}} = socket),
+  # The two writes in the Block rules drawer (AC-39, AC-2). The drawer only
+  # exists on a loaded day type, so a submit from another page state is not a
+  # save. The settings are saved first through the context's own upsert, which
+  # decides whether the version is publishable and whether each value is inside
+  # its AC-1 range; a field error keeps the drawer and every entry the reader
+  # typed, and the route table is not written at all. Only after the settings
+  # writer accepts the row are the per-route garages and types saved, and only
+  # then does the day reload so the blocks, warnings and scope button use the new
+  # rules. A version that is no longer published keeps the entries with the
+  # drawer's own sentence.
+  def handle_event("save_block_rules", _params, %{assigns: %{day_type: nil}} = socket),
     do: {:noreply, socket}
 
-  def handle_event("save_layover", params, socket) do
-    case layover_params(params) do
-      %{"min_layover_minutes" => _value} = attrs -> save_layover(socket, attrs)
-      # The field is the whole form, so a submit that carries no value at all (a
-      # crafted event, or a payload of another shape) is not a save.
-      _no_value -> {:noreply, socket}
+  def handle_event("save_block_rules", params, socket) do
+    if editor_access?(socket) do
+      case Gtfs.update_blocking_settings(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             block_rules_attrs(socket, params)
+           ) do
+        {:ok, _setting} ->
+          save_route_settings(socket, params)
+
+        # The context's changeset carries the field error: the drawer shows it
+        # under the input and every value the reader typed stays put. Focus lands
+        # on the first invalid control, with the summary as the fallback.
+        {:error, %Ecto.Changeset{}} ->
+          {:noreply,
+           push_event(put_block_rules(socket, params, nil), "focus_form_error", %{
+             form_id: "block-rules-form",
+             fallback_id: "block-rules-errors"
+           })}
+
+        {:error, _reason} ->
+          {:noreply, put_block_rules(socket, params, @block_rules_save_failed)}
+      end
+    else
+      # The refusal is the drawer's own sentence: the drawer is a top-layer
+      # `<dialog>` and the page flash renders behind it (AC-31).
+      {:noreply, put_block_rules(socket, params, @permission_message)}
     end
   end
 
@@ -1726,72 +1772,211 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     )
   end
 
-  # --- the minimum-layover drawer (step 28) ----------------------------------
+  # --- the Block rules drawer (step 40) --------------------------------------
 
-  # The drawer's transient state: the value the reader typed (or `%{}` for the
-  # stored one) and a drawer-level sentence for a save the changeset cannot
-  # explain. The form itself is the context's own changeset, so the page never
-  # re-derives `Blocking`'s validation (AC-9).
-  defp put_layover(socket, params, error),
-    do: assign(socket, :layover, %{params: params, error: error})
+  # Opening the drawer reads the version's routes once, so the Route garages
+  # table lists every route whether or not a row is stored for it. The read is
+  # scoped to the socket's own organization and version (CR-4), and the settings
+  # values come from the day load the page already holds rather than a second
+  # read. Re-opening starts from the stored values, so a previous refusal never
+  # reappears.
+  defp load_block_rules(socket) do
+    routes =
+      Gtfs.list_route_operating_settings(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id
+      )
 
-  # Only the one stored value is read from the drawer's form. A crafted payload
-  # cannot name an organization or a version (those come from the socket, CR-4),
-  # and anything but a map is ignored rather than passed to the context.
-  defp layover_params(%{"layover" => values}) when is_map(values),
-    do: Map.take(values, ["min_layover_minutes"])
+    put_block_rules(socket, routes)
+  end
 
-  defp layover_params(_params), do: %{}
+  defp put_block_rules(socket, routes) do
+    assign(socket, :block_rules, %{@empty_block_rules | routes: routes})
+  end
 
-  # The form the drawer renders: the stored minimum with the reader's own value
+  # The drawer's transient state after a change event or a refused save. The
+  # settings values, the interlining segment, and the per-route values each come
+  # from the payload when it carries them, and are kept otherwise, so a change
+  # to the Route switches control does not discard the typed numbers. The route
+  # refusals clear on every change, because the entry they named has just been
+  # edited.
+  defp put_block_rules(socket, params, error, route_errors \\ %{}) do
+    state = socket.assigns.block_rules
+
+    assign(socket, :block_rules, %{
+      state
+      | params: Map.merge(state.params, block_rules_params(params)),
+        interlining: params["interlining"] || state.interlining,
+        route_params: Map.merge(state.route_params, route_settings_params(params)),
+        route_errors: route_errors,
+        error: error
+    })
+  end
+
+  # Only the drawer's own settings fields are read from the payload, so a
+  # crafted event cannot name an organization or a version (those come from the
+  # socket, CR-4), and the relief limit the drawer does not show is not read
+  # from it either.
+  defp block_rules_params(%{"block_rules" => values}) when is_map(values),
+    do:
+      Map.take(
+        values,
+        ~w(min_layover_minutes max_block_minutes pull_out_buffer_minutes default_garage_id deadhead_speed_kmh deadhead_circuity)
+      )
+
+  defp block_rules_params(_params), do: %{}
+
+  # The route table's values, keyed by the route the payload named, so a reader's
+  # own two selects are kept and anything not posted falls back to the stored
+  # value. A payload naming a route the version does not have is stored here but
+  # never reaches the writer, which builds its batch from the routes it read.
+  defp route_settings_params(%{"route_settings" => values}) when is_map(values) do
+    Map.new(values, fn {route_id, entry} ->
+      {route_id,
+       %{
+         "garage_id" => entry["garage_id"],
+         "required_vehicle_type_id" => entry["required_vehicle_type_id"]
+       }}
+    end)
+  end
+
+  defp route_settings_params(_params), do: %{}
+
+  # The form the drawer renders: the stored settings with the reader's own values
   # on top, so an out-of-range value keeps both the input and the context's field
-  # error (AC-28). The `:validate` action is what makes an Ecto changeset render
+  # error (AC-39). The `:validate` action is what makes an Ecto changeset render
   # its own field errors — without it `Phoenix.HTML.FormData.Ecto.Changeset`
-  # drops every error — and the value the reader sent stays in the field.
-  defp layover_form(assigns) do
+  # drops every error — and the values the reader sent stay in the fields. The
+  # relief limit is carried through from the stored settings, because the writer
+  # replaces every column of the row and this drawer does not own that value.
+  defp block_rules_form(assigns) do
     to_form(
-      Blocking.change_settings(
-        %{min_layover_minutes: assigns.min_layover_minutes},
-        assigns.layover.params
-      ),
-      as: :layover,
+      Blocking.change_settings(assigns.settings, assigns.block_rules.params),
+      as: :block_rules,
       action: :validate
     )
   end
 
-  # The save itself: one scoped write through the context's own upsert, which
-  # decides whether the version is publishable and whether the value is a whole
-  # number from 0 to 120 (AC-9). Only its result decides what the page shows.
-  defp save_layover(socket, attrs) do
-    if editor_access?(socket) do
-      case Gtfs.update_blocking_settings(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             attrs
-           ) do
-        {:ok, _setting} ->
-          {:noreply,
-           socket
-           |> put_layover(%{}, nil)
-           |> assign(:open_drawer, nil)
-           |> load_day()
-           |> resolve_drawers()
-           |> assign_page_rows_if_loaded()
-           |> put_flash(:info, "Minimum layover saved.")}
+  # The attributes the settings writer validates: the reader's own values, the
+  # interlining segment they chose (or the stored one), and the stored relief
+  # limit. Nothing else from the payload is read.
+  defp block_rules_attrs(socket, params) do
+    state = socket.assigns.block_rules
 
-        # The context's changeset carries the field error: the drawer shows it
-        # under the input and the value the reader typed stays in the field.
-        {:error, %Ecto.Changeset{}} ->
-          {:noreply, put_layover(socket, attrs, nil)}
+    Map.merge(state.params, %{
+      "interlining" => state.interlining || to_string(socket.assigns.settings.interlining),
+      "max_piece_minutes" => blank_or_int(socket.assigns.settings.max_piece_minutes)
+    })
+    |> Map.merge(block_rules_params(params))
+  end
 
-        {:error, _reason} ->
-          {:noreply, put_layover(socket, attrs, @layover_save_failed)}
-      end
-    else
-      # The refusal is the drawer's own sentence: the drawer is a top-layer
-      # `<dialog>` and the page flash renders behind it (AC-31).
-      {:noreply, put_layover(socket, attrs, @permission_message)}
+  defp blank_or_int(nil), do: ""
+  defp blank_or_int(value), do: to_string(value)
+
+  # One row per route of the version, in the order the reader read them, with the
+  # reader's own two values on top of the stored ones so a refused save keeps
+  # every select where the reader put it.
+  defp block_rules_rows(assigns) do
+    submitted = assigns.block_rules.route_params
+
+    Enum.map(assigns.block_rules.routes, fn route ->
+      values = Map.get(submitted, route.route_id, %{})
+
+      %{
+        route_id: route.route_id,
+        garage_id: Map.get(values, "garage_id", route.garage_id),
+        required_vehicle_type_id:
+          Map.get(values, "required_vehicle_type_id", route.required_vehicle_type_id)
+      }
+    end)
+  end
+
+  # The summary counts the entries that need fixing: the settings fields carrying
+  # a context error, plus each route row the route writer refused.
+  defp block_rules_error_count(form, route_errors) do
+    field_errors =
+      form.source
+      |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+      |> map_size()
+
+    field_errors + (route_errors |> Enum.uniq_by(&elem(&1, 0)) |> length())
+  end
+
+  # The settings are stored by the time this runs, so the batch is built from the
+  # routes the drawer read with the reader's own values on top. Every route is
+  # included, so clearing a select stores `nil` rather than leaving the last
+  # saved value. On a full success the drawer closes and the day reloads, so the
+  # blocks, warnings and the scope button are drawn from the new rules; on a
+  # refusal the drawer stays open with the entry's own message, and the flash
+  # says the settings are already stored rather than claiming a failed save.
+  defp save_route_settings(socket, params) do
+    case Gtfs.update_route_operating_settings(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           route_setting_entries(socket, params)
+         ) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:block_rules, @empty_block_rules)
+         |> assign(:open_drawer, nil)
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:info, "Block rules saved.")}
+
+      {:error, {:invalid, invalid}} ->
+        {:noreply,
+         socket
+         |> put_block_rules(params, nil, route_errors(socket, invalid))
+         |> push_event("focus_form_error", %{
+           form_id: "block-rules-form",
+           fallback_id: "block-rules-errors"
+         })
+         |> put_flash(:error, @block_rules_partial)}
+
+      {:error, _reason} ->
+        {:noreply, put_block_rules(socket, params, @block_rules_save_failed)}
     end
+  end
+
+  # One entry per route the drawer read, with the reader's own two values when
+  # the table posted them and the stored value otherwise.
+  defp route_setting_entries(socket, params) do
+    state = socket.assigns.block_rules
+    submitted = Map.merge(state.route_params, route_settings_params(params))
+
+    Enum.map(state.routes, fn route ->
+      values = Map.get(submitted, route.route_id, %{})
+
+      %{
+        route_id: route.route_id,
+        garage_id: Map.get(values, "garage_id", route.garage_id),
+        required_vehicle_type_id:
+          Map.get(values, "required_vehicle_type_id", route.required_vehicle_type_id)
+      }
+    end)
+  end
+
+  # The refusals keyed by the entry and field they name, so each row's own select
+  # shows its own message instead of a drawer-level sentence. A refusal for a
+  # route the drawer does not show is dropped rather than printed on another
+  # route's row.
+  defp route_errors(socket, invalid) do
+    shown = MapSet.new(Enum.map(socket.assigns.block_rules.routes, & &1.route_id))
+
+    Enum.reduce(invalid, %{}, fn
+      %{route_id: route_id, field: _field, message: _message}, errors
+      when route_id in [nil] ->
+        errors
+
+      %{route_id: route_id, field: field, message: message}, errors ->
+        if MapSet.member?(shown, route_id) do
+          Map.put_new(errors, {route_id, field}, message)
+        else
+          errors
+        end
+    end)
   end
 
   # --- editor authority ------------------------------------------------------
@@ -1898,6 +2083,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings_by_trip: findings_by_trip(day.findings),
       destination_blocks: Enum.map(day.blocks, &destination_option/1),
       min_layover_minutes: day.settings.min_layover_minutes,
+      # The whole settings row, so the Block rules drawer renders every AC-1
+      # field from the day load rather than a second read.
+      settings: day.settings,
       untimed_trips: Enum.filter(day.unplottable, & &1.block_id),
       # The Garage and Vehicle type form's pickers read the planning inputs the
       # day load already gathered, in the order a reader scans them (INV-9).
@@ -1991,6 +2179,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings_by_trip: %{},
       destination_blocks: [],
       min_layover_minutes: nil,
+      settings: %{},
       untimed_trips: [],
       garages: [],
       vehicle_types: [],
@@ -2142,11 +2331,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     {merge_options, merge_total} = merge_destinations(assigns)
 
+    block_rules_form = block_rules_form(assigns)
+
     assigns =
       assigns
       |> assign(:assign_form, assign_form(assigns.assign))
       |> assign(:block_action_form, block_action_form(assigns.block_action))
-      |> assign(:layover_form, layover_form(assigns))
+      |> assign(:block_rules_form, block_rules_form)
+      |> assign(
+        :block_rules_error_count,
+        block_rules_error_count(block_rules_form, assigns.block_rules.route_errors)
+      )
       |> assign(:destination_options, options)
       |> assign(:destination_total, total)
       |> assign(:merge_options, merge_options)
@@ -2293,10 +2488,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   vehicles?={@vehicles?}
                   version_id={@state.version_id}
                 />
-                <BlocksComponents.layover_drawer
-                  open={@open_drawer == :layover}
-                  form={@layover_form}
-                  error={@layover.error}
+                <BlocksComponents.block_rules_drawer
+                  open={@open_drawer == :block_rules}
+                  form={@block_rules_form}
+                  interlining={@block_rules.interlining || to_string(@settings.interlining)}
+                  routes={@routes}
+                  route_rows={block_rules_rows(assigns)}
+                  route_errors={@block_rules.route_errors}
+                  garages={@garages}
+                  vehicle_types={@vehicle_types}
+                  error={@block_rules.error}
+                  error_count={@block_rules_error_count}
                 />
 
                 <%= case @trip_view do %>
