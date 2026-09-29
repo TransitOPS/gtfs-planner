@@ -427,6 +427,24 @@ describe("PathwayEvolutionsFloorplan", () => {
     expect(focused.getAttribute("tabindex")).toBe("0");
   });
 
+  it("keeps the reader's own node, with its fresh state, across an update", () => {
+    const island = buildIsland();
+    imageFor(island);
+    const hook = mountHook(island);
+
+    const svg = island.querySelector("[data-floorplan-svg]");
+    const walk = svg.querySelector(`[data-pathway-uuid="${WALK_ID}"]`);
+    walk.focus();
+
+    island.dataset.selectedId = WALK_ID;
+    hook.updated();
+
+    const redrawn = svg.querySelector(`[data-pathway-uuid="${WALK_ID}"]`);
+    expect(redrawn).toBe(walk);
+    expect(document.activeElement).toBe(walk);
+    expect(walk.getAttribute("aria-current")).toBe("true");
+  });
+
   it("falls back to the list with a visible note when the image fails", () => {
     const island = buildIsland();
     const image = imageFor(island);

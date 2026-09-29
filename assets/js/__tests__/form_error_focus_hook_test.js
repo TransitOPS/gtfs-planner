@@ -604,6 +604,31 @@ describe("FormErrorFocus", () => {
 
       expect(emailSpy).toHaveBeenCalledTimes(1);
     });
+
+    it("keeps a deliberate move to a non-control when the frame arrives", async () => {
+      const root = buildRoot();
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      // The floorplan's own pathway control: focusable, but not a control
+      // LiveView restores during a round trip.
+      const pathway = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      pathway.setAttribute("tabindex", "0");
+      root.append(pathway);
+
+      pushServerEvent(registrations, {
+        form_id: "login_form",
+        fallback_id: "login-recovery",
+      });
+
+      pathway.focus();
+      expect(document.activeElement).toBe(pathway);
+
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(document.activeElement).toBe(pathway);
+    });
   });
 
   // =========================================================================

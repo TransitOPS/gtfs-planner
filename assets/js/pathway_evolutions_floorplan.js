@@ -445,13 +445,44 @@ const PathwayEvolutionsFloorplan = {
 
     this._rovingId = roving;
     this._lastSelectedId = selectedId;
+
+    // The pathway under the reader's focus keeps its own DOM node: the fresh
+    // markup supplies its state, but the node already in the reader's hands is
+    // moved into place instead of being recreated, so a patch that lands
+    // between two key presses can never detach the node the next press is
+    // addressed to.
+    const kept =
+      inside && focused ? this._svg.querySelector(`[data-pathway-uuid="${focused}"]`) : null;
+
     this._svg.innerHTML = html;
+
+    if (kept) {
+      const redrawn = this._svg.querySelector(`[data-pathway-uuid="${focused}"]`);
+      if (redrawn) redrawn.replaceWith(this._adoptRedrawnState(redrawn, kept));
+    }
 
     if (inside && focused) this._focusPathway(focused);
     this._restoreKeyboardFocus();
 
     this._renderCaption();
     this._renderCauseHighlight();
+  },
+
+  // The kept node takes the redrawn node's attributes and children, so its
+  // state is exactly what the fresh render computed while its identity is the
+  // one the reader already holds.
+  _adoptRedrawnState(redrawn, kept) {
+    for (const attribute of Array.from(kept.attributes)) {
+      if (!redrawn.hasAttribute(attribute.name)) kept.removeAttribute(attribute.name);
+    }
+
+    for (const attribute of Array.from(redrawn.attributes)) {
+      kept.setAttribute(attribute.name, attribute.value);
+    }
+
+    kept.replaceChildren(...Array.from(redrawn.childNodes));
+
+    return kept;
   },
 
   _focusPathway(id) {

@@ -9,6 +9,12 @@ const INVALID_CONTROL_SELECTOR = '[aria-invalid="true"]';
 const NATIVE_CONTROL_SELECTOR = "input, select, textarea, button";
 const ENABLED_CONTROL_SELECTOR =
   "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])";
+// LiveView's own focus restoration during a round trip can only land on a form
+// control: the select or textual input it restores, or the submit button it
+// re-enables. A reader who deliberately moved focus to anything else (a
+// floorplan pathway, a heading) keeps it; re-asserting over that move is what
+// a keyboard user experiences as focus being pulled away.
+const RESTORED_FORM_CONTROLS = new Set(["BUTTON", "INPUT", "SELECT", "TEXTAREA"]);
 
 const FormErrorFocus = {
   mounted() {
@@ -82,9 +88,10 @@ const FormErrorFocus = {
     if (!nextFrame) return;
 
     nextFrame(() => {
-      if (document.activeElement !== target && document.contains(target)) {
-        target.focus();
-      }
+      const thief = document.activeElement;
+
+      if (thief === target || !document.contains(target)) return;
+      if (thief && RESTORED_FORM_CONTROLS.has(thief.tagName)) target.focus();
     });
   },
 };
