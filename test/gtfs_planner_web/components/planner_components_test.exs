@@ -209,6 +209,74 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
     end
   end
 
+  describe "constraint_chip/1" do
+    test "names the removal by the value alone when no kind is given" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.constraint_chip id="chip-mode" key="route_type" label="Bus" />
+        """)
+
+      chip = doc(html) |> LazyHTML.query("#chip-mode")
+
+      assert LazyHTML.attribute(chip, "aria-label") == ["Remove filter Bus"]
+      assert LazyHTML.attribute(chip, "phx-value-key") == ["route_type"]
+    end
+
+    test "puts the kind ahead of the value and disables the chip on request" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.constraint_chip id="chip-route" key="route_id" kind="Route" label="Blue" disabled />
+        """)
+
+      chip = doc(html) |> LazyHTML.query("#chip-route")
+
+      assert LazyHTML.attribute(chip, "aria-label") == ["Remove filter Route Blue"]
+      assert Enum.count(LazyHTML.query(doc(html), "#chip-route[disabled]")) == 1
+    end
+  end
+
+  describe "sort_header/1" do
+    test "marks the sorted column with its direction" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <table>
+          <tr>
+            <.sort_header label="Name" sort_key="name" sort_by={:name} sort_dir={:desc} />
+          </tr>
+        </table>
+        """)
+
+      header = doc(html) |> LazyHTML.query("th")
+
+      assert LazyHTML.attribute(header, "aria-sort") == ["descending"]
+      assert LazyHTML.text(header) |> String.replace(~r/\s+/, "") == "Name▼"
+    end
+
+    test "leaves another column unsorted" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <table>
+          <tr>
+            <.sort_header label="Stop ID" sort_key="name" sort_by={:id} sort_dir={:asc} />
+          </tr>
+        </table>
+        """)
+
+      header = doc(html) |> LazyHTML.query("th")
+
+      assert LazyHTML.attribute(header, "aria-sort") == ["none"]
+      assert LazyHTML.text(header) |> String.replace(~r/\s+/, "") == "StopID↕"
+    end
+  end
+
   describe "safe_href/2" do
     test "opens a plain web address or email and nothing else" do
       assert safe_href(:web, "https://agency.example/fares") == "https://agency.example/fares"

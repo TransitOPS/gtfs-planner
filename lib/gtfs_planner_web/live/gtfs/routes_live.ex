@@ -8,6 +8,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   import GtfsPlannerWeb.Gtfs.FeedSettingsComponents,
     only: [agency_form_fields: 1, unsaved_guard: 1]
 
+  import GtfsPlannerWeb.PlannerComponents, only: [constraint_chip: 1, sort_header: 1]
+
   alias Ecto.Changeset
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
@@ -860,79 +862,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     """
   end
 
-  # ── Workbench pieces ────────────────────────────────────────────────────────
-  #
-  # The redesign (tmp/redesign/routes.html) folds search, filters, results and
-  # pagination into one "workbench" card, following the design system's
-  # `.workbench` pattern. The markup lives in `render/1` so every part of the
-  # card reads the same assigns; only these two markup helpers are separate.
-
-  # A chip dismisses one constraint. It is labeled with the value the operator
-  # chose, not the raw query param, and its `aria-label` spells out the action.
-  attr :id, :string, required: true
-  attr :label, :string, required: true
-  attr :key, :string, required: true, doc: "the query param this chip dismisses"
-
-  defp constraint_chip(assigns) do
-    ~H"""
-    <button
-      id={@id}
-      type="button"
-      phx-click="remove_filter"
-      phx-value-key={@key}
-      class="inline-flex min-h-11 items-center gap-1.5 rounded-badge border border-subtle bg-white pl-2.5 pr-2 text-[13px] font-[650] text-strong hover:bg-canvas"
-      aria-label={"Remove filter #{@label}"}
-    >
-      {@label}
-      <.icon name="hero-x-mark" class="size-3.5 text-muted" />
-    </button>
-    """
-  end
-
-  # The table's own sort header, so the desktop table can carry the workbench
-  # styling (sticky canvas header, 44px targets) without the shared `<.table>`
-  # component's daisyUI chrome.
-  attr :label, :string, required: true
-  attr :sort_key, :string, required: true
-  attr :sort_by, :atom, required: true
-  attr :sort_dir, :atom, required: true
-  attr :class, :string, default: ""
-
-  defp sort_header(assigns) do
-    state =
-      column_sort_state(
-        assigns.sort_by,
-        assigns.sort_dir,
-        String.to_existing_atom(assigns.sort_key)
-      )
-
-    assigns =
-      assigns
-      |> assign(:state, state)
-      |> assign(:aria_sort, aria_sort_value(state))
-      |> assign(:indicator, sort_indicator(state))
-
-    ~H"""
-    <th
-      scope="col"
-      aria-sort={@aria_sort}
-      class={[
-        "sticky top-0 z-10 border-b border-subtle bg-canvas text-[13px] font-[650] text-default",
-        @class
-      ]}
-    >
-      <button
-        type="button"
-        phx-click="sort"
-        phx-value-key={@sort_key}
-        class="inline-flex min-h-11 items-center gap-1.5 hover:text-strong hover:underline"
-      >
-        {@label}<span aria-hidden="true">{@indicator}</span>
-      </button>
-    </th>
-    """
-  end
-
   # A route's display name follows the GTFS preference order; the fallback chain
   # ends at route_id, which is always present, so a cell is never blank.
   defp route_display_name(route) do
@@ -1679,23 +1608,4 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       ArgumentError -> :route_id
     end
   end
-
-  defp column_sort_state(sort_by, sort_dir, column) when column == sort_by do
-    case sort_dir do
-      :asc -> "asc"
-      :desc -> "desc"
-    end
-  end
-
-  defp column_sort_state(_sort_by, _sort_dir, _column), do: "none"
-
-  defp aria_sort_value("asc"), do: "ascending"
-  defp aria_sort_value("desc"), do: "descending"
-  defp aria_sort_value(_other), do: "none"
-
-  # ▲ / ▼ read as direction at a glance; an unsorted column gets the neutral
-  # double arrow because a single arrow would imply a sort that isn't there.
-  defp sort_indicator("asc"), do: "▲"
-  defp sort_indicator("desc"), do: "▼"
-  defp sort_indicator(_other), do: "↕"
 end

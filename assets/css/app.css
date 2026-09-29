@@ -1333,6 +1333,43 @@ body {
   }
 }
 
+/* ── stops (design system) ──
+   The stops table sits in the shared `.workbench-table`, whose unlayered cell
+   padding outranks Tailwind's utilities, so the column gutters are set here:
+   20px at the card's edges (the toolbar's inset) and 12px between columns. A
+   name cell is one 44px link with 4px above and below, so a row is 52px with or
+   without a description. Header cells take no vertical padding because the sort
+   button already carries the 44px target. */
+#stops-container .workbench-table :is(th, td) {
+  padding: 0.5rem 0.75rem;
+}
+
+#stops-container .workbench-table :is(th, td):first-child {
+  padding-left: 1.25rem;
+}
+
+#stops-container .workbench-table :is(th, td):last-child {
+  padding-right: 1.25rem;
+}
+
+#stops-container .workbench-table thead th {
+  padding-block: 0;
+}
+
+#stops-container .workbench-table tbody th {
+  padding-block: 0.25rem;
+}
+
+/* A disabled control (while loading, or the route filter while route
+   information is unavailable) reads as unavailable, like the design system's
+   disabled control: hairline border, canvas ground, muted ink. */
+#stops-page .fieldset :is(.input, .select):disabled {
+  border-color: var(--color-subtle);
+  background-color: var(--color-canvas);
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
 /* ── Signed-out form fields ──
    The password-recovery pages keep `<.input>`, the app's one input
    implementation, and restyle its daisyUI `fieldset` / `label` / `input`

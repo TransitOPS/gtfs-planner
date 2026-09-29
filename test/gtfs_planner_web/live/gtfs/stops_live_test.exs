@@ -122,7 +122,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert has_element?(view, "th[aria-sort]")
     end
 
-    test "stop ID column uses font-mono and link is primary", %{
+    test "stop name is the link and the stop ID is a mono cell", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -143,7 +143,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
-      assert has_element?(view, "a.font-mono.link-primary", "MONO1")
+      assert has_element?(
+               view,
+               "#stops th a[href='/gtfs/#{version.id}/stops/MONO1']",
+               "Mono Stop"
+             )
+
+      assert has_element?(view, "#stops td.font-mono", "MONO1")
     end
   end
 
@@ -287,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       |> render_click()
 
       refute has_element?(view, "#stops-unavailable")
-      assert has_element?(view, "a", "RETRY1")
+      assert has_element?(view, "#stops td", "RETRY1")
     end
   end
 
@@ -315,9 +321,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
-      assert has_element?(view, "a", "PARTIAL1")
+      assert has_element?(view, "#stops td", "PARTIAL1")
       assert has_element?(view, "#stops-enrichment-warning")
-      assert has_element?(view, "#stops-enrichment-retry")
+      assert has_element?(view, "#stops-enrichment-retry", "Reload routes")
+      assert has_element?(view, "#stops td", "Unavailable")
+      refute has_element?(view, "#stops td", "Not served")
+      assert has_element?(view, "select#route_id[disabled]")
     end
 
     test "retry after enrichment failure restores route badges without losing search/filter state",
@@ -364,7 +373,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       |> render_click()
 
       refute has_element?(view, "#stops-enrichment-warning")
-      assert has_element?(view, "a", "ENRICH1")
+      assert has_element?(view, "#stops td", "ENRICH1")
     end
   end
 
@@ -410,8 +419,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=999")
 
-      assert has_element?(view, "a", "CL051")
-      refute has_element?(view, "a", "CL001")
+      assert has_element?(view, "#stops td", "CL051")
+      refute has_element?(view, "#stops td", "CL001")
       assert has_element?(view, "button[phx-click='paginate'][phx-value-page='1']", "Previous")
 
       assert has_element?(
@@ -443,8 +452,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert canonical_uri.path == "/gtfs/#{version.id}/stops"
       assert URI.decode_query(canonical_uri.query)["page"] == "2"
 
-      assert has_element?(view, "a", "CL051")
-      refute has_element?(view, "a", "CL001")
+      assert has_element?(view, "#stops td", "CL051")
+      refute has_element?(view, "#stops td", "CL001")
     end
   end
 
@@ -562,14 +571,36 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       |> render_click()
 
       assert_patched(view, "/gtfs/#{version.id}/stops")
-      assert has_element?(view, "a", "CLEAR1")
+      assert has_element?(view, "#stops td", "CLEAR1")
     end
   end
 
   describe "StopsLive search form" do
     setup :shared_setup
 
-    test "search form has stable ID, visible label, and names-and-IDs hint", %{
+    test "search form has stable ID, visible label, and a name-or-ID placeholder", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "FORM1", parent_station: nil})
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "form#stop-search-form")
+      assert has_element?(view, "#stop-search-form label", "Search stops and stations")
+
+      assert has_element?(
+               view,
+               "#stop-search-form input[type='search'][placeholder='Stop name or ID']"
+             )
+    end
+
+    test "first-use empty state hides the search and filters", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -581,11 +612,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
-      assert has_element?(view, "form#stop-search-form")
-      assert has_element?(view, "#stop-search-form label", "Search")
-      assert has_element?(view, "#stop-search-form input[type='search']")
-      html = render(view)
-      assert html =~ "Search names and IDs"
+      assert has_element?(view, "#stops-first-use-empty")
+      refute has_element?(view, "#stop-search-form")
+      refute has_element?(view, "#stop-filter-form")
     end
   end
 
@@ -731,6 +760,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert Enum.empty?(LazyHTML.query(doc, "#stops-constrained-empty"))
     end
 
+    test "loading keeps the table layout with placeholder rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      doc = LazyHTML.from_fragment(conn.resp_body)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-container thead th")) == 5
+      refute Enum.empty?(LazyHTML.query(doc, "#stops-skeleton[aria-hidden='true'] tr"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-count"))
+    end
+
     test "connected render calls adapter once and transitions to ready", %{
       conn: conn,
       user: user,
@@ -834,7 +880,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
       assert has_element?(view, "#stops-container")
-      assert has_element?(view, "a", "RELOAD1")
+      assert has_element?(view, "#stops td", "RELOAD1")
 
       refute has_element?(view, "#route_id[disabled]")
       refute has_element?(view, "#search[disabled]")
@@ -924,6 +970,345 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     end
   end
 
+  describe "StopsLive rows" do
+    setup :shared_setup
+
+    test "the name links to the stop and carries its description", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "ROW1",
+          stop_name: "9th St & US 101",
+          stop_desc: "Southbound",
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(
+               view,
+               "#stops th a[href='/gtfs/#{version.id}/stops/ROW1']",
+               "9th St & US 101"
+             )
+
+      assert has_element?(view, "#stops th a", "Southbound")
+    end
+
+    test "a stop with no name is opened by its ID", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "NONAME1",
+          stop_name: nil,
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops th a", "NONAME1")
+    end
+
+    test "wheelchair access reads Accessible, Not accessible or Not recorded", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      accessible =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "ACC1",
+          wheelchair_boarding: 1,
+          parent_station: nil
+        })
+
+      blocked =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "ACC2",
+          wheelchair_boarding: 2,
+          parent_station: nil
+        })
+
+      unknown =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "ACC0",
+          wheelchair_boarding: 0,
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([accessible, blocked, unknown], 3, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops tr [data-accessibility='accessible']", "Accessible")
+
+      assert has_element?(
+               view,
+               "#stops tr [data-accessibility='not_accessible']",
+               "Not accessible"
+             )
+
+      assert has_element?(view, "#stops tr [data-accessibility='unknown']", "Not recorded")
+    end
+
+    test "a stop no trip serves says Not served, and served stops show their badges", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      served = stop_fixture(organization.id, version.id, %{stop_id: "SRV1", parent_station: nil})
+      idle = stop_fixture(organization.id, version.id, %{stop_id: "SRV2", parent_station: nil})
+
+      route =
+        route_fixture(organization.id, version.id, %{route_id: "R9", route_short_name: "R9"})
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([served, idle], 2, 1, [route], %{served.stop_id => [route]})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-#{served.id} td", "R9")
+      assert has_element?(view, "#stops-#{idle.id} td", "Not served")
+    end
+
+    test "phones get a list whose item links to the stop", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      station =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PH1",
+          stop_name: "Central Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts -> {:ok, stop_page([station], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(
+               view,
+               "#stops-list li a[href='/gtfs/#{version.id}/stops/PH1']",
+               "Central Station"
+             )
+
+      assert has_element?(view, "#stops-list li a", "ID PH1 · Station")
+    end
+  end
+
+  describe "StopsLive result count and constraints" do
+    setup :shared_setup
+
+    test "counts the catalog, then the matches once a constraint is set", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stops =
+        for id <- ["CNT1", "CNT2"],
+            do: stop_fixture(organization.id, version.id, %{stop_id: id, parent_station: nil})
+
+      stub_catalog(fn opts ->
+        if Keyword.get(opts, :search) == "cnt1",
+          do: {:ok, stop_page([hd(stops)], 1, 1, [], %{})},
+          else: {:ok, stop_page(stops, 2, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+      assert has_element?(view, "#stops-count", "2 stops and stations")
+      refute has_element?(view, "#stops-chips button")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=cnt1")
+      assert has_element?(view, "#stops-count", "1 stop or station matches")
+    end
+
+    test "shows one removable chip per constraint, labelled with the chosen value", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "CHIP1", parent_station: nil})
+
+      route =
+        route_fixture(organization.id, version.id, %{route_id: "R7", route_short_name: "Seven"})
+
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [route], %{})} end)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{version.id}/stops?search=harbour&route_id=R7&direction_id=1&wheelchair_boarding=2"
+        )
+
+      assert has_element?(view, "#stops-chip-search", "“harbour”")
+      assert has_element?(view, "#stops-chip-route_id", "Seven")
+      assert has_element?(view, "#stops-chip-direction_id", "Inbound")
+      assert has_element?(view, "#stops-chip-wheelchair_boarding", "Not accessible")
+      assert has_element?(view, "#stops-clear-filters", "Clear filters")
+    end
+
+    test "removing the search chip keeps the other filters", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "CHIP2", parent_station: nil})
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?search=harbour&wheelchair_boarding=2")
+
+      view |> element("#stops-chip-search") |> render_click()
+
+      assert_patched(view, "/gtfs/#{version.id}/stops?wheelchair_boarding=2")
+    end
+
+    test "removing the route chip also drops its direction", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "CHIP3", parent_station: nil})
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=0&search=main")
+
+      view |> element("#stops-chip-route_id") |> render_click()
+
+      assert_patched(view, "/gtfs/#{version.id}/stops?search=main")
+    end
+
+    test "choosing another route resets the direction, and other changes keep it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "DIR1", parent_station: nil})
+
+      routes =
+        for id <- ["R1", "R2"],
+            do: route_fixture(organization.id, version.id, %{route_id: id, route_short_name: id})
+
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, routes, %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=1")
+
+      view
+      |> form("#stop-filter-form", %{"wheelchair_boarding" => "1"})
+      |> render_change()
+
+      assert_patched(
+        view,
+        "/gtfs/#{version.id}/stops?direction_id=1&route_id=R1&wheelchair_boarding=1"
+      )
+
+      view
+      |> form("#stop-filter-form", %{"route_id" => "R2"})
+      |> render_change()
+
+      assert_patched(view, "/gtfs/#{version.id}/stops?route_id=R2&wheelchair_boarding=1")
+    end
+
+    test "the direction select appears only with a route and names Outbound and Inbound", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "DIR2", parent_station: nil})
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+      refute has_element?(view, "select#direction_id")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1")
+      assert has_element?(view, "select#direction_id option[value='0']", "Outbound")
+      assert has_element?(view, "select#direction_id option[value='1']", "Inbound")
+    end
+  end
+
+  describe "StopsLive empty-result copy" do
+    setup :shared_setup
+
+    test "a search with no matches names the search", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=harbour")
+
+      assert has_element?(view, "#stops-constrained-empty h2", "No stops match “harbour”")
+    end
+
+    test "filters with no matches say so and offer Clear filters", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?search=harbour&wheelchair_boarding=2")
+
+      assert has_element?(view, "#stops-constrained-empty h2", "No stops match these filters")
+      assert has_element?(view, "#stops-clear-filters", "Clear filters")
+    end
+  end
+
   describe "StopsLive route filtering" do
     setup :shared_setup
 
@@ -1010,7 +1395,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "ignores a non-numeric wheelchair_boarding filter", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?wheelchair_boarding=abc")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:wheelchair_boarding] == nil
     end
@@ -1021,7 +1406,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?wheelchair_boarding=7")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:wheelchair_boarding] == nil
     end
@@ -1029,7 +1414,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "ignores a non-numeric direction_id filter", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=x")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:direction_id] == nil
     end
@@ -1037,7 +1422,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "ignores an out-of-range direction_id filter", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=2")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:direction_id] == nil
     end
@@ -1070,7 +1455,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?sort_by=inserted_at")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:sort_by] == :stop_name
     end
@@ -1098,7 +1483,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "uses the default page when page is nested", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page[a]=b")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:page] == 1
     end
@@ -1106,7 +1491,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "ignores a nested search value", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search[a]=b")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:search] == ""
     end
@@ -1114,7 +1499,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "ignores a search value containing a NUL byte", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=%00")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:search] == ""
     end
@@ -1122,7 +1507,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     test "ignores a nested route_id value", %{conn: conn, gtfs_version: version} do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id[a]=b")
 
-      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert has_element?(view, "tbody#stops tr", "MALFORMED1")
       assert_received {:catalog_opts, opts}
       assert opts[:route_id] == ""
     end

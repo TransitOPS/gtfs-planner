@@ -22,7 +22,12 @@ async function loginAndGoToDiagram(page) {
   await page.waitForURL("**/stops");
   // Find the seeded station and navigate to its diagram
   // Click on the row containing "BROWSER_STATION"
-  const stationRow = page.locator("tr:has-text('BROWSER_STATION')");
+  // Below md the stops table gives way to a list whose items are the links.
+  const stationRow = page
+    .locator(
+      "tr:has-text('BROWSER_STATION'), #stops-list li:has-text('BROWSER_STATION')",
+    )
+    .filter({ visible: true });
   await expect(stationRow).toBeVisible({ timeout: 5000 });
   // Click the station name link to navigate to the detail page
   await stationRow.getByRole("link").first().click();
