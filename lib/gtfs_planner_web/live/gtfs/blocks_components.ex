@@ -810,12 +810,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       on_cancel="cancel_replace"
       cancel_label="Keep current blocks"
       pending={@pending}
-      described_by="suggestion-replace-body"
+      described_by="suggestion-replace-summary"
       confirm_variant="primary"
       return_focus_id="apply-suggestion"
-      data-initial-focus-id="suggestion-replace-body"
+      data-initial-focus-id="suggestion-replace-summary"
     >
-      <p id="suggestion-replace-body">
+      <%!-- The shared `confirm_dialog` already renders its own
+      `#<id>-body` wrapper, so this sentence cannot reuse that id: a duplicate
+      id would point `aria-describedby` at the wrapper and would send the
+      initial focus to an element that cannot take it, leaving the dialog's
+      dismiss button focused instead of the sentence a reader has to read. --%>
+      <p id="suggestion-replace-summary" tabindex="-1">
         Every scheduled trip in {@day_type.label} was planned again. {@replace.moves}
         {if @replace.moves == 1, do: "trip changes", else: "trips change"} block,
         including hand-tuned blocks, on {Enum.join(@replace.days, " and ")}. Each trip's change history keeps its
