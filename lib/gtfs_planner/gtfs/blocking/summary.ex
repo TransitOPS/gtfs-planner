@@ -8,7 +8,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   A block's span is the earliest first departure to the latest last arrival of its
   plottable, non-frequency trips, so a gap between two trips stays inside the span
   and the block counts once while it is out. A block with no such trip has no span
-  and is left out of the peak and the bins.
+  and is left out of the peak and the bins. A caller that has derived a block's
+  platform span from `Blocking.Movements.build/3` passes it as `block_summary/4`'s
+  fourth argument, and the peak, the bins and the fleet demand are then counted
+  over the interval the vehicle is really out of the garage.
 
   `peak/1` delegates to `GtfsPlanner.Gtfs.Schedules.Summary.peak_vehicles/1`, which
   already treats spans as half-open and reports the earliest maximum, so two blocks
@@ -60,6 +63,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
           route_ids: [String.t()]
         }
 
+  @typedoc """
+  A block's platform span in service-day seconds: pull-out start to pull-back
+  end, which may be negative before midnight and above 86,400 after it.
+  """
+  @type platform_span :: {integer(), integer()}
+
   @doc """
   Summarizes one block from its trips and its findings.
 
@@ -73,10 +82,34 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   first code of that severity in the fixed order, or `:ok` with no code when there
   is no finding. Only findings naming this block are considered, so a caller may
   hand over a whole day's findings.
+
+  A fourth argument overrides the span with a block's *platform* span — the
+  pull-out start to the pull-back end from `Blocking.Movements.build/3`, which is
+  the interval the vehicle is actually committed to its garage. It is the span the
+  day type's peak, bins and fleet demand are counted over (R7, R8), and a block
+  that pulls out before midnight gets a start below zero here where the trip span
+  could never have one. `nil` for either end, or no argument at all, keeps the
+  trip span, so a block with no movements and every existing caller of the
+  three-arity form are unchanged.
   """
-  @spec block_summary(String.t(), [Checks.trip_row()], [Checks.finding()]) :: block_summary()
-  def block_summary(block_id, trips, findings) do
-    {start_secs, end_secs} = span(trips)
+  @spec block_summary(String.t(), [Checks.trip_row()], [Checks.finding()], platform_span() | nil) ::
+          block_summary()
+  def block_summary(block_id, trips, findings, platform_span \\ nil)
+
+  # The three-arity form keeps the trip span. A caller that has movements hands
+  # over the platform span instead; anything else (a `nil` span, or a movement
+  # map without one) falls back to the same trip span, so a block with no
+  # movements and every existing caller are unchanged.
+  def block_summary(block_id, trips, findings, {start_secs, finish_secs} = platform_span)
+      when is_integer(start_secs) and is_integer(finish_secs) do
+    summarize(platform_span, block_id, trips, findings)
+  end
+
+  def block_summary(block_id, trips, findings, _platform_span) do
+    summarize(span(trips), block_id, trips, findings)
+  end
+
+  defp summarize({start_secs, end_secs}, block_id, trips, findings) do
     {status, status_code} = status(Enum.filter(findings, &(&1.block_id == block_id)))
 
     %{

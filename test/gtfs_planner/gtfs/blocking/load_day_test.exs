@@ -15,10 +15,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
+  alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Versions
 
+  import GtfsPlanner.AdvancedBlockingFixtures
   import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -438,7 +441,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
       assert layover.severity == :warning
       assert layover.block_id == "101"
       assert Enum.sort(layover.trip_ids) == Enum.sort([tight_a.id, tight_b.id])
-      assert layover.detail == %{gap_secs: 420}
+      # The gap is a layover, so the whole 420 seconds is the wait. A gap with a
+      # drive in it would report the wait after that drive instead.
+      assert layover.detail == %{gap_secs: 420, wait_secs: 420}
 
       assert [overlap] = Enum.filter(day.findings, &(&1.code == :overlap))
       assert overlap.severity == :error
@@ -614,7 +619,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
       assert [%{code: :repositions, severity: :notice, block_id: "9", detail: detail}] =
                Enum.filter(day.findings, &(&1.code == :repositions))
 
-      assert detail == %{gap_secs: 600, meters: nil}
+      # R9: the notice survives only where the drive is unknown, and the unknown
+      # drive is what the detail says.
+      assert detail == %{gap_secs: 600, meters: nil, drive: :unknown}
       assert day.counts.notices == 1
       assert day.counts.problems == 0
 
@@ -835,28 +842,104 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
     }
   end
 
+  # A day of `trip_count` trips in consecutive two-trip blocks, together with the
+  # planning inputs a real version has: a garage and a type for every block, a
+  # shared shape, a marked relief stop, an entered driving time and a listed
+  # fleet. AC-3's constant query count is a claim about this, not about a version
+  # with no planning rows at all, so every one of those reads is here and the
+  # number of rows of each kind still grows with the day.
   defp seeded_scope(trip_count) do
     scope = new_scope()
+    %{organization: organization, version: version} = scope
 
     calendar_service_fixture(scope.organization.id, scope.version.id, %{
       service_id: "WK",
       name: "Weekday"
     })
 
+    garage =
+      garage_fixture(organization.id, %{
+        "name" => "Main",
+        "lat" => Decimal.new("40.0000"),
+        "lon" => Decimal.new("-74.0")
+      })
+
+    vehicle_type = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+
+    # Every block runs in the same hour, so the fleet has to cover them all for
+    # the day to have no shortfall and keep its counts at zero.
+    for _index <- 1..trip_count do
+      vehicle_fixture(organization.id, %{
+        "garage_id" => garage.id,
+        "vehicle_type_id" => vehicle_type.id
+      })
+    end
+
+    for {stop_id, lat} <- [{"S_A", "40.0000"}, {"S_B", "40.0200"}] do
+      stop_with_coordinates_fixture(organization.id, version.id, %{
+        stop_id: stop_id,
+        stop_lat: Decimal.new(lat),
+        stop_lon: Decimal.new("-74.0")
+      })
+    end
+
+    shape!(scope, "SH-A")
+
+    relief_point_fixture(organization.id, version.id, %{stop_id: "S_A"})
+
+    deadhead_time_fixture(organization.id, version.id, %{
+      from_ref: {:garage, garage.id},
+      to_ref: {:stop, "S_A"},
+      minutes: 4
+    })
+
+    block_count = ceil(trip_count / 2)
+
+    for index <- 0..(block_count - 1) do
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "WK",
+        block_id: "block_#{index}",
+        garage_id: garage.id,
+        vehicle_type_id: vehicle_type.id
+      })
+    end
+
     for index <- 1..trip_count do
       {first, last} =
         if rem(index, 2) == 1, do: {"08:00:00", "09:00:00"}, else: {"09:30:00", "10:30:00"}
 
-      blocked_trip(scope, %{
+      scope
+      |> blocked_trip(%{
         trip_id: "trip_#{index}",
         service_id: "WK",
         block_id: "block_#{div(index - 1, 2)}",
         first: first,
-        last: last
+        last: last,
+        first_stop: "S_A",
+        last_stop: "S_B"
       })
+      |> Ecto.Changeset.change(shape_id: "SH-A")
+      |> Repo.insert!()
     end
 
     scope
+  end
+
+  # One shape with two points, shared by every trip of the day, so the
+  # measurement is made once for the shape however many trips name it.
+  defp shape!(scope, shape_id) do
+    for {sequence, lat} <- [{1, "40.0000"}, {2, "40.0100"}] do
+      %Shape{}
+      |> Shape.changeset(%{
+        organization_id: scope.organization.id,
+        gtfs_version_id: scope.version.id,
+        shape_id: shape_id,
+        shape_pt_sequence: sequence,
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.new("-74.0")
+      })
+      |> Repo.insert!()
+    end
   end
 
   # A test that only cares about block membership, service or scope passes no times,
