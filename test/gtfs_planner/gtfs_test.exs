@@ -2145,6 +2145,123 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "remove_level_from_station/5" do
+    setup do
+      organization = organization_fixture()
+      version_1 = gtfs_version_fixture(organization.id)
+      version_2 = gtfs_version_fixture(organization.id)
+      other_organization = organization_fixture()
+      other_org_version = gtfs_version_fixture(other_organization.id)
+
+      %{
+        organization: organization,
+        version_1: version_1,
+        version_2: version_2,
+        other_organization: other_organization,
+        other_org_version: other_org_version
+      }
+    end
+
+    test "clears only the child stops in the given version when other versions share the GTFS ids",
+         %{organization: org, version_1: version_1, version_2: version_2} do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      sibling = seed_station_level_and_child(org.id, version_2.id)
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 target.level.id
+               )
+
+      removed_child = Repo.get!(Stop, target.child.id)
+      assert removed_child.level_id == nil
+      assert removed_child.diagram_coordinate == nil
+      assert Gtfs.get_stop_level(org.id, version_1.id, target.station.id, target.level.id) == nil
+
+      untouched_child = Repo.get!(Stop, sibling.child.id)
+      assert untouched_child.level_id == sibling.level.level_id
+      assert untouched_child.diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+
+      assert %StopLevel{} =
+               Gtfs.get_stop_level(org.id, version_2.id, sibling.station.id, sibling.level.id)
+    end
+
+    test "clears only the child stops in the given organization when another organization shares the GTFS ids",
+         %{
+           organization: org,
+           version_1: version_1,
+           other_organization: other_org,
+           other_org_version: other_org_version
+         } do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      foreign = seed_station_level_and_child(other_org.id, other_org_version.id)
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 target.level.id
+               )
+
+      assert Repo.get!(Stop, target.child.id).level_id == nil
+
+      untouched_child = Repo.get!(Stop, foreign.child.id)
+      assert untouched_child.level_id == foreign.level.level_id
+      assert untouched_child.diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+    end
+
+    test "rejects a level from another version and leaves its child stops unchanged", %{
+      organization: org,
+      version_1: version_1,
+      version_2: version_2
+    } do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      sibling = seed_station_level_and_child(org.id, version_2.id)
+
+      assert {:error, :not_found} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 sibling.level.id
+               )
+
+      assert Repo.get!(Stop, target.child.id).level_id == target.level.level_id
+      assert Repo.get!(Stop, sibling.child.id).level_id == sibling.level.level_id
+
+      assert %StopLevel{} =
+               Gtfs.get_stop_level(org.id, version_1.id, target.station.id, target.level.id)
+    end
+
+    test "rejects a level from another organization and leaves its child stops unchanged", %{
+      organization: org,
+      version_1: version_1,
+      other_organization: other_org,
+      other_org_version: other_org_version
+    } do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      foreign = seed_station_level_and_child(other_org.id, other_org_version.id)
+
+      assert {:error, :not_found} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 foreign.level.id
+               )
+
+      assert Repo.get!(Stop, target.child.id).level_id == target.level.level_id
+      assert Repo.get!(Stop, foreign.child.id).level_id == foreign.level.level_id
+    end
+  end
+
   describe "list_child_stops_for_level/2" do
     setup do
       organization = organization_fixture()
@@ -4705,6 +4822,33 @@ defmodule GtfsPlanner.GtfsTest do
       refute_receive {[:stop_levels, :updated], _}
       refute_receive {[:stops, :updated], _}
     end
+  end
+
+  # Every scope gets the same GTFS ids, as when a version is copied from another feed.
+  defp seed_station_level_and_child(organization_id, gtfs_version_id) do
+    station =
+      stop_fixture(organization_id, gtfs_version_id, %{stop_id: "RM_STATION", location_type: 1})
+
+    level =
+      level_fixture(organization_id, gtfs_version_id, %{level_id: "RM_LEVEL", level_index: 0.0})
+
+    child =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "RM_PLATFORM",
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      })
+
+    {:ok, _stop_level} =
+      Gtfs.create_stop_level(%{
+        stop_id: station.id,
+        level_id: level.id,
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id
+      })
+
+    %{station: station, level: level, child: child}
   end
 
   defp preview_alignment_attrs do

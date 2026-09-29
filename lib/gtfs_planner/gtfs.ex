@@ -3533,6 +3533,10 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Removes a level association from a station while preserving the shared level record.
+
+  Child stops of the station on that level lose their level and diagram coordinate, within the
+  given organization and version only. Returns `{:error, :not_found}` when `level_id` is not a
+  level of that organization and version.
   """
   def remove_level_from_station(
         organization_id,
@@ -3542,10 +3546,17 @@ defmodule GtfsPlanner.Gtfs do
         level_id
       ) do
     Repo.transaction(fn ->
-      level = get_level!(level_id)
+      level =
+        Repo.get_by(Level,
+          id: level_id,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        ) || Repo.rollback(:not_found)
 
       from(s in Stop,
-        where: s.parent_station == ^station_stop_id and s.level_id == ^level.level_id
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station == ^station_stop_id and s.level_id == ^level.level_id
       )
       |> Repo.update_all(set: [level_id: nil, diagram_coordinate: nil])
 
