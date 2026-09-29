@@ -14,12 +14,20 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   value above `24:00:00` still reads as `26:00`. Grouping the pathway list by
   mode is view-only and preserves the snapshot's `pathway_id` order inside each
   group; it never reorders or drops a pathway.
+
+  The editor's own copy lives here too: the select options, the one-sentence
+  summary of a window, the pathway help that says which direction a closure
+  removes, the calendar detail line, and the overlap / no-active-dates notices a
+  save returns. They are derived from the same labels and the same
+  `GtfsTime`-formatted window as the list, so the form and the row cannot
+  disagree about what a closure does.
   """
 
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.PathwayEvolution
 
   # Group order and group labels for the pathway list. Modes outside this list
   # are grouped under their own mode label rather than dropped, so a fare gate or
@@ -309,6 +317,234 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   @spec pluralize_closures(non_neg_integer()) :: String.t()
   def pluralize_closures(1), do: "1 closure"
   def pluralize_closures(count), do: "#{count} closures"
+
+  @doc """
+  Returns one window endpoint for the editor's text field: `H:MM` when the
+  seconds are zero, otherwise the full service time.
+
+  The field accepts `H:MM`, `HH:MM` and `H:MM:SS`, so the short form a reader
+  already saw in the list round-trips unchanged, while `26:00:30` keeps the
+  seconds it carries.
+  """
+  @spec service_time_value(non_neg_integer()) :: String.t()
+  def service_time_value(seconds) when is_integer(seconds), do: compact_time(seconds)
+  def service_time_value(_seconds), do: ""
+
+  # -- editor ----------------------------------------------------------------
+
+  @doc """
+  Returns a pathway's full label: mode, endpoints and arrow, as the form's
+  context line and the delete confirmation name it.
+  """
+  @spec pathway_full_label(map()) :: String.t()
+  def pathway_full_label(pathway) do
+    "#{Pathway.mode_label(pathway.pathway_mode)} · #{ends_label(pathway)}"
+  end
+
+  @doc """
+  Builds the pathway `select` options, grouped by mode.
+
+  The option label is the endpoint line plus the exact `pathway_id`, so the
+  chosen option names the same natural ID the row and the locator show, and the
+  group order is the locator's own order.
+  """
+  @spec pathway_options([map()]) :: [{String.t(), [{String.t(), String.t()}]}]
+  def pathway_options(pathways) do
+    pathways
+    |> mode_groups()
+    |> Enum.map(fn group ->
+      {group.label, Enum.map(group.pathways, &{pathway_option_label(&1), &1.pathway_id})}
+    end)
+  end
+
+  defp pathway_option_label(pathway), do: "#{ends_label(pathway)} · #{pathway.pathway_id}"
+
+  @doc """
+  Builds the calendar `select` options: named calendars by name, then unnamed
+  ones by their exact `service_id`.
+
+  The option value is always the exact `service_id`, which is what the closure
+  stores and what an export carries; only the label falls back to the ID.
+  """
+  @spec calendar_options([map()]) :: [{String.t(), String.t()}]
+  def calendar_options(calendars) do
+    calendars
+    |> Enum.sort_by(&{unnamed_calendar?(&1), String.downcase(&1.label)})
+    |> Enum.map(&{&1.label, &1.service_id})
+  end
+
+  defp unnamed_calendar?(%{name: name}) when is_binary(name), do: String.trim(name) == ""
+  defp unnamed_calendar?(_option), do: true
+
+  @doc """
+  Returns the select's help sentence for the chosen pathway.
+
+  The sentence states which travel the closure removes: every direction of a
+  bidirectional pathway, or the recorded direction of a one-way one. With no
+  pathway chosen it says what the picker accepts.
+  """
+  @spec pathway_help(map() | nil) :: String.t()
+  def pathway_help(nil), do: "Any pathway at this station, including walkways and stairs."
+
+  def pathway_help(%{is_bidirectional: true}), do: "Closes travel in both directions."
+
+  def pathway_help(pathway) do
+    mode = pathway.pathway_mode |> Pathway.mode_label() |> String.downcase()
+    "Closes the #{mode} from #{stop_label(pathway.from_stop)} to #{stop_label(pathway.to_stop)}."
+  end
+
+  @doc """
+  Returns the calendar detail line: the effective span and count of active
+  service days, then the calendar's trip and closure usage.
+
+  The span comes from the read contract's own first/last active dates, so the
+  line cannot imply service on a day the calendar does not run.
+  """
+  @spec calendar_usage_line(map() | nil) :: String.t() | nil
+  def calendar_usage_line(nil), do: nil
+
+  def calendar_usage_line(option) do
+    [no_active_dates_line(option), calendar_detail(option), usage_clause(option)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp no_active_dates_line(%{active_date_count: 0}), do: "No active service dates"
+  defp no_active_dates_line(_option), do: nil
+
+  defp usage_clause(%{trip_count: trips, closure_count: closures}) do
+    "used by #{count_label(trips, "trip", "trips")} and " <>
+      count_label(closures, "closure", "closures")
+  end
+
+  defp usage_clause(_option), do: nil
+
+  @doc """
+  Returns the one-sentence summary of the window the form currently holds.
+
+  The sentence describes what saving would apply: which travel closes, the
+  service-time window, the calendar's service days, when travel reopens and —
+  when the calendar has no active dates — that the closure does not apply yet.
+  Values that do not parse yet produce the sentence that says what is missing
+  rather than guessing a window.
+  """
+  @spec closure_summary(map(), map() | nil, map() | nil) :: String.t()
+  def closure_summary(_params, nil, _calendar) do
+    "Choose a pathway to see when it closes."
+  end
+
+  def closure_summary(params, pathway, calendar) do
+    case window_seconds(params) do
+      nil ->
+        "Choose a calendar and enter a window to see when #{ends_label(pathway)} closes."
+
+      {start_time, end_time} ->
+        "#{ends_label(pathway)} closes #{window_phrase(start_time, end_time)} " <>
+          "on each service day of #{calendar_phrase(calendar)}. " <>
+          "#{reopen_sentence(pathway, start_time, end_time)}#{no_active_dates_suffix(calendar)}"
+    end
+  end
+
+  defp window_seconds(params) do
+    with {:ok, start_time} <- PathwayEvolution.parse_service_time(params["start_time"]),
+         {:ok, end_time} <- PathwayEvolution.parse_service_time(params["end_time"]),
+         true <- end_time > start_time do
+      {start_time, end_time}
+    else
+      _other -> nil
+    end
+  end
+
+  defp window_phrase(0, 86_400), do: "all day (00:00–24:00)"
+
+  defp window_phrase(start_time, end_time) when end_time > 86_400 do
+    "#{window_label(%{start_time: start_time, end_time: end_time})} " <>
+      "(until #{clock_label(end_time)} #{later_label(end_time)})"
+  end
+
+  defp window_phrase(start_time, end_time),
+    do: window_label(%{start_time: start_time, end_time: end_time})
+
+  defp reopen_sentence(%{is_bidirectional: true}, _start_time, end_time),
+    do: "Both directions reopen #{reopen_at(end_time)}."
+
+  defp reopen_sentence(pathway, _start_time, end_time),
+    do:
+      "The #{pathway.pathway_mode |> Pathway.mode_label() |> String.downcase()} reopens #{reopen_at(end_time)}."
+
+  defp reopen_at(86_400), do: "at midnight (24:00)"
+
+  defp reopen_at(end_time) when end_time > 86_400,
+    do: "at #{clock_label(end_time)} #{later_label(end_time)}"
+
+  defp reopen_at(end_time), do: "at #{compact_time(end_time)}"
+
+  defp calendar_phrase(%{label: label}), do: label
+  defp calendar_phrase(_calendar), do: "the calendar"
+
+  # Only a calendar the version knows can say how many active dates it has; a
+  # referenced service without a native row leaves the sentence open rather than
+  # claiming it does not run.
+  defp no_active_dates_suffix(%{active_date_count: 0, label: label}),
+    do: " #{label} has no active service dates, so this closure does not apply yet."
+
+  defp no_active_dates_suffix(_calendar), do: ""
+
+  # The clock time a service time falls on: 26:00 reads as 2:00 AM on the day
+  # after the service date, which is what a reader needs to see.
+  defp clock_label(seconds) do
+    hours = div(seconds, 3600)
+    minutes = div(rem(seconds, 3600), 60)
+    hour = rem(hours, 12)
+    hour = if hour == 0, do: 12, else: hour
+    suffix = if rem(hours, 24) < 12, do: "AM", else: "PM"
+    "#{hour}:#{String.pad_leading(to_string(minutes), 2, "0")} #{suffix}"
+  end
+
+  defp later_label(seconds) do
+    case div(seconds, 86_400) do
+      1 -> "the next day"
+      days -> "#{days} days later"
+    end
+  end
+
+  @doc """
+  Returns the notice a save shows when another closure on the same pathway and
+  service overlaps the saved window.
+
+  It names the other window and states the consequence in words: the pathway
+  stays closed while either window applies. Adjacent windows never produce it.
+  """
+  @spec overlap_notice(map(), [map()], map() | nil) :: map()
+  def overlap_notice(pathway, others, calendar) do
+    %{
+      id: "closure-notice-overlap",
+      kind: "info",
+      title: "Overlaps another closure.",
+      body:
+        "#{ends_label(pathway)} also closes #{Enum.map_join(others, " and ", &window_label/1)} " <>
+          "on #{calendar_phrase(calendar)}. The pathway stays closed while either applies."
+    }
+  end
+
+  @doc """
+  Returns the notice a save shows when the referenced calendar has no active
+  service dates, so the closure does not apply until it has some.
+  """
+  @spec no_active_dates_notice(map() | nil) :: map()
+  def no_active_dates_notice(calendar) do
+    %{
+      id: "closure-notice-no-active-dates",
+      kind: "warning",
+      title: "No active service dates.",
+      body:
+        "#{calendar_phrase(calendar)} does not run on any date, so this closure " <>
+          "does not apply until the calendar has dates."
+    }
+  end
+
+  defp count_label(1, singular, _plural), do: "1 #{singular}"
+  defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
   defp compact_time(seconds) do
     case String.split(GtfsTime.format(seconds), ":") do
