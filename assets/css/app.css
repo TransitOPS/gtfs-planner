@@ -3574,6 +3574,114 @@ body:has(#home-page) {
   stroke-dasharray: none;
 }
 
+/* Point editing (step 25): the prototype's draft zone, its error state, its
+   square handles, its midpoint circles, the drawing line and the crossing mark,
+   restyled from the prototype's SVG classes onto Leaflet's own paths. */
+.flex-map-area--draft {
+  fill: #c8187014;
+  stroke: #c81870;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+.flex-map-area--error {
+  fill: #d33a3a1a;
+  stroke: #d33a3a;
+  stroke-width: 2;
+  stroke-dasharray: none;
+}
+
+.flex-map-draw-line {
+  fill: none;
+  stroke: #c81870;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+#flex-area-map[data-mode="draw"] .flex-map-stage {
+  cursor: crosshair;
+}
+
+.flex-area-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+}
+
+.flex-area-handle-dot {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border: 2px solid #087b95;
+  cursor: move;
+}
+
+.flex-area-handle-dot.is-picked {
+  border-color: #c81870;
+  border-width: 3px;
+}
+
+.flex-area-handle:focus-visible {
+  outline: none;
+}
+
+.flex-area-handle:focus-visible .flex-area-handle-dot {
+  box-shadow: 0 0 0 3px #0d737d;
+}
+
+.flex-area-midpoint {
+  fill: #fff;
+  stroke: #087b95;
+  stroke-width: 1.5;
+  opacity: 0.9;
+  cursor: copy;
+}
+
+.flex-area-draw-point {
+  fill: #fff;
+  stroke: #087b95;
+  stroke-width: 2;
+}
+
+.flex-area-draw-point.is-picked {
+  fill: #c81870;
+  cursor: pointer;
+}
+
+.flex-area-crossing-disc {
+  fill: #fbe3e3;
+  stroke: #d33a3a;
+  stroke-width: 2;
+}
+
+.flex-area-crossing-x {
+  fill: none;
+  stroke: #9b1c1c;
+  stroke-width: 2;
+}
+
+/* The map's own hint line: what the current tool does, and which point is
+   selected, drawn over the map rather than in the panel the server re-renders. */
+.flex-map-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  z-index: 600;
+  max-width: calc(100% - 20px);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #ffffffe6;
+  color: #0a1330;
+  font: 500 12px Inter, system-ui, sans-serif;
+}
+
+.flex-map-hint[hidden] {
+  display: none;
+}
+
 /* A connecting stop is named on the map rather than on hover: the label is the
    permanent tooltip Leaflet adds to the marker, restyled from its default white
    box to the prototype's haloed text. */
