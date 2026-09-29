@@ -116,6 +116,30 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   @doc """
+  The unsaved changes between the saved service and its draft, in rider terms.
+
+  Ported from the prototype's `changes()` (`flex-model.js:308`) for the fields
+  the service page's hours and booking sections edit: the hours each calendar is
+  in service ("Weekdays: 7:00 am–6:00 pm → 7:00 am–5:00 pm"), the booking rules,
+  the phone, the booking link, and the text riders read. A detour service words
+  its hours difference as one line ("Trips with detours: …"), because its hours
+  are the calendars and band it runs on rather than per-calendar windows.
+
+  The hours line groups by calendar, as the prototype does: two areas that run
+  different windows on the same calendar read as one line joined with " and ",
+  so a per-area change is reported without naming the area. The where, riders,
+  detour and export lines the prototype also reports belong to the sections that
+  edit those fields.
+  """
+  @spec changes(FlexService.t(), FlexService.t(), map()) :: [String.t()]
+  def changes(%FlexService{} = saved, %FlexService{} = draft, calendars) do
+    hours_changes(saved, draft, calendars) ++
+      rule_changes(saved, draft, calendars) ++
+      contact_changes(saved, draft) ++
+      text_changes(saved, draft, calendars)
+  end
+
+  @doc """
   The name trip planners show this service under (R5).
 
   A registered-riders service that is included in the flex feed gains
@@ -217,6 +241,48 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     end
   end
 
+  @doc """
+  One hours row as riders read it: "7:00 am–6:00 pm", and
+  "6:00 pm–1:00 am (next day)" when the end is at or before the start (R6).
+
+  `compact: true` drops the minutes from an on-the-hour time ("7 am–6 pm"),
+  which is how the hours editor's week strip reads a window at a glance. The
+  hours editor and the rider text therefore word one row with one function and
+  cannot disagree.
+  """
+  @spec range_text(map(), keyword()) :: String.t()
+  def range_text(%{start: start, end: finish}, opts \\ []) do
+    compact = Keyword.get(opts, :compact, false)
+
+    "#{t12(start, compact)}–#{t12(finish, compact)}#{if overnight?(start, finish), do: " (next day)"}"
+  end
+
+  @doc """
+  The hours row's window on the hours editor's 5 am–2 am axis, or nil when
+  either time is unreadable.
+
+  `%{start: minutes, finish: minutes}` counts minutes from midnight, with an end
+  at or before the start counted into the next day (R6), so the week strip's bars
+  and the row's own words come from the same reading of the row.
+  """
+  @spec window(map()) :: %{start: non_neg_integer(), finish: non_neg_integer()} | nil
+  def window(%{start: start, end: finish}) do
+    case {minutes_of(start), minutes_of(finish)} do
+      {start_minutes, finish_minutes}
+      when is_integer(start_minutes) and is_integer(finish_minutes) ->
+        %{
+          start: start_minutes,
+          finish:
+            if(finish_minutes <= start_minutes, do: finish_minutes + 1_440, else: finish_minutes)
+        }
+
+      _other ->
+        nil
+    end
+  end
+
+  def window(_row), do: nil
+
   defp main_rule(service), do: Enum.find(service.booking_rules, &is_nil(&1.service_id))
 
   defp monday_line(%FlexBookingRule{when: :earlier_day, business_days: true, days: 1} = rule),
@@ -234,6 +300,167 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     |> Enum.map(fn rule ->
       "#{calendar_name(calendars, rule.service_id)} trips: #{lowercase_first(deadline_text(rule))}"
     end)
+  end
+
+  # --- changes between a saved service and its draft ---------------------------
+
+  # The hours the draft differs on, one line per calendar. A detour service's
+  # hours are its calendars and band, not windows, so its difference is one line.
+  defp hours_changes(saved, draft, calendars) do
+    if hours_lines(saved, saved.areas, calendars) == hours_lines(draft, draft.areas, calendars) do
+      []
+    else
+      case draft.kind do
+        :detour -> detour_hours_changes(saved, draft, calendars)
+        _kind -> calendar_hours_changes(saved, draft, calendars)
+      end
+    end
+  end
+
+  defp calendar_hours_changes(saved, draft, calendars) do
+    saved_groups = hours_by_calendar(saved)
+    draft_groups = hours_by_calendar(draft)
+
+    (calendar_ids(saved) ++ calendar_ids(draft))
+    |> Enum.uniq()
+    |> Enum.flat_map(fn service_id ->
+      before = windows_text(Map.get(saved_groups, service_id, []))
+      after_ = windows_text(Map.get(draft_groups, service_id, []))
+
+      if before == after_ do
+        []
+      else
+        ["#{calendar_plural(calendars, service_id)}: #{before} → #{after_}"]
+      end
+    end)
+  end
+
+  defp calendar_ids(service), do: service.hours |> Enum.map(& &1.service_id) |> Enum.uniq()
+
+  defp detour_hours_changes(saved, draft, calendars) do
+    [
+      "Trips with detours: #{detour_hours_text(saved, calendars)} → #{detour_hours_text(draft, calendars)}"
+    ]
+  end
+
+  defp detour_hours_text(service, calendars) do
+    service |> hours_lines(service.areas, calendars) |> Enum.join("; ")
+  end
+
+  defp hours_by_calendar(service) do
+    Enum.reduce(service.hours, %{}, fn row, groups ->
+      Map.update(groups, row.service_id, [row], &(&1 ++ [row]))
+    end)
+  end
+
+  defp windows_text([]), do: "no service"
+
+  defp windows_text(rows) do
+    Enum.map_join(rows, " and ", &range_text/1)
+  end
+
+  # The service-wide rule first, then one line per calendar-scoped rule that
+  # appeared, went away or changed its deadline.
+  defp rule_changes(saved, draft, calendars) do
+    main_rule_change(saved, draft) ++
+      calendar_rule_changes(saved, draft, calendars)
+  end
+
+  defp main_rule_change(saved, draft) do
+    before = deadline_text(main_rule(saved) || %FlexBookingRule{})
+    after_ = deadline_text(main_rule(draft) || %FlexBookingRule{})
+
+    if before == after_, do: [], else: ["Booking: #{lowercase_first(after_)}"]
+  end
+
+  # A detour service has one rule, so it never reports a calendar-scoped rule:
+  # `Checks` treats a second rule there as a readiness error.
+  defp calendar_rule_changes(%FlexService{kind: :detour}, _draft, _calendars), do: []
+
+  defp calendar_rule_changes(saved, draft, calendars) do
+    saved_rules = scoped_rules(saved)
+    draft_rules = scoped_rules(draft)
+
+    added =
+      Enum.flat_map(Map.keys(draft_rules), fn service_id ->
+        if Map.has_key?(saved_rules, service_id) do
+          []
+        else
+          text = lowercase_first(deadline_text(draft_rules[service_id]))
+          ["New rule for #{calendar_name(calendars, service_id)} trips: #{text}"]
+        end
+      end)
+
+    removed =
+      Enum.flat_map(Map.keys(saved_rules), fn service_id ->
+        if Map.has_key?(draft_rules, service_id) do
+          []
+        else
+          ["#{calendar_name(calendars, service_id)} booking rule removed"]
+        end
+      end)
+
+    changed =
+      Enum.flat_map(Map.keys(draft_rules), fn service_id ->
+        case Map.fetch(saved_rules, service_id) do
+          {:ok, saved_rule} -> changed_rule_lines(service_id, saved_rule, draft_rules, calendars)
+          :error -> []
+        end
+      end)
+
+    added ++ removed ++ changed
+  end
+
+  # One line for a calendar-scoped rule whose deadline moved.
+  defp changed_rule_lines(service_id, saved_rule, draft_rules, calendars) do
+    text = deadline_text(draft_rules[service_id])
+
+    if deadline_text(saved_rule) == text do
+      []
+    else
+      ["#{calendar_name(calendars, service_id)} trips: #{lowercase_first(text)}"]
+    end
+  end
+
+  defp scoped_rules(service) do
+    service.booking_rules
+    |> Enum.reject(&is_nil(&1.service_id))
+    |> Map.new(&{&1.service_id, &1})
+  end
+
+  defp contact_changes(saved, draft) do
+    phone_change(saved, draft) ++ booking_link_change(saved, draft)
+  end
+
+  defp phone_change(saved, draft) do
+    if saved.phone == draft.phone do
+      []
+    else
+      ["Phone: #{if(present?(draft.phone), do: draft.phone, else: "removed")}"]
+    end
+  end
+
+  defp booking_link_change(saved, draft) do
+    case {present?(saved.booking_url), present?(draft.booking_url)} do
+      {before, after_} when before == after_ -> []
+      {false, true} -> ["Booking link added"]
+      {true, false} -> ["Booking link removed"]
+      {true, true} -> ["Booking link changed"]
+    end
+  end
+
+  # A note the editor added reads as one; any other difference in the text riders
+  # read (a rule, a phone number) changed the text along with the field that did it.
+  defp text_changes(saved, draft, calendars) do
+    if message(saved, calendars) == message(draft, calendars) do
+      []
+    else
+      if not present?(saved.note) and present?(draft.note) do
+        ["Note for riders added"]
+      else
+        ["Text for riders changed"]
+      end
+    end
   end
 
   defp eligibility_sentence(%FlexService{riders: :registered} = service) do
@@ -368,12 +595,6 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     |> t12(true)
     |> String.replace("am", "AM")
     |> String.replace("pm", "PM")
-  end
-
-  # "7:00 am–6:00 pm", and "6:00 pm–1:00 am (next day)" when the end is the next
-  # day (R6).
-  defp range_text(%{start: start, end: finish}) do
-    "#{t12(start)}–#{t12(finish)}#{if overnight?(start, finish), do: " (next day)"}"
   end
 
   defp overnight?(start, finish) do
