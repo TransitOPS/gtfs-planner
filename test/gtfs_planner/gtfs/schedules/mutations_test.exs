@@ -643,9 +643,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert copy.pattern_derivation_reason == nil
       assert copy.trip_headsign == "Downtown"
 
-      assert {copy.service_id, copy.trip_short_name, copy.wheelchair_accessible,
-              copy.bikes_allowed, copy.shape_id} ==
-               {scope.service, "12D", 1, 2, "SHAPE-12"}
+      assert {copy.service_id, copy.wheelchair_accessible, copy.bikes_allowed, copy.shape_id} ==
+               {scope.service, 1, 2, "SHAPE-12"}
+
+      # The trip number identifies a trip within its service day, so the copy,
+      # which runs on the same service, starts without one and the source keeps its own.
+      assert copy.trip_short_name == nil
+      assert Repo.get!(Trip, copy.id).trip_short_name == nil
+      assert Repo.get!(Trip, source.id).trip_short_name == "12D"
 
       # A duplicate never joins a block; the source keeps its own.
       assert copy.block_id == nil
@@ -664,6 +669,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert Repo.get!(Trip, source.id) == source
       assert Repo.get!(Trip, source.id).block_id == "B7"
       assert length(trip_logs(context)) == 2
+
+      # The audit snapshot records the stored values, including the missing trip number.
+      copy_log = Enum.find(trip_logs(context), &(&1.entity_external_id == copy.trip_id))
+      assert copy_log.action == "created"
+      assert copy_log.changed_fields["after"]["trip_short_name"] == nil
+      assert copy_log.changed_fields["after"]["trip_headsign"] == "Downtown"
 
       # A custom source needs a timing, and the duplicate is created linked on the
       # pattern that timing belongs to.

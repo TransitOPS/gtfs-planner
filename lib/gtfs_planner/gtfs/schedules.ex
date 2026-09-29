@@ -270,13 +270,14 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   `attrs` carries `:start_time` and `:timed_pattern_id` (a timing of the source
   trip's pattern; required, because a custom source has no timing of its own).
-  The new trip copies `service_id`, `trip_headsign`, `trip_short_name`,
-  `wheelchair_accessible`, `bikes_allowed` and `shape_id`, gets no block, takes
-  the pattern's direction, and gets a freshly allocated trip ID. New stop times
-  take the pattern's per-visit distances when the source already references the
-  pattern's shape; otherwise their distances are nil (R15). The duplicate is
-  audited as created. A frequency source is refused with `:frequency_trip` and
-  the source trip itself is never written.
+  The new trip copies `service_id`, `trip_headsign`, `wheelchair_accessible`,
+  `bikes_allowed` and `shape_id`, gets no block, takes the pattern's direction,
+  and gets a freshly allocated trip ID. It gets no `trip_short_name`: the public
+  trip number identifies a trip within its service day, and the copy runs on the
+  source's service. New stop times take the pattern's per-visit distances when
+  the source already references the pattern's shape; otherwise their distances
+  are nil (R15). The duplicate is audited as created. A frequency source is
+  refused with `:frequency_trip` and the source trip itself is never written.
   """
   @spec duplicate_trip(String.t(), Ecto.UUID.t(), duplicate_attrs(), AuditContext.t()) ::
           {:ok, Trip.t()} | {:error, Ecto.Changeset.t() | update_error()}
@@ -1568,7 +1569,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   # The copy takes the pattern's direction and natural ID and the source trip's
   # service and rider-facing metadata, including its shape, but never its block:
-  # a duplicate is unblocked until it is assigned on the Blocks page (D1).
+  # a duplicate is unblocked until it is assigned on the Blocks page (D1). It
+  # also gets no trip number, which would repeat the source's on one service day.
   defp duplicate_trip_attrs(trip, route, pattern, timing, trip_id) do
     %{
       trip_id: trip_id,
@@ -1576,7 +1578,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       service_id: trip.service_id,
       direction_id: pattern.direction_id,
       trip_headsign: trip.trip_headsign,
-      trip_short_name: trip.trip_short_name,
       block_id: nil,
       wheelchair_accessible: trip.wheelchair_accessible,
       bikes_allowed: trip.bikes_allowed,
