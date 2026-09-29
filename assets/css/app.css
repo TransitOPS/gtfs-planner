@@ -683,10 +683,13 @@ body {
 
 /* The panel's heading takes focus when the suggestion arrives, so it needs a
    visible ring of its own: a programmatically focused heading is not
-   :focus-visible, and the page's focus is nowhere else to show. */
+   :focus-visible, and the page's focus is nowhere else to show. The replace
+   confirmation focuses its sentence for the same reason — it is what the
+   reader has to read before choosing. */
 #blocks-page #suggestion-title:focus,
 #blocks-page #suggestion-applied:focus,
-#blocks-page #suggestion-apply-message:focus {
+#blocks-page #suggestion-apply-message:focus,
+#blocks-page #suggestion-replace-summary:focus {
   outline: 2px solid var(--color-action);
   outline-offset: 2px;
 }
