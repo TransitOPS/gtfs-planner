@@ -380,6 +380,123 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
     end
   end
 
+  describe "changes/3" do
+    test "words an hours difference per calendar" do
+      saved = area_service(hours: [hours(nil, "weekday", "07:00", "18:00")])
+      draft = %{saved | hours: [hours(nil, "weekday", "07:00", "17:00")]}
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Weekdays: 7:00 am–6:00 pm → 7:00 am–5:00 pm"
+             ]
+    end
+
+    test "joins the windows a calendar keeps in one line, and names a calendar it dropped" do
+      saved =
+        area_service(
+          hours: [
+            hours(nil, "weekday", "07:00", "18:00"),
+            hours("a1", "weekday", "09:00", "15:00"),
+            hours(nil, "saturday", "09:00", "16:00")
+          ]
+        )
+
+      draft =
+        %{
+          saved
+          | hours: [
+              hours(nil, "weekday", "07:00", "18:00"),
+              hours("a1", "weekday", "09:00", "15:00")
+            ]
+        }
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Saturdays: 9:00 am–4:00 pm → no service"
+             ]
+    end
+
+    test "reports a booking rule that appeared, changed or went away" do
+      saved = area_service(booking_rules: [rule(when: :same_day, minutes: 30)])
+      draft = %{saved | booking_rules: [rule(when: :same_day, minutes: 60)]}
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Booking: book at least 1 hour before pickup",
+               "Text for riders changed"
+             ]
+
+      with_rule = %{
+        saved
+        | booking_rules: [
+            rule(when: :same_day, minutes: 30),
+            rule(service_id: "saturday", when: :earlier_day, days: 2, by: "12:00")
+          ]
+      }
+
+      assert RiderText.changes(saved, with_rule, calendars()) == [
+               "New rule for Saturday trips: book by 12:00 pm 2 days before",
+               "Text for riders changed"
+             ]
+
+      assert RiderText.changes(with_rule, saved, calendars()) == [
+               "Saturday booking rule removed",
+               "Text for riders changed"
+             ]
+    end
+
+    test "words a phone, a booking link and a note in the editor's terms" do
+      saved = area_service(phone: "(541) 555-0142")
+
+      draft = %{
+        saved
+        | phone: nil,
+          booking_url: "https://example.org/book",
+          note: "Tell the dispatcher about a wheelchair."
+      }
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Phone: removed",
+               "Booking link added",
+               "Note for riders added"
+             ]
+    end
+
+    test "words a detour's hours difference as one line" do
+      saved = detour(calendar_service_ids: ["weekday"], band_start: "09:00", band_end: "15:00")
+      draft = %{saved | band_end: "12:00"}
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Trips with detours: On Route 20 trips: weekdays, 9:00 am–3:00 pm only → On Route 20 trips: weekdays, 9:00 am–12:00 pm only"
+             ]
+    end
+
+    test "has nothing to report for an unchanged service" do
+      saved = area_service(hours: [hours(nil, "weekday", "07:00", "18:00")])
+
+      assert RiderText.changes(saved, saved, calendars()) == []
+    end
+  end
+
+  describe "range_text/2 and window/1" do
+    test "words one window as riders read it" do
+      assert RiderText.range_text(hours(nil, "weekday", "07:00", "18:00")) == "7:00 am–6:00 pm"
+
+      assert RiderText.range_text(hours(nil, "saturday", "18:00", "01:00")) ==
+               "6:00 pm–1:00 am (next day)"
+
+      assert RiderText.range_text(hours(nil, "weekday", "07:00", "18:00"), compact: true) ==
+               "7 am–6 pm"
+    end
+
+    test "places a window on the strip's axis, with the next day counted on" do
+      assert RiderText.window(hours(nil, "weekday", "07:00", "18:00")) ==
+               %{start: 420, finish: 1_080}
+
+      assert RiderText.window(hours(nil, "saturday", "18:00", "01:00")) ==
+               %{start: 1_080, finish: 1_500}
+
+      assert RiderText.window(hours(nil, "weekday", "", "18:00")) == nil
+    end
+  end
+
   defp calendars do
     %{"weekday" => @weekday, "saturday" => @saturday, "sunday" => @sunday}
   end

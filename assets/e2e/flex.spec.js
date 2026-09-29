@@ -321,6 +321,75 @@ test("create", async ({ page }) => {
   await captureReference(page, "flex-services-prototype.html", "create-several-names", "create");
 });
 
+// ── service page ──────────────────────────────────────────────────────────
+
+// The service page is the Flex workspace's second surface: the short header with
+// the readiness badge, the hours editor beside the sticky rider preview, and the
+// map card. The case opens the seeded Newport Dial-a-Ride, captures the page as
+// it stands, then changes one hours window and captures the save bar's
+// rider-terms summary without saving anything.
+test("service", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFlex(page);
+
+  // The list's first row is Newport Dial-a-Ride (name order).
+  await page.getByRole("link", { name: "Newport Dial-a-Ride", exact: true }).click();
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+$`));
+  await expect(page.locator("#svc-title")).toHaveText("Newport Dial-a-Ride");
+  await expect(page.locator("#svc-status")).toContainText("Ready");
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "false");
+  await expect(page.locator("#sec-when")).toBeVisible();
+  await expect(page.locator("#sec-booking")).toBeVisible();
+  await expect(page.locator("#rider-preview")).toBeVisible();
+  await expect(page.locator("#flex-service-map")).toBeVisible();
+  await expect(page.locator("#save-bar")).toHaveCount(0);
+
+  // The hours editor and the rider preview are above the 900 px fold.
+  for (const selector of ["#f-hours", "#rider-preview"]) {
+    const box = await page.locator(selector).boundingBox();
+    expect(box.y).toBeLessThan(900);
+  }
+
+  await waitForTiles(page, "#flex-service-map");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "service");
+
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#rider-preview")).toBeVisible();
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "service");
+
+  // One hours window moves: the page is dirty, the save bar words the change in
+  // rider terms, and the preview follows the draft before anything is saved.
+  await page.setViewportSize(DESKTOP);
+  await page.locator("#service_hours_0_end").fill("17:00");
+  await page.locator("#service_hours_0_end").blur();
+
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "true");
+  await expect(page.locator("#save-bar")).toBeVisible();
+  await expect(page.locator("#save-bar")).toContainText("1 unsaved change to Newport Dial-a-Ride");
+  await expect(page.locator("#save-bar")).toContainText(
+    "Weekdays: 7:00 am–6:00 pm → 7:00 am–5:00 pm",
+  );
+  await expect(page.locator("#rider-preview")).toContainText("Weekdays 7:00 am–5:00 pm");
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "service-editing");
+
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#save-bar")).toBeVisible();
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "service-editing");
+
+  await page.setViewportSize(DESKTOP);
+  await captureReference(page, "flex-services-prototype.html", "service", "service");
+});
+
 // ── export ────────────────────────────────────────────────────────────────
 
 // The Export page carries no flex route, so this case logs in and resolves the

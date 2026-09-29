@@ -162,8 +162,12 @@ defmodule GtfsPlannerWeb.Router do
       live "/runs", Gtfs.ComingSoonLive, :runs
       live "/rosters", Gtfs.ComingSoonLive, :rosters
       # Flex has no area bar of its own in the architecture's groups. The list is
-      # the Flex workspace's landing surface; a service page is its child route.
+      # the Flex workspace's landing surface; a service page is its child route,
+      # and the area editor is that page's own action rather than a route of its
+      # own, so its draft survives the patch (CR-8).
       live "/flex", Gtfs.FlexLive, :index
+      live "/flex/:service", Gtfs.FlexServiceLive, :show
+      live "/flex/:service/area", Gtfs.FlexServiceLive, :area
       # Settings holds the version's rarely changed configuration, including its
       # organization-level group. Feed details and Agencies are version-scoped
       # pages; Garages and Fleet list organization-wide data under the All

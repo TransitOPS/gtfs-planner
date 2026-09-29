@@ -148,7 +148,9 @@ defmodule GtfsPlanner.Gtfs.Flex do
   `areas` are the active services' stored areas: each carries the area's own
   id and the R8 GeoJSON `GtfsPlanner.Gtfs.Flex.Geometry.get_geojson/1` reads for
   it. An area with no stored geometry — a `:route_distance` area until the
-  export derives it — is absent, so the map draws exactly what is stored.
+  export derives it — is absent, so the map draws exactly what is stored. The
+  service page adds `role`: `"selected"` for the service on screen and
+  `"other"` for the other active services it draws muted.
 
   `routes` is one line per fixed route of the version that has at least two
   points, in `route_id` order: the shape the route's trips use most, or, for a
@@ -158,12 +160,18 @@ defmodule GtfsPlanner.Gtfs.Flex do
   `assets/js/alignment_geometry.js`'s `toLatLng/1` converts; `color` is the
   route's own colour, or `nil` for the map's fallback.
 
-  `stops` are the connecting stops the active services name, each with the
-  coordinates the map draws it at and `hub: true`; the service page's map adds
-  the stops along a detour service's route with `hub: false`.
+  `stops` are the connecting stops the services name, each with the coordinates
+  the map draws it at and `hub: true`; a service page draws its own, so the
+  list's map and the service's map read the same stop shape.
   """
+  @type map_area :: %{
+          optional(:role) => String.t(),
+          id: Ecto.UUID.t() | String.t(),
+          geojson: map()
+        }
+
   @type map_payload :: %{
-          areas: [%{id: Ecto.UUID.t(), geojson: map()}],
+          areas: [map_area()],
           routes: [%{id: String.t(), color: String.t() | nil, coordinates: [[float()]]}],
           stops: [%{id: String.t(), name: String.t(), lon: float(), lat: float(), hub: boolean()}]
         }
@@ -192,6 +200,62 @@ defmodule GtfsPlanner.Gtfs.Flex do
       routes: map_routes(organization_id, version_id),
       stops: map_stops(organization_id, version_id, active)
     }
+  end
+
+  @doc """
+  Builds the map payload the service page's map card draws.
+
+  This is the same version payload `map_payload/2` builds, with the areas
+  re-roled for one service: the service's own stored areas are `"selected"`,
+  and every other active service's area is `"other"`, which the hook draws
+  muted. A detour service stores no area of its own, so its derived zones
+  (`Geometry.detour_zones/3`) take the selected role; a service whose geometry
+  cannot be derived yet simply has none, exactly as the list's map shows it.
+  The stops are the service's own connecting stops, so the card labels the
+  stops this service names rather than every hub in the version.
+  """
+  @spec service_map_payload(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t()) :: map_payload()
+  def service_map_payload(organization_id, version_id, %FlexService{} = service) do
+    base = map_payload(organization_id, version_id)
+    own_ids = service.areas |> Enum.map(& &1.id) |> MapSet.new()
+
+    others =
+      base.areas
+      |> Enum.reject(&MapSet.member?(own_ids, &1.id))
+      |> Enum.map(&Map.put(&1, :role, "other"))
+
+    %{
+      base
+      | areas: selected_areas(organization_id, version_id, service) ++ others,
+        stops: map_stops(organization_id, version_id, [service])
+    }
+  end
+
+  # The service's own geometry with the selected role: its stored areas, or, for
+  # a detour service, the zones R13 derives for its stretch. Both go through
+  # `Geometry` (INV-1); a service whose geometry is not derivable yet contributes
+  # nothing rather than an empty shape.
+  defp selected_areas(organization_id, version_id, %FlexService{kind: :detour} = service) do
+    case Geometry.detour_zones(organization_id, version_id, service) do
+      {:ok, zones} ->
+        Enum.map(zones, fn zone ->
+          %{id: zone.zone_id, geojson: zone.geojson, role: "selected"}
+        end)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp selected_areas(_organization_id, _version_id, %FlexService{} = service) do
+    geojson = Geometry.get_geojson(Enum.map(service.areas, & &1.id))
+
+    Enum.flat_map(service.areas, fn area ->
+      case Map.fetch(geojson, area.id) do
+        {:ok, shape} -> [%{id: area.id, geojson: shape, role: "selected"}]
+        :error -> []
+      end
+    end)
   end
 
   @doc """
