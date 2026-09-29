@@ -2426,7 +2426,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("edit_pathway", %{"id" => id} = params, socket) do
-    if socket.assigns.mode == :add do
+    # Setting scale owns the diagram clicks; the hook turns a pathway click into a ruler point.
+    if socket.assigns.mode == :add or socket.assigns.measurement_enabled do
       {:noreply, socket}
     else
       pathway = Gtfs.get_pathway_with_stops!(id)

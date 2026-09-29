@@ -7745,6 +7745,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#ruler-form")
     end
 
+    test "pathway click while establishing scale does not open the pathway editor", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("button[phx-click='toggle_measurement']") |> render_click()
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      refute has_element?(view, "#pathway-form")
+      assert has_element?(view, "#diagram-overlay[data-measurement-enabled='true']")
+    end
+
+    test "pathway click outside establishing scale opens the pathway editor", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      assert has_element?(view, "#pathway-form")
+    end
+
     test "saving ruler persists calibration and shows edit and clear scale controls", %{
       conn: conn,
       user: user,
