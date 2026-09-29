@@ -698,7 +698,9 @@ body {
 /* The panel's heading takes focus when the suggestion arrives, so it needs a
    visible ring of its own: a programmatically focused heading is not
    :focus-visible, and the page's focus is nowhere else to show. */
-#blocks-page #suggestion-title:focus {
+#blocks-page #suggestion-title:focus,
+#blocks-page #suggestion-applied:focus,
+#blocks-page #suggestion-apply-message:focus {
   outline: 2px solid var(--color-action);
   outline-offset: 2px;
 }
