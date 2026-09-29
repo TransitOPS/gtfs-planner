@@ -193,9 +193,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       assert href(view, "#stop-fare-zone-link") ==
                "/gtfs/#{version.id}/settings/fares?zone=A"
 
-      # The entry sits in the Overview list, directly after Platform Code.
-      labels = dt_labels(view)
-      assert Enum.at(labels, Enum.find_index(labels, &(&1 == "Platform Code")) + 1) == "Fare zone"
+      # The entry sits in the Service and access card, where riders' options are listed.
+      assert "Fare zone" in dt_labels(view)
     end
 
     test "shows None with the unassigned filter for a boardable stop with no zone", %{
@@ -288,7 +287,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
 
       # A station shows the child platform zones instead of a zone of its own.
       refute has_element?(view, "#stop-fare-zone")
-      assert "Platform fare zones" in dt_labels(view)
+      assert "Fare zones" in dt_labels(view)
+      assert has_element?(view, "#facts-card", "From this station's platforms.")
 
       assert has_element?(view, "#platform-fare-zone-0", "Central · A")
       assert has_element?(view, "#platform-fare-zone-1", "Eastbank · B")
@@ -315,7 +315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
 
       assert has_element?(view, "#station-platform-fare-zones", "None")
       assert link_texts(view, "#station-platform-fare-zones a") == []
-      assert "Platform fare zones" in dt_labels(view)
+      assert "Fare zones" in dt_labels(view)
     end
 
     test "shows the fallback, not None, while the child stops cannot be read", %{
@@ -346,7 +346,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       refute has_element?(view, "#stop-fare-zone")
       refute has_element?(view, "#station-platform-fare-zones")
       refute "Fare zone" in dt_labels(view)
-      refute "Platform fare zones" in dt_labels(view)
+      refute "Fare zones" in dt_labels(view)
 
       # The page still offers no way to edit a fare zone.
       refute has_element?(view, "input[name*='zone']")

@@ -369,7 +369,9 @@ test.describe("Station detail responsive contracts", () => {
   test("station detail uses semantic dl/dt/dd structure", async ({ page }) => {
     await openStationDetail(page);
 
-    const dl = page.locator("dl");
+    // The location card, the service card and the GTFS fields disclosure are
+    // each a description list; the first two are open on load.
+    const dl = page.locator("dl").first();
     await expect(dl).toBeVisible();
 
     const dt = page.locator("dl dt");
@@ -385,19 +387,19 @@ test.describe("Station detail responsive contracts", () => {
 
     const inherited = page.locator('[data-accessibility-source="inherited"]');
     if ((await inherited.count()) > 0) {
-      await expect(inherited).toContainText("Inherited from station");
+      await expect(inherited).toContainText("Follows the station");
     }
   });
 
-  test("station detail pathway summary uses mono tabular metrics", async ({
+  test("station detail pathway metrics use tabular numerals", async ({
     page,
   }) => {
     await openStationDetail(page, "CATALOG_PATHWAY_STATION");
 
-    const pathwaySummary = page.locator("[data-pathway-summary]");
-    if ((await pathwaySummary.count()) > 0) {
-      const monoValues = pathwaySummary.locator(".font-mono.tabular-nums");
-      expect(await monoValues.count()).toBeGreaterThan(0);
+    const pathwayRows = page.locator("[data-pathway-summary]");
+    if ((await pathwayRows.count()) > 0) {
+      const metrics = pathwayRows.locator(".tabular-nums");
+      expect(await metrics.count()).toBeGreaterThan(0);
     }
   });
 

@@ -539,6 +539,17 @@ body {
   overflow: visible;
 }
 
+/* ── stop-detail (design system) ──
+   The station header (`StationWorkspace.station_header/1`) draws its own tabs
+   and rule, so the sub-header wrapper takes the design system's hairline in
+   place of the daisyUI base border while that header is inside it. The page
+   body takes its fonts, ink and action colour from `.ds-page`; everything else
+   is utilities in `StopDetailComponents`. */
+#sub-header-wrapper:has(.station-workspace-header) {
+  border-color: var(--color-subtle);
+  background: white;
+}
+
 /* The diagram action strip is the last child of #sub-header-wrapper and carries
    its own full-bleed bottom border (needed while it is sticky and the wrapper
    has scrolled away). Drop the wrapper's own border-b in that case so the two

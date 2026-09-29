@@ -133,7 +133,8 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   cyan message so they match the rest of the application (success with a check,
   info with an information mark); green stays reserved for the Active status.
   Warnings and errors are announced (`role="alert"`), success and info are a
-  polite status.
+  polite status. A warning that reports a state rather than a failure, such as
+  "may be out of date", passes `role="status"` so it does not interrupt.
 
   The `:action` slot holds the one control that resolves the message. It sits at
   the right of the text from the `sm` breakpoint up and under it below that, so
@@ -154,12 +155,19 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   """
   attr :kind, :string, required: true, values: ~w(info success warning error)
   attr :title, :string, required: true
+
+  attr :role, :string,
+    default: nil,
+    doc:
+      "overrides the announcement role, for a warning or error that is a polite status rather than an alert"
+
   attr :rest, :global
   slot :inner_block
   slot :action
 
   def message(assigns) do
-    {tone, icon_tone, icon_name, role} = Map.fetch!(@message_tones, assigns.kind)
+    {tone, icon_tone, icon_name, kind_role} = Map.fetch!(@message_tones, assigns.kind)
+    role = assigns.role || kind_role
 
     assigns =
       assigns

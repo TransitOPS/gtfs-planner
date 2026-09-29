@@ -88,6 +88,19 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
       assert doc(html) |> LazyHTML.query("#outcome") |> LazyHTML.attribute("role") == ["status"]
     end
 
+    test "lets a warning that reports a state be a polite status instead of an alert" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.message id="stale" kind="warning" role="status" title="May be out of date." />
+        <.message id="failed" kind="warning" title="Could not load." />
+        """)
+
+      assert doc(html) |> LazyHTML.query("#stale") |> LazyHTML.attribute("role") == ["status"]
+      assert doc(html) |> LazyHTML.query("#failed") |> LazyHTML.attribute("role") == ["alert"]
+    end
+
     test "reports info as a polite status with an information mark" do
       assigns = %{}
 
