@@ -1082,4 +1082,34 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(view, "#trip-SCH1_T0600-start", "06:00")
     end
   end
+
+  describe "route status banner" do
+    setup :editor_scope
+
+    test "an explicitly inactive route shows the shared banner and Reactivate persists; NULL stays eligible",
+         %{conn: conn, organization: organization, version: version} do
+      inactive =
+        route_fixture(organization.id, version.id, %{route_id: "SCH_INACT", active: false})
+
+      imported = route_fixture(organization.id, version.id, %{route_id: "SCH_NULL", active: nil})
+
+      {:ok, view, _html} = live(conn, schedules_path(version, inactive))
+
+      assert has_element?(view, "#route-inactive-banner", "Inactive: left out of exports")
+      assert has_element?(view, "#route-inactive-chip", "Inactive")
+      assert has_element?(view, "#route-reactivate", "Reactivate route")
+
+      view |> element("#route-reactivate") |> render_click()
+
+      refute has_element?(view, "#route-inactive-banner")
+      assert has_element?(view, "#flash-info", "reactivated. The next export includes it.")
+      assert GtfsPlanner.Repo.get!(GtfsPlanner.Gtfs.Route, inactive.id).active == true
+
+      # NULL is effectively eligible: no banner and no chip anywhere (INV-4).
+      {:ok, view, _html} = live(conn, schedules_path(version, imported))
+
+      refute has_element?(view, "#route-inactive-banner")
+      refute has_element?(view, "#route-inactive-chip")
+    end
+  end
 end

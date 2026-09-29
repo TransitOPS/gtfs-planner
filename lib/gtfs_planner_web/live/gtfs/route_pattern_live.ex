@@ -48,7 +48,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     confirm_delete_timing copy_pattern confirm_delete_pattern
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
-    alignment_follow_streets confirm_bulk_generation
+    alignment_follow_streets confirm_bulk_generation reactivate_route
   )
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
@@ -1182,6 +1182,65 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
     handle_version_switch(socket, version_id)
+  end
+
+  # The shared banner's Reactivate: the step-9 status command with this page's
+  # saved identity, projected from the scoped route read through the same
+  # source shape the details workspace uses. The screen reloads so the banner
+  # and the counts describe what is stored now; a refused request says so and
+  # reloads instead of claiming a change.
+  @impl true
+  def handle_event("reactivate_route", _params, socket) do
+    route = socket.assigns.route
+
+    case Gtfs.set_route_active(
+           route.route_id,
+           true,
+           Gtfs.route_source(route),
+           audit_context(socket)
+         ) do
+      {:ok, %{route: _saved}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Route #{route.route_id} reactivated. The next export includes it.")
+         |> load_screen()}
+
+      {:error, :not_found} ->
+        {:noreply, not_found(socket)}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :info,
+           "The route was updated while this page was open, so the request was refused. The latest saved route is loaded."
+         )
+         |> load_screen()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "You no longer have editor access to this organization. The route's status is unchanged."
+         )}
+
+      {:error, :busy} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "The server is busy right now — the route is unchanged. Try again."
+         )}
+
+      {:error, _other} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "The status could not be changed. The route is unchanged — try again."
+         )}
+    end
   end
 
   @impl true

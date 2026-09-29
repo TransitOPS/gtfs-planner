@@ -1087,3 +1087,105 @@ test.describe("Route connectivity recovery", () => {
     await expect(page.locator("#route-save")).toBeEnabled();
   });
 });
+
+/**
+ * Route status actions (spec 16, step 28).
+ *
+ * Route › Details owns the deactivate confirmation, Reactivate and Undo; the
+ * shared `route_sub_nav/1` inactive banner shows on every route tab for an
+ * explicitly inactive saved row and never for NULL or true (AC-11/12). The
+ * status write is the step-9 command with the saved identity, so a real
+ * browser run proves the production composition end to end.
+ */
+test.describe("Route status actions", () => {
+  test("deactivate confirms, the banner follows the saved row, and Undo restores", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    // An eligible route: no banner or chip anywhere, active status row.
+    await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
+    await expect(page.locator("#route-status-section")).toContainText(
+      "Active: included in exports",
+    );
+
+    // The review names what stays editable, what the next export leaves out,
+    // and says exports already run are unchanged.
+    await page.locator("#route-deactivate").click();
+    const review = page.locator("#route-status-confirm[data-open='true']");
+    await expect(review).toContainText("Deactivate PR?");
+    await expect(review).toContainText("stay in this version");
+    await expect(review).toContainText(
+      "Exports you already ran still include it",
+    );
+
+    await page.locator("#route-status-confirm-go").click();
+
+    await expect(page.locator("#route-inactive-banner")).toContainText(
+      "Inactive: left out of exports",
+    );
+    await expect(page.locator("#route-inactive-chip")).toContainText(
+      "Inactive",
+    );
+    await expect(page.locator("#route-status-outcome")).toContainText(
+      "deactivated. The next export leaves it out.",
+    );
+    await expect(page.locator("#route-status-undo")).toBeVisible();
+
+    // Deactivation retains editing: the tabs and the shared controls stay.
+    await expect(page.locator("#route-details-short")).toBeEnabled();
+    await expect(page.locator("#route-details-form")).toBeVisible();
+
+    // The boolean persisted: the banner survives an ordinary reload.
+    await page.reload();
+    await expect(page.locator("#route-inactive-banner")).toContainText(
+      "left out of exports",
+    );
+
+    // The banner follows the saved row to the other tabs, and its Reactivate
+    // action persists through the same command (the seed stays eligible).
+    await page
+      .locator(
+        `nav[aria-label='Route navigation'] a[href='/gtfs/${version}/routes/${DETAILS_ROUTE}/patterns']`,
+      )
+      .click();
+    await expect(page.locator("#route-inactive-banner")).toBeVisible();
+    await page.locator("#route-reactivate").click();
+    await expect(page.locator("#flash-info")).toContainText("reactivated");
+    await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
+  });
+
+  test("a dirty draft resolves before the review opens, and Keep active writes nothing", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    await page.fill("#route-details-long", "Renamed before review");
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    await page.locator("#route-deactivate").click();
+
+    // The leave dialog resolves the draft first; the review is not open yet.
+    await expect(
+      page.locator("#route-details-leave[data-open='true']"),
+    ).toContainText("Leave without saving?");
+    await expect(page.locator("#route-status-confirm-title")).toHaveCount(0);
+
+    // Discard resolves the draft and opens the review; Keep active then
+    // closes it without any write, so the banner never appears.
+    await page.locator("#route-details-leave-discard").click();
+    await expect(
+      page.locator("#route-status-confirm[data-open='true']"),
+    ).toBeVisible();
+    await page.locator("#route-status-keep").click();
+
+    await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
+    await expect(page.locator("#route-details-long")).not.toHaveValue(
+      "Renamed before review",
+    );
+  });
+});

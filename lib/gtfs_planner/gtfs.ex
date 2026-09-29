@@ -1023,6 +1023,17 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.set_route_active(route_id, active, source, audit_context)
 
   @doc """
+  Projects a persisted route row into the trusted edit source (R2).
+
+  The status command's saved identity is built from the loaded route row with
+  the same projection the editor workspace uses, so a route tab that holds only
+  its scoped read still submits a source the command can recheck (exact UUID,
+  scope and revision for a real change; stale or replaced rows refuse).
+  """
+  @spec route_source(map()) :: map()
+  def route_source(%Route{} = route), do: Routes.source(route)
+
+  @doc """
   Builds the complete reviewed route deletion impact summary (R5).
 
   See `GtfsPlanner.Gtfs.Routes.review_route_deletion/2` for the review,

@@ -171,6 +171,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
   defp patterns_path(version, route), do: "/gtfs/#{version.id}/routes/#{route.route_id}/patterns"
 
+  defp saved_active(route), do: Repo.get!(GtfsPlanner.Gtfs.Route, route.id).active
+
   defp new_pattern_path(version, route),
     do: "/gtfs/#{version.id}/routes/#{route.route_id}/patterns/new"
 
@@ -1161,6 +1163,59 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       render_click(element(view, "#pattern-task-details"))
       assert has_element?(view, "#pattern-details-name[value='Kept after']")
       assert has_element?(view, "#edit-status", "Unsaved changes")
+    end
+  end
+
+  describe "route status banner" do
+    setup :editor_scope
+
+    test "only explicit false shows the shared inactive banner and NULL stays eligible",
+         %{conn: conn, organization: organization, version: version} do
+      inactive =
+        route_fixture(organization.id, version.id, %{
+          route_id: "INACT1",
+          route_short_name: "INACT1",
+          active: false
+        })
+
+      imported =
+        route_fixture(organization.id, version.id, %{
+          route_id: "INACT2",
+          route_short_name: "INACT2",
+          active: nil
+        })
+
+      {:ok, view, _html} = live(conn, patterns_path(version, inactive))
+
+      assert has_element?(view, "#route-inactive-chip", "Inactive")
+      assert has_element?(view, "#route-inactive-banner", "Inactive: left out of exports")
+      assert has_element?(view, "#route-inactive-banner", "The next export skips INACT1")
+      assert has_element?(view, "#route-reactivate", "Reactivate route")
+
+      {:ok, view, _html} = live(conn, patterns_path(version, imported))
+
+      # NULL is effectively eligible: no banner and no chip anywhere (INV-4).
+      refute has_element?(view, "#route-inactive-banner")
+      refute has_element?(view, "#route-inactive-chip")
+    end
+
+    test "Reactivate persists through the status command and clears the banner",
+         %{conn: conn, organization: organization, version: version} do
+      route = route_fixture(organization.id, version.id, %{route_id: "INACT3", active: false})
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "INACT_T1")
+
+      {:ok, view, _html} = live(conn, patterns_path(version, route))
+
+      assert has_element?(view, "#route-inactive-banner", "its 1 trip")
+
+      view |> element("#route-reactivate") |> render_click()
+
+      # The reload drops the banner (and the Reactivate control inside it) and
+      # the persisted row carries the explicit true the command wrote.
+      refute has_element?(view, "#route-inactive-banner")
+      refute has_element?(view, "#route-reactivate")
+      assert has_element?(view, "#flash-info", "reactivated. The next export includes it.")
+      assert saved_active(route) == true
     end
   end
 end
