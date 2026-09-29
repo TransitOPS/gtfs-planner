@@ -54,6 +54,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   native beforeunload warning covers every other full-page departure.
   """
   use GtfsPlannerWeb, :live_view
+  require Logger
   alias Ecto.Changeset
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
@@ -123,7 +124,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:active_state, nil)
      |> assign(:status_dialog, nil)
      |> assign(:status_outcome, nil)
-     |> assign(:usage, nil)}
+     |> assign(:usage, nil)
+     |> assign(:delete_review, nil)
+     |> assign(:delete_changes, [])
+     |> assign(:delete_previous_categories, nil)
+     |> assign(:delete_ack_error, nil)
+     |> assign(:delete_error, nil)
+     |> assign(:delete_pending, false)
+     |> assign(:delete_task, nil)}
   end
 
   @impl true
@@ -249,6 +257,77 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     end
   end
 
+  # --- reviewed deletion (R5, the step-11/12 commands) -----------------------
+
+  # Delete opens the reviewed impact first: the review is the step-11 command,
+  # so the dialog never guesses an impact from the page's cached counts. A
+  # dirty draft resolves first (R4), exactly like the status review.
+  @impl true
+  def handle_event("open_delete_route", _params, socket) do
+    if socket.assigns.route_state == :ready and not socket.assigns.details_blocked? do
+      if details_dirty?(socket) do
+        {:noreply, assign(socket, :pending_navigation, :delete_review)}
+      else
+        {:noreply, open_delete_review(socket)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # "Keep route" closes the review with nothing dispatched and nothing written.
+  # A pending apply cannot be cancelled from here: the command owns the
+  # transaction and its outcome speaks for itself (AC-24's locked pending).
+  @impl true
+  def handle_event("cancel_delete_route", _params, socket) do
+    if socket.assigns.delete_pending do
+      {:noreply, socket}
+    else
+      {:noreply, clear_delete_dialog(socket)}
+    end
+  end
+
+  # The acknowledgement checkbox's own change event: a shown acknowledgement
+  # error clears as soon as the operator acknowledges (the reference's
+  # behavior), and nothing is written.
+  @impl true
+  def handle_event("acknowledge_delete", _params, socket) do
+    {:noreply, assign(socket, :delete_ack_error, nil)}
+  end
+
+  # The review's confirm: the step-12 command with the reviewed fingerprint and
+  # a fresh acknowledgement. The complete review refuses an unchecked box at
+  # the boundary — the server's `false` acknowledgement refusal stays the
+  # authority (R5), the dialog error is the fast local path.
+  @impl true
+  def handle_event("confirm_delete_route", params, socket) do
+    acknowledged? = get_in(params, ["delete", "acknowledged"]) == "on"
+    confirm_delete(socket, acknowledged?)
+  end
+
+  # The empty plan's single deliberate click is its own acknowledgement: there
+  # is nothing beyond the route row to acknowledge (R5's simple dialog). The
+  # event only works for an actually-empty plan — a complete review is never
+  # confirmed without its checkbox.
+  @impl true
+  def handle_event("confirm_delete_route_simple", _params, socket) do
+    case socket.assigns.delete_review do
+      %{empty?: true} -> confirm_delete(socket, true)
+      _other -> {:noreply, socket}
+    end
+  end
+
+  # "Deactivate instead" swaps the irreversible review for the reversible one:
+  # the delete dialog closes and the deactivate confirmation opens.
+  @impl true
+  def handle_event("delete_deactivate_instead", _params, socket) do
+    if socket.assigns.delete_review != nil and not socket.assigns.delete_pending do
+      {:noreply, socket |> clear_delete_dialog() |> open_status_review()}
+    else
+      {:noreply, socket}
+    end
+  end
+
   # --- dirty navigation ------------------------------------------------------
 
   @impl true
@@ -294,6 +373,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       :status_review ->
         {:noreply, socket |> discard_details() |> clear_pending() |> open_status_review()}
 
+      :delete_review ->
+        {:noreply, socket |> discard_details() |> clear_pending() |> open_delete_review()}
+
       path ->
         {:noreply, guarded_navigate(socket, path)}
     end
@@ -317,6 +399,79 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # keystroke reached it through the form's phx-change before the guard could
   # open, so the stored params are the on-screen draft, never a second grammar.
   defp draft_attrs(socket), do: socket.assigns.route_form.source.params
+
+  # --- reviewed deletion helpers (R5) -----------------------------------------
+
+  defp confirm_delete(socket, acknowledged?) do
+    review = socket.assigns.delete_review
+
+    cond do
+      is_nil(review) or socket.assigns.delete_pending ->
+        # A closed review, a replayed confirm or a second confirm while the
+        # apply is pending cannot start a second delete (AC-24's locked
+        # pending): the controls are disabled and this boundary refuses too.
+        {:noreply, socket}
+
+      not review.empty? and not acknowledged? ->
+        {:noreply,
+         socket
+         |> assign(
+           :delete_ack_error,
+           "Check the box to confirm that the route and everything listed above should be deleted."
+         )
+         |> push_event("focus_scoped_target", %{id: "route-delete-ack"})}
+
+      true ->
+        {:noreply, start_route_delete(socket, review)}
+    end
+  end
+
+  # One delete at a time: the command runs in a supervised task so the pending
+  # state renders and every competing control stays locked (R5's async apply).
+  # The task ref is matched in handle_info, so a late or foreign message can
+  # never classify as this delete's result.
+  defp start_route_delete(socket, review) do
+    route_id = socket.assigns.route.route_id
+    audit = audit_context(socket)
+
+    task =
+      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+        Gtfs.delete_route(route_id, review.fingerprint, true, audit)
+      end)
+
+    socket
+    |> assign(:delete_task, task)
+    |> assign(:delete_pending, true)
+    |> assign(:delete_ack_error, nil)
+    |> assign(:delete_error, nil)
+  end
+
+  @impl true
+  def handle_info({ref, result}, socket) do
+    if socket.assigns.delete_task && socket.assigns.delete_task.ref == ref do
+      {:noreply,
+       classify_route_delete(
+         socket |> assign(:delete_task, nil) |> assign(:delete_pending, false),
+         result
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
+    if socket.assigns.delete_task && socket.assigns.delete_task.ref == ref do
+      Logger.error("Route delete task crashed: #{inspect(reason)}")
+
+      classify_route_delete(
+        socket |> assign(:delete_task, nil) |> assign(:delete_pending, false),
+        {:error, :task_crashed}
+      )
+    else
+      {:noreply, socket}
+    end
+  end
 
   # The draft resolver behind both discard paths: restore the loaded row and
   # its advisories, or reload the latest saved values during a merge. Either
@@ -519,6 +674,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:status_dialog, nil)
         |> assign(:status_outcome, nil)
         |> assign(:usage, Map.get(workspace, :usage))
+        |> assign(:delete_review, nil)
+        |> assign(:delete_changes, [])
+        |> assign(:delete_previous_categories, nil)
+        |> assign(:delete_ack_error, nil)
+        |> assign(:delete_error, nil)
+        |> assign(:delete_pending, false)
+        |> assign(:delete_task, nil)
         |> assign(
           :transfer_count,
           related_transfers(organization_id, gtfs_version_id, workspace.route)
@@ -591,6 +753,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       # The save that unblocked the status review continues into it (R4).
       {:ok, %{route: saved}} when pending == :status_review ->
         {:noreply, saved_details(socket, saved) |> open_status_review()}
+
+      # The save that unblocked the delete review continues into it (R4).
+      {:ok, %{route: saved}} when pending == :delete_review ->
+        {:noreply, saved_details(socket, saved) |> open_delete_review()}
 
       {:ok, %{route: saved}} ->
         {:noreply, saved_details(socket, saved)}
@@ -854,6 +1020,320 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp deactivate_ref(route) do
     if route.route_short_name in [nil, ""], do: route.route_id, else: route.route_short_name
   end
+
+  # The reviewed impact comes from the step-11 command, never the page's cached
+  # counts: one serializable read names exactly what would be deleted and what
+  # is kept. Opening failures keep the page and speak in the status outcome
+  # region — the delete row lives in the same Status and removal section.
+  defp open_delete_review(socket) do
+    route = socket.assigns.route
+
+    case Gtfs.review_route_deletion(route.route_id, audit_context(socket)) do
+      {:ok, review} ->
+        socket
+        |> assign(:delete_review, review)
+        |> assign(:delete_changes, [])
+        |> assign(:delete_ack_error, nil)
+        |> assign(:delete_error, nil)
+
+      {:error, :not_found} ->
+        route_gone(
+          socket,
+          "This route is no longer in this version. Open it again from the route list."
+        )
+
+      {:error, :forbidden} ->
+        delete_open_refused(
+          socket,
+          "Your editor access was removed, so the route can't be deleted. Ask an admin to restore editor access."
+        )
+
+      {:error, :busy} ->
+        delete_open_refused(
+          socket,
+          "The server is busy right now. Nothing was deleted — try Delete route again."
+        )
+
+      # A malformed cross-route timing reference blocks the whole review
+      # atomically (AC-31); the route and every row are unchanged.
+      {:error, :malformed_cross_route_timing} ->
+        delete_open_refused(
+          socket,
+          "This route can't be deleted: a timing row links this route's trips to another route's patterns. Nothing was deleted. Fix the schedules first, or deactivate the route to keep the data."
+        )
+
+      {:error, _other} ->
+        delete_open_refused(
+          socket,
+          "The deletion review could not be loaded. Nothing was deleted — try Delete route again."
+        )
+    end
+  rescue
+    DBConnection.ConnectionError ->
+      delete_open_refused(
+        socket,
+        "The route data is unavailable right now. Nothing was deleted — try Delete route again."
+      )
+  end
+
+  defp delete_open_refused(socket, message) do
+    socket
+    |> assign(:status_outcome, %{message: message, undo?: false})
+    |> focus_status_outcome()
+  end
+
+  defp clear_delete_dialog(socket) do
+    socket
+    |> assign(:delete_review, nil)
+    |> assign(:delete_changes, [])
+    |> assign(:delete_ack_error, nil)
+    |> assign(:delete_error, nil)
+  end
+
+  # The complete review names the route and its display name like the
+  # reference; the empty plan's simple confirmation names only the route.
+  defp delete_dialog_title(%{empty?: true}, route), do: "Delete #{deactivate_ref(route)}?"
+
+  defp delete_dialog_title(_review, route),
+    do: "Delete #{deactivate_ref(route)} #{route_display_name(route)}?"
+
+  defp delete_dialog_describedby(%{empty?: true}), do: "route-delete-simple-body"
+  defp delete_dialog_describedby(_review), do: "route-delete-review-body"
+
+  # One command result, every outcome classified. Success navigates to the
+  # scoped list with the actual removed counts (AC-24); a stale fingerprint
+  # re-renders the fresh review, explains the changes, clears the
+  # acknowledgement and deletes nothing (AC-13); every refusal keeps the route
+  # and says so truthfully.
+  defp classify_route_delete(socket, result) do
+    route = socket.assigns.route
+
+    case result do
+      {:ok, %{deleted: deleted}} ->
+        socket
+        |> put_flash(:info, route_deleted_message(route, deleted))
+        |> push_navigate(to: "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?deleted=1")
+
+      {:error, {:stale_review, fresh}} ->
+        previous_categories =
+          case socket.assigns.delete_review do
+            %{categories: categories} -> categories
+            _other -> []
+          end
+
+        changes = Gtfs.deletion_review_changes(previous_categories, fresh.categories)
+
+        socket
+        |> assign(:delete_review, fresh)
+        |> assign(:delete_changes, changes)
+        |> assign(:delete_previous_categories, previous_categories)
+        |> assign(:delete_ack_error, nil)
+        |> assign(:delete_error, nil)
+        |> push_event("focus_scoped_target", %{id: "route-delete-ack"})
+
+      {:error, :not_found} ->
+        route_gone(
+          socket,
+          "This route is no longer in this version. Open it again from the route list."
+        )
+
+      {:error, :forbidden} ->
+        delete_refused(
+          socket,
+          "Your editor access was removed. Nothing was deleted — ask an admin to restore editor access."
+        )
+
+      {:error, :busy} ->
+        delete_refused(
+          socket,
+          "The server is busy right now. Nothing was deleted — try Delete route again."
+        )
+
+      {:error, :malformed_cross_route_timing} ->
+        delete_refused(
+          socket,
+          "This route can't be deleted: a timing row links this route's trips to another route's patterns. Nothing was deleted. Fix the schedules first, or deactivate the route to keep the data."
+        )
+
+      {:error, :not_acknowledged} ->
+        delete_refused(socket, "The deletion was not acknowledged. Nothing was deleted.")
+
+      {:error, _other} ->
+        delete_refused(
+          socket,
+          "The deletion could not be completed. Nothing was deleted — try Delete route again."
+        )
+    end
+  end
+
+  defp delete_refused(socket, message) do
+    socket
+    |> assign(:delete_error, message)
+    |> push_event("focus_scoped_target", %{id: "route-delete-error"})
+  end
+
+  # The list flash names the actual result (AC-24): the checked summary's real
+  # removed counts, never the review's estimate alone.
+  defp route_deleted_message(route, deleted) do
+    patterns = Map.get(deleted, "patterns", 0)
+    trips = Map.get(deleted, "trips", 0)
+    ref = deactivate_ref(route)
+    name = route_display_name(route)
+
+    cond do
+      patterns > 0 and trips > 0 ->
+        "#{ref} #{name} deleted, with its #{plural_count(patterns, "pattern")} and #{plural_count(trips, "trip")}."
+
+      patterns > 0 ->
+        "#{ref} #{name} deleted, with its #{plural_count(patterns, "pattern")}."
+
+      trips > 0 ->
+        "#{ref} #{name} deleted, with its #{plural_count(trips, "trip")}."
+
+      true ->
+        "Route #{ref} deleted."
+    end
+  end
+
+  defp plural_count(1, word), do: "1 #{word}"
+  defp plural_count(count, word) when is_integer(count), do: "#{count} #{word}s"
+
+  # The review table's rows: every affected category in the review's own order
+  # (AC-13), its scoped identities disclosed under the label, and after a
+  # stale apply the reviewed-then count struck through beside the fresh one
+  # and a contents chip on equal-total changes.
+  defp delete_impact_rows(assigns) do
+    review = assigns.delete_review
+    changed = Map.new(assigns.delete_changes, &{&1.key, &1.markers})
+    previous = Map.new(assigns.delete_previous_categories || [], &{&1.key, &1})
+
+    for category <- review.categories,
+        (category.key != "route" and category.count > 0) or Map.has_key?(changed, category.key) do
+      markers = Map.get(changed, category.key, [])
+      previous_category = previous[category.key]
+
+      %{
+        label: category.label,
+        count: category.count,
+        previous_count:
+          if(:count_changed in markers and previous_category != nil,
+            do: previous_category.count,
+            else: nil
+          ),
+        contents_changed?: :contents_changed in markers,
+        identities: identities_preview(category.identities)
+      }
+    end
+  end
+
+  # Identities are disclosed, not truncated away: the first few are named and
+  # the rest are counted, so the dialog stays one screen on a route-sized plan
+  # while every identity remains inside the review the fingerprint binds.
+  defp identities_preview(identities) do
+    shown = Enum.take(identities, 3)
+    hidden = length(identities) - length(shown)
+
+    cond do
+      identities == [] -> ""
+      hidden > 0 -> Enum.join(shown, ", ") <> " and #{hidden} more"
+      true -> Enum.join(shown, ", ")
+    end
+  end
+
+  defp delete_retained_lines(review) do
+    for entry <- review.retained, entry.count > 0 do
+      preview = identities_preview(entry.identities)
+
+      if preview == "" do
+        "#{entry.label} (#{entry.count})"
+      else
+        "#{entry.label} (#{entry.count}: #{preview})"
+      end
+    end
+  end
+
+  # Removed trips leave their blocks naturally; the review counts the affected
+  # distinct block IDs and the dialog says what that means (R5's table).
+  defp delete_blocks_note(review) do
+    case Enum.find(review.categories, &(&1.key == "blocks")) do
+      %{count: count} when count > 1 ->
+        "#{count} vehicle blocks lose these trips and keep their others."
+
+      %{count: 1} ->
+        "1 vehicle block loses these trips and keeps its others."
+
+      _other ->
+        nil
+    end
+  end
+
+  # The stale apply's explanation (R5): no actor and no action is invented —
+  # the review changed, and the highlighted rows below say which. Equal totals
+  # with changed contents get their own sentence, so same counts are never
+  # read as same data (AC-13).
+  defp delete_banner(changes) do
+    cond do
+      Enum.any?(changes, &(:count_changed in &1.markers)) ->
+        %{kind: :counts, text: "The counts changed while this was open."}
+
+      changes != [] ->
+        %{
+          kind: :contents,
+          text: "The contents changed while this was open, even though the counts are the same."
+        }
+
+      true ->
+        nil
+    end
+  end
+
+  defp delete_ack_label(review) do
+    patterns = category_count(review, "patterns")
+    trips = category_count(review, "trips")
+
+    cond do
+      patterns > 0 and trips > 0 ->
+        "Delete #{plural_count(patterns, "pattern")} and #{plural_count(trips, "trip")} with this route"
+
+      patterns > 0 ->
+        "Delete #{plural_count(patterns, "pattern")} with this route"
+
+      trips > 0 ->
+        "Delete #{plural_count(trips, "trip")} with this route"
+
+      true ->
+        "Delete the route and its listed records with this route"
+    end
+  end
+
+  defp category_count(review, key) do
+    case Enum.find(review.categories, &(&1.key == key)) do
+      %{count: count} -> count
+      _other -> 0
+    end
+  end
+
+  # The delete row's own help line, from the page's already-read counts. The
+  # exact impact is always the review that opens next, so an unknown count
+  # keeps the sentence general instead of guessing one.
+  defp delete_row_help(assigns) do
+    patterns = geometry_patterns(assigns[:geometry_status])
+    trips = assigns[:usage] && Map.get(assigns[:usage], :trips)
+
+    cond do
+      is_integer(patterns) and is_integer(trips) and patterns == 0 and trips == 0 ->
+        "It has no patterns or trips yet. The review confirms what would go with it."
+
+      is_integer(patterns) and is_integer(trips) ->
+        "Permanently deletes the route with its #{patterns} patterns and #{trips} trips. The review confirms first."
+
+      true ->
+        "Permanently deletes the route and everything that belongs only to it. The review confirms first."
+    end
+  end
+
+  defp geometry_patterns(%{patterns: count}) when is_integer(count), do: count
+  defp geometry_patterns(_other), do: nil
 
   # The confirmation's own copy pieces. A count that was not read keeps its
   # sentence truthful without a number instead of guessing one.
@@ -1511,6 +1991,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                           <.icon name="hero-arrow-path" class="ml-1 size-4" />Reactivate route
                         </.button>
                       </div>
+
+                      <%!-- The reviewed deletion row: the delete opens the
+                             step-11 review first, so the row's own help line
+                             stays informational and never claims the exact
+                             impact. --%>
+                      <div class="flex flex-wrap items-center justify-between gap-4 p-4">
+                        <div class="min-w-0 flex-1 basis-[260px]">
+                          <p class="text-sm font-[650] text-strong">Delete route</p>
+                          <p class="mt-1 text-[13px] text-muted">{delete_row_help(assigns)}</p>
+                        </div>
+                        <.button
+                          id="route-delete"
+                          type="button"
+                          variant="danger"
+                          phx-click="open_delete_route"
+                          disabled={@details_blocked?}
+                        >
+                          <.icon name="hero-trash" class="ml-1 size-4" />Delete route…
+                        </.button>
+                      </div>
                     </div>
                   </section>
 
@@ -1585,6 +2085,62 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                             Deactivate route
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  </dialog>
+
+                  <%!-- The reviewed-deletion dialog the delete row opens: the
+                         step-11 impact, the retained resources and Deactivate
+                         instead for an active route, and a fresh
+                         acknowledgement that every stale apply re-clears. The
+                         empty entire plan gets the simple confirmation (R5). --%>
+                  <dialog
+                    id="route-delete-review"
+                    phx-mounted={JS.ignore_attributes("open")}
+                    phx-hook="OverlayDialog"
+                    data-open={to_string(@delete_review != nil)}
+                    data-pending={to_string(@delete_pending)}
+                    data-close-on-backdrop="false"
+                    data-return-focus-id="route-delete"
+                    aria-labelledby="route-delete-review-title"
+                    aria-describedby={delete_dialog_describedby(@delete_review)}
+                    role={if @delete_review, do: "alertdialog", else: nil}
+                    aria-modal={if @delete_review, do: "true", else: nil}
+                    inert={if @delete_review, do: nil, else: ""}
+                    aria-hidden={if @delete_review, do: nil, else: "true"}
+                    class="m-0 border-0 w-full h-full bg-transparent p-0"
+                  >
+                    <div class="w-full h-full flex items-center justify-center p-4">
+                      <div
+                        :if={@delete_review}
+                        class="w-full max-w-xl border border-base-300 bg-base-100 p-5"
+                      >
+                        <h3 id="route-delete-review-title" class="font-semibold">
+                          {delete_dialog_title(@delete_review, @route)}
+                        </h3>
+
+                        <RouteFormComponents.delete_review_panel
+                          :if={not @delete_review.empty?}
+                          ref={deactivate_ref(@route)}
+                          name={route_display_name(@route)}
+                          rows={delete_impact_rows(assigns)}
+                          retained_lines={delete_retained_lines(@delete_review)}
+                          blocks_note={delete_blocks_note(@delete_review)}
+                          banner={delete_banner(@delete_changes)}
+                          ack_label={delete_ack_label(@delete_review)}
+                          ack_error={@delete_ack_error}
+                          error={@delete_error}
+                          pending={@delete_pending}
+                          deactivate_instead?={@active_state != :inactive}
+                        />
+
+                        <RouteFormComponents.delete_simple_panel
+                          :if={@delete_review.empty?}
+                          ref={deactivate_ref(@route)}
+                          name={route_display_name(@route)}
+                          error={@delete_error}
+                          pending={@delete_pending}
+                        />
                       </div>
                     </div>
                   </dialog>

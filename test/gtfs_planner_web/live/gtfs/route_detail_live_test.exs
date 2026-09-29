@@ -1843,6 +1843,445 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  describe "reviewed deletion" do
+    setup :shared_setup
+
+    test "delete opens the reviewed impact: affected categories with identities, retained resources and a fresh acknowledgement",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL1"})
+
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL_T1")
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL_T2")
+
+      fare_rule_fixture(organization.id, version.id, %{
+        fare_id: "DEL_F1",
+        route_id: route.route_id
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert has_element?(view, "#route-delete", "Delete route…")
+
+      view |> element("#route-delete") |> render_click()
+
+      assert has_element?(
+               view,
+               "#route-delete-review[data-open='true']",
+               "Delete P1 Details long name?"
+             )
+
+      assert has_element?(view, "#route-delete-review-body", "You can't undo this")
+      assert has_element?(view, "#route-delete-impact-title", "Deleted with the route")
+
+      # The categories are the review's own rows with their scoped identities.
+      assert has_element?(view, "#route-delete-impact", "Trips")
+      assert has_element?(view, "#route-delete-impact", "DEL_T1, DEL_T2")
+      assert has_element?(view, "#route-delete-impact", "Fare rules")
+
+      # The retained resources are the review's, with real counts: the two
+      # trips' calendars survive, and this route names no agency of its own.
+      assert has_element?(view, "#route-delete-retained", "Calendars retained (2")
+
+      # An active route offers the reversible alternative; the acknowledgement
+      # starts unchecked and is only the operator's own act.
+      assert has_element?(view, "#route-delete-deactivate", "Deactivate instead")
+
+      assert has_element?(
+               view,
+               "#route-delete-review-body",
+               "Delete 2 trips with this route"
+             )
+
+      refute ack_checked?(view)
+
+      # Keep route closes with nothing written (AC-24's reversible close).
+      view |> element("#route-delete-keep") |> render_click()
+
+      refute has_element?(view, "#route-delete-review-title")
+      assert saved_route(route).route_id == "DEL1"
+    end
+
+    test "confirming without the fresh acknowledgement deletes nothing",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL2"})
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL2_T1")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+      view |> form("#route-delete-form") |> render_submit()
+
+      assert has_element?(view, "#route-delete-ack-error", "Check the box")
+      assert has_element?(view, "#route-delete-review[data-open='true']")
+
+      assert Repo.get_by(GtfsPlanner.Gtfs.Trip,
+               organization_id: organization.id,
+               trip_id: "DEL2_T1"
+             )
+
+      assert saved_route(route).route_id == "DEL2"
+    end
+
+    test "the reviewed cascade deletes exactly its disclosed closure and returns to the scoped list with real counts",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      agency_fixture(organization.id, version.id, %{agency_id: "DEL_A1"})
+      route = details_route(organization.id, version.id, %{route_id: "DEL3"})
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "DEL_STOP"})
+      trip = trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL3_T1")
+
+      stop_time_fixture(organization.id, version.id, trip.trip_id, stop.stop_id, %{
+        stop_sequence: 1
+      })
+
+      fare_rule_fixture(organization.id, version.id, %{
+        fare_id: "DEL3_F1",
+        route_id: route.route_id
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+
+      # The review names the stop time's own identity, not just a count.
+      assert has_element?(view, "#route-delete-impact", "#{trip.trip_id}:1")
+
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_submit()
+
+      # The apply is the step-12 command in a supervised task; the completion
+      # navigates to the scoped list with the checked summary's real counts
+      # and moves focus to the list's primary action (AC-24).
+      {path, %{"info" => flash}} = assert_redirect(view)
+
+      assert path == "/gtfs/#{version.id}/routes?deleted=1"
+      assert flash =~ "deleted, with its 1 trip."
+
+      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+
+      refute Repo.get_by(GtfsPlanner.Gtfs.Trip,
+               organization_id: organization.id,
+               trip_id: "DEL3_T1"
+             )
+
+      refute Repo.get_by(GtfsPlanner.Gtfs.FareRule,
+               organization_id: organization.id,
+               fare_id: "DEL3_F1"
+             )
+
+      refute Repo.get_by(GtfsPlanner.Gtfs.StopTime,
+               organization_id: organization.id,
+               trip_id: "DEL3_T1"
+             )
+
+      # The retained records survive the cascade (AC-14).
+      assert Repo.get_by(GtfsPlanner.Gtfs.Stop,
+               organization_id: organization.id,
+               stop_id: "DEL_STOP"
+             )
+
+      assert Repo.get_by(GtfsPlanner.Gtfs.Agency,
+               organization_id: organization.id,
+               agency_id: "DEL_A1"
+             )
+    end
+
+    test "an empty entire plan uses the simple confirmation",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL4"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+
+      assert has_element?(view, "#route-delete-review[data-open='true']", "Delete P1?")
+      assert has_element?(view, "#route-delete-simple-body", "has no patterns or trips")
+      refute has_element?(view, "#route-delete-form")
+
+      view |> element("#route-delete-go") |> render_click()
+
+      {path, %{"info" => flash}} = assert_redirect(view)
+      assert path == "/gtfs/#{version.id}/routes?deleted=1"
+      assert flash == "Route P1 deleted."
+      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+    end
+
+    test "a relationships-only route uses the complete review",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL5"})
+
+      fare_rule_fixture(organization.id, version.id, %{
+        fare_id: "DEL5_F1",
+        route_id: route.route_id
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+
+      # A non-empty review is never the simple dialog: the fare rule is part of
+      # the reviewed impact and the acknowledgement is required (R5).
+      assert has_element?(
+               view,
+               "#route-delete-review[data-open='true']",
+               "Delete P1 Details long name?"
+             )
+
+      assert has_element?(view, "#route-delete-impact", "Fare rules")
+      assert has_element?(view, "#route-delete-form")
+
+      assert has_element?(
+               view,
+               "#route-delete-review-body",
+               "Delete the route and its listed records with this route"
+             )
+
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_submit()
+
+      {path, %{"info" => _flash}} = assert_redirect(view)
+      assert path == "/gtfs/#{version.id}/routes?deleted=1"
+
+      refute Repo.get_by(GtfsPlanner.Gtfs.FareRule,
+               organization_id: organization.id,
+               fare_id: "DEL5_F1"
+             )
+
+      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+    end
+
+    test "same-count stale review says contents changed, clears acknowledgement and deletes nothing",
+         %{conn: conn, organization: organization, gtfs_version: version, user: user} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL6"})
+
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL6_T1")
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL6_T2")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+
+      # Another writer changes the route's contents without changing any
+      # count, through the real command (R5's equal-totals stale case).
+      {:ok, _} =
+        Gtfs.update_route(
+          route.route_id,
+          %{"route_desc" => "Rewritten elsewhere"},
+          Gtfs.route_source(saved_route(route)),
+          %{},
+          %AuditContext{
+            organization_id: organization.id,
+            gtfs_version_id: version.id,
+            actor_id: user.id,
+            actor_email: user.email
+          }
+        )
+
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_submit()
+
+      # The stale apply is explained without inventing an actor or an action,
+      # the acknowledgement is cleared, and nothing was deleted (AC-13).
+      eventually(fn ->
+        assert has_element?(view, "#route-delete-changed", "contents changed")
+        assert has_element?(view, "#route-delete-changed", "Nothing was deleted")
+        assert has_element?(view, "#route-delete-impact", "contents changed")
+        refute ack_checked?(view)
+      end)
+
+      assert Repo.get_by(GtfsPlanner.Gtfs.Trip,
+               organization_id: organization.id,
+               trip_id: "DEL6_T1"
+             )
+
+      assert Repo.get_by(GtfsPlanner.Gtfs.Trip,
+               organization_id: organization.id,
+               trip_id: "DEL6_T2"
+             )
+
+      # The fresh review is confirmable with a genuinely new acknowledgement:
+      # the re-check re-acks and the fresh fingerprint applies.
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_submit()
+
+      {path, %{"info" => _flash}} = assert_redirect(view)
+      assert path == "/gtfs/#{version.id}/routes?deleted=1"
+      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+    end
+
+    test "a counts-changed stale review shows the reviewed count struck through, clears acknowledgement and deletes nothing",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL7"})
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL7_T1")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+
+      # Another writer adds a trip while the review is open.
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL7_T2")
+
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_submit()
+
+      # The apply runs in a supervised task, so the stale re-render arrives as
+      # an async message: poll briefly for the dialog's next state.
+      eventually(fn ->
+        assert has_element?(
+                 view,
+                 "#route-delete-changed",
+                 "The counts changed while this was open."
+               )
+
+        assert has_element?(view, "#route-delete-impact span.line-through", "1")
+        assert has_element?(view, "#route-delete-impact", "2")
+        assert has_element?(view, "#route-delete-impact", "DEL7_T1, DEL7_T2")
+        refute ack_checked?(view)
+      end)
+
+      assert Repo.get_by(GtfsPlanner.Gtfs.Trip,
+               organization_id: organization.id,
+               trip_id: "DEL7_T1"
+             )
+
+      assert Repo.get_by(GtfsPlanner.Gtfs.Trip,
+               organization_id: organization.id,
+               trip_id: "DEL7_T2"
+             )
+
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_submit()
+
+      {path, %{"info" => flash}} = assert_redirect(view)
+      assert path == "/gtfs/#{version.id}/routes?deleted=1"
+      assert flash =~ "deleted, with its 2 trips."
+    end
+
+    test "a dirty draft resolves keep-editing/discard/save-continue before the delete review opens",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL8"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{route: %{route_long_name: "Unsaved rename"}})
+      |> render_change()
+
+      # Delete holds behind the leave dialog instead of reviewing against
+      # unreviewed work (R4, step 28's resolution pattern).
+      view |> element("#route-delete") |> render_click()
+
+      assert has_element?(view, "#route-details-leave[data-open='true']", "Leave without saving?")
+      refute has_element?(view, "#route-delete-review-title")
+
+      # Keep editing resolves nothing: no review, no write.
+      view |> element("#route-details-leave-cancel") |> render_click()
+
+      refute has_element?(view, "#route-delete-review-title")
+      assert saved_route(route).route_id == "DEL8"
+
+      # Discard resolves the draft and then opens the review.
+      view |> element("#route-delete") |> render_click()
+      view |> element("#route-details-leave-discard") |> render_click()
+
+      assert has_element?(view, "#route-delete-review[data-open='true']")
+      assert saved_route(route).route_long_name == "Details long name"
+
+      # "Save and continue" commits the draft and only then opens the review.
+      view |> element("#route-delete-keep") |> render_click()
+
+      view
+      |> form("#route-details-form", %{route: %{route_long_name: "Saved rename"}})
+      |> render_change()
+
+      view |> element("#route-delete") |> render_click()
+      view |> element("#route-details-leave-save") |> render_click()
+
+      assert has_element?(view, "#route-delete-review[data-open='true']")
+      assert saved_route(route).route_long_name == "Saved rename"
+    end
+
+    test "Deactivate instead closes the delete review and opens the deactivate confirmation",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL9"})
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL9_T1")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+      view |> element("#route-delete-deactivate") |> render_click()
+
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
+      refute has_element?(view, "#route-delete-review-title")
+
+      # The reversible alternative writes nothing until its own confirm.
+      view |> element("#route-status-keep") |> render_click()
+
+      assert saved_route(route).active == true
+    end
+
+    test "review failures speak truthfully: a route deleted elsewhere redirects, and a revoked editor keeps the page",
+         %{conn: conn, organization: organization, gtfs_version: version, user: user} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL10"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # The route disappears before the review opens: the command's :not_found
+      # routes back to the scoped list (AC-24's truthful outcome).
+      Repo.delete!(saved_route(route))
+
+      view |> element("#route-delete") |> render_click()
+
+      assert_redirect(view, "/gtfs/#{version.id}/routes")
+
+      # A revoked editor can no longer open a review: the page stays and the
+      # refusal is announced in the section's outcome region.
+      route2 = details_route(organization.id, version.id, %{route_id: "DEL11"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route2.route_id}")
+
+      revoke_editor_role(user, organization)
+
+      view |> element("#route-delete") |> render_click()
+
+      assert has_element?(view, "#route-status-outcome", "editor access was removed")
+      refute has_element?(view, "#route-delete-review-title")
+      assert saved_route(route2).route_id == "DEL11"
+    end
+  end
+
+  # The apply runs in a supervised task, so its result lands as an async
+  # message: poll briefly for the asserted dialog state instead of sleeping a
+  # fixed amount (the delete itself is fast; the poll is the wait).
+  defp eventually(fun, attempts \\ 100)
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    fun.()
+  rescue
+    ExUnit.AssertionError ->
+      Process.sleep(20)
+      eventually(fun, attempts - 1)
+  end
+
+  defp eventually(fun, _attempts), do: fun.()
+
+  # The acknowledgement is the checkbox's own change event; the helper mimics
+  # the browser checking it before the submit under test.
+  defp ack_checked?(view) do
+    view
+    |> element("#route-delete-ack")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute("checked")
+    |> List.first() != nil
+  end
+
   defp fare_rule_fixture(organization_id, gtfs_version_id, attrs) do
     %GtfsPlanner.Gtfs.FareRule{}
     |> GtfsPlanner.Gtfs.FareRule.changeset(

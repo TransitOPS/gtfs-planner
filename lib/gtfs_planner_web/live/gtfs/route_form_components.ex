@@ -1359,4 +1359,256 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   defp choice_class do
     "relative inline-flex min-h-11 cursor-pointer items-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas has-[:checked]:border-2 has-[:checked]:border-action has-[:checked]:bg-selection has-[:checked]:px-[15px] has-[:checked]:text-action has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
   end
+
+  @doc """
+  Renders the reviewed-deletion confirmation body (R5, AC-13/24).
+
+  The impact table is the step-11 review's own categories, counts and scoped
+  identities; after a stale apply the caller passes the changes
+  `Gtfs.deletion_review_changes/2` returned, so rows that changed while the
+  review was open are highlighted, equal totals still say "contents changed",
+  and the caller-supplied banner explains the refusal without inventing an
+  actor or an action. The acknowledgement checkbox starts unchecked on every
+  open and is re-cleared on every stale re-render: only a fresh acknowledgement
+  can re-apply (R5).
+
+  The body owns its form, so the confirm button's submit carries the checkbox
+  state and the phx-change clears a shown acknowledgement error.
+  """
+  attr :ref, :string, required: true, doc: "the route's display reference"
+  attr :name, :string, required: true, doc: "the route's display name"
+
+  attr :rows, :list,
+    required: true,
+    doc: "affected categories: label, count, previous_count, contents_changed?, identities"
+
+  attr :retained_lines, :list,
+    required: true,
+    doc: "truthful kept-resource sentences, each already carrying its counts"
+
+  attr :blocks_note, :string,
+    default: nil,
+    doc: "the affected block-ID sentence, when the review counted any"
+
+  attr :banner, :map,
+    default: nil,
+    doc: "the stale-apply explanation: %{kind: :counts | :contents, text: binary}"
+
+  attr :ack_label, :string, required: true, doc: "the acknowledgement sentence"
+  attr :ack_error, :string, default: nil
+  attr :error, :string, default: nil, doc: "a truthful refusal from the apply command"
+  attr :pending, :boolean, default: false
+  attr :deactivate_instead?, :boolean, default: true, doc: "the route is active (INV-4)"
+
+  def delete_review_panel(assigns) do
+    ~H"""
+    <div id="route-delete-review-body" class="grid gap-3 text-sm text-base-content/70">
+      <div
+        :if={@banner}
+        id="route-delete-changed"
+        role="alert"
+        class={[
+          "flex items-start gap-3 rounded-control border px-4 py-3 text-warning-fg",
+          @banner.kind == :counts && "border-warning-line bg-warning-bg",
+          @banner.kind == :contents && "border-warning bg-warning/10"
+        ]}
+      >
+        <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+        <p class="text-sm"><strong class="font-bold">{@banner.text}</strong> Nothing was deleted.
+          Check the review below, then confirm again.</p>
+      </div>
+
+      <p>
+        This permanently deletes the route and everything that belongs only to it. You can't undo
+        this.
+      </p>
+
+      <h3 id="route-delete-impact-title" class="mt-1 text-[13px] font-[650] text-default">
+        Deleted with the route
+      </h3>
+      <table
+        id="route-delete-impact"
+        aria-labelledby="route-delete-impact-title"
+        class="w-full border-collapse overflow-hidden rounded-control border border-subtle text-sm"
+      >
+        <tbody>
+          <tr
+            :for={row <- @rows}
+            class={[
+              "border-b border-subtle last:border-0",
+              (row.previous_count != nil or row.contents_changed?) && "bg-warning-bg"
+            ]}
+          >
+            <th scope="row" class="py-2 pl-3 pr-3 text-left align-top font-normal">
+              {row.label}
+              <span
+                :if={row.identities != ""}
+                class="mt-0.5 block text-[12px] break-words text-muted"
+              >
+                {row.identities}
+              </span>
+            </th>
+            <td class="py-2 pl-3 pr-3 text-right align-top font-[650] tabular-nums text-strong">
+              <span :if={row.previous_count != nil} class="mr-1.5 font-normal text-muted line-through">
+                {row.previous_count}
+              </span>
+              {row.count}
+              <span
+                :if={row.contents_changed?}
+                class="ml-1.5 rounded-badge bg-warning/15 px-1.5 py-0.5 text-[11px] font-[650] text-warning-fg"
+              >
+                contents changed
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p
+        :if={@retained_lines != [] or @blocks_note}
+        id="route-delete-retained"
+        class="text-[13px] text-muted"
+      >
+        <span :if={@retained_lines != []}>Kept: {Enum.join(@retained_lines, ", ")}.</span>
+        <span :if={@blocks_note}>{@blocks_note}</span>
+      </p>
+
+      <div
+        :if={@deactivate_instead?}
+        class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-control bg-canvas px-4 py-3"
+      >
+        <p class="min-w-0 flex-1 basis-[260px] text-sm">
+          <strong class="font-[650] text-strong">Keep the data instead?</strong> Deactivating leaves
+          the route out of exports and can be undone.
+        </p>
+        <button
+          id="route-delete-deactivate"
+          type="button"
+          disabled={@pending}
+          phx-click="delete_deactivate_instead"
+          class="h-[44px] min-w-[44px] border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:border-subtle disabled:text-muted"
+        >
+          <.icon name="hero-eye-slash" class="ml-1 size-4" />Deactivate instead
+        </button>
+      </div>
+
+      <.form
+        for={%{}}
+        as={:delete}
+        id="route-delete-form"
+        phx-submit="confirm_delete_route"
+        phx-change="acknowledge_delete"
+        class="mt-2 grid gap-1.5"
+      >
+        <label class="flex cursor-pointer items-start gap-3 rounded-control border border-control px-4 py-3 has-[:checked]:border-action has-[:checked]:bg-selection">
+          <input
+            type="checkbox"
+            id="route-delete-ack"
+            name="delete[acknowledged]"
+            aria-describedby="route-delete-ack-error"
+            disabled={@pending}
+            class="mt-0.5 size-5 shrink-0 accent-action"
+          />
+          <span class="text-sm text-strong">{@ack_label}</span>
+        </label>
+        <p
+          :if={@ack_error}
+          id="route-delete-ack-error"
+          role="alert"
+          class="flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
+        >
+          {@ack_error}
+        </p>
+
+        <div class="mt-3 flex flex-wrap items-center justify-end gap-2">
+          <button
+            id="route-delete-keep"
+            type="button"
+            data-dialog-dismiss
+            disabled={@pending}
+            phx-click="cancel_delete_route"
+            class="h-[44px] min-w-[44px] border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:border-subtle disabled:text-muted"
+          >
+            Keep route
+          </button>
+          <button
+            id="route-delete-go"
+            type="submit"
+            disabled={@pending}
+            phx-disable-with="Deleting…"
+            class="h-[44px] min-w-[140px] bg-primary px-4 text-sm font-semibold text-primary-content"
+          >
+            Delete route
+          </button>
+        </div>
+      </.form>
+
+      <p
+        :if={@error}
+        id="route-delete-error"
+        role="alert"
+        class="rounded-control border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
+      >
+        {@error}
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the simple confirmation an empty entire plan may use (R5).
+
+  Only a review whose whole plan is empty (`empty?`) reaches this body: there
+  is nothing beyond the route row itself to name, so the confirmation is one
+  sentence and one deliberate click. There is no acknowledgement checkbox —
+  the confirm click is the acknowledgement, and it still goes through the
+  audited command.
+  """
+  attr :ref, :string, required: true
+  attr :name, :string, required: true
+  attr :error, :string, default: nil
+  attr :pending, :boolean, default: false
+
+  def delete_simple_panel(assigns) do
+    ~H"""
+    <div id="route-delete-simple-body" class="mt-1 text-sm text-base-content/70">
+      <p>
+        {@ref} {@name} has no patterns or trips. Deleting it removes the route from this version.
+        This can't be undone.
+      </p>
+
+      <p
+        :if={@error}
+        id="route-delete-error"
+        role="alert"
+        class="mt-3 rounded-control border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
+      >
+        {@error}
+      </p>
+
+      <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
+        <button
+          id="route-delete-keep"
+          type="button"
+          data-dialog-dismiss
+          disabled={@pending}
+          phx-click="cancel_delete_route"
+          class="h-[44px] min-w-[44px] border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:border-subtle disabled:text-muted"
+        >
+          Keep route
+        </button>
+        <button
+          id="route-delete-go"
+          type="button"
+          disabled={@pending}
+          phx-click="confirm_delete_route_simple"
+          phx-disable-with="Deleting…"
+          class="h-[44px] min-w-[44px] bg-primary px-4 text-sm font-semibold text-primary-content"
+        >
+          Delete route
+        </button>
+      </div>
+    </div>
+    """
+  end
 end

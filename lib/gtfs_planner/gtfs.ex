@@ -1061,6 +1061,19 @@ defmodule GtfsPlanner.Gtfs do
     do: Routes.delete_route(route_id, review_fingerprint, acknowledged, audit_context)
 
   @doc """
+  Compares a retained deletion review with a fresh one (R5/AC-13).
+
+  See `GtfsPlanner.Gtfs.Routes.deletion_review_changes/2` for the marker
+  contract: one entry per changed category, each carrying the stable
+  `:count_changed` and `:contents_changed` markers, so a stale apply is
+  explained even when the totals are equal.
+  """
+  @spec deletion_review_changes([map()], [map()]) ::
+          [%{key: String.t(), label: String.t(), markers: [atom()]}]
+  def deletion_review_changes(previous_categories, categories),
+    do: Routes.deletion_review_changes(previous_categories, categories)
+
+  @doc """
   Returns a list of distinct route types for an organization and GTFS version.
 
   ## Examples
