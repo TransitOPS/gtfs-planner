@@ -556,6 +556,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       services: [],
       calendars: %{},
       map: %{areas: [], routes: [], stops: []},
+      routes: [],
       has_fixed_routes?: true,
       include_flex: true
     }
