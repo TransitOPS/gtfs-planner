@@ -318,19 +318,22 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
         acc
 
       option, acc ->
-        Enum.reduce(before, acc, fn {prev, {worst, plan}}, acc ->
-          if option.first > prev and option.first <= finish do
-            worst = max(worst, max(option.first - prev, option.inner))
-            candidate = {worst, plan ++ option.points}
-
-            Map.update(acc, option.last, candidate, fn current ->
-              if candidate < current, do: candidate, else: current
-            end)
-          else
-            acc
-          end
-        end)
+        Enum.reduce(before, acc, &take(&1, option, &2, finish))
     end)
+  end
+
+  # Keeps the better of this option's candidate and what `last` already holds.
+  # `Map.update/4` with a `min/2` over the comparable tuple pairs the state value
+  # with the plan that reached it, so a later candidate never wins by tie order.
+  defp take({prev, {worst, plan}}, option, acc, finish) do
+    if option.first > prev and option.first <= finish do
+      worst = max(worst, max(option.first - prev, option.inner))
+      candidate = {worst, plan ++ option.points}
+
+      Map.update(acc, option.last, candidate, &min(&1, candidate))
+    else
+      acc
+    end
   end
 
   # A state at least as late and no worse than another can only help what comes

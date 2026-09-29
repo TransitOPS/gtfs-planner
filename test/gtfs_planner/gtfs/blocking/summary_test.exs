@@ -291,11 +291,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
         summary("A1")
       ]
 
+      # The names order the way the database orders them, so "35-ft diesel"
+      # leads "Any type" and the "Main" garage's two blocks come before
+      # "North". The no-garage block stays last in both directions.
       assert ids(Summary.sort_blocks(blocks, :garage, :asc)) ==
-               ["1", "101", "10", "2", "A1"]
+               ["101", "1", "10", "2", "A1"]
 
       assert ids(Summary.sort_blocks(blocks, :garage, :desc)) ==
-               ["2", "10", "101", "1", "A1"]
+               ["2", "10", "1", "101", "A1"]
     end
 
     test "sorts hours descending with hours-less blocks last" do

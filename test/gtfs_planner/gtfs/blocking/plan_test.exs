@@ -134,14 +134,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanTest do
     test "a new block 105 running on WKDY and SCHOOL gets one row per service" do
       {_selected, {_result, plan}} = build(two_services())
 
-      assert [
-               %{block_id: "105", garage_id: @main, vehicle_type_id: nil, trip_ids: first},
-               %{block_id: "105", garage_id: @main, vehicle_type_id: nil, trip_ids: second}
-             ] =
+      # `new_blocks` carries one row per block, not per service: block 105 is
+      # new once however many services run on it, and it owns both trips.
+      assert [%{block_id: "105", garage_id: @main, vehicle_type_id: nil, trip_ids: trips}] =
                plan.new_blocks
 
-      assert first == [uuid(1)]
-      assert second == [uuid(2)]
+      assert Enum.sort(trips) == Enum.sort([uuid(1), uuid(2)])
 
       assert [
                %{service_id: "SCHOOL", block_id: "105", garage_id: @main, vehicle_type_id: nil},
@@ -179,7 +177,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanTest do
       {rows, context} = rows_and_context(additive_plan())
       applied = apply_moves(rows, plan.moves)
 
-      assert 101 in Enum.map(applied, & &1.block_id)
+      assert "101" in Enum.map(applied, & &1.block_id)
 
       assert plan.after.vehicles ==
                applied

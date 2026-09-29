@@ -100,10 +100,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       second = complete_context(garages: garages |> Enum.to_list() |> Enum.reverse() |> Map.new())
 
       # Two equal contexts, the second with the garage map keyed in the opposite
-      # insertion order. A digest taken over the struct's map order rather than
-      # over sorted entries would answer differently here.
-      refute Map.keys(first.garages) == Map.keys(second.garages)
+      # insertion order. Erlang stores small map keys in term order, so the
+      # insertion order is not observable from the map itself; what the digest
+      # claims is that it does not depend on it, and these two are the same
+      # value either way.
       assert first == second
+      assert first.garages == second.garages
       assert Context.digest(first) == Context.digest(second)
     end
 
@@ -364,7 +366,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
           default_garage_id: @garage_uuid
         )
 
-      result = Context.resolve_block(context, "101", [trip_row(%{})])
+      # The block has no attribute row, so the route's deleted garage does not
+      # answer and the default is what remains.
+      result = Context.resolve_block(context, "999", [trip_row(%{})])
 
       assert result.garage_id == @garage_uuid
       assert result.garage_source == :default
@@ -700,6 +704,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
         service_id: "OFF",
         block_id: "101"
       })
+
+      # A context carries the attributes of the day type's own blocks, and a
+      # block exists only for the trips assigned to it. `OFF` is not in this day
+      # type, so nothing reads its row.
+      trip!(organization, version, "a", block_id: "101")
 
       assert {:ok, day} = load_day(organization.id, version.id, nil)
 

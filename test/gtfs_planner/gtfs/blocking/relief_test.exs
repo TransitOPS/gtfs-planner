@@ -383,20 +383,25 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
   defp spaced?(plan) do
     plan
     |> Enum.group_by(fn {_instant, window} -> window.gap_index end)
-    |> Enum.all?(fn {_gap_index, entries} ->
-      origin = Enum.find_value(entries, fn {i, w} -> if w.side == :origin, do: {i, w} end)
+    |> Enum.all?(fn {_gap_index, entries} -> gap_spaced?(entries) end)
+  end
 
-      destination =
-        Enum.find_value(entries, fn {i, w} -> if w.side == :destination, do: {i, w} end)
+  # A `:destination` change of a gap whose `:origin` change was also taken must
+  # be at least the drive later, because the vehicle is driving between. A gap
+  # missing either side has nothing to compare.
+  defp gap_spaced?(entries) do
+    origin = Enum.find_value(entries, fn {i, w} -> if w.side == :origin, do: {i, w} end)
 
-      case {origin, destination} do
-        {{origin_instant, %{drive_secs: drive}}, {destination_instant, _}} ->
-          destination_instant >= origin_instant + drive
+    destination =
+      Enum.find_value(entries, fn {i, w} -> if w.side == :destination, do: {i, w} end)
 
-        _ ->
-          true
-      end
-    end)
+    case {origin, destination} do
+      {{origin_instant, %{drive_secs: drive}}, {destination_instant, _}} ->
+        destination_instant >= origin_instant + drive
+
+      _ ->
+        true
+    end
   end
 
   defp span(plan, start, finish) do

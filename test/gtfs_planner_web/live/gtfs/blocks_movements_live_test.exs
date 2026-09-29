@@ -48,6 +48,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
     # kilometres north (the drive a vehicle cannot make in ten minutes) and one
     # with no coordinates at all (the drive the version cannot compute). Every
     # trip is plottable and every pull has a real distance.
+    # The bar titles name stops by name, not by ID, so each stop is named for the
+    # ID it carries.
     for {stop_id, lat, lon} <- [
           {"S1", "40.0000", "-74.0000"},
           {"S2", "40.0100", "-74.0000"},
@@ -57,6 +59,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
         ] do
       stop_with_coordinates_fixture(organization.id, version.id, %{
         stop_id: stop_id,
+        stop_name: stop_name(stop_id),
         stop_lat: lat && Decimal.new(lat),
         stop_lon: lon && Decimal.new(lon)
       })
@@ -152,14 +155,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
       assert attribute(view, out, "style") =~ "width: 6.67%"
       assert attribute(view, out, "phx-click") == "open_block"
       assert attribute(view, out, "phx-value-block") == "101"
-      assert attribute(view, out, "title") =~ "Leaves Main garage at 05:48, 12 min entered"
+      # The title leads with what the bar is, so the reader knows it is a pull.
+      assert attribute(view, out, "title") =~
+               "Pull-out · leaves Main garage at 05:48, 12 min entered"
 
       back = "#{row("101")} [data-role='pull-back']"
 
       assert attribute(view, back, "style") =~ "left: 66.67%"
       assert attribute(view, back, "style") =~ "width: 3.89%"
       assert attribute(view, back, "phx-click") == "open_block"
-      assert attribute(view, back, "title") =~ "Returns to Main garage at 07:07, 7 min entered"
+      # The title leads with what the bar is, so the reader knows it is a pull.
+      assert attribute(view, back, "title") =~
+               "Pull-back · returns to Main garage at 07:07, 7 min entered"
 
       # The axis reads the platform span, not the trip span: 05:48 is before the
       # first departure and 07:07 after the last arrival.
@@ -194,7 +201,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
       assert attribute(view, drive, "style") =~ "left: 33.33%"
       assert attribute(view, drive, "style") =~ "width: 4.44%"
       assert attribute(view, drive, "phx-click") == "open_gap"
-      assert attribute(view, drive, "title") =~ "Drive to FAR"
+      assert attribute(view, drive, "title") =~ "Drive to FAR Stop"
       assert attribute(view, drive, "title") =~ "07:00–07:08, 8 min entered, then wait 22 min"
 
       wait = "#{row("101")} [data-role='blocks-gap']"
@@ -229,7 +236,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
       assert attribute(view, bad, "style") =~ "left: 33.33%"
       assert attribute(view, bad, "style") =~ "width: 16.67%"
       assert attribute(view, bad, "phx-click") == "open_gap"
-      assert attribute(view, bad, "title") =~ "Can't reach FAR"
+      assert attribute(view, bad, "title") =~ "Can't reach FAR Stop"
       assert attribute(view, bad, "title") =~ "needs 40 min to get there, has 30 min"
       assert text(view, bad) == "!"
 
@@ -325,8 +332,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
+      # The axis labels every two hours and drops the last label that would
+      # crowd the right edge, so its opening tick carries the `−1d` marker and
+      # its closing tick is the same day's 23:00. The `+1d` marker belongs to the
+      # span itself, which the row's own cell prints.
       assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "23:00 −1d")
-      assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "23:00 +1d")
+      assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "23:00")
       assert has_element?(view, "#{row("101")} .blocks-meta-out", "23:45 −1d–01:03 +1d")
 
       # The pull-out is on the track rather than off its left edge: 23:45 is 45
@@ -371,4 +382,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
       assert text(view, "#blocks-timeline-legend .blocks-legend-relief") == "⇄"
     end
   end
+
+  # `S1` names "S1 Stop", so a title that reads a stop by name is unambiguous.
+  defp stop_name(stop_id), do: "#{stop_id} Stop"
 end

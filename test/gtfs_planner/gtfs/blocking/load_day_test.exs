@@ -53,7 +53,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
 
       assert day.day_type.key == hd(day.day_types).key
       assert Enum.map(day.day_types, & &1.service_ids) == [["WK"]]
-      assert day.settings == %{min_layover_minutes: 5}
+      # `settings` is the version's whole eight-key Block rules map; this
+      # case is about the minimum layover inside it.
+      assert day.settings.min_layover_minutes == 5
       assert day.mixed_timezones? == false
 
       assert day.counts == %{blocks: 2, trips: 6, unassigned: 3, problems: 0, notices: 0}
@@ -319,7 +321,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
       assert day.bins == []
       assert day.axis == nil
       assert day.routes == %{}
-      assert day.settings == %{min_layover_minutes: 5}
+      # `settings` is the version's whole eight-key Block rules map; this
+      # case is about the minimum layover inside it.
+      assert day.settings.min_layover_minutes == 5
       assert day.mixed_timezones? == false
       assert day.counts == %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
       assert day.peak == %{count: 0, at_secs: nil, excluded_unassigned: 0, excluded_frequency: 0}
@@ -435,7 +439,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
 
       assert {:ok, day} = Gtfs.load_blocking_day(organization.id, version.id, nil)
 
-      assert day.settings == %{min_layover_minutes: 10}
+      # `settings` is the version's whole eight-key Block rules map; this
+      # case is about the minimum layover inside it.
+      assert day.settings.min_layover_minutes == 10
 
       assert [layover] = Enum.filter(day.findings, &(&1.code == :short_layover))
       assert layover.severity == :warning
@@ -908,18 +914,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
       {first, last} =
         if rem(index, 2) == 1, do: {"08:00:00", "09:00:00"}, else: {"09:30:00", "10:30:00"}
 
-      scope
-      |> blocked_trip(%{
+      # `blocked_trip/2` already inserted the trip, so the shape is named in its
+      # own attributes rather than by re-inserting the returned struct.
+      blocked_trip(scope, %{
         trip_id: "trip_#{index}",
         service_id: "WK",
         block_id: "block_#{div(index - 1, 2)}",
         first: first,
         last: last,
         first_stop: "S_A",
-        last_stop: "S_B"
+        last_stop: "S_B",
+        shape_id: "SH-A"
       })
-      |> Ecto.Changeset.change(shape_id: "SH-A")
-      |> Repo.insert!()
     end
 
     scope

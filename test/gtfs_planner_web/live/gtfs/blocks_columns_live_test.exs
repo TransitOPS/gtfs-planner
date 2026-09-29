@@ -185,7 +185,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
-      assert headers(view) == "Block Garage · type Time out Hours Status"
+      # The row-select control leads the header, and the Block column carries the
+      # current sort arrow, so the five data columns are read after them.
+      assert headers(view) == "Select Block ↑ Garage · type Time out Hours Status"
 
       # The three removed columns are gone from the header and from every row.
       refute has_element?(view, "th.blocks-meta-trips")
@@ -252,7 +254,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
       assert cell(view, "101", "blocks-meta-garage") == "Main · Cutaway"
-      assert cell(view, "102", "blocks-meta-garage") == "No garage"
+      # A block with no garage still has a type to name, and the column reads
+      # "garage · type" in both cases, so the type is spelled out here.
+      assert cell(view, "102", "blocks-meta-garage") == "No garage · Any type"
       assert cell(view, "103", "blocks-meta-garage") == "Main · Any type"
 
       # The muted class is the difference between "no garage" and a name, so the
@@ -301,14 +305,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
       block_attribute!(context, "105", context.main.id, context.cutaway.id)
 
       # The entered pull-out from Main to the far stop is 15 minutes and the trip
-      # leaves at 00:00, so the span starts at 23:45 the day before; the last
-      # trip arrives at 01:30 and the entered pull-back is 3 minutes.
+      # leaves at 00:00, so the span starts at 23:45 the day before. The last
+      # trip arrives at 23:58 and the entered pull-back is 3 minutes, so the span
+      # ends at 00:01 the day after: both ends sit outside the service day, which
+      # is what the two day markers are for.
       trip!(context, "a", "105", "00:00:00", "00:30:00", "FAR", "S1")
-      trip!(context, "b", "105", "01:00:00", "01:30:00", "S2", "S1")
+      trip!(context, "b", "105", "22:00:00", "23:58:00", "S1", "S1")
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
-      assert cell(view, "105", "blocks-meta-out") == "23:45 −1d–01:33 +1d"
+      assert cell(view, "105", "blocks-meta-out") == "23:45 −1d–00:01 +1d"
     end
 
     test "prints the trip span of a block no garage resolves", context do
@@ -373,16 +379,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
       assert status_cell(view, "203") =~ "Can't reach"
       assert status_cell(view, "204") =~ "Garage differs"
 
-      # Each label carries an icon, so the four differ by more than their colour.
+      # Each label carries an icon, so a status is not identified by its colour
+      # alone. `CoreComponents.icon/1` renders a Heroicon as a classed span, so
+      # that is what the icon is and not an inline `<svg>`. The icon is chosen by
+      # severity rather than per code, so the two errors and the two warnings
+      # share one each.
       icons =
         view
         |> render()
         |> LazyHTML.from_fragment()
-        |> LazyHTML.query("#blocks-timeline tbody [data-role='block-status'] svg")
+        |> LazyHTML.query(
+          "#blocks-timeline tbody [data-role='block-status'] span[class*='hero-']"
+        )
         |> LazyHTML.attribute("class")
 
       assert length(icons) == 4
-      assert Enum.uniq(icons) == ["size-3.5 shrink-0"]
+      assert Enum.all?(icons, &(&1 =~ "size-3.5 shrink-0"))
+
+      assert Enum.map(icons, &(&1 =~ "hero-x-circle-mini")) ==
+               [true, false, true, false]
+
+      assert Enum.map(icons, &(&1 =~ "hero-exclamation-triangle-mini")) ==
+               [false, true, false, true]
     end
   end
 

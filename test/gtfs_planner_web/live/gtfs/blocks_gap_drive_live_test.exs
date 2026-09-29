@@ -183,11 +183,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
-      # The timeline's own gap bar opens the drawer, which is the production path
-      # from the row to the URL to the drawer.
+      # The timeline's own bar opens the drawer, which is the production path from
+      # the row to the URL to the drawer. This pair's drive does not fit the gap,
+      # so the timeline marks it `drive-bad` rather than drawing a gap bar.
       view
       |> element(
-        "[data-role='blocks-gap'][data-from='#{trips.first.id}'][data-to='#{trips.second.id}']"
+        "[data-role='drive-bad'][data-from='#{trips.first.id}'][data-to='#{trips.second.id}']"
       )
       |> render_click()
 
@@ -220,7 +221,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
       view
       |> element(
-        "[data-role='blocks-gap'][data-from='#{trips.first.id}'][data-to='#{trips.second.id}']"
+        "[data-role='drive-bad'][data-from='#{trips.first.id}'][data-to='#{trips.second.id}']"
       )
       |> render_click()
 
@@ -246,14 +247,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
       assert has_element?(view, "#gap-open-driving-times", "Enter a known driving time")
 
+      # The pair the link names is the pair the movement derived, in the stored
+      # reference form `Gtfs.list_deadhead_pairs/3` hands out. It is read before
+      # the click, because opening the page drawer leaves the gap drawer.
+      assert attribute_values(view, "#gap-open-driving-times", "phx-value-pair") ==
+               ["stop:AB_VALLEY|stop:AB_MKT"]
+
       view |> element("#gap-open-driving-times") |> render_click()
 
       assert_patch(view, base <> "?drawer=driving_times&pair=stop%3AAB_VALLEY%7Cstop%3AAB_MKT")
-
-      # The pair the link names is the pair the movement derived, in the stored
-      # reference form `Gtfs.list_deadhead_pairs/3` hands out.
-      assert attribute_values(view, "#gap-open-driving-times", "phx-value-pair") ==
-               ["stop:AB_VALLEY|stop:AB_MKT"]
 
       # The drawer the link opens is a page drawer, so the stack is dropped rather
       # than left open underneath it.
@@ -341,9 +343,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
     test "the row labels read in the drawer's own order", context do
       relief_limit!(context, 330)
-      block_101!(context)
+      trips = block_101!(context)
 
-      {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
+      base = blocks_path(context.version.id)
+      {:ok, view, _html} = live(editor_conn(context), gap_url(base, trips.first, trips.second))
 
       assert texts(view, "#gap-drawer dt") == [
                "Arrives",

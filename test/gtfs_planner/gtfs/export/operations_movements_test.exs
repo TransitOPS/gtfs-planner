@@ -153,7 +153,11 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
       # `_prev` partner listing each of them a day earlier.
       {:ok, [day_type]} = blocking_day_types(organization.id, version.id)
 
-      expected = day_type.dates |> Enum.uniq() |> Enum.sort() |> Enum.map(&csv_date/1)
+      expected =
+        day_type.dates
+        |> Enum.uniq()
+        |> Enum.map(&csv_date/1)
+        |> Enum.sort()
 
       {service_id, _prev} = services(dates)
 
@@ -201,7 +205,12 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
       written = dates |> Enum.filter(&(&1["service_id"] == pull_out["service_id"]))
       written = written |> Enum.map(& &1["date"]) |> Enum.sort()
 
-      assert written == Enum.map(day_type_dates, &(&1 |> Date.add(-1) |> csv_date()))
+      expected =
+        day_type_dates
+        |> Enum.map(&(&1 |> Date.add(-1) |> csv_date()))
+        |> Enum.sort()
+
+      assert written == expected
     end
   end
 
@@ -271,7 +280,10 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
 
     test "an unpublished version keeps its public files and says the movements are out of reach" do
       organization = organization_fixture()
-      {:ok, staging} = GtfsPlanner.Versions.create_staging_gtfs_version(organization.id, %{})
+
+      {:ok, staging} =
+        GtfsPlanner.Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
       version = Repo.get!(GtfsPlanner.Versions.GtfsVersion, staging.id)
 
       route_fixture(organization.id, version.id, route_id: "R1", route_short_name: "1")
@@ -329,19 +341,19 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
   defp assert_resolved(entries) do
     stop_ids =
       ["stops.txt", "stops_supplement.txt"]
-      |> Enum.flat_map(fn file -> file |> csv_rows() |> Enum.map(& &1["stop_id"]) end)
+      |> Enum.flat_map(fn file -> entries[file] |> csv_rows() |> Enum.map(& &1["stop_id"]) end)
       |> MapSet.new()
 
     service_ids =
       ["calendar.txt", "calendar_dates.txt", "calendar_dates_supplement.txt"]
       |> Enum.flat_map(fn file ->
-        file |> csv_rows() |> Enum.map(& &1["service_id"]) |> Enum.reject(&is_nil/1)
+        entries[file] |> csv_rows() |> Enum.map(& &1["service_id"]) |> Enum.reject(&is_nil/1)
       end)
       |> MapSet.new()
 
     route_ids =
       ["routes.txt", "routes_supplement.txt"]
-      |> Enum.flat_map(fn file -> file |> csv_rows() |> Enum.map(& &1["route_id"]) end)
+      |> Enum.flat_map(fn file -> entries[file] |> csv_rows() |> Enum.map(& &1["route_id"]) end)
       |> MapSet.new()
 
     for row <- csv_rows(entries["stop_times_supplement.txt"]) do
@@ -435,6 +447,8 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
     Map.new(files, fn {name, content} -> {to_string(name), content} end)
   end
 
+  # The artifact store nests a published ZIP under its organization, version and
+  # run directories, so the one regular file under the root is the published ZIP.
   defp published_zip_entries(root) do
     [path] =
       root
@@ -442,7 +456,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
       |> Path.wildcard(match_dot: true)
       |> Enum.filter(&File.regular?/1)
 
-    path |> File.read!() |> :zip.unzip([:memory]) |> then(&zip_entries/1)
+    zip_entries(File.read!(path))
   end
 
   # The supplement files hold no quoted field and no embedded comma, so their
@@ -459,14 +473,17 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
     keys = String.split(header, ",")
 
     Enum.map(lines, fn line ->
-      line |> String.split(",") |> Enum.zip(keys) |> Map.new()
+      keys |> Enum.zip(String.split(line, ",")) |> Map.new()
     end)
   end
 
   defp csv_date(%Date{} = date), do: date |> Date.to_string() |> csv_date()
   defp csv_date(date) when is_binary(date), do: String.replace(date, "-", "")
 
-  defp previous_day("20" <> year <> month <> day) do
+  # `csv_date/1` compacts to `YYYYMMDD`, so the year, month and day are read back
+  # out of that eight-character shape rather than out of a separator the value no
+  # longer has.
+  defp previous_day(<<year::binary-size(4), month::binary-size(2), day::binary-size(2)>>) do
     Date.new!(String.to_integer(year), String.to_integer(month), String.to_integer(day))
     |> Date.add(-1)
     |> csv_date()
