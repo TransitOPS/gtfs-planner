@@ -112,6 +112,49 @@ async function waitForLiveView(page) {
   });
 }
 
+// The seeded clock and date strings move with the seed run, and a masked box
+// follows the masked text's width in a proportional font, so the content-sized
+// masked regions are pinned to fixed inline sizes: the captured geometry is then
+// identical at 1:15 AM and 10:15 AM UTC and on any run date, and no comparison
+// tolerance is involved. Every pinned width is the two-digit-hour worst case
+// rounded up. The widths are asserted after pinning so a mask whose box stops
+// being fixed fails here instead of flaking the reviewed screenshot.
+const PINNED_MASK_WIDTHS = [
+  ["#resume-list .tabular-nums.text-muted", 112],
+  ["#check-time", 112],
+  ["#export-meta", 176],
+  ["#editing-now span", 152],
+  ["#export-line", 128],
+];
+
+async function pinMaskGeometry(page) {
+  await page.addStyleTag({
+    content: PINNED_MASK_WIDTHS.map(
+      ([selector, width]) => `${selector} { inline-size: ${width}px; }`,
+    ).join("\n"),
+  });
+
+  const pinned = await page.evaluate(
+    (specs) =>
+      specs.map(([selector, expected]) => ({
+        selector,
+        expected,
+        boxes: [...document.querySelectorAll(selector)].map((el) => ({
+          width: Math.round(el.getBoundingClientRect().width),
+          overflow: el.scrollWidth - el.clientWidth,
+        })),
+      })),
+    PINNED_MASK_WIDTHS,
+  );
+
+  for (const { selector, expected, boxes } of pinned) {
+    for (const { width, overflow } of boxes) {
+      expect(width, `${selector} masked width is pinned`).toBe(expected);
+      expect(overflow, `${selector} content fits its pinned masked box`).toBeLessThanOrEqual(0);
+    }
+  }
+}
+
 async function captureTargetMetrics(locator) {
   return locator.evaluate((el) => {
     const style = window.getComputedStyle(el);
@@ -581,6 +624,7 @@ test.describe("dashboard", () => {
       await waitForHomeRegions(page);
       await page.waitForSelector(ready, { state: "visible" });
       await expect(page.locator(root)).toBeVisible();
+      await pinMaskGeometry(page);
     };
 
     await openAt1280(PLANNER_HOME_USER, "#home-planner", "#attention");
@@ -601,7 +645,10 @@ test.describe("dashboard", () => {
           page.locator("#resume-latest-context"),
           // The row clock, not the route badges: `RouteIdentity.route_badge`
           // also carries `tabular-nums`, so the mask pins the muted time span.
+          // The row's kind-and-change line carries seeded dates too, such as
+          // "Calendar · end date moved to Nov 28".
           page.locator("#resume-list .tabular-nums.text-muted"),
+          page.locator("#resume-list span.block.truncate.text-muted"),
         ],
       },
     );
