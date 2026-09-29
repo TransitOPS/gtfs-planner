@@ -21,13 +21,26 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   save returns. They are derived from the same labels and the same
   `GtfsTime`-formatted window as the list, so the form and the row cannot
   disagree about what a closure does.
+
+  The access view's range report is prepared here as well. A range report's
+  findings are the domain's exact loss periods; grouping them is view-only and
+  lossless, so this module derives display rows from the report and never
+  recomputes a period, a cause or an instant. A period's `Show at` address comes
+  from `access_moment_path/4`, which is also the address the timeline patches to,
+  so a link and the request behind it cannot disagree.
   """
 
   use GtfsPlannerWeb, :html
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
+
+  # The two words a range period's lost line is built from. Both are the
+  # vocabulary the moment preview's table already uses.
+  @range_modes %{step_free: "Step-free", walking: "Walking"}
+  @range_directions %{to_platform: "to platform", to_exit: "from platform"}
 
   # Group order and group labels for the pathway list. Modes outside this list
   # are grouped under their own mode label rather than dropped, so a fare gate or
@@ -1266,6 +1279,553 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     "#{label} closed #{window_label(instance)}#{suffix}"
   end
+
+  # -- range report -----------------------------------------------------------
+
+  @doc """
+  Returns the exact address of one service moment of the access route.
+
+  The service time is the `HH:MM:SS` form the route accepts, and the station id
+  and query are encoded exactly as the router decodes them, so a period's
+  `Show at` link and the request behind it name one instant.
+  """
+  @spec access_moment_path(String.t(), String.t(), Date.t(), non_neg_integer()) :: String.t()
+  def access_moment_path(version_id, stop_id, %Date{} = date, time) when is_integer(time) do
+    query =
+      URI.encode_query([
+        {"date", Date.to_iso8601(date)},
+        {"time", GtfsTime.format(time)}
+      ])
+
+    "/gtfs/#{version_id}/stops/#{URI.encode(stop_id)}/evolutions/access?#{query}"
+  end
+
+  @doc """
+  Formats a UTC offset in seconds as `+HH:MM` or `-HH:MM`.
+
+  Both the moment line and a range period's DST note read their offsets through
+  this one function, so an offset is written one way on the page.
+  """
+  @spec utc_offset_label(integer()) :: String.t()
+  def utc_offset_label(seconds) when is_integer(seconds) do
+    total = abs(seconds)
+    sign = if seconds < 0, do: "-", else: "+"
+    hours = div(total, 3600) |> Integer.to_string() |> String.pad_leading(2, "0")
+    minutes = div(rem(total, 3600), 60) |> Integer.to_string() |> String.pad_leading(2, "0")
+    sign <> hours <> ":" <> minutes
+  end
+
+  @doc """
+  Labels a service-date span exactly: one date, a same-month or same-year range,
+  or both years when the span crosses one.
+  """
+  @spec range_dates_label(Date.t(), Date.t()) :: String.t()
+  def range_dates_label(%Date{} = first, %Date{} = last) do
+    cond do
+      Date.compare(first, last) == :eq ->
+        Calendar.strftime(first, "%b %-d, %Y")
+
+      first.year != last.year ->
+        "#{Calendar.strftime(first, "%b %-d, %Y")}–#{Calendar.strftime(last, "%b %-d, %Y")}"
+
+      first.month != last.month ->
+        "#{Calendar.strftime(first, "%b %-d")}–#{Calendar.strftime(last, "%b %-d, %Y")}"
+
+      true ->
+        "#{Calendar.strftime(first, "%b %-d")}–#{last.day}, #{last.year}"
+    end
+  end
+
+  @doc """
+  Prepares one range report for display: its exact periods, their groups, and
+  whether grouping collapses anything.
+
+  A period is one finding of `Gtfs.analyze_closures/5`, rendered as the domain
+  reported it: its occurrence is the service date and elapsed seconds in the
+  backend's own `preview_target`, its local window, both UTC offsets and its lost
+  and platform findings come from the finding, and its causes are the finding's
+  active instances. The view derives nothing: it never reparses a clock label,
+  never re-derives a service-day origin, and never approximates a grouped gap as
+  a continuous span.
+
+  Grouping is view-only and lossless. Two periods join one group only when their
+  local start and end clock values, their local day offset, both UTC offsets,
+  their lost findings, their platform step-free findings and their active
+  closure identities all agree. Occurrence dates stay an ordered list on the
+  group, so its disclosure can name every date it covers. The offsets are part of
+  the key, so a daylight-saving change inside a range keeps two groups apart
+  instead of merging them into one span that never happened.
+  """
+  @spec range_display(map(), map(), String.t(), String.t()) :: map()
+  def range_display(report, snapshot, version_id, stop_id) do
+    stops = Map.new(snapshot.child_stops, &{&1.stop_id, &1})
+
+    periods =
+      report.findings
+      |> Enum.with_index()
+      |> Enum.map(fn {finding, index} ->
+        range_period(finding, index, snapshot, stops, version_id, stop_id)
+      end)
+
+    groups = range_groups(periods)
+
+    %{
+      periods: periods,
+      groups: groups,
+      grouping?: length(groups) < length(periods),
+      caption:
+        if(length(groups) < length(periods),
+          do: "Loss periods in this range, grouped when their window, offsets and causes repeat",
+          else: "Every loss period in this range"
+        )
+    }
+  end
+
+  defp range_period(finding, index, snapshot, stops, version_id, stop_id) do
+    target = finding.preview_target
+    service_date = target.date
+    local_start_date = NaiveDateTime.to_date(finding.local_start)
+    local_end_date = NaiveDateTime.to_date(finding.local_end)
+
+    %{
+      id: "range-period-#{index}",
+      list_id: "range-period-list-#{index}",
+      kind: :period,
+      index: index,
+      period_count: 1,
+      service_date: Date.to_iso8601(service_date),
+      date_label: date_label(service_date),
+      local_start: NaiveDateTime.to_iso8601(finding.local_start),
+      local_end: NaiveDateTime.to_iso8601(finding.local_end),
+      start_offset: finding.start_utc_offset,
+      end_offset: finding.end_utc_offset,
+      when_label: range_window(finding, service_date, local_start_date, local_end_date),
+      offset_note: range_offset_note(finding),
+      lost: lost_lines(finding.comparison, stops),
+      causes: range_causes(finding.instances, service_date, snapshot),
+      target_date: Date.to_iso8601(service_date),
+      target_time: target.time,
+      target_label: service_time_value(target.time),
+      href: access_moment_path(version_id, stop_id, target.date, target.time),
+      show_id: "range-show-#{index}",
+      # Only a grouped row discloses a list of dates; a period row is one date.
+      dates: [],
+      key: range_key(finding, local_start_date, local_end_date)
+    }
+  end
+
+  # The identity the specification names: local clock start and end, the local
+  # day offset, both UTC offsets, the exact lost findings, the platform step-free
+  # findings and the closure identity/window tuples. Occurrence dates and the
+  # absolute instants are deliberately absent, so the same window repeating on
+  # several dates is one group.
+  defp range_key(finding, local_start_date, local_end_date) do
+    {
+      Calendar.strftime(finding.local_start, "%H:%M"),
+      Calendar.strftime(finding.local_end, "%H:%M"),
+      Date.diff(local_end_date, local_start_date),
+      {finding.start_utc_offset, finding.end_utc_offset},
+      range_lost_key(finding.comparison),
+      range_platform_key(finding.comparison),
+      range_causes_key(finding.instances)
+    }
+  end
+
+  defp range_lost_key(comparison) do
+    comparison.lost
+    |> Enum.map(&{&1.entrance_id, &1.platform_id, &1.mode, &1.direction})
+    |> Enum.sort()
+  end
+
+  defp range_platform_key(comparison) do
+    %{to_platform: to_platform, to_exit: to_exit} = comparison.platforms_without_step_free
+    {Enum.sort(to_platform), Enum.sort(to_exit)}
+  end
+
+  defp range_causes_key(instances) do
+    instances
+    |> Enum.map(&{&1.evolution_id, &1.service_id, &1.start_time, &1.end_time})
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp range_groups(periods) do
+    periods
+    |> Enum.group_by(& &1.key)
+    |> Enum.map(fn {_key, members} ->
+      members = Enum.sort_by(members, &{&1.service_date, &1.target_time})
+      first = hd(members)
+
+      first
+      |> Map.merge(%{
+        id: "range-group-#{first.index}",
+        list_id: "range-group-list-#{first.index}",
+        kind: :group,
+        period_count: length(members),
+        date_label: range_pattern(members),
+        dates: Enum.map(members, &range_occurrence(&1, first)),
+        first_date_label: first.date_label,
+        show_id: "range-show-group-#{first.index}"
+      })
+    end)
+    |> Enum.sort_by(& &1.index)
+  end
+
+  # One date of a group, with its own exact target: the disclosure lists every
+  # occurrence and links each one to the pair the backend named for it.
+  defp range_occurrence(period, group) do
+    %{
+      id: "range-date-#{group.index}-#{period.service_date}-#{period.target_time}",
+      date: period.service_date,
+      label: period.date_label,
+      href: period.href,
+      target_label: period.target_label
+    }
+  end
+
+  # The group's own date pattern. A span whose every day is present reads as a
+  # range; a span with a hole says `Between ...` instead of implying the days in
+  # between. Either way the group's own disclosure carries every exact date.
+  defp range_pattern(members) do
+    dates =
+      members |> Enum.map(& &1.service_date) |> Enum.map(&Date.from_iso8601!/1) |> Enum.sort()
+
+    case dates do
+      [one] ->
+        date_label(one)
+
+      _many ->
+        first = hd(dates)
+        last = List.last(dates)
+        span = Date.diff(last, first) + 1
+
+        cond do
+          span != length(dates) -> "Between #{range_dates_label(first, last)}"
+          span >= 7 -> "Every day, #{range_dates_label(first, last)}"
+          true -> range_dates_label(first, last)
+        end
+    end
+  end
+
+  # The local clock window of one period, with the local date named whenever it
+  # is not the service date the group is keyed by, so a 25:00 window reads as the
+  # next civil morning instead of as midnight of its own service date.
+  defp range_window(finding, service_date, local_start_date, local_end_date) do
+    window =
+      "#{DisplayClock.format_time(finding.local_start)} – #{DisplayClock.format_time(finding.local_end)}"
+
+    cond do
+      Date.compare(local_start_date, service_date) != :eq ->
+        window <> " on #{date_label(local_start_date)}"
+
+      Date.compare(local_end_date, local_start_date) != :eq ->
+        days = Date.diff(local_end_date, local_start_date)
+        window <> if(days == 1, do: " next day", else: " +#{days} days")
+
+      true ->
+        window
+    end
+  end
+
+  # A period whose own window crosses a daylight-saving change keeps both offsets
+  # visible, so the reader can see why it is not grouped with the ordinary ones.
+  defp range_offset_note(%{start_utc_offset: offset, end_utc_offset: offset}), do: nil
+
+  defp range_offset_note(finding) do
+    "Starts UTC#{utc_offset_label(finding.start_utc_offset)}, ends UTC#{utc_offset_label(finding.end_utc_offset)}"
+  end
+
+  defp lost_lines(comparison, stops) do
+    %{to_platform: to_platform, to_exit: to_exit} = comparison.platforms_without_step_free
+
+    platform_lines =
+      Enum.map(to_platform, &"No step-free route to #{stop_label(Map.get(stops, &1))}") ++
+        Enum.map(to_exit, &"No step-free route from #{stop_label(Map.get(stops, &1))}")
+
+    pair_lines =
+      Enum.map(comparison.lost, fn finding ->
+        "#{@range_modes[finding.mode]} #{@range_directions[finding.direction]} · " <>
+          "#{stop_label(Map.get(stops, finding.entrance_id))} ↔ " <>
+          stop_label(Map.get(stops, finding.platform_id))
+      end)
+
+    platform_lines ++ pair_lines
+  end
+
+  defp range_causes(instances, service_date, snapshot) do
+    instances
+    |> Enum.uniq_by(&{&1.evolution_id, &1.service_date})
+    |> Enum.sort_by(&{&1.service_date, &1.evolution_id})
+    |> Enum.map(&range_cause(&1, service_date, snapshot))
+  end
+
+  defp range_cause(instance, service_date, snapshot) do
+    row = Enum.find(snapshot.closures, &(&1.evolution.id == instance.evolution_id))
+    {calendar_label, _detail} = calendar_lines(row && row.calendar, instance.service_id)
+
+    spill =
+      if Date.compare(instance.service_date, service_date) == :eq do
+        nil
+      else
+        "from the #{Calendar.strftime(instance.service_date, "%A, %B %-d, %Y")} service day"
+      end
+
+    %{
+      key: "#{instance.evolution_id}-#{Date.to_iso8601(instance.service_date)}",
+      pathway_label: if(row, do: pathway_label(row.pathway), else: instance.pathway_id),
+      pathway_id: instance.pathway_id,
+      detail:
+        [calendar_label, window_label(instance), spill]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join(" · ")
+    }
+  end
+
+  attr :display, :map, required: true, doc: "the prepared range report"
+  attr :view, :atom, required: true, values: [:grouped, :all]
+
+  @doc """
+  Renders a range report's loss periods: a table at `md` and wider and one card
+  per row below it. Both carry the same rows and the same fields, grouped by
+  repeated window when the grouped view is selected and one row per period in
+  the every-period view. Each row's exact occurrence, local window, offsets and
+  period count stay readable as data attributes.
+  """
+  def range_results(assigns) do
+    # The view is resolved by the caller: when nothing repeats, the only honest
+    # presentation is the report's own periods, and the caller passes the view
+    # the report actually allows. Deriving it here would mutate the attribute
+    # after the fact, and a re-render that only changed the report would keep the
+    # previous header and its previous row kind.
+    assigns =
+      assign(
+        assigns,
+        :rows,
+        if(assigns.view == :grouped, do: assigns.display.groups, else: assigns.display.periods)
+      )
+
+    ~H"""
+    <div id="range-segments">
+      <table
+        :if={@rows != []}
+        id="range-periods-table"
+        class="w-full border-collapse text-left text-sm max-md:hidden"
+      >
+        <caption class="sr-only">{@display.caption}</caption>
+        <thead>
+          <tr>
+            <th
+              scope="col"
+              class="h-11 w-[12rem] border-b border-subtle bg-canvas py-0 pr-4 pl-5 text-[13px] font-[650] text-base-content"
+            >
+              {if @view == :grouped, do: "Service dates", else: "Service date"}
+            </th>
+            <th
+              scope="col"
+              class="h-11 border-b border-subtle bg-canvas px-4 py-0 text-[13px] font-[650] text-base-content"
+            >
+              When
+            </th>
+            <th
+              scope="col"
+              class="h-11 border-b border-subtle bg-canvas px-4 py-0 text-[13px] font-[650] text-base-content"
+            >
+              Connections lost
+            </th>
+            <th
+              scope="col"
+              class="h-11 min-w-[18rem] border-b border-subtle bg-canvas px-4 py-0 text-[13px] font-[650] text-base-content"
+            >
+              Caused by
+            </th>
+            <th
+              scope="col"
+              class="h-11 w-[9.5rem] border-b border-subtle bg-canvas py-0 pr-5 pl-4 text-[13px] font-[650] text-base-content"
+            >
+              <span class="sr-only">Preview</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            :for={row <- @rows}
+            id={row.id}
+            data-range-row={row.kind}
+            data-service-date={row.service_date}
+            data-target-time={row.target_time}
+            data-period-count={row.period_count}
+            data-local-start={row.local_start}
+            data-local-end={row.local_end}
+            data-start-offset={row.start_offset}
+            data-end-offset={row.end_offset}
+            class="align-top hover:bg-canvas/50"
+          >
+            <th scope="row" class="border-b border-subtle/60 py-2.5 pr-4 pl-5 font-normal">
+              <span id={row.id <> "-date-label"} class="block font-[650] text-strong">
+                {row.date_label}
+              </span>
+              <span
+                :if={@view == :grouped and row.period_count == 1}
+                class="block text-[13px] text-muted"
+              >
+                1 day
+              </span>
+              <.range_date_disclosure
+                :if={row.dates != []}
+                row={row}
+                id={row.id <> "-dates"}
+              />
+            </th>
+            <td class="border-b border-subtle/60 px-4 py-2.5">
+              <span id={row.id <> "-when"} class="block tabular-nums text-strong">
+                {row.when_label}
+              </span>
+              <span :if={row.offset_note} class="block text-[13px] text-muted">
+                {row.offset_note}
+              </span>
+            </td>
+            <td class="border-b border-subtle/60 px-4 py-2.5">
+              <.lost_lines lines={row.lost} id={row.id <> "-lost"} />
+            </td>
+            <td class="border-b border-subtle/60 px-4 py-2.5">
+              <.range_cause_list causes={row.causes} id_prefix={row.id} />
+            </td>
+            <td class="border-b border-subtle/60 py-1 pr-5 pl-4">
+              <.range_show_at row={row} id={row.show_id} />
+              <span :if={length(row.dates) > 1} class="block text-[13px] text-muted">
+                First on {row.first_date_label}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <ul :if={@rows != []} id="range-periods-list" class="md:hidden">
+        <li
+          :for={row <- @rows}
+          id={row.list_id}
+          data-range-row={row.kind}
+          data-service-date={row.service_date}
+          data-target-time={row.target_time}
+          data-period-count={row.period_count}
+          data-local-start={row.local_start}
+          data-local-end={row.local_end}
+          data-start-offset={row.start_offset}
+          data-end-offset={row.end_offset}
+          class="border-t border-subtle px-4 py-3 first:border-t-0"
+        >
+          <p id={row.list_id <> "-date-label"} class="font-[650] text-strong">{row.date_label}</p>
+          <p id={row.list_id <> "-when"} class="mt-0.5 tabular-nums text-strong">
+            {row.when_label}
+          </p>
+          <p :if={row.offset_note} class="text-[13px] text-muted">{row.offset_note}</p>
+          <.lost_lines lines={row.lost} id={row.list_id <> "-lost"} />
+          <.range_cause_list causes={row.causes} id_prefix={row.list_id} />
+          <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <.range_show_at row={row} id={row.list_id <> "-show"} />
+            <.range_date_disclosure
+              :if={row.dates != []}
+              row={row}
+              id={row.list_id <> "-dates"}
+            />
+          </div>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  attr :lines, :list, required: true
+  attr :id, :string, required: true
+
+  @doc """
+  Renders the exact connections one range period loses: the platform that lost
+  its last step-free route first, then each lost pair with its mode and
+  direction.
+  """
+  def lost_lines(assigns) do
+    ~H"""
+    <ul id={@id} class="space-y-0.5">
+      <li :for={line <- @lines} class="text-sm text-strong">{line}</li>
+    </ul>
+    """
+  end
+
+  attr :causes, :list, required: true
+  attr :id_prefix, :string, required: true
+
+  @doc """
+  Renders the active closures of one range period: each closure's pathway label,
+  its exact natural ID and its calendar and service window.
+  """
+  def range_cause_list(assigns) do
+    ~H"""
+    <ul>
+      <li :for={cause <- @causes} id={@id_prefix <> "-cause-" <> cause.key} class="mt-1 first:mt-0">
+        <span class="block text-sm text-strong">{cause.pathway_label}</span>
+        <span class="block text-[13px] text-muted">
+          <span class="font-mono">{cause.pathway_id}</span> · {cause.detail}
+        </span>
+      </li>
+    </ul>
+    """
+  end
+
+  attr :row, :map, required: true
+  attr :id, :string, required: true
+
+  @doc """
+  Renders one period's link to the exact moment the backend named for it.
+  """
+  def range_show_at(assigns) do
+    ~H"""
+    <.link
+      patch={@row.href}
+      id={@id}
+      data-show-date={@row.target_date}
+      data-show-time={@row.target_label}
+      class="inline-flex min-h-11 items-center whitespace-nowrap text-sm font-[650] text-action no-underline hover:underline"
+    >
+      Show at {@row.target_label}
+    </.link>
+    """
+  end
+
+  attr :row, :map, required: true
+  attr :id, :string, required: true
+
+  @doc """
+  Renders one group's date disclosure: every date it covers, each with its own
+  exact `Show at` target, so a repeated window never implies an untouched date
+  between two occurrences.
+  """
+  def range_date_disclosure(assigns) do
+    ~H"""
+    <details id={@id} data-range-dates={length(@row.dates)} class="mt-0.5">
+      <summary class="inline-flex min-h-11 cursor-pointer items-center gap-1 text-[13px] font-[650] text-action">
+        <.icon name="hero-chevron-right" class="size-3.5" />{length(@row.dates)} days
+      </summary>
+      <div class="mt-1 rounded-control bg-canvas/60 px-2 py-2">
+        <p class="text-[13px] text-muted">Preview at {@row.target_label} on:</p>
+        <ul class="mt-1 flex flex-wrap gap-x-1">
+          <li :for={date <- @row.dates}>
+            <.link
+              patch={date.href}
+              id={date.id}
+              data-show-date={date.date}
+              data-show-time={date.target_label}
+              class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-[650] tabular-nums text-action no-underline hover:bg-canvas hover:underline"
+            >
+              {date.label}
+            </.link>
+          </li>
+        </ul>
+      </div>
+    </details>
+    """
+  end
+
+  defp date_label(%Date{} = date), do: Calendar.strftime(date, "%a, %b %-d")
 
   attr :id, :string, required: true
   attr :title, :string, required: true

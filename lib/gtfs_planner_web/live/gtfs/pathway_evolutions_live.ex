@@ -51,6 +51,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   cannot disagree. Nothing in it writes: the month navigation and the exact link
   to the calendar page are its only controls, and a calendar that has left the
   version is reported while the form keeps every entered value.
+
+  The range check is the access view's second, independent request: its own
+  form, generation, scope and stale label, a ten-second deadline, and the
+  production `Gtfs.analyze_closures/5` behind it. It shares nothing with the
+  moment preview but the page's station, version and resolved zone, so a preview
+  refresh cannot retitle, replace or clear a retained range, and a range
+  completion cannot answer for a station or version the reader has left. A
+  limit, a refusal or a deadline keeps the last successful range on screen under
+  its own stale label and its original request heading, and an incomplete station
+  is never presented as a range with no loss.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -121,6 +131,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:preview_form, %{date: "", time: ""})
      |> assign(:preview_form_errors, %{})
      |> assign(:preview_zone, nil)
+     |> assign(:range_form, range_form("", ""))
+     |> assign(:range_form_errors, %{})
+     |> assign(:range_status, :idle)
+     |> assign(:range_error, nil)
+     |> assign(:range_generation, 0)
+     |> assign(:range_scope, nil)
+     |> assign(:range_request, nil)
+     |> assign(:range_report, nil)
+     |> assign(:range_view, :grouped)
+     |> assign(:range_timer, nil)
      |> stream_configure(:closures, dom_id: &"closure-#{&1.id}")
      |> stream(:closures, [])}
   end
@@ -507,6 +527,37 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     end
   end
 
+  # The range form's own submit. A pair of dates that does not parse is a form
+  # error and keeps every entered string; it never reaches the context, which
+  # takes two dates and would otherwise raise. Which spans the context refuses
+  # is the context's own rule: a reversed or over-long range comes back as
+  # `:range_invalid` and is rendered inline, without a second copy of the limit
+  # in this view.
+  def handle_event("check_range", %{"range" => params}, socket) when is_map(params) do
+    case range_params(params) do
+      {:ok, first, last} ->
+        {:noreply, start_range(socket, first, last)}
+
+      {:error, entered, errors} ->
+        {:noreply,
+         socket
+         |> assign(:range_form, range_form(entered["first_date"], entered["last_date"]))
+         |> assign(:range_form_errors, errors)
+         |> assign(:status_message, range_form_message(errors))}
+    end
+  end
+
+  def handle_event("check_range", _params, socket), do: {:noreply, socket}
+
+  # The grouped / every-period switch. Both views render the same domain
+  # findings, so this only chooses which presentation is on screen; the older
+  # view's own state is unchanged either way.
+  def handle_event("range_view", %{"view" => view}, socket) when view in ["grouped", "all"] do
+    {:noreply, assign(socket, :range_view, String.to_existing_atom(view))}
+  end
+
+  def handle_event("range_view", _params, socket), do: {:noreply, socket}
+
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
     if Versions.published_gtfs_version_for_org?(
          socket.assigns.current_organization.id,
@@ -545,6 +596,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     {:noreply, socket}
   end
 
+  # The range deadline. The timer carries the scope of the request it was
+  # started for, so a deadline that has already fired and been superseded matches
+  # nothing here: only the request this view is still waiting for can time out.
+  # The matching task is cancelled, and the last successful range stays on screen
+  # under its stale label.
+  def handle_info({:range_deadline, scope}, socket) do
+    if scope == socket.assigns.range_scope and socket.assigns.range_status == :loading do
+      {:noreply, socket |> cancel_async(:range) |> range_failed(:timeout)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   # The preview task returns its own scope, so a completion the reader has
   # already left behind - another moment, another station, another version - is
   # dropped here instead of replacing current output. The task isolates every
@@ -574,6 +638,41 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     end
   end
 
+  # A cancelled range task is expected: it was superseded on purpose or its
+  # deadline fired, and neither is a failure of its own. It sits beside the
+  # preview's own cancellation clauses rather than beside the deadline's, so one
+  # operation's clauses stay together.
+  def handle_async(:range, {:exit, {:shutdown, :cancel}}, socket), do: {:noreply, socket}
+
+  def handle_async(:range, {:exit, _reason}, socket) do
+    if socket.assigns.range_status == :loading do
+      {:noreply, socket |> cancel_range_timer() |> range_failed(:unexpected)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # The range task's completion, matched against the scope this view asked for
+  # exactly as the preview's is. A superseded range - another span, another
+  # station, another version - is dropped rather than replacing current output.
+  def handle_async(:range, {:ok, {:range, scope, result}}, socket) do
+    if scope == socket.assigns.range_scope do
+      {:noreply, socket |> cancel_range_timer() |> apply_range(result)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # A deadline timer's message is delivered to this process, so it dies with the
+  # view; cancelling it here keeps a stopped view from leaving a timer armed in
+  # the runtime's timer service. The async task itself is stopped by LiveView
+  # when the view terminates.
+  @impl true
+  def terminate(_reason, socket) do
+    cancel_range_timer(socket)
+    :ok
+  end
+
   # The station is kept across a version change only because the mount resolves
   # it again in the new scope. A version that does not hold the station reaches
   # the missing-station response, which flashes and returns to that version's
@@ -595,13 +694,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   defp access_target(version_id, stop_id, %{date: %Date{} = date, time: time})
        when is_integer(time) do
-    query =
-      URI.encode_query([
-        {"date", Date.to_iso8601(date)},
-        {"time", GtfsTime.format(time)}
-      ])
-
-    "/gtfs/#{version_id}/stops/#{URI.encode(stop_id)}/evolutions/access?#{query}"
+    access_moment_path(version_id, stop_id, date, time)
   end
 
   defp access_target(version_id, stop_id, _moment),
@@ -626,7 +719,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     # A result belongs to the station and version that produced it, so a patch
     # that keeps both (another moment of the same station) retains it under the
     # stale label, while a different station or version starts clean.
-    socket = if same_place?(socket), do: socket, else: assign(socket, :preview, nil)
+    retained? = same_place?(socket)
 
     socket =
       socket
@@ -642,6 +735,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       # A request from the route this one replaced keeps its generation, so any
       # completion still in flight can never match the state this route mounts.
       |> assign(:preview_generation, socket.assigns.preview_generation + 1)
+      |> retain_range(retained?)
 
     # Time-aware evaluation never uses the display clock's UTC fallback, so an
     # unusable agency zone replaces the calculation instead of naming an instant
@@ -650,11 +744,49 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       socket
     else
       case moment_params(%{"date" => params["date"], "time" => params["time"]}, clock.date) do
-        {:ok, date, time} -> start_preview(socket, date, time)
-        {:error, form, errors} -> assign(socket, preview_form: form, preview_form_errors: errors)
+        {:ok, date, time} ->
+          socket
+          |> default_range_form(date, retained?)
+          |> start_preview(date, time)
+
+        {:error, form, errors} ->
+          socket
+          |> default_range_form(clock.date, retained?)
+          |> assign(:preview_form, form)
+          |> assign(:preview_form_errors, errors)
       end
     end
   end
+
+  # A range result, its form and its stale label belong to the station and
+  # version that produced them exactly as the moment preview's do. A different
+  # place cancels the request, its deadline timer and the retained result;
+  # another moment of the same place keeps all of them, because the reader's
+  # range is an independent request that a preview refresh does not replace.
+  defp retain_range(socket, true), do: socket
+
+  defp retain_range(socket, false) do
+    socket
+    |> cancel_range_request()
+    |> assign(:preview, nil)
+    |> assign(:range_report, nil)
+    |> assign(:range_status, :idle)
+    |> assign(:range_error, nil)
+    |> assign(:range_scope, nil)
+    |> assign(:range_request, nil)
+    |> assign(:range_form, range_form("", ""))
+    |> assign(:range_form_errors, %{})
+    |> assign(:range_view, :grouped)
+    |> assign(:range_generation, socket.assigns.range_generation + 1)
+  end
+
+  # The form opens on the selected service date for both endpoints. A retained
+  # range keeps whatever the reader entered instead.
+  defp default_range_form(socket, %Date{} = date, false) do
+    assign(socket, :range_form, range_form(Date.to_iso8601(date), Date.to_iso8601(date)))
+  end
+
+  defp default_range_form(socket, %Date{} = _date, true), do: socket
 
   defp same_place?(socket) do
     case socket.assigns.preview_scope do
@@ -805,12 +937,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   # The agency zone became unusable after the page resolved it: the context owns
   # that refusal, and the page names it instead of showing a result for the wrong
-  # zone. Authoring stays reachable through the switch.
+  # zone. Authoring stays reachable through the switch. Both access results
+  # belong to the zone that produced them, so both go with it.
   defp apply_preview(socket, {:error, {:timezone_unavailable, reason}}) do
     socket
     |> assign(:preview, nil)
     |> assign(:preview_status, :idle)
     |> assign(:preview_error, nil)
+    |> assign(:range_report, nil)
+    |> assign(:range_status, :idle)
+    |> assign(:range_error, nil)
     |> assign(:preview_zone, %{timezone: "UTC", fallback?: true, fallback_reason: reason})
     |> assign(:status_message, "Access cannot be checked: the agency time zone is unavailable.")
   end
@@ -833,6 +969,212 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:status_message, "The access check stopped before it finished.")
   end
 
+  # -- access range check -----------------------------------------------------
+
+  # The range check's own deadline in milliseconds: a request still running after
+  # ten seconds is cancelled and reported as the limit AC-23 names, never as a
+  # completed result.
+  @range_deadline 10_000
+
+  # Two dates from the range form. Both arrive as strings, both are required, and
+  # a value that does not parse is reported as a form error rather than passed to
+  # the context, which takes two `Date`s and would otherwise raise.
+  defp range_params(params) do
+    first = parse_range_date(params["first_date"])
+    last = parse_range_date(params["last_date"])
+
+    errors =
+      [first: first, last: last]
+      |> Enum.flat_map(fn {field, result} ->
+        case result do
+          {:ok, _date} -> []
+          {:error, message} -> [{field, message}]
+        end
+      end)
+      |> Map.new()
+
+    entered = %{
+      "first_date" => entered_date(params["first_date"]),
+      "last_date" => entered_date(params["last_date"])
+    }
+
+    case {first, last} do
+      {{:ok, first}, {:ok, last}} -> {:ok, first, last}
+      _invalid -> {:error, entered, errors}
+    end
+  end
+
+  # The two date fields as a real form, so the template builds them the way the
+  # rest of the page builds its forms and the submit carries the `range[field]`
+  # names the handler reads.
+  defp range_form(first, last) do
+    to_form(%{"first_date" => first, "last_date" => last}, as: :range)
+  end
+
+  defp entered_date(value) when is_binary(value), do: value
+  defp entered_date(_value), do: ""
+
+  defp parse_range_date(nil), do: {:error, "Choose a first and a last date."}
+  defp parse_range_date(""), do: {:error, "Choose a first and a last date."}
+
+  defp parse_range_date(value) when is_binary(value) do
+    case Date.from_iso8601(String.trim(value)) do
+      {:ok, date} -> {:ok, date}
+      {:error, _reason} -> {:error, "Enter a service date like 2026-10-06."}
+    end
+  end
+
+  defp parse_range_date(_value), do: {:error, "Choose a first and a last date."}
+
+  defp range_form_message(errors),
+    do: errors[:first] || errors[:last] || "Choose a first and a last date."
+
+  # One range request at a time, with its own generation, scope and deadline.
+  # The previous request and its timer are cancelled before the new timer is
+  # armed, so a span the reader has replaced cannot time out the one they are
+  # waiting for. The retained result is never cleared here: its stale label is
+  # what says it is the earlier check.
+  defp start_range(socket, %Date{} = first, %Date{} = last) do
+    generation = socket.assigns.range_generation + 1
+
+    scope =
+      {socket.assigns.current_organization.id, socket.assigns.current_gtfs_version.id,
+       socket.assigns.stop_id, generation}
+
+    socket =
+      socket
+      |> cancel_range_request()
+      |> assign(:range_generation, generation)
+      |> assign(:range_scope, scope)
+      |> assign(:range_request, %{first: first, last: last})
+      |> assign(:range_status, :loading)
+      |> assign(:range_error, nil)
+      |> assign(:range_form, range_form(Date.to_iso8601(first), Date.to_iso8601(last)))
+      |> assign(:range_form_errors, %{})
+      |> assign(:status_message, "Checking service dates #{range_dates_label(first, last)}…")
+
+    timer = Process.send_after(self(), {:range_deadline, scope}, @range_deadline)
+
+    socket
+    |> assign(:range_timer, timer)
+    |> start_async(:range, fn -> load_range(scope, first, last) end)
+  end
+
+  # Runs in the task process with ids and parsed dates only, and isolates every
+  # failure it can observe, exactly as the preview loader does.
+  defp load_range({organization_id, gtfs_version_id, stop_id, _generation} = scope, first, last) do
+    {:range, scope, Gtfs.analyze_closures(organization_id, gtfs_version_id, stop_id, first, last)}
+  rescue
+    exception -> {:range, scope, {:error, {:unexpected, exception}}}
+  catch
+    kind, reason -> {:range, scope, {:error, {:unexpected, {kind, reason}}}}
+  end
+
+  defp apply_range(socket, {:ok, %{} = report}) do
+    socket
+    |> assign(:range_report, report)
+    |> assign(:range_status, :ready)
+    |> assign(:range_error, nil)
+    |> assign(:range_form_errors, %{})
+    |> assign(:status_message, range_announcement(report))
+  end
+
+  # The agency zone became unusable after the page resolved it: the range has the
+  # same refusal as the moment preview, so the calculation is replaced by the
+  # same explanation instead of service dates named in the wrong zone.
+  defp apply_range(socket, {:error, {:timezone_unavailable, reason}}) do
+    socket
+    |> assign(:range_report, nil)
+    |> assign(:range_status, :idle)
+    |> assign(:range_error, nil)
+    |> assign(:preview, nil)
+    |> assign(:preview_status, :idle)
+    |> assign(:preview_error, nil)
+    |> assign(:preview_zone, %{timezone: "UTC", fallback?: true, fallback_reason: reason})
+    |> assign(:status_message, "Access cannot be checked: the agency time zone is unavailable.")
+  end
+
+  defp apply_range(socket, {:error, :not_found}) do
+    socket
+    |> put_flash(:error, "Station not found")
+    |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/stops")
+  end
+
+  # The context owns the limit. A reversed range and a span over 31 days arrive
+  # as one refusal, and the reader's own two entries say which of the two it is;
+  # no second copy of the day ceiling lives in this view. The message is inline,
+  # the retained result is untouched, and the stale label explains what is still
+  # on screen.
+  defp apply_range(socket, {:error, :range_invalid}) do
+    message =
+      case socket.assigns.range_request do
+        %{first: %Date{} = first, last: %Date{} = last} ->
+          if Date.compare(last, first) == :lt do
+            "Choose a last date on or after the first date."
+          else
+            "Choose 31 days or fewer."
+          end
+
+        _absent ->
+          "Choose 31 days or fewer."
+      end
+
+    socket
+    |> assign(:range_status, :failed)
+    |> assign(:range_error, nil)
+    |> assign(:range_form_errors, %{last: message})
+    |> assign(:status_message, message)
+  end
+
+  defp apply_range(socket, {:error, :analysis_too_large}), do: range_failed(socket, :too_large)
+
+  defp apply_range(socket, {:error, _reason}), do: range_failed(socket, :unexpected)
+
+  defp range_failed(socket, reason) do
+    socket
+    |> assign(:range_status, :failed)
+    |> assign(:range_error, reason)
+    |> assign(:status_message, range_failure_message(reason))
+  end
+
+  defp range_failure_message(:too_large),
+    do: "This range is too large to check. Choose fewer days."
+
+  defp range_failure_message(:timeout), do: "The range check took too long and stopped."
+  defp range_failure_message(_reason), do: "The range check stopped before it finished."
+
+  defp range_announcement(%{status: :incomplete}),
+    do:
+      "Range check incomplete: this station's data is missing, so no connection loss can be ruled out."
+
+  defp range_announcement(%{findings: []}), do: "Range checked: no connection lost in this range."
+
+  defp range_announcement(%{findings: findings}) do
+    count = length(findings)
+
+    "Range checked: #{count} #{if count == 1, do: "period", else: "periods"} with lost connections."
+  end
+
+  # The timer is held as a reference, so only the matching one is ever cancelled;
+  # a timer that already fired returns `false` here, and the scope comparison in
+  # the deadline's own clause keeps its message inert.
+  defp cancel_range_request(socket) do
+    socket
+    |> cancel_range_timer()
+    |> cancel_async(:range)
+  end
+
+  defp cancel_range_timer(socket) do
+    case socket.assigns.range_timer do
+      nil ->
+        socket
+
+      ref ->
+        Process.cancel_timer(ref)
+        assign(socket, :range_timer, nil)
+    end
+  end
+
   defp preview_announcement(socket, preview) do
     headings =
       case preview_banner_copy(socket.assigns.station_data, preview) do
@@ -853,16 +1195,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   defp service_clock(seconds) when is_integer(seconds), do: service_time_value(seconds)
 
-  # A UTC offset in seconds as `+HH:MM`, which is what the moment line shows
-  # beside the local clock time.
-  defp offset_label(seconds) when is_integer(seconds) do
-    sign = if seconds < 0, do: "-", else: "+"
-    total = abs(seconds)
-    hours = div(total, 3600) |> Integer.to_string() |> String.pad_leading(2, "0")
-    minutes = div(rem(total, 3600), 60) |> Integer.to_string() |> String.pad_leading(2, "0")
-    sign <> hours <> ":" <> minutes
-  end
-
   defp preview_moment_label(assigns) do
     with %{local_time: %NaiveDateTime{} = local, instant: %DateTime{} = instant} <-
            assigns.preview,
@@ -876,7 +1208,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
       "#{long_date(assigns.preview.service_date)} · " <>
         "#{service_clock(assigns.preview.service_time)} service time " <>
-        "(#{DisplayClock.format_time(local)}#{elsewhere} UTC#{offset_label(offset)})"
+        "(#{DisplayClock.format_time(local)}#{elsewhere} UTC#{utc_offset_label(offset)})"
     else
       _absent -> nil
     end
@@ -940,6 +1272,127 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp preview_zone_note(_assigns), do: nil
+
+  # The range report's own display data, the summary and computed-at lines, and
+  # the stale label that names what is on screen and what is still being
+  # calculated. Every value is the domain's: a period's occurrence is the
+  # backend's `preview_target`, its window and offsets come from the finding, and
+  # the local stamps come from one `DisplayClock` conversion of the report's own
+  # instants.
+  defp range_display(assigns) do
+    case assigns.range_report do
+      %{} = report ->
+        range_display(
+          report,
+          assigns.station_data,
+          assigns.current_gtfs_version.id,
+          assigns.stop_id
+        )
+
+      _absent ->
+        %{periods: [], groups: [], grouping?: false, caption: "Every loss period in this range"}
+    end
+  end
+
+  defp range_summary(assigns) do
+    with %{first_date: %Date{} = first, last_date: %Date{} = last} = report <-
+           assigns.range_report,
+         %{fallback?: false} = zone <- assigns.preview_zone do
+      [local_start, local_end] =
+        DisplayClock.localize_many([report.horizon_start, report.horizon_end], zone)
+
+      "Service dates #{range_dates_label(first, last)} · " <>
+        "#{range_local_stamp(local_start)} to #{range_local_stamp(local_end)} (#{report.timezone})"
+    else
+      _absent -> nil
+    end
+  end
+
+  defp range_computed_label(assigns) do
+    with %{} = report <- assigns.range_report,
+         %{fallback?: false} = zone <- assigns.preview_zone do
+      [local] = DisplayClock.localize_many([report.computed_at], zone)
+
+      "#{range_period_count(report)}Checked #{range_local_stamp(local)}"
+    else
+      _absent -> nil
+    end
+  end
+
+  defp range_period_count(%{findings: []}), do: ""
+
+  defp range_period_count(%{findings: findings}) do
+    count = length(findings)
+    "#{count} #{if count == 1, do: "period", else: "periods"} with lost connections · "
+  end
+
+  defp range_local_stamp(%NaiveDateTime{} = local),
+    do: "#{Calendar.strftime(local, "%b %-d")} #{DisplayClock.format_time(local)}"
+
+  # The stale label belongs to the retained range, never to the new request: it
+  # names the range still on screen, when it was checked, and either what is
+  # being checked now or why the new check stopped.
+  defp range_stale_detail(assigns) do
+    case assigns.range_report do
+      %{first_date: %Date{} = first, last_date: %Date{} = last} ->
+        shown =
+          "service dates #{range_dates_label(first, last)}, checked #{range_checked_label(assigns)}"
+
+        cond do
+          assigns.range_status == :loading ->
+            "· showing #{shown} · checking #{range_request_label(assigns.range_request)}"
+
+          assigns.range_error != nil ->
+            "· showing #{shown} · the check of #{range_request_label(assigns.range_request)} stopped before it finished"
+
+          map_size(assigns.range_form_errors) > 0 ->
+            "· showing #{shown} · the entered dates were not checked"
+
+          true ->
+            nil
+        end
+
+      _absent ->
+        nil
+    end
+  end
+
+  defp range_checked_label(%{
+         range_report: %{computed_at: %DateTime{} = at},
+         preview_zone: %{fallback?: false} = zone
+       }) do
+    [local] = DisplayClock.localize_many([at], zone)
+    range_local_stamp(local)
+  end
+
+  defp range_checked_label(_assigns), do: "an earlier time"
+
+  defp range_request_label(%{first: %Date{} = first, last: %Date{} = last}),
+    do: "service dates #{range_dates_label(first, last)}"
+
+  defp range_request_label(_absent), do: "the requested dates"
+
+  defp range_invalid_message(%{range_form_errors: errors}),
+    do: errors[:first] || errors[:last]
+
+  # The presentation a report actually allows. When nothing repeats, grouping
+  # would only restate one period per row, so the every-period view is the only
+  # honest one and the toggle is not offered; the caller resolves it because the
+  # component renders exactly the view it is given.
+  defp range_results_view(%{range_display: %{grouping?: true}, range_view: view}), do: view
+  defp range_results_view(_assigns), do: :all
+
+  # The same reason sentences the moment preview uses: the range report's own
+  # reasons are the base evaluation's, and they are rendered, never softened.
+  defp range_incomplete_reasons(
+         %{range_report: %{incomplete_reasons: [_ | _] = reasons}} = assigns
+       ) do
+    reasons
+    |> Enum.uniq()
+    |> Enum.map(&incomplete_reason(&1, assigns.station_data))
+  end
+
+  defp range_incomplete_reasons(_assigns), do: []
 
   # The timeline's own sub-line: the service hours its axis covers, where the
   # hours past 24:00 land on the local clock, and what the reader can do with
@@ -2198,6 +2651,26 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         :preview_skeleton?,
         assigns.preview_status == :loading and assigns.preview == nil
       )
+      |> assign(:range_display, range_display(assigns))
+      |> assign(:range_summary, range_summary(assigns))
+      |> assign(:range_computed, range_computed_label(assigns))
+      |> assign(:range_stale_detail, range_stale_detail(assigns))
+      |> assign(:range_invalid_message, range_invalid_message(assigns))
+      |> assign(:range_incomplete_reasons, range_incomplete_reasons(assigns))
+      |> assign(
+        :range_incomplete?,
+        assigns.range_report != nil and assigns.range_report.status == :incomplete
+      )
+      |> assign(
+        :range_no_loss?,
+        assigns.range_report != nil and assigns.range_report.status == :complete and
+          assigns.range_report.findings == []
+      )
+      |> assign(
+        :range_segments?,
+        assigns.range_report != nil and assigns.range_report.findings != []
+      )
+      |> assign(:range_empty?, assigns.range_report == nil and is_nil(assigns.range_error))
 
     ~H"""
     <Layouts.app
@@ -2482,6 +2955,258 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 axis_note={@preview_axis_note}
               />
             </div>
+
+            <%!--
+            The range check: its own form, request, generation, deadline and stale
+            label. It shares the page's station, version and zone with the moment
+            preview and nothing else, so a preview refresh leaves its form, its
+            retained result and its stale label exactly as they were, and a limit
+            or a timeout keeps the last successful range on screen instead of
+            replacing it with a complete-looking answer.
+            --%>
+            <section
+              id="range-section"
+              aria-labelledby="range-title"
+              class="mt-6 flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white"
+            >
+              <.form
+                for={@range_form}
+                id="range-form"
+                phx-submit="check_range"
+                novalidate
+                aria-labelledby="range-title"
+                class="px-5 pt-3.5 pb-4"
+              >
+                <h2
+                  id="range-title"
+                  class="flex min-h-[26px] items-center font-display text-[18px] tracking-[-0.02em]"
+                >
+                  Check a date range
+                </h2>
+                <p id="range-help" class="mt-0.5 text-[13px] text-muted">
+                  Checks every closure boundary across 1–31 service days, including short windows.
+                </p>
+                <div class="mt-3 grid grid-cols-1 items-end gap-3 min-[360px]:grid-cols-2 sm:flex sm:flex-wrap">
+                  <div class="grid min-w-0 gap-1.5">
+                    <label for="range-first" class="text-[13px] font-[650] text-base-content">
+                      First date
+                    </label>
+                    <input
+                      id="range-first"
+                      name="range[first_date]"
+                      type="date"
+                      value={@range_form[:first_date].value}
+                      required
+                      aria-describedby="range-help range-invalid"
+                      aria-invalid={@range_invalid_message && "true"}
+                      class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong sm:w-[10.5rem] aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+                    />
+                  </div>
+                  <div class="grid min-w-0 gap-1.5">
+                    <label for="range-last" class="text-[13px] font-[650] text-base-content">
+                      Last date
+                    </label>
+                    <input
+                      id="range-last"
+                      name="range[last_date]"
+                      type="date"
+                      value={@range_form[:last_date].value}
+                      required
+                      aria-describedby="range-help range-invalid"
+                      aria-invalid={@range_invalid_message && "true"}
+                      class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong sm:w-[10.5rem] aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+                    />
+                  </div>
+                  <.button
+                    id="check-range"
+                    type="submit"
+                    phx-disable-with="Updating…"
+                    class="col-span-full h-11 min-w-[152px] justify-self-start rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas sm:col-auto"
+                  >
+                    Check date range
+                  </.button>
+                </div>
+                <p
+                  :if={@range_invalid_message}
+                  id="range-invalid"
+                  role="alert"
+                  class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error"
+                >
+                  <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+                  {@range_invalid_message}
+                </p>
+              </.form>
+
+              <div id="range-output" class="border-t border-subtle">
+                <%!--
+                The two limits the context owns: a range that needs more work
+                than its bound allows, and one that outlived the deadline. Both
+                say what happened and what to change, and neither is a result.
+                --%>
+                <section
+                  :if={@range_error == :too_large}
+                  id="range-too-large"
+                  aria-labelledby="range-too-large-title"
+                  class="mx-5 mt-4 flex gap-3 rounded-card bg-error/10 px-4 py-3 text-sm"
+                >
+                  <.icon
+                    name="hero-exclamation-triangle"
+                    class="mt-0.5 size-5 shrink-0 text-error"
+                  />
+                  <div class="min-w-0">
+                    <h3 id="range-too-large-title" class="font-[650] text-error">
+                      This range is too large to check
+                    </h3>
+                    <p id="range-too-large-detail" class="mt-0.5 text-strong">
+                      It has more than 200,000 closure instances. Choose fewer days.
+                    </p>
+                  </div>
+                </section>
+
+                <section
+                  :if={@range_error == :timeout}
+                  id="range-timeout"
+                  aria-labelledby="range-timeout-title"
+                  class="mx-5 mt-4 flex gap-3 rounded-card bg-error/10 px-4 py-3 text-sm"
+                >
+                  <.icon name="hero-clock" class="mt-0.5 size-5 shrink-0 text-error" />
+                  <div class="min-w-0">
+                    <h3 id="range-timeout-title" class="font-[650] text-error">
+                      The check took too long
+                    </h3>
+                    <p id="range-timeout-detail" class="mt-0.5 text-strong">
+                      It stopped after 10 seconds. Choose fewer days, or check the range again.
+                    </p>
+                  </div>
+                </section>
+
+                <section
+                  :if={@range_error == :unexpected}
+                  id="range-error"
+                  aria-labelledby="range-error-title"
+                  class="mx-5 mt-4 flex gap-3 rounded-card bg-error/10 px-4 py-3 text-sm"
+                >
+                  <.icon
+                    name="hero-exclamation-triangle"
+                    class="mt-0.5 size-5 shrink-0 text-error"
+                  />
+                  <div class="min-w-0">
+                    <h3 id="range-error-title" class="font-[650] text-error">
+                      The range check stopped before it finished
+                    </h3>
+                    <p id="range-error-detail" class="mt-0.5 text-strong">
+                      Nothing was changed. Check the range again; if it stops again, reload the page.
+                    </p>
+                  </div>
+                </section>
+
+                <p
+                  :if={@range_stale_detail}
+                  id="range-stale"
+                  class="mx-5 mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-control bg-warning/10 px-4 py-2.5 text-[13px] text-warning"
+                >
+                  <.icon name="hero-clock" class="size-4 shrink-0" />
+                  <strong class="font-[650]">Results are from an earlier check</strong>
+                  <span id="range-stale-detail">{@range_stale_detail}</span>
+                </p>
+
+                <div
+                  :if={@range_report}
+                  id="range-summary"
+                  class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 px-5 pt-4 pb-3"
+                >
+                  <div class="min-w-0">
+                    <p id="range-result" class="text-sm font-[650] tabular-nums text-strong">
+                      {@range_summary}
+                    </p>
+                    <p id="range-computed" class="text-[13px] tabular-nums text-muted">
+                      {@range_computed}
+                    </p>
+                  </div>
+                  <div
+                    :if={@range_display.grouping?}
+                    id="range-view"
+                    role="group"
+                    aria-label="Range results"
+                    class="inline-flex h-11 shrink-0 overflow-hidden rounded-control border border-control bg-white"
+                  >
+                    <button
+                      :for={{view, label} <- [grouped: "Grouped", all: "List every period"]}
+                      id={"range-view-#{view}"}
+                      type="button"
+                      phx-click="range_view"
+                      phx-value-view={view}
+                      data-range-view={view}
+                      aria-pressed={to_string(@range_view == view)}
+                      class="px-3.5 text-sm font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white"
+                    >
+                      {label}
+                    </button>
+                  </div>
+                </div>
+
+                <%!--
+                An incomplete station is never an all-clear: the report's own
+                reasons are named, and the periods below are the ones that could
+                be computed. No no-loss region renders in this state.
+                --%>
+                <section
+                  :if={@range_incomplete?}
+                  id="range-incomplete"
+                  aria-labelledby="range-incomplete-title"
+                  class="mx-5 mt-4 flex gap-3 rounded-card bg-warning/10 px-4 py-3 text-sm"
+                >
+                  <.icon
+                    name="hero-exclamation-triangle"
+                    class="mt-0.5 size-5 shrink-0 text-warning"
+                  />
+                  <div class="min-w-0">
+                    <h3 id="range-incomplete-title" class="font-[650] text-warning">
+                      Range check incomplete
+                    </h3>
+                    <p class="mt-0.5 text-strong">
+                      This check can’t say whether any connection is lost until the station data
+                      is fixed:
+                    </p>
+                    <ul id="range-incomplete-reasons" class="mt-1 list-disc pl-5">
+                      <li :for={reason <- @range_incomplete_reasons}>{reason}</li>
+                    </ul>
+                    <a
+                      id="range-incomplete-floorplans"
+                      href={"/gtfs/#{@current_gtfs_version.id}/stops/#{URI.encode(@stop_id)}/diagram"}
+                      class="mt-1 inline-flex min-h-11 items-center text-sm font-[650] text-action hover:underline"
+                    >
+                      Review pathways on Floorplans
+                    </a>
+                  </div>
+                </section>
+
+                <.range_results
+                  :if={@range_segments?}
+                  display={@range_display}
+                  view={range_results_view(assigns)}
+                />
+
+                <section
+                  :if={@range_no_loss?}
+                  id="range-no-loss"
+                  class="mx-5 mt-4 mb-5 flex items-start gap-3 rounded-card bg-success/10 px-4 py-3 text-sm"
+                >
+                  <.icon name="hero-check-circle" class="mt-0.5 size-5 shrink-0 text-success" />
+                  <div class="min-w-0">
+                    <p class="font-[650] text-success">No connection lost in this range</p>
+                    <p class="mt-0.5 text-strong">
+                      Every entrance keeps the walking and step-free connections it has without
+                      closures, at every closure boundary in the span above.
+                    </p>
+                  </div>
+                </section>
+
+                <p :if={@range_empty?} id="range-empty" class="px-5 py-4 text-sm text-muted">
+                  No range checked yet. A preview covers one moment; a range check lists every time a connection is lost across the dates you choose.
+                </p>
+              </div>
+            </section>
           </div>
         <% end %>
 
