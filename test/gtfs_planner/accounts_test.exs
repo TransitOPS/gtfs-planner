@@ -586,6 +586,46 @@ defmodule GtfsPlanner.AccountsTest do
 
       assert user.email == Accounts.get_user_by_reset_password_token(token).email
     end
+
+    test "issues a new token and invalidates the earlier one after the request window", %{
+      user: user
+    } do
+      first_token = deliver_reset_token(user)
+      backdate_reset_tokens(user, 120)
+
+      second_token = deliver_reset_token(user)
+
+      refute Accounts.get_user_by_reset_password_token(first_token)
+      assert Accounts.get_user_by_reset_password_token(second_token).id == user.id
+      assert reset_token_count(user) == 1
+    end
+
+    test "sends no email and issues no token inside the request window", %{user: user} do
+      first_token = deliver_reset_token(user)
+
+      assert {:error, :throttled} =
+               Accounts.deliver_user_reset_password_instructions(user, &"/reset/#{&1}")
+
+      assert_no_email_sent()
+      assert reset_token_count(user) == 1
+      assert Accounts.get_user_by_reset_password_token(first_token).id == user.id
+    end
+
+    test "leaves other contexts and other users' reset tokens untouched", %{user: user} do
+      other_user = user_fixture()
+      other_token = deliver_reset_token(other_user)
+      session_token = Accounts.generate_user_session_token(user)
+      {_encoded_invite, invite_token} = UserToken.build_email_token(user, "invite")
+      Repo.insert!(invite_token)
+      _earlier_token = deliver_reset_token(user)
+      backdate_reset_tokens(user, 120)
+
+      _new_token = deliver_reset_token(user)
+
+      assert Accounts.get_user_by_reset_password_token(other_token).id == other_user.id
+      assert Accounts.get_user_by_session_token(session_token).id == user.id
+      assert Repo.get_by(UserToken, user_id: user.id, context: "invite")
+    end
   end
 
   describe "get_user_by_reset_password_token/1" do
@@ -1669,5 +1709,25 @@ defmodule GtfsPlanner.AccountsTest do
 
   defp invite_tokens(%User{} = user) do
     Repo.all(from t in UserToken, where: t.user_id == ^user.id and t.context == "invite")
+  end
+
+  defp deliver_reset_token(user) do
+    extract_user_token(fn url ->
+      Accounts.deliver_user_reset_password_instructions(user, fn token ->
+        "#{url}/users/reset_password/#{token}"
+      end)
+    end)
+  end
+
+  defp backdate_reset_tokens(user, seconds_ago) do
+    inserted_at = DateTime.add(DateTime.utc_now(), -seconds_ago, :second)
+
+    Repo.update_all(UserToken.user_and_contexts_query(user, ["reset_password"]),
+      set: [inserted_at: inserted_at]
+    )
+  end
+
+  defp reset_token_count(user) do
+    Repo.aggregate(UserToken.user_and_contexts_query(user, ["reset_password"]), :count, :id)
   end
 end

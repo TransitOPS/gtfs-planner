@@ -445,20 +445,61 @@ defmodule GtfsPlanner.Accounts do
     PasswordResetRequestForm.changeset(attrs)
   end
 
+  # Minimum gap between reset emails for one account; the newest token's inserted_at records it.
+  @reset_request_interval_seconds 60
+
   @doc ~S"""
   Delivers the reset password email to the given user.
+
+  Only the newest reset link works: issuing a token deletes the user's earlier
+  reset tokens. When the user already has a reset token issued within the last
+  minute, no token is issued and no email is sent, and the result is
+  `{:error, :throttled}`. The check and the insert run in one transaction that
+  locks the user row, so simultaneous requests for one account send one email.
+  The email is sent after that transaction commits.
 
   ## Examples
 
       iex> deliver_user_reset_password_instructions(user, &url(~p"/users/reset_password/#{&1}"))
       {:ok, %{to: ..., body: ...}}
 
+      iex> deliver_user_reset_password_instructions(user, &url(~p"/users/reset_password/#{&1}"))
+      {:error, :throttled}
+
   """
   def deliver_user_reset_password_instructions(%User{} = user, reset_password_url_fun)
       when is_function(reset_password_url_fun, 1) do
-    {encoded_token, user_token} = UserToken.build_email_token(user, "reset_password")
-    Repo.insert!(user_token)
-    UserNotifier.deliver_reset_password_instructions(user, reset_password_url_fun.(encoded_token))
+    case Repo.transaction(fn -> issue_reset_password_token(user) end) do
+      {:ok, {:ok, encoded_token}} ->
+        UserNotifier.deliver_reset_password_instructions(
+          user,
+          reset_password_url_fun.(encoded_token)
+        )
+
+      {:ok, :throttled} ->
+        {:error, :throttled}
+    end
+  end
+
+  defp issue_reset_password_token(user) do
+    # Locking the user row makes concurrent requests for one account queue up,
+    # so the later one sees the earlier one's token.
+    Repo.one!(from u in User, where: u.id == ^user.id, select: u.id, lock: "FOR UPDATE")
+
+    reset_tokens = UserToken.user_and_contexts_query(user, ["reset_password"])
+
+    recent_tokens =
+      from t in reset_tokens,
+        where: t.inserted_at > ago(@reset_request_interval_seconds, "second")
+
+    if Repo.exists?(recent_tokens) do
+      :throttled
+    else
+      Repo.delete_all(reset_tokens)
+      {encoded_token, user_token} = UserToken.build_email_token(user, "reset_password")
+      Repo.insert!(user_token)
+      {:ok, encoded_token}
+    end
   end
 
   @doc """
