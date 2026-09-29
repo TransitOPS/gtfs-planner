@@ -287,7 +287,7 @@ describe("transfer_map_hook initial view", () => {
 });
 
 describe("transfer_map_hook show", () => {
-  it("draws A, B, a child platform, the dashed direction and a padded fit", () => {
+  it("draws Arrive, Board, a child platform, the dashed direction and a padded fit", () => {
     const { L, map } = createLeaflet();
     window.L = L;
     const { hook, events } = mountHook(buildRoot({ mapGeneration: GENERATION }));
@@ -311,19 +311,19 @@ describe("transfer_map_hook show", () => {
     expect(markerOptions(L, 0).icon.html).toContain(`width:${treatment.width}`);
     expect(markerOptions(L, 0).icon.iconSize).toEqual([12, 18]);
 
-    // A and B name the endpoints and are not actions, so they stay out of the
-    // tab order, but they are lifted above the child platforms so a station's
-    // children cannot cover the letter.
+    // Arrive and Board name the endpoints with words and are not actions, so they
+    // stay out of the tab order, but they are lifted above the child platforms so
+    // a station's children cannot cover the pill.
     expect(markerOptions(L, 1).keyboard).toBe(false);
     expect(markerOptions(L, 1).title).toBe("Central Station");
-    expect(markerOptions(L, 1).icon.html).toContain(">A<");
-    expect(markerOptions(L, 1).icon.html).toContain("bg-primary");
+    expect(markerOptions(L, 1).icon.html).toContain(">Arrive<");
+    expect(markerOptions(L, 1).icon.html).toContain("bg-strong");
     expect(markerOptions(L, 1).zIndexOffset).toBeGreaterThan(
       markerOptions(L, 0).zIndexOffset || 0,
     );
     expect(markerOptions(L, 2).title).toBe("Harbor");
-    expect(markerOptions(L, 2).icon.html).toContain(">B<");
-    expect(markerOptions(L, 2).icon.html).toContain("bg-secondary");
+    expect(markerOptions(L, 2).icon.html).toContain(">Board<");
+    expect(markerOptions(L, 2).icon.html).toContain("bg-cyan-700");
 
     // The dashed accent line is cased in white so it reads as the connection
     // rather than as the basemap's own dashed reference lines.
@@ -364,13 +364,13 @@ describe("transfer_map_hook show", () => {
     events.get("transfer_map:show")({ a: null, b: B_POINT, children: [] });
 
     expect(L.marker).toHaveBeenCalledTimes(1);
-    expect(markerOptions(L, 0).icon.html).toContain(">B<");
+    expect(markerOptions(L, 0).icon.html).toContain(">Board<");
     expect(L.polyline).not.toHaveBeenCalled();
     expect(map.fitBounds).not.toHaveBeenCalled();
     expect(map.setView).toHaveBeenLastCalledWith([40.7003, -74.0126], 17);
   });
 
-  it("draws one A/B node inside a dashed loop when both sides are the same station", () => {
+  it("draws one Arrive and board pill inside a dashed loop when both sides are the same station", () => {
     const { L, map } = createLeaflet();
     window.L = L;
     const { events } = mountHook(buildRoot({ mapGeneration: GENERATION }));
@@ -383,11 +383,10 @@ describe("transfer_map_hook show", () => {
     });
 
     expect(L.marker).toHaveBeenCalledTimes(1);
-    expect(markerOptions(L, 0).icon.html).toContain(">A/B<");
+    expect(markerOptions(L, 0).icon.html).toContain(">Arrive and board<");
     expect(L.polyline).not.toHaveBeenCalled();
 
-    // One dashed loop, cased, with its radius clearing the letter marker it
-    // surrounds.
+    // One dashed loop, cased, with its radius clearing the dot it surrounds.
     expect(L.circleMarker).toHaveBeenCalledTimes(2);
     const dashedLoops = L.circleMarker.mock.calls.filter(
       ([, options]) => options.dashArray === "6 6",
@@ -395,7 +394,7 @@ describe("transfer_map_hook show", () => {
     expect(dashedLoops).toHaveLength(1);
     expect(dashedLoops[0][0]).toEqual([40.7527, -73.9772]);
     expect(dashedLoops[0][1]).toMatchObject({ weight: 3, fill: false });
-    expect(dashedLoops[0][1].radius).toBeGreaterThan(28 / 2);
+    expect(dashedLoops[0][1].radius).toBeGreaterThan(16 / 2);
     expect(L.circleMarker.mock.calls[0][1]).toMatchObject({
       color: "#ffffff",
       fill: false,
@@ -417,7 +416,7 @@ describe("transfer_map_hook show", () => {
     });
 
     expect(L.marker).toHaveBeenCalledTimes(1);
-    expect(markerOptions(L, 0).icon.html).toContain(">B<");
+    expect(markerOptions(L, 0).icon.html).toContain(">Board<");
     expect(L.polyline).not.toHaveBeenCalled();
   });
 
@@ -562,8 +561,8 @@ describe("transfer_map_hook pick session", () => {
     expect(markerOptions(L, 0).keyboard).toBe(true);
     expect(markerOptions(L, 0).title).toBe("Central Station");
     expect(markerOptions(L, 0).riseOnHover).toBe(true);
-    // A candidate can sit exactly on an endpoint letter, so it carries a lift
-    // of its own (asserted against the letters in the layering case below).
+    // A candidate can sit exactly on an endpoint marker, so it carries a lift
+    // of its own (asserted against the endpoints in the layering case below).
     expect(markerOptions(L, 0).zIndexOffset).toBeGreaterThan(0);
     expect(markerOptions(L, 0).icon.className).toContain(
       "transfer-map-candidate",
@@ -582,7 +581,7 @@ describe("transfer_map_hook pick session", () => {
     });
   });
 
-  it("stacks candidates above the endpoint letters and the letters above child platforms", () => {
+  it("stacks candidates above the endpoint pills and the pills above child platforms", () => {
     const { L } = createLeaflet();
     window.L = L;
     const { events } = mountHook(buildRoot({ mapGeneration: GENERATION }));
@@ -597,17 +596,17 @@ describe("transfer_map_hook pick session", () => {
     events.get("transfer_map:pick_candidates")({ pick_id: 3, stops: [A_POINT] });
 
     // Leaflet stacks markers by latitude, so these offsets are the only thing
-    // keeping a station's child platforms from covering the endpoint letter and
-    // the letter from covering the candidate on the same pixel.
+    // keeping a station's child platforms from covering the endpoint pill and
+    // the pill from covering the candidate on the same pixel.
     const child = markerOptions(L, 0).zIndexOffset || 0;
-    const letterA = markerOptions(L, 1).zIndexOffset || 0;
-    const letterB = markerOptions(L, 2).zIndexOffset || 0;
+    const arriveOffset = markerOptions(L, 1).zIndexOffset || 0;
+    const boardOffset = markerOptions(L, 2).zIndexOffset || 0;
     const candidate = markerOptions(L, 3).zIndexOffset || 0;
 
-    expect(letterA).toBeGreaterThan(child);
-    expect(letterB).toBeGreaterThan(child);
-    expect(candidate).toBeGreaterThan(letterA);
-    expect(candidate).toBeGreaterThan(letterB);
+    expect(arriveOffset).toBeGreaterThan(child);
+    expect(boardOffset).toBeGreaterThan(child);
+    expect(candidate).toBeGreaterThan(arriveOffset);
+    expect(candidate).toBeGreaterThan(boardOffset);
   });
 
   it("picks a candidate from the keyboard, which Leaflet's keyboard option alone does not do", () => {
@@ -764,6 +763,69 @@ describe("transfer_map_hook page controls and teardown", () => {
 
     expect(tileLayer(L, 0).redraw).toHaveBeenCalledTimes(1);
     expect(map.invalidateSize).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a container that was hidden and is shown", () => {
+    let observe;
+
+    function widthOf(root, width) {
+      Object.defineProperty(root, "clientWidth", { configurable: true, value: width });
+    }
+
+    beforeEach(() => {
+      observe = null;
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(callback) {
+            observe = callback;
+          }
+          observe() {}
+          disconnect() {}
+        },
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("re-measures the map and fits the connection once", () => {
+      const { L, map } = createLeaflet();
+      window.L = L;
+      const root = buildRoot({ mapGeneration: GENERATION });
+      widthOf(root, 0);
+      const { events } = mountHook(root);
+
+      events.get("transfer_map:show")({ a: A_POINT, b: B_POINT, children: [], fit: true });
+      map.fitBounds.mockClear();
+      map.invalidateSize.mockClear();
+
+      widthOf(root, 480);
+      observe();
+
+      expect(map.invalidateSize).toHaveBeenCalledTimes(1);
+      expect(map.fitBounds).toHaveBeenCalledTimes(1);
+
+      // A later resize of the visible container is Leaflet's own to handle, so the
+      // operator's zoom is not reset.
+      observe();
+      expect(map.invalidateSize).toHaveBeenCalledTimes(1);
+      expect(map.fitBounds).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a container that was never hidden alone", () => {
+      const { L, map } = createLeaflet();
+      window.L = L;
+      const root = buildRoot({ mapGeneration: GENERATION });
+      widthOf(root, 480);
+      mountHook(root);
+      map.invalidateSize.mockClear();
+
+      observe();
+
+      expect(map.invalidateSize).not.toHaveBeenCalled();
+    });
   });
 
   it("clears the debounce timer, unbinds the fit listener and removes the map on destroy", () => {

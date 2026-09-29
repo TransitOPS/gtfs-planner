@@ -1,75 +1,143 @@
 defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   @moduledoc """
-  Presentation for the Routes › Transfers page.
+  Presentation for the Routes › Transfers page, in the TransitOps application
+  design system.
 
-  The page shell is one bordered workspace split into the version's general
-  rules on the left and the selected connection's context on the right. This
-  module renders the list pane's search and filter toolbar, its table of general
-  rules, its load failure, first-use and filtered-empty states, the selected
-  rule's inspector, the compare view for the rules it competes with, the context
-  pane's connection map with its pick callout, the state before a connection is
-  chosen, and the labels and reason text the rules display.
+  The page is one white card split into the version's rules on the left and the
+  selected connection's context on the right. This module renders the left
+  pane's view chips, toolbar, count row (or selection bar), table, load failure,
+  first-use and filtered-empty states, the right pane's map, the selected rule's
+  inspector, the compare and delete dialogs, the create/edit form with its live
+  preview, and the labels and sentences the rules display.
 
-  The states reuse the shared callout and empty state rather than the visual
-  reference's own state boxes, so a failed load and an empty list read the same
-  way here as they do on Routes. The reference is authority for the composition,
-  the column order, the copy and the label hierarchy; the application is
-  authority for the components, the theme tokens and the accessibility posture.
-  A rule's state is always carried by text as well as color, the min-time column
-  is tabular, and every row control is a full-height button.
+  Rules are written in rider and operator words first and GTFS second: a kind is
+  "Timed transfer" or "Minimum time", and `transfer_type N` appears only as muted
+  detail. Every rule is also written as one sentence ("Route 4 waits for Route 1,
+  so riders can connect."). A rule's state always carries text as well as colour,
+  and every row control is a 44px target.
 
   The inspector reads the catalog's selected row and its competitors, so every
   sentence it renders — the rider meaning, the station-coverage count, the
   competing-rule count, the attention reasons and the GTFS values — comes from
-  the annotated data rather than from the reference's sample rules. Data terms
-  stay in the context and their wording stays here (CR-14).
+  the annotated data. Data terms stay in the context and their wording stays here
+  (CR-14).
 
-  The page lists one of two views of the version. The view chips above the
-  toolbar count the whole version's general rules and in-seat records, and the
-  in-seat view renders read-only: the table keeps the same columns with a footer
-  that says so, the toolbar drops the Needs attention checkbox because in-seat
-  rows carry no reasons, a version without in-seat records states where they are
-  managed, and the inspector names the record, its rider meaning and the Blocks
-  handoff instead of the general inspector's coverage, overlap and action
-  controls. Nothing here creates, changes or deletes a type 4/5 row (R1).
+  The page lists one of two views of the version. The view chips count the whole
+  version's general rules and stay-on-board records, and the stay-on-board view
+  renders read-only: the table keeps the same columns without checkboxes or a
+  time, the toolbar drops Needs attention because those rows carry no reasons, a
+  version without records says where they are managed, and the inspector names
+  the record, its meaning and the Blocks handoff instead of the general
+  inspector's actions. Nothing here creates, changes or deletes a type 4/5 row
+  (R1).
+
+  Below 1024px the two panes drill in instead of stacking: while a rule the URL
+  names is open, the list is hidden and the right pane leads with a way back.
+  `TransferDetailFocus` brings the pane to the top with focus on the rule's title
+  when it opens, and returns focus to the rule's row when it closes.
   """
 
   use GtfsPlannerWeb, :html
 
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [constraint_chip: 1, form_error_summary: 1, message: 1, sort_header: 1]
+
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlannerWeb.Components.RouteIdentity
   alias LiveSelect.Component, as: LiveSelectComponent
+
+  @quiet_class "inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-sm font-[650] text-action hover:underline"
+  @quiet_flush_class "inline-flex min-h-11 items-center gap-1.5 rounded-control text-sm font-[650] text-action hover:underline"
+  @chip_class "inline-flex min-h-11 items-center gap-2 rounded-control border border-control bg-white px-3 text-sm font-semibold text-strong hover:bg-canvas aria-[pressed=true]:border-action aria-[pressed=true]:bg-selection aria-[pressed=true]:text-action"
+  @secondary_class "inline-flex min-h-11 items-center justify-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted"
+  @heading_class "font-display text-[24px] font-semibold tracking-[-0.025em] text-strong"
+
+  # --- workspace ---------------------------------------------------------------
 
   @doc """
   Renders the two-pane transfer workspace.
 
-  The list pane is the wider column (about 55%) from `lg` up, with the context
-  pane beside it and a divider between them; below `lg` the two panes stack so a
-  phone-width viewport never scrolls sideways.
+  From `lg` up the list pane is the wider column (11fr to 9fr) and the context
+  pane beside it stays in view while a long list scrolls. Below `lg` the panes
+  drill in: `detail` is `"open"` while a rule (or a pick on the map) has the
+  screen, `"closed"` while the list has it, and `"both"` while the editor shows
+  its form over its preview. `"none"`, or no `:context` slot, gives the list the
+  whole card, as a failed load does.
 
   ## Examples
 
-      <.workspace>
+      <.workspace detail="closed">
         <:list><.first_use /></:list>
         <:context><.context_empty /></:context>
       </.workspace>
   """
+  attr :id, :string, default: "transfers-workspace"
+  attr :detail, :string, values: ~w(open closed both none), default: "closed"
+  attr :class, :any, default: nil
   slot :list, required: true, doc: "the rule list pane"
-  slot :context, required: true, doc: "the selected connection's context pane"
+  slot :context, doc: "the selected connection's context pane"
 
   def workspace(assigns) do
     ~H"""
-    <div class="mt-6 overflow-hidden rounded-box border border-base-300 bg-base-100 lg:grid lg:grid-cols-[11fr_9fr] lg:items-start">
-      <section class="min-w-0 lg:border-r lg:border-base-300" aria-label="Transfer rules">
+    <section
+      id={@id}
+      phx-hook=".TransferDetailFocus"
+      data-detail={@detail}
+      aria-label="Transfer workspace"
+      class={[
+        "group overflow-clip rounded-card border border-subtle bg-white",
+        @context != [] && "lg:grid lg:grid-cols-[minmax(0,11fr)_minmax(0,9fr)]",
+        @class
+      ]}
+    >
+      <section aria-label="Transfer rules" class="min-w-0 max-lg:group-data-[detail=open]:hidden">
         {render_slot(@list)}
       </section>
       <section
-        class="min-w-0 border-t border-base-300 lg:border-t-0"
+        :if={@context != []}
         aria-label="Connection preview"
+        class="min-w-0 border-t border-subtle lg:border-l lg:border-t-0 max-lg:group-data-[detail=closed]:hidden"
       >
-        {render_slot(@context)}
+        <div class="lg:sticky lg:top-3 lg:max-h-[calc(100vh-24px)] lg:overflow-y-auto lg:overscroll-contain">
+          {render_slot(@context)}
+        </div>
       </section>
-    </div>
+
+      <%!-- Below 1024px opening a rule swaps the list for the rule, so the page
+      would otherwise stay scrolled to where the row was and keyboard focus would
+      sit on a hidden button. Opening the pane scrolls to the top and focuses the
+      rule's title; closing it returns focus to the current row. --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".TransferDetailFocus">
+        export default {
+          mounted() {
+            this.detail = this.el.dataset.detail;
+          },
+          updated() {
+            const detail = this.el.dataset.detail;
+            const previous = this.detail;
+            this.detail = detail;
+
+            if (!window.matchMedia("(max-width: 1023px)").matches) return;
+
+            if (detail === "open" && previous !== "open") {
+              // Remember the row the rule was opened from, and bring the rule's pane
+              // to the top of the screen with focus on its title.
+              const row = this.el.querySelector('#transfers button[aria-current="true"]');
+              this.openedFrom = row ? row.id : null;
+
+              const title = this.el.querySelector("#transfer-inspector-title");
+              if (title) {
+                this.el.scrollIntoView({block: "start"});
+                title.focus({preventScroll: true});
+              }
+            } else if (detail === "closed" && previous === "open") {
+              const row = this.openedFrom && document.getElementById(this.openedFrom);
+              if (row) row.focus();
+            }
+          }
+        };
+      </script>
+    </section>
     """
   end
 
@@ -82,39 +150,85 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   ## Examples
 
-      <.load_failure />
+      <.load_failure version_name="September 2026 service" />
   """
+  attr :version_name, :string, required: true
+
   def load_failure(assigns) do
     ~H"""
-    <div id="transfers-unavailable" class="p-4 sm:p-6">
-      <.callout kind="error" title="Transfers couldn’t load">
-        Your rules haven’t changed. Try loading this version again.
-        <.button
-          id="transfers-retry"
-          phx-click="retry_load"
-          variant="secondary"
-          size="sm"
-          class="mt-2"
-        >
-          Retry loading
-        </.button>
-      </.callout>
+    <div id="transfers-unavailable" class="p-4 md:p-5">
+      <.message kind="error" title="Transfers couldn’t load">
+        Your rules haven’t changed. Try loading {@version_name} again.
+        <:action>
+          <.button
+            id="transfers-retry"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="retry_load"
+          >
+            <.icon name="hero-arrow-path" class="size-4" /> Retry loading
+          </.button>
+        </:action>
+      </.message>
     </div>
     """
   end
 
   @doc """
+  Renders a callout that states a fact about the open rule, without a live
+  region.
+
+  The inspector renders several of these each time a different rule is chosen,
+  so an assertive `role="alert"` on each would interrupt the reader on every
+  selection. Errors that follow an action use `PlannerComponents.message/1`.
+
+  ## Examples
+
+      <.note kind="warning" title="This rule needs attention">…</.note>
+  """
+  attr :kind, :string, required: true, values: ~w(info warning)
+  attr :title, :string, required: true
+  attr :rest, :global
+  slot :inner_block
+  slot :action
+
+  def note(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :tone,
+        case assigns.kind do
+          "info" -> {"bg-soft text-cyan-800", "text-cyan-700", "hero-information-circle"}
+          "warning" -> {"bg-warning-bg text-warning-fg", nil, "hero-exclamation-triangle"}
+        end
+      )
+
+    ~H"""
+    <div class={["flex items-start gap-3 rounded-control px-4 py-3", elem(@tone, 0)]} {@rest}>
+      <.icon name={elem(@tone, 2)} class={["mt-0.5 size-5 shrink-0", elem(@tone, 1)]} />
+      <div class="min-w-0 text-sm">
+        <p class="font-bold">{@title}</p>
+        <div :if={@inner_block != []} class="mt-1 space-y-1">{render_slot(@inner_block)}</div>
+        <div :if={@action != []} class="mt-2">{render_slot(@action)}</div>
+      </div>
+    </div>
+    """
+  end
+
+  # --- list pane ---------------------------------------------------------------
+
+  @doc """
   Renders the list pane's two view chips.
 
   The chips are the page's view switcher: the left one lists the version's
-  general rules and the right one its in-seat records, each with the count the
+  rules and the right one its stay-on-board records, each with the count the
   catalog loaded for the whole version rather than for the current filter, so an
   operator sees what a view holds before switching to it. Because type 4/5 rows
-  are authored on Blocks, the in-seat chip says so where the operator chooses
-  it.
+  are authored on Blocks, the stay-on-board view says so beside the chips.
 
-  The pressed chip states `aria-pressed` and changes both its border and its
-  weight, so which view is listed never rests on color alone.
+  The pressed chip states `aria-pressed` and carries a check icon as well as its
+  border, so which view is listed never rests on colour alone.
 
   ## Examples
 
@@ -124,67 +238,54 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   attr :counts, :map, required: true, doc: "the catalog's `counts` for the whole version"
 
   def view_chips(assigns) do
+    assigns = assign(assigns, :chip_class, @chip_class)
+
     ~H"""
-    <div
-      role="group"
-      aria-label="Transfer views"
-      class="flex flex-wrap gap-2 border-b border-base-300 px-4 py-3"
-    >
-      <button
-        id="transfers-view-general"
-        type="button"
-        aria-pressed={to_string(@view == :general)}
-        phx-click="switch_view"
-        phx-value-view="general"
-        class={view_chip_classes(@view == :general)}
-      >
-        General rules ({@counts.general})
-      </button>
-      <button
-        id="transfers-view-in-seat"
-        type="button"
-        aria-pressed={to_string(@view == :in_seat)}
-        phx-click="switch_view"
-        phx-value-view="in_seat"
-        class={view_chip_classes(@view == :in_seat)}
-      >
-        In-seat ({@counts.in_seat}) · managed on Blocks
-      </button>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-subtle px-4 py-3 md:px-5">
+      <div role="group" aria-label="Kinds of transfer" class="flex flex-wrap gap-2">
+        <button
+          id="transfers-view-general"
+          type="button"
+          aria-pressed={to_string(@view == :general)}
+          phx-click="switch_view"
+          phx-value-view="general"
+          class={@chip_class}
+        >
+          <.icon :if={@view == :general} name="hero-check" class="size-4" /> Transfer rules
+          <span class="tabular-nums">{@counts.general}</span>
+        </button>
+        <button
+          id="transfers-view-in-seat"
+          type="button"
+          aria-pressed={to_string(@view == :in_seat)}
+          phx-click="switch_view"
+          phx-value-view="in_seat"
+          class={@chip_class}
+        >
+          <.icon :if={@view == :in_seat} name="hero-check" class="size-4" /> Stay on board
+          <span class="tabular-nums">{@counts.in_seat}</span>
+        </button>
+      </div>
+      <p :if={@view == :in_seat} id="transfers-in-seat-note" class="text-[13px] text-muted">
+        Read-only here. Blocks manages these.
+      </p>
     </div>
     """
   end
 
-  # One chip shape, pressed or not: daisyUI's button with a chip's own border
-  # and weight. Both states carry the border and the weight change, so the
-  # pressed chip is legible without its color.
-  defp view_chip_classes(true) do
-    "btn h-auto min-h-11 border-primary bg-primary/10 font-semibold text-primary hover:bg-primary/20"
-  end
-
-  defp view_chip_classes(false) do
-    "btn h-auto min-h-11 border-control-border bg-base-100 font-medium text-base-content/70 hover:border-primary"
-  end
-
   @doc """
-  Renders the list pane's toolbar: the connection search and the filter
-  disclosure.
+  Renders the list pane's toolbar: the connection search, the kind of rule and
+  the More filters disclosure.
 
-  The search names what it looks through and patches as the operator types, so a
-  term narrows the list without a submit. Beside it, the filters button discloses
-  the three selects — stop or station, route and type — which the catalog
-  supplies as the current view's own choices, plus the start of an id it has no
-  option for. The button counts the applies selects rather than every control, so
-  "Filters (2)" means two of the three narrow the list; the Needs attention
-  checkbox and Clear filters stay visible while the selects are collapsed, so a
-  filter is always removable.
+  Search and kind are the two filters used on almost every visit, so they sit in
+  the row; the stop and route selects are behind More filters, whose badge counts
+  how many of those two apply. Every applied filter also shows as a removable
+  chip in the count row, so a filtered deep link is legible before the
+  disclosure is opened.
 
-  The disclosure is a control the operator opens, as the reference has it: the
-  URL says which filters apply and the button says how many, so a filtered deep
-  link is legible before it is opened.
-
-  The in-seat view drops the Needs attention checkbox: in-seat rows carry no
-  attention reasons, so the control could only ever empty the list. The reference
-  shows it there, but the catalog cannot answer it.
+  The two server forms keep the ids the tests reach for: `transfer-search-form`
+  patches as the operator types, and `transfer-filter-form` patches when a
+  select changes.
 
   ## Examples
 
@@ -192,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         search_form={@search_form}
         filter_form={@filter_form}
         filter_options={@catalog.filter_options}
-        filter_count={2}
+        filter_count={1}
         filters_open?={@filters_open?}
       />
   """
@@ -205,120 +306,87 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   attr :filter_count, :integer,
     required: true,
-    doc: "how many of the three selects currently apply"
+    doc: "how many of the stop and route selects currently apply"
 
-  attr :filters_open?, :boolean, required: true, doc: "whether the filter disclosure is open"
-
-  attr :in_seat?, :boolean,
-    required: true,
-    doc: "whether the listed view is the read-only in-seat view"
+  attr :filters_open?, :boolean, required: true, doc: "whether More filters is open"
 
   def list_toolbar(assigns) do
     ~H"""
-    <div class="border-b border-base-300 px-4 py-3">
-      <div class="flex items-end gap-2">
-        <div class="min-w-0 flex-1">
-          <.form for={@search_form} id="transfer-search-form" phx-change="search">
+    <div id="transfers-toolbar" role="search" class="border-b border-subtle px-4 py-4 md:px-5">
+      <div class="flex flex-wrap items-end gap-3">
+        <.form
+          for={@search_form}
+          id="transfer-search-form"
+          phx-change="search"
+          class="min-w-0 flex-1 basis-full sm:basis-[200px]"
+        >
+          <.input
+            field={@search_form[:q]}
+            type="search"
+            label="Search transfers"
+            placeholder="Stop, route or trip"
+            phx-debounce="300"
+          />
+        </.form>
+
+        <%!-- `contents` lets the form's children lay out in the toolbar row, so the
+        kind select, the disclosure button and the two hidden selects belong to one
+        server form without nesting it inside the search form. --%>
+        <.form for={@filter_form} id="transfer-filter-form" phx-change="filter" class="contents">
+          <div class="min-w-0 flex-1 basis-[150px] sm:w-[190px] sm:flex-none">
             <.input
-              field={@search_form[:q]}
-              type="search"
-              label="Find a connection"
-              placeholder="Stop, station, route, trip, or ID"
-              phx-debounce="300"
+              field={@filter_form[:type]}
+              type="select"
+              id="transfer-filter-type"
+              label="Kind of rule"
+              prompt="All kinds"
+              options={type_filter_options(@filter_options.types)}
             />
-          </.form>
-        </div>
-        <.button
-          id="transfers-filters-toggle"
-          type="button"
-          variant="secondary"
-          phx-click="toggle_filters"
-          aria-expanded={to_string(@filters_open?)}
-          aria-controls="transfer-filter-fields"
-          class="min-h-11"
-        >
-          {filter_button_label(@filter_count)}
-        </.button>
-      </div>
-
-      <.form for={@filter_form} id="transfer-filter-form" phx-change="filter">
-        <div
-          id="transfer-filter-fields"
-          hidden={!@filters_open?}
-          class="mt-3 grid gap-3 sm:grid-cols-3"
-        >
-          <.input
-            field={@filter_form[:stop]}
-            type="select"
-            id="transfer-filter-stop"
-            label="Stop or station"
-            prompt="All locations"
-            options={stop_filter_options(@filter_options.stops)}
-          />
-          <.input
-            field={@filter_form[:route]}
-            type="select"
-            id="transfer-filter-route"
-            label="Route"
-            prompt="All routes"
-            options={route_filter_options(@filter_options.routes)}
-          />
-          <.input
-            field={@filter_form[:type]}
-            type="select"
-            id="transfer-filter-type"
-            label="Type"
-            prompt="All types"
-            options={type_filter_options(@filter_options.types)}
-          />
-        </div>
-
-        <div class="mt-3 flex flex-wrap items-center gap-4">
-          <.input
-            :if={not @in_seat?}
-            field={@filter_form[:attention]}
-            type="checkbox"
-            id="transfer-filter-attention"
-            label="Needs attention"
-          />
+          </div>
           <.button
-            id="transfers-clear-filters"
+            id="transfers-filters-toggle"
             type="button"
-            variant="quiet"
-            size="sm"
+            variant="secondary"
             class="min-h-11"
-            phx-click="clear_filters"
+            phx-click="toggle_filters"
+            aria-expanded={to_string(@filters_open?)}
+            aria-controls="transfer-filter-fields"
           >
-            Clear filters
+            <.icon name="hero-adjustments-horizontal" class="size-4" /> More filters
+            <span
+              :if={@filter_count > 0}
+              class="min-w-5 rounded-badge bg-selection px-1.5 text-center text-[13px] font-bold tabular-nums text-action"
+            >
+              {@filter_count}
+            </span>
           </.button>
-        </div>
-      </.form>
+          <div
+            id="transfer-filter-fields"
+            hidden={!@filters_open?}
+            class="grid basis-full gap-3 sm:grid-cols-2"
+          >
+            <.input
+              field={@filter_form[:stop]}
+              type="select"
+              id="transfer-filter-stop"
+              label="Stop or station"
+              prompt="All locations"
+              options={stop_filter_options(@filter_options.stops)}
+            />
+            <.input
+              field={@filter_form[:route]}
+              type="select"
+              id="transfer-filter-route"
+              label="Route"
+              prompt="All routes"
+              options={route_filter_options(@filter_options.routes)}
+            />
+          </div>
+        </.form>
+      </div>
     </div>
     """
   end
-
-  defp filter_button_label(0), do: "Filters"
-  defp filter_button_label(count), do: "Filters (#{count})"
-
-  defp count_label(count, true), do: "#{count} in-seat #{pluralize(count, "record")}"
-  defp count_label(count, false), do: "#{count} #{pluralize(count, "rule")}"
-
-  # A checked set replaces the list count with itself, in the reference's words:
-  # the operator's next decision is what the count bar's live region says.
-  defp selection_count_label(_total_count, checked_count, _in_seat?) when checked_count > 0,
-    do: "#{checked_count} selected · this version"
-
-  defp selection_count_label(total_count, _checked_count, in_seat?),
-    do: count_label(total_count, in_seat?)
-
-  # The footer names what the list can do with a row: general rows drive the
-  # context pane, in-seat rows are read-only here and kept in export.
-  defp table_footer(true), do: "Read-only here. All records are retained in export."
-  defp table_footer(false), do: "Select a connection to see its map and rider impact."
-
-  # The page count names the same rows the count bar does.
-  defp pagination_entity(true), do: "in-seat records"
-  defp pagination_entity(false), do: "rules"
 
   defp stop_filter_options(stops) do
     Enum.map(stops, fn stop -> {stop.name || stop.stop_id, stop.stop_id} end)
@@ -344,99 +412,152 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp type_filter_options(types), do: Enum.map(types, &{type_label(&1), &1})
 
   @doc """
-  Renders the list pane's count bar: how many rules the current list holds and
-  the one-direction reminder.
+  Renders the count row, or the selection bar while rules are checked.
 
-  It sits between the toolbar and the rows and stays above the filtered-empty
-  state, so an emptied list reads "0 rules" instead of losing its count with its
-  rows. The count names the rows the view holds — general rules or in-seat
-  records — as the reference's count bar does.
+  The row reads "13 transfer rules", or "5 of 13 transfer rules" while a filter
+  narrows the list, with one removable chip per applied filter and, in the
+  general view, the Needs attention toggle. Clear filters appears only while
+  something is applied. It stays above the filtered-empty state, so an emptied
+  list reads "0 of 13 transfer rules" instead of losing its count with its rows.
 
-  Once a rule is checked, the general view's bar also carries the selection's own
-  controls: the "Select all shown" checkbox beside the checked count, and "Delete
-  selected" on the right. They appear with the selection and leave with it, so an
-  empty list and a fresh one read exactly as they did before. Nothing here checks
-  or deletes a type 4/5 record (R1), so the in-seat view keeps the count and the
-  direction hint and nothing else.
+  Once a rule is checked, the general view's row is replaced by the selection
+  bar: the number checked, Delete N rules, and Clear selection. Nothing here
+  checks or deletes a type 4/5 record (R1), so the stay-on-board row keeps the
+  count and its chips and nothing else.
 
   ## Examples
 
-      <.rule_count total_count={0} in_seat?={false} />
-      <.rule_count total_count={12} in_seat?={false} checked_count={2} all_checked?={false} />
+      <.rule_count total_count={12} all_count={12} in_seat?={false} chips={[]} />
+      <.rule_count total_count={12} all_count={12} in_seat?={false} chips={[]} checked_count={2} />
   """
-  attr :total_count, :integer, required: true
+  attr :total_count, :integer, required: true, doc: "the rows the current list holds"
+  attr :all_count, :integer, required: true, doc: "the rows the view holds without a filter"
 
   attr :in_seat?, :boolean,
     required: true,
-    doc: "whether the count names in-seat records instead of rules"
+    doc: "whether the count names stay-on-board records instead of rules"
 
+  attr :chips, :list,
+    default: [],
+    doc: "the applied filters, as `%{key: \"q\", label: \"…\"}` maps"
+
+  attr :attention?, :boolean, default: false, doc: "whether Needs attention is on"
   attr :checked_count, :integer, default: 0, doc: "how many of the shown rules are checked"
 
-  attr :all_checked?, :boolean,
-    default: false,
-    doc: "whether every rule the page shows is checked"
-
   def rule_count(assigns) do
+    assigns =
+      assigns
+      |> assign(:quiet_class, @quiet_class)
+      |> assign(:chip_class, @chip_class)
+
+    if assigns.checked_count > 0 and not assigns.in_seat? do
+      selection_bar(assigns)
+    else
+      summary_row(assigns)
+    end
+  end
+
+  defp selection_bar(assigns) do
     ~H"""
-    <div class="flex min-h-12 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-base-300 px-4 py-2 text-sm text-base-content/70">
-      <div class="flex min-h-11 flex-wrap items-center gap-x-4 gap-y-1">
-        <label
-          :if={not @in_seat? and @checked_count > 0}
-          class="flex min-h-11 cursor-pointer items-center gap-2"
-        >
-          <input
-            type="checkbox"
-            id="transfers-select-all"
-            checked={@all_checked?}
-            phx-click="toggle_check_all"
-            class="checkbox"
-          />
-          <span>Select all shown</span>
-        </label>
-        <span id="transfers-count" role="status">
-          {selection_count_label(@total_count, @checked_count, @in_seat?)}
-        </span>
-      </div>
+    <div class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle bg-selection px-4 py-1 text-[13px] md:px-5">
+      <p id="transfers-count" role="status" class="font-[650] tabular-nums text-strong">
+        {@checked_count} selected
+      </p>
       <.button
-        :if={not @in_seat? and @checked_count > 0}
         id="transfers-delete-selected"
         type="button"
-        variant="danger"
-        size="sm"
+        variant="secondary"
         class="min-h-11"
         phx-click="delete_selected"
       >
-        Delete selected
+        <.icon name="hero-trash" class="size-4" /> {delete_button_label(@checked_count)}
       </.button>
-      <span :if={@checked_count == 0} id="transfers-direction-hint">One direction per rule</span>
+      <button
+        id="transfers-clear-selection"
+        type="button"
+        phx-click="clear_selection"
+        class={[@quiet_class, "ml-auto"]}
+      >
+        Clear selection
+      </button>
     </div>
     """
   end
 
+  defp summary_row(assigns) do
+    assigns = assign(assigns, :filtered?, assigns.chips != [] or assigns.attention?)
+
+    ~H"""
+    <div
+      id="transfers-summary"
+      class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
+    >
+      <p id="transfers-count" role="status" class="font-[650] tabular-nums text-strong">
+        {count_label(@total_count, @all_count, @in_seat?)}
+      </p>
+      <div :if={@chips != []} class="flex flex-wrap items-center gap-2">
+        <.constraint_chip
+          :for={chip <- @chips}
+          id={"transfers-chip-#{chip.key}"}
+          key={chip.key}
+          label={chip.label}
+        />
+      </div>
+      <div class="ml-auto flex flex-wrap items-center gap-x-3">
+        <button
+          :if={not @in_seat?}
+          id="transfers-attention-toggle"
+          type="button"
+          phx-click="toggle_attention"
+          aria-pressed={to_string(@attention?)}
+          class={[@chip_class, "text-[13px]"]}
+        >
+          <.icon name="hero-exclamation-triangle" class="size-4" /> Needs attention
+        </button>
+        <button
+          :if={@filtered?}
+          id="transfers-clear-filters"
+          type="button"
+          phx-click="clear_filters"
+          class={@quiet_class}
+        >
+          Clear filters
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp count_label(total, all, in_seat?) when total == all, do: count_noun(total, in_seat?)
+  defp count_label(total, all, in_seat?), do: "#{total} of #{count_noun(all, in_seat?)}"
+
+  defp count_noun(count, true), do: "#{count} #{pluralize(count, "stay-on-board record")}"
+  defp count_noun(count, false), do: "#{count} #{pluralize(count, "transfer rule")}"
+
+  defp delete_button_label(1), do: "Delete 1 rule"
+  defp delete_button_label(count), do: "Delete #{count} rules"
+
   @doc """
-  Renders the list pane's table of general rules.
+  Renders the list pane's table of rules.
 
-  Each row names its two endpoints with the scope the rule applies to as
-  subtext, its type, and its minimum time right-aligned in tabular figures; a
-  rule that needs attention carries a text badge under its From endpoint, so its
-  state never depends on color alone. The footer names what a row selection
-  drives, and the pagination moves through 50-row pages.
+  Each row names its two endpoints with the scope the rule applies to as subtext
+  (a route badge and its name, a trip, or "Any route" — "whole station" for a
+  station), its kind, and its minimum time right-aligned in tabular figures. A
+  rule that needs attention carries a text badge under its arrival stop, so its
+  state never depends on colour alone. Below `md` each row becomes one card: the
+  two stops, then the kind and time.
 
-  The rows are the `:transfers` stream, whose items are `{dom_id, row}` pairs
-  with the `transfers-<uuid>` DOM ids the page contract fixes. Selection lives in
-  the URL: the caller passes the selected id and the current sort, and a row
-  button renders its own highlight from them.
+  The rows are the `:transfers` stream, whose items are `{dom_id, row}` pairs with
+  the `transfers-<uuid>` DOM ids the page contract fixes. Selection lives in the
+  URL: the caller passes the selected id and the current sort, and a row button
+  renders its own highlight from them. The arrival cell holds the row's one tab
+  stop, whose overlay makes the whole row a target; the checkbox sits above it.
 
-  The general view leads with the reference's select column: one checkbox per row,
-  labelled with the connection it selects, whose checked state is the map the
-  caller passes. The in-seat view has no such column, because a type 4/5 record is
+  The general view leads with a select column: one checkbox per row, labelled
+  with the connection it selects, whose checked state is the map the caller
+  passes, and a header checkbox that checks every row of the shown page. The
+  stay-on-board view has no such column and no time, because a type 4/5 record is
   never checked or deleted here (R1).
-
-  The in-seat view lists the same columns read-only: the attention badge cannot
-  appear (the catalog annotates in-seat rows with no reasons) and the footer
-  says the records are retained in export rather than offering the selection a
-  map preview. The reference's own per-row state text and badges have no
-  production data yet; the column keeps the reference's "Type" heading.
 
   ## Examples
 
@@ -449,6 +570,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         per_page={@per_page}
         total_count={@total_count}
         in_seat?={false}
+        all_checked?={false}
       />
   """
   attr :rows, :any, required: true, doc: "the `:transfers` stream"
@@ -461,108 +583,152 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   attr :in_seat?, :boolean,
     required: true,
-    doc: "whether the rows are the read-only in-seat records"
+    doc: "whether the rows are the read-only stay-on-board records"
 
   attr :checked, :map,
     default: %{},
     doc: "the checked rules, as `%{id => the updated_at the row carried when it was checked}`"
 
+  attr :all_checked?, :boolean,
+    default: false,
+    doc: "whether every rule the page shows is checked"
+
   def rules_table(assigns) do
     ~H"""
     <div>
-      <.table id="transfers" rows={@rows} responsive="stack">
-        <:col :let={{_dom_id, row}} :if={not @in_seat?} label="Select">
-          <div class="flex min-h-11 min-w-11 items-center">
-            <input
-              type="checkbox"
-              id={"transfer-check-#{row.id}"}
-              checked={Map.has_key?(@checked, row.id)}
-              phx-click="toggle_check"
-              phx-value-id={row.id}
-              aria-label={"Select #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
-              class="checkbox"
+      <table
+        id="transfers-table"
+        aria-label={if(@in_seat?, do: "Stay-on-board records", else: "Transfer rules")}
+        data-checkable={to_string(not @in_seat?)}
+        class="transfers-table w-full table-fixed border-collapse text-left text-sm"
+      >
+        <colgroup>
+          <col :if={not @in_seat?} class="w-11" />
+          <col />
+          <col />
+          <col class="w-[112px]" />
+          <col :if={not @in_seat?} class="w-[76px]" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th
+              :if={not @in_seat?}
+              scope="col"
+              class="sticky top-0 z-10 w-11 border-b border-subtle bg-canvas py-0 pl-4 pr-0"
+            >
+              <label class="flex size-11 items-center justify-center">
+                <input
+                  type="checkbox"
+                  id="transfers-select-all"
+                  checked={@all_checked?}
+                  phx-click="toggle_check_all"
+                  aria-label="Select all rules on this page"
+                  class="size-5 accent-action"
+                />
+              </label>
+            </th>
+            <.sort_header
+              label="Arrive at"
+              sort_key="from"
+              sort_by={@sort_by}
+              sort_dir={@sort_dir}
+              class="px-3 py-0"
             />
-          </div>
-        </:col>
-        <:col
-          :let={{_dom_id, row}}
-          label="From"
-          sort_key="from"
-          sort_event="sort"
-          sort={column_sort_state(@sort_by, @sort_dir, :from)}
-        >
-          <%!-- One wrapper, so the stacked layout keeps the badge under the name
-          instead of beside it. --%>
-          <div>
-            <button
-              id={"transfer-select-#{row.id}"}
-              type="button"
-              phx-click="select_rule"
-              phx-value-id={row.id}
-              aria-current={row.id == @selected_id && "true"}
-              aria-label={"Inspect rule #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
-              class="block w-full min-h-11 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+            <.sort_header
+              label="Board at"
+              sort_key="to"
+              sort_by={@sort_by}
+              sort_dir={@sort_dir}
+              class="px-3 py-0"
+            />
+            <.sort_header
+              label="Rule"
+              sort_key="type"
+              sort_by={@sort_by}
+              sort_dir={@sort_dir}
+              class="px-3 py-0"
+            />
+            <.sort_header
+              :if={not @in_seat?}
+              label="Time"
+              sort_key="min_time"
+              sort_by={@sort_by}
+              sort_dir={@sort_dir}
+              class="px-3 py-0 text-right"
+            />
+          </tr>
+        </thead>
+        <tbody id="transfers" phx-update="stream">
+          <tr
+            :for={{dom_id, row} <- @rows}
+            id={dom_id}
+            class="transfers-row border-b border-subtle last:border-b-0 hover:bg-canvas/70"
+          >
+            <td
+              :if={not @in_seat?}
+              data-label="Select"
+              class="tx-check w-11 py-1 pl-4 pr-0 align-middle"
             >
-              <span class="block truncate font-semibold">{endpoint_name(row.from)}</span>
-              <span class="block text-xs text-base-content/70">
-                {selector_label(row.from, :from)}
+              <label class="flex size-11 items-center justify-center">
+                <input
+                  type="checkbox"
+                  id={"transfer-check-#{row.id}"}
+                  checked={Map.has_key?(@checked, row.id)}
+                  phx-click="toggle_check"
+                  phx-value-id={row.id}
+                  aria-label={"Select #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
+                  class="size-5 accent-action"
+                />
+              </label>
+            </td>
+            <td data-label="Arrive at" class="tx-from min-w-0 px-3 py-1.5 align-middle">
+              <button
+                id={"transfer-select-#{row.id}"}
+                type="button"
+                phx-click="select_rule"
+                phx-value-id={row.id}
+                aria-current={row.id == @selected_id && "true"}
+                aria-label={"Inspect rule #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
+                class="tx-pick block min-h-11 w-full py-1 text-left"
+              >
+                <.endpoint_heading endpoint={row.from} />
+                <span class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[13px] text-muted">
+                  <.scope endpoint={row.from} side={:from} table?={true} />
+                </span>
+              </button>
+              <span
+                :if={not @in_seat? and row.attention != []}
+                id={"transfer-attention-#{row.id}"}
+                class="mt-0.5 inline-flex items-center gap-1 rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg"
+              >
+                <.icon name="hero-exclamation-triangle" class="size-3.5" /> Needs attention
               </span>
-            </button>
-            <span
-              :if={not @in_seat? and row.attention != []}
-              id={"transfer-attention-#{row.id}"}
-              class="badge badge-warning badge-sm mt-1"
+            </td>
+            <td data-label="Board at" class="tx-to min-w-0 px-3 py-1.5 align-middle">
+              <.endpoint_heading endpoint={row.to} arrow?={true} />
+              <span class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[13px] text-muted">
+                <.scope endpoint={row.to} side={:to} table?={true} />
+              </span>
+            </td>
+            <td data-label="Rule" class="tx-rule px-3 py-1.5 align-middle leading-snug text-strong">
+              {type_short(row.transfer.transfer_type)}
+            </td>
+            <td
+              :if={not @in_seat?}
+              data-label="Time"
+              class="tx-time px-3 py-1.5 text-right align-middle"
             >
-              Needs attention
-            </span>
-          </div>
-        </:col>
-        <:col
-          :let={{_dom_id, row}}
-          label="To"
-          sort_key="to"
-          sort_event="sort"
-          sort={column_sort_state(@sort_by, @sort_dir, :to)}
-        >
-          <%!-- The same wrapper as the From cell, so the stacked layout puts both
-          endpoint values on the right rather than beside their label. --%>
-          <div>
-            <button
-              type="button"
-              phx-click="select_rule"
-              phx-value-id={row.id}
-              aria-label={"Inspect rule #{endpoint_name(row.from)} to #{endpoint_name(row.to)}"}
-              class="block w-full min-h-11 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-            >
-              <span class="block truncate font-semibold">{endpoint_name(row.to)}</span>
-              <span class="block text-xs text-base-content/70">{selector_label(row.to, :to)}</span>
-            </button>
-          </div>
-        </:col>
-        <:col
-          :let={{_dom_id, row}}
-          label="Type"
-          sort_key="type"
-          sort_event="sort"
-          sort={column_sort_state(@sort_by, @sort_dir, :type)}
-        >
-          {type_label(row.transfer.transfer_type)}
-        </:col>
-        <:col
-          :let={{_dom_id, row}}
-          label="Min time"
-          align="right"
-          sort_key="min_time"
-          sort_event="sort"
-          sort={column_sort_state(@sort_by, @sort_dir, :min_time)}
-        >
-          <span class="tabular-nums">{min_time_label(row.transfer.min_transfer_time)}</span>
-        </:col>
-      </.table>
+              <.time_cell transfer={row.transfer} />
+            </td>
+          </tr>
+        </tbody>
+      </table>
 
-      <p class="px-4 py-3 text-sm text-base-content/70">{table_footer(@in_seat?)}</p>
+      <p id="transfers-table-note" class="px-4 py-3 text-[13px] text-muted md:px-5">
+        {table_footer(@in_seat?)}
+      </p>
 
-      <.pagination
+      <.page_nav
         page={@page}
         per_page={@per_page}
         total={@total_count}
@@ -572,48 +738,190 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     """
   end
 
+  # A table cell's stop name: two lines at most, and muted when the rule stores no
+  # stop. Below `md` the boarding stop leads with an arrow, so the card reads from
+  # the arrival stop to the boarding stop.
+  attr :endpoint, :map, required: true
+  attr :arrow?, :boolean, default: false
+
+  defp endpoint_heading(assigns) do
+    ~H"""
+    <span class={[
+      "line-clamp-2 leading-snug",
+      if(is_nil(@endpoint.stop_id), do: "font-normal text-muted", else: "font-[650] text-strong")
+    ]}>
+      <.icon
+        :if={@arrow?}
+        name="hero-arrow-right"
+        class="mr-1.5 size-4 align-[-3px] text-muted md:hidden"
+      />{endpoint_name(@endpoint)}
+    </span>
+    """
+  end
+
+  # The general view's footer names what a row selection drives; stay-on-board
+  # rows are read-only here and kept in export.
+  defp table_footer(true), do: "Read-only here. Every record stays in your export."
+  defp table_footer(false), do: "Select a rule to see it on the map and what it means for riders."
+
+  defp pagination_entity(true), do: "stay-on-board records"
+  defp pagination_entity(false), do: "rules"
+
+  # The Time cell: a minimum-time rule shows its time, or "Missing" in the warning
+  # ink when it has none, and every other kind has no time to show.
+  attr :transfer, :map, required: true
+
+  defp time_cell(%{transfer: %{transfer_type: 2, min_transfer_time: nil}} = assigns) do
+    ~H"""
+    <span class="font-[650] text-warning-fg">Missing</span>
+    """
+  end
+
+  defp time_cell(%{transfer: %{transfer_type: 2, min_transfer_time: seconds}} = assigns) do
+    assigns = assign(assigns, :seconds, seconds)
+
+    ~H"""
+    <span class="tabular-nums">{min_time_label(@seconds)}</span>
+    """
+  end
+
+  defp time_cell(assigns) do
+    ~H"""
+    <span class="text-muted">—</span>
+    """
+  end
+
+  # Previous and Next through 50-row pages. Nothing renders while the list fits one
+  # page.
+  attr :page, :integer, required: true
+  attr :per_page, :integer, required: true
+  attr :total, :integer, required: true
+  attr :entity, :string, required: true
+
+  defp page_nav(assigns) do
+    pages = max(div(assigns.total + assigns.per_page - 1, assigns.per_page), 1)
+    page = assigns.page |> max(1) |> min(pages)
+
+    assigns =
+      assigns
+      |> assign(:pages, pages)
+      |> assign(:current, page)
+      |> assign(:from, (page - 1) * assigns.per_page + 1)
+      |> assign(:to, min(page * assigns.per_page, assigns.total))
+      |> assign(:secondary_class, @secondary_class)
+
+    ~H"""
+    <nav
+      :if={@pages > 1}
+      id="transfers-pagination"
+      aria-label="Pages of transfer rules"
+      class="flex flex-wrap items-center justify-between gap-3 border-t border-subtle px-4 py-3 md:px-5"
+    >
+      <p class="text-[13px] tabular-nums text-muted">
+        Showing <strong class="font-[650] text-strong">{@from}–{@to}</strong> of {@total} {@entity}
+      </p>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          phx-click="paginate"
+          phx-value-page={@current - 1}
+          disabled={@current <= 1}
+          class={@secondary_class}
+        >
+          <.icon name="hero-chevron-left" class="size-4" /> Previous
+        </button>
+        <span class="text-[13px] tabular-nums text-muted">Page {@current} of {@pages}</span>
+        <button
+          type="button"
+          phx-click="paginate"
+          phx-value-page={@current + 1}
+          disabled={@current >= @pages}
+          class={@secondary_class}
+        >
+          Next <.icon name="hero-chevron-right" class="size-4" />
+        </button>
+      </div>
+    </nav>
+    """
+  end
+
+  # --- labels and sentences ----------------------------------------------------
+
   @type_labels %{
-    0 => "Recommended",
-    1 => "Timed connection",
+    0 => "Preferred transfer point",
+    1 => "Timed transfer",
     2 => "Minimum time",
     3 => "Not possible",
     4 => "Stay on board",
-    5 => "Alight & reboard"
+    5 => "Must re-board"
+  }
+
+  @type_short_labels %{
+    0 => "Preferred point",
+    1 => "Timed transfer",
+    2 => "Minimum time",
+    3 => "Not possible",
+    4 => "Stay on board",
+    5 => "Must re-board"
+  }
+
+  # The GTFS reference's own name for each value, kept as secondary detail.
+  @type_gtfs_labels %{
+    0 => "Recommended transfer point",
+    1 => "Timed transfer point",
+    2 => "Minimum time required",
+    3 => "Transfer not possible",
+    4 => "In-seat transfer",
+    5 => "In-seat transfer not allowed"
   }
 
   @doc """
-  Labels a `transfer_type` for display, in the reference's wording.
+  Labels a `transfer_type` for display, in rider and operator words.
 
   ## Examples
 
-      iex> type_label(2)
-      "Minimum time"
+      iex> type_label(0)
+      "Preferred transfer point"
   """
   def type_label(transfer_type), do: Map.get(@type_labels, transfer_type, "Unknown")
 
   @doc """
-  Formats a minimum transfer time as the reference writes it: whole minutes, with
-  the remainder in seconds when there is one, and an em dash when a rule has no
-  time stored.
+  The short form of `type_label/1` a table cell has room for.
+
+  ## Examples
+
+      iex> type_short(0)
+      "Preferred point"
+  """
+  def type_short(transfer_type), do: Map.get(@type_short_labels, transfer_type, "Unknown")
+
+  @doc """
+  Formats a minimum transfer time in minutes and seconds, and as an em dash when a
+  rule has no time stored.
 
   ## Examples
 
       iex> min_time_label(150)
-      "2m 30s"
+      "2 min 30 sec"
+      iex> min_time_label(180)
+      "3 min"
+      iex> min_time_label(45)
+      "45 sec"
   """
   def min_time_label(nil), do: "—"
 
   def min_time_label(seconds) when is_integer(seconds) do
-    case rem(seconds, 60) do
-      0 -> "#{div(seconds, 60)}m"
-      remainder -> "#{div(seconds, 60)}m #{remainder}s"
+    case {div(seconds, 60), rem(seconds, 60)} do
+      {0, remainder} -> "#{remainder} sec"
+      {minutes, 0} -> "#{minutes} min"
+      {minutes, remainder} -> "#{minutes} min #{remainder} sec"
     end
   end
 
   @doc """
   Names a rule's endpoint: the stop or station name, the stored stop id when the
-  version no longer contains it, or a sentence when the rule stores no stop at
-  all.
+  version no longer contains it, or "No stop recorded" when the rule stores no
+  stop at all.
 
   ## Examples
 
@@ -622,20 +930,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   """
   def endpoint_name(%{name: name}) when is_binary(name) and name != "", do: name
   def endpoint_name(%{stop_id: stop_id}) when is_binary(stop_id), do: stop_id
-  def endpoint_name(_endpoint), do: "Stop not recorded"
+  def endpoint_name(_endpoint), do: "No stop recorded"
 
   @doc """
-  Names the scope a rule applies to on one side of the connection — every arriving
-  or departing service at the endpoint, one route (by short name when it has one),
-  or one trip.
+  Names the scope a rule applies to on one side of the connection as text: every
+  arriving or departing route, one route (by short name when it has one), or one
+  trip.
 
   ## Examples
 
       iex> selector_label(%{selector: {:route, "12"}, route: %{route_short_name: "12"}}, :from)
       "Route 12"
   """
-  def selector_label(%{selector: :any}, :from), do: "All arriving routes"
-  def selector_label(%{selector: :any}, :to), do: "All departing routes"
+  def selector_label(%{selector: :any}, :from), do: "Any arriving route"
+  def selector_label(%{selector: :any}, :to), do: "Any departing route"
 
   def selector_label(%{selector: {:route, route_id}} = endpoint, _side) do
     "Route #{route_short_name(Map.get(endpoint, :route)) || route_id}"
@@ -643,57 +951,130 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   def selector_label(%{selector: {:trip, trip_id}}, _side), do: "Trip #{trip_id}"
 
+  # One side's scope as it reads in a table cell or the journey pair: a route badge
+  # and the route's name, a trip (with its route's badge when the trip's route is
+  # known), or the "any route" line. In a table cell a station reads "Any route ·
+  # whole station", because its platforms are covered too.
+  attr :endpoint, :map, required: true
+  attr :side, :atom, required: true, values: [:from, :to]
+  attr :table?, :boolean, default: false
+
+  defp scope(%{endpoint: %{selector: {:trip, trip_id}} = endpoint} = assigns) do
+    assigns = assign(assigns, trip_id: trip_id, route: Map.get(endpoint, :route))
+
+    ~H"""
+    <.route_badge :if={@route} route={@route} />
+    <span>Trip {@trip_id}</span>
+    """
+  end
+
+  defp scope(%{endpoint: %{selector: {:route, route_id}} = endpoint} = assigns) do
+    route = Map.get(endpoint, :route) || %{route_id: route_id}
+
+    assigns =
+      assign(assigns,
+        route: route,
+        route_name: blank_to_nil(Map.get(route, :route_long_name))
+      )
+
+    ~H"""
+    <.route_badge route={@route} />
+    <span :if={@route_name} class="truncate">{@route_name}</span>
+    """
+  end
+
+  defp scope(%{endpoint: endpoint, side: side, table?: table?} = assigns) do
+    assigns = assign(assigns, :text, any_route_text(endpoint, side, table?))
+
+    ~H"""
+    <span>{@text}</span>
+    """
+  end
+
+  defp any_route_text(%{child_count: count}, _side, true) when count > 0,
+    do: "Any route · whole station"
+
+  defp any_route_text(endpoint, side, _table?), do: selector_label(endpoint, side)
+
+  # A route's badge. A screen reader hears "Route 12" and the route's name beside
+  # it, not the bare number the badge shows.
+  attr :route, :map, required: true
+
+  defp route_badge(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :spoken,
+        "Route #{route_short_name(assigns.route) || assigns.route.route_id}"
+      )
+
+    ~H"""
+    <span class="sr-only">{@spoken}</span>
+    <span aria-hidden="true">
+      <RouteIdentity.route_badge route={@route} class="min-h-6 min-w-6 text-[13px]" />
+    </span>
+    """
+  end
+
   @doc """
-  Writes one attention reason as the text a sighted operator reads (R11).
+  Writes one attention reason as the sentence a sighted operator reads (R11).
 
   The catalog annotates a row with the reasons it needs attention; the text lives
   here so every surface that shows a reason — the list's badge and the
-  inspector's reason list — names it the same way.
+  inspector's reason list — names it the same way. Each sentence says what is
+  wrong and, where the operator has a choice, what to do.
 
   ## Examples
 
-      iex> attention_text({:competes, 1})
-      "Conflicts with 1 rule of equal priority"
+      iex> attention_text(:min_time_missing)
+      "This rule needs a minimum time."
   """
   def attention_text({:competes, count}) do
-    "Conflicts with #{count} #{pluralize(count, "rule")} of equal priority"
+    "Conflicts with #{count} other #{pluralize(count, "rule")} for the same trips."
   end
 
-  def attention_text(:min_time_missing), do: "Minimum time missing"
+  def attention_text(:min_time_missing), do: "This rule needs a minimum time."
 
   def attention_text({:missing_stop, side, stop_id}) do
-    "#{side_label(side)} stop #{stop_id} is not in this version"
+    "The #{side_word(side)} stop “#{stop_id}” is not in this version. " <>
+      "Choose a stop that is, or delete the rule."
   end
 
-  def attention_text({:invalid_stop_type, side, stop_id, location_type}) do
-    "#{side_label(side)} stop #{stop_id} is #{article(Stop.location_type_label(location_type))}; " <>
-      "transfers need a stop, platform or station"
+  def attention_text({:invalid_stop_type, _side, stop_id, location_type}) do
+    "“#{stop_id}” is #{article(Stop.location_type_label(location_type))}. " <>
+      "Transfers need a stop, platform or station."
   end
 
   def attention_text({:missing_route, side, route_id}) do
-    "#{side_label(side)} route #{route_id} is not in this version"
+    "The #{side_word(side)} route “#{route_id}” is not in this version."
   end
 
   def attention_text({:missing_trip, side, trip_id}) do
-    "#{side_label(side)} trip #{trip_id} is not in this version"
+    "The #{side_word(side)} trip “#{trip_id}” is not in this version."
   end
 
-  def attention_text({:trip_not_on_route, side, trip_id, route_id}) do
-    "#{side_label(side)} trip #{trip_id} is not on route #{route_id}"
+  def attention_text({:trip_not_on_route, _side, trip_id, route_id}) do
+    "Trip #{trip_id} is not on route #{route_id}."
   end
 
-  def attention_text({:trip_not_at_stop, side, trip_id, stop_id}) do
-    "#{side_label(side)} trip #{trip_id} doesn't stop at #{stop_id}"
+  def attention_text({:trip_not_at_stop, _side, trip_id, stop_id}) do
+    "Trip #{trip_id} does not stop at #{stop_id}. Choose a trip that does, or use a route instead."
   end
 
-  defp side_label(:from), do: "From"
-  defp side_label(:to), do: "To"
+  defp side_word(:from), do: "arriving"
+  defp side_word(:to), do: "departing"
 
   defp pluralize(1, noun), do: noun
   defp pluralize(_count, noun), do: noun <> "s"
 
-  defp article(<<first::utf8, _rest::binary>>) when first in ~c"AEIOU", do: "an"
-  defp article(_label), do: "a"
+  defp article(label) do
+    lowered = String.downcase(label)
+
+    case lowered do
+      <<first::utf8, _rest::binary>> when first in ~c"aeiou" -> "an " <> lowered
+      _label -> "a " <> lowered
+    end
+  end
 
   defp route_short_name(route) when is_map(route),
     do: blank_to_nil(Map.get(route, :route_short_name))
@@ -709,22 +1090,78 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp blank_to_nil(_value), do: nil
 
-  defp column_sort_state(sort_by, sort_dir, column) when column == sort_by do
-    case sort_dir do
-      :asc -> "asc"
-      :desc -> "desc"
-    end
+  @doc """
+  Writes a rule as one sentence: what it means for riders and for the trip planners
+  that read the feed.
+
+  A minimum-time rule with a stored time names it, so the sentence carries the
+  rule's own number; without one it asks for the time the kind requires. Either
+  side reads as "Route 4", "trip 1-0815" or "any route".
+
+  ## Examples
+
+      iex> rule_sentence(3, nil, %{selector: {:route, "1"}}, %{selector: {:route, "4"}})
+      "Trip planners will not offer a connection from Route 1 to Route 4."
+  """
+  def rule_sentence(type, min_time, from, to)
+
+  def rule_sentence(0, _min, from, to) do
+    "Trip planners prefer this place when riders switch from #{who(from)} to #{who(to)}. " <>
+      "It does not make a vehicle wait."
   end
 
-  defp column_sort_state(_sort_by, _sort_dir, _column), do: "none"
+  def rule_sentence(1, _min, from, to) do
+    subject = if any?(to), do: "Departing vehicles wait", else: "#{upcase_first(who(to))} waits"
+    arriving = if any?(from), do: "arriving vehicles", else: who(from)
+
+    "#{subject} for #{arriving}, so riders can connect."
+  end
+
+  def rule_sentence(2, nil, _from, _to) do
+    "Trip planners need a minimum time for this connection. " <>
+      "Set one so they know how long riders need."
+  end
+
+  def rule_sentence(2, min, from, to) do
+    "Trip planners offer this connection only if riders have at least #{min_time_label(min)} " <>
+      "between arriving on #{who(from)} and boarding #{who(to)}."
+  end
+
+  def rule_sentence(3, _min, from, to) do
+    "Trip planners will not offer a connection from #{who(from)} to #{who(to)}."
+  end
+
+  def rule_sentence(4, _min, from, to) do
+    "Riders can stay on board when #{who(from)} continues as #{who(to)}."
+  end
+
+  def rule_sentence(5, _min, from, to) do
+    "Riders must get off and board again when #{who(from)} continues as #{who(to)}."
+  end
+
+  def rule_sentence(_type, _min, _from, _to), do: ""
+
+  defp who(%{selector: {:trip, trip_id}}), do: "trip #{trip_id}"
+
+  defp who(%{selector: {:route, route_id}} = endpoint),
+    do: "Route #{route_short_name(Map.get(endpoint, :route)) || route_id}"
+
+  defp who(_endpoint), do: "any route"
+
+  defp any?(%{selector: :any}), do: true
+  defp any?(_endpoint), do: false
+
+  defp upcase_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
+  defp upcase_first(text), do: text
+
+  # --- first use, empty and no-result states -----------------------------------
 
   @doc """
   Renders the list pane's first-use state for a version without general rules.
 
   It differs from `no_results/1`: nothing is hidden by a filter here, so the copy
-  explains what a rule is for rather than undoing a query. The caller supplies
-  the "Create transfer" action once the editor exists; until then the state
-  stands on its own with no control to offer.
+  explains what a rule is for rather than undoing a query, and says that most
+  connections need none. The caller supplies the "Create transfer rule" action.
 
   ## Examples
 
@@ -734,35 +1171,43 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   slot :action, doc: "the primary action that creates the version's first rule"
 
   def first_use(assigns) do
+    assigns = assign(assigns, :heading_class, @heading_class)
+
     ~H"""
-    <div id="transfers-first-use" class={["p-4 sm:p-6", @class]}>
-      <.empty_state title="Make connections clearer">
-        Add a rule when riders need a specific connection, extra time, or a different transfer point. Journey planners can infer transfers without these rules.
-        <:action :if={@action != []}>
-          {render_slot(@action)}
-        </:action>
-      </.empty_state>
+    <div id="transfers-first-use" class={["px-5 py-14 sm:px-10", @class]}>
+      <div class="mx-auto max-w-[520px] text-center">
+        <h2 class={@heading_class}>Most connections need no rule</h2>
+        <p class="mt-2 text-sm text-muted">
+          Trip planners already work out transfers from stop distance and timetables. Add a rule where that guess is wrong: a bus that waits, a longer walk, or a connection that should not be offered.
+        </p>
+        <div :if={@action != []} class="mt-6">{render_slot(@action)}</div>
+      </div>
     </div>
     """
   end
 
   @doc """
-  Renders the in-seat view's empty state for a version without in-seat records.
+  Renders the stay-on-board view's empty state for a version without records.
 
   It offers no action, because type 4/5 rows are authored and removed on Blocks:
   there is nothing to create from here. The view chips above it stay reachable,
-  so an operator can return to the general rules.
+  so an operator can return to the rules.
 
   ## Examples
 
       <.in_seat_empty />
   """
   def in_seat_empty(assigns) do
+    assigns = assign(assigns, :heading_class, @heading_class)
+
     ~H"""
-    <div id="transfers-in-seat-empty" class="p-4 sm:p-6">
-      <.empty_state title="No in-seat records">
-        Stay-on-board connections are managed on Blocks.
-      </.empty_state>
+    <div id="transfers-in-seat-empty" class="px-5 py-14 sm:px-10">
+      <div class="mx-auto max-w-[520px] text-center">
+        <h2 class={@heading_class}>No stay-on-board records yet</h2>
+        <p class="mt-2 text-sm text-muted">
+          Records that let riders stay on one vehicle across two trips are set up in Blocks, next to the vehicle’s day. They appear here once they exist.
+        </p>
+      </div>
     </div>
     """
   end
@@ -770,70 +1215,183 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   @doc """
   Renders the list pane's filtered-empty state.
 
-  The version has general rules, but the search and filters hide all of them, so
-  the state offers the way back — the bare list — instead of asking for a first
-  rule. The toolbar above it stays visible, because the search term that emptied
-  the list is edited there.
+  The version has rules, but the search and filters hide all of them, so the state
+  offers the way back — the bare list — instead of asking for a first rule. The
+  toolbar above it stays visible, because the search term that emptied the list is
+  edited there.
 
   ## Examples
 
-      <.no_results />
+      <.no_results all_count={13} />
   """
+  attr :all_count, :integer, required: true, doc: "the rows the view holds without a filter"
+  attr :in_seat?, :boolean, default: false
+
   def no_results(assigns) do
+    assigns = assign(assigns, :secondary_class, @secondary_class)
+
     ~H"""
-    <div id="transfers-no-results" class="p-4 sm:p-6">
-      <.empty_state title="No matching connections">
-        Try another stop, route, or search term.
-        <:action>
-          <.button
-            id="transfers-no-results-clear"
-            type="button"
-            variant="secondary"
-            size="sm"
-            class="min-h-11"
-            phx-click="clear_filters"
-          >
-            Clear filters
-          </.button>
-        </:action>
-      </.empty_state>
+    <div id="transfers-no-results" class="px-5 py-12 text-center">
+      <h2 class="font-sans text-base font-bold tracking-normal text-strong">
+        No transfers match
+      </h2>
+      <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
+        Try another stop, route or word, or clear the filters to see all {count_noun(
+          @all_count,
+          @in_seat?
+        )}.
+      </p>
+      <button
+        id="transfers-no-results-clear"
+        type="button"
+        phx-click="clear_filters"
+        class={[@secondary_class, "mt-5"]}
+      >
+        Clear filters
+      </button>
+    </div>
+    """
+  end
+
+  # --- context pane: inspector --------------------------------------------------
+
+  # One side of a journey: what riders do there, the service, the stop, and what kind
+  # of place it is.
+  attr :label, :string, required: true
+  attr :side, :atom, required: true, values: [:from, :to]
+  attr :endpoint, :map, required: true
+  attr :name_id, :string, default: nil
+  attr :missing?, :boolean, default: false
+
+  defp journey_side(assigns) do
+    assigns = assign(assigns, :context, endpoint_context(assigns.endpoint, assigns.missing?))
+
+    ~H"""
+    <div class="min-w-0">
+      <p class="text-[13px] text-muted">{@label}</p>
+      <p class="mt-1 flex flex-wrap items-center gap-1.5 text-sm text-strong">
+        <.scope endpoint={@endpoint} side={@side} />
+      </p>
+      <p id={@name_id} class="mt-1 text-sm font-[650] leading-snug text-strong">
+        <%= if is_nil(@endpoint.stop_id) do %>
+          <span class="font-normal text-muted">No stop recorded</span>
+        <% else %>
+          {endpoint_name(@endpoint)}
+        <% end %>
+      </p>
+      <p :if={@context} class="text-[13px] text-muted">{@context}</p>
+    </div>
+    """
+  end
+
+  # What kind of place an endpoint is, in the words a rider or operator uses.
+  defp endpoint_context(%{stop_id: nil}, _missing?), do: nil
+  defp endpoint_context(_endpoint, true), do: "Not in this version"
+
+  defp endpoint_context(%{child_count: count}, _missing?) when count > 0,
+    do: "Station · covers #{count} #{pluralize(count, "platform")}"
+
+  defp endpoint_context(%{location_type: 1}, _missing?), do: "Station"
+
+  defp endpoint_context(%{top_level: %{name: parent}}, _missing?) when is_binary(parent),
+    do: "Platform at #{parent}"
+
+  defp endpoint_context(%{platform_code: code}, _missing?) when is_binary(code) and code != "",
+    do: "Platform #{code}"
+
+  defp endpoint_context(_endpoint, _missing?), do: "Stop"
+
+  # The journey pair: arrive here, board there, joined by an arrow. It is the same
+  # shape in the inspector, in the live preview and (as text) in the dialogs, so the
+  # operator reads one connection one way everywhere.
+  attr :from, :map, required: true
+  attr :to, :map, required: true
+  attr :from_missing?, :boolean, default: false
+  attr :to_missing?, :boolean, default: false
+
+  attr :name_ids?, :boolean,
+    default: false,
+    doc: "whether the stop names carry the inspector's ids"
+
+  defp journey_pair(assigns) do
+    ~H"""
+    <div class="rounded-card bg-canvas p-4">
+      <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+        <.journey_side
+          label="Riders arrive at"
+          side={:from}
+          endpoint={@from}
+          missing?={@from_missing?}
+          name_id={@name_ids? && "transfer-inspector-arrive"}
+        />
+        <.icon name="hero-arrow-right" class="hidden size-5 pt-6 text-muted sm:block" />
+        <.journey_side
+          label="Riders board at"
+          side={:to}
+          endpoint={@to}
+          missing?={@to_missing?}
+          name_id={@name_ids? && "transfer-inspector-board"}
+        />
+      </div>
     </div>
     """
   end
 
   @doc """
-  Renders the context pane's inspector for the selected general rule.
+  Renders the way back from an open rule to the list, below 1024px.
 
-  The pane answers what a rule does: the type, the two endpoints with the scope
-  each side covers, what the rule means for riders, which direction it applies
-  in, whether a station endpoint makes it station-wide, which equal-priority
-  rules compete with it for the same trips, its attention reasons as text, and
-  the stored GTFS values behind the summary. Every reason the catalog annotates
-  reaches the operator as words, so no state is carried by color alone.
+  There the list and the rule take the screen in turn, so the rule's pane leads
+  with this link, above the map, and the list returns with the rule's row where
+  the operator left it. From `lg` up both panes are always on screen and the link
+  is not drawn.
 
-  The direction line reads "Applies in this direction only." because rules are
-  one-directional (R7); the reverse link appears only when the catalog found an
-  exact mirror of the six key fields in the same view, and the sentence stands in
-  its place when there is none. A station endpoint's coverage line counts the
-  child platforms the rule covers, so an operator can see why a more specific
-  route or trip rule may override it.
+  ## Examples
 
-  Edit, reverse-create and delete controls are added by later steps; this renders
-  the read-only inspector, the compare trigger and the related links.
+      <.back_to_list path={~p"/gtfs/\#{@current_gtfs_version.id}/transfers"} />
+  """
+  attr :path, :string, required: true, doc: "the list without the open rule"
 
-  The in-seat variant answers the same question for a record this page does not
-  own: the eyebrow names the record, the heading and rider meaning come from the
-  same labels, and a note says the record is managed on Blocks. The reverse
-  control, the station-coverage and overlap callouts, the attention list and the
-  related links are general-rule features — an in-seat record has no action here
-  (R1).
+  def back_to_list(assigns) do
+    assigns = assign(assigns, :quiet_class, @quiet_class)
+
+    ~H"""
+    <div class="border-b border-subtle px-2 lg:hidden">
+      <.link id="transfer-inspector-back" patch={@path} class={@quiet_class}>
+        <.icon name="hero-chevron-left" class="size-4" /> All transfer rules
+      </.link>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the context pane's inspector for the selected rule.
+
+  The pane answers what a rule does: its kind, one plain sentence, the two
+  endpoints with the scope each side covers, which direction it applies in with
+  the next step inline, whether a station endpoint makes it station-wide, which
+  equal-priority rules compete with it for the same trips, its attention reasons
+  as text, and the stored GTFS values behind the summary under Technical
+  details. Every reason the catalog annotates reaches the operator as words, so
+  no state is carried by colour alone.
+
+  The direction line reads "Works one way only: Route 1 to Route 4." because
+  rules are one-directional (R7); it ends in "View the reverse rule" when the
+  catalog found an exact mirror of the six key fields in the same view, and in
+  "Create the reverse rule" when there is none. A station endpoint's coverage
+  note counts the child platforms the rule covers, so an operator can see why a
+  more specific route or trip rule may override it.
+
+  The stay-on-board variant answers the same question for a record this page does
+  not own: the title and sentence come from the same labels, and a note says the
+  record is managed on Blocks. The direction line, the coverage and overlap
+  notes, the attention list, the related links and the edit, reverse and delete
+  actions are general-rule features — a stay-on-board record has none here (R1).
 
   ## Examples
 
       <.inspector
         row={@selected}
         competitors={@competitors}
-        compare_open?={@compare_open?}
         version_id={@current_gtfs_version.id}
         in_seat?={false}
       />
@@ -844,257 +1402,225 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     required: true,
     doc: "the selected row's competing rows, in the catalog's own order"
 
-  attr :compare_open?, :boolean,
-    required: true,
-    doc: "whether the compare view is open"
-
   attr :version_id, :string,
     required: true,
     doc: "the version the stop and route links belong to"
 
   attr :in_seat?, :boolean,
     required: true,
-    doc: "whether the selected row is a read-only in-seat record"
+    doc: "whether the selected row is a read-only stay-on-board record"
 
   def inspector(assigns) do
+    row = assigns.row
+
     assigns =
       assigns
-      |> assign(:attention, attention_reasons(assigns.row))
-      |> assign(:competitor_count, competitor_count(assigns.row))
-      |> assign(:coverage, coverage_endpoints(assigns.row))
-      |> assign(:detail_lines, detail_lines(assigns.row.transfer))
-      |> assign(:from_route_id, route_id(assigns.row.from))
-      |> assign(:to_route_id, route_id(assigns.row.to))
+      |> assign(:attention, attention_reasons(row))
+      |> assign(:competitor_count, competitor_count(row))
+      |> assign(:coverage, coverage_endpoints(row))
+      |> assign(:detail_lines, detail_lines(row.transfer))
+      |> assign(:from_route_id, route_id(row.from))
+      |> assign(:to_route_id, route_id(row.to))
+      |> assign(:sentence, row_sentence(row))
+      |> assign(:from_missing?, missing_stop?(row, :from))
+      |> assign(:to_missing?, missing_stop?(row, :to))
+      |> assign(:quiet_class, @quiet_class)
+      |> assign(:quiet_flush_class, @quiet_flush_class)
+      |> assign(:heading_class, @heading_class)
 
     ~H"""
-    <div id="transfer-inspector" class="p-4 sm:p-6">
-      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-        {inspector_eyebrow(@in_seat?)}
-      </p>
-      <div class="mt-1 flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-xl font-semibold">{type_label(@row.transfer.transfer_type)}</h2>
-        <.button
-          :if={not @in_seat?}
-          id="transfer-inspector-edit"
-          type="button"
-          variant="secondary"
-          size="sm"
-          class="min-h-11"
-          phx-click="open_edit"
-          phx-value-id={@row.id}
-        >
-          Edit transfer
-        </.button>
-      </div>
-
-      <%!-- One spaced column: the shared callout does not accept a `class`, so the
-      rhythm between the journey, the callouts and the disclosure lives here. --%>
-      <div class="mt-4 space-y-4">
-        <div class="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
-          <div class="min-w-0 border-l-4 border-primary pl-3">
-            <span class="block text-xs text-base-content/70">Arrive at</span>
-            <strong id="transfer-inspector-arrive" class="block text-sm font-semibold">
-              {endpoint_name(@row.from)}
-            </strong>
-            <span class="block text-xs text-base-content/70">
-              {selector_label(@row.from, :from)}
-            </span>
-          </div>
-          <span aria-hidden="true" class="pt-6 text-base-content/50">→</span>
-          <div class="min-w-0 border-l-4 border-info pl-3">
-            <span class="block text-xs text-base-content/70">Board at</span>
-            <strong id="transfer-inspector-board" class="block text-sm font-semibold">
-              {endpoint_name(@row.to)}
-            </strong>
-            <span class="block text-xs text-base-content/70">{selector_label(@row.to, :to)}</span>
-          </div>
-        </div>
-
-        <.callout kind="info" title="What this means for riders">
-          <.rider_meaning row={@row} />
-        </.callout>
-
-        <div class="flex flex-wrap items-center gap-2 text-sm text-base-content/70">
-          <span>Applies in this direction only.</span>
+    <div id="transfer-inspector">
+      <div class="px-4 py-5 md:px-6">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <h2 id="transfer-inspector-title" tabindex="-1" class={[@heading_class, "outline-none"]}>
+            {type_label(@row.transfer.transfer_type)}
+          </h2>
           <.button
-            :if={not @in_seat? and @row.reverse_id}
-            id="transfer-inspector-reverse-inspect"
-            type="button"
-            variant="quiet"
-            size="sm"
-            class="min-h-11 text-primary underline underline-offset-4"
-            phx-click="inspect_reverse"
-          >
-            Inspect reverse rule
-          </.button>
-          <span :if={not @in_seat? and is_nil(@row.reverse_id)}>
-            The reverse connection is not changed.
-          </span>
-        </div>
-
-        <.callout
-          :if={@in_seat?}
-          id="transfer-inspector-blocks-note"
-          kind="info"
-          title="Managed on Blocks."
-        >
-          <p>Changes to stay-on-board records are made there.</p>
-        </.callout>
-
-        <.callout
-          :if={not @in_seat? and @coverage != []}
-          id="transfer-inspector-coverage"
-          kind="info"
-          title="Station-wide coverage"
-        >
-          <p :for={endpoint <- @coverage}>{coverage_sentence(endpoint)}</p>
-        </.callout>
-
-        <.callout
-          :if={not @in_seat? and @competitor_count > 0}
-          id="transfer-inspector-overlap"
-          kind="warning"
-          title="Rules disagree for the same journey"
-        >
-          <p>{overlap_sentence(@competitor_count)}</p>
-          <.button
-            id="transfer-inspector-compare"
+            :if={not @in_seat?}
+            id="transfer-inspector-edit"
             type="button"
             variant="secondary"
-            size="sm"
-            class="mt-2 min-h-11"
-            phx-click="open_compare"
+            class="min-h-11"
+            phx-click="open_edit"
+            phx-value-id={@row.id}
           >
-            Compare rules
+            Edit rule
           </.button>
-        </.callout>
+        </div>
+        <p id="transfer-inspector-sentence" class="mt-1 text-[15px] leading-snug text-default">
+          {@sentence}
+        </p>
 
-        <.callout
-          :if={not @in_seat? and @attention != []}
-          id="transfer-inspector-attention"
-          kind="warning"
-          title="Needs attention"
-        >
-          <ul class="list-disc space-y-1 pl-5">
-            <li :for={reason <- @attention}>{attention_text(reason)}</li>
-          </ul>
-        </.callout>
+        <div class="mt-4 grid gap-4">
+          <.journey_pair
+            from={@row.from}
+            to={@row.to}
+            from_missing?={@from_missing?}
+            to_missing?={@to_missing?}
+            name_ids?={true}
+          />
 
-        <details id="transfer-inspector-details" class="border-t border-base-300 pt-4">
-          <summary class="cursor-pointer text-sm font-medium">Rule scope &amp; GTFS details</summary>
-          <div class="mt-2 space-y-1 text-sm text-base-content/70">
-            <p>{specificity_label(@row)} · type {@row.transfer.transfer_type}</p>
-            <p :for={{field, value} <- @detail_lines}>{field}: {value}</p>
-            <p class="pt-1">
-              Specific trip and route selectors narrow this rule. Equally specific overlapping rules need review.
+          <p
+            :if={not @in_seat?}
+            id="transfer-inspector-direction"
+            class="flex flex-wrap items-center gap-x-2 text-sm text-muted"
+          >
+            <span>Works one way only: {who(@row.from)} to {who(@row.to)}.</span>
+            <button
+              :if={@row.reverse_id}
+              id="transfer-inspector-reverse-inspect"
+              type="button"
+              phx-click="inspect_reverse"
+              class={@quiet_flush_class}
+            >
+              View the reverse rule
+            </button>
+            <button
+              :if={is_nil(@row.reverse_id)}
+              id="transfer-inspector-reverse-create"
+              type="button"
+              phx-click="reverse_draft"
+              class={@quiet_flush_class}
+            >
+              Create the reverse rule
+            </button>
+          </p>
+
+          <.note
+            :if={@in_seat?}
+            id="transfer-inspector-blocks-note"
+            kind="info"
+            title="Managed in Blocks"
+          >
+            <p>
+              Stay-on-board records are set on the block that runs both trips. Changes are made there.
             </p>
+          </.note>
+
+          <.note
+            :if={not @in_seat? and @coverage != []}
+            id="transfer-inspector-coverage"
+            kind="info"
+            title="Covers the whole station"
+          >
+            <p :for={endpoint <- @coverage}>{coverage_sentence(endpoint)}</p>
+          </.note>
+
+          <.note
+            :if={not @in_seat? and @competitor_count > 0}
+            id="transfer-inspector-overlap"
+            kind="warning"
+            title="Rules disagree for the same trips"
+          >
+            <p>{overlap_sentence(@competitor_count)}</p>
+            <:action>
+              <.button
+                id="transfer-inspector-compare"
+                type="button"
+                variant="secondary"
+                class="min-h-11"
+                phx-click="open_compare"
+              >
+                Compare rules
+              </.button>
+            </:action>
+          </.note>
+
+          <.note
+            :if={not @in_seat? and @attention != []}
+            id="transfer-inspector-attention"
+            kind="warning"
+            title={attention_title(length(@attention))}
+          >
+            <ul class="list-disc space-y-1 pl-5">
+              <li :for={reason <- @attention}>{attention_text(reason)}</li>
+            </ul>
+          </.note>
+
+          <details id="transfer-inspector-details" class="group/details border-t border-subtle pt-3">
+            <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold text-strong [&::-webkit-details-marker]:hidden">
+              <.icon
+                name="hero-chevron-right"
+                class="size-4 text-muted group-open/details:rotate-90"
+              /> Technical details
+            </summary>
+            <div class="pb-1 pt-1 text-[13px] text-muted">
+              <p>
+                <strong class="font-[650] text-default">{specificity_label(@row)}</strong>
+                · GTFS specificity {specificity_rank(@row)} of 6 · {gtfs_label(
+                  @row.transfer.transfer_type
+                )}
+              </p>
+              <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+                <%= for {field, value} <- @detail_lines do %>
+                  <dt class="font-mono">{field}</dt>
+                  <dd class="text-default">{value}</dd>
+                <% end %>
+              </dl>
+              <p class="mt-2">
+                Trip and route choices narrow a rule. Rules with the same specificity that overlap need review.
+              </p>
+            </div>
+          </details>
+
+          <div :if={not @in_seat?} class="flex flex-wrap gap-x-5">
+            <.link
+              :if={@row.from.stop_id}
+              id="transfer-inspector-stop-link"
+              navigate={~p"/gtfs/#{@version_id}/stops/#{@row.from.stop_id}"}
+              class="inline-flex min-h-11 items-center text-sm font-semibold text-action hover:underline"
+            >
+              View {endpoint_name(@row.from)}
+            </.link>
+            <.link
+              :if={@from_route_id}
+              id="transfer-inspector-route-link-from"
+              navigate={~p"/gtfs/#{@version_id}/routes/#{@from_route_id}"}
+              class="inline-flex min-h-11 items-center text-sm font-semibold text-action hover:underline"
+            >
+              View route {route_label(@row.from)}
+            </.link>
+            <.link
+              :if={not is_nil(@to_route_id) and @to_route_id != @from_route_id}
+              id="transfer-inspector-route-link-to"
+              navigate={~p"/gtfs/#{@version_id}/routes/#{@to_route_id}"}
+              class="inline-flex min-h-11 items-center text-sm font-semibold text-action hover:underline"
+            >
+              View route {route_label(@row.to)}
+            </.link>
           </div>
-        </details>
 
-        <div :if={not @in_seat?} class="flex flex-wrap gap-4">
-          <.link
-            :if={@row.from.stop_id}
-            id="transfer-inspector-stop-link"
-            navigate={~p"/gtfs/#{@version_id}/stops/#{@row.from.stop_id}"}
-            class="min-h-11 py-1 text-sm font-semibold text-primary underline underline-offset-4"
-          >
-            View {endpoint_name(@row.from)}
-          </.link>
-          <.link
-            :if={@from_route_id}
-            id="transfer-inspector-route-link-from"
-            navigate={~p"/gtfs/#{@version_id}/routes/#{@from_route_id}"}
-            class="min-h-11 py-1 text-sm font-semibold text-primary underline underline-offset-4"
-          >
-            View route {route_label(@row.from)}
-          </.link>
-          <.link
-            :if={@to_route_id}
-            id="transfer-inspector-route-link-to"
-            navigate={~p"/gtfs/#{@version_id}/routes/#{@to_route_id}"}
-            class="min-h-11 py-1 text-sm font-semibold text-primary underline underline-offset-4"
-          >
-            View route {route_label(@row.to)}
-          </.link>
-        </div>
-
-        <div
-          :if={not @in_seat?}
-          class="mt-4 flex flex-wrap items-center gap-4 border-t border-base-300 pt-4"
-        >
-          <.button
-            id="transfer-inspector-reverse-create"
-            type="button"
-            variant="secondary"
-            size="sm"
-            class="min-h-11"
-            phx-click="reverse_draft"
-          >
-            Create reverse rule
-          </.button>
-          <.button
-            id="transfer-inspector-delete"
-            type="button"
-            variant="danger"
-            size="sm"
-            class="min-h-11"
-            phx-click="confirm_delete"
-          >
-            Delete
-          </.button>
+          <div :if={not @in_seat?} class="border-t border-subtle pt-2">
+            <button
+              id="transfer-inspector-delete"
+              type="button"
+              phx-click="confirm_delete"
+              class="-ml-2 inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-sm font-[650] text-error-fg hover:underline"
+            >
+              <.icon name="hero-trash" class="size-4" /> Delete rule
+            </button>
+          </div>
         </div>
       </div>
     </div>
     """
   end
 
-  # The eyebrow names which of the two views' rows the inspector is showing: an
-  # in-seat record is displayed here but owned by Blocks.
-  defp inspector_eyebrow(true), do: "In-seat record"
-  defp inspector_eyebrow(false), do: "Transfer rule"
-
-  @rider_meaning_text %{
-    0 => "This is a recommended connection point. It does not promise that a vehicle will wait.",
-    1 =>
-      "The departing vehicle is expected to wait for the arriving service so riders can connect.",
-    3 => "Journey planners should not offer this connection.",
-    4 => "Riders may stay on the vehicle as it continues on the next trip.",
-    5 => "Riders must get off and board again for the next trip."
-  }
-
-  @doc """
-  Writes what a rule means for riders, in the reference's wording (prototype
-  `riderMeaning`).
-
-  A minimum-time rule with a stored time names it, so the sentence carries the
-  rule's own number; without one it asks for the time the type requires. The
-  sentence is a paragraph of the inspector's rider callout, which supplies the
-  surrounding surface.
-
-  ## Examples
-
-      <.rider_meaning row={@row} />
-  """
-  attr :row, :map, required: true, doc: "the catalog's `row()` to explain"
-
-  def rider_meaning(assigns) do
-    transfer = assigns.row.transfer
-
-    assigns =
-      assigns
-      |> assign(:type, transfer.transfer_type)
-      |> assign(:min_time, transfer.min_transfer_time)
-      |> assign(:text, Map.get(@rider_meaning_text, transfer.transfer_type, ""))
-
-    ~H"""
-    <p :if={@type == 2 and not is_nil(@min_time)}>
-      Allow at least <strong>{min_time_label(@min_time)}</strong>
-      between arrival and departure, including walking and a buffer.
-    </p>
-    <p :if={@type == 2 and is_nil(@min_time)}>Set a minimum time for this rule.</p>
-    <p :if={@type != 2}>{@text}</p>
-    """
+  defp row_sentence(row) do
+    rule_sentence(
+      row.transfer.transfer_type,
+      row.transfer.min_transfer_time,
+      row.from,
+      row.to
+    )
   end
+
+  defp missing_stop?(row, side) do
+    Enum.any?(row.attention, &match?({:missing_stop, ^side, _stop_id}, &1))
+  end
+
+  defp attention_title(1), do: "This rule needs attention"
+  defp attention_title(count), do: "#{count} things need attention"
 
   @doc """
   Names how narrow a rule's selectors are, from the rank the catalog computed.
@@ -1108,81 +1634,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       iex> specificity_label(%{rank: 4})
       "Route-specific"
   """
-  def specificity_label(%{rank: rank}) when rank in 1..3, do: "Trip-specific"
+  def specificity_label(%{rank: rank}) when rank in 1..3, do: "Specific trips"
   def specificity_label(%{rank: rank}) when rank in 4..5, do: "Route-specific"
-  def specificity_label(_row), do: "Stop / station default"
+  def specificity_label(_row), do: "Every service at these stops"
 
-  @doc """
-  Renders the compare view for a rule that competes with equal-priority rules.
+  defp specificity_rank(%{rank: rank}) when rank in 1..6, do: rank
+  defp specificity_rank(_row), do: 6
 
-  It lists the selected rule and every competitor with the effect each one has —
-  its type and minimum time — each with an "Edit rule" action that opens that
-  rule's own editor, so the operator can see why neither takes precedence and then
-  correct the one that should change.
+  defp gtfs_label(type), do: Map.get(@type_gtfs_labels, type, "Unknown")
 
-  ## Examples
-
-      <.compare_dialog :if={@compare_open?} row={@selected} competitors={@competitors} />
-  """
-  attr :row, :map, required: true, doc: "the selected rule's `row()`"
-  attr :competitors, :list, required: true, doc: "the competing rows"
-
-  def compare_dialog(assigns) do
-    assigns = assign(assigns, :rules, [assigns.row | assigns.competitors])
-
-    ~H"""
-    <.confirm_dialog
-      id="transfer-compare-dialog"
-      open={true}
-      size="lg"
-      single_action={true}
-      title="Rules that match the same connection"
-      confirm_label="Close"
-      cancel_label="Close"
-      pending_label="Closing…"
-      on_confirm="close_compare"
-      on_cancel="close_compare"
-      described_by="transfer-compare-dialog-body"
-      return_focus_id="transfer-inspector-compare"
-    >
-      <p>
-        These rules apply to some of the same trip pairs with equal priority, so neither takes precedence. Choose the intended behavior, then narrow or remove the competing rule.
-      </p>
-      <div class="mt-3 divide-y divide-base-300 border border-base-300 p-3">
-        <div
-          :for={rule <- @rules}
-          class="flex flex-wrap items-start justify-between gap-2 py-2 first:pt-0 last:pb-0"
-        >
-          <p class="min-w-0">
-            <strong class="block">
-              {type_label(rule.transfer.transfer_type)} · {min_time_label(
-                rule.transfer.min_transfer_time
-              )}
-            </strong>
-            <span class="block">{endpoint_name(rule.from)} → {endpoint_name(rule.to)}</span>
-            <span class="block text-base-content/70">
-              {selector_label(rule.from, :from)} → {selector_label(rule.to, :to)}
-            </span>
-          </p>
-          <.button
-            id={"transfer-compare-edit-#{rule.id}"}
-            type="button"
-            variant="secondary"
-            size="sm"
-            class="min-h-11"
-            phx-click="compare_edit"
-            phx-value-id={rule.id}
-          >
-            Edit rule
-          </.button>
-        </div>
-      </div>
-    </.confirm_dialog>
-    """
-  end
-
-  # The competition reason is the overlap callout's own; every other reason
-  # renders in the attention list, as text (R11).
+  # The competition reason is the overlap note's own; every other reason renders in
+  # the attention list, as text (R11).
   defp attention_reasons(%{attention: attention}) do
     Enum.reject(attention, &match?({:competes, _}, &1))
   end
@@ -1206,23 +1668,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp coverage_sentence(endpoint) do
     count = endpoint.child_count
 
-    "#{endpoint_name(endpoint)} includes all #{count} #{pluralize(count, "child platform")}. " <>
-      "More specific route or trip rules can override this rule for matching journeys."
-  end
-
-  defp overlap_sentence(1) do
-    "1 other rule of equal priority matches some of the same trips. " <>
-      "Review them before deciding which should apply."
+    "#{endpoint_name(endpoint)} includes #{count} #{pluralize(count, "platform")}, " <>
+      "so this rule applies at every one. A rule for a specific route or trip overrides it."
   end
 
   defp overlap_sentence(count) do
-    "#{count} other rules of equal priority match some of the same trips. " <>
-      "Review them before deciding which should apply."
+    "#{count} other #{pluralize(count, "rule")} of equal priority can apply to some of the " <>
+      "same trips, so a trip planner can’t tell which one wins. " <>
+      "Keep one, or narrow one to a route or trip."
   end
 
-  # The eight stored GTFS columns behind the rule, in the reference's order: the
-  # two stops always name what the rule stores, the selectors and the minimum
-  # time only when the rule has one.
+  # The eight stored GTFS columns behind the rule: the two stops always name what
+  # the rule stores, the selectors only when the rule has one, and the kind and the
+  # minimum time as the rule holds them.
   defp detail_lines(transfer) do
     [
       {"from_stop_id", transfer.from_stop_id || "not set"},
@@ -1231,6 +1689,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       {"to_route_id", transfer.to_route_id},
       {"from_trip_id", transfer.from_trip_id},
       {"to_trip_id", transfer.to_trip_id},
+      {"transfer_type", transfer.transfer_type},
       {"min_transfer_time", min_time_detail(transfer)}
     ]
     |> Enum.reject(fn {_field, value} -> is_nil(value) end)
@@ -1254,25 +1713,133 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   @doc """
   Renders the context pane before any connection is chosen.
 
+  With rows in the view but none chosen it says what choosing does; with no rows
+  at all (or none the filters leave) it says where a connection will appear. The
+  stay-on-board view names Blocks, because that is where its records begin.
+
   ## Examples
 
-      <.context_empty />
+      <.context_empty none?={false} in_seat?={false} />
   """
+  attr :none?, :boolean,
+    default: false,
+    doc: "whether the view holds no rows at all, rather than none chosen"
+
+  attr :in_seat?, :boolean, default: false
+
   def context_empty(assigns) do
+    assigns = assign(assigns, :heading_class, @heading_class)
+
     ~H"""
-    <div id="transfer-inspector-empty" class="p-4 sm:p-6">
-      <h2 class="text-xl font-semibold">A little context goes a long way</h2>
-      <p class="mt-3 text-sm text-base-content/70">
-        Choose a connection to see where riders arrive, where they board next, and which rule applies.
-      </p>
+    <div id="transfer-inspector-empty" class="px-4 py-6 md:px-6">
+      <h2 class={@heading_class}>{context_empty_title(@none?, @in_seat?)}</h2>
+      <p class="mt-2 max-w-[52ch] text-sm text-muted">{context_empty_text(@none?, @in_seat?)}</p>
     </div>
     """
   end
 
+  defp context_empty_title(true, true), do: "Stay-on-board records appear here"
+  defp context_empty_title(true, false), do: "Connections appear here"
+  defp context_empty_title(false, _in_seat?), do: "Choose a rule to see the connection"
+
+  defp context_empty_text(true, true) do
+    "Each record set up in Blocks appears here on the map, with what it means for riders."
+  end
+
+  defp context_empty_text(true, false) do
+    "Each rule you add appears here on the map, with what it means for riders and trip planners."
+  end
+
+  defp context_empty_text(false, _in_seat?) do
+    "It appears on the map with what it means for riders and trip planners."
+  end
+
+  @doc """
+  Renders the compare view for a rule that competes with equal-priority rules.
+
+  It lists the selected rule and every competitor with the effect each one has —
+  its kind and minimum time — each with an "Edit rule" action that opens that
+  rule's own editor, so the operator can see why none is more specific and then
+  correct the one that should change.
+
+  ## Examples
+
+      <.compare_dialog :if={@compare_open?} row={@selected} competitors={@competitors} />
+  """
+  attr :row, :map, required: true, doc: "the selected rule's `row()`"
+  attr :competitors, :list, required: true, doc: "the competing rows"
+
+  def compare_dialog(assigns) do
+    assigns = assign(assigns, :rules, [assigns.row | assigns.competitors])
+
+    ~H"""
+    <.confirm_dialog
+      id="transfer-compare-dialog"
+      open={true}
+      chrome="planner"
+      size="lg"
+      single_action={true}
+      title="Rules that match the same trips"
+      confirm_label="Close"
+      cancel_label="Close"
+      pending_label="Closing…"
+      on_confirm="close_compare"
+      on_cancel="close_compare"
+      described_by="transfer-compare-dialog-body"
+      return_focus_id="transfer-inspector-compare"
+    >
+      <p class="text-default">
+        These rules can apply to some of the same trips and none is more specific, so a trip planner can’t tell which one wins. Keep the one you intend, then narrow the other to a route or trip, or delete it.
+      </p>
+      <ul class="mt-4 grid gap-2">
+        <li
+          :for={rule <- @rules}
+          class={[
+            "flex flex-wrap items-start justify-between gap-3 rounded-card border p-3",
+            if(rule.id == @row.id, do: "border-action bg-selection", else: "border-subtle")
+          ]}
+        >
+          <div class="min-w-0 flex-1">
+            <p :if={rule.id == @row.id} class="mb-1 text-[13px] font-[650] text-action">
+              Selected rule
+            </p>
+            <p class="text-sm font-bold text-strong">
+              {type_label(rule.transfer.transfer_type)}{compare_time(rule.transfer)}
+            </p>
+            <p class="mt-0.5 text-sm text-default">
+              {endpoint_name(rule.from)} to {endpoint_name(rule.to)}
+            </p>
+            <p class="mt-0.5 text-[13px] text-muted">
+              {selector_label(rule.from, :from)} to {selector_label(rule.to, :to)}
+            </p>
+          </div>
+          <.button
+            id={"transfer-compare-edit-#{rule.id}"}
+            type="button"
+            variant="secondary"
+            class="min-h-11 shrink-0"
+            phx-click="compare_edit"
+            phx-value-id={rule.id}
+          >
+            Edit rule
+          </.button>
+        </li>
+      </ul>
+    </.confirm_dialog>
+    """
+  end
+
+  defp compare_time(%{transfer_type: 2, min_transfer_time: seconds}) when is_integer(seconds),
+    do: " · #{min_time_label(seconds)}"
+
+  defp compare_time(_transfer), do: ""
+
+  # --- context pane: connection map -------------------------------------------
+
   @doc """
   Renders the context pane's connection map.
 
-  The region is the reference's map header, canvas, legend and its two failure
+  The region is the map's title row, canvas, legend and its two failure
   affordances. The canvas is the `TransferMap` hook's own container —
   `phx-update="ignore"`, so the server never patches inside it — while every
   control and sentence the operator reads lives outside it, so a map that never
@@ -1305,43 +1872,43 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     doc: "the connection's endpoints the payload reports without coordinates"
 
   def map_region(assigns) do
-    assigns = assign(assigns, :title, map_title(assigns))
+    assigns =
+      assigns
+      |> assign(:title, map_title(assigns))
+      |> assign(:quiet_class, @quiet_class)
+      |> assign(:secondary_class, @secondary_class)
 
     ~H"""
-    <div id="transfer-map-region" class="border-b border-base-300">
-      <div class="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        <h3 id="transfer-map-title" class="text-sm font-semibold">{@title}</h3>
-        <.button
+    <div id="transfer-map-region" class="border-b border-subtle">
+      <div class="flex min-h-12 items-center justify-between gap-3 px-4 py-1 md:px-6">
+        <h3 id="transfer-map-title" class="text-sm font-bold text-strong">{@title}</h3>
+        <button
           id="transfer-map-fit"
           type="button"
-          variant="quiet"
-          size="sm"
-          class="min-h-9 py-1 text-primary underline underline-offset-4"
+          class={@quiet_class}
           phx-click={JS.dispatch("transfer-map:fit", to: "#transfer-map")}
         >
           Fit connection
-        </.button>
+        </button>
       </div>
 
-      <div :if={@pick} class="mx-4 mb-3 sm:mx-6">
-        <.callout id="transfer-pick-callout" kind="info" title="Pick on the map">
-          <p>Select a stop on the map, or use the named stop field.</p>
-          <p :if={@pick.truncated?} id="transfer-pick-truncated" class="mt-1">
-            Zoom in to see all stops.
-          </p>
-          <.button
-            id="transfer-pick-cancel"
-            type="button"
-            variant="secondary"
-            size="sm"
-            class="mt-2 min-h-9"
-            phx-click="cancel_pick"
-            phx-window-keydown="cancel_pick"
-            phx-key="Escape"
-          >
-            Cancel picking
-          </.button>
-        </.callout>
+      <div :if={@pick} class="mx-4 mb-3 md:mx-6">
+        <.note id="transfer-pick-callout" kind="info" title="Pick on the map">
+          <p>Select a stop on the map, or type its name in the search field.</p>
+          <p :if={@pick.truncated?} id="transfer-pick-truncated">Zoom in to see all stops.</p>
+          <:action>
+            <button
+              id="transfer-pick-cancel"
+              type="button"
+              class={@secondary_class}
+              phx-click="cancel_pick"
+              phx-window-keydown="cancel_pick"
+              phx-key="Escape"
+            >
+              Cancel picking
+            </button>
+          </:action>
+        </.note>
       </div>
 
       <div class={if(@map_state == :unavailable, do: "hidden")}>
@@ -1351,7 +1918,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           phx-update="ignore"
           data-map-generation={@generation}
           data-extent={Jason.encode!(@extent || %{})}
-          class="h-72 w-full lg:h-80"
+          class="h-[250px] w-full lg:h-[320px]"
         >
         </div>
       </div>
@@ -1359,56 +1926,67 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       <div
         :if={@map_state == :unavailable}
         id="transfer-map-unavailable"
-        class="grid h-72 place-content-center gap-1 bg-base-200/50 px-6 text-center lg:h-80"
+        class="grid h-[250px] place-content-center justify-items-center gap-1 bg-canvas px-6 text-center lg:h-[320px]"
       >
-        <h3 class="text-base font-semibold">Map unavailable</h3>
-        <p class="text-sm text-base-content/70">Stop names and rule details are still available.</p>
-        <.button
+        <h3 class="text-base font-bold text-strong">Map unavailable</h3>
+        <p class="max-w-[34ch] text-sm text-muted">
+          Stop names and rule details still work. Try the map again in a moment.
+        </p>
+        <button
           id="transfer-map-retry"
           type="button"
-          variant="secondary"
-          size="sm"
-          class="mx-auto mt-3 min-h-11"
+          class={[@secondary_class, "mt-3"]}
           phx-click="retry_map"
         >
-          Retry map
-        </.button>
+          <.icon name="hero-arrow-path" class="size-4" /> Retry map
+        </button>
       </div>
 
       <div
         :if={@map_state == :ready}
         id="transfer-map-legend"
-        class="flex flex-wrap gap-x-4 gap-y-1 border-t border-base-300 px-4 py-2 text-xs text-base-content/70 sm:px-6"
+        class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-subtle px-4 py-2 text-[13px] text-muted md:px-6"
       >
-        <span><b class="text-primary">A</b> Arrival</span>
-        <span><b class="text-secondary">B</b> Departure</span>
-        <span><b class="text-accent">⇢</b> Rule direction · not a walking route</span>
+        <span class="inline-flex items-center gap-1.5">
+          <span class="inline-block size-3 rounded-full bg-strong"></span>Riders arrive
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <span class="inline-block size-3 rounded-full bg-cyan-700"></span>Riders board
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <.icon name="hero-arrow-right" class="size-4" />Direction of the rule, not a walking route
+        </span>
       </div>
 
       <ul
         :if={@map_state == :ready and @missing != []}
         id="transfer-map-missing"
-        class="border-t border-base-300 px-4 py-2 text-xs text-base-content/70 sm:px-6"
+        class="border-t border-subtle px-4 py-2 text-[13px] text-muted md:px-6"
       >
-        <li :for={name <- @missing}>{name} has no coordinates.</li>
+        <li :for={name <- @missing}>{name} has no location in this version.</li>
       </ul>
     </div>
     """
   end
 
-  defp map_title(%{pick: %{side: :from}}), do: "Choose the arrival stop"
-  defp map_title(%{pick: %{side: :to}}), do: "Choose the departure stop"
-  defp map_title(%{editor_open?: true}), do: "Preview this connection"
+  defp map_title(%{pick: %{side: :from}}), do: "Choose where riders arrive"
+  defp map_title(%{pick: %{side: :to}}), do: "Choose where riders board"
+  defp map_title(%{editor_open?: true}), do: "Preview of this connection"
   defp map_title(_assigns), do: "Selected connection"
+
+  # --- dialogs ------------------------------------------------------------------
 
   @doc """
   Renders the confirmation for deleting the rules the operator selected.
 
   The dialog lists every rule it will delete — both endpoints with the scope each
-  side covers, and the type — and names the version the deletion lands in, so the
-  operator confirms named rules rather than a count (R8). A refusal keeps the
-  dialog open with its reason, because the rules the click captured no longer
-  match what a confirm would delete.
+  side covers, and the kind — and names the version the deletion lands in, so the
+  operator confirms named rules rather than a count (R8). The change log cannot
+  roll a transfer rule back, so the dialog says the deletion can't be undone
+  instead of offering an undo, and the safe button takes focus. A refusal keeps
+  the dialog open with its reason, because the rules the click captured no longer
+  match what a confirm would delete; when a retry cannot change that outcome, only
+  Close remains.
 
   It is a general-view surface: a type 4/5 record is never listed and never
   deletable here (R1).
@@ -1424,49 +2002,53 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     doc: "the name of the version the listed rules belong to"
 
   def delete_dialog(assigns) do
+    count = length(assigns.dialog.rows)
+
+    assigns =
+      assigns
+      |> assign(:count, count)
+      |> assign(:final?, assigns.dialog.error in [:stale, :not_found])
+
     ~H"""
     <.confirm_dialog
       id="transfer-delete-dialog"
       open={true}
+      chrome="planner"
       size="lg"
-      title={delete_dialog_title(length(@dialog.rows))}
-      confirm_label={delete_dialog_confirm_label(length(@dialog.rows))}
+      title={delete_dialog_title(@count)}
+      confirm_label={delete_button_label(@count)}
+      cancel_label={if(@final?, do: "Close", else: keep_label(@count))}
       pending_label="Deleting…"
+      single_action={@final?}
       on_confirm="apply_delete"
       on_cancel="cancel_delete"
       confirm_variant="danger"
       described_by="transfer-delete-dialog-body"
       return_focus_id={@dialog.return_focus_id}
     >
-      <div class="space-y-3">
-        <ul class="border border-base-300">
-          <li
-            :for={row <- @dialog.rows}
-            id={"transfer-delete-row-#{row.id}"}
-            class="border-b border-base-300 p-3 last:border-b-0"
-          >
-            <strong class="block">{endpoint_name(row.from)} → {endpoint_name(row.to)}</strong>
-            <span class="block text-sm text-base-content/70">
-              {selector_label(row.from, :from)} → {selector_label(row.to, :to)} · {type_label(
-                row.transfer.transfer_type
-              )}
-            </span>
-          </li>
-        </ul>
-        <p>
-          These exact rules will be removed from {@version_name} and its next export. Stops, routes, and rules outside this selection stay unchanged.
-        </p>
-        <p>
-          Only the listed records will be deleted. In-seat records are excluded. This cannot be undone.
-        </p>
-        <.callout
-          :if={@dialog.error}
-          id="transfer-delete-error"
-          kind="error"
-          title="Nothing was deleted."
+      <ul class="max-h-64 overflow-auto rounded-card border border-subtle">
+        <li
+          :for={row <- @dialog.rows}
+          id={"transfer-delete-row-#{row.id}"}
+          class="border-b border-subtle px-3 py-2 last:border-b-0"
         >
-          <p>{delete_error_text(@dialog.error)}</p>
-        </.callout>
+          <strong class="block text-sm text-strong">
+            {endpoint_name(row.from)} to {endpoint_name(row.to)}
+          </strong>
+          <span class="block text-[13px] text-muted">
+            {selector_label(row.from, :from)} to {selector_label(row.to, :to)} · {type_short(
+              row.transfer.transfer_type
+            )}
+          </span>
+        </li>
+      </ul>
+      <p class="mt-4 text-default">
+        {if @count == 1, do: "This rule", else: "These rules"} will be removed from {@version_name} and from its next export. Stops, routes and other rules stay as they are. This can’t be undone.
+      </p>
+      <div :if={@dialog.error} class="mt-4">
+        <.message id="transfer-delete-error" kind="error" title="Nothing was deleted.">
+          {delete_error_text(@dialog.error)}
+        </.message>
       </div>
     </.confirm_dialog>
     """
@@ -1475,63 +2057,108 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp delete_dialog_title(1), do: "Delete 1 transfer rule?"
   defp delete_dialog_title(count), do: "Delete #{count} transfer rules?"
 
-  defp delete_dialog_confirm_label(1), do: "Delete 1 rule"
-  defp delete_dialog_confirm_label(count), do: "Delete #{count} rules"
+  defp keep_label(1), do: "Keep rule"
+  defp keep_label(_count), do: "Keep rules"
 
   # The three refusals the delete facades answer, under the band's own "Nothing
   # was deleted.": each reason says what happened to the selection the dialog was
   # built from.
   defp delete_error_text(:stale) do
-    "One or more rules changed since you selected them. Close this dialog to see the latest rules."
+    "One or more rules changed after you selected them. Close this dialog to see the latest rules."
   end
 
   defp delete_error_text(:not_found) do
-    "One or more rules were already removed or can't be deleted here."
+    "One or more rules were already removed or can’t be deleted here. Close this dialog to see the latest list."
   end
 
   defp delete_error_text(_busy) do
-    "The server was busy. Try again."
+    "The server didn’t respond. Try again."
   end
 
-  # The three scopes the editor offers, in the reference's wording. A scope is the
-  # operator's workflow choice; the stored rule keeps only GTFS fields.
+  @doc """
+  Renders the confirmation that guards a dirty draft's departure (AC-20).
+
+  The draft is what the operator typed, and every way out of the editor — Back,
+  Cancel, "Open existing rule", a link departure and a version switch — runs
+  through the same question, so none of them silently discards it. The confirm
+  names what is lost; "Keep editing" returns to the draft with focus on the save
+  button.
+
+  ## Examples
+
+      <.discard_dialog open={@pending_discard != nil} mode={:create} />
+  """
+  attr :open, :boolean, required: true, doc: "whether a departure is waiting for an answer"
+
+  attr :mode, :atom,
+    default: :create,
+    values: [:create, :edit, nil],
+    doc: "whether the draft is a new rule or a stored one"
+
+  def discard_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="transfer-discard-dialog"
+      open={@open}
+      chrome="planner"
+      title="Discard unsaved changes?"
+      confirm_label="Discard changes"
+      cancel_label="Keep editing"
+      pending_label="Discarding…"
+      on_confirm="discard_changes"
+      on_cancel="keep_editing"
+      confirm_variant="danger"
+      described_by="transfer-discard-dialog-body"
+      return_focus_id="transfer-save"
+    >
+      <p>
+        {if @mode == :edit,
+          do: "The saved rule stays as it was.",
+          else: "Nothing has been saved yet."} The changes in this form will be lost.
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  # --- create and edit ----------------------------------------------------------
+
+  # The three scopes the editor offers. A scope is the operator's workflow choice;
+  # the stored rule keeps only GTFS fields.
   @scope_choices [
-    {"stops", "All services at selected stops", "Use a station to cover all its platforms."},
-    {"routes", "A route pair at selected stops",
-     "Stops still define where the connection happens."},
-    {"custom", "Specific trips or mixed selectors",
-     "Stops still define where the connection happens."}
+    {"stops", "Every route at these stops", "Use a station to cover all its platforms."},
+    {"routes", "One route to another", "Only riders switching between the two routes you pick."},
+    {"custom", "Specific trips or a mix",
+     "Narrow either side to a trip, or mix a route on one side with anything on the other."}
   ]
 
-  # One line of help per type, under the type's own label.
-  @type_help %{
-    0 => "Prefer this connection point.",
-    1 => "The departing service waits for this arrival.",
-    2 => "Allow enough time to reach the next service.",
-    3 => "Do not offer this connection."
-  }
+  # The four kinds a general rule can be, most used first; the GTFS numbering is
+  # secondary detail on each card.
+  @type_choices [
+    {1, "The departing vehicle waits for the arriving one so riders can connect."},
+    {2, "Trip planners only offer the connection if riders get at least this long."},
+    {3, "Trip planners never offer a connection between these two."},
+    {0, "Trip planners choose this place first when riders could change routes at several."}
+  ]
 
-  # Where a stop's kind line reads from: a station says how many platforms it
-  # covers, a child platform names its station, and anything else is a plain stop.
-  @stop_hint_unset "Choose a stop from this version."
+  @stop_hint_unset "Choose a stop or a whole station from this version."
 
   @doc """
-  Renders the create-transfer editor in place of the list pane.
+  Renders the create/edit editor in place of the list pane.
 
-  The form is the reference's `create` state: the rule's scope, the two stops
-  with a `LiveSelect` search each, the route and trip selects the scope allows,
-  the four type choices with their help, the minimum time a minimum-time rule
-  requires with its live "m s" readout, the Blocks note, and the footer that
-  saves or cancels the draft. The draft's own values are the form's: the LiveView
-  clears the dependents of a changed stop or route and reloads the option lists,
-  and this component renders whatever the draft holds.
+  The form asks in the order its answers depend on each other: where riders
+  change (a stop search each, with Pick on map), which services that covers (three
+  cards, then the route and trip selects the scope allows), and what should happen
+  (four cards, then the minimum time a minimum-time rule requires with its live
+  readout). The draft's own values are the form's: the LiveView clears the
+  dependents of a changed stop or route and reloads the option lists, and this
+  component renders whatever the draft holds.
 
   A `nil` `error` renders nothing; a duplicate names the colliding row's view — a
   general rule can be edited, which the duplicate's "Open existing rule" does, and
   a type 4/5 record cannot (R1) — the stale notice keeps the draft and offers the
-  reload, and the busy notice keeps the draft and offers the retry. Field errors
-  are the form's own, so the stop fields carry theirs beside the LiveSelect, which
-  owns the input.
+  reload, and the busy notice keeps the draft and offers the retry. A rejected
+  save lists every invalid field in a summary that links to it, and each field
+  also carries its own error.
 
   The editor is a general-view surface: the page renders it for the general view
   only, in the create and the edit mode, and its one write is the save.
@@ -1549,20 +2176,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   attr :in_seat_path, :string,
     required: true,
-    doc: "the in-seat list of this version, for a collision with a type 4/5 record"
+    doc: "the stay-on-board list of this version, for a collision with a type 4/5 record"
 
   def editor(assigns) do
+    editor = assigns.editor
+
     assigns =
       assigns
-      |> assign(:from_stop_errors, field_errors(assigns.editor.form, :from_stop_id))
-      |> assign(:to_stop_errors, field_errors(assigns.editor.form, :to_stop_id))
-      |> assign(:type_errors, field_errors(assigns.editor.form, :transfer_type))
-      |> assign(:type_choices, type_choices())
-      |> assign(:scope_options, scope_options())
-      |> assign(:scope_help, scope_help(assigns.editor.scope))
-      |> assign(:draft_type, draft_type(assigns.editor))
-      |> assign(:draft_time, draft_min_time(assigns.editor))
-      |> assign(:open_existing_id, open_existing_id(assigns.editor.error))
+      |> assign(:from_stop_errors, field_errors(editor.form, :from_stop_id))
+      |> assign(:to_stop_errors, field_errors(editor.form, :to_stop_id))
+      |> assign(:type_errors, field_errors(editor.form, :transfer_type))
+      |> assign(:type_choices, @type_choices)
+      |> assign(:scope_choices, @scope_choices)
+      |> assign(:draft_type, draft_type(editor))
+      |> assign(:draft_time, draft_min_time(editor))
+      |> assign(:failures, summary_failures(editor))
+      |> assign(:open_existing_id, open_existing_id(editor.error))
+      |> assign(:secondary_class, @secondary_class)
+      |> assign(:quiet_class, @quiet_class)
+      |> assign(:heading_class, @heading_class)
 
     ~H"""
     <div
@@ -1572,187 +2204,188 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       data-depart-event="transfer_depart"
       data-discard-message="Discard unsaved transfer changes? Cancel to keep editing."
       data-focus-on-mount="transfer-editor-title"
-      class="p-4 sm:p-6"
+      class="px-4 py-5 md:px-6"
     >
-      <.button
+      <button
         id="transfer-back"
         type="button"
-        variant="quiet"
-        size="sm"
-        class="-ml-2 min-h-11 text-primary underline underline-offset-4"
+        class={[@quiet_class, "-ml-2"]}
         phx-click="cancel_editor"
       >
-        ← Back to transfers
-      </.button>
+        <.icon name="hero-chevron-left" class="size-4" /> Back to transfers
+      </button>
 
-      <h2 id="transfer-editor-title" tabindex="-1" class="mt-1 text-xl font-semibold">
+      <h2
+        id="transfer-editor-title"
+        tabindex="-1"
+        class={[@heading_class, "mt-1 outline-none"]}
+      >
         {editor_title(@editor)}
       </h2>
-      <p class="mt-1 text-sm text-base-content/70">{@version_name} · one direction</p>
+      <p class="mt-1 text-[13px] text-muted">{@version_name} · works in one direction</p>
 
-      <%!-- A rule that moved on while the editor was open: the draft the operator
-      entered is kept, and the reload path is the way back to the stored values. --%>
-      <.callout
-        :if={@editor.error == :stale}
-        id="transfer-stale"
-        kind="warning"
-        title="Rule changed"
-      >
-        <p>
-          This rule changed since you opened it. Your entries are still here; reload the rule to continue.
-        </p>
-        <.button
-          id="transfer-reload-rule"
-          type="button"
-          variant="secondary"
-          size="sm"
-          class="mt-2 min-h-11"
-          phx-click="reload_rule"
+      <div :if={@editor.error != nil or @failures != []} class="mt-4 grid gap-4">
+        <%!-- A rule that moved on while the editor was open: the draft the operator
+        entered is kept, and the reload path is the way back to the stored values. --%>
+        <.message
+          :if={@editor.error == :stale}
+          id="transfer-stale"
+          kind="warning"
+          title="This rule changed while you were editing"
         >
-          Reload rule
-        </.button>
-      </.callout>
+          Someone saved a change to it. Your entries are still here. Reload the rule to see what changed before you save.
+          <:action>
+            <.button
+              id="transfer-reload-rule"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="reload_rule"
+            >
+              Reload rule
+            </.button>
+          </:action>
+        </.message>
 
-      <.callout
-        :if={not is_nil(@editor.error) and @editor.error != :stale}
-        id="transfer-form-error"
-        kind="error"
-        title="Transfer not saved"
-      >
-        <p :if={in_seat_duplicate?(@editor.error)}>
-          A stay-on-board record already uses these stops and trips.
-        </p>
-        <.link
-          :if={in_seat_duplicate?(@editor.error)}
-          id="transfer-view-in-seat-link"
-          patch={@in_seat_path}
-          class="mt-1 inline-block min-h-11 py-1 font-semibold text-primary underline underline-offset-4"
+        <.message
+          :if={@editor.error not in [nil, :stale]}
+          id="transfer-form-error"
+          kind="error"
+          title={form_error_title(@editor.error)}
         >
-          View in-seat records
-        </.link>
-        <p :if={general_duplicate?(@editor.error)}>
-          A rule already exists for these stops and services. Edit it instead of creating a second rule.
-        </p>
-        <.button
-          :if={@open_existing_id}
-          id="transfer-open-existing"
-          type="button"
-          variant="secondary"
-          size="sm"
-          class="mt-2 min-h-11"
-          phx-click="open_existing"
-          phx-value-id={@open_existing_id}
-        >
-          Open existing rule
-        </.button>
-        <p :if={@editor.error == :busy}>
-          The server couldn't save your changes. Your entries are still here.
-        </p>
-        <.button
-          :if={@editor.error == :busy}
-          id="transfer-retry-save"
-          type="button"
-          variant="secondary"
-          size="sm"
-          class="mt-2 min-h-11"
-          phx-click="retry_save"
-        >
-          Retry saving
-        </.button>
-      </.callout>
+          {form_error_text(@editor.error)}
+          <:action :if={in_seat_duplicate?(@editor.error)}>
+            <.link
+              id="transfer-view-in-seat-link"
+              patch={@in_seat_path}
+              class={[@secondary_class, "no-underline"]}
+            >
+              View stay-on-board records
+            </.link>
+          </:action>
+          <:action :if={@open_existing_id}>
+            <.button
+              id="transfer-open-existing"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="open_existing"
+              phx-value-id={@open_existing_id}
+            >
+              Open existing rule
+            </.button>
+          </:action>
+          <:action :if={@editor.error == :busy}>
+            <.button
+              id="transfer-retry-save"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="retry_save"
+            >
+              Retry saving
+            </.button>
+          </:action>
+        </.message>
+
+        <.form_error_summary
+          id="transfer-error-summary"
+          title={summary_title(length(@failures))}
+          failures={@failures}
+          class=""
+        />
+      </div>
 
       <.form
         for={@editor.form}
         id="transfer-form"
+        novalidate
         phx-change="editor_change"
         phx-submit="save"
-        class="mt-3"
       >
-        <div class="border-t border-base-300 pt-4">
-          <h3 id="transfer-scope-heading" class="text-sm font-semibold">
-            1. Choose who this applies to
-          </h3>
-          <.input
-            id="transfer-scope"
-            name="scope"
-            type="select"
-            label="Rule scope"
-            value={scope_value(@editor.scope)}
-            options={@scope_options}
-            help={@scope_help}
-          />
-        </div>
-
-        <div class="mt-4 border-t border-base-300 pt-4">
-          <h3 class="text-sm font-semibold">2. Set the connection</h3>
-
-          <.connection_side
+        <section aria-labelledby="transfer-step-1" class="mt-6 grid gap-4 border-t border-subtle pt-5">
+          <.step_head id="transfer-step-1" number={1} title="Where do riders change?">
+            Riders arrive at the first stop and board at the second. Add the reverse rule separately if they need it.
+          </.step_head>
+          <.stop_field
             side={:from}
-            label="A · Arrive at"
+            label="Riders arrive at"
             editor={@editor}
             errors={@from_stop_errors}
           />
-          <.connection_side
-            side={:to}
-            label="B · Board at"
-            editor={@editor}
-            errors={@to_stop_errors}
-          />
+          <.stop_field side={:to} label="Riders board at" editor={@editor} errors={@to_stop_errors} />
+        </section>
 
-          <p class="mt-3 text-sm text-base-content/70">
-            A → B only. Add the reverse rule separately if riders need it.
-          </p>
-        </div>
+        <fieldset class="mt-6 grid gap-3 border-t border-subtle pt-5">
+          <legend class="sr-only">Which services this covers</legend>
+          <.step_head id="transfer-step-2" number={2} title="Which services does it cover?" />
+          <div id="transfer-scope" class="grid gap-2">
+            <.choice_card
+              :for={{value, title, help} <- @scope_choices}
+              id={"transfer-scope-#{value}"}
+              name="scope"
+              value={value}
+              checked={scope_value(@editor.scope) == value}
+              title={title}
+              help={help}
+            />
+          </div>
+          <div :if={@editor.scope != :stops} class="grid gap-3 sm:grid-cols-2">
+            <.route_select side={:from} editor={@editor} />
+            <.route_select side={:to} editor={@editor} />
+          </div>
+          <div :if={@editor.scope == :custom} class="grid gap-3 sm:grid-cols-2">
+            <.trip_select side={:from} editor={@editor} />
+            <.trip_select side={:to} editor={@editor} />
+          </div>
+        </fieldset>
 
-        <fieldset class="mt-4 border-t border-base-300 pt-4">
-          <legend class="text-sm font-semibold">3. What should riders know?</legend>
-
-          <label
-            :for={{value, label, help} <- @type_choices}
-            class="mt-2 flex min-h-11 cursor-pointer items-start gap-3 rounded-box border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
-          >
-            <input
-              type="radio"
+        <fieldset class="mt-6 grid gap-3 border-t border-subtle pt-5">
+          <legend class="sr-only">What should happen</legend>
+          <.step_head id="transfer-step-3" number={3} title="What should happen?" />
+          <div class="grid gap-2">
+            <.choice_card
+              :for={{value, help} <- @type_choices}
               id={"transfer-type-#{value}"}
               name={@editor.form[:transfer_type].name}
-              value={value}
+              value={to_string(value)}
               checked={@draft_type == value}
-              class="radio radio-sm mt-1"
+              title={type_label(value)}
+              help={help}
+              detail={"GTFS: transfer_type #{value}"}
             />
-            <span class="min-w-0">
-              <span class="block text-sm font-medium">{label}</span>
-              <small class="block text-sm text-base-content/70">{help}</small>
-            </span>
-          </label>
-
-          <p :for={message <- @type_errors} class="mt-1.5 flex items-center gap-2 text-sm text-error">
-            <.icon name="hero-exclamation-circle" class="size-5" />{message}
+          </div>
+          <p :for={message <- @type_errors} class={error_class()}>
+            <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />{message}
           </p>
 
-          <div :if={@draft_type == 2} class="mt-3">
+          <div :if={@draft_type == 2}>
             <.input
               id="transfer-min-time"
-              field={@editor.form[:min_transfer_time]}
+              field={live_field(@editor.form, :min_transfer_time)}
               type="number"
               min="0"
               step="1"
               inputmode="numeric"
-              label="Minimum time (seconds)"
+              label="Minimum time in seconds"
             />
-            <p class="text-sm text-base-content/70">
-              <span id="transfer-min-time-readout">
-                {min_time_label(@draft_time)} · include walking and a buffer.
-              </span>
+            <p id="transfer-min-time-readout" class="mt-1.5 text-[13px] text-muted">
+              {min_time_readout(@draft_time)}
             </p>
           </div>
         </fieldset>
 
-        <p class="mt-4 text-sm text-base-content/70">
-          Looking for a stay-on-board connection? Those are managed on Blocks.
+        <p class="mt-6 border-t border-subtle pt-4 text-[13px] text-muted">
+          Looking for a stay-on-board connection? Those are set in Blocks.
         </p>
 
-        <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
-          <.button id="transfer-save" type="submit" class="min-h-11" phx-disable-with="Saving…">
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <.button
+            id="transfer-save"
+            type="submit"
+            class="min-h-11 min-w-[132px]"
+            phx-disable-with="Saving…"
+          >
             {save_label(@editor)}
           </.button>
           <.button
@@ -1764,7 +2397,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
           >
             Cancel
           </.button>
-          <span :if={@editor.dirty?} id="transfer-dirty" class="text-sm text-base-content/70">
+          <span :if={@editor.dirty?} id="transfer-dirty" class="text-[13px] text-muted">
             Unsaved changes
           </span>
         </div>
@@ -1773,67 +2406,152 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     """
   end
 
+  # The minutes-and-seconds reading of what the operator has typed, then what the
+  # time should cover; before anything valid is typed there is only the guidance.
+  defp min_time_readout(nil),
+    do: "Include the walk between the stops and a buffer for late buses."
+
+  defp min_time_readout(seconds),
+    do:
+      "#{min_time_label(seconds)} · include the walk between the stops and a buffer for late buses."
+
+  defp editor_title(%{mode: :edit}), do: "Edit transfer rule"
+  defp editor_title(_editor), do: "Create transfer rule"
+
+  defp save_label(%{mode: :edit}), do: "Save changes"
+  defp save_label(_editor), do: "Create rule"
+
+  defp summary_title(1), do: "Rule not saved. Fix this:"
+  defp summary_title(count), do: "Rule not saved. Fix these #{count}:"
+
   # A duplicate that names a general rule is one the operator can edit here; a
   # collision whose row vanished, or a type 4/5 record, offers no such action.
   defp open_existing_id({:duplicate, %{id: id}}), do: id
   defp open_existing_id(_error), do: nil
 
-  @doc """
-  Renders the confirmation that guards a dirty draft's departure (AC-20).
+  defp form_error_title(:busy), do: "Rule not saved"
 
-  The draft is what the operator typed, and every way out of the editor — Back,
-  Cancel, "Open existing rule", a link departure and a version switch — runs
-  through the same question, so none of them silently discards it. The confirm is
-  the destructive one and names it; "Keep editing" returns to the draft with focus
-  on the save button.
+  defp form_error_title({:duplicate, _collision} = error) do
+    if in_seat_duplicate?(error),
+      do: "A stay-on-board record already uses these trips",
+      else: "This connection already has a rule"
+  end
 
-  ## Examples
+  defp form_error_text(:busy) do
+    "The server didn’t respond. Nothing was changed and your entries are still here."
+  end
 
-      <.discard_dialog open={@pending_discard != nil} />
-  """
-  attr :open, :boolean, required: true, doc: "whether a departure is waiting for an answer"
+  defp form_error_text({:duplicate, _collision} = error) do
+    if in_seat_duplicate?(error) do
+      "Stay-on-board records are set in Blocks, and a transfer rule can’t repeat one of them."
+    else
+      "A rule already covers these stops and services. Edit it instead of adding a second one."
+    end
+  end
 
-  def discard_dialog(assigns) do
+  # A duplicate names the colliding row's view: a type 4/5 record cannot be
+  # edited here (R1), and a collision whose row vanished is offered the general
+  # message, because that is where a second rule would be created.
+  defp in_seat_duplicate?({:duplicate, %{transfer_type: type}}) when type in 4..5, do: true
+  defp in_seat_duplicate?(_error), do: false
+
+  # The rejected save's problems, in the order the fields appear, each linking to its
+  # field. Only a submit that was refused has them: live validation, which is not a
+  # rejection, keeps its errors inline.
+  defp summary_failures(%{form: %{action: :insert} = form}) do
+    [
+      {:from_stop_id, "Riders arrive at", "#transfer_from_stop_id_text_input"},
+      {:to_stop_id, "Riders board at", "#transfer_to_stop_id_text_input"},
+      {:from_route_id, "Arriving route", "#transfer-from-route"},
+      {:to_route_id, "Departing route", "#transfer-to-route"},
+      {:transfer_type, "What should happen", "#transfer-type-1"},
+      {:min_transfer_time, "Minimum time", "#transfer-min-time"}
+    ]
+    |> Enum.flat_map(fn {field, label, href} ->
+      case field_errors(form, field) do
+        [] -> []
+        errors -> [%{href: href, msg: "#{label}: #{Enum.join(errors, " ")}"}]
+      end
+    end)
+  end
+
+  defp summary_failures(_editor), do: []
+
+  # One step of the form: a numbered mark and a question, with an optional line of
+  # help. The number is decoration, so it is hidden from a screen reader; the
+  # question is the heading.
+  attr :id, :string, required: true
+  attr :number, :integer, required: true
+  attr :title, :string, required: true
+  slot :inner_block
+
+  defp step_head(assigns) do
     ~H"""
-    <.confirm_dialog
-      id="transfer-discard-dialog"
-      open={@open}
-      title="Discard unsaved changes?"
-      confirm_label="Discard changes"
-      cancel_label="Keep editing"
-      pending_label="Discarding…"
-      on_confirm="discard_changes"
-      on_cancel="keep_editing"
-      confirm_variant="danger"
-      described_by="transfer-discard-dialog-body"
-      return_focus_id="transfer-save"
-    >
-      <p>Your saved transfer will stay as it was. The changes in this form will be lost.</p>
-    </.confirm_dialog>
+    <div class="flex items-start gap-3">
+      <span
+        aria-hidden="true"
+        class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-canvas text-[13px] font-bold text-strong"
+      >
+        {@number}
+      </span>
+      <div>
+        <h3 id={@id} class="text-base font-bold text-strong">{@title}</h3>
+        <p :if={@inner_block != []} class="mt-0.5 text-[13px] text-muted">
+          {render_slot(@inner_block)}
+        </p>
+      </div>
+    </div>
     """
   end
 
-  defp editor_title(%{mode: :edit}), do: "Edit transfer"
-  defp editor_title(_editor), do: "Create transfer"
+  # One radio card: a whole-card target with a bold title, one line of what it does,
+  # and, for a kind, its GTFS value as muted detail. The checked card takes the
+  # selection tint and the focused one an outline, so neither rests on colour alone.
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :value, :string, required: true
+  attr :checked, :boolean, required: true
+  attr :title, :string, required: true
+  attr :help, :string, required: true
+  attr :detail, :string, default: nil
 
-  defp save_label(%{mode: :edit}), do: "Save changes"
-  defp save_label(_editor), do: "Create transfer"
+  defp choice_card(assigns) do
+    ~H"""
+    <label class="relative flex min-h-11 cursor-pointer gap-3 rounded-card border border-control bg-white px-4 py-3.5 hover:bg-canvas has-[:checked]:border-action has-[:checked]:bg-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus">
+      <input
+        type="radio"
+        id={@id}
+        name={@name}
+        value={@value}
+        checked={@checked}
+        class="mt-0.5 size-[18px] shrink-0 accent-action focus-visible:outline-none"
+      />
+      <span class="min-w-0">
+        <span class="block text-sm font-bold text-strong">{@title}</span>
+        <span class="mt-1 block text-[13px] leading-relaxed text-default">{@help}</span>
+        <span :if={@detail} class="mt-1 block text-[13px] text-muted">{@detail}</span>
+      </span>
+    </label>
+    """
+  end
 
-  # One side of the connection: the stop search, the kind line of the chosen stop
-  # and the route and trip the scope allows. `LiveSelect` owns the text input and
-  # the hidden field, so the label points at the input it renders (its id is the
-  # form's field id plus `_text_input`), and the field's own error is rendered
-  # beside the search rather than by `<.input>`.
+  defp error_class, do: "mt-1 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
+
+  # One side of the connection: the stop search, what was chosen, and Pick on map.
+  # `LiveSelect` owns the text input and the hidden field, so the label points at the
+  # input it renders (its id is the form's field id plus `_text_input`), and the
+  # field's own error is rendered beside the search rather than by `<.input>`. The
+  # group carries `aria-invalid` because the widget's input cannot, which is also
+  # what lets the form's error focus find the first invalid stop.
   attr :side, :atom, required: true, values: [:from, :to]
-  attr :label, :string, required: true, doc: "the reference's side label, such as `A · Arrive at`"
+  attr :label, :string, required: true
   attr :editor, :map, required: true, doc: "the page's editor draft"
   attr :errors, :list, required: true, doc: "the stop field's inline errors for this side"
 
-  defp connection_side(assigns) do
+  defp stop_field(assigns) do
     side = assigns.side
-    field = assigns.editor.form[stop_field(side)]
+    field = assigns.editor.form[stop_field_name(side)]
     stop = stop_option(assigns.editor, side)
-    scope = assigns.editor.scope
 
     assigns =
       assigns
@@ -1843,83 +2561,138 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       |> assign(:field, field)
       |> assign(:stop_options, stop_option_list(stop))
       |> assign(:hint, stop_hint(stop))
+      |> assign(:missing?, missing_option?(stop))
       |> assign(:hint_id, "transfer-#{side}-stop-hint")
       |> assign(:error_id, "transfer-#{side}-stop-error")
-      |> assign(:scope, scope)
-      |> assign(:route_field, assigns.editor.form[route_field(side)])
-      |> assign(:route_label, route_field_label(scope, side))
-      |> assign(:route_prompt, route_prompt(scope))
-      |> assign(:route_options, route_option_list(assigns.editor, side))
-      |> assign(:route_chosen?, not is_nil(draft_field(assigns.editor, "#{side}_route_id")))
-      |> assign(:trip_chosen?, not is_nil(draft_field(assigns.editor, "#{side}_trip_id")))
-      |> assign(:trip_field, assigns.editor.form[trip_field(side)])
-      |> assign(:trip_label, trip_field_label(side))
-      |> assign(:trip_options, trip_option_list(assigns.editor, side))
 
     ~H"""
-    <div class="mt-4">
-      <label for={@input_id} class="label mb-1 text-base">{@label}</label>
-      <div class="flex items-start gap-2">
-        <.live_component
-          module={LiveSelectComponent}
-          id={@component_id}
-          field={@field}
-          options={@stop_options}
-          debounce={200}
-          update_min_len={1}
-          placeholder="Search stops or stations"
-          text_input_class="input input-bordered w-full min-h-11"
-          dropdown_class="bg-base-100 border border-base-300 shadow-lg mt-1 text-base-content"
-          option_class="px-4 py-2.5 border-b border-base-300 last:border-b-0"
-          active_option_class="bg-primary text-primary-content"
-          available_option_class="hover:bg-base-200 cursor-pointer"
-        >
-          <:option :let={option}>
-            <span class="font-medium">{option.label}</span>
-          </:option>
-        </.live_component>
+    <div
+      role="group"
+      aria-labelledby={"#{@input_id}-label"}
+      aria-invalid={to_string(@errors != [])}
+      data-invalid={to_string(@errors != [])}
+      class="transfer-stop-field grid gap-1.5"
+    >
+      <label id={"#{@input_id}-label"} for={@input_id} class="text-[13px] font-[650] text-default">
+        {@label}
+      </label>
+      <div class="flex flex-wrap items-start gap-2">
+        <div class="relative min-w-0 flex-1 basis-[220px]">
+          <.icon
+            name="hero-magnifying-glass"
+            class="pointer-events-none absolute left-3 top-[13px] z-10 size-5 text-muted"
+          />
+          <.live_component
+            module={LiveSelectComponent}
+            id={@component_id}
+            field={@field}
+            options={@stop_options}
+            debounce={200}
+            update_min_len={1}
+            placeholder="Search stops or stations"
+            container_class="relative"
+            text_input_class="h-11 w-full rounded-control border border-control bg-white pl-10 pr-3 text-sm text-strong placeholder:text-muted"
+            text_input_selected_class="text-strong"
+            dropdown_class="absolute inset-x-0 top-full z-50 mt-1 max-h-64 overflow-auto rounded-card border border-subtle bg-white p-1 text-strong shadow-float"
+            option_class="flex min-h-11 flex-col justify-center rounded-control px-3 py-1.5 text-sm"
+            active_option_class="bg-selection"
+            available_option_class="cursor-pointer hover:bg-canvas"
+          >
+            <:option :let={option}>
+              <span class="font-[650] text-strong">{option.label}</span>
+              <span :if={Map.get(option, :hint)} class="text-[13px] text-muted">{option.hint}</span>
+            </:option>
+          </.live_component>
+        </div>
         <.button
           id={"transfer-pick-#{@side}"}
           type="button"
           variant="secondary"
-          class="min-h-11 shrink-0 whitespace-nowrap"
+          class="min-h-11 shrink-0"
           phx-click="start_pick"
           phx-value-side={@pick_side}
         >
-          Pick on map
+          <.icon name="hero-map-pin" class="size-4" /> Pick on map
         </.button>
       </div>
-      <p id={@hint_id} class="mt-1.5 text-sm text-base-content/70">{@hint}</p>
-      <p :if={@errors != []} id={@error_id} class="mt-1.5 text-sm text-error">
+      <p
+        id={@hint_id}
+        class={["text-[13px]", if(@missing?, do: "font-semibold text-warning-fg", else: "text-muted")]}
+      >
+        {@hint}
+      </p>
+      <p :if={@errors != []} id={@error_id} class={error_class()}>
+        <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />
         {Enum.join(@errors, " ")}
       </p>
+    </div>
+    """
+  end
 
-      <%!-- "All services at selected stops" renders no selector: the stop or
-      station is the whole rule. The other two scopes narrow the side to a route,
-      and "Specific trips or mixed selectors" narrows it once more to a trip of
-      that route. --%>
-      <.input
-        :if={@scope != :stops}
-        id={"transfer-#{@side}-route"}
-        field={@route_field}
-        type="select"
-        label={@route_label}
-        prompt={@route_prompt}
-        options={@route_options}
-      />
+  # The route the scope asks for on one side: required for "One route to another",
+  # optional for the mixed scope. Its options follow that side's stop.
+  attr :side, :atom, required: true, values: [:from, :to]
+  attr :editor, :map, required: true
 
-      <%!-- A stored rule may name a trip without a route (an imported rank-3
-      selector), so the trip select also shows when the draft already holds one;
-      a draft that has neither waits for its route, as the reference does. --%>
-      <.input
-        :if={@scope == :custom and (@route_chosen? or @trip_chosen?)}
-        id={"transfer-#{@side}-trip"}
-        field={@trip_field}
-        type="select"
-        label={@trip_label}
-        prompt="Any trip"
-        options={@trip_options}
-      />
+  defp route_select(assigns) do
+    side = assigns.side
+    scope = assigns.editor.scope
+
+    assigns =
+      assigns
+      |> assign(:route_field, assigns.editor.form[route_field(side)])
+      |> assign(:route_label, route_field_label(scope, side))
+      |> assign(:route_prompt, route_prompt(scope))
+      |> assign(:route_options, route_option_list(assigns.editor, side))
+
+    ~H"""
+    <.input
+      id={"transfer-#{@side}-route"}
+      field={@route_field}
+      type="select"
+      label={@route_label}
+      prompt={@route_prompt}
+      options={@route_options}
+    />
+    """
+  end
+
+  # A stored rule may name a trip without a route (an imported rank-3 selector), so
+  # the trip select also shows when the draft already holds one; a draft that has
+  # neither waits for its route and says so.
+  attr :side, :atom, required: true, values: [:from, :to]
+  attr :editor, :map, required: true
+
+  defp trip_select(assigns) do
+    side = assigns.side
+    editor = assigns.editor
+
+    assigns =
+      assigns
+      |> assign(
+        :chosen?,
+        not is_nil(draft_field(editor, "#{side}_route_id")) or
+          not is_nil(draft_field(editor, "#{side}_trip_id"))
+      )
+      |> assign(:trip_field, editor.form[trip_field(side)])
+      |> assign(:trip_label, trip_field_label(side))
+      |> assign(:trip_options, trip_option_list(editor, side))
+
+    ~H"""
+    <.input
+      :if={@chosen?}
+      id={"transfer-#{@side}-trip"}
+      field={@trip_field}
+      type="select"
+      label={@trip_label}
+      prompt="Any trip"
+      options={@trip_options}
+    />
+    <div :if={not @chosen?} id={"transfer-#{@side}-trip-hint"} class="grid gap-1.5">
+      <span class="text-[13px] font-[650] text-default">{@trip_label}</span>
+      <p class="flex min-h-11 items-center rounded-control bg-canvas px-3 text-[13px] text-muted">
+        Choose a route to pick one of its trips.
+      </p>
     </div>
     """
   end
@@ -1928,11 +2701,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   Renders the context pane's live preview of the draft.
 
   It answers the same question the inspector answers for a stored rule — the
-  type, the connection the draft describes, and what the rule would mean for
+  kind, the connection the draft describes, and what the rule would mean for
   riders — from the draft rather than from a row, so the operator sees the effect
-  of a change before saving. The rider meaning is the inspector's own sentence for
-  the draft's type; a draft that does not name both stops asks for them instead,
-  because a connection is what the preview is about.
+  of a change before saving. The sentence is the inspector's own for the draft's
+  kind; a draft that does not name both stops asks for them instead, because a
+  connection is what the preview is about.
 
   ## Examples
 
@@ -1941,70 +2714,64 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   attr :editor, :map, required: true, doc: "the page's editor draft"
 
   def draft_preview(assigns) do
+    editor = assigns.editor
+    from = draft_endpoint(editor, :from)
+    to = draft_endpoint(editor, :to)
+
     assigns =
       assigns
-      |> assign(:transfer, draft_transfer(assigns.editor))
-      |> assign(:from, draft_endpoint(assigns.editor, :from))
-      |> assign(:to, draft_endpoint(assigns.editor, :to))
-      |> assign(:both_stops?, both_stops?(assigns.editor))
+      |> assign(:from, from)
+      |> assign(:to, to)
+      |> assign(:type, draft_type(editor))
+      |> assign(:both_stops?, both_stops?(editor))
+      |> assign(:sentence, rule_sentence(draft_type(editor), draft_min_time(editor), from, to))
+      |> assign(:heading_class, @heading_class)
 
     ~H"""
-    <div id="transfer-draft-preview" class="p-4 sm:p-6">
-      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-        Live preview
-      </p>
-      <h2 class="mt-1 text-xl font-semibold">{type_label(@transfer.transfer_type)}</h2>
-
-      <div class="mt-4 space-y-4">
-        <div class="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
-          <div class="min-w-0 border-l-4 border-primary pl-3">
-            <span class="block text-xs text-base-content/70">Arrive at</span>
-            <strong class="block text-sm font-semibold">{@from.name}</strong>
-            <span class="block text-xs text-base-content/70">{@from.selector}</span>
-          </div>
-          <span aria-hidden="true" class="pt-6 text-base-content/50">→</span>
-          <div class="min-w-0 border-l-4 border-info pl-3">
-            <span class="block text-xs text-base-content/70">Board at</span>
-            <strong class="block text-sm font-semibold">{@to.name}</strong>
-            <span class="block text-xs text-base-content/70">{@to.selector}</span>
-          </div>
+    <div id="transfer-draft-preview" class="px-4 py-5 md:px-6">
+      <h3 class="text-sm font-bold text-strong">What riders and trip planners will see</h3>
+      <h2 class={[@heading_class, "mt-2 text-[22px]"]}>{type_label(@type)}</h2>
+      <%= if @both_stops? do %>
+        <p class="mt-1 text-[15px] leading-snug text-default">{@sentence}</p>
+        <div class="mt-4">
+          <.journey_pair from={@from} to={@to} />
         </div>
-
-        <.callout kind="info" title="What this means for riders">
-          <.rider_meaning :if={@both_stops?} row={%{transfer: @transfer}} />
-          <p :if={not @both_stops?}>Choose both stops to preview the connection.</p>
-        </.callout>
-      </div>
+      <% else %>
+        <p class="mt-1 text-sm text-muted">Choose both stops to preview the connection.</p>
+      <% end %>
     </div>
     """
   end
 
-  defp scope_options, do: Enum.map(@scope_choices, fn {value, label, _help} -> {label, value} end)
-
-  # An unknown scope reads as the first choice, which is also the one the LiveView
-  # parses an unknown value to, so the select always shows what the draft applies.
   defp scope_choice(scope) do
     Enum.find(@scope_choices, hd(@scope_choices), &(elem(&1, 0) == to_string(scope)))
   end
 
-  defp scope_help(scope) do
-    {_value, _label, help} = scope_choice(scope)
-    help
-  end
-
+  # An unknown scope reads as the first choice, which is also the one the LiveView
+  # parses an unknown value to, so the cards always show what the draft applies.
   defp scope_value(scope) do
-    {value, _label, _help} = scope_choice(scope)
+    {value, _title, _help} = scope_choice(scope)
     value
-  end
-
-  defp type_choices do
-    Enum.map(0..3, &{&1, type_label(&1), Map.fetch!(@type_help, &1)})
   end
 
   # Field errors reach the form only once the editor has been used: `to_form/2`
   # answers a changeset without an action with no errors at all, and the submit
   # path sets `:insert`, so an untouched draft never opens covered in red.
-  defp field_errors(form, field), do: Enum.map(form[field].errors, &translate_error/1)
+  defp field_errors(form, field), do: Enum.map(live_field(form, field).errors, &translate_error/1)
+
+  # While the operator is still changing the draft (`:validate`), a required field
+  # they have not filled in yet is not wrong yet: choosing the first stop must not
+  # paint the minimum time red. It reads as an error after a refused save, and a
+  # value that is present but invalid shows its error as it is typed.
+  defp live_field(%{action: :validate} = form, name) do
+    field = form[name]
+
+    if blank?(field.value), do: %{field | errors: []}, else: field
+  end
+
+  defp live_field(form, name), do: form[name]
+
+  defp blank?(value), do: value in [nil, ""] or (is_binary(value) and String.trim(value) == "")
 
   # The draft's type and minimum time as the changeset would read them, so the
   # readout and the preview answer the operator's keystrokes rather than the
@@ -2022,22 +2789,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp integer(value) when is_integer(value), do: value
   defp integer(_value), do: nil
 
-  # The preview reads the draft the way the inspector reads a row: the two
-  # endpoints with the scope each side covers, and a transfer struct for the
-  # rider meaning's own labels.
-  defp draft_transfer(editor) do
-    %Transfer{
-      from_stop_id: draft_field(editor, "from_stop_id"),
-      to_stop_id: draft_field(editor, "to_stop_id"),
-      from_route_id: draft_field(editor, "from_route_id"),
-      to_route_id: draft_field(editor, "to_route_id"),
-      from_trip_id: draft_field(editor, "from_trip_id"),
-      to_trip_id: draft_field(editor, "to_trip_id"),
-      transfer_type: draft_type(editor),
-      min_transfer_time: draft_min_time(editor)
-    }
-  end
-
   defp draft_field(editor, key) do
     case editor.params[key] do
       value when is_binary(value) -> blank_to_nil(value)
@@ -2045,35 +2796,37 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     end
   end
 
+  # The preview reads the draft the way the inspector reads a row: an endpoint with
+  # the stop the version resolves, and the selector its route and trip choose.
   defp draft_endpoint(editor, side) do
     route_id = draft_field(editor, "#{side}_route_id")
     trip_id = draft_field(editor, "#{side}_trip_id")
+    stop = stop_option(editor, side)
 
-    %{
-      name: draft_endpoint_name(editor, side),
-      selector: selector_label(draft_selector(editor, route_id, trip_id), side)
-    }
+    Map.merge(
+      %{
+        stop_id: draft_field(editor, "#{side}_stop_id"),
+        name: stop && stop.stop_name,
+        location_type: stop && stop.location_type,
+        platform_code: stop && stop.platform_code,
+        top_level: stop && stop.parent_name && %{name: stop.parent_name},
+        child_count: (stop && stop.child_count) || 0
+      },
+      draft_selector(editor, route_id, trip_id)
+    )
   end
 
-  defp draft_endpoint_name(editor, side) do
-    case {stop_option(editor, side), draft_field(editor, "#{side}_stop_id")} do
-      {%{stop_name: name}, _stop_id} when is_binary(name) and name != "" -> name
-      {_stop, stop_id} when is_binary(stop_id) -> stop_id
-      _neither -> "Choose a stop"
-    end
-  end
-
-  defp draft_selector(_editor, _route_id, trip_id) when is_binary(trip_id) do
-    %{selector: {:trip, trip_id}}
+  defp draft_selector(editor, route_id, trip_id) when is_binary(trip_id) do
+    %{selector: {:trip, trip_id}, route: route_id && draft_route(editor, route_id)}
   end
 
   defp draft_selector(editor, route_id, _trip_id) when is_binary(route_id) do
     %{selector: {:route, route_id}, route: draft_route(editor, route_id)}
   end
 
-  defp draft_selector(_editor, _route_id, _trip_id), do: %{selector: :any}
+  defp draft_selector(_editor, _route_id, _trip_id), do: %{selector: :any, route: nil}
 
-  # The short name the route select shows, so the preview names the same route.
+  # The route the select shows, so the preview names the same route.
   defp draft_route(editor, route_id) do
     (editor.options.from_routes ++ editor.options.to_routes)
     |> Enum.find(&(&1.route_id == route_id))
@@ -2084,8 +2837,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       not is_nil(draft_field(editor, "to_stop_id"))
   end
 
-  defp stop_field(:from), do: :from_stop_id
-  defp stop_field(:to), do: :to_stop_id
+  defp stop_field_name(:from), do: :from_stop_id
+  defp stop_field_name(:to), do: :to_stop_id
 
   defp route_field(:from), do: :from_route_id
   defp route_field(:to), do: :to_route_id
@@ -2093,19 +2846,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp trip_field(:from), do: :from_trip_id
   defp trip_field(:to), do: :to_trip_id
 
-  # "A route pair at selected stops" requires both routes, so each side's select
-  # is what the rule needs; the other two scopes may leave either one empty, and
-  # say so beside the label rather than in the prompt alone.
-  defp route_field_label(:custom, side), do: "#{side_word(side)} route (optional)"
-  defp route_field_label(_scope, side), do: "#{side_word(side)} route"
+  # "One route to another" requires both routes, so each side's select is what the
+  # rule needs; the mixed scope may leave either one empty, and says so beside the
+  # label rather than in the prompt alone.
+  defp route_field_label(:custom, side), do: "#{side_title(side)} route (optional)"
+  defp route_field_label(_scope, side), do: "#{side_title(side)} route"
 
-  defp trip_field_label(side), do: "#{side_word(side)} trip (optional)"
+  defp trip_field_label(side), do: "#{side_title(side)} trip (optional)"
 
-  defp side_word(:from), do: "Arriving"
-  defp side_word(:to), do: "Departing"
+  defp side_title(:from), do: "Arriving"
+  defp side_title(:to), do: "Departing"
 
-  # A route the operator must choose reads as a requirement; a route they may
-  # leave out offers the empty choice as "Any route".
+  # A route the operator must choose reads as a requirement; a route they may leave
+  # out offers the empty choice as "Any route".
   defp route_prompt(:custom), do: "Any route"
   defp route_prompt(_scope), do: "Choose route"
 
@@ -2138,9 +2891,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp trip_option_list(editor, :to), do: editor.options.to_trips |> Enum.map(&trip_option/1)
 
   # "08:15 · Harbor · WKDY": the time the trip serves this side's coverage, its
-  # headsign and its service, in the reference's order, with the reason a stored
-  # trip is not among the route's own options when there is one (AC-XFER-029). The
-  # value the select submits is the trip's own id.
+  # headsign and its service, with the reason a stored trip is not among the
+  # route's own options when there is one (AC-XFER-029). The value the select
+  # submits is the trip's own id.
   defp trip_option(trip) do
     base =
       [Map.get(trip, :time), Map.get(trip, :headsign), Map.get(trip, :service_id)]
@@ -2170,7 +2923,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp stop_option_list(nil), do: []
 
   defp stop_option_list(%{stop_id: stop_id} = stop) do
-    [%{label: stop_label(stop), value: stop_id}]
+    [%{label: stop_label(stop), value: stop_id, hint: stop_hint(stop)}]
   end
 
   @doc """
@@ -2191,39 +2944,39 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     end
   end
 
-  defp stop_hint(nil), do: @stop_hint_unset
+  @doc """
+  Describes what kind of place one stop option is, under its name: a station says
+  how many platforms it covers, a platform names its station, and anything else is
+  a plain stop. A missing stop is the prompt to choose one.
 
-  defp stop_hint(%{location_type: 1} = stop) do
+  ## Examples
+
+      iex> stop_hint(nil)
+      "Choose a stop or a whole station from this version."
+  """
+  def stop_hint(nil), do: @stop_hint_unset
+  def stop_hint(%{missing?: true}), do: "Not in this version"
+
+  def stop_hint(%{location_type: 1} = stop) do
     case Map.get(stop, :child_count, 0) do
       0 -> "Station"
-      count -> "Station · includes #{count} #{pluralize(count, "platform")}"
+      count -> "Station · covers #{count} #{pluralize(count, "platform")}"
     end
   end
 
-  defp stop_hint(%{platform_code: code, parent_name: parent})
-       when is_binary(code) and is_binary(parent),
-       do: "Platform #{code} · #{parent}"
+  def stop_hint(%{platform_code: code, parent_name: parent})
+      when is_binary(code) and is_binary(parent),
+      do: "Platform #{code} at #{parent}"
 
-  defp stop_hint(%{parent_name: parent}) when is_binary(parent), do: "Stop · #{parent}"
+  def stop_hint(%{parent_name: parent}) when is_binary(parent), do: "Platform at #{parent}"
+  def stop_hint(_stop), do: "Stop"
 
-  defp stop_hint(%{stop_name: name, stop_id: stop_id}) do
-    case blank_to_nil(name) do
-      nil -> stop_id
-      _name -> "Stop in this version."
-    end
-  end
+  # A stop the version no longer holds keeps its stored id in the field, and the
+  # LiveView marks the option it builds for it.
+  defp missing_option?(%{missing?: true}), do: true
+  defp missing_option?(_stop), do: false
 
   # The map protocol's name for the side a pick session answers.
   defp pick_side(:from), do: "a"
   defp pick_side(:to), do: "b"
-
-  # A duplicate names the colliding row's view: a type 4/5 record cannot be
-  # edited here (R1), and a collision whose row vanished is offered the general
-  # message, because that is where a second rule would be created.
-  defp in_seat_duplicate?({:duplicate, %{transfer_type: type}}) when type in 4..5, do: true
-  defp in_seat_duplicate?(_error), do: false
-
-  defp general_duplicate?({:duplicate, collision}) when not is_map(collision), do: true
-  defp general_duplicate?({:duplicate, %{transfer_type: type}}), do: type in 0..3
-  defp general_duplicate?(_error), do: false
 end

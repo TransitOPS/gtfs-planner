@@ -3,7 +3,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
   Merge evidence (EV-20) for the create-transfer editor.
 
   The editor replaces the list pane while a draft is open: the header's "Create
-  transfer" button and the first-use CTA open it in the general view only, the
+  transfer rule" button and the first-use CTA open it in the general view only, the
   draft starts as a minimum-time rule with no stops and no time, and the context
   pane previews it before it exists. The draft's own rules are the cases here —
   the stop search offers only the stops a rule may name, the route and trip
@@ -98,7 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      assert has_element?(view, "#transfers-create", "Create transfer")
+      assert has_element?(view, "#transfers-create", "Create transfer rule")
       refute has_element?(view, "#transfer-editor")
 
       view |> element("#transfers-create") |> render_click()
@@ -112,18 +112,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       refute has_element?(view, "#transfers-view-general")
       refute has_element?(view, "#transfers-create")
 
-      assert text_of(document, "#transfer-editor h2") == "Create transfer"
-      assert text_of(document, "#transfer-editor > p") == "#{ctx.version.name} · one direction"
-      assert has_element?(view, "#transfer-back", "← Back to transfers")
+      assert text_of(document, "#transfer-editor h2") == "Create transfer rule"
+
+      assert text_of(document, "#transfer-editor > p") ==
+               "#{ctx.version.name} · works in one direction"
+
+      assert has_element?(view, "#transfer-back", "Back to transfers")
 
       # A minimum-time rule with nothing chosen and no time entered.
-      assert has_element?(view, "#transfer-scope option[value='stops'][selected]")
+      assert has_element?(view, "#transfer-scope-stops[checked]")
       assert has_element?(view, "#transfer-type-2[checked]")
       assert has_element?(view, "#transfer-min-time[value='']")
       assert has_element?(view, "#transfer-from-stop")
       assert has_element?(view, "#transfer-to-stop")
-      assert text_of(document, "#transfer-from-stop-hint") == "Choose a stop from this version."
-      assert text_of(document, "#transfer-to-stop-hint") == "Choose a stop from this version."
+
+      assert text_of(document, "#transfer-from-stop-hint") ==
+               "Choose a stop or a whole station from this version."
+
+      assert text_of(document, "#transfer-to-stop-hint") ==
+               "Choose a stop or a whole station from this version."
 
       # No route and no trip selector until a scope asks for one.
       refute has_element?(view, "#transfer-from-route")
@@ -131,12 +138,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       refute has_element?(view, "#transfer-from-trip")
       refute has_element?(view, "#transfer-dirty")
 
-      assert has_element?(view, "#transfer-save[phx-disable-with='Saving…']", "Create transfer")
+      assert has_element?(view, "#transfer-save[phx-disable-with='Saving…']", "Create rule")
       assert has_element?(view, "#transfer-cancel", "Cancel")
-      assert has_element?(view, "#transfer-min-time-readout")
 
-      assert text_of(document, "#transfer-draft-preview") =~ "Live preview"
-      assert text_of(document, "#transfer-draft-preview") =~ "What this means for riders"
+      # No time typed yet, so the readout is only the guidance.
+      assert text_of(document, "#transfer-min-time-readout") ==
+               "Include the walk between the stops and a buffer for late buses."
+
+      assert text_of(document, "#transfer-draft-preview") =~
+               "What riders and trip planners will see"
 
       assert text_of(document, "#transfer-draft-preview") =~
                "Choose both stops to preview the connection."
@@ -148,7 +158,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
       assert has_element?(view, "#transfers-first-use")
-      assert has_element?(view, "#transfers-first-use-create", "Create transfer")
+      assert has_element?(view, "#transfers-first-use-create", "Create transfer rule")
 
       view |> element("#transfers-first-use-create") |> render_click()
 
@@ -193,10 +203,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       # `Gtfs.search_transfer_stops/3` answers in name then ID order, so the two
       # platforms precede the station they belong to. CEN-E is an entrance: a rule
       # cannot name it, so the search never offers it (R2).
-      assert option_labels(doc(view), "#transfer-from-stop li") == [
+      assert option_labels(doc(view), "#transfer-from-stop li span:first-child") == [
                "Central · Bay A",
                "Central · Bay C",
                "Central Station"
+             ]
+
+      # Each option says what kind of place it is under its name.
+      assert option_labels(doc(view), "#transfer-from-stop li span:last-child") == [
+               "Platform A at Central Station",
+               "Platform C at Central Station",
+               "Station · covers 2 platforms"
              ]
 
       refute render(view) =~ "Central · Main entrance"
@@ -208,11 +225,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       change_draft(view, ["transfer", "from_stop_id"], :stops, %{"from_stop_id" => "CEN"})
 
-      assert text_of(doc(view), "#transfer-from-stop-hint") == "Station · includes 2 platforms"
+      assert text_of(doc(view), "#transfer-from-stop-hint") == "Station · covers 2 platforms"
 
       change_draft(view, ["transfer", "from_stop_id"], :stops, %{"from_stop_id" => "CEN-A"})
 
-      assert text_of(doc(view), "#transfer-from-stop-hint") == "Platform A · Central Station"
+      assert text_of(doc(view), "#transfer-from-stop-hint") == "Platform A at Central Station"
     end
   end
 
@@ -326,7 +343,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfer-draft-preview") =~ "All arriving routes"
+      assert text_of(document, "#transfer-draft-preview") =~ "Any arriving route"
       assert option_values(document, "#transfer-from-route option") == ["", "12", "24"]
 
       # Harbor serves route 12, so one side can hold a route and a trip again
@@ -341,8 +358,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfer-draft-preview") =~ "All arriving routes"
-      assert text_of(document, "#transfer-draft-preview") =~ "All departing routes"
+      assert text_of(document, "#transfer-draft-preview") =~ "Any arriving route"
+      assert text_of(document, "#transfer-draft-preview") =~ "Any departing route"
       refute text_of(document, "#transfer-draft-preview") =~ "Trip 12-0815"
       assert has_element?(view, "#transfer-from-route option[value='']")
       assert has_element?(view, "#transfer-to-route option[value='']")
@@ -370,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       })
 
       assert text_of(doc(view), "#transfer-min-time-readout") ==
-               "2m 30s · include walking and a buffer."
+               "2 min 30 sec · include the walk between the stops and a buffer for late buses."
     end
   end
 
@@ -395,12 +412,52 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       assert rule.organization_id == ctx.organization.id
       assert rule.gtfs_version_id == ctx.version.id
 
-      assert render(view) =~ "Transfer saved in #{ctx.version.name}."
+      assert render(view) =~ "Transfer rule saved in #{ctx.version.name}."
 
       refute has_element?(view, "#transfer-editor")
       assert has_element?(view, "#transfers")
       assert has_element?(view, "#transfer-select-#{rule.id}[aria-current='true']")
       assert_patch(view, transfers_path(ctx.version, rule: rule.id))
+    end
+
+    test "a blank required field is an error after a refused save, not while the draft changes",
+         ctx do
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
+      view |> element("#transfers-first-use-create") |> render_click()
+
+      # Choosing the first stop is not a mistake about the second stop or the time.
+      change_draft(view, ["transfer", "from_stop_id"], :stops, %{"from_stop_id" => "CEN-A"})
+
+      refute has_element?(view, "#transfer-to-stop-error")
+      refute has_element?(view, "#transfer-min-time-error")
+      refute has_element?(view, "#transfer-error-summary")
+
+      save_draft(view, :stops, %{"from_stop_id" => "CEN-A"})
+
+      assert_push_event(view, "focus_form_error", %{form_id: "transfer-form"})
+
+      assert has_element?(view, "#transfer-to-stop-error", "Choose a stop or station")
+      assert has_element?(view, "#transfer-min-time-error", "Enter a whole number of seconds")
+      refute has_element?(view, "#transfer-from-stop-error")
+
+      # The summary lists each problem and links to the field it names.
+      assert text_of(doc(view), "#transfer-error-summary strong") ==
+               "Rule not saved. Fix these 2:"
+
+      assert has_element?(
+               view,
+               "#transfer-error-summary a[href='#transfer_to_stop_id_text_input']",
+               "Riders board at: Choose a stop or station"
+             )
+
+      assert has_element?(
+               view,
+               "#transfer-error-summary a[href='#transfer-min-time']",
+               "Minimum time: Enter a whole number of seconds, zero or more."
+             )
+
+      # The stop group that is wrong says so, so the error focus can find it.
+      assert has_element?(view, "#transfer-editor [role='group'][aria-invalid='true']")
     end
 
     test "a required route pair is refused before the server", ctx do
@@ -457,7 +514,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       assert has_element?(view, "#transfer-min-time[value='180']")
       assert has_element?(view, "#transfer-type-2[checked]")
       assert has_element?(view, "#transfer-dirty")
-      assert text_of(document, "#transfer-to-stop-hint") == "Platform C · Central Station"
+      assert text_of(document, "#transfer-to-stop-hint") == "Platform C at Central Station"
 
       # A trip whose route is right but which never stops at the chosen stop is
       # refused on the trip itself. A scope change drops every selector answered for
@@ -550,11 +607,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfer-form-error") =~ "Transfer not saved"
+      assert text_of(document, "#transfer-form-error") =~ "This connection already has a rule"
 
       assert text_of(document, "#transfer-form-error") =~
-               "A rule already exists for these stops and services. " <>
-                 "Edit it instead of creating a second rule."
+               "A rule already covers these stops and services. " <>
+                 "Edit it instead of adding a second one."
 
       refute has_element?(view, "#transfer-view-in-seat-link")
       assert length(stored_transfers(ctx)) == 1
@@ -579,7 +636,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       })
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       state = %{
         "from_stop_id" => "CEN",
@@ -597,7 +654,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       document = doc(view)
 
       assert text_of(document, "#transfer-form-error") =~
-               "A stay-on-board record already uses these stops and trips."
+               "A stay-on-board record already uses these trips"
+
+      assert text_of(document, "#transfer-form-error") =~
+               "Stay-on-board records are set in Blocks, and a transfer rule can’t repeat one of them."
 
       assert attribute(document, "#transfer-view-in-seat-link", "href") ==
                transfers_path(ctx.version, view: "in_seat")
@@ -634,7 +694,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveCreateTest do
       document = doc(view)
 
       assert text_of(document, "#transfer-form-error") =~
-               "The server couldn't save your changes. Your entries are still here."
+               "The server didn’t respond. Nothing was changed and your entries are still here."
 
       assert has_element?(view, "#transfer-retry-save", "Retry saving")
       assert has_element?(view, "#transfer-save[phx-disable-with='Saving…']")

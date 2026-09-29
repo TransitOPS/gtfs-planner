@@ -4,12 +4,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
   The inspector must render the selected catalog row from real data: the type,
   both endpoints with the scope each side carries, what the rule means for
-  riders, the one-direction line with "Inspect reverse rule" only when the
-  catalog resolved an exact mirror, one station-coverage line per distinct
-  station endpoint with its child count, the overlap callout whose compare view
-  lists the competing rules with their own effects, every other attention reason
-  as text, the "Rule scope & GTFS details" disclosure with the stored GTFS
-  values, and links to the arrival stop and the rules' routes.
+  riders, the one-way line ending in "View the reverse rule" only when the
+  catalog resolved an exact mirror and "Create the reverse rule" otherwise, one
+  station-coverage line per distinct station endpoint with its child count, the
+  overlap note whose compare view lists the competing rules with their own
+  effects, every other attention reason as text, the Technical details
+  disclosure with the stored GTFS values, and links to the arrival stop and the
+  rules' routes.
 
   The cases assert literal copy, counts and patched URLs against the shared
   fixture network and the catalog's own competition verdict, so an inspector that
@@ -67,23 +68,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: scoped.id))
 
-      assert has_element?(view, "#transfer-inspector", "Transfer rule")
       assert text_of(view, "#transfer-inspector h2") == "Minimum time"
 
       inspector = text_of(view, "#transfer-inspector")
 
-      assert inspector =~ "Arrive at"
+      assert inspector =~ "Riders arrive at"
       assert inspector =~ "Central · Bay A"
       assert inspector =~ "Route 12"
-      assert inspector =~ "Board at"
+      assert inspector =~ "Riders board at"
       assert inspector =~ "Central · Bay C"
       assert inspector =~ "Route 24"
 
-      # The template renders the sentence across two source lines, so the inspector's
-      # text holds the line break between the two halves; each half is asserted where
-      # it is written.
-      assert inspector =~ "Allow at least 3m"
-      assert inspector =~ "between arrival and departure, including walking and a buffer."
+      assert text_of(view, "#transfer-inspector-sentence") ==
+               "Trip planners offer this connection only if riders have at least 3 min between arriving on Route 12 and boarding Route 24."
 
       refute has_element?(view, "#transfer-inspector-empty")
     end
@@ -94,18 +91,28 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: missing_time.id))
 
-      assert has_element?(view, "#transfer-inspector", "Set a minimum time for this rule.")
-      assert has_element?(view, "#transfer-inspector-attention", "Minimum time missing")
+      assert has_element?(
+               view,
+               "#transfer-inspector-sentence",
+               "Trip planners need a minimum time for this connection."
+             )
+
+      assert has_element?(
+               view,
+               "#transfer-inspector-attention",
+               "This rule needs a minimum time."
+             )
     end
 
     test "each type carries its own rider meaning", ctx do
       # Distinct stop pairs, because the six-field key is unique per version.
       meanings = [
         {0, "MKT", "HBR",
-         "This is a recommended connection point. It does not promise that a vehicle will wait."},
+         "Trip planners prefer this place when riders switch from any route to any route. It does not make a vehicle wait."},
         {1, "MKT", "MUS",
-         "The departing vehicle is expected to wait for the arriving service so riders can connect."},
-        {3, "HBR", "MUS", "Journey planners should not offer this connection."}
+         "Departing vehicles wait for arriving vehicles, so riders can connect."},
+        {3, "HBR", "MUS",
+         "Trip planners will not offer a connection from any route to any route."}
       ]
 
       for {type, from, to, sentence} <- meanings do
@@ -113,7 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
         {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: row.id))
 
-        assert has_element?(view, "#transfer-inspector", sentence)
+        assert text_of(view, "#transfer-inspector-sentence") == sentence
       end
     end
   end
@@ -142,8 +149,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: forward.id))
 
-      assert has_element?(view, "#transfer-inspector-reverse-inspect", "Inspect reverse rule")
-      refute has_element?(view, "#transfer-inspector", "The reverse connection is not changed.")
+      assert has_element?(view, "#transfer-inspector-reverse-inspect", "View the reverse rule")
+      refute has_element?(view, "#transfer-inspector-reverse-create")
+
+      assert has_element?(
+               view,
+               "#transfer-inspector-direction",
+               "Works one way only: Route 12 to Route 24."
+             )
 
       view |> element("#transfer-inspector-reverse-inspect") |> render_click()
 
@@ -186,7 +199,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert has_element?(view, "#transfer-select-#{mirror.id}[aria-current='true']")
     end
 
-    test "a rule without a mirror says the reverse connection is unchanged", ctx do
+    test "a rule without a mirror offers to create the reverse rule", ctx do
       solo =
         rule!(ctx, %{
           from_stop_id: "CEN-A",
@@ -200,7 +213,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: solo.id))
 
       refute has_element?(view, "#transfer-inspector-reverse-inspect")
-      assert has_element?(view, "#transfer-inspector", "The reverse connection is not changed.")
+
+      assert has_element?(
+               view,
+               "#transfer-inspector-reverse-create",
+               "Create the reverse rule"
+             )
     end
   end
 
@@ -214,13 +232,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert has_element?(
                view,
                "#transfer-inspector-coverage",
-               "Central Station includes all 2 child platforms."
+               "Central Station includes 2 platforms, so this rule applies at every one."
              )
 
       assert has_element?(
                view,
                "#transfer-inspector-coverage",
-               "Station-wide coverage"
+               "Covers the whole station"
              )
 
       view |> element("#transfer-select-#{platform.id}") |> render_click()
@@ -240,7 +258,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert has_element?(
                view,
                "#transfer-inspector-coverage",
-               "Central Station includes all 2 child platforms."
+               "Central Station includes 2 platforms, so this rule applies at every one."
              )
     end
 
@@ -277,7 +295,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert has_element?(
                view,
                "#transfer-inspector-overlap",
-               "1 other rule of equal priority matches some of the same trips."
+               "1 other rule of equal priority can apply to some of the same trips"
              )
 
       refute has_element?(view, "#transfer-inspector-attention")
@@ -287,23 +305,26 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert has_element?(
                view,
                "#transfer-compare-dialog",
-               "Rules that match the same connection"
+               "Rules that match the same trips"
              )
 
       dialog = text_of(view, "#transfer-compare-dialog")
 
       assert dialog =~
-               "These rules apply to some of the same trip pairs with equal priority, so neither takes precedence."
+               "These rules can apply to some of the same trips and none is more specific, so a trip planner can’t tell which one wins."
 
-      assert dialog =~ "Choose the intended behavior, then narrow or remove the competing rule."
+      assert dialog =~
+               "Keep the one you intend, then narrow the other to a route or trip, or delete it."
 
       # Both rules, each with its own effect and its own scope: the selected
       # minimum-time rule and the competing one that forbids the transfer.
-      assert dialog =~ "Minimum time · 2m"
-      assert dialog =~ "Not possible · —"
-      assert dialog =~ "Route 12 → All departing routes"
-      assert dialog =~ "All arriving routes → Route 24"
-      assert dialog =~ "Central Station → Central Station"
+      assert dialog =~ "Selected rule"
+      assert dialog =~ "Minimum time · 2 min"
+      assert dialog =~ "Not possible"
+      refute dialog =~ "Not possible ·"
+      assert dialog =~ "Route 12 to Any departing route"
+      assert dialog =~ "Any arriving route to Route 24"
+      assert dialog =~ "Central Station to Central Station"
 
       view |> element("#transfer-compare-dialog-cancel") |> render_click()
 
@@ -382,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       assert has_element?(
                view,
                "#transfer-inspector-attention",
-               "To route R404 is not in this version"
+               "The departing route “R404” is not in this version."
              )
     end
 
@@ -398,13 +419,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       attention = text_of(view, "#transfer-inspector-attention")
 
-      assert attention =~ "From stop LOC-1 is not in this version"
-      assert attention =~ "To stop GHOST is not in this version"
-      assert attention =~ "Minimum time missing"
+      assert attention =~ "3 things need attention"
+      assert attention =~ "The arriving stop “LOC-1” is not in this version."
+      assert attention =~ "The departing stop “GHOST” is not in this version."
+      assert attention =~ "This rule needs a minimum time."
     end
   end
 
-  describe "the GTFS details disclosure" do
+  describe "the technical details disclosure" do
     test "names the specificity, the type and the stored values", ctx do
       scoped =
         rule!(ctx, %{
@@ -418,25 +440,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: scoped.id))
 
-      assert has_element?(
-               view,
-               "#transfer-inspector-details",
-               "Rule scope & GTFS details"
-             )
+      assert has_element?(view, "#transfer-inspector-details", "Technical details")
 
       details = text_of(view, "#transfer-inspector-details")
 
-      assert details =~ "Route-specific · type 2"
-      assert details =~ "from_stop_id: CEN-A"
-      assert details =~ "to_stop_id: CEN-C"
-      assert details =~ "from_route_id: 12"
-      assert details =~ "to_route_id: 24"
-      assert details =~ "min_transfer_time: 180 seconds"
+      assert details =~ "Route-specific"
+      assert details =~ "GTFS specificity 4 of 6"
+      assert details =~ "Minimum time required"
+
+      assert stored_values(view) == %{
+               "from_stop_id" => "CEN-A",
+               "to_stop_id" => "CEN-C",
+               "from_route_id" => "12",
+               "to_route_id" => "24",
+               "transfer_type" => "2",
+               "min_transfer_time" => "180 seconds"
+             }
 
       assert details =~
-               "Specific trip and route selectors narrow this rule. Equally specific overlapping rules need review."
-
-      refute details =~ "from_trip_id:"
+               "Trip and route choices narrow a rule. Rules with the same specificity that overlap need review."
     end
 
     test "a trip rule is trip-specific and names its trips and min time as required", ctx do
@@ -453,12 +475,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       details = text_of(view, "#transfer-inspector-details")
 
-      assert details =~ "Trip-specific · type 2"
-      assert details =~ "from_trip_id: 12-0815"
-      assert details =~ "to_trip_id: 24-0840"
-      assert details =~ "min_transfer_time: required seconds"
+      assert details =~ "Specific trips"
+      assert details =~ "GTFS specificity 1 of 6"
 
-      refute details =~ "from_route_id:"
+      assert stored_values(view) == %{
+               "from_stop_id" => "CEN-A",
+               "to_stop_id" => "CEN-C",
+               "from_trip_id" => "12-0815",
+               "to_trip_id" => "24-0840",
+               "transfer_type" => "2",
+               "min_transfer_time" => "required seconds"
+             }
     end
 
     test "a default rule is the stop and station default", ctx do
@@ -468,8 +495,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
 
       details = text_of(view, "#transfer-inspector-details")
 
-      assert details =~ "Stop / station default · type 0"
-      refute details =~ "min_transfer_time:"
+      assert details =~ "Every service at these stops"
+      assert details =~ "GTFS specificity 6 of 6"
+      assert details =~ "Recommended transfer point"
+
+      assert stored_values(view) == %{
+               "from_stop_id" => "MKT",
+               "to_stop_id" => "HBR",
+               "transfer_type" => "0"
+             }
     end
   end
 
@@ -531,7 +565,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
     test "a version with no general rules shows the empty context pane", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      assert has_element?(view, "#transfer-inspector-empty", "A little context goes a long way")
+      assert has_element?(view, "#transfer-inspector-empty", "Connections appear here")
       refute has_element?(view, "#transfer-inspector")
       refute has_element?(view, "#transfer-compare-dialog")
     end
@@ -543,11 +577,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
       assert has_element?(view, "#transfer-select-#{first.id}[aria-current='true']")
-      assert has_element?(view, "#transfer-inspector", "Recommended")
+      assert has_element?(view, "#transfer-inspector", "Preferred transfer point")
 
       view |> element("#transfer-select-#{second.id}") |> render_click()
 
-      assert has_element?(view, "#transfer-inspector", "Timed connection")
+      assert has_element?(view, "#transfer-inspector", "Timed transfer")
       refute has_element?(view, "#transfer-inspector-empty")
     end
   end
@@ -558,6 +592,22 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInspectorTest do
   end
 
   defp rule!(ctx, attrs), do: transfer_fixture(ctx.organization.id, ctx.version.id, attrs)
+
+  # The stored GTFS columns the disclosure lists, as `%{column => value}`: one term
+  # and one definition per column, so a column that is missing, extra or paired
+  # with the wrong value fails here.
+  defp stored_values(view) do
+    document = view |> render() |> LazyHTML.from_fragment()
+
+    terms = document |> LazyHTML.query("#transfer-inspector-details dt") |> Enum.map(&node_text/1)
+
+    values =
+      document |> LazyHTML.query("#transfer-inspector-details dd") |> Enum.map(&node_text/1)
+
+    Map.new(Enum.zip(terms, values))
+  end
+
+  defp node_text(node), do: node |> LazyHTML.text() |> String.trim()
 
   defp text_of(view, selector) do
     view

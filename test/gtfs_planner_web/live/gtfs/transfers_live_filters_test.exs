@@ -3,11 +3,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
   Merge evidence (EV-17) for the list pane's search and filters.
 
   The toolbar must search the way the catalog searches, filter by a station and
-  its children, by a stored route or a stored trip's route and by type, count the
-  three selects, combine every control with AND, keep the applied values in the
-  form, round-trip through the URL, drop a value the current view cannot honor,
-  and show the filtered-empty state instead of first use when the query hides
-  every rule.
+  its children, by a stored route or a stored trip's route and by kind, count the
+  two selects behind More filters, combine every control with AND, keep the
+  applied values in the form, show each one as a removable chip, round-trip
+  through the URL, drop a value the current view cannot honor, and show the
+  filtered-empty state instead of first use when the query hides every rule.
 
   The cases assert literal URLs, form values and row ids against the shared
   fixture network, so a filter that does not survive the URL, misses a station's
@@ -65,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
              )
 
       assert has_element?(view, "#transfer-filter-fields[hidden]")
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters"
+      assert text_of(doc(view), "#transfers-filters-toggle") == "More filters"
 
       view |> element("#transfers-filters-toggle") |> render_click()
 
@@ -73,15 +73,17 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       refute has_element?(view, "#transfer-filter-fields[hidden]")
 
       # The three selects name themselves and their unfiltered choice, and the
-      # options come from the listed rows' own stops, routes and types.
+      # options come from the listed rows' own stops, routes and kinds.
       assert has_element?(view, "#transfer-filter-stop option[value='']", "All locations")
       assert has_element?(view, "#transfer-filter-route option[value='']", "All routes")
-      assert has_element?(view, "#transfer-filter-type option[value='']", "All types")
+      assert has_element?(view, "#transfer-filter-type option[value='']", "All kinds")
       assert has_element?(view, "#transfer-filter-stop option", "Central Station")
       assert has_element?(view, "#transfer-filter-route option", "12 · Riverside")
-      assert has_element?(view, "#transfer-filter-type option", "Recommended")
-      assert has_element?(view, "#transfer-filter-attention")
-      assert has_element?(view, "#transfers-clear-filters", "Clear filters")
+      assert has_element?(view, "#transfer-filter-type option", "Preferred transfer point")
+      assert has_element?(view, "#transfers-attention-toggle[aria-pressed='false']")
+
+      # Clear filters appears only while something is applied.
+      refute has_element?(view, "#transfers-clear-filters")
     end
 
     test "typing in the search field narrows the list and keeps the term", ctx do
@@ -98,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       assert has_element?(view, "#transfer-search-form input[name='q'][value='museum']")
     end
 
-    test "the checkbox's own form payload applies the filter", ctx do
+    test "the Needs attention toggle applies the filter and keeps the other filters", ctx do
       flagged =
         rule!(ctx, %{
           from_stop_id: "CEN-A",
@@ -112,21 +114,34 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      # `<.input type="checkbox">` renders a hidden "false" beside the checked
-      # "true" under the one name, so this is the payload the browser sends.
-      view
-      |> render_change("filter", %{
-        "stop" => "",
-        "route" => "",
-        "type" => "",
-        "attention" => ["false", "true"]
-      })
+      view |> element("#transfers-attention-toggle") |> render_click()
 
       assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?attention=1")
       assert row_ids(doc(view)) == ["transfers-#{flagged.id}"]
+      assert has_element?(view, "#transfers-attention-toggle[aria-pressed='true']")
 
-      # The checkbox is not one of the three counted selects.
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters"
+      # The toggle is not one of the two counted selects behind More filters.
+      assert text_of(doc(view), "#transfers-filters-toggle") == "More filters"
+
+      # A select change afterwards keeps the toggle on.
+      view |> form("#transfer-filter-form", %{"type" => "2"}) |> render_change()
+
+      assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?attention=1&type=2")
+
+      # Pressing it again turns it off and keeps the kind.
+      view |> element("#transfers-attention-toggle") |> render_click()
+
+      assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?type=2")
+      assert has_element?(view, "#transfers-attention-toggle[aria-pressed='false']")
+    end
+
+    test "the toggle does nothing in the stay-on-board view", ctx do
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version) <> "?view=in_seat")
+
+      # A crafted event answers with the page as it was, not with a patch.
+      assert is_binary(render_hook(view, "toggle_attention", %{}))
+      refute has_element?(view, "#transfers-attention-toggle")
+      refute has_element?(view, "#transfers-chip-q")
     end
 
     test "the stop select lists a station with its children and counts the filter", ctx do
@@ -143,8 +158,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       |> form("#transfer-filter-form", %{
         "stop" => "CEN",
         "route" => "",
-        "type" => "",
-        "attention" => "false"
+        "type" => ""
       })
       |> render_change()
 
@@ -160,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       assert Enum.sort(row_ids(doc(view))) == expected
       refute has_element?(view, "#transfers-#{market.id}")
       assert has_element?(view, "#transfer-filter-stop option[value='CEN'][selected]")
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters (1)"
+      assert text_of(doc(view), "#transfers-filters-toggle") =~ ~r/More filters\s+1/
     end
 
     test "the route select matches a stored route and a stored trip's route", ctx do
@@ -199,10 +213,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       assert Enum.sort(row_ids(doc(view))) == expected
       refute has_element?(view, "#transfers-#{other.id}")
       assert has_element?(view, "#transfer-filter-route option[value='24'][selected]")
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters (1)"
+      assert text_of(doc(view), "#transfers-filters-toggle") =~ ~r/More filters\s+1/
     end
 
-    test "the type select lists only that type", ctx do
+    test "the kind select lists only that kind and does not count behind More filters", ctx do
       impossible = rule!(ctx, %{from_stop_id: "MKT", to_stop_id: "HBR", transfer_type: 3})
       rule!(ctx, %{from_stop_id: "MUS", to_stop_id: "HBR", transfer_type: 0})
 
@@ -214,7 +228,72 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       assert row_ids(doc(view)) == ["transfers-#{impossible.id}"]
       assert has_element?(view, "#transfer-filter-type option[value='3'][selected]")
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters (1)"
+
+      # Kind sits in the toolbar row, so only stop and route count behind the
+      # disclosure.
+      assert text_of(doc(view), "#transfers-filters-toggle") == "More filters"
+    end
+  end
+
+  describe "the applied filters" do
+    test "each one is a removable chip that patches the list without it", ctx do
+      rule!(ctx, %{
+        from_stop_id: "CEN-A",
+        to_stop_id: "HBR",
+        from_route_id: "12",
+        transfer_type: 1
+      })
+
+      rule!(ctx, %{from_stop_id: "MKT", to_stop_id: "HBR", transfer_type: 3})
+
+      url = transfers_path(ctx.version) <> "?q=harbor&type=1&stop=CEN&route=12"
+      {:ok, view, _html} = live(ctx.conn, url)
+
+      chips = doc(view) |> LazyHTML.query("#transfers-summary button[phx-click='remove_filter']")
+      assert Enum.count(chips) == 4
+
+      assert has_element?(view, "#transfers-chip-q[aria-label='Remove filter “harbor”']")
+
+      assert has_element?(
+               view,
+               "#transfers-chip-type[aria-label='Remove filter Timed transfer']"
+             )
+
+      assert has_element?(
+               view,
+               "#transfers-chip-stop[aria-label='Remove filter Central Station']"
+             )
+
+      assert has_element?(view, "#transfers-chip-route[aria-label='Remove filter Route 12']")
+
+      view |> element("#transfers-chip-type") |> render_click()
+
+      assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?q=harbor&route=12&stop=CEN")
+      refute has_element?(view, "#transfers-chip-type")
+
+      view |> element("#transfers-chip-q") |> render_click()
+
+      assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?route=12&stop=CEN")
+      assert has_element?(view, "#transfer-search-form input[name='q'][value='']")
+    end
+
+    test "the count row says how many of the version's rules match", ctx do
+      rule!(ctx, %{from_stop_id: "CEN-A", to_stop_id: "HBR", transfer_type: 1})
+      rule!(ctx, %{from_stop_id: "MKT", to_stop_id: "HBR", transfer_type: 3})
+
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version) <> "?type=3")
+
+      assert text_of(doc(view), "#transfers-count") == "1 of 2 transfer rules"
+    end
+
+    test "a chip key the page does not know changes nothing", ctx do
+      rule!(ctx, %{from_stop_id: "CEN-A", to_stop_id: "HBR", transfer_type: 1})
+
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version) <> "?type=1")
+
+      render_hook(view, "remove_filter", %{"key" => "attention"})
+
+      assert has_element?(view, "#transfers-chip-type")
     end
   end
 
@@ -277,12 +356,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
+      view |> element("#transfers-attention-toggle") |> render_click()
+
       view
       |> form("#transfer-filter-form", %{
         "stop" => "CEN",
         "route" => "24",
-        "type" => "2",
-        "attention" => "true"
+        "type" => "2"
       })
       |> render_change()
 
@@ -295,7 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       )
 
       assert row_ids(doc(view)) == ["transfers-#{matching.id}"]
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters (3)"
+      assert text_of(doc(view), "#transfers-filters-toggle") =~ ~r/More filters\s+2/
 
       # The same URL renders the same rows and the same form values, so the list
       # and the URL cannot disagree about the filter.
@@ -306,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       assert has_element?(same, "#transfer-filter-stop option[value='CEN'][selected]")
       assert has_element?(same, "#transfer-filter-route option[value='24'][selected]")
       assert has_element?(same, "#transfer-filter-type option[value='2'][selected]")
-      assert has_element?(same, "#transfer-filter-attention[checked]")
+      assert has_element?(same, "#transfers-attention-toggle[aria-pressed='true']")
 
       # The search is the other form's, and narrows without dropping a filter.
       same |> form("#transfer-search-form", %{"q" => "harbor"}) |> render_change()
@@ -360,12 +440,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       {:ok, view, _html} = live(ctx.conn, redirected_to)
 
       refute has_element?(view, "#transfer-filter-type option[value='4']")
-      refute has_element?(view, "#transfer-filter-attention[checked]")
+      refute has_element?(view, "#transfers-attention-toggle[aria-pressed='true']")
       # A nil filter value leaves `options_for_select/2` with nothing to mark, so
       # the empty option carries no `selected` attribute; it is still the select's
       # value because it comes first.
-      assert has_element?(view, "#transfer-filter-type option[value='']", "All types")
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters"
+      assert has_element?(view, "#transfer-filter-type option[value='']", "All kinds")
+      assert text_of(doc(view), "#transfers-filters-toggle") == "More filters"
     end
 
     test "an unknown stop keeps its option selected and empties the list", ctx do
@@ -375,8 +455,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       assert has_element?(view, "#transfer-filter-stop option[value='UNKNOWN'][selected]")
       assert text_of(doc(view), "#transfer-filter-stop option[value='UNKNOWN']") == "UNKNOWN"
-      assert has_element?(view, "#transfers-no-results", "No matching connections")
-      assert text_of(doc(view), "#transfers-filters-toggle") == "Filters (1)"
+      assert has_element?(view, "#transfers-no-results", "No transfers match")
+      assert text_of(doc(view), "#transfers-filters-toggle") =~ ~r/More filters\s+1/
     end
 
     test "a filter that hides every rule shows the filtered-empty state, not first use", ctx do
@@ -385,15 +465,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version) <> "?q=zzz")
 
-      assert has_element?(view, "#transfers-no-results", "No matching connections")
+      assert has_element?(view, "#transfers-no-results", "No transfers match")
 
       assert text_of(doc(view), "#transfers-no-results") =~
-               "Try another stop, route, or search term."
+               "Try another stop, route or word, or clear the filters to see all 2 transfer rules."
 
-      # The count bar stays above the state, as the reference has it, so an
-      # emptied list still reads how many rules matched.
-      assert text_of(doc(view), "#transfers-count") == "0 rules"
-      assert text_of(doc(view), "#transfers-direction-hint") == "One direction per rule"
+      # The count row stays above the state, so an emptied list still reads how
+      # many rules matched.
+      assert text_of(doc(view), "#transfers-count") == "0 of 2 transfer rules"
 
       refute has_element?(view, "#transfers-first-use")
       refute has_element?(view, "#transfers")
@@ -418,7 +497,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveFiltersTest do
       assert_patched(view, transfers_path(ctx.version))
       assert has_element?(view, "#transfers")
       assert has_element?(view, "#transfer-search-form input[name='q'][value='']")
-      refute has_element?(view, "#transfer-filter-attention[checked]")
+      refute has_element?(view, "#transfers-attention-toggle[aria-pressed='true']")
     end
   end
 

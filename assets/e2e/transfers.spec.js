@@ -33,6 +33,10 @@ const TRANSFERS_VERSION = "Browser Transfers Version";
 const FIRST_USE_VERSION = "Browser E2E Version";
 const ROUTE = "BXF_24";
 
+// The whole-station default is the one station rule with no route on either side.
+const WHOLE_STATION_BOTH_SIDES =
+  /Any route · whole station[\s\S]*Any route · whole station/;
+
 const DESKTOP = { width: 1440, height: 1000 };
 const PHONE = { width: 375, height: 812 };
 const NARROW = { width: 320, height: 800 };
@@ -81,14 +85,16 @@ test.describe("Transfers", () => {
 
     const firstUse = page.locator("#transfers-first-use");
     await expect(firstUse).toBeVisible();
-    await expect(firstUse).toContainText("Make connections clearer");
+    await expect(firstUse).toContainText("Most connections need no rule");
     await expect(page.locator("#transfers-first-use-create")).toHaveText(
-      "Create transfer",
+      "Create transfer rule",
     );
     await expect(firstUse.getByRole("button")).toHaveCount(1);
+    // The panel carries the one create action, so the header has none.
+    await expect(page.locator("#transfers-create")).toHaveCount(0);
     await expect(page.locator("#transfers-no-results")).toHaveCount(0);
     await expect(page.locator("#transfers-view-in-seat")).toContainText(
-      "In-seat (0) · managed on Blocks",
+      /Stay on board\s*0/,
     );
 
     await capture(page, testInfo, "first-use-1440x1000");
@@ -99,13 +105,18 @@ test.describe("Transfers", () => {
   }, testInfo) => {
     await openTransfers(page);
 
-    await expect(page.locator("#transfers-count")).toHaveText("8 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("8 transfer rules");
 
     await openFilters(page);
     await page.locator("#transfer-filter-stop").selectOption("BXF_CEN");
 
     await expect(page).toHaveURL(/[?&]stop=BXF_CEN(&|$)/);
-    await expect(page.locator("#transfers-count")).toHaveText("5 rules");
+    await expect(page.locator("#transfers-count")).toHaveText(
+      "5 of 8 transfer rules",
+    );
+    await expect(page.locator("#transfers-chip-stop")).toContainText(
+      "Transfer Central Station",
+    );
     await expect(page.locator("#transfers > tr")).toHaveCount(5);
 
     // The station filter matches the station itself and its two platform
@@ -127,7 +138,7 @@ test.describe("Transfers", () => {
 
     await page.locator("#transfers-clear-filters").click();
 
-    await expect(page.locator("#transfers-count")).toHaveText("8 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("8 transfer rules");
     await expect(page).not.toHaveURL(/[?&]stop=/);
   });
 
@@ -147,7 +158,7 @@ test.describe("Transfers", () => {
 
     await expect(page.locator("#transfer-inspector")).toBeVisible();
     await expect(page.locator("#transfer-inspector-overlap")).toContainText(
-      "1 other rule of equal priority matches some of the same trips",
+      "1 other rule of equal priority can apply to some of the same trips",
     );
 
     const compare = page.locator("#transfer-compare-dialog");
@@ -158,8 +169,8 @@ test.describe("Transfers", () => {
       visible(compare),
     );
     await expect(compare).toBeVisible();
-    await expect(compare).toContainText("Minimum time · 2m");
-    await expect(compare).toContainText("Not possible · —");
+    await expect(compare).toContainText("Minimum time · 2 min");
+    await expect(compare).toContainText("Not possible");
     await expect(compare.getByRole("button", { name: "Edit rule" })).toHaveCount(
       2,
     );
@@ -180,7 +191,7 @@ test.describe("Transfers", () => {
     await page.setViewportSize(DESKTOP);
 
     // The rule that names the station's two platforms in the other direction is
-    // its exact mirror, so "Inspect reverse rule" selects it.
+    // its exact mirror, so "View the reverse rule" selects it.
     const stationRule = ruleRow(
       page,
       "Transfer Central · Bay A",
@@ -223,7 +234,7 @@ test.describe("Transfers", () => {
 
     await expect(page).toHaveURL(/[?&]view=in_seat(&|$)/);
     await expect(page.locator("#transfers-count")).toHaveText(
-      "2 in-seat records",
+      "2 stay-on-board records",
     );
     await expect(page.locator("#transfers-view-in-seat")).toHaveAttribute(
       "aria-pressed",
@@ -240,21 +251,23 @@ test.describe("Transfers", () => {
     // The stopless record says so instead of rendering a blank endpoint.
     const stopless = ruleRow(
       page,
-      "Stop not recorded",
-      "Stop not recorded",
+      "No stop recorded",
+      "No stop recorded",
       "Trip BXF_24_0840",
     );
     await expect(stopless).toHaveCount(1);
-    await expect(stopless).toContainText("Stop not recorded");
+    await expect(stopless).toContainText("No stop recorded");
 
     await selectRow(page, stopless);
     await expect(page.locator("#transfer-inspector-blocks-note")).toContainText(
-      "Changes to stay-on-board records are made there.",
+      "Changes are made there.",
     );
 
-    const phone = page.locator("#transfers");
+    // Below 1024px the record the operator opened has the screen, not the list.
+    const phone = page.locator("#transfer-inspector");
     await page.setViewportSize(PHONE);
     await expect(phone).toBeVisible();
+    await expect(page.locator("#transfers")).not.toBeVisible();
     await capture(page, testInfo, "in-seat-375x812", phone);
 
     await page.setViewportSize(DESKTOP);
@@ -272,9 +285,10 @@ test.describe("Transfers", () => {
     await chooseStopWithKeyboard(page, "from", "Transfer Museum");
     await chooseStopWithKeyboard(page, "to", "Transfer Market Street");
 
-    // The draft starts on "Minimum time", so the operator reaches the type
-    // radios from the last stop field and picks "Recommended" with the arrow
-    // keys, as a native radio group allows.
+    // The draft starts on "Minimum time", so the operator reaches the kind
+    // radios from the last stop field and picks "Preferred transfer point" with
+    // the arrow keys, as a native radio group allows: the cards run Timed, Minimum
+    // time, Not possible, Preferred, so Up twice wraps round to the last one.
     await tabUntilFocused(page, "transfer-type-2");
     await page.keyboard.press("ArrowUp");
     await page.keyboard.press("ArrowUp");
@@ -290,10 +304,10 @@ test.describe("Transfers", () => {
     await page.keyboard.press("Enter");
 
     await expect(page.locator("#flash-group")).toContainText(
-      `Transfer saved in ${TRANSFERS_VERSION}.`,
+      `Transfer rule saved in ${TRANSFERS_VERSION}.`,
     );
     await expect(page.locator("#transfer-editor")).toHaveCount(0);
-    await expect(page.locator("#transfers-count")).toHaveText("9 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("9 transfer rules");
 
     const created = ruleRow(
       page,
@@ -305,7 +319,7 @@ test.describe("Transfers", () => {
       created.locator('button[id^="transfer-select-"][aria-current="true"]'),
     ).toHaveCount(1);
     await expect(page.locator("#transfer-inspector")).toContainText(
-      "Recommended",
+      "Preferred transfer point",
     );
 
     await capture(page, testInfo, "create-1440x1000");
@@ -325,7 +339,7 @@ test.describe("Transfers", () => {
     await press(page, page.locator("#transfer-save"), visible(error));
     await expect(error).toBeVisible();
     await expect(error).toContainText(
-      "A rule already exists for these stops and services.",
+      "A rule already covers these stops and services.",
     );
     await expect(page.locator("#transfer-open-existing")).toHaveText(
       "Open existing rule",
@@ -355,8 +369,7 @@ test.describe("Transfers", () => {
       page,
       "Transfer Central Station",
       "Transfer Central Station",
-      "All arriving routes",
-      "All departing routes",
+      WHOLE_STATION_BOTH_SIDES,
     );
     await expect(rule).toHaveCount(1);
     await selectRow(page, rule);
@@ -372,12 +385,14 @@ test.describe("Transfers", () => {
     await expect(page.locator("#transfer-min-time")).toHaveValue("300");
 
     await page.locator("#transfer-min-time").fill("360");
-    await expect(page.locator("#transfer-min-time-readout")).toContainText("6m");
+    await expect(page.locator("#transfer-min-time-readout")).toContainText(
+      "6 min",
+    );
 
     await press(page, page.locator("#transfer-save"), hidden(editor));
 
     await expect(page.locator("#flash-group")).toContainText(
-      `Transfer saved in ${TRANSFERS_VERSION}.`,
+      `Transfer rule saved in ${TRANSFERS_VERSION}.`,
     );
     await expect(page.locator("#transfer-editor")).toHaveCount(0);
 
@@ -385,10 +400,9 @@ test.describe("Transfers", () => {
       page,
       "Transfer Central Station",
       "Transfer Central Station",
-      "All arriving routes",
-      "All departing routes",
+      WHOLE_STATION_BOTH_SIDES,
     );
-    await expect(saved).toContainText("6m");
+    await expect(saved).toContainText("6 min");
 
     await capture(page, testInfo, "edit-1440x1000");
   });
@@ -448,7 +462,7 @@ test.describe("Transfers", () => {
     await press(page, page.locator("#transfer-pick-from"), visible(callout));
     await expect(callout).toBeVisible();
     await expect(page.locator("#transfer-map-title")).toHaveText(
-      "Choose the arrival stop",
+      "Choose where riders arrive",
     );
 
     // The context pane opens at the zoom of the rule the page had selected, so
@@ -472,7 +486,7 @@ test.describe("Transfers", () => {
     );
     await expect(page.locator("#transfer-pick-callout")).toHaveCount(0);
     await expect(page.locator("#transfer-map-title")).toHaveText(
-      "Preview this connection",
+      "Preview of this connection",
     );
 
     await discardDraft(page);
@@ -511,9 +525,9 @@ test.describe("Transfers", () => {
     );
 
     await expect(page.locator("#flash-group")).toContainText(
-      `Transfer saved in ${TRANSFERS_VERSION}.`,
+      `Transfer rule saved in ${TRANSFERS_VERSION}.`,
     );
-    await expect(page.locator("#transfers-count")).toHaveText("10 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("10 transfer rules");
     await expect(ruleRow(page, "Transfer Market Street", "Transfer Harbor")).toHaveCount(1);
   });
 
@@ -537,7 +551,9 @@ test.describe("Transfers", () => {
     await page.waitForURL(/\/transfers\?/);
 
     await expect(page).toHaveURL(new RegExp(`[?&]route=${ROUTE}(&|$)`));
-    await expect(page.locator("#transfers-count")).toHaveText(`${count} rules`);
+    await expect(page.locator("#transfers-count")).toHaveText(
+      new RegExp(`^\\s*${count} of \\d+ transfer rules\\s*$`),
+    );
     await expect(page.locator("#transfers > tr")).toHaveCount(count);
 
     await capture(page, testInfo, "related-1440x1000");
@@ -548,7 +564,7 @@ test.describe("Transfers", () => {
   }, testInfo) => {
     await openTransfers(page);
 
-    await expect(page.locator("#transfers-count")).toHaveText("10 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("10 transfer rules");
 
     const marketRule = ruleRow(
       page,
@@ -563,9 +579,7 @@ test.describe("Transfers", () => {
     await marketRule.locator('input[id^="transfer-check-"]').click();
     await museumRule.locator('input[id^="transfer-check-"]').click();
 
-    await expect(page.locator("#transfers-count")).toHaveText(
-      "2 selected · this version",
-    );
+    await expect(page.locator("#transfers-count")).toHaveText("2 selected");
 
     const dialog = page.locator("#transfer-delete-dialog");
 
@@ -580,10 +594,10 @@ test.describe("Transfers", () => {
     );
     await expect(
       dialog.locator("#transfer-delete-dialog-body"),
-    ).toContainText("Transfer Market Street → Transfer Market Street");
+    ).toContainText("Transfer Market Street to Transfer Market Street");
     await expect(
       dialog.locator("#transfer-delete-dialog-body"),
-    ).toContainText("Transfer Museum → Transfer Harbor");
+    ).toContainText("Transfer Museum to Transfer Harbor");
 
     await press(
       page,
@@ -592,7 +606,7 @@ test.describe("Transfers", () => {
     );
 
     await expect(dialog).not.toBeVisible();
-    await expect(page.locator("#transfers-count")).toHaveText("8 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("8 transfer rules");
     await expect(
       ruleRow(page, "Transfer Market Street", "Transfer Market Street"),
     ).toHaveCount(0);
@@ -626,7 +640,7 @@ test.describe("Transfers", () => {
     );
 
     await expect(page.locator("#transfer-delete-dialog")).not.toBeVisible();
-    await expect(page.locator("#transfers-count")).toHaveText("7 rules");
+    await expect(page.locator("#transfers-count")).toHaveText("7 transfer rules");
     await expect(
       ruleRow(page, "Transfer Museum", "Transfer Market Street"),
     ).toHaveCount(0);
@@ -637,10 +651,9 @@ test.describe("Transfers", () => {
   }, testInfo) => {
     await openTransfers(page);
 
-    // The list pane's own surfaces are what this journey measures: the view
-    // chips, the toolbar and the count bar, the rule the page selected on load
-    // and the editor. The rows are named by the journeys that select and delete
-    // them.
+    // Below 1024px the list and the rule take the screen in turn, so each surface
+    // is reached the way an operator reaches it: the list first, a row to open the
+    // rule, the way back, then the editor.
     const list = page.locator("#transfers-view-general");
     const inspector = page.locator("#transfer-inspector");
 
@@ -654,10 +667,21 @@ test.describe("Transfers", () => {
       await page.setViewportSize(size);
 
       await expect(list).toBeVisible();
+      await expect(inspector).not.toBeVisible();
       expect(await fitsViewport(page), `${label} list`).toBe(true);
 
+      const row = page.locator('#transfers button[id^="transfer-select-"]').first();
+      await press(page, row, visible(inspector));
       await expect(inspector).toBeVisible();
+      await expect(list).not.toBeVisible();
       expect(await fitsViewport(page), `${label} inspector`).toBe(true);
+
+      await press(
+        page,
+        page.locator("#transfer-inspector-back"),
+        visible(list),
+      );
+      await expect(list).toBeVisible();
 
       await openCreate(page);
       await expect(page.locator("#transfer-editor")).toBeVisible();
@@ -791,13 +815,19 @@ async function openFilters(page) {
 
 async function selectRow(page, row) {
   const button = row.locator('button[id^="transfer-select-"]').first();
+  const id = (await button.getAttribute("id")).replace("transfer-select-", "");
 
-  // The page selects its first row on load, so the row's own current marker is
-  // what says the intended rule is the one the inspector shows.
+  // The page selects its first row on load without naming it in the URL, and the
+  // rows of equal name sort by id, so the intended rule may already be the current
+  // one. Pressing it names the rule in the URL either way, which is what opens it
+  // below 1024px, so the press is repeated until both the URL and the row's own
+  // current marker say it is the rule the inspector shows.
   await activate(
     page,
     () => button.click(),
-    async () => (await button.getAttribute("aria-current")) === "true",
+    async () =>
+      page.url().includes(`rule=${id}`) &&
+      (await button.getAttribute("aria-current")) === "true",
   );
 }
 
