@@ -17,6 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.Schedules
 
   # The problems notice names three problems and counts the rest, so a block with
   # many overlaps does not turn the timetable into a wall of sentences.
@@ -957,18 +958,18 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp frequency_title(_drawer), do: "This trip runs on a frequency"
 
-  defp headsign_help(%{trip: row}, pattern) when is_map(row) do
-    # A pattern the payload carries is an entry map (`Schedules.pattern_entries/2`)
-    # with no `:headsign` field, so a blank trip headsign must not index it.
-    reference = row.trip_headsign || (pattern && Map.get(pattern, :headsign))
+  # Names the headsign a blank field will store: the selected timing's, else the
+  # pattern's (`Schedules.fallback_headsign/2`), never the trip's own headsign.
+  defp headsign_help(%{values: values}, pattern) when is_map(pattern) do
+    timing = Enum.find(pattern.timings, &(&1.id == values["timed_pattern_id"]))
 
-    case reference do
-      nil -> ""
+    case Schedules.fallback_headsign(timing && timing.headsign, pattern.headsign) do
+      nil -> nil
       headsign -> "Leave blank to use #{headsign}."
     end
   end
 
-  defp headsign_help(_drawer, _pattern), do: ""
+  defp headsign_help(_drawer, _pattern), do: nil
 
   defp can_submit?(%{mode: :add}, nil), do: false
   defp can_submit?(%{mode: :add}, pattern), do: pattern.timings != []
