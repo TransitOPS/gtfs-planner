@@ -62,7 +62,9 @@ locals {
           "GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES=157286400",
           "GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES=1073741824",
           "GTFS_TASK_ARTIFACTS_TTL_SECONDS=86400",
-          "GEOAPIFY_API_KEY=${var.geoapify_api_key}"
+          "GEOAPIFY_API_KEY=${var.geoapify_api_key}",
+          "OPENROUTER_API_KEY=${var.openrouter_api_key}",
+          "OPENROUTER_MODEL=${var.openrouter_model}"
         ]
         networks = [
           local.lb_network,
