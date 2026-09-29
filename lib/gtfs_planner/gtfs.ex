@@ -5694,22 +5694,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns the minimum layover for an organization's GTFS version.
+  Returns every Block rules setting for an organization's GTFS version.
 
-  A version with no stored setting returns `%{min_layover_minutes: 5}`; the read
-  never inserts a row.
+  A version with no stored setting returns the defaults (5 minutes minimum layover,
+  no block-length or piece limit, 0 minutes pull-out buffer, any interlining, no
+  default garage, 30 km/h deadhead speed at 1.3 circuity); the read never inserts a
+  row.
   """
-  @spec get_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: %{min_layover_minutes: 0..120}
+  @spec get_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: Blocking.settings()
   def get_blocking_settings(organization_id, gtfs_version_id) do
     Blocking.get_settings(organization_id, gtfs_version_id)
   end
 
   @doc """
-  Stores the minimum layover for an organization's published GTFS version.
+  Stores the eight Block rules settings for an organization's published version.
+
+  Every value is range-checked, the interlining value must be one of the three, and
+  a `default_garage_id` must be a garage of this organization. The save takes
+  `Blocking.lock_blocking!/1` and replaces every settings column of the version's one
+  row.
 
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
-  another organization, and `{:error, changeset}` when the value is not a whole
-  number from 0 to 120.
+  another organization, and `{:error, changeset}` when a value is rejected.
   """
   @spec update_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
           {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
