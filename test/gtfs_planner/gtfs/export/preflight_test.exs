@@ -283,6 +283,22 @@ defmodule GtfsPlanner.Gtfs.Export.PreflightTest do
       assert message =~ "1 trip uses a service ID"
       assert message =~ "ELSEWHERE"
     end
+
+    test "ignores trips of an inactive route, which the export leaves out", %{
+      organization: org,
+      version: version
+    } do
+      active_route = route_fixture(org.id, version.id)
+      inactive_route = route_fixture(org.id, version.id, route_id: "R_INACTIVE", active: false)
+      trip_fixture(org.id, version.id, inactive_route.route_id, service_id: "RETIRED_SERVICE")
+      trip_fixture(org.id, version.id, active_route.route_id, service_id: "GHOST_SERVICE")
+
+      assert {:error, [%{code: "trip_missing_service", message: message}]} =
+               Preflight.run(org.id, version.id)
+
+      assert message =~ "1 trip uses a service ID"
+      assert message =~ "(for example GHOST_SERVICE)"
+    end
   end
 
   describe "scoping" do
