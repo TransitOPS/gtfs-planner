@@ -17,39 +17,69 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       title: "Runs",
       scope: :version,
       summary: "Cut vehicle blocks into each operator’s daily work.",
-      section_names: ["Duty chart", "Suggest runs", "Work rules", "Checks"]
+      section_names: [
+        "Review every run on one chart",
+        "Get suggested runs",
+        "Set your work rules",
+        "Catch problems early"
+      ]
     },
     rosters: %{
       title: "Rosters",
       scope: :version,
       summary: "Group runs into weekly lines and record which operator holds each line.",
-      section_names: ["Weekly lines", "Open work", "Operators", "Crew export"]
+      section_names: [
+        "Build weekly lines",
+        "Check each line",
+        "Record who picks each line",
+        "Export assignments"
+      ]
     },
     flex: %{
       title: "Flex",
       scope: :version,
       summary:
-        "Describe on-demand service on your fixed routes, such as drop-off near a stop by request.",
-      section_names: ["Flex services", "Area", "Boarding", "Booking", "Export preview"]
+        "Describe your on-demand service so trip planners can show riders where and when they can book a ride.",
+      section_names: [
+        "Describe each service",
+        "Draw the area it covers",
+        "Add detours to a fixed route",
+        "Publish with your feed"
+      ]
     },
     evolutions: %{
       title: "Evolutions",
       scope: :version,
       summary:
         "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
-      section_names: ["Closures", "Access check"]
+      section_names: [
+        "Schedule a closure",
+        "Pick pathways on the floorplan",
+        "Check station access",
+        "Include closures in your export"
+      ]
     },
     export_defaults: %{
       title: "Export defaults",
       scope: :all_versions,
       summary: "Choose how future exports are written.",
-      section_names: ["ID formats", "Stop times between timepoints", "GTFS-flex files"]
+      section_names: [
+        "Choose your identifiers",
+        "Fill in times between timepoints",
+        "Include on-demand service",
+        "See what each export used"
+      ]
     },
     feed_url: %{
       title: "Published feed URL",
       scope: :all_versions,
       summary: "Give data consumers one permanent address for your feed.",
-      section_names: ["Feed URL", "What’s live", "Publishing"]
+      section_names: [
+        "Copy your permanent URL",
+        "See what’s live",
+        "Publish a finished export",
+        "Know the link won’t break"
+      ]
     }
   ]
 
@@ -131,13 +161,15 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
     end
 
-    test "renders exactly one title element at the requested heading level" do
+    test "renders exactly one title at the requested level and the outcome list heading one level below" do
       for level <- [1, 2, 3] do
         doc = render_doc(ComingSoon.feature(:runs), "All versions", level)
 
         assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
         assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1
-        assert Enum.count(LazyHTML.query(doc, "h1, h2, h3")) == 1
+
+        assert Enum.count(LazyHTML.query(doc, "h#{level + 1}#coming-soon-outcomes-title")) == 1
+        assert Enum.count(LazyHTML.query(doc, "h1, h2, h3, h4")) == 2
       end
     end
 
@@ -161,8 +193,8 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
                ["coming-soon-title"]
 
       assert Enum.count(LazyHTML.query(doc, "ul#coming-soon-sections")) == 1
-      assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) == 5
-      assert text_of(doc, "#coming-soon") =~ "What it will include"
+      assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) == 4
+      assert text_of(doc, "#coming-soon-outcomes-title") == "What you’ll be able to do"
 
       for selector <- ["form", "button", "a", "input", "select", "textarea"] do
         assert Enum.empty?(LazyHTML.query(doc, "#coming-soon #{selector}"))

@@ -3,7 +3,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   Shared content and body for destinations that are navigable before they are built.
 
   Every placeholder surface renders one `coming_soon/1` instance from this fixed
-  catalog, so a title, summary, scope and subsection list stay in one place instead
+  catalog, so a title, summary, scope and outcome list stay in one place instead
   of being restated per consumer. The caller owns the page shell: it supplies the
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
@@ -15,7 +15,8 @@ defmodule GtfsPlannerWeb.ComingSoon do
 
   use Phoenix.Component
 
-  import GtfsPlannerWeb.CoreComponents, only: [status_badge: 1]
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [scope_line: 1]
 
   @type scope :: :version | :all_versions
 
@@ -29,8 +30,10 @@ defmodule GtfsPlannerWeb.ComingSoon do
   @doc """
   Returns the fixed catalog entry for one unbuilt destination.
 
-  Keys, titles, summaries, scopes and subsection lists come from the finalized
-  content table in the information-architecture spec.
+  Keys, titles, summaries and scopes come from the finalized content table in
+  the information-architecture spec. Each `sections` entry names one thing the
+  feature will let a person do, in the words an operator uses, followed by one
+  sentence that says what it covers and where it stops.
   """
   @spec feature(atom()) :: feature()
   def feature(:runs) do
@@ -39,10 +42,25 @@ defmodule GtfsPlannerWeb.ComingSoon do
       scope: :version,
       summary: "Cut vehicle blocks into each operator’s daily work.",
       sections: [
-        %{name: "Duty chart", text: "Review each operator’s work through the day."},
-        %{name: "Suggest runs", text: "Review suggested cuts of vehicle blocks."},
-        %{name: "Work rules", text: "Set the rules used to form runs."},
-        %{name: "Checks", text: "Find runs that break those rules."}
+        %{
+          name: "Review every run on one chart",
+          text:
+            "See when each operator signs on, which blocks they drive, where the break falls and when they sign off."
+        },
+        %{
+          name: "Get suggested runs",
+          text: "Preview a suggested way to cut your blocks. Nothing changes until you apply it."
+        },
+        %{
+          name: "Set your work rules",
+          text:
+            "Enter report time, sign-off time, the longest paid break and the longest spread. Runs shows how paid time adds up."
+        },
+        %{
+          name: "Catch problems early",
+          text:
+            "Flag work that isn’t in any run, stretches that run too long without a relief, and runs that spread past your limit."
+        }
       ]
     }
   end
@@ -53,10 +71,26 @@ defmodule GtfsPlannerWeb.ComingSoon do
       scope: :version,
       summary: "Group runs into weekly lines and record which operator holds each line.",
       sections: [
-        %{name: "Weekly lines", text: "Arrange runs across the week."},
-        %{name: "Open work", text: "Find work without an assigned operator."},
-        %{name: "Operators", text: "Manage the operators available for assignments."},
-        %{name: "Crew export", text: "Download roster and assignment data."}
+        %{
+          name: "Build weekly lines",
+          text:
+            "Choose one run or a day off for each day of the week. Create a Monday to Friday line in one step from work that isn’t in a line yet."
+        },
+        %{
+          name: "Check each line",
+          text:
+            "See weekly paid hours, hours over 40, and whether the line has two days off in a row and enough rest between working days."
+        },
+        %{
+          name: "Record who picks each line",
+          text:
+            "Operators pick lines by seniority outside GTFS Planner. Keep a list of operators and record each pick here."
+        },
+        %{
+          name: "Export assignments",
+          text:
+            "Download planned operator assignments for other systems. The plan leaves out vacations, sick days and the extraboard."
+        }
       ]
     }
   end
@@ -66,13 +100,28 @@ defmodule GtfsPlannerWeb.ComingSoon do
       title: "Flex",
       scope: :version,
       summary:
-        "Describe on-demand service on your fixed routes, such as drop-off near a stop by request.",
+        "Describe your on-demand service so trip planners can show riders where and when they can book a ride.",
       sections: [
-        %{name: "Flex services", text: "Choose the fixed routes covered by each service."},
-        %{name: "Area", text: "Set the area served around route stops."},
-        %{name: "Boarding", text: "Describe pickup and drop-off arrangements."},
-        %{name: "Booking", text: "Set how and when riders book."},
-        %{name: "Export preview", text: "Review the GTFS-flex data the service will produce."}
+        %{
+          name: "Describe each service",
+          text:
+            "Set when it runs, who can ride and how riders book. Flex writes the booking instructions in plain sentences you can review."
+        },
+        %{
+          name: "Draw the area it covers",
+          text:
+            "Start from town limits, a distance around your routes, a drawing or a file, then adjust the boundary."
+        },
+        %{
+          name: "Add detours to a fixed route",
+          text:
+            "Choose which trips can leave the route on request and how far they may go, such as up to ¾ mile."
+        },
+        %{
+          name: "Publish with your feed",
+          text:
+            "Flex service goes out as a separate file with your main feed. A problem with a flex service never holds back the main feed."
+        }
       ]
     }
   end
@@ -84,8 +133,25 @@ defmodule GtfsPlannerWeb.ComingSoon do
       summary:
         "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
       sections: [
-        %{name: "Closures", text: "Set which pathways close and when."},
-        %{name: "Access check", text: "Check station access during those closures."}
+        %{
+          name: "Schedule a closure",
+          text:
+            "Pick a pathway, the calendar of days it’s closed and the hours, such as the elevator on weekdays 9:00 AM–3:00 PM."
+        },
+        %{
+          name: "Pick pathways on the floorplan",
+          text: "See which pathways have closures and which are closed at a time you choose."
+        },
+        %{
+          name: "Check station access",
+          text:
+            "Choose up to 31 days and see whether every entrance still connects to every platform, and whether a step-free route remains."
+        },
+        %{
+          name: "Include closures in your export",
+          text:
+            "Closures are saved with your feed export. They use a GTFS extension that isn’t in the official reference, so some trip planners and validators may ignore them."
+        }
       ]
     }
   end
@@ -96,9 +162,25 @@ defmodule GtfsPlannerWeb.ComingSoon do
       scope: :all_versions,
       summary: "Choose how future exports are written.",
       sections: [
-        %{name: "ID formats", text: "Choose identifier formats for exports."},
-        %{name: "Stop times between timepoints", text: "Choose how missing times are estimated."},
-        %{name: "GTFS-flex files", text: "Choose whether exports include on-demand service data."}
+        %{
+          name: "Choose your identifiers",
+          text:
+            "Pick which identifier your exports use for stops, blocks and routes. The exact choices are still being decided."
+        },
+        %{
+          name: "Fill in times between timepoints",
+          text:
+            "Choose whether exports estimate times for the stops between timepoints, and how. Filling times in route patterns uses the same choice."
+        },
+        %{
+          name: "Include on-demand service",
+          text:
+            "Choose whether exports add the flex file. The Flex page shows this choice and links here."
+        },
+        %{
+          name: "See what each export used",
+          text: "Each finished export keeps the settings it was made with."
+        }
       ]
     }
   end
@@ -109,9 +191,26 @@ defmodule GtfsPlannerWeb.ComingSoon do
       scope: :all_versions,
       summary: "Give data consumers one permanent address for your feed.",
       sections: [
-        %{name: "Feed URL", text: "Find the address consumers will use."},
-        %{name: "What’s live", text: "Review the version and export currently served."},
-        %{name: "Publishing", text: "Learn how a completed export becomes the public feed."}
+        %{
+          name: "Copy your permanent URL",
+          text:
+            "One address that never changes, so trip planners keep reading your latest published feed."
+        },
+        %{
+          name: "See what’s live",
+          text:
+            "Check which version and export the URL serves now. It can differ from the version you’re editing."
+        },
+        %{
+          name: "Publish a finished export",
+          text:
+            "After an export finishes and is checked, publish it. If the check found errors, you confirm first and see how many."
+        },
+        %{
+          name: "Know the link won’t break",
+          text:
+            "Download links from Export expire after a day by default. The published URL keeps serving your feed until you publish a different one."
+        }
       ]
     }
   end
@@ -124,7 +223,10 @@ defmodule GtfsPlannerWeb.ComingSoon do
   a placeholder never offers an action that cannot work yet. The heading level
   follows the surrounding page: `1` on a standalone placeholder page, `2` under
   the station heading on Evolutions, and `3` under the route and pattern headings
-  on Alignment.
+  on Alignment. The outcome list's own heading sits one level below it.
+
+  The section is a design-system page scope (`ds-page`), so it takes the
+  application fonts and ink wherever it renders.
   """
   attr :feature, :map, required: true
   attr :scope_label, :string, required: true
@@ -132,46 +234,47 @@ defmodule GtfsPlannerWeb.ComingSoon do
 
   def coming_soon(assigns) do
     ~H"""
-    <section
-      id="coming-soon"
-      aria-labelledby="coming-soon-title"
-      class="rounded-box border border-base-300 p-6 sm:p-8"
-    >
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1
-          :if={@heading_level == 1}
+    <section id="coming-soon" aria-labelledby="coming-soon-title" class="ds-page">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <.dynamic_tag
+          tag_name={"h#{@heading_level}"}
           id="coming-soon-title"
-          class="break-words text-2xl font-bold leading-8"
+          class="min-w-0 break-words font-display text-[28px] font-semibold leading-tight tracking-[-0.025em] text-strong"
         >
           {@feature.title}
-        </h1>
-        <h2
-          :if={@heading_level == 2}
-          id="coming-soon-title"
-          class="break-words text-xl font-semibold"
+        </.dynamic_tag>
+        <%!-- Text and icon, never colour alone. White with a hairline because the page
+        ground is the same grey as `bg-canvas`, which would erase the badge. --%>
+        <span
+          id="coming-soon-status"
+          class="inline-flex items-center gap-1.5 rounded-badge border border-subtle bg-white px-2 py-0.5 text-[13px] font-[650] text-muted"
         >
-          {@feature.title}
-        </h2>
-        <h3
-          :if={@heading_level == 3}
-          id="coming-soon-title"
-          class="break-words text-lg font-semibold"
-        >
-          {@feature.title}
-        </h3>
-        <.status_badge id="coming-soon-status" status={:coming_soon} label="Coming soon" />
+          <.icon name="hero-clock" class="size-4" /> Coming soon
+        </span>
       </div>
 
-      <p id="coming-soon-scope" class="mt-1 text-sm text-base-content/70">{@scope_label}</p>
+      <p id="coming-soon-summary" class="mt-3 max-w-[62ch] text-lg leading-snug text-default">
+        {@feature.summary}
+      </p>
 
-      <p class="mt-3 max-w-2xl text-sm text-base-content/70">{@feature.summary}</p>
+      <p class="mt-1 text-[13px] text-muted">
+        <.scope_line id="coming-soon-scope" icon="hero-square-3-stack-3d">
+          {@scope_label}
+        </.scope_line>
+      </p>
 
-      <p class="mt-6 text-sm font-semibold text-base-content">What it will include</p>
+      <.dynamic_tag
+        tag_name={"h#{@heading_level + 1}"}
+        id="coming-soon-outcomes-title"
+        class="mt-9 font-display text-[22px] font-semibold leading-tight tracking-[-0.025em] text-strong"
+      >
+        What you’ll be able to do
+      </.dynamic_tag>
 
-      <ul id="coming-soon-sections" class="mt-2 max-w-2xl space-y-3">
-        <li :for={section <- @feature.sections}>
-          <p class="text-sm font-medium text-base-content">{section.name}</p>
-          <p class="text-sm text-base-content/70">{section.text}</p>
+      <ul id="coming-soon-sections" class="mt-4 max-w-[46rem] border-t border-subtle">
+        <li :for={section <- @feature.sections} class="border-b border-subtle py-3.5">
+          <p class="font-[650] text-strong">{section.name}</p>
+          <p class="mt-1 text-default">{section.text}</p>
         </li>
       </ul>
     </section>
