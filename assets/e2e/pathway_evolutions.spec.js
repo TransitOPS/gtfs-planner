@@ -2,12 +2,17 @@
 // the station-merge closure-file disclosure (EV-20, step 16), the fingerprinted
 // delete confirmation (EV-31, step 20), the calendar reference refusals
 // (EV-24, step 22), the rejected-closure import recovery (EV-26, step 24), the
-// Pathways export omission notice (EV-27, step 25) and the moment access preview
-// at its own route (EV-28, step 26).
+// Pathways export omission notice (EV-27, step 25), the moment access preview
+// at its own route (EV-28, step 26) and the integrated authoring-to-round-trip
+// closure journey (EV-10, step 30).
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
-// with `BROWSER_E2E=true`. The `authoring` group exercises the ordinary station
+// The whole file is the EV-10 gate, so every group runs against the one
+// reset-and-seeded browser database the repository's Playwright configuration
+// already uses (`mise run prepare:browser`, workers: 1, retries: 0) with
+// `BROWSER_E2E=true`. Cases that write remove what they wrote through the
+// ordinary editor before they end, so groups stay runnable alone and the
+// whole-file run does not depend on case order. The `authoring` group exercises
+// the ordinary station
 // navigation into the real closure list, its states, its exact natural IDs and
 // its keyboard operation, and captures the rendered result at the two required
 // viewports. The `exchange` group reviews a station-merge upload that carries
@@ -19,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { bodyFitsViewport } from "./browser_helpers";
+import { bodyFitsViewport, readZipTextMember } from "./browser_helpers";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -245,6 +250,51 @@ async function unloadGuarded(page) {
     window.dispatchEvent(event);
     return event.defaultPrevented;
   });
+}
+
+// Step 30. The whole-file gate (EV-10) runs every group against one seeded
+// database, so a case that writes through the ordinary editor removes exactly
+// the rows it created before it ends. Later cases then see the seeded stations,
+// closures and counts again instead of depending on the order other cases ran
+// in. Deleting one loaded row is this group's own ordinary flow; the counts are
+// asserted by the caller.
+async function deleteClosureRow(page, row, expectedStart) {
+  await row.locator("button").first().click();
+  await expect(page.locator("#closure-editor-title")).toHaveText("Edit closure");
+
+  if (expectedStart) {
+    await expect(page.locator("#closure-start")).toHaveValue(expectedStart);
+  } else {
+    // The row loaded its own persisted window before the delete action.
+    await expect(page.locator("#closure-start")).toHaveValue(/^\d{1,2}:\d{2}$/);
+  }
+
+  await page.locator("#delete-closure").click();
+  await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+  await page.locator("#closure-delete-dialog-confirm").click();
+  await expect(page.locator("#closure-delete-dialog")).toBeHidden();
+  await expect(page.locator("#evolutions-status")).toContainText(
+    "Closure deleted.",
+  );
+}
+
+// Every authored closure on a station is removed through that same flow, so a
+// case that created rows can hand the station back in its seeded state.
+async function removeStationClosures(page, versionId, stopId, expectedCount) {
+  await page.goto(evolutionsPath(versionId, stopId));
+  await waitForLiveView(page);
+
+  for (let remaining = expectedCount; remaining > 0; remaining -= 1) {
+    await deleteClosureRow(
+      page,
+      page.locator("#closures-list tr[data-closure-id]").first(),
+    );
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(
+      remaining - 1,
+    );
+  }
+
+  await expect(page.locator("#closures-empty")).toBeVisible();
 }
 
 test.describe("authoring", () => {
@@ -643,8 +693,10 @@ test.describe("authoring", () => {
   // strings and lands focus on the first invalid field, a duplicate tuple links
   // to the closure this station already has, a stale row asks for an explicit
   // reload, and the overlap notice names the window it overlaps. The cases
-  // write only into the version's own empty station, so the seeded station the
-  // other groups read keeps its two closures.
+  // write only into the version's own empty station, and the create case
+  // deletes the rows it authored before it ends, so the seeded station the
+  // other groups read keeps its two closures and the empty station stays
+  // empty for every later group in the whole-file run.
   test.describe("the closure editor", () => {
     test.beforeEach(async ({ page }) => {
       await logIn(page);
@@ -719,6 +771,7 @@ test.describe("authoring", () => {
       // A second window on the same pathway and calendar names the one it
       // overlaps, in words and in service times.
       await page.locator("#new-closure").click();
+      await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
       await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
       await page.selectOption("#closure-calendar", "CAL_DAILY");
       await page.fill("#closure-start", "09:30");
@@ -761,6 +814,13 @@ test.describe("authoring", () => {
         path: capturePath(testInfo, "step-018-production-320.png"),
         fullPage: true,
       });
+
+      // The whole-file gate shares one seeded database, so the two closures
+      // this case authored are removed through the ordinary delete flow before
+      // it ends. Later groups then read the seeded empty station and the
+      // seeded CAL_DAILY usage again.
+      await page.setViewportSize(DESKTOP);
+      await removeStationClosures(page, versionId, EMPTY_STATION, 2);
     });
 
     test("a rejected save keeps the entered strings and focuses the first invalid field", async ({
@@ -815,6 +875,7 @@ test.describe("authoring", () => {
       await waitForLiveView(page);
 
       await page.locator("#new-closure").click();
+      await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
       await page.selectOption("#closure-pathway", PUNCTUATED_PATHWAY);
       await page.selectOption("#closure-calendar", "CAL_DAILY");
       await page.fill("#closure-start", "09:00");
@@ -896,6 +957,13 @@ test.describe("authoring", () => {
       await expect(page.locator("#closure-end")).toHaveValue("26:30");
       await expect(page.locator("#evolutions-status")).toContainText("Closure reloaded.");
       await expect(page.locator("#save-closure")).toBeEnabled();
+
+      // The whole-file gate shares one seeded database; restore the seeded
+      // overnight window this case deliberately moved so the timeline, preview
+      // and floorplan groups still read 22:00–26:00.
+      await page.fill("#closure-end", "26:00");
+      await page.locator("#save-closure").click();
+      await expect(page.locator("#evolutions-status")).toContainText("Closure saved.");
     });
 
     // Step 19 / EV-7. Unsaved input is never dropped silently: an in-app link,
@@ -1197,7 +1265,24 @@ test.describe("delete", () => {
     );
 
     await page.locator("#new-closure").click();
+    await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
     await expect(page.locator("#closure-calendar option[value='CAL_DAILY']")).toHaveCount(1);
+
+    // The whole-file gate shares one seeded database; this case removed the
+    // seeded lift closure, so it recreates the same supported row through the
+    // ordinary editor. Later groups (the station merge's unchanged-closures
+    // check, the calendars/preview/timeline/range/floorplan reads and the
+    // guards count) then see the seeded CAL_DAILY usage again.
+    await page.selectOption("#closure-pathway", PUNCTUATED_PATHWAY);
+    await page.selectOption("#closure-calendar", "CAL_DAILY");
+    await page.fill("#closure-start", "09:00");
+    await page.fill("#closure-end", "15:00");
+    await page.fill("#closure-note", "Quarterly inspection.");
+    await page.locator("#save-closure").click();
+    await expect(page.locator("#evolutions-status")).toContainText("Closure saved.");
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(
+      rowsBefore,
+    );
   });
 
   test("cancelling the delete keeps the closure and a dirty form's values", async ({
@@ -1316,6 +1401,12 @@ test.describe("delete", () => {
     await waitForLiveView(page);
     await stairs.locator("button").first().click();
     await expect(page.locator("#closure-end")).toHaveValue("28:00");
+
+    // The whole-file gate shares one seeded database; restore the seeded
+    // overnight window so every later group reads 22:00–26:00.
+    await page.fill("#closure-end", "26:00");
+    await page.locator("#save-closure").click();
+    await expect(page.locator("#evolutions-status")).toContainText("Closure saved.");
   });
 
   test.describe("reference capture", () => {
@@ -2592,6 +2683,7 @@ test.describe("guards", () => {
     await page.goto(evolutionsPath(versionId, EMPTY_STATION));
     await waitForLiveView(page);
     await page.locator("#new-closure").click();
+    await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
     await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
     await page.selectOption("#closure-calendar", "GUARD_ONLY");
     await page.fill("#closure-start", "06:00");
@@ -4449,5 +4541,294 @@ test.describe("floorplan", () => {
         fullPage: true,
       });
     });
+  });
+});
+
+// Step 30 / EV-10. The integrated journey this whole-file gate exists for: an
+// editor authors one closure through the keyboard, reloads it, sees the
+// step-free loss it causes while walking and the staircase stay available,
+// reopens the boundary at its end, checks the same service date as a one-day
+// range, meets the calendar reference refusal, round-trips the closure through
+// the real full export and the durable Import feed, and deletes the row it
+// authored. Every expected value is a literal from the seeded fixtures or from
+// the row this case created; the case removes that row before it ends, so it
+// runs alone (`--grep journey`) and leaves no order dependence behind.
+test.describe("journey", () => {
+  const AGENCY_TZ = "America/New_York";
+
+  async function agencyToday(page) {
+    return page.evaluate(
+      (timeZone) =>
+        new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date()),
+      AGENCY_TZ,
+    );
+  }
+
+  const connectionCell = (page, connection) =>
+    page
+      .locator(
+        '#findings-table tbody[data-platform-id="BROWSER_EVO_PLATFORM"] tr',
+        { hasText: "North entrance" },
+      )
+      .locator(`td[data-connection="${connection}"]`);
+
+  test.beforeEach(async ({ page }) => {
+    await logIn(page);
+  });
+
+  test("an editor creates, previews, exports, re-imports and deletes a closure", async ({
+    page,
+  }, testInfo) => {
+    // The export builds assets and the round-trip import publishes a version,
+    // so the integrated journey needs more than the default 30 seconds.
+    test.setTimeout(300_000);
+
+    const versionId = await seededVersionId(page);
+    const today = await agencyToday(page);
+
+    // --- Keyboard create: the list's primary action is a real button, the
+    // editor opens on its first field, and Enter on the focused save action
+    // commits the same way a click would. ---
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    const createAction = page.locator("#new-closure");
+    await createAction.focus();
+    await expect(createAction).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
+    await expect(page.locator("#closure-pathway")).toBeFocused();
+
+    await page.selectOption("#closure-pathway", PUNCTUATED_PATHWAY);
+    await page.selectOption("#closure-calendar", "CAL_DAILY");
+    await page.fill("#closure-start", "16:00");
+    await page.fill("#closure-end", "17:00");
+    await page.fill("#closure-note", "Journey check.");
+    await expect(page.locator("#closure-summary")).toContainText(
+      "closes 16:00–17:00 on each service day of Every day service",
+    );
+
+    await page.locator("#save-closure").focus();
+    await expect(page.locator("#save-closure")).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#evolutions-status")).toContainText("Closure saved.");
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(3);
+
+    // --- Reload: the authored row rebuilds identically, including its note. ---
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(3);
+
+    const authoredListRow = page
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: "16:00–17:00" });
+    await expect(authoredListRow).toHaveCount(1);
+    await authoredListRow.locator("button").first().click();
+    await expect(page.locator("#closure-note")).toHaveValue("Journey check.");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "step-030-journey-authoring-desktop.png"),
+      fullPage: true,
+    });
+
+    // --- Moment preview: the authored window loses the step-free connection
+    // while walking over the staircase stays available. ---
+    await page.goto(accessPath(versionId, STATION, `?date=${today}&time=16:30:00`));
+    await waitForLiveView(page);
+
+    await expect(page.locator("#preview-moment")).toContainText(
+      "16:30 service time",
+    );
+    await expect(page.locator("#preview-result-title")).toHaveText(
+      "No step-free route to or from Platform 1",
+    );
+    await expect(connectionCell(page, "step_free_to_platform")).toHaveAttribute(
+      "data-state",
+      "lost",
+    );
+    await expect(connectionCell(page, "walking_to_platform")).toHaveAttribute(
+      "data-state",
+      "available",
+    );
+    await expect(page.locator("#preview-result-body")).toContainText(
+      "Elevator BROWSER_EVO/PW LIFT 1 (Mezzanine hall ↔ Platform 1) is closed 16:00–17:00.",
+    );
+    await expect(page.locator("#preview-result-body")).toContainText(
+      "Walking connections to and from Platform 1 remain.",
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "step-030-journey-preview-desktop.png"),
+      fullPage: true,
+    });
+
+    await page.setViewportSize(MOBILE);
+    await page.goto(accessPath(versionId, STATION, `?date=${today}&time=16:30:00`));
+    await waitForLiveView(page);
+    await expect(page.locator("#preview-result-title")).toHaveText(
+      "No step-free route to or from Platform 1",
+    );
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-030-journey-preview-mobile.png"),
+      fullPage: true,
+    });
+
+    await page.setViewportSize(NARROW);
+    await page.goto(accessPath(versionId, STATION, `?date=${today}&time=16:30:00`));
+    await waitForLiveView(page);
+    await expect(page.locator("#preview-result")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-030-journey-preview-320.png"),
+      fullPage: true,
+    });
+
+    // --- Reopen the boundary the authored closure owns: 17:00 restores the
+    // step-free connection at exactly that instant. ---
+    await page.setViewportSize(DESKTOP);
+    await page.goto(accessPath(versionId, STATION, `?date=${today}&time=16:30:00`));
+    await waitForLiveView(page);
+
+    const authoredTimelineRow = page
+      .locator(`#timeline-rows > li[data-service-date="${today}"]`)
+      .filter({ hasText: "16:00–17:00" });
+    await expect(authoredTimelineRow).toHaveCount(1);
+    await expect(
+      authoredTimelineRow.locator('[data-boundary-phase="closes"]'),
+    ).toHaveAttribute("data-boundary-time", "57600");
+
+    await authoredTimelineRow.locator('[data-boundary-phase="reopens"]').click();
+    await page.waitForURL(
+      (url) =>
+        url.pathname ===
+          `/gtfs/${versionId}/stops/${STATION}/evolutions/access` &&
+        url.searchParams.get("date") === today &&
+        url.searchParams.get("time") === "17:00:00",
+    );
+    await expect(page.locator("#preview-result-title")).toHaveText(
+      "No connection lost at this time",
+    );
+    await expect(page.locator("#preview-moment")).toContainText(
+      "17:00 service time",
+    );
+
+    // --- One-day range: the same service date reports the seeded daytime
+    // window and the authored 16:00–17:00 window. ---
+    await page.fill("#range-first", today);
+    await page.fill("#range-last", today);
+    await page.locator("#check-range").click();
+
+    const rangePeriods = page.locator("#range-periods-table tbody");
+    await expect(rangePeriods).toContainText("BROWSER_EVO/PW LIFT 1");
+    await expect(rangePeriods).toContainText("09:00–15:00");
+    await expect(rangePeriods).toContainText("16:00–17:00");
+    await expect(page.locator("#range-no-loss")).toHaveCount(0);
+
+    // --- Protected reference: the calendar both windows use cannot be deleted
+    // while any closure references it. ---
+    await page.goto(calendarPath(versionId, "CAL_DAILY"));
+    await waitForLiveView(page);
+    await expect(page.locator("#calendar-usage-closures")).toContainText(
+      "scheduled closures use this calendar",
+    );
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+    await expect(page.locator("#calendar-delete-blocked")).toContainText(
+      "Calendar not deleted",
+    );
+    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+      "scheduled closures use this calendar",
+    );
+
+    // --- Full export round trip: the real durable export writes the supported
+    // row into pathway_evolutions.txt, and the same archive imports through
+    // the durable Import feed into a new version that carries it. ---
+    await page.goto(exportPath(versionId, "?type=full"));
+    await waitForLiveView(page);
+    await expect(
+      page
+        .locator("#export-inventory tbody tr")
+        .filter({ hasText: "pathway_evolutions.txt" }),
+    ).toHaveCount(1);
+
+    // An earlier case's ready export can already render this link, so the
+    // journey waits for its own run's href and ready status before downloading
+    // the archive this moment wrote.
+    const previousDownloadHref = (await page.locator("#export-download-link").count())
+      ? await page.locator("#export-download-link").getAttribute("href")
+      : null;
+
+    await page.locator("#start-export").click();
+    await expect
+      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
+        timeout: 60_000,
+      })
+      .not.toBe(previousDownloadHref);
+    await expect(page.locator("#export-run-status")).toContainText(
+      "Ready to download",
+    );
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#export-download-link").click();
+    const download = await downloadPromise;
+    const zip = fs.readFileSync(await download.path());
+
+    expect(download.suggestedFilename()).toMatch(/\.zip$/);
+
+    const closureCsv = readZipTextMember(zip, "pathway_evolutions.txt");
+    expect(closureCsv).toContain(
+      "pathway_id,service_id,start_time,end_time,is_closed",
+    );
+    expect(closureCsv).toContain(
+      "BROWSER_EVO/PW LIFT 1,CAL_DAILY,16:00:00,17:00:00,1,",
+    );
+
+    const importName = `Browser journey import ${Date.now()}`;
+    await page.goto(`/gtfs/${versionId}/import`);
+    await waitForLiveView(page);
+    await page.fill("#gtfs-import-version-name", importName);
+    await stageImportFiles(page, [
+      { name: `${importName}.zip`, mimeType: "application/zip", buffer: zip },
+    ]);
+    await page.locator("#gtfs-import-submit").click();
+
+    await expect(page.locator("#gtfs-import-result")).toContainText(
+      "Import successful",
+      { timeout: 120_000 },
+    );
+
+    const importedHref = await page
+      .locator("#gtfs-import-view-version")
+      .getAttribute("href");
+    expect(importedHref).toMatch(/^\/gtfs\/[0-9a-f-]+\/routes$/);
+    const importedVersionId = importedHref.split("/")[2];
+
+    await page.goto(
+      `/gtfs/${importedVersionId}/stops/${STATION}/evolutions?pathway=${encodeURIComponent(PUNCTUATED_PATHWAY)}`,
+    );
+    await waitForLiveView(page);
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(2);
+    await expect(page.locator("#closures-list")).toContainText("09:00–15:00");
+    await expect(page.locator("#closures-list")).toContainText("16:00–17:00");
+
+    // --- Delete the row this journey authored, through its own confirmation,
+    // so the seeded station is what every later reader sees. ---
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    await deleteClosureRow(
+      page,
+      page
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: "16:00–17:00" }),
+      "16:00",
+    );
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(2);
+    await expect(page.locator("#closures-list")).toContainText("09:00–15:00");
+    await expect(page.locator("#closures-list")).toContainText("22:00–26:00");
   });
 });
