@@ -64,13 +64,6 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
 
       assert Enum.all?(Calendars.tools(), &(&1.parameters["additionalProperties"] == false))
     end
-
-    test "answers prepare_date_change with a bounded error until the prepare step", context do
-      args = Jason.encode!(%{"dates" => ["2026-10-14"], "stop" => ["WD"], "run" => []})
-
-      assert Dispatch.call(Calendars, context.scope, "prepare_date_change", args) ==
-               {:tool_error, "Not available yet."}
-    end
   end
 
   describe "list_calendars" do
