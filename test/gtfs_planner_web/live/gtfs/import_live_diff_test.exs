@@ -661,7 +661,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     submit_diff(view, "station-update.zip", archive)
     await_change_task(view)
 
-    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+    assert has_element?(view, "#diff-decisions [data-review-row]")
 
     assert has_element?(
              view,
@@ -699,19 +699,219 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     submit_diff(view, "levels.txt", "level_id,level_index,level_name\nPLAIN,1.0,Plain")
     await_change_task(view)
 
-    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+    assert has_element?(view, "#diff-decisions [data-review-row]")
     refute has_element?(view, "#diff-evolutions-ignored")
   end
 
-  test "the new-version scope sentence applies only to Import feed", %{view: view} do
-    assert has_element?(view, "#gtfs-import-section", "new version")
-    refute has_element?(view, "#station-data-section", "new version")
+  test "station changes name the version they edit, not a new one", %{view: view} do
+    assert has_element?(view, "#diff-destination", "Approved changes go into")
+    refute has_element?(view, "#diff-destination", "new version")
+  end
+
+  test "a partial apply keeps the failed closure-backed removal alongside its applied sibling",
+       %{
+         conn: conn,
+         view: view,
+         organization: organization,
+         version: version
+       } do
+    station =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "MERGE_STATION",
+        stop_name: "Merge Review Station",
+        location_type: 1
+      })
+
+    entrance =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "MERGE_ENTRANCE",
+        stop_name: "North entrance",
+        location_type: 2,
+        level_id: "L_MERGE",
+        parent_station: station.stop_id
+      })
+
+    platform =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "MERGE_PLATFORM",
+        stop_name: "Platform 1",
+        location_type: 0,
+        level_id: "L_MERGE",
+        parent_station: station.stop_id
+      })
+
+    blocked =
+      pathway_fixture(organization.id, version.id, entrance.stop_id, platform.stop_id, %{
+        pathway_id: "PW/MERGE BLOCKED",
+        pathway_mode: 5,
+        is_bidirectional: true,
+        traversal_time: 45,
+        length: Decimal.new("12.5")
+      })
+
+    pathway_fixture(organization.id, version.id, entrance.stop_id, platform.stop_id, %{
+      pathway_id: "PW_MERGE_KEPT",
+      pathway_mode: 1,
+      is_bidirectional: true,
+      traversal_time: 60
+    })
+
+    closure =
+      pathway_evolution_fixture(organization.id, version.id, %{
+        pathway_id: blocked.pathway_id,
+        start_time: 32_400,
+        end_time: 54_000
+      })
+
+    archive =
+      zip!([
+        {~c"pathways.txt",
+         "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional,traversal_time\n" <>
+           "PW_MERGE_KEPT,MERGE_ENTRANCE,MERGE_PLATFORM,1,1,60\n" <>
+           "PW_MERGE_ADDED,MERGE_ENTRANCE,MERGE_PLATFORM,1,1,60"},
+        {~c"pathway_evolutions.txt",
+         "pathway_id,service_id,start_time,end_time,is_closed\n" <>
+           "#{blocked.pathway_id},#{closure.service_id},06:00:00,07:00:00,1"}
+      ])
+
+    submit_diff(view, "merge-update.zip", archive)
+    await_change_task(view)
+
+    assert has_element?(view, "#diff-decisions [data-review-row][data-action='remove']")
+    assert has_element?(view, "#diff-decisions [data-review-row][data-action='add']")
+    refute has_element?(view, "#diff-decisions [data-review-row][data-action='modify']")
+
+    render_click(view, "approve-all", %{"action" => "remove"})
+    render_click(view, "approve-all", %{"action" => "add"})
+    view |> element("#diff-apply-btn") |> render_click()
+    await_change_task(view)
+
+    run = ChangeRuns.latest_for_version(organization.id, version.id)
+
+    assert has_element?(view, "#diff-run-state[data-state='partial']")
+    assert has_element?(view, "#diff-count-applied", "1")
+    assert has_element?(view, "#diff-count-failed", "1")
+    assert has_element?(view, "#diff-count-unapplied", "0")
+
+    failed = "#diff-failed-decisions li[data-decision-id='pathway:PW/MERGE BLOCKED']"
+
+    assert has_element?(view, failed, "Not removed: this pathway has scheduled closures.")
+
+    href = "/gtfs/#{version.id}/stops/MERGE_STATION/evolutions?pathway=PW%2FMERGE+BLOCKED"
 
     assert has_element?(
              view,
-             "#diff-destination",
-             "Reviewed changes apply to version"
+             "#{failed} a[data-role='version-diff-evolutions-link']" <>
+               "[data-pathway-id='PW/MERGE BLOCKED'][data-station-stop-id='MERGE_STATION']" <>
+               "[href='#{href}']",
+             "Open closures · Merge Review Station"
            )
+
+    # The stopped run keeps the reason and the retry path, and drops the approval
+    # controls the review step owned.
+    refute has_element?(view, "button[phx-click='approve-decision']")
+    refute has_element?(view, "button[phx-click='reject-decision']")
+    assert has_element?(view, "#diff-retry-btn")
+
+    assert has_element?(
+             view,
+             "#diff-retry-hint",
+             "After the closures are deleted, Retry applies the failed removal again."
+           )
+
+    # Step 16's omission notice is durable review state, so the apply keeps it.
+    assert has_element?(
+             view,
+             "#diff-evolutions-ignored",
+             "pathway_evolutions.txt is not applied by station merge. Existing scheduled closures are unchanged."
+           )
+
+    assert %{status: :failed, apply_failure_code: "pathway_in_use"} =
+             decision(run, "pathway:PW/MERGE BLOCKED")
+
+    applied = decision(run, "pathway:PW_MERGE_ADDED")
+    assert %{status: :applied} = applied
+
+    # The protected removal changed nothing: the pathway and its closure remain.
+    assert Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "PW/MERGE BLOCKED")
+
+    assert [%{start_time: 32_400, end_time: 54_000}] =
+             evolutions_in_version(organization.id, version.id)
+
+    # A reconnect rebuilds the same terminal rows and the same encoded link.
+    {:ok, reconnected, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(reconnected, "#diff-run-state[data-state='partial']")
+    assert has_element?(reconnected, failed, "Not removed: this pathway has scheduled closures.")
+    assert has_element?(reconnected, "#{failed} a[href='#{href}']")
+
+    # Once the closure is gone, Retry applies only the still-failed removal: the
+    # applied sibling keeps its applied timestamp and is not re-applied.
+    Repo.delete!(closure)
+    reconnected |> element("#diff-retry-btn") |> render_click()
+    await_change_task(reconnected)
+
+    assert has_element?(reconnected, "#diff-done")
+    assert has_element?(reconnected, "#diff-count-applied", "2")
+    assert has_element?(reconnected, "#diff-count-failed", "0")
+    refute has_element?(reconnected, "#diff-failed-decisions")
+    refute has_element?(reconnected, "#diff-retry-btn")
+
+    refute Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "PW/MERGE BLOCKED")
+    assert Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "PW_MERGE_ADDED")
+    assert decision(run, "pathway:PW_MERGE_ADDED").applied_at == applied.applied_at
+  end
+
+  test "a failed removal without a station ancestor keeps the explanation and invents no link", %{
+    view: view,
+    organization: organization,
+    version: version
+  } do
+    from_stop = stop_fixture(organization.id, version.id, %{stop_id: "LOOSE_FROM"})
+    to_stop = stop_fixture(organization.id, version.id, %{stop_id: "LOOSE_TO"})
+
+    blocked =
+      pathway_fixture(organization.id, version.id, from_stop.stop_id, to_stop.stop_id, %{
+        pathway_id: "PW_LOOSE",
+        traversal_time: 60
+      })
+
+    pathway_evolution_fixture(organization.id, version.id, %{
+      pathway_id: blocked.pathway_id,
+      start_time: 32_400,
+      end_time: 54_000
+    })
+
+    submit_diff(
+      view,
+      "pathways.txt",
+      "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional,traversal_time\n" <>
+        "PW_LOOSE_ADDED,LOOSE_FROM,LOOSE_TO,1,1,60"
+    )
+
+    await_change_task(view)
+
+    render_click(view, "approve-all", %{"action" => "remove"})
+    render_click(view, "approve-all", %{"action" => "add"})
+    view |> element("#diff-apply-btn") |> render_click()
+    await_change_task(view)
+
+    assert has_element?(view, "#diff-run-state[data-state='partial']")
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='pathway:PW_LOOSE']",
+             "Not removed: this pathway has scheduled closures."
+           )
+
+    refute has_element?(view, "#diff-failed-decisions a[data-role='version-diff-evolutions-link']")
+  end
+
+  defp decision(run, decision_id) do
+    Enum.find(
+      ChangeRuns.list_decisions(run.organization_id, run.id),
+      &(&1.decision_id == decision_id)
+    )
   end
 
   defp evolutions_in_version(organization_id, version_id) do

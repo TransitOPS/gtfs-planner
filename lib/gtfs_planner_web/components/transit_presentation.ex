@@ -96,7 +96,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   attr :natural_key, :string, required: true
 
   attr :status, :atom,
-    values: [:pending, :approved, :rejected, :preview, :applied, :failed],
+    values: [:pending, :approved, :rejected, :preview, :applied, :failed, :stale],
     default: :pending
 
   attr :summary, :string, default: nil
@@ -104,9 +104,11 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   attr :dependency_keys, :list, default: []
   attr :edited?, :boolean, default: false
   attr :expanded?, :boolean, default: false
+  attr :failure_code, :string, default: nil
   attr :class, :any, default: nil
   slot :note, doc: "Display-ready lines shown under the record key."
   slot :actions
+  slot :links, doc: "row-level links rendered with the summary, such as Open Evolutions"
 
   def version_diff_row(assigns) do
     {action_label, action_icon, action_tone} = version_diff_action(assigns.action)
@@ -133,10 +135,15 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
       data-role="version-diff-row"
       data-action={@action}
       data-status={@status}
+      data-apply-failure-code={@failure_code}
       data-expanded={to_string(@expanded?)}
       data-edited={to_string(@edited?)}
       aria-labelledby={"#{@id}-title"}
-      class={["@container border-b border-base-300 py-4 text-sm last:border-b-0", @class]}
+      class={[
+        "@container border-b border-base-300 py-4 text-sm last:border-b-0",
+        @status == :failed && "bg-error/5",
+        @class
+      ]}
     >
       <div class="grid gap-3 @2xl:grid-cols-[minmax(8rem,0.8fr)_minmax(0,2fr)_auto] @2xl:items-start @2xl:gap-4">
         <div data-role="version-diff-action" class="flex items-center gap-2 font-medium">
@@ -161,9 +168,23 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
           >
             {@natural_key}
           </p>
-          <p :if={@summary} data-role="version-diff-summary" class="mt-1 text-base-content/70">
+          <p
+            :if={@summary}
+            data-role="version-diff-summary"
+            class={[
+              "mt-1",
+              if(@status == :failed, do: "text-base-content", else: "text-base-content/70")
+            ]}
+          >
             {@summary}
           </p>
+          <div
+            :if={@links != []}
+            data-role="version-diff-links"
+            class="mt-1 flex min-h-11 flex-col items-start gap-1"
+          >
+            {render_slot(@links)}
+          </div>
           <p
             :if={@dependency_keys != []}
             data-role="version-diff-dependencies"
@@ -309,6 +330,9 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   defp version_diff_status(:preview), do: {"Preview only", "hero-eye", "text-info"}
   defp version_diff_status(:applied), do: {"Applied", "hero-check-circle", "text-success"}
   defp version_diff_status(:failed), do: {"Failed", "hero-exclamation-circle", "text-error"}
+
+  defp version_diff_status(:stale),
+    do: {"Stale", "hero-exclamation-triangle", "text-warning"}
 
   defp visible_action_label(:modify), do: "Modified"
   defp visible_action_label(action), do: elem(version_diff_action(action), 0)

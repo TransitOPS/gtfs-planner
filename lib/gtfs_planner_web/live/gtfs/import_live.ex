@@ -160,6 +160,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:apply_results, [])
      |> assign(:decisions_by_id, %{})
      |> assign(:decision_dependents, %{})
+     |> assign(:evolution_targets, %{})
      |> stream(:diff_decisions, [])
      |> stream(:diff_preview_decisions, [])
      |> stream(:import_recovery_runs, recoverable_runs,
@@ -511,6 +512,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> assign(:diff_preview_count, 0)
     |> assign(:apply_results, [])
     |> assign(:decisions_by_id, %{})
+    |> assign(:evolution_targets, %{})
     |> stream(:diff_decisions, [], reset: true)
     |> stream(:diff_preview_decisions, [], reset: true)
   end
@@ -858,6 +860,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         applicable = Enum.reject(decisions, &(&1.status == :preview))
         previews = Enum.filter(decisions, &(&1.status == :preview))
         filtered = filter_decisions(applicable, socket.assigns.diff_filter)
+        evolution_targets = pathway_in_use_targets(organization_id, run, applicable)
 
         socket
         |> assign(:change_run, run)
@@ -868,6 +871,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         |> assign(:diff_preview_count, length(previews))
         |> assign(:decisions_by_id, Map.new(applicable, &{&1.decision_id, &1}))
         |> assign(:decision_dependents, decision_dependents(run, filtered))
+        |> assign(:evolution_targets, evolution_targets)
         |> stream(:diff_decisions, filtered, reset: true)
         |> stream(:diff_preview_decisions, previews, reset: true)
 
@@ -982,6 +986,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     do: Map.get(summary, "ignored_evolution_files", 0) || 0
 
   defp ignored_evolution_files(_run), do: 0
+
+  # The omission disclosure is durable run state, so the review, a stopped run
+  # and the finished result all render it from the same summary.
+  defp ignored_closures_notice(assigns) do
+    ~H"""
+    <.message id="diff-evolutions-ignored" kind="info" title="Closures in this upload stay as they are">
+      <code class="font-mono text-[13px]">pathway_evolutions.txt</code>
+      is not applied by station merge. Existing scheduled closures are unchanged.
+    </.message>
+    """
+  end
 
   defp run_blockers(%ChangeRun{state: :review}), do: []
   defp run_blockers(%ChangeRun{state: :failed, failure_code: code}), do: [%{reason: code}]
@@ -1134,6 +1149,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               decisions_stream={@streams.diff_decisions}
               previews_stream={@streams.diff_preview_decisions}
               version={@current_gtfs_version}
+              evolution_targets={@evolution_targets}
             />
 
             <section
@@ -1562,6 +1578,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   # Names the decisions a partial run could not apply. The list is capped so a
   # feed-wide failure stays readable.
   attr :decisions, :list, required: true
+  attr :targets, :map, default: %{}, doc: "owning stations of pathways that closures protect"
+  attr :version_id, :any, default: nil
 
   defp failed_decisions_list(assigns) do
     assigns =
@@ -1580,6 +1598,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           <span class="capitalize">{decision.entity_type}</span> {decision.natural_key}
         </span>
         · {decision.action} · {decision_failure_reason(decision)}
+        <.link
+          :for={target <- Map.get(@targets, decision.decision_id, [])}
+          data-role="version-diff-evolutions-link"
+          data-pathway-id={decision.natural_key}
+          data-station-stop-id={target.stop_id}
+          navigate={evolutions_href(@version_id, target.stop_id, decision.natural_key)}
+          class="ml-1 inline-flex min-h-11 items-center gap-1 font-semibold text-action hover:underline"
+        >
+          Open closures · {target.stop_name}
+          <.icon name="hero-arrow-right" class="size-4 shrink-0" />
+        </.link>
       </li>
       <li :if={@hidden_count > 0} id="diff-failed-decisions-more">and {@hidden_count} more</li>
     </ul>
@@ -1854,6 +1883,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   attr :decisions_stream, :any, required: true
   attr :previews_stream, :any, required: true
   attr :version, :any, required: true
+  attr :evolution_targets, :map, default: %{}
 
   defp station_panel(%{step: :review} = assigns) do
     approved = approved_decisions(assigns.decisions)
@@ -1914,15 +1944,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         </.message>
       </div>
 
-      <div
-        :if={ignored_evolution_files(@run) > 0}
-        id="diff-evolutions-ignored"
-        class="border-b border-subtle px-5 py-4"
-      >
-        <.message kind="info" title="Closures in this upload stay as they are">
-          <code class="font-mono text-[13px]">pathway_evolutions.txt</code>
-          is not applied by station merge. Existing scheduled closures are unchanged.
-        </.message>
+      <div :if={ignored_evolution_files(@run) > 0} class="border-b border-subtle px-5 py-4">
+        <.ignored_closures_notice />
       </div>
 
       <div class="border-b border-subtle px-5 py-5">
@@ -2127,6 +2150,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       <div class="grid grid-cols-1 gap-5 px-5 py-5" role="status">
         <p class="m-0 text-sm text-default">{@body}</p>
 
+        <.ignored_closures_notice :if={ignored_evolution_files(@run) > 0} />
+
         <.figures
           :if={@counts?}
           id="diff-run-counts"
@@ -2145,6 +2170,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         <.failed_decisions_list
           :if={@state in [:partial, :failed, :interrupted]}
           decisions={failed_decisions(@decisions)}
+          targets={@evolution_targets}
+          version_id={@version.id}
         />
 
         <.message :if={@blockers != []} id="diff-blockers" kind="error" title="What stopped it">
@@ -2172,6 +2199,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             {@start_over_label}
           </.button>
         </div>
+        <p
+          :if={pathway_in_use?(@decisions)}
+          id="diff-retry-hint"
+          class="m-0 text-[13px] text-muted"
+        >
+          After the closures are deleted, Retry applies the failed removal again.
+        </p>
         <p class="m-0 text-[13px] text-muted">
           This review is saved. You can leave this page and retry later.
         </p>
@@ -2225,7 +2259,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           Open stops &amp; stations
         </.button>
       </div>
-      <div class="px-5 py-5">
+      <div class="grid gap-5 px-5 py-5">
+        <.ignored_closures_notice :if={ignored_evolution_files(@run) > 0} />
         <.figures
           id="diff-run-counts"
           class="max-w-xl grid-cols-3"
@@ -2590,6 +2625,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> Enum.sort_by(& &1.decision_id)
   end
 
+  defp decision_failure_reason(%{apply_failure_code: "pathway_in_use"}),
+    do: "Not removed: this pathway has scheduled closures."
+
   defp decision_failure_reason(%{apply_failure_code: "drifted"}),
     do: "Changed since the review was computed"
 
@@ -2603,6 +2641,56 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     do: "Still used by trips, transfers, pathways or other records in this version"
 
   defp decision_failure_reason(_decision), do: "Could not be applied"
+
+  # The failure row links to the station that owns the pathway. Stations come
+  # from the same scoped endpoint-ancestry rule the closure usage links use, so a
+  # pathway without a station ancestor keeps the explanation as text rather than
+  # an invented owner. A run from before the closures existed has no failed rows.
+  defp pathway_in_use_targets(organization_id, %ChangeRun{} = run, decisions) do
+    failed =
+      Enum.filter(decisions, fn decision ->
+        decision.entity_type == :pathway and decision.apply_failure_code == "pathway_in_use"
+      end)
+
+    case failed do
+      [] ->
+        %{}
+
+      failed ->
+        stations =
+          Gtfs.pathway_station_ids(
+            organization_id,
+            run.gtfs_version_id,
+            Enum.map(failed, & &1.natural_key)
+          )
+
+        Map.new(failed, fn decision ->
+          {decision.decision_id,
+           named_stations(
+             organization_id,
+             run.gtfs_version_id,
+             Map.get(stations, decision.natural_key, [])
+           )}
+        end)
+    end
+  end
+
+  defp named_stations(_organization_id, _version_id, []), do: []
+
+  defp named_stations(organization_id, version_id, stop_ids) do
+    stop_ids
+    |> Enum.map(&Gtfs.get_stop_by_stop_id(organization_id, version_id, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&%{stop_id: &1.stop_id, stop_name: &1.stop_name})
+  end
+
+  defp evolutions_href(version_id, station_stop_id, pathway_id) do
+    ~p"/gtfs/#{version_id}/stops/#{station_stop_id}/evolutions?#{%{"pathway" => pathway_id}}"
+  end
+
+  defp pathway_in_use?(decisions_by_id) do
+    decisions_by_id |> Map.values() |> Enum.any?(&(&1.apply_failure_code == "pathway_in_use"))
+  end
 
   defp dependents_note(dependents, decision) do
     case Map.fetch(dependents, {decision.entity_type, decision.natural_key}) do
