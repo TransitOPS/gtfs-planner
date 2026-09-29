@@ -1072,10 +1072,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       today = postgres_local_today("Etc/UTC")
 
+      # The readable identity has to serve the date selected at the bottom of this
+      # test, and `next_monday/1` can land up to thirteen days out, so its range is
+      # anchored to that Monday rather than to today.
+      monday = next_monday(today)
+
       calendar_fixture(organization.id, version.id, %{
         service_id: "DETAIL_OK",
-        start_date: Date.add(today, -10),
-        end_date: Date.add(today, 10)
+        start_date: Date.add(monday, -10),
+        end_date: Date.add(monday, 10)
       })
 
       calendar_attribute_fixture(organization.id, version.id, %{
@@ -1127,7 +1132,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
 
       view
       |> form("#calendar-date-change-form",
-        date_change: %{mode: "single", date: Date.to_iso8601(next_monday(today))}
+        date_change: %{mode: "single", date: Date.to_iso8601(monday)}
       )
       |> render_change()
 
