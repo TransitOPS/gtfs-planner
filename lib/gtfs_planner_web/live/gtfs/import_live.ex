@@ -40,6 +40,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     "conflict" => :conflict
   }
 
+  @max_failed_decisions 50
+
   @diff_actions %{
     "add" => :add,
     "modify" => :modify,
@@ -422,6 +424,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   def handle_event("retry-diff-run", _params, socket), do: {:noreply, retry_change_run(socket)}
 
   @impl true
+  def handle_event("start-over-diff", _params, socket) do
+    with %ChangeRun{} = run <- socket.assigns[:change_run],
+         {:ok, _started_over} <-
+           ChangeRuns.start_over(socket.assigns.current_organization.id, run.id) do
+      handle_event("reset-diff", %{}, socket)
+    else
+      _ -> {:noreply, refresh_change_review(socket)}
+    end
+  end
+
+  @impl true
   def handle_event("reset-diff", _params, socket) do
     socket =
       Enum.reduce(socket.assigns.uploads.diff_files.entries, socket, fn entry, acc ->
@@ -452,8 +465,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     {:noreply, socket}
   end
 
+  # A page that reset or started over no longer shows the run, so its later changes
+  # must not bring the run back.
   @impl true
-  def handle_info({:change_run_changed, run_id}, socket) do
+  def handle_info(
+        {:change_run_changed, run_id},
+        %{assigns: %{change_run: %ChangeRun{id: run_id}}} = socket
+      ) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
@@ -469,6 +487,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     {:noreply, socket}
   end
+
+  def handle_info({:change_run_changed, _run_id}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_info({:import_run_changed, run_id}, socket) do
@@ -1232,6 +1252,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   0
                 )} · Unapplied {Map.get(@change_run.summary, "unapplied", 0)}
               </p>
+              <p
+                :if={@change_run.state == :partial}
+                id="diff-partial-note"
+                class="mt-1 text-sm text-base-content/70"
+              >
+                Applied changes stay in this version. Start over to review the remaining differences against the current data.
+              </p>
+              <.failed_decisions_list
+                :if={@change_run.state in [:partial, :failed, :interrupted]}
+                decisions={failed_decisions(@decisions_by_id)}
+              />
               <p class="mt-1 text-sm text-base-content/70">
                 This review is durable. You can safely reconnect while it runs.
               </p>
@@ -1244,15 +1275,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               >
                 Cancel review
               </button>
-              <button
+              <div
                 :if={@change_run.state in [:partial, :failed, :interrupted, :cancelled, :expired]}
-                id="diff-retry-btn"
-                type="button"
-                class="btn btn-primary btn-sm mt-3 min-h-11"
-                phx-click="retry-diff-run"
+                class="mt-3 flex flex-wrap gap-2"
               >
-                Retry
-              </button>
+                <button
+                  id="diff-retry-btn"
+                  type="button"
+                  class="btn btn-primary btn-sm min-h-11"
+                  phx-click="retry-diff-run"
+                >
+                  Retry
+                </button>
+                <button
+                  id="diff-start-over-btn"
+                  type="button"
+                  class="btn btn-outline btn-sm min-h-11"
+                  phx-click="start-over-diff"
+                >
+                  Start over
+                </button>
+              </div>
             </div>
           <% end %>
 
@@ -1425,6 +1468,33 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </div>
       <div class="p-6">{render_slot(@inner_block)}</div>
     </section>
+    """
+  end
+
+  # Names the decisions a partial run could not apply. The list is capped so a
+  # feed-wide failure stays readable.
+  attr :decisions, :list, required: true
+
+  defp failed_decisions_list(assigns) do
+    assigns =
+      assigns
+      |> assign(:shown, Enum.take(assigns.decisions, @max_failed_decisions))
+      |> assign(:hidden_count, max(length(assigns.decisions) - @max_failed_decisions, 0))
+
+    ~H"""
+    <ul
+      :if={@decisions != []}
+      id="diff-failed-decisions"
+      class="mt-2 space-y-1 text-sm text-base-content/80"
+    >
+      <li :for={decision <- @shown} data-decision-id={decision.decision_id}>
+        <span class="font-medium">
+          <span class="capitalize">{decision.entity_type}</span> {decision.natural_key}
+        </span>
+        · {decision.action} · {decision_failure_reason(decision.apply_failure_code)}
+      </li>
+      <li :if={@hidden_count > 0} id="diff-failed-decisions-more">and {@hidden_count} more</li>
+    </ul>
     """
   end
 
@@ -1829,6 +1899,20 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> Enum.map(fn action -> {action, Map.get(summary, action, 0)} end)
     |> Enum.reject(fn {_action, count} -> count == 0 end)
   end
+
+  defp failed_decisions(decisions_by_id) do
+    decisions_by_id
+    |> Map.values()
+    |> Enum.filter(&(&1.status in [:failed, :stale]))
+    |> Enum.sort_by(& &1.decision_id)
+  end
+
+  defp decision_failure_reason("drifted"), do: "Changed since the review was computed"
+
+  defp decision_failure_reason("dependencies_unmet"),
+    do: "Depends on a change that was not applied"
+
+  defp decision_failure_reason(_code), do: "Could not be applied"
 
   defp approved_decision_count(decisions_by_id) do
     decisions_by_id

@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   @terminal_states [:partial, :completed, :failed, :interrupted, :cancelled, :expired]
   @decision_statuses [:pending, :approved, :rejected, :preview, :applied, :failed, :stale]
   @decision_actions [:add, :modify, :remove, :conflict]
+  @started_over_code "started_over"
 
   @spec create_pending_compute(Ecto.UUID.t(), Ecto.UUID.t(), actor(), [staged_file()]) ::
           {:ok, ChangeRun.t()} | {:error, term()}
@@ -738,6 +739,43 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     }
   end
 
+  @doc """
+  Retires a run that ended without completing so the version can review a new upload.
+
+  The run becomes `:cancelled` with a marker that `latest_for_version/2` reads as "no run",
+  so the page stays on the upload step after a reload. Decisions the run already applied
+  stay applied; only its remaining review state is abandoned.
+  """
+  @spec start_over(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
+  def start_over(organization_id, run_id) do
+    case transaction_with_broadcast(fn -> start_over_locked_run(organization_id, run_id) end) do
+      {:ok, run} = result ->
+        _ = ChangeArtifactStorage.remove(organization_id, run.gtfs_version_id, run.id)
+        result
+
+      error ->
+        error
+    end
+  end
+
+  defp start_over_locked_run(organization_id, run_id) do
+    case lock_run(organization_id, run_id) do
+      nil ->
+        {{:error, :not_found}, []}
+
+      %ChangeRun{state: state} = run when state in @terminal_states and state != :completed ->
+        attrs = %{state: :cancelled, phase: :cleanup, failure_code: @started_over_code}
+
+        case Repo.update(ChangeRun.system_changeset(run, attrs)) do
+          {:ok, started_over} -> {{:ok, started_over}, [run.id]}
+          {:error, changeset} -> {{:error, changeset}, []}
+        end
+
+      _run ->
+        {{:error, :invalid_transition}, []}
+    end
+  end
+
   @spec get_for_version(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: ChangeRun.t() | nil
   def get_for_version(organization_id, gtfs_version_id, run_id) do
     from(r in ChangeRun,
@@ -748,7 +786,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     |> Repo.one()
   end
 
-  @doc "Returns the most recent durable review for one immutable route-version scope."
+  @doc """
+  Returns the most recent durable review for one immutable route-version scope,
+  or nil when that run was started over.
+  """
   @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t()) :: ChangeRun.t() | nil
   def latest_for_version(organization_id, gtfs_version_id) do
     from(r in ChangeRun,
@@ -757,6 +798,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       limit: 1
     )
     |> Repo.one()
+    |> case do
+      %ChangeRun{failure_code: @started_over_code} -> nil
+      run -> run
+    end
   end
 
   @spec list_decisions(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: [ChangeDecision.t()]
