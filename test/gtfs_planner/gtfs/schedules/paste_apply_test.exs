@@ -10,6 +10,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
@@ -210,6 +212,341 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
     end
   end
 
+  describe "apply_paste/5 changes" do
+    test "a retimed 07:00 trip keeps its trip_id, transfers and wheelchair_accessible, with timepoint 0 at estimated stops",
+         context do
+      scope = apply_case!(context)
+
+      was_updated_at =
+        Repo.get_by!(Trip, trip_id: scope.trips.second) |> Map.fetch!(:updated_at)
+
+      Repo.get_by!(Trip, trip_id: scope.trips.second)
+      |> Ecto.Changeset.change(%{wheelchair_accessible: 1})
+      |> Repo.update!()
+
+      # Endpoints pasted; Market Street is estimated from the Standard template.
+      # Both rows change: the estimated middle carries timepoint 0, so neither
+      # vector reuses Standard (R9/R10) and each row mints its own timing.
+      input = replace_input("Central Station\tHospital\n06:00\t06:10\n07:00\t07:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 2
+      assert review.plan.counts.remove == 0
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.added == 0
+      assert summary.changed == 2
+      assert summary.removed == 0
+      assert summary.transfers_removed == 0
+      assert summary.new_timings == ["Pasted Sep 28 · A", "Pasted Sep 28 · B"]
+
+      assert Enum.sort(summary.trip_ids) ==
+               Enum.sort([scope.trips.first, scope.trips.second])
+
+      first_id = Repo.get_by!(Trip, trip_id: scope.trips.first).id
+      second_id = Repo.get_by!(Trip, trip_id: scope.trips.second).id
+
+      trip = Repo.get_by!(Trip, trip_id: scope.trips.second)
+      assert trip.trip_id == scope.trips.second
+      assert trip.wheelchair_accessible == 1
+      assert trip.direction_id == 0
+      assert trip.route_pattern_id == "MAIN"
+      assert trip.pattern_derivation_state == "linked"
+      assert trip.pattern_derivation_reason == nil
+      assert trip.trip_short_name == nil
+      assert trip.block_id == nil
+      assert trip.trip_headsign == nil
+      assert trip.updated_at != was_updated_at
+
+      timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · B")
+      assert trip.timed_pattern_id == timing.id
+
+      first_timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
+
+      assert Repo.get_by!(Trip, trip_id: scope.trips.first).timed_pattern_id ==
+               first_timing.id
+
+      assert ordered_stop_times(context, scope.trips.second) == [
+               {"07:00:00", "07:00:00", 1},
+               {"07:06:00", "07:06:00", 0},
+               {"07:12:00", "07:12:00", 1}
+             ]
+
+      # Both transfers naming the kept trip survive the retime.
+      assert Schedules.count_trip_transfers(context.organization.id, context.version.id, [
+               scope.trips.second
+             ]) == 2
+
+      [first_log, second_log] =
+        context |> trip_logs() |> Enum.filter(&(&1.action == "updated"))
+
+      log =
+        Enum.find([first_log, second_log], &(&1.entity_external_id == scope.trips.second))
+
+      assert log.changed_fields["before"]["trip_id"] == scope.trips.second
+      assert log.changed_fields["after"]["trip_id"] == scope.trips.second
+      assert log.changed_fields["after"]["timing_name"] == "Pasted Sep 28 · B"
+      assert is_binary(log.changed_fields["operation_id"])
+
+      # Both 'updated' logs of one apply share the operation id and scope.
+      assert first_log.changed_fields["operation_id"] ==
+               second_log.changed_fields["operation_id"]
+
+      assert Enum.sort(log.changed_fields["affected_trip_ids"]) ==
+               Enum.sort([first_id, second_id])
+
+      timing_logs = timing_logs(context)
+
+      assert Enum.map(timing_logs, & &1.changed_fields["after"]["name"]) == [
+               "Pasted Sep 28 · A",
+               "Pasted Sep 28 · B"
+             ]
+    end
+
+    test "a metadata-only change keeps the same timed_pattern_id and leaves stop times alone",
+         context do
+      scope = apply_case!(context)
+
+      input =
+        replace_input(
+          "Central Station\tMarket Street\tHospital\tTrip number\n" <>
+            "06:00\t06:05\t06:10\t1227\n07:00\t07:05\t07:10\t1228\n"
+        )
+
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 2
+      assert review.plan.counts.remove == 0
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.changed == 2
+      assert summary.new_timings == []
+      assert Enum.sort(summary.trip_ids) == Enum.sort([scope.trips.first, scope.trips.second])
+
+      first = Repo.get_by!(Trip, trip_id: scope.trips.first)
+      assert first.timed_pattern_id == scope.main.timing.id
+      assert first.trip_short_name == "1227"
+
+      second = Repo.get_by!(Trip, trip_id: scope.trips.second)
+      assert second.timed_pattern_id == scope.main.timing.id
+      assert second.trip_short_name == "1228"
+
+      assert ordered_stop_times(context, scope.trips.first) == [
+               {"06:00:00", "06:00:00", 1},
+               {"06:05:00", "06:05:00", 1},
+               {"06:10:00", "06:10:00", 1}
+             ]
+    end
+
+    test "two changes sharing one new vector create a single pasted timing", context do
+      scope = apply_case!(context)
+
+      input = replace_input("Central Station\tHospital\n06:00\t06:12\n07:00\t07:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 2
+      assert length(review.plan.new_timings) == 1
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.changed == 2
+      assert summary.new_timings == ["Pasted Sep 28 · A"]
+
+      assert Repo.aggregate(
+               from(t in TimedPattern, where: t.name == "Pasted Sep 28 · A"),
+               :count
+             ) == 1
+
+      timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
+      assert Repo.get_by!(Trip, trip_id: scope.trips.first).timed_pattern_id == timing.id
+      assert Repo.get_by!(Trip, trip_id: scope.trips.second).timed_pattern_id == timing.id
+    end
+
+    test "a change and a removal in one apply both commit", context do
+      scope = apply_case!(context)
+
+      input = replace_input("Central Station\tHospital\n07:00\t07:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 1
+      assert review.plan.counts.remove == 1
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.changed == 1
+      assert summary.removed == 1
+      assert summary.transfers_removed == 2
+      assert summary.new_timings == ["Pasted Sep 28 · A"]
+      assert summary.trip_ids == [scope.trips.second]
+
+      assert Repo.get_by(Trip, trip_id: scope.trips.first) == nil
+
+      assert ordered_stop_times(context, scope.trips.second) == [
+               {"07:00:00", "07:00:00", 1},
+               {"07:06:00", "07:06:00", 0},
+               {"07:12:00", "07:12:00", 1}
+             ]
+
+      # The 'updated' and 'deleted' logs of one apply share the operation id.
+      operation_ids =
+        context
+        |> trip_logs()
+        |> Enum.filter(&(&1.action in ["updated", "deleted"]))
+        |> Enum.map(& &1.changed_fields["operation_id"])
+        |> Enum.uniq()
+
+      assert match?([operation_id] when is_binary(operation_id), operation_ids)
+    end
+
+    test "a stale change-plus-removal apply writes neither", context do
+      scope = apply_case!(context)
+
+      input = replace_input("Central Station\tHospital\n07:00\t07:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 1
+      assert review.plan.counts.remove == 1
+      counts_before = scoped_counts(context)
+
+      scope.trips.first
+      |> then(&Repo.get_by!(Trip, trip_id: &1))
+      |> Ecto.Changeset.change(%{trip_short_name: "1"})
+      |> Repo.update!()
+
+      assert {:error, :stale_plan} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert scoped_counts(context) == counts_before
+      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
+
+      # The changed trip keeps its original Standard clocks (fixture stop
+      # times carry no timepoint, so only the clocks compare here).
+      assert ordered_stop_times(context, scope.trips.second)
+             |> Enum.map(fn {arrival, departure, _timepoint} -> {arrival, departure} end) == [
+               {"07:00:00", "07:00:00"},
+               {"07:05:00", "07:05:00"},
+               {"07:10:00", "07:10:00"}
+             ]
+
+      assert Repo.aggregate(
+               from(t in TimedPattern, where: t.name == "Pasted Sep 28 · A"),
+               :count
+             ) == 0
+    end
+
+    test "a custom trip with matching stops becomes linked to the pasted timing", context do
+      scope = apply_case!(context)
+
+      custom_trip_id = "R-APPLY-0-WKD-APPLY-0800"
+
+      schedule_trip_fixture(
+        context.organization.id,
+        context.version.id,
+        scope.route_id,
+        scope.main,
+        %{
+          trip_id: custom_trip_id,
+          service_id: scope.service,
+          start_time: "08:00:00",
+          state: "custom"
+        }
+      )
+
+      input =
+        replace_input(
+          "Central Station\tMarket Street\tHospital\n" <>
+            "06:00\t06:05\t06:10\n07:00\t07:05\t07:10\n08:00\t08:05\t08:10\n"
+        )
+
+      review = prepare_review!(context, scope, input)
+
+      custom_change =
+        Enum.find(review.plan.changes, &(&1.op == :change and &1.trip.trip_id == custom_trip_id))
+
+      assert custom_change.timing == {:existing, scope.main.timing.id}
+      assert :custom_replaced in custom_change.warnings
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.changed == 1
+      assert summary.new_timings == []
+
+      custom = Repo.get_by!(Trip, trip_id: custom_trip_id)
+      assert custom.trip_id == custom_trip_id
+      assert custom.pattern_derivation_state == "linked"
+      assert custom.pattern_derivation_reason == nil
+      assert custom.timed_pattern_id == scope.main.timing.id
+
+      assert ordered_stop_times(context, custom_trip_id) == [
+               {"08:00:00", "08:00:00", 1},
+               {"08:05:00", "08:05:00", 1},
+               {"08:10:00", "08:10:00", 1}
+             ]
+    end
+  end
+
+  defp timing_logs(context) do
+    Repo.all(
+      from(l in ChangeLog,
+        where:
+          l.organization_id == ^context.organization.id and
+            l.gtfs_version_id == ^context.version.id and l.entity_type == "timed_pattern",
+        order_by: [asc: l.inserted_at]
+      )
+    )
+  end
+
+  defp ordered_stop_times(context, trip_id) do
+    scoped(StopTime, context)
+    |> where_trip(trip_id)
+    |> Repo.all()
+    |> Enum.sort_by(&{&1.stop_sequence, &1.id})
+    |> Enum.map(&{&1.arrival_time, &1.departure_time, &1.timepoint})
+  end
+
   defp prepare_review!(context, scope, input) do
     assert {:ok, loaded} =
              Schedules.load_paste_scope(
@@ -404,6 +741,24 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       else
         extra
       end
+
+    # Real timing rows carry explicit service fields (GTFS pickup/drop default
+    # 0); the row fixtures leave them NULL, which would keep every pasted
+    # vector off the reuse key. Normalize before any review is prepared.
+    timing_ids =
+      Repo.all(
+        from(t in TimedPattern,
+          where:
+            t.organization_id == ^context.organization.id and
+              t.gtfs_version_id == ^context.version.id,
+          select: t.id
+        )
+      )
+
+    Repo.update_all(
+      from(r in TimedPatternStop, where: r.timed_pattern_id in ^timing_ids),
+      set: [pickup_type: 0, drop_off_type: 0]
+    )
 
     %{
       route_id: route.route_id,
