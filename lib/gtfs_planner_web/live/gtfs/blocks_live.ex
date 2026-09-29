@@ -50,6 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
@@ -162,6 +163,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # prints is derived from the loaded day.
   @empty_suggest %{scope: :unassigned_only, too_large: nil, error: nil, busy: false}
 
+  # The panel's own data, empty until a plan is previewed. It is a render assign
+  # rather than something `render/1` derives, so the render never reads the loaded
+  # day (CR-6).
+  @empty_suggestion %{
+    plan: nil,
+    scope: nil,
+    picked: [],
+    minimum: 0,
+    fixed: 0,
+    existing: 0,
+    changed_block_ids: MapSet.new()
+  }
+
   # A scope of no selection cannot reach the generator's `{:selected, ids}` mode
   # (AC-26), so a payload that asks for one is refused here in the drawer's own
   # words rather than turned into a scope the reader did not choose.
@@ -237,6 +251,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:operator_changes, @empty_operator_changes)
      |> assign(:suggest, @empty_suggest)
      |> assign(:plan_preview, nil)
+     |> assign(:preview_day, nil)
+     |> assign(:suggestion, @empty_suggestion)
      |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
@@ -256,6 +272,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @impl true
   # A day type is a different plan, so its blocks are not the blocks the reader
   # was selecting; the trip selection clears with it (AC-24, AC-42).
+  def handle_event("select_day", %{"day" => _day}, %{assigns: %{plan_preview: plan}} = socket)
+      when not is_nil(plan) do
+    # A preview is a proposal over one day type. Changing what it was built from
+    # would leave the panel describing a plan the page no longer shows, so the
+    # control is disabled while it is up and its event is refused here as well: a
+    # disabled control that still fired would be a lie about the page's state
+    # (AC-44).
+    {:noreply, socket}
+  end
+
   def handle_event("select_day", %{"day" => day}, socket) do
     patch(socket, %{day: blank_to_nil(day), trip: nil, page: 1, pool_page: 1},
       clear_selection: true,
@@ -365,6 +391,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # survives a page change and a sort exactly as the trip selection does, and the
   # two events are distinct: `toggle_block` never reads the trip selection and
   # `toggle_trip` never reads this one.
+  def handle_event(
+        "toggle_block",
+        %{"block" => _block_id},
+        %{assigns: %{plan_preview: plan}} = socket
+      )
+      when not is_nil(plan),
+      do: {:noreply, socket}
+
   def handle_event("toggle_block", %{"block" => block_id}, socket) do
     case find_block(socket.assigns.day, block_id) do
       nil ->
@@ -381,6 +415,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The header checkbox selects the whole page, and unselects it when the page is
   # already selected, so one control builds and clears a page-sized selection
   # (AC-42).
+  def handle_event("select_block_page", _params, %{assigns: %{plan_preview: plan}} = socket)
+      when not is_nil(plan),
+      do: {:noreply, socket}
+
   def handle_event("select_block_page", _params, socket) do
     selection =
       toggle_block_page(socket.assigns.block_selection, socket.assigns.timeline_block_ids)
@@ -576,6 +614,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # are page drawers, so the drawer stack is dropped rather than stacked under
   # them — the reference opens one drawer over another, and two open panels would
   # cover the page twice.
+  def handle_event(
+        "open_drawer",
+        %{"key" => key} = _params,
+        %{assigns: %{plan_preview: plan}} = socket
+      )
+      when not is_nil(plan) and key in ["block_rules", "driving_times", "suggest"] do
+    # The rules and the driving times a plan was built on, and the drawer that
+    # builds another, are all off while a preview is up (AC-44).
+    {:noreply, socket}
+  end
+
   def handle_event("open_drawer", %{"key" => key} = params, socket)
       when key in ["driving_times", "operator_changes", "suggest"] do
     patch(socket, %{
@@ -644,7 +693,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # block selection, when there is one, or unassigned trips.
   def handle_event("suggest_scope_change", %{"scope" => scope}, socket) do
     if suggest_scope?(scope) do
-      {:noreply, put_suggest(socket, %{socket.assigns.suggest | scope: scope, too_large: nil})}
+      {:noreply,
+       put_suggest(socket, %{
+         socket.assigns.suggest
+         | scope: suggest_scope_name(scope),
+           too_large: nil
+       })}
     else
       {:noreply, socket}
     end
@@ -671,6 +725,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     # closure, and the pairing is what tells a late result from a stale one.
     {:noreply,
      start_async(socket, @suggest_preview_key, fn -> {request, run_suggestion(request)} end)}
+  end
+
+  # Discarding a suggestion puts the saved day back on the page. Nothing was
+  # written to produce the preview, so there is nothing to undo here: the plan is
+  # dropped, the loaded day is re-derived, and the timeline is re-sent with the
+  # markers gone (AC-44, CR-4).
+  def handle_event("discard_suggestion", _params, %{assigns: %{plan_preview: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("discard_suggestion", _params, socket) do
+    {:noreply, drop_preview(socket)}
+  end
+
+  # “Suggest again” reopens the drawer on the scope the discarded plan was built
+  # with, so a reader who changes their mind about the scope does not have to
+  # choose it again, and the panel's own `:suggest` assign still carries it.
+  def handle_event("suggest_again", _params, %{assigns: %{plan_preview: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("suggest_again", _params, socket) do
+    patch(drop_preview(socket), %{trip: nil, gap: nil, block: nil, drawer: "suggest", pair: nil})
   end
 
   # The trip, gap and block drawers are part of the URL, so closing one drops the
@@ -1066,6 +1141,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         # previous day's rows under the new day's pager, counts and peak.
         |> assign(:timeline_key, nil)
         |> assign(:pool_key, nil)
+        # A reloaded day is a different plan, so a suggestion previewed over the
+        # last one is dropped rather than drawn over rows it no longer describes.
+        |> assign(:plan_preview, nil)
+        |> assign(:preview_day, nil)
+        |> assign(:suggestion, @empty_suggestion)
         |> assign_derived(day)
 
       {:error, {:unknown_day_type, day_types}} ->
@@ -1112,13 +1192,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # empty states clear the key, so a reload always resends.
   defp assign_timeline(socket) do
     %{state: state} = socket.assigns
-    visible = visible_blocks(socket.assigns.day.blocks, state)
+    visible = visible_blocks(drawn_day(socket).blocks, state)
     page = effective_page(state.page, length(visible))
     rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
 
     key =
       {state.panel, state.view, state.route, state.status, state.sort, state.dir, page,
-       socket.assigns.selection, socket.assigns.block_selection}
+       socket.assigns.selection, socket.assigns.block_selection,
+       not is_nil(socket.assigns.plan_preview)}
 
     socket =
       assign(socket,
@@ -1145,10 +1226,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # selection is in the key for the same reason as the List view's rows.
   defp assign_pool(socket) do
     %{state: state} = socket.assigns
-    visible = visible_pool(socket.assigns.day.pool, state.route)
+    visible = visible_pool(drawn_day(socket).pool, state.route)
     page = effective_page(state.pool_page, length(visible))
     rows = visible |> Enum.drop((page - 1) * @page_size) |> Enum.take(@page_size)
-    key = {state.panel, state.route, page, socket.assigns.selection}
+
+    key =
+      {state.panel, state.route, page, socket.assigns.selection,
+       not is_nil(socket.assigns.plan_preview)}
 
     socket =
       assign(socket,
@@ -1177,6 +1261,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> Enum.filter(&(is_nil(route_id) or &1.route_id == route_id))
     |> MapSet.new(& &1.id)
   end
+
+  # The day the rows are drawn from. While a suggestion is previewed that is the
+  # proposal's own day — a block the plan creates is a row, and a trip the plan
+  # places has left the pool — while `:day` stays the saved day, so discarding
+  # needs no reload and a later apply still matches the plan's fingerprint
+  # (CR-4). The two are the same map when nothing is previewed.
+  defp drawn_day(socket), do: socket.assigns.preview_day || socket.assigns.day
 
   # Both streamed pages are re-derived together, so the timeline, the List view
   # and the pool stay in step on a day, filter, page or selection change.
@@ -2604,9 +2695,34 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp suggest_scope(%{assigns: %{suggest_pool_count: 0}}), do: :replace_all
   defp suggest_scope(_socket), do: :unassigned_only
 
+  # The page action's own reason for being off. A version with no garage cannot
+  # produce a suggestion, and a suggestion already on the page is not replaced by
+  # another one: the reader discards or re-opens it first.
+  defp suggest_title(false, _previewing?), do: "Add a garage in Settings first"
+
+  defp suggest_title(_garages?, true),
+    do: "Discard the suggestion before suggesting again."
+
+  defp suggest_title(_garages?, _previewing?), do: nil
+
   @scopes [:unassigned_only, :selected, :replace_all]
 
+  # A radio carries its scope as the string the drawer's option values use, while
+  # the rest of the page works in the atoms `suggest_mode/2` and the panel take.
+  # The value is therefore read by name: a payload that is not one of the three
+  # names changes nothing, and a payload that is one of them is stored as the
+  # atom the rest of the page compares against — a scope the reader chose but the
+  # page ignored would plan the default scope and say it had planned the chosen
+  # one (AC-26).
+  defp suggest_scope?(value) when is_binary(value),
+    do: Enum.any?(@scopes, &(to_string(&1) == value))
+
   defp suggest_scope?(value), do: value in @scopes
+
+  defp suggest_scope_name(value) when is_binary(value),
+    do: Enum.find(@scopes, &(to_string(&1) == value))
+
+  defp suggest_scope_name(value), do: if(value in @scopes, do: value)
 
   defp put_suggest(socket, state), do: assign(socket, :suggest, state)
 
@@ -2641,12 +2757,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # belongs: a plan is stored and the drawer closes, a too-large scope keeps the
   # drawer open with its count and writes no preview, and a scope with no
   # selection is refused in the drawer's own words.
+  #
+  # A stored plan is drawn on the page by `Blocking.preview_day/2`, which is pure:
+  # the render assigns come from the proposal, the saved day in `:day` is
+  # untouched, and no row is written (CR-4, CR-6, AC-44). The preview is derived
+  # here rather than in `render/1` for that reason, and the timeline is
+  # re-streamed so a row that is now a different block arrives with its marker.
   defp apply_suggestion(socket, {:ok, plan}) do
     socket =
       socket
       |> assign(:plan_preview, plan)
       |> put_suggest(%{@empty_suggest | scope: socket.assigns.suggest.scope})
       |> assign(:open_drawer, nil)
+      |> assign(:timeline_key, nil)
+      |> show_preview(plan)
+      |> assign_page_rows()
 
     patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil})
   end
@@ -3330,6 +3455,84 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})}
   end
 
+  # Dropping the preview is one step whatever the reader does next, so the day is
+  # re-derived from the loaded day rather than from the previewed one, and the
+  # timeline key is cleared so the container is replaced.
+  defp drop_preview(socket) do
+    socket
+    |> assign(:plan_preview, nil)
+    |> assign(:preview_day, nil)
+    |> assign(:suggestion, @empty_suggestion)
+    |> assign(:timeline_key, nil)
+    |> assign_derived(socket.assigns.day)
+    |> assign_page_rows()
+  end
+
+  # Everything the Suggested blocks panel renders, derived here rather than in
+  # `render/1` so the render never reaches into the loaded day (CR-6). The plan's
+  # own numbers are read by the panel; the two this page owns are the minimum
+  # vehicle count, which is the proposal's day load figure, and the problems the
+  # plan takes away, which is the saved day's problems the proposal's no longer
+  # has, keyed by `Checks.finding_key/1` — the key the review and the day load
+  # count problems by, so “2 fixed” is never a second opinion about what a problem
+  # is.
+  defp show_preview(socket, plan) do
+    preview = Blocking.preview_day(socket.assigns.day, plan)
+
+    socket
+    |> assign(:suggestion, %{
+      plan: plan,
+      scope: plan.mode && suggest_scope_of(plan.mode),
+      picked: picked_blocks(plan.mode),
+      minimum: preview.figures.minimum,
+      fixed: fixed_problem_count(socket.assigns.day, preview),
+      existing: existing_problem_count(socket.assigns.day, plan),
+      # Both ends of every move, because a block that loses a trip and one that
+      # gains one are both changed rows, and a new block has no `from` at all.
+      changed_block_ids:
+        plan.moves
+        |> Enum.flat_map(fn move -> Enum.reject([move.from, move.to], &is_nil/1) end)
+        |> MapSet.new()
+    })
+    |> assign(:preview_day, preview)
+    |> assign_derived(preview)
+  end
+
+  defp suggest_scope_of(:unassigned_only), do: :unassigned_only
+  defp suggest_scope_of({:selected, _ids}), do: :selected
+  defp suggest_scope_of(:replace_all), do: :replace_all
+
+  defp picked_blocks({:selected, ids}), do: ids
+  defp picked_blocks(_mode), do: []
+
+  # The saved day's own problems that the plan does not add: the day type's
+  # errors and warnings less the keys the review lists as added, so “N existing
+  # problems remain” counts what a reader sees on the page rather than only the
+  # blocks the plan touched (AC-44).
+  defp existing_problem_count(day, plan) do
+    added =
+      plan.review.effects
+      |> Enum.flat_map(& &1.added)
+      |> MapSet.new(&Checks.finding_key/1)
+
+    day.findings
+    |> Enum.filter(&(&1.severity in [:error, :warning]))
+    |> Enum.reject(&(Checks.finding_key(&1) in added))
+    |> length()
+  end
+
+  defp fixed_problem_count(day, preview) do
+    after_keys =
+      preview.findings
+      |> Enum.map(&Checks.finding_key/1)
+      |> MapSet.new()
+
+    day.findings
+    |> Enum.filter(&(&1.severity in [:error, :warning]))
+    |> Enum.reject(&(Checks.finding_key(&1) in after_keys))
+    |> length()
+  end
+
   @impl true
   def render(assigns) do
     {options, total} =
@@ -3406,9 +3609,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 type="button"
                 phx-click="open_drawer"
                 phx-value-key="suggest"
-                disabled={not @garages?}
-                title={if @garages?, do: nil, else: "Add a garage in Settings first"}
-                class="btn btn-sm min-h-11"
+                disabled={not @garages? or not is_nil(@plan_preview)}
+                title={suggest_title(@garages?, not is_nil(@plan_preview))}
+                class={[
+                  "btn btn-sm min-h-11",
+                  (not @garages? or not is_nil(@plan_preview)) && "btn-disabled"
+                ]}
               >
                 Suggest blocks
               </button>
@@ -3448,6 +3654,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   state={@state}
                   min_layover_minutes={@min_layover_minutes}
                   estimated_pairs={@estimated_pairs}
+                  preview?={not is_nil(@plan_preview)}
                 />
 
                 <.callout
@@ -3465,6 +3672,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   figures={@figures}
                   peak={@peak}
                   open_drawer={@open_drawer}
+                  preview?={not is_nil(@plan_preview)}
                 />
 
                 <BlocksComponents.plan_notices
@@ -3472,6 +3680,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   garages?={@garages?}
                   vehicles?={@vehicles?}
                   version_id={@state.version_id}
+                />
+
+                <%!-- The panel sits between the notices and the workbench so the
+                proposal, the counts above and the rows it changes are all on one
+                screen: a preview is a reading of the page, not a replacement of
+                it (AC-44). --%>
+                <BlocksComponents.suggestion_panel
+                  :if={not is_nil(@plan_preview)}
+                  plan={@suggestion.plan}
+                  day_type={@day_type}
+                  scope={@suggestion.scope}
+                  picked={@suggestion.picked}
+                  minimum={@suggestion.minimum}
+                  existing_problems={@suggestion.existing}
+                  fixed_problems={@suggestion.fixed}
+                  repeating_trip_ids={@suggest_repeating_trip_ids}
+                  estimated_pairs={@estimated_pairs}
                 />
 
                 <BlocksComponents.workspace
@@ -3493,6 +3718,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   page_block_ids={@timeline_block_ids}
                   block_selected_count={length(@selected_blocks)}
                   bulk={@bulk}
+                  preview?={not is_nil(@plan_preview)}
+                  changed_block_ids={@suggestion.changed_block_ids}
                 />
 
                 <BlocksComponents.service_dates_drawer
