@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.ResultComponents do
   """
   attr :tone, :string, values: @tone_values, required: true
   attr :icon, :string, default: nil, doc: "a hero icon name that replaces the tone's own icon"
+  attr :spin, :boolean, default: false, doc: "turns the icon while work is in progress"
   attr :class, :any, default: nil, doc: "layout classes for the badge's place in its row"
   attr :rest, :global
   slot :inner_block, required: true
@@ -88,7 +89,10 @@ defmodule GtfsPlannerWeb.ResultComponents do
       data-tone={@tone}
       {@rest}
     >
-      <.icon name={@icon || @t.icon} class="size-[15px] shrink-0" /> {render_slot(@inner_block)}
+      <.icon
+        name={@icon || @t.icon}
+        class={["size-[15px] shrink-0", @spin && "motion-safe:animate-spin"]}
+      /> {render_slot(@inner_block)}
     </span>
     """
   end
