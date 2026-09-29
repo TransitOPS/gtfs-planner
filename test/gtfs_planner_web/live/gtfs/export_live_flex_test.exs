@@ -3,10 +3,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
   Judges the Export page's flex download and flex validation (EV-25, AC-28, R15).
 
   The download link is scoped to a ready run that actually holds a flex
-  artifact. The "Validate flex file" button starts a `mobility_data_flex` run
+  artifact. The "Check flex file" button starts a `mobility_data_flex` run
   through the configured validator module (Mox in tests), and the validator
   itself selects the `:flex` export profile from that run type. The history
-  table and the results page label the run "Flex file".
+  table titles the run "Flex file check" and the results page leads with "Flex file".
   """
 
   use GtfsPlannerWeb.ConnCase, async: false
@@ -101,7 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       {:ok, view, _html} = live(log_in, "/gtfs/#{version.id}/export")
 
       assert has_element?(view, "#run-validation", "Check feed")
-      assert has_element?(view, "#validate-flex-button", "Validate flex file")
+      assert has_element?(view, "#validate-flex-button", "Check flex file")
 
       test_pid = self()
 
@@ -190,7 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
     end
   end
 
-  test "labels a flex run as the flex file in history and on its results page", %{
+  test "titles a flex run as a flex file check in history and names it on its results page", %{
     conn: conn,
     user: user,
     organization: organization,
@@ -210,7 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
     {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
     assert has_element?(view, "#recent-validation-counts-#{run.id}")
-    assert has_element?(view, "#recent-check-#{run.id}", "Flex file")
+    assert has_element?(view, "#recent-check-#{run.id}", "Flex file check")
 
     {:ok, result_view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
     assert has_element?(result_view, "header p", "Flex file")

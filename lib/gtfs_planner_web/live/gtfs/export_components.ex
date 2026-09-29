@@ -967,7 +967,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
                 class="min-h-11"
                 phx-click={JS.push("run_flex_validation") |> JS.focus(to: "#export-check-body")}
               >
-                Validate flex file
+                Check flex file
               </.button>
             </div>
         <% end %>

@@ -237,14 +237,6 @@ async function vertexCount(page) {
   return count;
 }
 
-// ── placeholder ───────────────────────────────────────────────────────────
-
-// The shell holds no cases yet: each visual step below adds its own case and
-// captures it through `capture`. The skipped placeholder keeps
-// `playwright test e2e/flex.spec.js` green while the page is still the Coming
-// soon placeholder.
-test.skip("placeholder", async () => {});
-
 // ── list ──────────────────────────────────────────────────────────────────
 
 // The Flex list is the Flex area's landing surface: the services table beside the
@@ -483,7 +475,9 @@ test("service-sections", async ({ page }) => {
   // The rest of the page is the second half's sections.
   await expect(page.locator("#sec-riders")).toBeVisible();
   await expect(page.locator("#sec-export")).toContainText("Changes");
-  await expect(page.locator("#export-r3-note")).toContainText("stop_sequence doubles");
+  await expect(page.locator("#export-r3-note")).toContainText(
+    "trip is exported once, with the detour stops placed between its fixed stops",
+  );
   await expect(page.locator("#sec-status")).toBeVisible();
 
   await waitForTiles(page, "#flex-service-map");

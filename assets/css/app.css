@@ -1143,8 +1143,9 @@ body {
 /* A secondary button in the error ink: the design system's
    `.button.secondary.danger`, the row-two Delete of the lifecycle card, which
    opens a review instead of deleting. `.ds-page .btn-outline` sets the ink
-   with an id-strength selector, so the override is scoped to the id as well. */
-#route-detail-page .btn-outline.btn-outline-danger {
+   with an id-strength selector, so the override is scoped to the id as well:
+   the route page and the flex service page, whose Delete has the same shape. */
+:is(#route-detail-page, #flex-service-page) .btn-outline.btn-outline-danger {
   border-color: var(--color-error-line);
   color: var(--color-error-fg);
 }
@@ -1154,7 +1155,7 @@ html:has(#route-details-save-bar:not([hidden])) {
   scroll-padding-bottom: 104px;
 }
 
-#route-detail-page .btn-outline.btn-outline-danger:hover {
+:is(#route-detail-page, #flex-service-page) .btn-outline.btn-outline-danger:hover {
   border-color: var(--color-error-line);
   background: var(--color-error-bg);
   color: var(--color-error-fg);
@@ -3472,6 +3473,14 @@ dialog[role="alertdialog"][open] > div > div {
   outline-offset: 2px;
 }
 
+/* `.ds-page` moves a checkbox's ring onto its choice card, but the service
+   page's plain `<.input type="checkbox">` fields sit in no card, so the box
+   keeps its own ring. */
+#flex-service-page .fieldset input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 /* A message or summary that takes focus programmatically must show where it landed. */
 #calendars-page :is([role="status"], [role="alert"])[tabindex="-1"]:focus {
   outline: 2px solid var(--color-focus);
@@ -3568,8 +3577,8 @@ body:has(#home-page) {
 }
 
 .flex-map-area--overlap {
-  fill: #d6982229;
-  stroke: #d69822;
+  fill: color-mix(in srgb, var(--color-warning-line) 16%, transparent);
+  stroke: var(--color-warning-line);
   stroke-width: 1.5;
   stroke-dasharray: none;
 }
@@ -3578,22 +3587,22 @@ body:has(#home-page) {
    square handles, its midpoint circles, the drawing line and the crossing mark,
    restyled from the prototype's SVG classes onto Leaflet's own paths. */
 .flex-map-area--draft {
-  fill: #c8187014;
-  stroke: #c81870;
+  fill: color-mix(in srgb, var(--color-action) 8%, transparent);
+  stroke: var(--color-action);
   stroke-width: 2;
   stroke-dasharray: 6 4;
 }
 
 .flex-map-area--error {
-  fill: #d33a3a1a;
-  stroke: #d33a3a;
+  fill: color-mix(in srgb, var(--color-error-line) 10%, transparent);
+  stroke: var(--color-error-line);
   stroke-width: 2;
   stroke-dasharray: none;
 }
 
 .flex-map-draw-line {
   fill: none;
-  stroke: #c81870;
+  stroke: var(--color-action);
   stroke-width: 2;
   stroke-dasharray: 6 4;
 }
@@ -3620,7 +3629,7 @@ body:has(#home-page) {
 }
 
 .flex-area-handle-dot.is-picked {
-  border-color: #c81870;
+  border-color: var(--color-action);
   border-width: 3px;
 }
 
@@ -3629,7 +3638,7 @@ body:has(#home-page) {
 }
 
 .flex-area-handle:focus-visible .flex-area-handle-dot {
-  box-shadow: 0 0 0 3px #0d737d;
+  box-shadow: 0 0 0 3px var(--color-focus);
 }
 
 .flex-area-midpoint {
@@ -3647,19 +3656,19 @@ body:has(#home-page) {
 }
 
 .flex-area-draw-point.is-picked {
-  fill: #c81870;
+  fill: var(--color-action);
   cursor: pointer;
 }
 
 .flex-area-crossing-disc {
-  fill: #fbe3e3;
-  stroke: #d33a3a;
+  fill: var(--color-error-bg);
+  stroke: var(--color-error-line);
   stroke-width: 2;
 }
 
 .flex-area-crossing-x {
   fill: none;
-  stroke: #9b1c1c;
+  stroke: var(--color-error-fg);
   stroke-width: 2;
 }
 
@@ -3672,10 +3681,10 @@ body:has(#home-page) {
   z-index: 600;
   max-width: calc(100% - 20px);
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: #ffffffe6;
-  color: #0a1330;
-  font: 500 12px Inter, system-ui, sans-serif;
+  color: var(--color-strong);
+  font: 500 12px var(--font-ds);
 }
 
 .flex-map-hint[hidden] {
@@ -3690,7 +3699,7 @@ body:has(#home-page) {
   border: 0;
   background: transparent;
   box-shadow: none;
-  color: #0a1330;
-  font: 600 12px Inter, system-ui, sans-serif;
+  color: var(--color-strong);
+  font: 600 12px var(--font-ds);
   text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;
 }

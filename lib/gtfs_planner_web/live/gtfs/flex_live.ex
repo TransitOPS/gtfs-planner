@@ -244,64 +244,66 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <.header>
-        Flex
-        <:subtitle>On-demand services in {@current_gtfs_version.name}</:subtitle>
-        <:actions :if={@flex_state == :ready and @services_count > 0}>
-          <.button
-            id="create-service"
-            variant="primary"
-            class="min-h-11"
-            phx-click="open_create"
-            phx-value-opener_id="create-service"
-          >
-            Create flex service
-          </.button>
-        </:actions>
-      </.header>
+      <div id="flex-page" class="ds-page">
+        <.header>
+          Flex
+          <:subtitle>On-demand services in {@current_gtfs_version.name}</:subtitle>
+          <:actions :if={@flex_state == :ready and @services_count > 0}>
+            <.button
+              id="create-service"
+              variant="primary"
+              class="min-h-11"
+              phx-click="open_create"
+              phx-value-opener_id="create-service"
+            >
+              <.icon name="hero-plus" class="size-4" /> Create flex service
+            </.button>
+          </:actions>
+        </.header>
 
-      <.exports_line
-        :if={@flex_state == :ready}
-        include_flex={@include_flex}
-        has_fixed_routes?={@has_fixed_routes?}
-        version_id={@current_gtfs_version.id}
-      />
-
-      <.loading :if={@flex_state == :loading} />
-      <.list_error :if={@flex_state == :unavailable} />
-
-      <div :if={@flex_state == :ready} class="mt-6 grid gap-8 lg:grid-cols-[minmax(0,1fr)_440px]">
-        <.first_use
-          :if={@services_count == 0}
-          sources={@copy_sources}
-          copy_form={@copy_form}
-          copy_target={@copy_target}
-          copy_error={@copy_error}
+        <.exports_line
+          :if={@flex_state == :ready}
+          include_flex={@include_flex}
+          has_fixed_routes?={@has_fixed_routes?}
+          version_id={@current_gtfs_version.id}
         />
 
-        <.services_table
-          :if={@services_count > 0}
-          rows={@streams.services}
-          count={@services_count}
-        />
+        <.loading :if={@flex_state == :loading} />
+        <.list_error :if={@flex_state == :unavailable} />
 
-        <.list_map_card
-          title={FlexComponents.map_title(@services_count)}
-          legend={if @services_count > 0, do: :all, else: :routes}
+        <div :if={@flex_state == :ready} class="mt-6 grid gap-8 lg:grid-cols-[minmax(0,1fr)_440px]">
+          <.first_use
+            :if={@services_count == 0}
+            sources={@copy_sources}
+            copy_form={@copy_form}
+            copy_target={@copy_target}
+            copy_error={@copy_error}
+          />
+
+          <.services_table
+            :if={@services_count > 0}
+            rows={@streams.services}
+            count={@services_count}
+          />
+
+          <.list_map_card
+            title={FlexComponents.map_title(@services_count)}
+            legend={if @services_count > 0, do: :all, else: :routes}
+          />
+        </div>
+
+        <.create_drawer
+          :if={@flex_state == :ready}
+          open={@create_open}
+          version_name={@current_gtfs_version.name}
+          form={@create_form}
+          errors={@create_errors}
+          routes={@routes}
+          error={@create_error}
+          focus_id={@create_focus_id}
+          return_focus_id={@create_return_focus_id}
         />
       </div>
-
-      <.create_drawer
-        :if={@flex_state == :ready}
-        open={@create_open}
-        version_name={@current_gtfs_version.name}
-        form={@create_form}
-        errors={@create_errors}
-        routes={@routes}
-        error={@create_error}
-        focus_id={@create_focus_id}
-        return_focus_id={@create_return_focus_id}
-      />
     </Layouts.app>
     """
   end

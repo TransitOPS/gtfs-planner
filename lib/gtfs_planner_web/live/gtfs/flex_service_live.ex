@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.FlexComponents
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Boundaries
   alias GtfsPlanner.Gtfs.Calendars
@@ -176,6 +177,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
      |> assign(:trip_counts, %{})
      |> assign(:area_summaries, [])
      |> assign(:plan, nil)
+     |> assign(:plan_zones, nil)
      |> assign(:export_defaults, nil)
      |> assign(:export_details_open, false)
      |> assign(:status_action, nil)
@@ -956,305 +958,324 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <.service_loading :if={@service_state == :loading} />
+      <div id="flex-service-scope" class="ds-page">
+        <.service_loading :if={@service_state == :loading} />
 
-      <.service_not_found
-        :if={@service_state == :not_found}
-        version_id={@current_gtfs_version.id}
-      />
-
-      <.service_unavailable :if={@service_state == :unavailable} />
-
-      <div
-        :if={@service_state == :ready}
-        id="flex-service-page"
-        phx-hook="DraftGuard"
-        data-dirty={to_string(@dirty?)}
-        data-depart-event="flex_depart"
-        data-discard-message="Discard unsaved changes? Cancel to keep editing."
-        data-focus-on-mount="svc-title"
-        class={@dirty? && "pb-28"}
-      >
-        <%!-- The editor's own header replaces the service header while the
-        editor is open, exactly as the reference's editor page has one header
-        with the service name on the way back. --%>
-        <.service_header
-          :if={@live_action == :show}
-          service={@draft}
-          status={@status}
+        <.service_not_found
+          :if={@service_state == :not_found}
           version_id={@current_gtfs_version.id}
         />
 
-        <div :if={@live_action == :area} id="flex-service-area" class="mt-2">
-          <FlexAreaEditorComponents.editor_header
-            service={@draft}
-            title={@area_title}
-            use_reason={@area_use_reason}
-          />
-
-          <div class="grid overflow-hidden rounded-card border border-subtle bg-white lg:grid-cols-[minmax(0,392px)_minmax(0,1fr)]">
-            <div
-              id="area-panel"
-              class="order-2 min-w-0 bg-white px-4 py-5 sm:px-5 lg:order-none lg:max-h-[calc(100dvh-200px)] lg:overflow-y-auto lg:border-r lg:border-subtle"
-            >
-              <div class="grid gap-5">
-                <%= case @area_source do %>
-                  <% :town -> %>
-                    <FlexAreaEditorComponents.census_panel
-                      places={@area_places}
-                      state={@area_census_state}
-                      slow?={@area_census_slow}
-                      no_stops?={is_nil(@area_stop_extent)}
-                      search_name={@area_search["name"]}
-                      search_state={@area_search["state"]}
-                      pick={@area_pick_place && @area_pick_place.geoid}
-                      error={@area_error}
-                    />
-                  <% :routes -> %>
-                    <FlexAreaEditorComponents.routes_panel
-                      routes={@area_routes}
-                      route_ids={@area_route_ids}
-                      distance={@area_distance}
-                      distance_choices={@area_distance_choices}
-                      error={@area_error}
-                    />
-                  <% :draw -> %>
-                    <FlexAreaEditorComponents.draw_panel error={@area_error} />
-                  <% :import -> %>
-                    <FlexAreaEditorComponents.import_panel
-                      upload={@uploads.area_file}
-                      upload_state={@area_file_state}
-                      upload_error={@area_upload_error}
-                      file_name={@area_file && @area_file.name}
-                      file_error={@area_file_error}
-                      features={(@area_file && @area_file.features) || []}
-                      pick={@area_file && @area_file.pick}
-                      name_field={@area_file && @area_file.name_field}
-                    />
-                  <% _choose -> %>
-                    <FlexAreaEditorComponents.choose_panel error={@area_error} />
-                <% end %>
-
-                <FlexAreaEditorComponents.stats_panel
-                  :if={@area_candidate}
-                  candidate={@area_candidate}
-                  name_form={@area_name_form}
-                  name_error={@area_name_error}
-                  stats={@area_stats}
-                  overlaps={@area_overlaps}
-                  compare={@area_compare}
-                  stop_choices={@stop_choices}
-                />
-              </div>
-            </div>
-
-            <div class="order-1 min-w-0 lg:order-none">
-              <FlexAreaEditorComponents.area_map
-                mode={@area_mode}
-                source={@area_source}
-                editable={@area_editable}
-                vertices={@area_vertices}
-                crossing={@area_crossing}
-                simplify_note={@area_simplify_note}
-              />
-            </div>
-          </div>
-        </div>
+        <.service_unavailable :if={@service_state == :unavailable} />
 
         <div
-          :if={@live_action == :show}
-          class="mt-5 grid items-start gap-10 xl:grid-cols-[minmax(0,640px)_minmax(0,1fr)]"
+          :if={@service_state == :ready}
+          id="flex-service-page"
+          phx-hook="DraftGuard"
+          data-dirty={to_string(@dirty?)}
+          data-depart-event="flex_depart"
+          data-discard-message="Discard unsaved changes? Cancel to keep editing."
+          data-focus-on-mount="svc-title"
+          class={@dirty? && "pb-28"}
         >
-          <div class="grid min-w-0 gap-6">
-            <.service_error_summary :if={@save_errors != []} errors={@save_errors} />
+          <%!-- The editor's own header replaces the service header while the
+          editor is open, exactly as the reference's editor page has one header
+          with the service name on the way back. --%>
+          <.service_header
+            :if={@live_action == :show}
+            service={@draft}
+            status={@status}
+            version_id={@current_gtfs_version.id}
+          />
 
-            <.callout
-              :if={@save_error}
-              id="flex-service-save-error"
-              kind="error"
-              title="Nothing was saved"
-              tabindex="-1"
-            >
-              {@save_error}
-            </.callout>
+          <div :if={@live_action == :area} id="flex-service-area" class="mt-2">
+            <FlexAreaEditorComponents.editor_header
+              service={@draft}
+              title={@area_title}
+              use_reason={@area_use_reason}
+            />
 
-            <div
-              :if={@stale?}
-              id="flex-service-stale"
-              role="alert"
-              class="flex flex-wrap items-start justify-between gap-3 rounded-card border border-warning-line bg-warning-bg px-4 py-3 text-sm text-warning-fg"
-            >
-              <p class="flex items-start gap-2">
-                <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4" />
-                <span>
-                  <strong class="font-[650]">
-                    Someone else saved this service while you were editing.
-                  </strong>
-                  Your edits are kept but not saved.
-                  <span :if={@stale_changes != []} class="block">
-                    They changed: {Enum.join(@stale_changes, "; ")}.
-                  </span>
-                </span>
-              </p>
-              <div class="flex flex-wrap gap-2">
-                <.button
-                  id="stale-theirs"
-                  type="button"
-                  variant="secondary"
-                  class="min-h-11"
-                  phx-click="use_their_changes"
-                >
-                  Use their changes
-                </.button>
-                <.button
-                  id="stale-both"
-                  type="button"
-                  variant="primary"
-                  class="min-h-11"
-                  phx-click="save_both_changes"
-                >
-                  Save both changes
-                </.button>
+            <div class="grid overflow-hidden rounded-card border border-subtle bg-white lg:grid-cols-[minmax(0,392px)_minmax(0,1fr)]">
+              <div
+                id="area-panel"
+                class="order-2 min-w-0 bg-white px-4 py-5 sm:px-5 lg:order-none lg:max-h-[calc(100dvh-200px)] lg:overflow-y-auto lg:border-r lg:border-subtle"
+              >
+                <div class="grid gap-5">
+                  <%= case @area_source do %>
+                    <% :town -> %>
+                      <FlexAreaEditorComponents.census_panel
+                        places={@area_places}
+                        state={@area_census_state}
+                        slow?={@area_census_slow}
+                        no_stops?={is_nil(@area_stop_extent)}
+                        search_name={@area_search["name"]}
+                        search_state={@area_search["state"]}
+                        pick={@area_pick_place && @area_pick_place.geoid}
+                        error={@area_error}
+                      />
+                    <% :routes -> %>
+                      <FlexAreaEditorComponents.routes_panel
+                        routes={@area_routes}
+                        route_ids={@area_route_ids}
+                        distance={@area_distance}
+                        distance_choices={@area_distance_choices}
+                        error={@area_error}
+                      />
+                    <% :draw -> %>
+                      <FlexAreaEditorComponents.draw_panel error={@area_error} />
+                    <% :import -> %>
+                      <FlexAreaEditorComponents.import_panel
+                        upload={@uploads.area_file}
+                        upload_state={@area_file_state}
+                        upload_error={@area_upload_error}
+                        file_name={@area_file && @area_file.name}
+                        file_error={@area_file_error}
+                        features={(@area_file && @area_file.features) || []}
+                        pick={@area_file && @area_file.pick}
+                        name_field={@area_file && @area_file.name_field}
+                      />
+                    <% _choose -> %>
+                      <FlexAreaEditorComponents.choose_panel error={@area_error} />
+                  <% end %>
+
+                  <FlexAreaEditorComponents.stats_panel
+                    :if={@area_candidate}
+                    candidate={@area_candidate}
+                    name_form={@area_name_form}
+                    name_error={@area_name_error}
+                    stats={@area_stats}
+                    overlaps={@area_overlaps}
+                    compare={@area_compare}
+                    stop_choices={@stop_choices}
+                  />
+                </div>
+              </div>
+
+              <div class="order-1 min-w-0 lg:order-none">
+                <FlexAreaEditorComponents.area_map
+                  mode={@area_mode}
+                  source={@area_source}
+                  editable={@area_editable}
+                  vertices={@area_vertices}
+                  crossing={@area_crossing}
+                  simplify_note={@area_simplify_note}
+                />
               </div>
             </div>
-
-            <.form
-              for={@form}
-              id="flex-service-form"
-              novalidate
-              phx-change="validate"
-              phx-submit="save"
-              class="grid min-w-0 gap-8"
-            >
-              <%!-- The reference orders the sections by how often staff change
-              them: a detour's distance and stretch first, an area service's
-              hours first. --%>
-              <%= if @draft.kind == :detour do %>
-                <.where_detour_section
-                  form={@form}
-                  service={@draft}
-                  field_errors={@field_errors}
-                  route_stop_choices={@route_stop_choices}
-                  plan={@plan}
-                  checks={@checks}
-                />
-
-                <.booking_section
-                  form={@form}
-                  service={@draft}
-                  field_errors={@field_errors}
-                  calendars={@calendars}
-                  calendar_options={@calendar_options}
-                  checks={@checks}
-                />
-
-                <.when_section
-                  form={@form}
-                  service={@draft}
-                  field_errors={@field_errors}
-                  calendars={@calendars}
-                  calendar_rows={@calendar_rows}
-                  calendar_options={@calendar_options}
-                  trip_counts={@trip_counts}
-                  version_id={@current_gtfs_version.id}
-                  today={@today}
-                  checks={@checks}
-                />
-              <% else %>
-                <.when_section
-                  form={@form}
-                  service={@draft}
-                  field_errors={@field_errors}
-                  calendars={@calendars}
-                  calendar_rows={@calendar_rows}
-                  calendar_options={@calendar_options}
-                  trip_counts={@trip_counts}
-                  version_id={@current_gtfs_version.id}
-                  today={@today}
-                  checks={@checks}
-                />
-
-                <.booking_section
-                  form={@form}
-                  service={@draft}
-                  field_errors={@field_errors}
-                  calendars={@calendars}
-                  calendar_options={@calendar_options}
-                  checks={@checks}
-                />
-
-                <.where_area_section
-                  service={@draft}
-                  area_summaries={@area_summaries}
-                  stop_choices={@stop_choices}
-                  hub_options={@hub_options}
-                  hub_pick={@hub_pick}
-                  checks={@checks}
-                />
-              <% end %>
-
-              <.riders_section
-                form={@form}
-                service={@draft}
-                field_errors={@field_errors}
-                checks={@checks}
-              />
-
-              <.exports_section
-                service={@draft}
-                plan={@plan}
-                export_defaults={@export_defaults}
-                status={@status}
-              />
-
-              <.status_section service={@draft} status_action={@status_action} />
-            </.form>
           </div>
 
-          <aside
-            class="grid gap-4 self-start xl:sticky xl:top-4"
-            aria-label="Rider preview and map"
+          <div
+            :if={@live_action == :show}
+            class="mt-5 grid items-start gap-10 xl:grid-cols-[minmax(0,640px)_minmax(0,1fr)]"
           >
-            <section
-              aria-labelledby="preview-title"
-              class="rounded-card border border-subtle bg-white"
+            <div class="grid min-w-0 gap-6">
+              <.service_error_summary :if={@save_errors != []} errors={@save_errors} />
+
+              <.message
+                :if={@save_error}
+                id="flex-service-save-error"
+                kind="error"
+                title="Nothing was saved"
+                tabindex="-1"
+              >
+                {@save_error}
+              </.message>
+
+              <%!-- The save bar's Save changes is the view's one primary while the
+              draft is dirty, which it always is when this shows, so both answers
+              here are secondary. --%>
+              <.message
+                :if={@stale?}
+                id="flex-service-stale"
+                kind="warning"
+                title="Someone else saved this service while you were editing."
+              >
+                Your edits are kept but not saved.
+                <span :if={@stale_changes != []} class="block">
+                  They changed: {Enum.join(@stale_changes, "; ")}.
+                </span>
+                <:action>
+                  <div class="flex flex-wrap gap-2">
+                    <.button
+                      id="stale-theirs"
+                      type="button"
+                      variant="secondary"
+                      class="min-h-11"
+                      phx-click="use_their_changes"
+                    >
+                      Use their changes
+                    </.button>
+                    <.button
+                      id="stale-both"
+                      type="button"
+                      variant="secondary"
+                      class="min-h-11"
+                      phx-click="save_both_changes"
+                    >
+                      Save both changes
+                    </.button>
+                  </div>
+                </:action>
+              </.message>
+
+              <.message
+                :if={not @draft.active}
+                id="flex-service-inactive"
+                kind="neutral"
+                title="This service is inactive."
+              >
+                Exports leave it out. Its setup is kept.
+                <:action>
+                  <.button
+                    id="flex-service-reactivate"
+                    type="button"
+                    variant="secondary"
+                    class="min-h-11"
+                    phx-click="reactivate"
+                  >
+                    Reactivate service
+                  </.button>
+                </:action>
+              </.message>
+
+              <.form
+                for={@form}
+                id="flex-service-form"
+                novalidate
+                phx-change="validate"
+                phx-submit="save"
+                class="grid min-w-0 gap-8"
+              >
+                <%!-- The reference orders the sections by how often staff change
+                them: a detour's distance and stretch first, an area service's
+                hours first. --%>
+                <%= if @draft.kind == :detour do %>
+                  <.where_detour_section
+                    form={@form}
+                    service={@draft}
+                    field_errors={@field_errors}
+                    route_stop_choices={@route_stop_choices}
+                    plan={@plan}
+                    checks={@checks}
+                  />
+
+                  <.booking_section
+                    form={@form}
+                    service={@draft}
+                    field_errors={@field_errors}
+                    calendars={@calendars}
+                    calendar_options={@calendar_options}
+                    checks={@checks}
+                  />
+
+                  <.when_section
+                    form={@form}
+                    service={@draft}
+                    field_errors={@field_errors}
+                    calendars={@calendars}
+                    calendar_rows={@calendar_rows}
+                    calendar_options={@calendar_options}
+                    trip_counts={@trip_counts}
+                    version_id={@current_gtfs_version.id}
+                    today={@today}
+                    checks={@checks}
+                  />
+                <% else %>
+                  <.when_section
+                    form={@form}
+                    service={@draft}
+                    field_errors={@field_errors}
+                    calendars={@calendars}
+                    calendar_rows={@calendar_rows}
+                    calendar_options={@calendar_options}
+                    trip_counts={@trip_counts}
+                    version_id={@current_gtfs_version.id}
+                    today={@today}
+                    checks={@checks}
+                  />
+
+                  <.booking_section
+                    form={@form}
+                    service={@draft}
+                    field_errors={@field_errors}
+                    calendars={@calendars}
+                    calendar_options={@calendar_options}
+                    checks={@checks}
+                  />
+
+                  <.where_area_section
+                    service={@draft}
+                    area_summaries={@area_summaries}
+                    stop_choices={@stop_choices}
+                    hub_options={@hub_options}
+                    hub_pick={@hub_pick}
+                    checks={@checks}
+                  />
+                <% end %>
+
+                <.riders_section
+                  form={@form}
+                  service={@draft}
+                  field_errors={@field_errors}
+                  checks={@checks}
+                />
+
+                <.exports_section
+                  service={@draft}
+                  plan={@plan}
+                  export_defaults={@export_defaults}
+                  status={@status}
+                />
+
+                <.status_section service={@draft} status_action={@status_action} />
+              </.form>
+            </div>
+
+            <aside
+              class="grid gap-4 self-start xl:sticky xl:top-4"
+              aria-label="Rider preview and map"
             >
-              <div class="border-b border-subtle px-4 py-2.5">
-                <h2 id="preview-title" class="text-base font-bold text-strong">
-                  What riders will see
-                </h2>
-                <p class="text-[13px] text-muted">
-                  In the Transit app and trip planners built on OpenTripPlanner
-                </p>
-              </div>
-              <div class="p-4">
-                <.rider_preview service={@draft} calendars={@calendars} />
-              </div>
-            </section>
+              <section
+                aria-labelledby="preview-title"
+                class="rounded-card border border-subtle bg-white"
+              >
+                <div class="border-b border-subtle px-4 py-2.5">
+                  <h2 id="preview-title" class="text-base font-bold text-strong">
+                    What riders will see
+                  </h2>
+                  <p class="text-[13px] text-muted">
+                    In the Transit app and trip planners built on OpenTripPlanner
+                  </p>
+                </div>
+                <div class="p-4">
+                  <.rider_preview service={@draft} calendars={@calendars} />
+                </div>
+              </section>
 
-            <.service_map_card service={@draft} />
-          </aside>
+              <.service_map_card service={@draft} />
+            </aside>
+          </div>
         </div>
+
+        <.save_bar
+          :if={@service_state == :ready and @live_action == :show and @dirty?}
+          service={@draft}
+          saved={@saved}
+          calendars={@calendars}
+          saving={@saving}
+        />
+
+        <.export_details_drawer
+          :if={@service_state == :ready}
+          open={@export_details_open}
+          service={@draft}
+          plan={@plan}
+          export_defaults={@export_defaults}
+        />
+
+        <.discard_dialog :if={@service_state == :ready} open={@pending_discard} />
+        <.leave_dialog :if={@service_state == :ready} open={not is_nil(@pending_leave)} />
       </div>
-
-      <.save_bar
-        :if={@service_state == :ready and @live_action == :show and @dirty?}
-        service={@draft}
-        saved={@saved}
-        calendars={@calendars}
-        saving={@saving}
-      />
-
-      <.export_details_drawer
-        :if={@service_state == :ready}
-        open={@export_details_open}
-        service={@draft}
-        plan={@plan}
-        export_defaults={@export_defaults}
-      />
-
-      <.discard_dialog :if={@service_state == :ready} open={@pending_discard} />
-      <.leave_dialog :if={@service_state == :ready} open={not is_nil(@pending_leave)} />
     </Layouts.app>
     """
   end
@@ -1320,6 +1341,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:map, Flex.service_map_payload(organization_id, version_id, service))
     |> assign(:export_defaults, ExportDefaults.get(organization_id))
     |> assign(:plan, plan(organization_id, version_id, draft, area_geojson, summaries))
+    |> assign(:plan_zones, nil)
     |> assign(:export_details_open, false)
     |> assign(:status_action, nil)
     |> assign(:save_errors, [])
@@ -1411,14 +1433,41 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     end)
   end
 
-  defp plan(organization_id, version_id, service, area_geojson, summaries) do
+  defp plan(organization_id, version_id, service, area_geojson, summaries, opts \\ []) do
     FlexExport.plan(
       organization_id,
       version_id,
       service,
-      plan_areas(service, area_geojson, summaries)
+      plan_areas(service, area_geojson, summaries),
+      opts
     )
   end
+
+  # A change event re-plans the draft on every keystroke. A detour's zones are
+  # the plan's PostGIS work and move only with the fields
+  # `detour_geometry_key/1` names, so they are derived again only when one of
+  # those changes; a load clears the cache.
+  defp plan_zones(socket, %FlexService{kind: :detour} = draft) do
+    key = detour_geometry_key(draft)
+
+    case socket.assigns.plan_zones do
+      {^key, zones} ->
+        {key, zones}
+
+      _stale ->
+        {key,
+         FlexExport.plan_zones(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           draft
+         )}
+    end
+  end
+
+  defp plan_zones(_socket, _draft), do: nil
+
+  defp zone_opts({_key, zones}), do: [zones: zones]
+  defp zone_opts(nil), do: []
 
   # The connecting-stop select offers every stop the version has that is not
   # already a connecting stop, and keeps its choice when the options change.
@@ -1518,6 +1567,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     draft = normalize_rules(draft)
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
+    zones = plan_zones(socket, draft)
 
     socket
     |> assign(:draft, draft)
@@ -1525,6 +1575,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:save_errors, [])
     |> assign(:field_errors, %{})
     |> assign(:save_error, nil)
+    |> assign(:plan_zones, zones)
     |> assign(
       :plan,
       plan(
@@ -1532,7 +1583,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         version_id,
         draft,
         socket.assigns.area_geojson,
-        socket.assigns.area_summaries
+        socket.assigns.area_summaries,
+        zone_opts(zones)
       )
     )
     |> assign_hub_choices()
@@ -2357,11 +2409,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   defp known_area_route?(socket, route_id),
     do: Enum.any?(socket.assigns.area_routes, &(&1.id == route_id))
 
-  defp parse_distance(value) when is_integer(value) and value > 0, do: value
+  # The panel offers fixed distances; any other value, including one past the
+  # schema's cap, keeps the current distance rather than reaching ST_Buffer.
+  defp parse_distance(value) when is_integer(value) do
+    if value > 0 and value <= FlexArea.max_distance_m(), do: value
+  end
 
   defp parse_distance(value) when is_binary(value) do
     case Integer.parse(value) do
-      {distance, ""} when distance > 0 -> distance
+      {distance, ""} -> parse_distance(distance)
       _other -> nil
     end
   end

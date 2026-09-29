@@ -911,13 +911,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   slot :header_actions
   slot :lede, doc: "one muted line under the title; planner chrome only"
 
-  slot :footer,
-    doc: """
-    Actions pinned below the scrolling body, for a drawer whose primary action
-    has to stay reachable while its answers scroll. A control that submits the
-    drawer's form belongs to that form through its own `form` attribute.
-    """
-
   def drawer(assigns) do
     ~H"""
     <dialog
@@ -980,14 +973,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <%!-- Content --%>
           <div id={"#{@id}-body"} class="flex-1 overflow-y-auto p-6">
             {render_slot(@inner_block)}
-          </div>
-          <%!-- Actions --%>
-          <div
-            :if={@footer != []}
-            id={"#{@id}-footer"}
-            class="shrink-0 border-t border-base-300 bg-base-100 px-6 py-4"
-          >
-            {render_slot(@footer)}
           </div>
         </div>
       </aside>
