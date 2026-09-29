@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   use GtfsPlannerWeb.ConnCase
 
+  import Mox, only: [set_mox_global: 1, verify_on_exit!: 1]
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
@@ -12,6 +13,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Export.RunnerSupervisor
   alias GtfsPlanner.Gtfs.ExportRuns
+  alias GtfsPlanner.Gtfs.Validator.Result
+  alias GtfsPlanner.Gtfs.ValidatorMock
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
@@ -64,7 +67,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     conn = log_in_user(conn, user, organization: organization)
     {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-    assert has_element?(view, "#run-validation", "Run validation")
+    assert has_element?(view, "#run-validation", "Check feed")
     refute has_element?(view, "#validation-checks")
     refute has_element?(view, ~s(input[type="checkbox"][name="validation[checks][]"]))
   end
@@ -102,9 +105,225 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
     assert has_element?(view, "#export-workspace")
-    assert has_element?(view, "#validation-history-counts")
-    assert has_element?(view, "a.link", "Pathways Tests")
+    assert has_element?(view, "#recent-checks")
+    assert has_element?(view, "#recent-check-#{run.id} a", "Pathways test")
     assert has_element?(view, "#recent-validation-counts-#{run.id}")
+  end
+
+  test "offers Export feed before the first export and no download", %{
+    conn: conn,
+    user: user,
+    organization: organization,
+    gtfs_version: version
+  } do
+    conn = log_in_user(conn, user, organization: organization)
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+    assert has_element?(view, "#export-empty-history")
+    assert has_element?(view, "#start-export", "Export feed")
+    refute has_element?(view, "#export-download-link")
+    refute has_element?(view, "#recent-checks")
+  end
+
+  describe "export notices" do
+    test "a cancel with no export to cancel reports it in the status band", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      render_click(view, "cancel_export")
+
+      assert has_element?(view, "#export-run-status #export-notice", "couldn’t be cancelled")
+    end
+
+    test "a retry with no export to restart reports it in the status band", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      render_click(view, "retry_export")
+
+      assert has_element?(view, "#export-run-status #export-notice", "couldn’t be restarted")
+    end
+
+    test "the notice clears when the export type changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_click(view, "cancel_export")
+      assert has_element?(view, "#export-notice")
+
+      view |> form("#gtfs-export-form", export: %{type: "pathways"}) |> render_change()
+
+      refute has_element?(view, "#export-notice")
+    end
+  end
+
+  describe "feed check" do
+    setup :set_mox_global
+    setup :verify_on_exit!
+
+    test "shows the verdict and links the full results when a check finishes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      stub_validator(%{errors: 0, warnings: 3, infos: 7})
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("#run-validation") |> render_click()
+      assert has_element?(view, "#check-progress")
+
+      await_validation(view)
+
+      assert has_element?(view, "#mobility-summary-metrics [data-count=warnings]", "3")
+      assert has_element?(view, "#check-verdict", "Review the 3 warnings.")
+
+      assert has_element?(
+               view,
+               "#view-validation-results[href^='/gtfs/#{version.id}/validation/']"
+             )
+
+      assert has_element?(view, "#recent-checks a", "Feed check")
+    end
+
+    test "returns to Check feed when the reader chooses Check again", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      stub_validator(%{errors: 0, warnings: 0, infos: 5})
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      view |> element("#run-validation") |> render_click()
+      await_validation(view)
+      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+
+      view |> element("#reset-validation") |> render_click()
+
+      assert has_element?(view, "#run-validation", "Check feed")
+      refute has_element?(view, "#mobility-summary-metrics")
+    end
+
+    @tag :capture_log
+    test "says the check could not finish when the validator errors", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      test_pid = self()
+
+      Mox.stub(ValidatorMock, :validate, fn _organization_id, _version_id, _opts ->
+        send(test_pid, {:validator_task, self()})
+        {:error, :validator_unavailable}
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      view |> element("#run-validation") |> render_click()
+
+      await_validation(view)
+
+      assert has_element?(view, "#validation-error-panel", "The check couldn’t finish.")
+      assert has_element?(view, "#run-validation", "Try again")
+      refute has_element?(view, "#validation-error-panel", "validator_unavailable")
+    end
+  end
+
+  describe "recent checks" do
+    test "summarises the last checks and reports each one's counts", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      failing =
+        completed_run(organization, version, "mobility_data",
+          errors_count: 2,
+          warnings_count: 5,
+          infos_count: 7
+        )
+
+      clean = completed_run(organization, version, "mobility_data", infos_count: 5)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      assert has_element?(
+               view,
+               "#recent-checks-title + p",
+               "1 of the last 2 checks reported errors, and 1 reported warnings."
+             )
+
+      assert has_element?(view, "#recent-validation-counts-#{failing.id}", "2 errors")
+      assert has_element?(view, "#recent-validation-counts-#{failing.id}", "5 warnings")
+      assert has_element?(view, "#recent-validation-counts-#{clean.id}", "0 errors")
+    end
+
+    test "reports a pathways test as failed, couldn’t be checked and passed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(organization, version, "pathways_tests",
+          result_json: %{
+            "summary" => %{"scoring_failure" => 2, "query_failure" => 1, "passed" => 14}
+          }
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      assert has_element?(view, "#recent-validation-counts-#{run.id}", "2 failed")
+      assert has_element?(view, "#recent-validation-counts-#{run.id}", "1 couldn’t be checked")
+      assert has_element?(view, "#recent-validation-counts-#{run.id}", "14 passed")
+    end
+
+    test "links a station reachability check to its own results with the station's name", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      stop_fixture(organization.id, version.id, stop_id: "STATION1", stop_name: "Central Station")
+
+      run =
+        completed_run(organization, version, "station_reachability",
+          result_json: %{"metadata" => %{"station_stop_id" => "STATION1"}}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      assert has_element?(
+               view,
+               "#recent-check-#{run.id} a",
+               "Station reachability · Central Station"
+             )
+
+      assert has_element?(
+               view,
+               "#recent-check-#{run.id} a[href='/gtfs/#{version.id}/station-reachability/#{run.id}?stop_id=STATION1']"
+             )
+    end
   end
 
   describe "operations export" do
@@ -340,7 +559,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(view, "#gtfs-tab-import[href='/gtfs/#{version.id}/import']")
       refute has_element?(view, "#gtfs-tab-import[aria-current='page']")
 
-      assert heading_text(html, "header h1") == "Export & Validate"
+      assert heading_text(html, "header h1") == "Export feed"
       assert has_element?(view, "#gtfs-export-form")
       assert has_element?(view, "#export-download-container")
     end
@@ -352,6 +571,46 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     |> LazyHTML.query(selector)
     |> LazyHTML.text()
     |> String.trim()
+  end
+
+  defp completed_run(organization, version, run_type, attrs) do
+    {:ok, run} = Validations.create_validation_run(organization.id, version.id, run_type)
+
+    run
+    |> ValidationRun.changeset(Enum.into(attrs, %{status: "completed"}))
+    |> Repo.update!()
+  end
+
+  # The validator runs in a task under the LiveView's supervisor. The stub reports
+  # its own pid, so `await_validation/1` can wait for the task to exit (its reply
+  # is already in the LiveView's mailbox by then) and then let the LiveView drain
+  # it.
+  defp stub_validator(summary) do
+    test_pid = self()
+
+    Mox.stub(ValidatorMock, :validate, fn _organization_id, _version_id, opts ->
+      send(test_pid, {:validator_task, self()})
+      run = opts |> Keyword.fetch!(:validation_run_id) |> Validations.get_validation_run!()
+      {:ok, running} = Validations.mark_running(run)
+
+      result = %Result{
+        summary: summary,
+        notices: [],
+        duration_ms: 1,
+        validated_at: DateTime.utc_now()
+      }
+
+      {:ok, _completed} = Validations.mark_completed(running, result)
+      {:ok, result}
+    end)
+  end
+
+  defp await_validation(view) do
+    assert_receive {:validator_task, task_pid}, 5_000
+    ref = Process.monitor(task_pid)
+    assert_receive {:DOWN, ^ref, :process, ^task_pid, _reason}, 5_000
+    _ = :sys.get_state(view.pid)
+    render(view)
   end
 
   defp start_export_and_wait(view, button_id \\ "#start-export") do
@@ -370,7 +629,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#export-inventory tbody tr")
     |> Enum.map(fn row ->
-      row |> LazyHTML.query("td") |> Enum.map(&String.trim(LazyHTML.text(&1)))
+      row |> LazyHTML.query("th, td") |> Enum.map(&String.trim(LazyHTML.text(&1)))
     end)
     |> Enum.filter(fn [filename, _count] ->
       filename in ["stops_supplement.txt", "vehicles.txt"]
