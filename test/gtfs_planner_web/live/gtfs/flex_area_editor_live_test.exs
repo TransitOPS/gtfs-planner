@@ -839,9 +839,276 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
     }
   end
 
+  describe "point editing" do
+    setup :editor_with_flex_version
+
+    test "Edit points hands the stored ring over, and Pan hands the map back", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      ring = stored_ring(ctx, service, "a1")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+
+      # No candidate yet: the tool is offered but disabled, and the panel has a
+      # reason rather than a silent no-op.
+      assert has_element?(view, "#area-mode-edit[disabled]")
+      assert text_of(doc(view), "#area-vertices") == ""
+
+      view |> element("#area-mode-edit") |> render_click()
+
+      # The ring is the stored area's own closed ring, in [lon, lat], with the
+      # repeated closing vertex not counted.
+      assert_push_event(view, "flex_map:mode", %{
+        mode: "edit",
+        ring: ^ring,
+        vertices: 4
+      })
+
+      # The payload that arrives with the mode leaves the candidate to the hook.
+      assert_push_event(view, "flex_map:load", %{areas: []})
+      assert has_element?(view, "#area-mode-edit[aria-pressed='true']")
+      assert has_element?(view, "#area-vertices", "4 points")
+      assert has_element?(view, "#area-stats")
+      refute has_element?(view, "#area-compare")
+
+      view |> element("#area-mode-pan") |> render_click()
+
+      assert_push_event(view, "flex_map:mode", %{mode: "pan"})
+      assert_push_event(view, "flex_map:load", %{areas: [%{id: "area-candidate"}]})
+      assert has_element?(view, "#area-mode-pan[aria-pressed='true']")
+      assert has_element?(view, "#area-vertices", "4 points")
+    end
+
+    test "a moved point is measured and clears the crossing marker", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+
+      # 400 m east, a change a rider would see: the saved square's comparison
+      # appears and the panel measures the edited shape, not the stored one.
+      moved = replace_position(stored_ring(ctx, service, "a1"), 0, [-124.07, 44.595])
+
+      render_hook(view, "flex_area_edited", %{"ring" => moved})
+
+      assert_push_event(view, "flex_map:crossing", %{lon: nil, lat: nil, reason: nil})
+      assert has_element?(view, "#area-vertices", "4 points")
+      refute has_element?(view, "#area-crossing")
+      refute has_element?(view, "#use-area[disabled]")
+      assert has_element?(view, "#area-compare", "Compared with the saved area")
+
+      {:ok, %{geojson: normalized}} = Geometry.normalize(polygon(moved))
+      expected = Geometry.stats(ctx.organization.id, ctx.version.id, normalized)
+
+      assert text_of(doc(view), "#area-stats") =~ FlexComponents.km2_text(expected.km2)
+    end
+
+    test "a self-crossing ring disables Use this area and marks the crossing point", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+      view |> element("#area-mode-edit") |> render_click()
+
+      bowtie = bowtie_ring()
+      assert {:error, {:invalid, reason, [lon, lat]}} = Geometry.normalize(polygon(bowtie))
+
+      render_hook(view, "flex_area_edited", %{"ring" => bowtie})
+
+      # The map gets the crossing point and the reason; the panel states it and
+      # "Use this area" refuses until the crossing is gone (AC-12).
+      assert_push_event(view, "flex_map:crossing", %{lon: ^lon, lat: ^lat, reason: ^reason})
+      assert has_element?(view, "#area-crossing")
+      assert has_element?(view, "#area-use-reason", "crosses itself")
+      assert has_element?(view, "#use-area[disabled]")
+      assert has_element?(view, "#area-vertices", "4 points")
+    end
+
+    test "a valid ring after a crossing clears the message and the marker", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+      view |> element("#area-mode-edit") |> render_click()
+
+      render_hook(view, "flex_area_edited", %{"ring" => bowtie_ring()})
+      assert has_element?(view, "#area-crossing")
+
+      render_hook(view, "flex_area_edited", %{"ring" => stored_ring(ctx, service, "a1")})
+
+      assert_push_event(view, "flex_map:crossing", %{lon: nil, lat: nil, reason: nil})
+      refute has_element?(view, "#area-crossing")
+      refute has_element?(view, "#use-area[disabled]")
+    end
+
+    test "the event is fenced to the editor's own tools, and a broken ring is ignored", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      ring = stored_ring(ctx, service, "a1")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+
+      # Pan is not a point tool: a crafted payload changes nothing at all.
+      render_hook(view, "flex_area_edited", %{"ring" => ring})
+
+      refute_push_event(view, "flex_map:crossing", _)
+      refute_push_event(view, "flex_map:mode", _)
+      assert text_of(doc(view), "#area-vertices") == ""
+
+      view |> element("#area-mode-edit") |> render_click()
+
+      # In edit mode the shapes the server cannot read are dropped: too few
+      # positions, an unclosed ring, a latitude outside its range and no ring.
+      render_hook(view, "flex_area_edited", %{"ring" => [[0, 0], [1, 0], [0, 0]]})
+      render_hook(view, "flex_area_edited", %{"ring" => [[0, 0], [1, 0], [1, 1], [0, 1]]})
+      render_hook(view, "flex_area_edited", %{"ring" => [[0, 0], [1, 0], [1, 999], [0, 0]]})
+      render_hook(view, "flex_area_edited", %{})
+
+      refute_push_event(view, "flex_map:crossing", _)
+      assert text_of(doc(view), "#area-vertices") == "4 points"
+    end
+
+    test "a ring over R8's vertex cap asks for Simplify instead of reaching PostGIS", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+      view |> element("#area-mode-edit") |> render_click()
+
+      render_hook(view, "flex_area_edited", %{"ring" => capped_ring()})
+
+      assert has_element?(view, "#area-error", "more than 5,000 points")
+      refute_push_event(view, "flex_map:crossing", _)
+      assert text_of(doc(view), "#area-vertices") == "4 points"
+    end
+
+    test "Simplify answers with the ring the map redraws", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+      view |> element("#area-mode-edit") |> render_click()
+
+      wiggly = wiggly_ring()
+      render_hook(view, "flex_area_edited", %{"ring" => wiggly})
+
+      assert has_element?(view, "#area-vertices", "#{length(wiggly) - 1} points")
+
+      # The server simplifies the candidate it holds, with R8's topology kept.
+      {:ok, %{geojson: normalized}} = Geometry.normalize(polygon(wiggly))
+      assert {:ok, simplified} = Geometry.simplify(normalized, 30)
+      simplified_ring = simplified["coordinates"] |> hd() |> hd()
+      expected = length(simplified_ring) - 1
+
+      assert expected < length(wiggly) - 1
+
+      view |> element("#area-simplify") |> render_click()
+
+      assert_push_event(view, "flex_map:ring", %{ring: ^simplified_ring, vertices: ^expected})
+      assert has_element?(view, "#area-vertices", "#{expected} points")
+      assert has_element?(view, "#area-simplify-note", "Simplified from #{length(wiggly) - 1}")
+      assert has_element?(view, "#area-simplify-note", "Undo restores the detail")
+    end
+
+    test "Simplify on the read-only map redraws through the payload", ctx do
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+      view |> element("#area-mode-edit") |> render_click()
+      render_hook(view, "flex_area_edited", %{"ring" => wiggly_ring()})
+
+      view |> element("#area-mode-pan") |> render_click()
+      view |> element("#area-simplify") |> render_click()
+
+      assert_push_event(view, "flex_map:load", %{
+        areas: [%{id: "area-candidate", role: "selected"}]
+      })
+
+      assert has_element?(view, "#area-simplify-note", "Simplified from")
+    end
+  end
+
   # --- helpers ----------------------------------------------------------------
 
   defp service_path(version, service), do: "/gtfs/#{version.id}/flex/#{service.id}"
+
+  # The ring the editor hands the map: the stored area's own closed outer ring.
+  defp stored_ring(ctx, service, key) do
+    area = Enum.find(stored(ctx, service).areas, &(&1.key == key))
+    geojson = Geometry.get_geojson([area.id]) |> Map.fetch!(area.id)
+
+    geojson |> Map.fetch!("coordinates") |> hd() |> hd()
+  end
+
+  defp polygon(ring), do: %{"type" => "Polygon", "coordinates" => [ring]}
+
+  # Moves one vertex of a closed ring, its repeated first vertex included.
+  defp replace_position([_first | rest] = _ring, 0, position) do
+    [position | List.replace_at(rest, -1, position)]
+  end
+
+  defp replace_position(ring, index, position), do: List.replace_at(ring, index, position)
+
+  # A self-crossing ring: its first and third edges cross near the middle.
+  defp bowtie_ring do
+    [
+      [-124.05, 44.6],
+      [-124.04, 44.61],
+      [-124.05, 44.61],
+      [-124.04, 44.6],
+      [-124.05, 44.6]
+    ]
+  end
+
+  # 5,001 positions along the Newport square's south edge: over R8's cap, so the
+  # editor must refuse it before any query runs.
+  defp capped_ring do
+    edge = for step <- 0..4_999, do: [-124.075 + step * 1.0e-8, 44.595]
+
+    edge ++ [List.first(edge)]
+  end
+
+  # A ring whose vertices wander within 5 m of the square's edges: 30 m of
+  # tolerance collapses them, which is what the Simplify case asks the server for.
+  defp wiggly_ring do
+    [[-124.075, 44.595], [-124.045, 44.595], [-124.045, 44.625], [-124.075, 44.625]]
+    |> wiggly_edges()
+  end
+
+  defp wiggly_edges(corners) do
+    corners
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {corner, index} ->
+      [corner | wiggly_between(corner, Enum.at(corners, rem(index + 1, 4)))]
+    end)
+    |> then(&(&1 ++ [List.first(&1)]))
+  end
+
+  defp wiggly_between([lon_a, lat_a], [lon_b, lat_b]) do
+    for step <- 1..9 do
+      at = step / 10
+      wobble = if rem(step, 2) == 0, do: 0.00005, else: -0.00005
+
+      [lon_a + (lon_b - lon_a) * at + wobble, lat_a + (lat_b - lat_a) * at + wobble]
+    end
+  end
 
   defp area_path(version, service, key),
     do: "/gtfs/#{version.id}/flex/#{service.id}/area?area=#{key}"

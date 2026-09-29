@@ -118,6 +118,16 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     "import" => :import
   }
 
+  # Point editing (AC-12). The tolerance is roughly a village street: 30 m takes
+  # the fine detail off a Census city limit without moving the boundary a rider
+  # would notice, and every simplification keeps its topology and holes (R8). The
+  # ring the editor accepts is R8's own 5,000-position cap, checked before the
+  # ring reaches PostGIS.
+  @area_simplify_tolerance_m 30
+  @area_max_vertices 5_000
+  @area_crossing_reason "The boundary crosses itself where the red mark is."
+  @area_too_many_reason "This boundary has more than 5,000 points. Use Simplify to make it editable."
+
   # The prototype's ADA preset: the eligibility sentence and the next-day rule
   # 49 CFR 37.131(b) describes.
   @ada_eligibility "Riders with ADA paratransit eligibility. Visitors eligible elsewhere may ride up to 21 days a year"
@@ -205,7 +215,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
      |> assign(:area_map_base, nil)
      |> assign(:area_map, nil)
      |> assign(:area_use_reason, nil)
-     |> assign(:area_name_error, nil)}
+     |> assign(:area_name_error, nil)
+     |> assign(:area_mode, :pan)
+     |> assign(:area_crossing, nil)
+     |> assign(:area_vertices, nil)
+     |> assign(:area_simplify_note, nil)
+     |> assign(:area_editable, false)}
   end
 
   @impl true
@@ -675,6 +690,58 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     {:noreply, push_patch(socket, to: service_path(socket))}
   end
 
+  # --- the area editor's point editing -------------------------------------------
+
+  # The map's own edits (AC-12): the hook sends the ring it holds after a drag,
+  # an insert, a removal or an arrow-key move, at most once per 300 ms burst. The
+  # ring is normalized and measured on the server like any picked boundary, and
+  # the answer is the crossing marker or its absence. Only the editor's own point
+  # tools may write the candidate.
+  @impl true
+  def handle_event("flex_area_edited", params, socket) do
+    if socket.assigns.area_mode in [:edit, :draw] do
+      edited_ring(socket, params)
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Pan, Edit points and Draw: which tool the map is in is the server's state, so
+  # the toolbar, the panel and the map's own mode all come from one place.
+  @impl true
+  def handle_event("area_mode", %{"mode" => "edit"}, socket) do
+    case editing_candidate(socket) do
+      nil ->
+        {:noreply, assign(socket, :area_error, no_candidate_reason(socket.assigns.area_source))}
+
+      candidate ->
+        # The mode is set before the measurement, so the payload the measurement
+        # refreshes is the one that already leaves the candidate to the hook.
+        socket =
+          socket
+          |> assign(:area_mode, :edit)
+          |> assign(:area_crossing, nil)
+          |> measure_candidate(candidate)
+
+        {:noreply, push_area_mode(socket)}
+    end
+  end
+
+  def handle_event("area_mode", %{"mode" => "pan"}, socket),
+    do: {:noreply, set_area_mode(socket, :pan)}
+
+  def handle_event("area_mode", _params, socket), do: {:noreply, socket}
+
+  # Simplify runs on the server (AC-12) and answers with the ring the map
+  # redraws: one undo entry for the hook, so Undo restores the detail.
+  @impl true
+  def handle_event("flex_area_simplify", _params, socket) do
+    case socket.assigns.area_candidate do
+      %{geojson: %{} = geojson} -> simplify_area(socket, geojson)
+      _no_candidate -> {:noreply, assign(socket, :area_error, "Set the area first.")}
+    end
+  end
+
   # --- the where section -------------------------------------------------------
 
   @impl true
@@ -951,7 +1018,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
                       error={@area_error}
                     />
                   <% :draw -> %>
-                    <FlexAreaEditorComponents.draw_panel />
+                    <FlexAreaEditorComponents.draw_panel error={@area_error} />
                   <% :import -> %>
                     <FlexAreaEditorComponents.import_panel
                       upload={@uploads.area_file}
@@ -964,7 +1031,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
                       name_field={@area_file && @area_file.name_field}
                     />
                   <% _choose -> %>
-                    <FlexAreaEditorComponents.choose_panel />
+                    <FlexAreaEditorComponents.choose_panel error={@area_error} />
                 <% end %>
 
                 <FlexAreaEditorComponents.stats_panel
@@ -981,7 +1048,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
             </div>
 
             <div class="order-1 min-w-0 lg:order-none">
-              <FlexAreaEditorComponents.area_map />
+              <FlexAreaEditorComponents.area_map
+                mode={@area_mode}
+                source={@area_source}
+                editable={@area_editable}
+                vertices={@area_vertices}
+                crossing={@area_crossing}
+                simplify_note={@area_simplify_note}
+              />
             </div>
           </div>
         </div>
@@ -1988,8 +2062,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:area_upload_error, nil)
     |> assign(:area_error, nil)
     |> assign(:area_name_error, nil)
+    |> assign(:area_mode, :pan)
+    |> assign(:area_crossing, nil)
+    |> assign(:area_vertices, nil)
+    |> assign(:area_simplify_note, nil)
     |> assign(:area_map_base, area_map_base(socket))
     |> refresh_area_map()
+    |> assign_area_editable()
     |> assign_area_use_reason()
   end
 
@@ -2056,10 +2135,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # from the geometry the editor holds, and every other active service's stored
   # areas muted. The draft's areas are drawn from `@area_geojson`, not from the
   # rows, because an area the editor has not saved yet has no row to read.
+  #
+  # While points are being edited the hook owns the ring, so the payload leaves
+  # the candidate out and the draft's areas become the faint reference the
+  # prototype draws its edited boundary over; otherwise the candidate is the
+  # selected area and the draft's own areas sit behind it.
   defp area_payload(socket) do
     base = socket.assigns.area_map_base || %{routes: [], stops: []}
-    candidate_areas = candidate_areas(socket)
-    own_role = if candidate_areas == [], do: "selected", else: "other"
+    candidate_areas = if socket.assigns.area_mode == :pan, do: candidate_areas(socket), else: []
+
+    own_role =
+      if candidate_areas == [] and socket.assigns.area_mode == :pan, do: "selected", else: "other"
 
     %{
       areas:
@@ -2118,7 +2204,60 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   defp refresh_area_map(socket) do
     payload = area_payload(socket)
+    socket = assign(socket, :area_map, payload)
+
+    # While points are being edited the hook owns the candidate's drawing, so the
+    # payload is held for the next mode change instead of being pushed under the
+    # user's hands, where it would re-fit the map on every edit.
+    if socket.assigns.area_mode == :pan do
+      push_event(socket, "flex_map:load", payload)
+    else
+      socket
+    end
+  end
+
+  # The map's payload and its mode travel together when a tool changes: the hook
+  # draws the ring it is editing, the payload leaves the candidate out, and
+  # neither of them draws the candidate twice.
+  defp push_area_payload(socket) do
+    payload = area_payload(socket)
     socket |> assign(:area_map, payload) |> push_event("flex_map:load", payload)
+  end
+
+  # Which tool the map is in, and the ring that tool starts from. The server owns
+  # the mode so the toolbar, the panel and the map cannot disagree about it.
+  defp set_area_mode(socket, mode) do
+    socket
+    |> assign(:area_mode, mode)
+    |> assign(:area_crossing, nil)
+    |> push_area_mode()
+  end
+
+  defp push_area_mode(socket) do
+    socket
+    |> push_event("flex_map:mode", mode_payload(socket, socket.assigns.area_mode))
+    |> push_area_payload()
+  end
+
+  defp mode_payload(socket, :edit) do
+    case socket.assigns.area_candidate do
+      %{geojson: %{} = geojson} ->
+        ring = outer_ring(geojson)
+        %{mode: "edit", ring: ring, vertices: ring_vertices(ring)}
+
+      _no_candidate ->
+        %{mode: "edit"}
+    end
+  end
+
+  defp mode_payload(_socket, :draw), do: %{mode: "draw"}
+  defp mode_payload(_socket, :pan), do: %{mode: "pan"}
+
+  # A candidate a source produced belongs to the read-only map: picking a town, a
+  # distance or a file while points are being edited hands the map back to the
+  # payload. The editor's own edits measure directly and stay in their mode.
+  defp leave_point_tools(socket) do
+    if socket.assigns.area_mode == :pan, do: socket, else: set_area_mode(socket, :pan)
   end
 
   # --- the area editor's sources ------------------------------------------------
@@ -2138,6 +2277,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
       :routes ->
         put_area_routes(socket, socket.assigns.area_route_ids, socket.assigns.area_distance)
+
+      # Drawing is a tool on the map, so choosing it hands the map over to the
+      # hook's draw mode; the other sources leave the hook's tools.
+      :draw ->
+        set_area_mode(socket, :draw)
 
       _other ->
         socket
@@ -2365,10 +2509,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   # --- the candidate ------------------------------------------------------------
 
+  # A candidate a source produced (a place, a route distance, a file): measured,
+  # and then the map back in the payload's hands.
+  defp put_area_candidate(socket, candidate) do
+    socket |> measure_candidate(candidate) |> leave_point_tools()
+  end
+
   # The candidate's own measurements: the area in km², the stops inside it, the
   # routes serving them, the overlap with other active services and the
-  # comparison with the saved area (AC-14, FH-7).
-  defp put_area_candidate(socket, candidate) do
+  # comparison with the saved area (AC-14, FH-7). The map's own edits measure the
+  # same way and stay in their mode, so this half is the one both paths share.
+  defp measure_candidate(socket, candidate) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
@@ -2399,14 +2550,193 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:area_stats, stats)
     |> assign(:area_overlaps, overlaps)
     |> assign(:area_compare, compare)
+    |> assign(:area_vertices, candidate_vertices(candidate))
     |> assign(:area_error, nil)
     |> refresh_area_map()
+    |> assign_area_editable()
     |> assign_area_use_reason()
   end
+
+  # The ring a point editor starts from: the candidate on screen, or the stored
+  # area the editor opened on, with its own name, source and provenance.
+  defp editing_candidate(socket) do
+    case socket.assigns.area_candidate do
+      %{geojson: %{}} = candidate -> candidate
+      _no_candidate -> stored_candidate(socket)
+    end
+  end
+
+  defp stored_candidate(socket) do
+    with %FlexArea{} = stored <-
+           Enum.find(socket.assigns.draft.areas, &(&1.key == socket.assigns.area_key)),
+         {:ok, %{} = geojson} <- Map.fetch(socket.assigns.area_geojson, geojson_key(stored)) do
+      %{
+        geojson: geojson,
+        source: stored.source,
+        census_geoid: stored.census_geoid,
+        census_layer: stored.census_layer,
+        census_vintage: stored.census_vintage,
+        route_ids: stored.route_ids,
+        distance_m: stored.distance_m
+      }
+    else
+      _no_stored_area -> nil
+    end
+  end
+
+  # The candidate an edit works on: the geometry changes, the source and the
+  # provenance stay, so a moved Census boundary still says where it came from and
+  # a boundary drawn from scratch starts as a drawn area.
+  defp edited_candidate(socket) do
+    case socket.assigns.area_candidate do
+      %{geojson: %{}} = candidate -> candidate
+      _no_candidate -> %{geojson: nil, source: :drawn, route_ids: [], distance_m: nil}
+    end
+  end
+
+  # The first polygon's outer ring; the R8 output is always a MultiPolygon and a
+  # derived area may be a Polygon.
+  defp outer_ring(%{"type" => "MultiPolygon", "coordinates" => [[ring | _holes] | _rest]})
+       when is_list(ring),
+       do: ring
+
+  defp outer_ring(%{"type" => "Polygon", "coordinates" => [ring | _holes]}) when is_list(ring),
+    do: ring
+
+  defp outer_ring(_geojson), do: nil
+
+  # The edited ring replaces the first polygon's outer ring; every hole and every
+  # other part stays, so editing cannot drop the water a Census boundary left out
+  # or a second part of an imported file.
+  defp replace_outer_ring(
+         %{"type" => "MultiPolygon", "coordinates" => [[_ring | holes] | rest]},
+         ring
+       ),
+       do: %{"type" => "MultiPolygon", "coordinates" => [[ring | holes] | rest]}
+
+  defp replace_outer_ring(%{"type" => "Polygon", "coordinates" => [_ring | holes]}, ring),
+    do: %{"type" => "Polygon", "coordinates" => [ring | holes]}
+
+  defp replace_outer_ring(_geojson, ring),
+    do: %{"type" => "Polygon", "coordinates" => [ring]}
+
+  # The positions a ring holds, its repeated closing vertex not counted.
+  defp ring_vertices([first | _rest] = ring) do
+    if List.last(ring) == first, do: length(ring) - 1, else: length(ring)
+  end
+
+  defp ring_vertices(_ring), do: 0
+
+  defp candidate_vertices(%{geojson: %{} = geojson}) do
+    case outer_ring(geojson) do
+      ring when is_list(ring) -> ring_vertices(ring)
+      _no_ring -> nil
+    end
+  end
+
+  defp candidate_vertices(_candidate), do: nil
+
+  # A ring the hook may have pushed: closed, a triangle or more, every position
+  # [lon, lat] inside GeoJSON's own range and under R8's vertex cap. Anything else
+  # never reaches PostGIS. The mode above already fences who may push at all.
+  defp edited_ring(socket, %{"ring" => ring}) when is_list(ring) do
+    cond do
+      not editable_ring?(ring) ->
+        {:noreply, socket}
+
+      length(ring) > @area_max_vertices ->
+        {:noreply, assign(socket, :area_error, @area_too_many_reason)}
+
+      true ->
+        accept_edited_ring(socket, ring)
+    end
+  end
+
+  defp edited_ring(socket, _params), do: {:noreply, socket}
+
+  defp editable_ring?([_first | _rest] = ring) do
+    length(ring) >= 4 and Enum.all?(ring, &editable_position?/1) and
+      List.first(ring) == List.last(ring)
+  end
+
+  defp editable_ring?(_ring), do: false
+
+  defp editable_position?([lon, lat | _rest]),
+    do: is_number(lon) and is_number(lat) and abs(lon) <= 180 and abs(lat) <= 90
+
+  defp editable_position?(_position), do: false
+
+  # The server's verdict on the edited ring. A valid one becomes the candidate
+  # (the normalized geometry, measured for the panel and the comparison) and
+  # clears the map's marker; an invalid one keeps the last measurement, names the
+  # crossing point and disables "Use this area" with the reason.
+  defp accept_edited_ring(socket, ring) do
+    base = edited_candidate(socket)
+
+    case Geometry.normalize(replace_outer_ring(base.geojson, ring)) do
+      {:ok, %{geojson: geojson}} ->
+        socket
+        |> assign(:area_crossing, nil)
+        |> assign(:area_simplify_note, nil)
+        |> measure_candidate(%{base | geojson: geojson})
+        |> push_event("flex_map:crossing", %{lon: nil, lat: nil, reason: nil})
+
+      {:error, {:invalid, reason, [lon, lat]}} ->
+        socket
+        |> assign(:area_error, nil)
+        |> assign(:area_crossing, %{lon: lon, lat: lat, reason: reason})
+        |> assign(:area_vertices, ring_vertices(ring))
+        |> assign(:area_simplify_note, nil)
+        |> assign_area_use_reason()
+        |> push_event("flex_map:crossing", %{lon: lon, lat: lat, reason: reason})
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket, :area_error, "That boundary can’t be used: #{area_reason(reason)}.")}
+    end
+  end
+
+  defp simplify_area(socket, geojson) do
+    before = socket.assigns.area_vertices || 0
+
+    case Geometry.simplify(geojson, @area_simplify_tolerance_m) do
+      {:ok, simplified} ->
+        ring = outer_ring(simplified)
+        vertices = ring_vertices(ring)
+
+        socket =
+          socket
+          |> assign(:area_crossing, nil)
+          |> assign(
+            :area_simplify_note,
+            "Simplified from #{before} to #{vertices} points. Undo restores the detail."
+          )
+          |> measure_candidate(%{edited_candidate(socket) | geojson: simplified})
+
+        # The map redraws the simplified ring either way: as the ring the hook is
+        # editing (with an undo entry) or, on the read-only map, as the payload.
+        if socket.assigns.area_mode == :pan do
+          {:noreply, push_area_payload(socket)}
+        else
+          {:noreply, push_event(socket, "flex_map:ring", %{ring: ring, vertices: vertices})}
+        end
+
+      {:error, {:invalid, reason, _location}} ->
+        {:noreply,
+         assign(socket, :area_error, "The boundary could not be simplified: #{reason}.")}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, :area_error, "The boundary could not be simplified.")}
+    end
+  end
+
+  defp assign_area_editable(socket),
+    do: assign(socket, :area_editable, editing_candidate(socket) != nil)
 
   defp assign_area_use_reason(socket) do
     reason =
       cond do
+        socket.assigns.area_crossing -> @area_crossing_reason
         not candidate_ready?(socket) -> no_candidate_reason(socket.assigns.area_source)
         String.trim(socket.assigns.area_name) == "" -> @area_name_reason
         true -> nil

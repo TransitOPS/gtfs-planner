@@ -91,12 +91,18 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   The four ways to set an area, in the reference's order: official Census town
   limits first, then distance from routes, drawing and a GeoJSON file.
   """
+  attr :error, :string, default: nil
+
   def choose_panel(assigns) do
     ~H"""
     <div>
       <.panel_heading>How do you want to set the area?</.panel_heading>
       <p class="mt-1 text-[13px] text-muted">
         You can adjust the boundary afterwards whichever way you start.
+      </p>
+
+      <p :if={@error} id="area-error" role="alert" class="mt-2 text-sm font-[650] text-error-fg">
+        {@error}
       </p>
 
       <div class="mt-3 grid gap-2">
@@ -488,11 +494,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   end
 
   @doc """
-  Drawing on the map: the reference's own instructions. The map's point tools
-  (click to place, drag, insert, delete, arrow-key moves, undo and simplify)
-  arrive with step 25, so this panel states the state and the way back rather
-  than pretending to edit.
+  Drawing on the map: the reference's own instructions. The tools themselves are
+  the map's toolbar beside it (step 25), so this panel says what the map does
+  rather than pretending to edit.
   """
+  attr :error, :string, default: nil
+
   def draw_panel(assigns) do
     ~H"""
     <div>
@@ -505,13 +512,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         <li>Backspace removes the last point. Escape stops drawing.</li>
       </ol>
 
-      <.callout
-        id="area-draw-soon"
-        kind="info"
-        title="The map's point tools are not available yet"
-        class="mt-3"
-      >
-        Clicking points, dragging them, undo and simplify arrive with the next change. Start from town limits, a distance from routes or a file.
+      <p :if={@error} id="area-error" role="alert" class="mt-2 text-sm font-[650] text-error-fg">
+        {@error}
+      </p>
+
+      <.callout id="area-draw-tools" kind="info" title="Editing points" class="mt-3">
+        Drag a point to move it, click the boundary to add one, Delete to remove the selected point, and Undo or Redo for every change. Arrow keys move the selected point 20 m (100 m with Shift). Previous point and Next point walk the boundary. Simplify runs on the server and keeps the boundary valid.
       </.callout>
     </div>
     """
@@ -593,22 +599,166 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   end
 
   @doc """
-  The map the editor draws the candidate on, read-only until step 25: the
-  shared `FlexAreaMap` hook owns the stage and the server answers its handshake
-  with the payload the editor built.
+  The map the editor draws the candidate on, with the point tools above it
+  (AC-12): Pan, Edit points and Draw on the left, Undo, Redo, Simplify and the
+  point walk on the right, and the boundary's own count beside them. The
+  crossing message and the simplification's result sit under the toolbar, where
+  the reason "Use this area" is disabled stays next to the map it explains.
+
+  The shared `FlexAreaMap` hook owns the map stage; Pan, Edit points, Draw and
+  Simplify are the server's events, while Undo, Redo and Previous/Next point
+  dispatch a DOM action because the history and the handle focus live in the
+  hook. Undo, Redo and the point walk carry no server-rendered disabled state:
+  the hook enables them when the history has somewhere to go.
   """
+  attr :mode, :atom, required: true
+  attr :source, :atom, required: true
+  attr :editable, :boolean, required: true
+  attr :vertices, :integer, default: nil
+  attr :crossing, :any, default: nil
+  attr :simplify_note, :string, default: nil
+
   def area_map(assigns) do
     ~H"""
-    <div
-      id="flex-area-map"
-      phx-hook="FlexAreaMap"
-      phx-update="ignore"
-      class="overflow-hidden border-subtle lg:border-l"
-    >
-      <div class="flex-map-stage h-[62vh] min-h-[480px] bg-canvas lg:h-[calc(100dvh-200px)]"></div>
+    <div class="flex h-full flex-col">
+      <div
+        id="flex-area-tools"
+        class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-subtle px-3 py-2"
+      >
+        <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Map tools">
+          <.map_button id="area-mode-pan" event="area_mode" value="pan" pressed={@mode == :pan}>
+            Pan
+          </.map_button>
+          <.map_button
+            id="area-mode-edit"
+            event="area_mode"
+            value="edit"
+            pressed={@mode == :edit}
+            disabled={not @editable}
+            title={not @editable && "Set the area first."}
+          >
+            Edit points
+          </.map_button>
+          <.map_button
+            id="area-mode-draw"
+            event="choose_source"
+            value="draw"
+            pressed={@mode == :draw}
+          >
+            Draw
+          </.map_button>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Boundary edits">
+          <.map_action id="area-undo" action="undo">Undo</.map_action>
+          <.map_action id="area-redo" action="redo">Redo</.map_action>
+          <button
+            type="button"
+            id="area-simplify"
+            phx-click="flex_area_simplify"
+            disabled={@vertices == nil}
+            class="inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted"
+          >
+            Simplify
+          </button>
+          <.map_action id="area-prev-point" action="previous_point">Previous point</.map_action>
+          <.map_action id="area-next-point" action="next_point">Next point</.map_action>
+        </div>
+
+        <p id="area-vertices" class="ml-auto text-[13px] tabular-nums text-muted">
+          {vertices_text(@vertices)}
+        </p>
+      </div>
+
+      <.callout
+        :if={@crossing}
+        id="area-crossing"
+        kind="error"
+        title="The boundary crosses itself"
+        class="rounded-none"
+      >
+        Move the point at the red mark so the edges don’t cross. Exports refuse a boundary that crosses itself.
+      </.callout>
+
+      <p
+        :if={@simplify_note}
+        id="area-simplify-note"
+        role="status"
+        class="border-b border-subtle px-3 py-2 text-[13px] text-muted"
+      >
+        {@simplify_note}
+      </p>
+
+      <div
+        id="flex-area-map"
+        phx-hook="FlexAreaMap"
+        phx-update="ignore"
+        class="relative min-h-0 flex-1 overflow-hidden border-subtle lg:border-l"
+      >
+        <div class="flex-map-stage h-[62vh] min-h-[480px] bg-canvas lg:h-[calc(100dvh-244px)]"></div>
+      </div>
     </div>
     """
   end
+
+  # One map-tool button: the server's event, and its pressed state on screen as
+  # well as in aria (daisyUI's outline carries no pressed look by itself).
+  attr :id, :string, required: true
+  attr :event, :string, required: true
+  attr :value, :string, required: true
+  attr :pressed, :boolean, default: false
+  attr :disabled, :boolean, default: false
+  attr :title, :string, default: nil
+  slot :inner_block, required: true
+
+  defp map_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      phx-click={@event}
+      phx-value-mode={@event == "area_mode" && @value}
+      phx-value-source={@event == "choose_source" && @value}
+      aria-pressed={to_string(@pressed)}
+      disabled={@disabled}
+      title={@title}
+      class={[
+        "inline-flex min-h-9 items-center rounded-control border border-control px-3 text-sm font-[650]",
+        @pressed && "bg-action text-white hover:bg-action-hover",
+        !@pressed && "bg-white text-strong hover:bg-canvas",
+        @disabled && "cursor-not-allowed text-muted"
+      ]}
+    >
+      {render_slot(@inner_block)}
+    </button>
+    """
+  end
+
+  # One of the hook's own buttons: a DOM action, not a server event, because the
+  # history and the handle focus never leave the browser. The disabled state
+  # starts on and the hook keeps it true to what the history can do.
+  attr :id, :string, required: true
+  attr :action, :string, required: true
+  attr :disabled, :boolean, default: true
+  slot :inner_block, required: true
+
+  defp map_action(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      phx-click={JS.dispatch("flex-area:action", to: "#flex-area-map", detail: %{action: @action})}
+      disabled={@disabled}
+      class="inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted"
+    >
+      {render_slot(@inner_block)}
+    </button>
+    """
+  end
+
+  defp vertices_text(nil), do: ""
+  defp vertices_text(1), do: "1 point"
+  defp vertices_text(count), do: "#{count} points"
 
   # --- shared parts -----------------------------------------------------------
 
