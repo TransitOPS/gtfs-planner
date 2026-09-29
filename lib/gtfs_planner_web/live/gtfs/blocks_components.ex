@@ -129,23 +129,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the whole-day count strip and the day-type note.
+  Renders the whole-day count strip, the plan figures beside it and the day-type
+  note.
 
   Every figure is the whole day type's, so the route filter, “Problems only”
   and any paging leave them unchanged. Each item is a button: the unassigned
-  figure opens the unassigned panel and the problems and peak figures open
-  their drawer. The items whose key names no target (`blocks`, `notices`) are
-  ignored by the handler.
+  figure opens the unassigned panel, the problems figure opens its drawer and
+  the three plan figures after the divider all open the Plan summary — the
+  drawer step 36 names `plan_summary`, which is why they send that one value
+  rather than their own keys. The items whose key names no target (`blocks`,
+  `notices`) are ignored by the handler.
   """
   attr :day_type, :map, required: true
   attr :counts, :map, required: true
+  attr :figures, :map, required: true
   attr :peak, :map, required: true
   attr :open_drawer, :atom, default: nil
 
   def summary_strip(assigns) do
     assigns =
       assigns
-      |> assign(:items, count_items(assigns.counts, assigns.peak))
+      |> assign(:items, count_items(assigns.counts))
+      |> assign(:figure_items, figure_items(assigns.figures, assigns.peak))
       |> assign(:selected_key, assigns.open_drawer && Atom.to_string(assigns.open_drawer))
 
     ~H"""
@@ -160,6 +165,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         event="open_drawer"
         selected_key={@selected_key}
       />
+      <span
+        id="blocks-summary-divider"
+        class="w-px shrink-0 self-stretch bg-base-300"
+        aria-hidden="true"
+      >
+      </span>
+      <.count_strip
+        id="blocks-summary-figures"
+        items={@figure_items}
+        event="open_drawer"
+        event_value="plan_summary"
+        selected_key={@selected_key}
+      />
       <span id="blocks-peak-detail" class="text-sm text-base-content/70">
         {peak_detail(@peak)}
       </span>
@@ -167,6 +185,92 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         Whole day type · {date_count_label(@day_type.date_count)}
       </span>
     </section>
+    """
+  end
+
+  @doc """
+  Renders the page-level notices above the workbench: the fleet shortfall, the
+  two fleet-setup notices, and nothing at all when the version has what the
+  plan needs.
+
+  The order is the one a planner acts in: a garage is needed before a vehicle
+  can be listed against it, so a version with no garage is told that and not
+  also about a fleet it cannot check yet. A shortfall is the plan's own
+  `:fleet_shortfall` finding rendered as a sentence per short row, so the
+  numbers are `Fleet.rows/2`'s and the garage and type names are the ones the
+  day load resolved. The notice offers the Plan summary and the Fleet settings;
+  it never covers the workbench, and each notice is a real anchor or button.
+  """
+  attr :fleet_shortfalls, :list, required: true
+  attr :garages?, :boolean, required: true
+  attr :vehicles?, :boolean, required: true
+  attr :version_id, :string, required: true
+
+  def plan_notices(assigns) do
+    ~H"""
+    <div id="blocks-notices" class="space-y-3">
+      <.callout
+        :if={!@garages?}
+        id="blocks-no-garages"
+        kind="info"
+        title="Add a garage to plan travel to and from the garage."
+      >
+        Driving between stops still shows. Suggestions need at least one garage.
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <.link
+            id="blocks-no-garages-link"
+            navigate={"/gtfs/#{@version_id}/settings/garages"}
+            class="link link-primary inline-flex min-h-11 items-center"
+          >
+            Go to Settings › Garages
+          </.link>
+        </div>
+      </.callout>
+      <.callout
+        :if={@garages? and not @vehicles?}
+        id="blocks-no-vehicles"
+        kind="info"
+        title="Fleet limits aren’t checked."
+      >
+        No vehicles are listed, so the page can’t tell whether each garage has enough.
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <.link
+            id="blocks-no-vehicles-link"
+            navigate={"/gtfs/#{@version_id}/settings/fleet"}
+            class="link link-primary inline-flex min-h-11 items-center"
+          >
+            Go to Settings › Fleet
+          </.link>
+        </div>
+      </.callout>
+      <.callout
+        :if={@fleet_shortfalls != []}
+        id="blocks-fleet-shortfall"
+        kind="error"
+        title="Not enough vehicles."
+      >
+        <span data-role="blocks-shortfall-summary">{shortfall_summary(@fleet_shortfalls)}</span>
+        Rebuilding blocks can’t fix this; add vehicles or move blocks to another garage.
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            id="blocks-fleet-shortfall-summary"
+            type="button"
+            phx-click="open_drawer"
+            phx-value-key="plan_summary"
+            class="btn btn-sm min-h-11"
+          >
+            Open plan summary
+          </button>
+          <.link
+            id="blocks-fleet-shortfall-fleet-link"
+            navigate={"/gtfs/#{@version_id}/settings/fleet"}
+            class="link link-primary inline-flex min-h-11 items-center"
+          >
+            Go to Settings › Fleet
+          </.link>
+        </div>
+      </.callout>
+    </div>
     """
   end
 
@@ -397,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       id="peak-drawer"
       open={@open}
       title="Peak vehicles out"
-      return_focus_id="blocks-summary-counts-item-peak"
+      return_focus_id="blocks-summary-figures-item-peak"
     >
       <p class="text-sm font-semibold">{peak_headline(@peak)} · whole day type</p>
       <p class="mt-1 text-sm text-base-content/70">
@@ -2798,14 +2902,56 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp date_count_label(1), do: "1 date"
   defp date_count_label(count), do: "#{count} dates"
 
-  defp count_items(counts, peak) do
+  defp count_items(counts) do
     [
       %{key: "blocks", label: "Blocks", count: counts.blocks, tone: :neutral},
       %{key: "unassigned", label: "Unassigned trips", count: counts.unassigned, tone: :info},
       %{key: "problems", label: "Problems", count: counts.problems, tone: :error},
-      %{key: "notices", label: "Notices", count: counts.notices, tone: :warning},
-      %{key: "peak", label: "Peak vehicles out", count: peak.count, tone: :neutral}
+      %{key: "notices", label: "Notices", count: counts.notices, tone: :warning}
     ]
+  end
+
+  # The three plan figures the Plan summary owns (AC-34). Each keeps its own key
+  # so its button is a stable DOM id, and the strip sends `plan_summary` for all
+  # three. The minimum is the day's lower bound and the peak is the day's own,
+  # so both are the whole day type's whatever the workspace is showing.
+  defp figure_items(figures, peak) do
+    [
+      %{
+        key: "vehicles",
+        label: "Vehicles",
+        count: figures.vehicles,
+        detail: "· minimum #{figures.minimum}",
+        tone: :neutral
+      },
+      %{
+        key: "riders",
+        label: "Time with riders",
+        count: figures.riders,
+        value: "#{figures.riders}%",
+        tone: :neutral
+      },
+      %{
+        key: "peak",
+        label: "Peak out",
+        count: peak.count,
+        detail: peak_detail_suffix(peak),
+        tone: :neutral
+      }
+    ]
+  end
+
+  defp peak_detail_suffix(%{at_secs: nil}), do: nil
+  defp peak_detail_suffix(peak), do: "at #{clock(peak.at_secs)}"
+
+  # One sentence per short fleet row, in the day's own row order: the typed row
+  # before the garage total, so a garage short on both reads as two checks
+  # rather than one repeated line.
+  defp shortfall_summary(shortfalls) do
+    Enum.map_join(shortfalls, " ", fn row ->
+      "#{row.garage} · #{row.type}: needs #{row.needed} at #{clock(row.at_secs)}, " <>
+        "#{row.listed} listed."
+    end)
   end
 
   defp peak_detail(%{at_secs: nil}), do: "No block is timed"
