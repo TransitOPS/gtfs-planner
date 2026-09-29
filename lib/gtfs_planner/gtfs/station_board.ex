@@ -12,6 +12,9 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
   result to those summaries, counting with the station report's own `Outcome`
   rule so a board row cannot disagree with the report it links to.
 
+  `classify/2` turns those summaries into a stage, and `query/3` filters,
+  searches, orders, pages and counts the board in memory for the current params.
+
   Every read is scoped by organization and version; the caller passes both ids
   from the mount context and no request input selects them.
   """
@@ -48,6 +51,24 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
         }
 
   @type status :: %{issues: non_neg_integer(), reachability: nil | reachability()}
+
+  @type stage :: :not_started | :in_progress | :clean | :unknown
+
+  @type params :: %{
+          stage: :all | :not_started | :in_progress | :clean,
+          q: String.t(),
+          page: pos_integer()
+        }
+
+  @page_size 12
+  @max_query_length 100
+
+  @stage_params %{
+    "all" => :all,
+    "not_started" => :not_started,
+    "in_progress" => :in_progress,
+    "clean" => :clean
+  }
 
   @doc """
   Returns one summary per station of the version, sorted by `stop_id`.
@@ -145,6 +166,84 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
 
       {base.stop_id, %{issues: issues, reachability: station_reachability(latest, base)}}
     end)
+  end
+
+  @doc """
+  Returns the board stage of a station summary.
+
+  A station without pathways is not started regardless of its status. A station
+  with pathways and no status (statuses unavailable) is unknown. Otherwise the
+  station is clean when it has no issues and its latest reachability run passed
+  and is not stale; every other station with pathways is in progress.
+  """
+  @spec classify(base(), status() | nil) :: stage()
+  def classify(%{pathway_count: 0}, _status), do: :not_started
+
+  def classify(_base, nil), do: :unknown
+
+  def classify(_base, %{issues: 0, reachability: %{outcome: :passed, stale?: false}}),
+    do: :clean
+
+  def classify(_base, _status), do: :in_progress
+
+  @doc """
+  Normalizes the board's URL params, never raising on unexpected values.
+
+  An unknown stage falls back to `:all`, the search term is trimmed to at most
+  #{@max_query_length} characters, and a page that is not a positive integer
+  falls back to 1.
+  """
+  @spec parse_params(map()) :: params()
+  def parse_params(params) do
+    %{
+      stage: parse_stage(Map.get(params, "stage")),
+      q: parse_query(Map.get(params, "q")),
+      page: parse_page(Map.get(params, "page"))
+    }
+  end
+
+  @doc """
+  Filters, searches, orders, pages and counts the board for one version.
+
+  The stage counts are version totals: they describe every station, not only
+  the rows matching the stage filter or `q`, and the status-dependent counts are
+  `nil` when statuses are `:unavailable`. Rows are ordered by `last_edited_at`
+  descending with never-edited stations last, then by name; the `:not_started`
+  filter orders by name. A page holds #{@page_size} rows, and a page beyond the
+  last one is clamped to the last page.
+  """
+  @spec query([base()], %{String.t() => status()} | :unavailable, params()) :: %{
+          rows: [%{base: base(), status: status() | nil, stage: stage()}],
+          page: pos_integer(),
+          total_pages: pos_integer(),
+          total: non_neg_integer(),
+          counts: %{
+            all: non_neg_integer(),
+            not_started: non_neg_integer(),
+            in_progress: non_neg_integer() | nil,
+            clean: non_neg_integer() | nil
+          }
+        }
+  def query(bases, statuses, params) do
+    classified = Enum.map(bases, &classify_row(&1, statuses))
+
+    rows =
+      classified
+      |> filter_stage(params.stage)
+      |> filter_query(params.q)
+      |> sort_rows(params.stage)
+
+    total = length(rows)
+    total_pages = max(div(total + @page_size - 1, @page_size), 1)
+    page = params.page |> max(1) |> min(total_pages)
+
+    %{
+      rows: Enum.slice(rows, (page - 1) * @page_size, @page_size),
+      page: page,
+      total_pages: total_pages,
+      total: total,
+      counts: stage_counts(classified, statuses)
+    }
   end
 
   defp build(stations, organization_id, gtfs_version_id) do
@@ -367,4 +466,83 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
     )
     |> Repo.all()
   end
+
+  defp classify_row(base, :unavailable),
+    do: %{base: base, status: nil, stage: classify(base, nil)}
+
+  defp classify_row(base, statuses) do
+    status = Map.get(statuses, base.stop_id)
+    %{base: base, status: status, stage: classify(base, status)}
+  end
+
+  defp filter_stage(rows, :all), do: rows
+  defp filter_stage(rows, stage), do: Enum.filter(rows, &(&1.stage == stage))
+
+  defp filter_query(rows, ""), do: rows
+
+  defp filter_query(rows, q) do
+    needle = String.downcase(q)
+    Enum.filter(rows, &matches_query?(&1.base, needle))
+  end
+
+  defp matches_query?(base, needle) do
+    String.contains?(String.downcase(base.stop_id), needle) or
+      (is_binary(base.name) and String.contains?(String.downcase(base.name), needle))
+  end
+
+  defp sort_rows(rows, :not_started), do: Enum.sort_by(rows, &name_sort_key/1)
+  defp sort_rows(rows, _stage), do: Enum.sort_by(rows, &edit_sort_key/1)
+
+  defp name_sort_key(%{base: base}), do: {is_nil(base.name), base.name || "", base.stop_id}
+
+  defp edit_sort_key(%{base: base}) do
+    {
+      is_nil(base.last_edited_at),
+      negated_microseconds(base.last_edited_at),
+      is_nil(base.name),
+      base.name || "",
+      base.stop_id
+    }
+  end
+
+  defp negated_microseconds(nil), do: nil
+  defp negated_microseconds(last_edited_at), do: -DateTime.to_unix(last_edited_at, :microsecond)
+
+  defp stage_counts(classified, :unavailable) do
+    %{
+      all: length(classified),
+      not_started: Enum.count(classified, &(&1.stage == :not_started)),
+      in_progress: nil,
+      clean: nil
+    }
+  end
+
+  defp stage_counts(classified, _statuses) do
+    %{
+      all: length(classified),
+      not_started: Enum.count(classified, &(&1.stage == :not_started)),
+      in_progress: Enum.count(classified, &(&1.stage == :in_progress)),
+      clean: Enum.count(classified, &(&1.stage == :clean))
+    }
+  end
+
+  defp parse_stage(stage) when is_binary(stage), do: Map.get(@stage_params, stage, :all)
+  defp parse_stage(_stage), do: :all
+
+  defp parse_query(q) when is_binary(q) do
+    q |> String.trim() |> String.slice(0, @max_query_length)
+  end
+
+  defp parse_query(_q), do: ""
+
+  defp parse_page(page) when is_integer(page) and page > 0, do: page
+
+  defp parse_page(page) when is_binary(page) do
+    case Integer.parse(page) do
+      {number, ""} when number > 0 -> number
+      _invalid -> 1
+    end
+  end
+
+  defp parse_page(_page), do: 1
 end
