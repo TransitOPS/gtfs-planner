@@ -100,6 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Ecto.Query, only: [from: 2]
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.FlexFixtures
@@ -109,6 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Geometry
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest.ControlledBoundaries
   alias GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest.UnavailableBoundaries
@@ -504,6 +506,28 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
 
       refute has_element?(view, "#area-stats")
       assert has_element?(view, "#use-area[disabled]")
+    end
+
+    test "a route chip takes the text color that reads on its own color", ctx do
+      {1, nil} =
+        Repo.update_all(
+          from(r in Route,
+            where: r.gtfs_version_id == ^ctx.version.id and r.route_id == "20"
+          ),
+          set: [route_color: "FFD200"]
+        )
+
+      service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view |> element("#edit-area-a1") |> render_click()
+      view |> element("#area-mode-routes") |> render_click()
+
+      chip = doc(view) |> LazyHTML.query("#area-route-20 span[style]")
+
+      assert LazyHTML.attribute(chip, "style") == ["background-color: #FFD200; color: #000000"]
     end
   end
 

@@ -25,12 +25,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   import GtfsPlannerWeb.Gtfs.FlexComponents,
     only: [census_layer_label: 1, distance_metres: 1, join_help: 1, km2_text: 1]
 
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+
   alias GtfsPlanner.Boundaries
+  alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
   The editor's page header: the way back to the service, the editor's title, and
   the two actions that leave the editor — Cancel, and Use this area, which stays
   disabled with its reason while the candidate is not usable yet.
+
+  The way back is a button that sends `cancel_area` rather than
+  `<.back_link>`, which navigates: the event patches to the service page, so the
+  draft the person is editing survives the trip, and a navigation would remount
+  the page and drop it.
   """
   attr :service, :any, required: true
   attr :title, :string, required: true
@@ -38,51 +46,51 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
 
   def editor_header(assigns) do
     ~H"""
-    <div class="flex flex-wrap items-end justify-between gap-4 pb-3 pt-3">
-      <div class="min-w-0">
-        <button
-          type="button"
-          id="area-back"
-          phx-click="cancel_area"
-          class="inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action hover:underline"
-        >
-          <.icon name="hero-chevron-left" class="size-4" /> {@service.name}
-        </button>
-        <h1
-          id="area-title"
-          tabindex="-1"
-          class="text-[32px] font-bold leading-9 text-strong outline-none"
-        >
-          {@title}
-        </h1>
-      </div>
+    <div id="area-header" class="pt-3">
+      <button
+        type="button"
+        id="area-back"
+        phx-click="cancel_area"
+        class={[
+          "-ml-2 inline-flex min-h-11 items-center gap-1 rounded-control px-2 text-sm font-[650] text-muted",
+          "hover:bg-canvas hover:text-strong",
+          focus_class()
+        ]}
+      >
+        <.icon name="hero-chevron-left" class="size-4" /> {@service.name}
+      </button>
 
-      <div class="flex flex-wrap items-center gap-3">
-        <p id="area-subtitle" class="max-w-[34ch] text-right text-[13px] text-muted">
-          The service keeps this area when you save it.
-        </p>
-        <button
-          type="button"
-          id="cancel-area"
-          phx-click="cancel_area"
-          class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          id="use-area"
-          phx-click="use_area"
-          disabled={@use_reason != nil}
-          aria-describedby={@use_reason && "use-area-reason"}
-          class="inline-flex min-h-11 items-center rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-action-hover disabled:cursor-not-allowed disabled:bg-canvas disabled:text-muted"
-        >
-          Use this area
-        </button>
-        <p :if={@use_reason} id="use-area-reason" class="text-[13px] font-[650] text-warning-fg">
-          {@use_reason}
-        </p>
-      </div>
+      <.header>
+        <span id="area-title">{@title}</span>
+        <:subtitle>
+          <span id="area-subtitle">The service keeps this area when you save it.</span>
+        </:subtitle>
+        <:actions>
+          <span :if={@use_reason} id="use-area-reason" class="text-[13px] font-[650] text-warning-fg">
+            {@use_reason}
+          </span>
+          <.button
+            id="cancel-area"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="cancel_area"
+          >
+            Cancel
+          </.button>
+          <.button
+            id="use-area"
+            type="button"
+            class="min-h-11"
+            phx-click="use_area"
+            disabled={@use_reason != nil}
+            data-unavailable={@use_reason != nil}
+            aria-describedby={@use_reason && "use-area-reason"}
+          >
+            Use this area
+          </.button>
+        </:actions>
+      </.header>
     </div>
     """
   end
@@ -166,45 +174,46 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
       <.back_to_choose />
       <.panel_heading>Town or city limits</.panel_heading>
 
-      <div
+      <.message
         :if={@state == :unavailable}
         id="census-unavailable"
-        role="alert"
-        class="mt-3 rounded-card border border-warning-line bg-warning-bg px-3 py-3 text-sm text-warning-fg"
+        kind="warning"
+        title="Census boundaries unavailable"
+        class="mt-3"
       >
-        <p class="font-[650]">Census boundaries unavailable</p>
-        <p class="mt-1">
-          The Census Bureau’s boundary service didn’t answer. Areas you’ve already saved aren’t affected. Try again later, import a boundary file from your county GIS, or draw the area.
-        </p>
+        The Census Bureau’s boundary service didn’t answer. Areas you’ve already saved aren’t affected. Try again later, import a boundary file from your county GIS, or draw the area.
         <div class="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
+          <.button
             id="census-retry"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
             phx-click="census_retry"
-            class="inline-flex min-h-11 items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
           >
             <.icon name="hero-arrow-path" class="size-4" /> Try again
-          </button>
-          <button
-            type="button"
+          </.button>
+          <.button
             id="census-draw"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
             phx-click="choose_source"
             phx-value-source="draw"
-            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
           >
             Draw on the map
-          </button>
-          <button
-            type="button"
+          </.button>
+          <.button
             id="census-import"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
             phx-click="choose_source"
             phx-value-source="import"
-            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
           >
             Import a file
-          </button>
+          </.button>
         </div>
-      </div>
+      </.message>
 
       <p
         :if={@state == :loading and @slow?}
@@ -212,8 +221,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         role="status"
         class="mt-3 flex items-center gap-2 text-sm text-muted"
       >
-        <span class="loading loading-spinner loading-sm" aria-hidden="true"></span>
-        Asking the Census Bureau…
+        <.icon
+          name="hero-arrow-path"
+          class="size-4 shrink-0 text-cyan-700 motion-safe:animate-spin"
+        /> Asking the Census Bureau…
       </p>
 
       <form
@@ -222,30 +233,23 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         phx-submit="census_search"
         class="mt-3 grid gap-3 sm:grid-cols-2"
       >
-        <label class="block min-w-0">
-          <span class="text-sm font-[650] text-strong">Place name</span>
-          <input
-            type="text"
-            id="census-search-name"
-            name="place_name"
-            value={@search_name}
-            autocomplete="off"
-            class="input input-lg mt-1 w-full min-w-0"
-          />
-        </label>
-        <label class="block min-w-0">
-          <span class="text-sm font-[650] text-strong">State</span>
-          <select
-            id="census-search-state"
-            name="state_fips"
-            class="select select-lg mt-1 w-full min-w-0"
-          >
-            <option value="">Choose a state</option>
-            <option :for={{name, code} <- @states} value={code} selected={code == @search_state}>
-              {name}
-            </option>
-          </select>
-        </label>
+        <.input
+          id="census-search-name"
+          name="place_name"
+          type="text"
+          label="Place name"
+          value={@search_name}
+          autocomplete="off"
+        />
+        <.input
+          id="census-search-state"
+          name="state_fips"
+          type="select"
+          label="State"
+          prompt="Choose a state"
+          options={@states}
+          value={@search_state}
+        />
         <div class="sm:col-span-2">
           <.button id="census-search-submit" type="submit" class="min-h-11">
             Search the Census Bureau
@@ -257,19 +261,23 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
 
       <form :if={@places != []} id="census-place-form" phx-change="census_pick">
         <fieldset class="mt-3">
-          <legend class="text-sm font-[650] text-strong">Place</legend>
+          <legend class="text-[13px] font-[650] text-default">Place</legend>
           <div class="mt-1 grid gap-2">
             <label
               :for={place <- @places}
               id={"census-place-#{place.geoid}"}
-              class="flex cursor-pointer items-start gap-3 rounded-card border border-subtle px-3 py-2.5 hover:bg-canvas"
+              class={[
+                "flex cursor-pointer items-start gap-3 rounded-card border border-subtle px-3 py-2.5 hover:bg-canvas",
+                "has-[:checked]:border-action has-[:checked]:bg-selection",
+                focus_within_class()
+              ]}
             >
               <input
                 type="radio"
                 name="geoid"
                 value={place.geoid}
                 checked={@pick == place.geoid}
-                class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                class="mt-1 size-4 shrink-0 accent-action"
               />
               <span class="min-w-0">
                 <span class="block text-sm font-[650] text-strong">
@@ -322,43 +330,44 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
 
       <form id="area-routes-form" phx-change="route_buffer" class="mt-3">
         <fieldset>
-          <legend class="text-sm font-[650] text-strong">Routes</legend>
+          <legend class="text-[13px] font-[650] text-default">Routes</legend>
           <div class="mt-1 grid gap-1">
             <label
               :for={route <- @routes}
               id={"area-route-#{route.id}"}
-              class="flex min-h-11 cursor-pointer items-center gap-3"
+              class={[
+                "flex min-h-11 cursor-pointer items-center gap-3 rounded-control",
+                focus_within_class()
+              ]}
             >
               <input
                 type="checkbox"
                 name="route_ids[]"
                 value={route.id}
                 checked={route.id in @route_ids}
-                class="size-4 shrink-0 accent-[var(--color-action)]"
+                class="size-4 shrink-0 accent-action"
               />
-              <span
-                class="inline-flex min-w-9 justify-center rounded-badge px-1.5 text-[13px] font-bold text-white"
-                style={"background-color: #{route.color || "#0d737d"}"}
-              >
-                {route.short_name || route.id}
-              </span>
+              <RouteIdentity.route_badge
+                route={
+                  %{route_color: route.color, route_short_name: route.short_name, route_id: route.id}
+                }
+                class="min-w-9"
+              />
               <span class="text-sm">{route.long_name || route.name}</span>
             </label>
           </div>
         </fieldset>
 
-        <label class="mt-3 block">
-          <span class="text-sm font-[650] text-strong">Distance</span>
-          <select id="area-distance" name="distance_m" class="select select-lg mt-1 w-full min-w-0">
-            <option
-              :for={{label, metres} <- @distance_choices}
-              value={metres}
-              selected={metres == @distance}
-            >
-              {label}
-            </option>
-          </select>
-        </label>
+        <div class="mt-3">
+          <.input
+            id="area-distance"
+            name="distance_m"
+            type="select"
+            label="Distance"
+            options={@distance_choices}
+            value={@distance}
+          />
+        </div>
       </form>
 
       <p class="mt-1 text-[13px] text-muted">
@@ -419,71 +428,80 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         />
       </.form>
 
-      <.callout
+      <.message
         :if={@file_error == :lines}
         id="area-file-lines"
         kind="error"
         title="This file has lines, not areas"
+        class="mt-3"
       >
         A flex area must be a closed shape. If this is a route, use Distance from routes instead.
-        <div class="mt-2">
-          <button
-            type="button"
+        <div class="mt-3">
+          <.button
             id="area-file-routes"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
             phx-click="choose_source"
             phx-value-source="routes"
-            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
           >
             Use distance from routes
-          </button>
+          </.button>
         </div>
-      </.callout>
+      </.message>
 
-      <.callout
+      <.message
         :if={@file_error == :swapped}
         id="area-file-swapped"
         kind="error"
         title="This file lists latitude and longitude the wrong way round"
+        class="mt-3"
       >
         GeoJSON lists longitude first; this file seems to list latitude first.
-        <div class="mt-2">
-          <button
-            type="button"
+        <div class="mt-3">
+          <.button
             id="area-file-swap"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
             phx-click="swap_coordinates"
-            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
           >
             Swap and preview
-          </button>
+          </.button>
         </div>
-      </.callout>
+      </.message>
 
-      <.callout
+      <.message
         :if={@file_error == :unreadable}
         id="area-file-unreadable"
         kind="error"
         title="This file could not be read as GeoJSON"
+        class="mt-3"
       >
         Choose a GeoJSON document, or export one from your provider or county GIS.
-      </.callout>
+      </.message>
 
       <form :if={@features != []} id="area-feature-form" phx-change="pick_feature" class="mt-3">
         <fieldset>
-          <legend class="text-sm font-[650] text-strong">
+          <legend class="text-[13px] font-[650] text-default">
             {@file_name} · {length(@features)} {plural_word(length(@features), "area")}
           </legend>
           <div class="mt-1 grid gap-2">
             <label
               :for={feature <- @features}
               id={"area-feature-#{feature.index}"}
-              class="flex cursor-pointer items-start gap-3 rounded-card border border-subtle px-3 py-2.5 hover:bg-canvas"
+              class={[
+                "flex cursor-pointer items-start gap-3 rounded-card border border-subtle px-3 py-2.5 hover:bg-canvas",
+                "has-[:checked]:border-action has-[:checked]:bg-selection",
+                focus_within_class()
+              ]}
             >
               <input
                 type="radio"
                 name="feature"
                 value={feature.index}
                 checked={@pick == feature.index}
-                class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                class="mt-1 size-4 shrink-0 accent-action"
               />
               <span class="min-w-0">
                 <span class="block text-sm font-[650] text-strong">{feature.name}</span>
@@ -522,9 +540,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         {@error}
       </p>
 
-      <.callout id="area-draw-tools" kind="info" title="Editing points" class="mt-3">
+      <.message id="area-draw-tools" kind="info" title="Editing points" class="mt-3">
         Drag a point to move it, click the boundary to add one, Delete to remove the selected point, and Undo or Redo for every change. Arrow keys move the selected point 20 m (100 m with Shift). Previous point and Next point walk the boundary. Simplify runs on the server and keeps the boundary valid.
-      </.callout>
+      </.message>
     </div>
     """
   end
@@ -564,7 +582,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         From: {@source_line}
       </p>
 
-      <h2 id="area-inside-title" class="mt-4 text-xl font-bold text-strong">What’s inside</h2>
+      <h2 id="area-inside-title" class="mt-4 text-base font-bold text-strong">What’s inside</h2>
 
       <dl id="area-stats" class="mt-2 grid grid-cols-[96px_1fr] gap-x-3 gap-y-1 text-sm">
         <dt class="text-muted">Size</dt>
@@ -575,20 +593,23 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         <dd class="text-strong">{routes_text(@stats)}</dd>
       </dl>
 
-      <.callout
+      <.message
         :for={overlap <- @overlaps}
         id={"area-overlap-#{overlap.service_id}"}
         kind="info"
         title="Overlaps another service"
+        class="mt-4"
       >
         {km2_text(overlap.km2)} km² is also served by {overlap.name}. Riders there may see both services.
-      </.callout>
+      </.message>
 
-      <.callout
+      <.message
         :if={@compare && compared?(@compare)}
         id="area-compare"
         kind="warning"
+        role="status"
         title="Compared with the saved area"
+        class="mt-4"
       >
         <ul class="grid gap-0.5">
           <li class="tabular-nums">{delta_text(@compare)}</li>
@@ -599,7 +620,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
             Now inside: {stop_list(@compare.stops_joined, @stop_names)}
           </li>
         </ul>
-      </.callout>
+      </.message>
     </div>
     """
   end
@@ -663,7 +684,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
             id="area-simplify"
             phx-click="flex_area_simplify"
             disabled={@vertices == nil}
-            class="inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted"
+            class={[
+              "inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted",
+              focus_class()
+            ]}
           >
             Simplify
           </button>
@@ -676,15 +700,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         </p>
       </div>
 
-      <.callout
+      <.message
         :if={@crossing}
         id="area-crossing"
         kind="error"
         title="The boundary crosses itself"
-        class="rounded-none"
+        class="rounded-none!"
       >
         Move the point at the red mark so the edges don’t cross. Exports refuse a boundary that crosses itself.
-      </.callout>
+      </.message>
 
       <p
         :if={@simplify_note}
@@ -732,7 +756,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         "inline-flex min-h-9 items-center rounded-control border border-control px-3 text-sm font-[650]",
         @pressed && "bg-action text-white hover:bg-action-hover",
         !@pressed && "bg-white text-strong hover:bg-canvas",
-        @disabled && "cursor-not-allowed text-muted"
+        @disabled && "cursor-not-allowed text-muted",
+        focus_class()
       ]}
     >
       {render_slot(@inner_block)}
@@ -755,7 +780,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
       id={@id}
       phx-click={JS.dispatch("flex-area:action", to: "#flex-area-map", detail: %{action: @action})}
       disabled={@disabled}
-      class="inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted"
+      class={[
+        "inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted",
+        focus_class()
+      ]}
     >
       {render_slot(@inner_block)}
     </button>
@@ -781,7 +809,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
       id={@id}
       phx-click="choose_source"
       phx-value-source={@source}
-      class="flex min-h-11 w-full items-start gap-3 rounded-card border border-subtle px-3 py-3 text-left hover:border-action hover:bg-canvas"
+      class={[
+        "flex min-h-11 w-full items-start gap-3 rounded-card border border-subtle px-3 py-3 text-left hover:border-action hover:bg-canvas",
+        focus_class()
+      ]}
     >
       <.icon name={@icon} class="mt-0.5 size-5 shrink-0 text-action" />
       <span class="min-w-0">
@@ -796,7 +827,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
 
   defp panel_heading(assigns) do
     ~H"""
-    <h2 id="area-panel-title" tabindex="-1" class="text-xl font-bold text-strong outline-none">
+    <h2 id="area-panel-title" tabindex="-1" class="text-base font-bold text-strong outline-none">
       {render_slot(@inner_block)}
     </h2>
     """
@@ -809,12 +840,25 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
       id="area-back-to-choose"
       phx-click="choose_source"
       phx-value-source="choose"
-      class="-mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+      class={[
+        "-mt-2 inline-flex min-h-11 items-center gap-1 rounded-control text-sm font-[650] text-action hover:underline",
+        focus_class()
+      ]}
     >
       <.icon name="hero-chevron-left" class="size-4" /> Other ways to set the area
     </button>
     """
   end
+
+  # The design system's focus ring, for a raw `<button>` that `<.button>` does
+  # not cover. A radio or checkbox inside a card draws it on the card instead,
+  # because `.ds-page` removes the input's own outline.
+  defp focus_class,
+    do: "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+
+  defp focus_within_class,
+    do:
+      "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
 
   # The picker's line under a place: the CDP label, the layer and the GEOID the
   # editor stores with the boundary, so the choice is identifiable before it is

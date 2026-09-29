@@ -434,7 +434,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
 
       # The organization's setting, not the service's: the page keeps no draft.
       refute has_element?(view, "#save-bar")
-      assert text_of(doc(view), "#export-r3-note") =~ "stop_sequence doubles"
+
+      assert text_of(doc(view), "#export-r3-note") =~
+               "Each Route 20 trip is exported once, with the detour stops placed between its fixed stops"
 
       # Another organization's answer is untouched.
       other = organization_fixture()
@@ -476,7 +478,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
       assert text_of(drawer, "#export-details-rows") =~ "locations.geojson"
       assert text_of(drawer, "#export-details-rows") =~ "trips.txt"
 
-      view |> element("#export-details-done") |> render_click()
+      view |> element("#export-details-close") |> render_click()
       refute has_element?(view, "#export-details-overlay[data-open='true']")
     end
 
@@ -497,6 +499,32 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
 
       assert text_of(drawer, "#export-details") =~
                "the timed stop_sequence doubles so the zone rows sit between them"
+    end
+
+    test "a detour's plan keeps its zones through other edits and follows a stretch edit",
+         ctx do
+      service = detour_service(ctx)
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+
+      view
+      |> element("#flex-service-form")
+      |> render_change(%{"service" => %{"phone" => "(541) 555-0199"}})
+
+      view |> element("#export-details-button") |> render_click()
+
+      assert text_of(doc(view), "#export-details") =~ "adds 3 detour areas"
+
+      view
+      |> element("#flex-service-form")
+      |> render_change(%{"service" => %{"last_stop_id" => "NP2"}})
+
+      details = text_of(doc(view), "#export-details")
+
+      assert details =~ "adds 1 detour area"
+      assert details =~ "flex-valley-line-detours-NP1-NP2"
+      refute details =~ "flex-valley-line-detours-TLD1-TLD2"
     end
   end
 

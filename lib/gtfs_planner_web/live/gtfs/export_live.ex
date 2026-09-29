@@ -376,7 +376,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp check_title(%{run_type: "mobility_data"}, _station_names_by_run_id), do: "Feed check"
 
   defp check_title(%{run_type: "mobility_data_flex"}, _station_names_by_run_id),
-    do: "Flex file"
+    do: "Flex file check"
 
   defp check_title(%{run_type: "pathways_tests"}, _station_names_by_run_id),
     do: "Pathways test"
@@ -533,7 +533,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp handle_run_validation(socket, run_type) do
     if socket.assigns.validating do
-      {:noreply, put_flash(socket, :error, "Validation already in progress")}
+      {:noreply, put_flash(socket, :error, "A check is already running.")}
     else
       organization_id = socket.assigns.current_organization.id
       gtfs_version_id = socket.assigns.current_gtfs_version.id

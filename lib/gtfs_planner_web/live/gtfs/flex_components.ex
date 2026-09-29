@@ -6,17 +6,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   `FlexLive` owns the load and every value; these components render what they are
   given, so the copy the prototype fixes lives in one place per state. The table
-  is the shared `table/1`, whose last column carries each service's
-  `Flex.Checks.status/2` badge: the tone selects the badge's colour and the
-  label always carries the meaning, so the status is never signalled by colour
-  alone.
+  is a design-system table whose last column carries each service's
+  `Flex.Checks.status/2` badge: the tone selects the badge's colour and icon and
+  the label always carries the meaning, so the status is never signalled by
+  colour alone.
 
-  The create drawer is the shared `drawer/1`, because the app's own
-  `OverlayDialog` behaviour already gives a modal dialog that Esc closes, that
-  keeps focus inside it, and that returns focus to the control that opened it.
-  Its error summary follows the app's `FormErrorFocus` pattern: the summary
-  carries `tabindex="-1"` and the page moves focus to it, and each item links to
-  the field it names.
+  The create drawer is the shared `drawer/1` in the planner chrome, because the
+  app's own `OverlayDialog` behaviour already gives a modal dialog that Esc
+  closes, that keeps focus inside it, and that returns focus to the control that
+  opened it. Its error summary follows the app's `FormErrorFocus` pattern: the
+  summary carries `tabindex="-1"` and the page moves focus to it, and each item
+  links to the field it names.
 
   The map card renders the `FlexAreaMap` hook's root (`#flex-list-map`) with the
   Leaflet stage inside it and the legend beneath it. The server never patches
@@ -30,14 +30,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   import GtfsPlannerWeb.CoreComponents,
     only: [
       button: 1,
-      callout: 1,
       confirm_dialog: 1,
       drawer: 1,
+      header: 1,
       icon: 1,
       input: 1,
-      skeleton: 1,
-      status_badge: 1,
-      table: 1
+      skeleton: 1
+    ]
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [
+      back_link: 1,
+      drawer_footer: 1,
+      drawer_scroll: 1,
+      form_error_summary: 1,
+      message: 1
     ]
 
   # The weekly service calendar row. Aliased away from `Calendar` so the
@@ -133,47 +140,116 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   def services_table(assigns) do
     ~H"""
-    <div class="min-w-0 self-start rounded-card border border-subtle bg-white">
-      <p
-        id="flex-services-count"
-        role="status"
-        class="border-b border-subtle bg-canvas px-4 py-2.5 text-[13px] font-[650] text-default"
-      >
-        {count_label(@count)}
-      </p>
+    <div class="min-w-0 self-start">
+      <div class="overflow-clip rounded-card border border-subtle bg-white">
+        <div class="flex min-h-[52px] items-center border-b border-subtle px-4 py-1">
+          <p
+            id="flex-services-count"
+            role="status"
+            class="text-[13px] font-[650] tabular-nums text-strong"
+          >
+            {count_label(@count)}
+          </p>
+        </div>
 
-      <div class="overflow-x-auto">
-        <div class="min-w-[640px]">
-          <.table id="flex-services" rows={@rows}>
-            <:col :let={{_id, row}} label="Service">
-              <a
-                href={row.href}
-                class="font-[650] text-action no-underline hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
+        <%!-- The table keeps a readable width and scrolls inside its own card,
+        so a narrow viewport never scrolls the page sideways. --%>
+        <div class="overflow-x-auto">
+          <table
+            id="flex-services-table"
+            class="w-full min-w-[640px] border-collapse text-left text-sm"
+          >
+            <caption class="sr-only">
+              Flex services
+            </caption>
+            <thead>
+              <tr class="bg-canvas">
+                <th scope="col" class={head_class()}>Service</th>
+                <th scope="col" class={head_class()}>Hours</th>
+                <th scope="col" class={head_class()}>Booking</th>
+                <th scope="col" class={head_class()}>Status</th>
+              </tr>
+            </thead>
+            <tbody id="flex-services" phx-update="stream">
+              <tr
+                :for={{id, row} <- @rows}
+                id={id}
+                class="border-t border-subtle align-top hover:bg-canvas"
               >
-                {row.name}
-              </a>
-              <p class="mt-0.5 text-[13px] text-muted">{row.where}</p>
-            </:col>
-
-            <:col :let={{_id, row}} label="Hours">
-              <span :for={line <- row.hours_lines} class="block tabular-nums">{line}</span>
-            </:col>
-
-            <:col :let={{_id, row}} label="Booking">{row.booking}</:col>
-
-            <:col :let={{_id, row}} label="Status">
-              <.status_badge
-                status={badge_tone(row.status.tone)}
-                label={row.status.label}
-                class="whitespace-nowrap"
-              />
-            </:col>
-          </.table>
+                <td class="px-4 py-1">
+                  <.link
+                    navigate={row.href}
+                    class="inline-flex min-h-11 items-center rounded-control text-[15px] font-[650] text-action no-underline underline-offset-4 hover:text-action-hover hover:underline"
+                  >
+                    {row.name}
+                  </.link>
+                  <p class="pb-2 text-[13px] text-muted">{row.where}</p>
+                </td>
+                <td class="px-4 py-3 text-default">
+                  <span :for={line <- row.hours_lines} class="block tabular-nums">{line}</span>
+                </td>
+                <td class="px-4 py-3 text-default">{row.booking}</td>
+                <td class="px-4 py-3">
+                  <.badge tone={badge_tone(row.status.tone)} label={row.status.label} />
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
+
+      <p id="flex-services-note" class="mt-3 text-[13px] text-muted">
+        A service with problems isn’t exported until it’s fixed. The export run names any service it leaves out.
+      </p>
     </div>
     """
   end
+
+  defp head_class, do: "px-4 py-2.5 text-left text-[13px] font-[650] text-default"
+
+  # A radio or checkbox inside a choice card shows its focus ring on the card,
+  # because `.ds-page` removes the control's own outline.
+  defp card_focus,
+    do:
+      "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
+
+  # `.ds-page` rings links, selects and text fields but not a raw `<button>`, so
+  # every hand-rolled button in this module carries the design system's outline.
+  defp focus_ring,
+    do: "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+
+  # A status as words on a tinted ground with a mark, so the meaning never rests
+  # on colour alone. `tone` is the design system's own vocabulary; the flex list
+  # and the service page both call it with `badge_tone/1`'s answer.
+  attr :tone, :string, values: ~w(neutral success warning error), required: true
+  attr :label, :string, required: true
+  attr :id, :string, default: nil
+
+  defp badge(assigns) do
+    assigns = assign(assigns, :tone_class, badge_class(assigns.tone))
+    assigns = assign(assigns, :icon_name, badge_icon(assigns.tone))
+
+    ~H"""
+    <span
+      id={@id}
+      class={[
+        "inline-flex min-h-7 items-center gap-1.5 whitespace-nowrap rounded-badge px-2 text-[13px] font-[650]",
+        @tone_class
+      ]}
+    >
+      <.icon name={@icon_name} class="size-3.5 shrink-0" />{@label}
+    </span>
+    """
+  end
+
+  defp badge_class("success"), do: "bg-success-bg text-success-fg"
+  defp badge_class("warning"), do: "bg-warning-bg text-warning-fg"
+  defp badge_class("error"), do: "bg-error-bg text-error-fg"
+  defp badge_class("neutral"), do: "border border-subtle bg-canvas text-default"
+
+  defp badge_icon("success"), do: "hero-check-circle"
+  defp badge_icon("neutral"), do: "hero-information-circle"
+  defp badge_icon(_alert), do: "hero-exclamation-triangle"
 
   @doc """
   Renders the export-state line: what a full export will do with these services.
@@ -189,9 +265,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   def exports_line(%{include_flex: false} = assigns) do
     ~H"""
-    <.callout
+    <.message
       id="flex-exports"
       kind="warning"
+      role="status"
       title="Exports leave flex out."
       class="mt-5"
     >
@@ -202,7 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       >
         Change in Settings › Export defaults
       </.link>
-    </.callout>
+    </.message>
     """
   end
 
@@ -252,9 +329,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     <section
       id="flex-first-use"
       aria-labelledby="flex-first-use-title"
-      class="self-start rounded-card border border-subtle px-6 py-6"
+      class="self-start rounded-card border border-subtle bg-white px-6 py-6"
     >
-      <h2 id="flex-first-use-title" class="text-[24px]">
+      <h2
+        id="flex-first-use-title"
+        class="font-display text-[24px] font-semibold tracking-[-0.025em] text-strong"
+      >
         What kind of on-demand service do you run?
       </h2>
       <p class="mt-2 max-w-[60ch] text-sm leading-relaxed">
@@ -269,7 +349,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           phx-click="open_create"
           phx-value-kind={kind.key}
           phx-value-opener_id={"flex-create-#{kind.key}"}
-          class="flex min-h-11 items-start gap-3 rounded-card border border-subtle px-3 py-3 text-left hover:border-action hover:bg-canvas"
+          class={[
+            "flex min-h-11 items-start gap-3 rounded-card border border-subtle px-3 py-3 text-left hover:border-action hover:bg-canvas",
+            focus_ring()
+          ]}
         >
           <span class="min-w-0 flex-1">
             <span class="block text-sm font-[650] text-strong">{kind.label}</span>
@@ -323,10 +406,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       |> assign(:named, assigns.form[:named].value)
       |> assign(:route_options, Enum.map(assigns.routes, &{&1.name, &1.id}))
       |> assign(:error_ids, MapSet.new(Enum.map(assigns.errors, &elem(&1, 0))))
+      |> assign(
+        :failures,
+        Enum.map(assigns.errors, fn {field_id, message} ->
+          %{href: "##{field_id}", msg: message}
+        end)
+      )
 
     ~H"""
     <.drawer
       id="create-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_create"
       title="Create flex service"
@@ -335,193 +425,185 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       return_focus_id={@return_focus_id}
       class="max-w-[min(100vw,32.5rem)]"
     >
-      <div id="create-drawer-content" phx-hook="FormErrorFocus">
-        <p id="create-drawer-description" class="mb-4 text-sm text-muted">
-          {@version_name}
-        </p>
+      <:lede><span id="create-drawer-description">{@version_name}</span></:lede>
 
+      <div id="create-drawer-content" phx-hook="FormErrorFocus" class="flex min-h-0 flex-1 flex-col">
         <.form
           for={@form}
           id="create-form"
           novalidate
           phx-change="create_change"
           phx-submit="create_submit"
-          class="grid gap-5"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <div :if={@errors != []}>
-            <div
+          <.drawer_scroll>
+            <.form_error_summary
+              :if={@errors != []}
               id="create-error-summary"
+              title={summary_lead(@errors)}
+              failures={@failures}
+              class=""
+            />
+
+            <.message
+              :if={@error}
+              id="create-save-error"
+              kind="error"
+              title="Nothing was created"
               tabindex="-1"
-              role="alert"
-              class="rounded-card border-2 border-error-line px-4 py-3 text-sm outline-none"
             >
-              <p class="font-[650] text-error-fg">{summary_lead(@errors)}</p>
-              <ul class="mt-1 grid gap-0.5 pl-5 [list-style:disc]">
-                <li :for={{field_id, message} <- @errors}>
-                  <a href={"##{field_id}"} class="text-error-fg underline">{message}</a>
-                </li>
-              </ul>
-            </div>
-          </div>
-
-          <div :if={@error}>
-            <.callout id="create-save-error" kind="error" title="Nothing was created" tabindex="-1">
               {@error}
-            </.callout>
-          </div>
+            </.message>
 
-          <fieldset>
-            <legend class="text-sm font-[650] text-strong">How does it work?</legend>
+            <fieldset>
+              <legend class="text-[13px] font-[650] text-default">How does it work?</legend>
 
-            <div class="mt-2 grid gap-2">
-              <label
-                :for={kind <- @kinds}
-                for={"create-pattern-#{kind.pattern}"}
-                class={[
-                  "flex cursor-pointer items-start gap-3 rounded-card border px-3 py-3",
-                  if(@kind == kind.key,
-                    do: "border-action shadow-[inset_0_0_0_1px_var(--color-action)]",
-                    else: "border-subtle hover:bg-canvas"
-                  )
-                ]}
-              >
-                <input
-                  type="radio"
-                  id={"create-pattern-#{kind.pattern}"}
-                  name="create[kind]"
-                  value={kind.key}
-                  checked={@kind == kind.key}
-                  aria-invalid={error_flag(@error_ids, "create-pattern-#{kind.pattern}")}
-                  class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
-                />
-                <span class="min-w-0 flex-1">
-                  <span class="block text-sm font-[650] text-strong">{kind.label}</span>
-                  <span class="block text-[13px] text-muted">{kind.help}</span>
-                </span>
-                <span class="shrink-0" aria-hidden="true"><.kind_diagram kind={kind.key} /></span>
-              </label>
-            </div>
-
-            <.booked_stops_pointer />
-
-            <p
-              :if={error_for(@errors, "create-pattern-area")}
-              class="mt-1 text-[13px] font-[650] text-error-fg"
-            >
-              {error_for(@errors, "create-pattern-area")}
-            </p>
-          </fieldset>
-
-          <fieldset :if={@kind == "area"}>
-            <legend class="text-sm font-[650] text-strong">
-              Do riders know the areas by one name?
-            </legend>
-
-            <div class="mt-1 grid gap-1">
-              <label
-                for="create-named-one"
-                class="flex min-h-11 cursor-pointer items-start gap-3 py-1"
-              >
-                <input
-                  type="radio"
-                  id="create-named-one"
-                  name="create[named]"
-                  value="one"
-                  checked={@named != "several"}
-                  class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
-                />
-                <span class="text-sm">
-                  Yes, one name
-                  <span class="block text-[13px] text-muted">
-                    Towns can still have their own hours, such as “Toledo only: weekdays 9 am–3 pm”.
+              <div class="mt-2 grid gap-2">
+                <label
+                  :for={kind <- @kinds}
+                  for={"create-pattern-#{kind.pattern}"}
+                  class={[
+                    "flex cursor-pointer items-start gap-3 rounded-card border px-3 py-3",
+                    card_focus(),
+                    if(@kind == kind.key,
+                      do: "border-action shadow-[inset_0_0_0_1px_var(--color-action)]",
+                      else: "border-subtle hover:bg-canvas"
+                    )
+                  ]}
+                >
+                  <input
+                    type="radio"
+                    id={"create-pattern-#{kind.pattern}"}
+                    name="create[kind]"
+                    value={kind.key}
+                    checked={@kind == kind.key}
+                    aria-invalid={error_flag(@error_ids, "create-pattern-#{kind.pattern}")}
+                    class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-sm font-[650] text-strong">{kind.label}</span>
+                    <span class="block text-[13px] text-muted">{kind.help}</span>
                   </span>
-                </span>
-              </label>
+                  <span class="shrink-0" aria-hidden="true"><.kind_diagram kind={kind.key} /></span>
+                </label>
+              </div>
 
-              <label
-                for="create-named-several"
-                class="flex min-h-11 cursor-pointer items-start gap-3 py-1"
+              <.booked_stops_pointer />
+
+              <p
+                :if={error_for(@errors, "create-pattern-area")}
+                class="mt-1 text-[13px] font-[650] text-error-fg"
               >
-                <input
-                  type="radio"
-                  id="create-named-several"
-                  name="create[named]"
-                  value="several"
-                  checked={@named == "several"}
-                  class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
-                />
-                <span class="text-sm">No, each area has its own name</span>
-              </label>
+                {error_for(@errors, "create-pattern-area")}
+              </p>
+            </fieldset>
+
+            <fieldset :if={@kind == "area"}>
+              <legend class="text-[13px] font-[650] text-default">
+                Do riders know the areas by one name?
+              </legend>
+
+              <div class="mt-1 grid gap-1">
+                <label
+                  for="create-named-one"
+                  class={[
+                    "flex min-h-11 cursor-pointer items-start gap-3 rounded-control py-1",
+                    card_focus()
+                  ]}
+                >
+                  <input
+                    type="radio"
+                    id="create-named-one"
+                    name="create[named]"
+                    value="one"
+                    checked={@named != "several"}
+                    class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                  />
+                  <span class="text-sm">
+                    Yes, one name
+                    <span class="block text-[13px] text-muted">
+                      Towns can still have their own hours, such as “Toledo only: weekdays 9 am–3 pm”.
+                    </span>
+                  </span>
+                </label>
+
+                <label
+                  for="create-named-several"
+                  class={[
+                    "flex min-h-11 cursor-pointer items-start gap-3 rounded-control py-1",
+                    card_focus()
+                  ]}
+                >
+                  <input
+                    type="radio"
+                    id="create-named-several"
+                    name="create[named]"
+                    value="several"
+                    checked={@named == "several"}
+                    class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
+                  />
+                  <span class="text-sm">No, each area has its own name</span>
+                </label>
+              </div>
+
+              <p
+                :if={@named == "several"}
+                id="create-several-names-advice"
+                class="mt-1 rounded-card bg-canvas px-3 py-2 text-[13px] text-default"
+              >
+                Create one service for each name, such as Newport Dial-a-Ride and Toledo Flex, so trip planners show the names riders know. Start with the first one here.
+              </p>
+            </fieldset>
+
+            <div :if={@kind == "detour"}>
+              <.input
+                field={@form[:route_id]}
+                type="select"
+                label="Route that detours"
+                options={@route_options}
+                prompt="Choose a route"
+              />
+              <p
+                :if={error_for(@errors, "create_route_id")}
+                class="mt-1 text-[13px] font-[650] text-error-fg"
+              >
+                {error_for(@errors, "create_route_id")}
+              </p>
             </div>
 
-            <p
-              :if={@named == "several"}
-              id="create-several-names-advice"
-              class="mt-1 rounded-card bg-canvas px-3 py-2 text-[13px] text-default"
-            >
-              Create one service for each name, such as Newport Dial-a-Ride and Toledo Flex, so trip planners show the names riders know. Start with the first one here.
-            </p>
-          </fieldset>
+            <div>
+              <.input
+                field={@form[:name]}
+                type="text"
+                label="Service name"
+                autocomplete="off"
+                phx-debounce="blur"
+                placeholder="For example, Newport Dial-a-Ride"
+                help="Riders see this name in trip planners. Use the name on your website and vehicles."
+              />
+              <p
+                :if={error_for(@errors, "create_name")}
+                class="mt-1 text-[13px] font-[650] text-error-fg"
+              >
+                {error_for(@errors, "create_name")}
+              </p>
+            </div>
 
-          <div :if={@kind == "detour"}>
-            <.input
-              field={@form[:route_id]}
-              type="select"
-              label="Route that detours"
-              options={@route_options}
-              prompt="Choose a route"
-            />
-            <p
-              :if={error_for(@errors, "create_route_id")}
-              class="mt-1 text-[13px] font-[650] text-error-fg"
-            >
-              {error_for(@errors, "create_route_id")}
+            <p class="rounded-control bg-canvas px-3 py-2.5 text-[13px] text-muted">
+              Next you’ll add when it runs, how riders book and where it goes. Exports leave it out until those are set.
             </p>
-          </div>
+          </.drawer_scroll>
 
-          <div>
-            <.input
-              field={@form[:name]}
-              type="text"
-              label="Service name"
-              autocomplete="off"
-              phx-debounce="blur"
-              placeholder="For example, Newport Dial-a-Ride"
-              help="Riders see this name in trip planners. Use the name on your website and vehicles."
-            />
-            <p
-              :if={error_for(@errors, "create_name")}
-              class="mt-1 text-[13px] font-[650] text-error-fg"
-            >
-              {error_for(@errors, "create_name")}
-            </p>
-          </div>
-
-          <p class="text-[13px] text-muted">
-            Next you’ll add when it runs, how riders book and where it goes. Exports leave it out until those are set.
-          </p>
+          <.drawer_footer>
+            <.button type="button" variant="secondary" class="min-h-11" phx-click="close_create">
+              Cancel
+            </.button>
+            <.button id="create-submit" type="submit" class="min-h-11">
+              Create service
+            </.button>
+          </.drawer_footer>
         </.form>
       </div>
-
-      <%!-- The one primary action sits in the drawer's pinned footer, so it
-      stays reachable while the answers above it scroll. The two controls
-      belong to the form through its own id. --%>
-      <:footer>
-        <div class="flex flex-wrap items-center justify-end gap-3">
-          <.button type="button" variant="secondary" class="min-h-11" phx-click="close_create">
-            Cancel
-          </.button>
-          <.button
-            id="create-submit"
-            type="submit"
-            form="create-form"
-            variant="primary"
-            class="min-h-11"
-          >
-            Create service
-          </.button>
-        </div>
-      </:footer>
     </.drawer>
     """
   end
@@ -565,7 +647,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           label="Copy from"
           options={@options}
           prompt="Choose a version"
-          class="w-full select select-lg min-w-[16rem]"
+          class="w-full select min-w-[16rem]"
         />
         <.button id="copy-services" type="submit" variant="primary" class="min-h-11">
           Copy services
@@ -583,13 +665,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
       <.confirm_dialog
         id="copy-confirm"
+        chrome="planner"
         open={not is_nil(@target)}
         title="Copy flex services?"
         confirm_label="Copy services"
         pending_label="Copying…"
         on_confirm="confirm_copy"
         on_cancel="cancel_copy"
-        confirm_variant="primary"
         described_by="copy-confirm-body"
         return_focus_id="copy-services"
       >
@@ -720,13 +802,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   """
   def list_error(assigns) do
     ~H"""
-    <div id="flex-list-error" class="mt-6" role="alert">
-      <.callout kind="error" title="Couldn’t load flex services.">
-        <p>Your services are safe. Check your connection and try again.</p>
-        <div class="mt-3">
-          <.button id="flex-list-retry" phx-click="retry" class="min-h-11">Try again</.button>
-        </div>
-      </.callout>
+    <div id="flex-list-error" class="mt-6">
+      <.message kind="error" title="Couldn’t load flex services.">
+        Your services are safe. Check your connection and try again.
+        <:action>
+          <.button id="flex-list-retry" variant="secondary" phx-click="retry" class="min-h-11">
+            <.icon name="hero-arrow-path" class="size-4" /> Try again
+          </.button>
+        </:action>
+      </.message>
     </div>
     """
   end
@@ -801,12 +885,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     "Exports also write a flex file: your fixed routes plus flex, built and published with your main feed. Apps that show flex load it instead of the main feed, which stays as it is for Google Maps."
   end
 
-  # `Checks.status/2` tones map onto the shared badge vocabulary: a ready service
-  # reads as a pass, a problem or suggestion keeps its own tone, and every
+  # `Checks.status/2` tones map onto the badge's vocabulary: a ready service
+  # reads as success, a problem or suggestion keeps its own tone, and every
   # neutral label (inactive, not in trip planners) uses the neutral treatment.
-  defp badge_tone(:success), do: "pass"
+  defp badge_tone(:success), do: "success"
   defp badge_tone(tone) when tone in [:warning, :error], do: to_string(tone)
-  defp badge_tone(_tone), do: :neutral
+  defp badge_tone(_tone), do: "neutral"
 
   # The row's short booking summary, ported from the prototype's `bookingShort`:
   # how riders book, then the service-wide rule's notice. A calendar-scoped rule
@@ -937,18 +1021,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   def service_not_found(assigns) do
     ~H"""
     <div id="flex-service-not-found" class="mt-6">
-      <.callout kind="error" title="That flex service isn’t in this version.">
-        <p>It may have been deleted, or the link may belong to another version.</p>
-        <div class="mt-3">
+      <.message kind="error" title="That flex service isn’t in this version.">
+        It may have been deleted, or the link may belong to another version.
+        <:action>
           <.button
             id="flex-service-back"
+            variant="secondary"
             navigate={~p"/gtfs/#{@version_id}/flex"}
             class="min-h-11"
           >
             Back to Flex
           </.button>
-        </div>
-      </.callout>
+        </:action>
+      </.message>
     </div>
     """
   end
@@ -958,13 +1043,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   """
   def service_unavailable(assigns) do
     ~H"""
-    <div id="flex-service-unavailable" class="mt-6" role="alert">
-      <.callout kind="error" title="Couldn’t load this flex service.">
-        <p>Your service is safe. Check your connection and try again.</p>
-        <div class="mt-3">
-          <.button id="flex-service-retry" phx-click="retry" class="min-h-11">Try again</.button>
-        </div>
-      </.callout>
+    <div id="flex-service-unavailable" class="mt-6">
+      <.message kind="error" title="Couldn’t load this flex service.">
+        Your service is safe. Check your connection and try again.
+        <:action>
+          <.button id="flex-service-retry" variant="secondary" phx-click="retry" class="min-h-11">
+            <.icon name="hero-arrow-path" class="size-4" /> Try again
+          </.button>
+        </:action>
+      </.message>
     </div>
     """
   end
@@ -974,7 +1061,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   where it runs and when it last changed, and the readiness badge.
 
   The badge is `Flex.Checks.status/2` for the draft on screen, so it reports what
-  a save would publish rather than what the last save stored.
+  a save would publish rather than what the last save stored. The two rare
+  actions share one menu, the account menu's client-side dropdown (`UserMenu`),
+  which the server never re-renders: `phx-update="ignore"` keeps an open panel
+  open across patches.
   """
   attr :service, :any, required: true
   attr :status, :any, required: true
@@ -985,49 +1075,48 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
     ~H"""
     <div>
-      <a
-        id="flex-service-back-link"
-        href={~p"/gtfs/#{@version_id}/flex"}
-        class="inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action no-underline hover:underline"
-      >
-        <.icon name="hero-chevron-left" class="size-4" /> Flex
-      </a>
+      <.back_link id="flex-service-back-link" navigate={~p"/gtfs/#{@version_id}/flex"}>
+        Flex
+      </.back_link>
 
-      <div class="mt-1 flex flex-wrap items-start justify-between gap-4">
-        <div class="min-w-0">
-          <h1
-            id="svc-title"
-            tabindex="-1"
-            class="text-[32px] font-bold leading-9 text-strong outline-none"
-          >
-            {@service.name}
-          </h1>
-          <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
-            <span>{RiderText.where_line(@service)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{@updated}</span>
-          </p>
-        </div>
+      <.header>
+        <span id="svc-title" tabindex="-1" class="outline-none">{@service.name}</span>
+        <:subtitle>{RiderText.where_line(@service)} · {@updated}</:subtitle>
+        <:actions>
+          <.badge id="svc-status" tone={badge_tone(@status.tone)} label={@status.label} />
 
-        <div class="flex flex-wrap items-center gap-2">
-          <.status_badge
-            id="svc-status"
-            status={badge_tone(@status.tone)}
-            label={@status.label}
-          />
-
-          <details id="more-menu" class="relative">
-            <summary class="inline-flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
+          <div id="more-menu" phx-hook="UserMenu" phx-update="ignore" class="relative">
+            <button
+              type="button"
+              id="more-menu-trigger"
+              data-user-menu-trigger
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="more-menu-panel"
+              class={[
+                "inline-flex min-h-11 items-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas",
+                focus_ring()
+              ]}
+            >
               <.icon name="hero-ellipsis-horizontal" class="size-4" /> More actions
-            </summary>
-            <div class="absolute right-0 top-full z-30 mt-2 w-64 rounded-card border border-subtle bg-white p-2 shadow-float">
+            </button>
+            <div
+              id="more-menu-panel"
+              data-user-menu-panel
+              role="menu"
+              aria-label="More actions"
+              hidden
+              class="absolute right-0 top-full z-30 mt-2 w-64 rounded-card border border-subtle bg-white p-2 shadow-float"
+            >
               <button
                 type="button"
                 id="menu-export-details"
-                phx-click={
-                  JS.remove_attribute("open", to: "#more-menu") |> JS.push("show_export_details")
-                }
-                class="flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas"
+                role="menuitem"
+                phx-click={close_more_menu(JS.push("show_export_details"))}
+                class={[
+                  "flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas focus:bg-canvas",
+                  focus_ring()
+                ]}
               >
                 Show export details
               </button>
@@ -1035,17 +1124,30 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
               <button
                 type="button"
                 id="menu-goto-status"
-                phx-click={JS.remove_attribute("open", to: "#more-menu") |> JS.push("goto_status")}
-                class="flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas"
+                role="menuitem"
+                phx-click={close_more_menu(JS.push("goto_status"))}
+                class={[
+                  "flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas focus:bg-canvas",
+                  focus_ring()
+                ]}
               >
                 Deactivate or delete…
               </button>
             </div>
-          </details>
-        </div>
-      </div>
+          </div>
+        </:actions>
+      </.header>
     </div>
     """
+  end
+
+  # The hook opens and closes the panel through `hidden` and `aria-expanded`;
+  # choosing an item does the same, so the panel is not left open behind the
+  # drawer or the scroll the choice starts.
+  defp close_more_menu(js) do
+    js
+    |> JS.set_attribute({"hidden", ""}, to: "#more-menu-panel")
+    |> JS.set_attribute({"aria-expanded", "false"}, to: "#more-menu-trigger")
   end
 
   @doc """
@@ -1057,22 +1159,22 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   attr :errors, :list, required: true
 
   def service_error_summary(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :failures,
+        Enum.map(assigns.errors, fn {field_id, message} ->
+          %{href: "##{field_id}", msg: message}
+        end)
+      )
+
     ~H"""
-    <div :if={@errors != []}>
-      <div
-        id="flex-service-error-summary"
-        tabindex="-1"
-        role="alert"
-        class="rounded-card border-2 border-error-line px-4 py-3 text-sm outline-none"
-      >
-        <p class="font-[650] text-error-fg">{save_lead(@errors)}</p>
-        <ul class="mt-1 grid gap-0.5 pl-5 [list-style:disc]">
-          <li :for={{field_id, message} <- @errors}>
-            <a href={"##{field_id}"} class="text-error-fg underline">{message}</a>
-          </li>
-        </ul>
-      </div>
-    </div>
+    <.form_error_summary
+      id="flex-service-error-summary"
+      title={save_lead(@errors)}
+      failures={@failures}
+      class=""
+    />
     """
   end
 
@@ -1117,7 +1219,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
     ~H"""
     <section id="sec-when" aria-labelledby="when-title" class="min-w-0 border-t border-subtle pt-5">
-      <h2 id="when-title" class="text-xl font-bold text-strong">{@title}</h2>
+      <h2 id="when-title" class="text-base font-bold text-strong">{@title}</h2>
       <p class="mt-1 text-sm text-muted">{@help}</p>
 
       <div :if={@area?} id="f-hours" tabindex="-1" class="mt-3 grid gap-3 outline-none">
@@ -1138,7 +1240,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         id="add-hours"
         type="button"
         phx-click="add_hours"
-        class="mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+        class={[
+          "mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline",
+          focus_ring()
+        ]}
       >
         <.icon name="hero-plus" class="size-4" /> Add hours
       </button>
@@ -1209,7 +1314,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       aria-labelledby="booking-title"
       class="min-w-0 border-t border-subtle pt-5"
     >
-      <h2 id="booking-title" class="text-xl font-bold text-strong">How riders book</h2>
+      <h2 id="booking-title" class="text-base font-bold text-strong">How riders book</h2>
 
       <fieldset class="mt-3">
         <legend class="text-sm font-[650] text-strong">When riders must book</legend>
@@ -1238,9 +1343,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         id="add-scoped-rule"
         type="button"
         phx-click="add_scoped_rule"
-        class="mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+        class={[
+          "mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline",
+          focus_ring()
+        ]}
       >
-        <.icon name="hero-plus" class="size-4" /> Use a different rule on some days
+        <.icon name="hero-plus" class="size-4" /> Add rule for some days
       </button>
 
       <p :if={@service.kind == :detour} class="mt-2 text-[13px] text-muted">
@@ -1632,7 +1740,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       aria-labelledby="where-title"
       class="min-w-0 border-t border-subtle pt-5"
     >
-      <h2 id="where-title" class="text-xl font-bold text-strong">Where riders can travel</h2>
+      <h2 id="where-title" class="text-base font-bold text-strong">Where riders can travel</h2>
 
       <ul :if={@area_summaries != []} id="f-area" tabindex="-1" class="mt-3 grid gap-2 outline-none">
         <li
@@ -1685,7 +1793,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         id="add-area"
         type="button"
         phx-click="add_area"
-        class="mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+        class={[
+          "mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline",
+          focus_ring()
+        ]}
       >
         <.icon name="hero-plus" class="size-4" /> Add another area
       </button>
@@ -1711,36 +1822,35 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
               phx-value-stop-id={stop_id}
               aria-label={"Remove #{hub_name(@stop_choices, stop_id)}"}
               title="Remove"
-              class="inline-flex min-h-9 min-w-9 items-center justify-center rounded-badge text-muted hover:bg-white hover:text-strong"
+              class={[
+                "inline-flex min-h-9 min-w-9 items-center justify-center rounded-badge text-muted hover:bg-white hover:text-strong",
+                focus_ring()
+              ]}
             >
               <.icon name="hero-x-mark" class="size-3.5" />
             </button>
           </span>
 
-          <span :if={@hub_options != []} class="inline-flex flex-wrap items-center gap-2">
-            <select
+          <span :if={@hub_options != []} class="inline-flex flex-wrap items-start gap-2">
+            <.input
+              type="select"
               id="hub-stop"
               name="hub_stop"
+              value={@hub_pick}
+              options={@hub_options}
               phx-change="pick_hub"
               aria-label="Stop to add"
-              class="select select-lg h-9 w-56 min-w-0"
-            >
-              <option
-                :for={{name, stop_id} <- @hub_options}
-                value={stop_id}
-                selected={stop_id == @hub_pick}
-              >
-                {name}
-              </option>
-            </select>
-            <button
-              type="button"
+              class="select w-56 min-w-0"
+            />
+            <.button
               id="add-hub"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
               phx-click="add_hub"
-              class="inline-flex min-h-9 items-center rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
             >
               Add stop
-            </button>
+            </.button>
           </span>
         </div>
       </div>
@@ -1781,7 +1891,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       aria-labelledby="where-title"
       class="min-w-0 border-t border-subtle pt-5"
     >
-      <h2 id="where-title" class="text-xl font-bold text-strong">Where the bus can detour</h2>
+      <h2 id="where-title" class="text-base font-bold text-strong">Where the bus can detour</h2>
 
       <div class="mt-3 grid min-w-0 gap-4 sm:grid-cols-2">
         <div class="min-w-0">
@@ -1950,7 +2060,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       <legend class="sr-only">Calendars</legend>
       <label
         :for={{label, service_id} <- @calendar_options}
-        class="flex min-h-11 cursor-pointer items-center gap-3 rounded-card border border-subtle px-3 py-2"
+        class={[
+          "flex min-h-11 cursor-pointer items-center gap-3 rounded-card border border-subtle px-3 py-2",
+          card_focus()
+        ]}
       >
         <input
           type="checkbox"
@@ -2033,7 +2146,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       aria-labelledby="riders-title"
       class="min-w-0 border-t border-subtle pt-5"
     >
-      <h2 id="riders-title" class="text-xl font-bold text-strong">Who can ride</h2>
+      <h2 id="riders-title" class="text-base font-bold text-strong">Who can ride</h2>
 
       <div class="mt-3 grid gap-2">
         <.choice_radio
@@ -2068,9 +2181,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           type="button"
           id="ada-preset"
           phx-click="ada_preset"
-          class="-mt-2 inline-flex min-h-11 items-center gap-1 justify-self-start text-sm font-[650] text-action hover:underline"
+          class={[
+            "-mt-2 inline-flex min-h-11 items-center gap-1 justify-self-start text-sm font-[650] text-action hover:underline",
+            focus_ring()
+          ]}
         >
-          Use ADA paratransit wording and booking rule
+          Use ADA defaults
         </button>
 
         <fieldset>
@@ -2137,30 +2253,22 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       aria-labelledby="export-title"
       class="min-w-0 border-t border-subtle pt-5"
     >
-      <h2 id="export-title" class="text-xl font-bold text-strong">In exports</h2>
+      <h2 id="export-title" class="text-base font-bold text-strong">In exports</h2>
 
       <p id="export-summary" class="mt-2 text-sm text-strong">{@headline}</p>
       <p class="mt-1 text-[13px] text-muted">{@destination}</p>
 
       <div :if={@service.kind == :detour} class="mt-4">
-        <label for="f-realtime" class="text-[13px] font-[650] text-default">
-          Which file does your realtime vendor read?
-        </label>
-        <div class="mt-1 max-w-xs">
-          <select
+        <div class="max-w-xs">
+          <.input
+            type="select"
             id="f-realtime"
             name="realtime_source"
+            value={to_string(@export_defaults.realtime_source)}
+            label="Which file does your realtime vendor read?"
+            options={@realtime_options}
             phx-change="set_realtime"
-            class="select select-lg w-full"
-          >
-            <option
-              :for={{label, value} <- @realtime_options}
-              value={value}
-              selected={value == to_string(@export_defaults.realtime_source)}
-            >
-              {label}
-            </option>
-          </select>
+          />
         </div>
 
         <.realtime_note_card :if={@realtime_note} note={@realtime_note} />
@@ -2171,14 +2279,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       </div>
 
       <p :if={@service.kind == :detour} id="export-r3-note" class="mt-3 text-[13px] text-muted">
-        Each Route {@service.route_id} trip is written once, and its timed stop_sequence doubles so the detour rows sit between its fixed stops (R3). The route type stays Bus (3).
+        Each Route {@service.route_id} trip is exported once, with the detour stops placed between its fixed stops. The route stays a bus route.
       </p>
 
       <button
         type="button"
         id="export-details-button"
         phx-click="show_export_details"
-        class="mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+        class={[
+          "mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline",
+          focus_ring()
+        ]}
       >
         Show export details
       </button>
@@ -2208,84 +2319,82 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     ~H"""
     <.drawer
       id="export-details"
+      chrome="planner"
       open={@open}
       on_close="close_export_details"
       title="Export details"
       return_focus_id="export-details-button"
       class="max-w-[min(100vw,44rem)]"
     >
-      <p class="text-sm text-strong">{@plan.headline}.</p>
-      <p class="mt-1 text-[13px] text-muted">
+      <:lede>
         For data users and consultants. IDs come from the service and stay the same between exports.
-      </p>
+      </:lede>
 
-      <dl class="mt-3 grid grid-cols-[150px_1fr] gap-x-3 gap-y-1 text-[13px]">
-        <dt class="text-muted">Files</dt>
-        <dd class="text-strong">
-          Main feed (fixed routes) and flex file (fixed routes plus flex), built from one export and published together
-        </dd>
-        <dt class="text-muted">Flex exports</dt>
-        <dd class="text-strong">
-          {if @included?,
-            do: "Included in the next full export",
-            else: "Left out right now (Settings › Export defaults)"}
-        </dd>
-      </dl>
+      <.drawer_scroll>
+        <div>
+          <p class="text-sm text-strong">{@plan.headline}.</p>
 
-      <table class="mt-4 w-full border-collapse text-left text-sm">
-        <caption class="sr-only">Rows by file</caption>
-        <thead>
-          <tr class="border-b border-subtle text-[13px] text-muted">
-            <th scope="col" class="py-2 pr-3 font-[650]">What</th>
-            <th scope="col" class="py-2 pr-3 font-[650]">File</th>
-            <th scope="col" class="py-2 text-right font-[650]">Rows</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr :for={{what, count, file} <- @plan.counts} class="border-b border-subtle">
-            <td class="py-2 pr-3">{what}</td>
-            <td class="py-2 pr-3 font-mono text-[13px]">{file}</td>
-            <td class="py-2 text-right tabular-nums">{count}</td>
-          </tr>
-        </tbody>
-      </table>
+          <dl class="mt-3 grid grid-cols-[150px_1fr] gap-x-3 gap-y-1 text-[13px]">
+            <dt class="text-muted">Files</dt>
+            <dd class="text-strong">
+              Main feed (fixed routes) and flex file (fixed routes plus flex), built from one export and published together
+            </dd>
+            <dt class="text-muted">Flex exports</dt>
+            <dd class="text-strong">
+              {if @included?,
+                do: "Included in the next full export",
+                else: "Left out right now (Settings › Export defaults)"}
+            </dd>
+          </dl>
+        </div>
 
-      <h3 class="mt-6 text-base font-bold text-strong">Rows this service writes</h3>
-      <ul id="export-details-rows" class="mt-2 grid gap-2">
-        <li :for={row <- @plan.rows} class="rounded-card border border-subtle px-3 py-2">
-          <p class="font-mono text-[13px] text-strong">{row.file} · {row.id}</p>
-          <p class="mt-0.5 text-[13px] text-default">{row.summary}</p>
-        </li>
-      </ul>
+        <table class="w-full border-collapse text-left text-sm">
+          <caption class="sr-only">
+            Rows by file
+          </caption>
+          <thead>
+            <tr class="border-b border-subtle text-[13px] text-muted">
+              <th scope="col" class="py-2 pr-3 font-[650]">What</th>
+              <th scope="col" class="py-2 pr-3 font-[650]">File</th>
+              <th scope="col" class="py-2 text-right font-[650]">Rows</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={{what, count, file} <- @plan.counts} class="border-b border-subtle">
+              <td class="py-2 pr-3">{what}</td>
+              <td class="py-2 pr-3 font-mono text-[13px]">{file}</td>
+              <td class="py-2 text-right tabular-nums">{count}</td>
+            </tr>
+          </tbody>
+        </table>
 
-      <div :if={@plan.warnings != []} class="mt-4 grid gap-2">
-        <p class="text-[13px] font-[650] text-default">The next export would report</p>
-        <ul class="grid gap-2">
-          <li
-            :for={warning <- @plan.warnings}
-            class="flex items-start gap-2 rounded-card border border-warning-line bg-warning-bg px-3 py-2 text-[13px] text-warning-fg"
-          >
-            <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
-            <span>{warning.detail}</span>
-          </li>
-        </ul>
-      </div>
+        <div>
+          <h3 class="text-base font-bold text-strong">Rows this service writes</h3>
+          <ul id="export-details-rows" class="mt-2 grid gap-2">
+            <li :for={row <- @plan.rows} class="rounded-card border border-subtle px-3 py-2">
+              <p class="font-mono text-[13px] text-strong">{row.file} · {row.id}</p>
+              <p class="mt-0.5 text-[13px] text-default">{row.summary}</p>
+            </li>
+          </ul>
+        </div>
 
-      <div class="mt-4 grid gap-1 text-[13px] text-muted">
-        <p :for={note <- @notes}>{note}</p>
-      </div>
+        <div :if={@plan.warnings != []} class="grid gap-2">
+          <p class="text-[13px] font-[650] text-default">The next export would report</p>
+          <ul class="grid gap-2">
+            <li
+              :for={warning <- @plan.warnings}
+              class="flex items-start gap-2 rounded-card border border-warning-line bg-warning-bg px-3 py-2 text-[13px] text-warning-fg"
+            >
+              <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+              <span>{warning.detail}</span>
+            </li>
+          </ul>
+        </div>
 
-      <:footer>
-        <.button
-          id="export-details-done"
-          type="button"
-          variant="secondary"
-          class="min-h-11"
-          phx-click="close_export_details"
-        >
-          Close
-        </.button>
-      </:footer>
+        <div class="grid gap-1 text-[13px] text-muted">
+          <p :for={note <- @notes}>{note}</p>
+        </div>
+      </.drawer_scroll>
     </.drawer>
     """
   end
@@ -2308,7 +2417,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       aria-labelledby="status-title"
       class="min-w-0 border-t border-subtle pt-5"
     >
-      <h2 id="status-title" tabindex="-1" class="text-xl font-bold text-strong outline-none">
+      <h2 id="status-title" tabindex="-1" class="text-base font-bold text-strong outline-none">
         Status and removal
       </h2>
 
@@ -2354,17 +2463,18 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           <.button
             id="delete-service"
             type="button"
-            variant="danger"
-            class="min-h-11"
+            variant="secondary"
+            class="btn-outline-danger min-h-11"
             phx-click="delete"
           >
-            Delete service…
+            <.icon name="hero-trash" class="size-4" /> Delete service
           </.button>
         </div>
       </div>
 
       <.confirm_dialog
         id="flex-service-deactivate-dialog"
+        chrome="planner"
         open={@status_action == :deactivate}
         title={"Deactivate #{@service.name}?"}
         confirm_label="Deactivate service"
@@ -2382,6 +2492,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
       <.confirm_dialog
         id="flex-service-delete-dialog"
+        chrome="planner"
         open={@status_action == :delete}
         title={"Delete #{@service.name}?"}
         confirm_label="Delete service"
@@ -2410,6 +2521,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     ~H"""
     <.confirm_dialog
       id="flex-service-discard-dialog"
+      chrome="planner"
       open={@open}
       title="Discard unsaved changes?"
       confirm_label="Discard changes"
@@ -2435,6 +2547,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     ~H"""
     <.confirm_dialog
       id="flex-service-leave-dialog"
+      chrome="planner"
       open={@open}
       title="Leave with unsaved changes?"
       confirm_label="Discard changes"
@@ -2522,7 +2635,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           phx-value-index={@hour.index}
           aria-label="Remove these hours"
           title="Remove these hours"
-          class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-control border border-control text-default hover:bg-canvas"
+          class={[
+            "inline-flex min-h-11 min-w-11 items-center justify-center rounded-control border border-control text-default hover:bg-canvas",
+            focus_ring()
+          ]}
         >
           <.icon name="hero-x-mark" class="size-4" />
         </button>
@@ -2550,7 +2666,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           <span class="relative h-3 rounded-badge bg-canvas">
             <span
               :for={bar <- day.bars}
-              class="absolute inset-y-0 rounded-badge bg-cyan-500"
+              class="absolute inset-y-0 rounded-badge bg-cyan-700"
               style={bar.style}
             >
             </span>
@@ -2602,6 +2718,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         for={"booking-when-#{@rule_index}-#{choice.key}"}
         class={[
           "flex min-w-0 cursor-pointer items-start gap-3 rounded-card border px-3 py-3",
+          card_focus(),
           if(to_string(@rule_when) == choice.key,
             do: "border-action shadow-[inset_0_0_0_1px_var(--color-action)]",
             else: "border-subtle hover:bg-canvas"
@@ -2684,7 +2801,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         id={"remove-scoped-rule-#{@rule_index}"}
         phx-click="remove_scoped_rule"
         phx-value-index={@rule_index}
-        class="mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline"
+        class={[
+          "mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action hover:underline",
+          focus_ring()
+        ]}
       >
         <.icon name="hero-x-mark" class="size-4" /> Remove this rule
       </button>
@@ -2838,6 +2958,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       for={@id}
       class={[
         "flex min-w-0 cursor-pointer items-start gap-3 rounded-card border px-3 py-2.5",
+        card_focus(),
         if(@checked,
           do: "border-action shadow-[inset_0_0_0_1px_var(--color-action)]",
           else: "border-subtle hover:bg-canvas"
