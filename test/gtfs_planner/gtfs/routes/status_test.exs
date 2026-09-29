@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Gtfs.Routes.StatusTest do
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.RouteCleanupFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -446,14 +447,5 @@ defmodule GtfsPlanner.Gtfs.Routes.StatusTest do
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
       :ok
     end)
-  end
-
-  # Cascading cleanup in dependency order: every row scoped by organization or
-  # version goes first, so fixtures never leak across tests.
-  defp delete_org_or_version!(schema, org_id, version_id) do
-    Repo.delete_all(
-      from s in schema,
-        where: s.organization_id == ^org_id or s.gtfs_version_id == ^version_id
-    )
   end
 end
