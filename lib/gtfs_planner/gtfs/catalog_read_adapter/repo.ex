@@ -24,7 +24,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   The calendar list feed status resolves the agency-local today once and reports
   the version-wide service gaps with it. The Fare zones workspace resolves its inventory, checks
   and first stop page in one operational read, so a lost connection is reported
-  once for the whole workspace. Nothing else is rescued, so
+  once for the whole workspace, and the Flex services list resolves the version's
+  services with their readiness checks, the calendars map and the organization's
+  export switch the same way. Nothing else is rescued, so
   a malformed id, a bad query, or any other defect still raises rather than being
   reported as downtime.
   """
@@ -37,7 +39,10 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     Blocking,
     Calendars,
     DisplayClock,
+    ExportDefaults,
     FareZones,
+    Flex,
+    Flex.Checks,
     Route,
     RoutePatterns,
     Routes,
@@ -243,6 +248,25 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
         inventory: FareZones.inventory(organization_id, gtfs_version_id),
         checks: FareZones.checks(organization_id, gtfs_version_id),
         stops: FareZones.list_stops(organization_id, gtfs_version_id, opts)
+      }
+    end)
+  end
+
+  @impl true
+  def load_flex_list(organization_id, gtfs_version_id) do
+    run(fn ->
+      services = Flex.list_services(organization_id, gtfs_version_id)
+      facts = Checks.version_facts(organization_id, gtfs_version_id)
+
+      %{
+        services:
+          Enum.map(services, fn service ->
+            others = Enum.reject(services, &(&1.id == service.id))
+            %{service: service, checks: Checks.run(service, facts, others)}
+          end),
+        calendars: Flex.calendars_map(organization_id, gtfs_version_id),
+        has_fixed_routes?: map_size(facts.routes) > 0,
+        include_flex: ExportDefaults.get(organization_id).include_flex
       }
     end)
   end

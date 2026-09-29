@@ -2,7 +2,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   @moduledoc """
   Operational read contract for the route and stop/station catalog and detail views,
   for the editable calendar list and detail reads, for the version's transfer
-  catalog, and for the Fare zones workspace.
+  catalog, for the Fare zones workspace, and for the Flex services list.
 
   Catalog reads must distinguish ready values, missing records, partial enrichment,
   and a database connection that is temporarily unavailable. Only a lost database
@@ -39,6 +39,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
     Blocking,
     Calendars,
     FareZones,
+    Flex.Checks,
+    FlexService,
     Route,
     RoutePattern,
     Routes,
@@ -70,6 +72,12 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
           inventory: FareZones.inventory(),
           checks: FareZones.checks(),
           stops: FareZones.stop_page()
+        }
+  @type flex_list :: %{
+          services: [%{service: FlexService.t(), checks: [Checks.check()]}],
+          calendars: %{optional(String.t()) => %{name: String.t(), plural: String.t()}},
+          has_fixed_routes?: boolean(),
+          include_flex: boolean()
         }
   @type calendar_screen :: Calendars.screen()
   @type route_editor :: Routes.editor_workspace()
@@ -118,6 +126,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
             }
   @callback load_fare_workspace(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, fare_workspace()} | unavailable()
+  @callback load_flex_list(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, flex_list()} | unavailable()
   @callback load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, Transfers.catalog()} | unavailable()
 end

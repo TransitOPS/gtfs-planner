@@ -161,8 +161,9 @@ defmodule GtfsPlannerWeb.Router do
       # garage conflict notice compares.
       live "/runs", Gtfs.ComingSoonLive, :runs
       live "/rosters", Gtfs.ComingSoonLive, :rosters
-      # Flex has no area bar of its own in the architecture's groups.
-      live "/flex", Gtfs.ComingSoonLive, :flex
+      # Flex has no area bar of its own in the architecture's groups. The list is
+      # the Flex workspace's landing surface; a service page is its child route.
+      live "/flex", Gtfs.FlexLive, :index
       # Settings holds the version's rarely changed configuration, including its
       # organization-level group. Feed details and Agencies are version-scoped
       # pages; Garages and Fleet list organization-wide data under the All

@@ -19,8 +19,9 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
     parent_station: nil
   }
 
-  # The three standalone placeholder destinations with the area bar each one must
-  # render, the link it must mark current, and the tab count of that bar.
+  # The standalone placeholder destinations with the area bar each one must
+  # render, the link it must mark current, and the tab count of that bar. Flex
+  # left this list with step 19: `/flex` is `Gtfs.FlexLive`'s list now.
   @standalone_destinations [
     %{
       path: "/runs",
@@ -37,21 +38,12 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       bar: "#operations-sub-nav",
       current: "/rosters",
       tabs: 3
-    },
-    %{
-      path: "/flex",
-      title: "Flex",
-      sections: 4,
-      bar: nil,
-      current: nil,
-      tabs: 0
     }
   ]
 
   @placeholder_paths [
     "/runs",
     "/rosters",
-    "/flex",
     "/stops/#{@station_stop_id}/evolutions"
   ]
 
@@ -116,20 +108,16 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
 
         assert has_element?(view, "#coming-soon-status", "Coming soon")
 
-        if unquote(destination.bar) do
-          bar = unquote(destination.bar)
+        bar = unquote(destination.bar)
 
-          assert Enum.count(LazyHTML.query(doc, "#{bar} a")) == unquote(destination.tabs)
+        assert Enum.count(LazyHTML.query(doc, "#{bar} a")) == unquote(destination.tabs)
 
-          assert LazyHTML.attribute(
-                   LazyHTML.query(doc, "#{bar} a[aria-current='page']"),
-                   "href"
-                 ) == ["/gtfs/#{version.id}#{unquote(destination.current)}"]
+        assert LazyHTML.attribute(
+                 LazyHTML.query(doc, "#{bar} a[aria-current='page']"),
+                 "href"
+               ) == ["/gtfs/#{version.id}#{unquote(destination.current)}"]
 
-          assert Enum.count(LazyHTML.query(doc, "#{bar} a[aria-current='page']")) == 1
-        else
-          refute has_element?(view, "#sub-header-wrapper")
-        end
+        assert Enum.count(LazyHTML.query(doc, "#{bar} a[aria-current='page']")) == 1
       end
     end
   end
@@ -294,7 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       selected_version_id = to_string(other_version.id)
 
-      for path <- ["/runs", "/rosters", "/flex"] do
+      for path <- ["/runs", "/rosters"] do
         {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{path}")
 
         render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})

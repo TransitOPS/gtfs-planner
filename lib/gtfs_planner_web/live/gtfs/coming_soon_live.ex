@@ -2,8 +2,8 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
   @moduledoc """
   Read-only placeholder pages for GTFS destinations that are navigable before they are built.
 
-  One LiveView serves the four fixed actions in the architecture's route table:
-  Runs and Rosters (`/runs`, `/rosters`), Flex (`/flex`) and Evolutions
+  One LiveView serves the three fixed actions in the architecture's route table:
+  Runs and Rosters (`/runs`, `/rosters`) and Evolutions
   (`/stops/:stop_id/evolutions`). Each mounts through the ordinary `:gtfs_routes`
   session, so the shared user, organization and published-version hooks decide
   whether a request reaches it; the editor guard is declared here because a
@@ -153,7 +153,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLive do
     case socket.assigns.live_action do
       :runs -> ~p"/gtfs/#{version_id}/runs"
       :rosters -> ~p"/gtfs/#{version_id}/rosters"
-      :flex -> ~p"/gtfs/#{version_id}/flex"
       :evolutions -> evolutions_target(socket.assigns[:stop_id], version_id)
     end
   end

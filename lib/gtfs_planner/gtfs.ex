@@ -731,6 +731,23 @@ defmodule GtfsPlanner.Gtfs do
     catalog_read_adapter().load_fare_workspace(organization_id, gtfs_version_id, opts)
   end
 
+  @doc """
+  Loads the version's flex services list through the configured catalog read
+  adapter.
+
+  The load carries everything the list renders: every service with its readiness
+  checks (`Flex.Checks.run/3`), the version's calendars map for the rider text
+  (`Flex.calendars_map/2`), whether the version has any fixed route (R15's
+  only-feed state) and the organization's `include_flex` switch. A lost database
+  connection is reported once as `{:error, :unavailable}` so the page can offer
+  its retry action rather than presenting an empty list as the version's data.
+  """
+  @spec load_flex_list(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, CatalogReadAdapter.flex_list()} | CatalogReadAdapter.unavailable()
+  def load_flex_list(organization_id, gtfs_version_id) do
+    catalog_read_adapter().load_flex_list(organization_id, gtfs_version_id)
+  end
+
   @spec resolve_station_journal_scope(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, Scope.t()} | {:error, :not_found | :invalid_id}
   def resolve_station_journal_scope(organization_id, gtfs_version_id, station_id, actor_id),
