@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
   use GtfsPlannerWeb.ConnCase
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -12,6 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.ChangeRun
   alias GtfsPlanner.Gtfs.Import.ChangeRuns
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Repo
 
   setup %{conn: conn} do
@@ -638,6 +640,88 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       %{name: filename, content: content, type: type}
     ])
     |> render_upload(filename)
+  end
+
+  test "a station-merge archive with the closure file discloses the omission and applies no closures",
+       %{conn: conn, view: view, organization: organization, version: version} do
+    stored =
+      pathway_evolution_fixture(organization.id, version.id, %{
+        start_time: 32_400,
+        end_time: 54_000
+      })
+
+    archive =
+      zip!([
+        {~c"levels.txt", "level_id,level_index,level_name\nMERGE,1.0,Merge review"},
+        {~c"pathway_evolutions.txt",
+         "pathway_id,service_id,start_time,end_time,is_closed\n" <>
+           "#{stored.pathway_id},#{stored.service_id},06:00:00,07:00:00,1"}
+      ])
+
+    submit_diff(view, "station-update.zip", archive)
+    await_change_task(view)
+
+    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+
+    assert has_element?(
+             view,
+             "#diff-evolutions-ignored",
+             "pathway_evolutions.txt is not applied by station merge. Existing scheduled closures are unchanged."
+           )
+
+    assert %{summary: %{"ignored_evolution_files" => 1}} =
+             ChangeRuns.latest_for_version(organization.id, version.id)
+
+    assert [%{start_time: 32_400, end_time: 54_000}] =
+             evolutions_in_version(organization.id, version.id)
+
+    # The summary is durable: a reconnect rebuilds the same notice from the run.
+    {:ok, reconnected, _html} = live(conn, "/gtfs/#{version.id}/import")
+    assert has_element?(reconnected, "#diff-evolutions-ignored")
+
+    reconnected
+    |> element("button[phx-click='approve-decision'][phx-value-id='level:MERGE']")
+    |> render_click()
+
+    reconnected |> element("#diff-apply-btn") |> render_click()
+    await_change_task(reconnected)
+
+    assert has_element?(reconnected, "#diff-reset-btn")
+
+    assert [%{start_time: 32_400, end_time: 54_000}] =
+             evolutions_in_version(organization.id, version.id)
+
+    assert %{summary: %{"ignored_evolution_files" => 1}} =
+             ChangeRuns.latest_for_version(organization.id, version.id)
+  end
+
+  test "a station merge without the closure file shows no omission notice", %{view: view} do
+    submit_diff(view, "levels.txt", "level_id,level_index,level_name\nPLAIN,1.0,Plain")
+    await_change_task(view)
+
+    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+    refute has_element?(view, "#diff-evolutions-ignored")
+  end
+
+  test "the new-version scope sentence applies only to Import feed", %{view: view} do
+    assert has_element?(view, "#gtfs-import-section", "new version")
+    refute has_element?(view, "#station-data-section", "new version")
+
+    assert has_element?(
+             view,
+             "#diff-destination",
+             "Reviewed changes apply to version"
+           )
+  end
+
+  defp evolutions_in_version(organization_id, version_id) do
+    Repo.all(
+      from(e in PathwayEvolution,
+        where: e.organization_id == ^organization_id and e.gtfs_version_id == ^version_id,
+        order_by: [asc: e.start_time],
+        select: %{start_time: e.start_time, end_time: e.end_time}
+      )
+    )
   end
 
   defp submit_diff(view, filename, content) do

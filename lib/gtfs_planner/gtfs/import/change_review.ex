@@ -5,18 +5,35 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeReview do
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.{Diff, ParsedEntity, ParseError, ParseFailure, RowParser}
 
+  # Station merge never applies scheduled closures. The file is counted after
+  # archive expansion so the review can disclose that the upload carried it,
+  # without turning it into an entity type, a blocker or a duplicate conflict.
+  @ignored_evolution_filename "pathway_evolutions.txt"
+
   @spec compute(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) :: map()
   def compute(organization_id, version_id, files) do
     {expanded, warnings} = Import.expand_archives(files)
+    ignored_evolution_files = count_ignored_evolution_files(expanded)
 
     case categorize(expanded) do
-      {:error, duplicates} -> review_with_blockers(duplicates ++ archive_blockers(warnings))
-      {:ok, _files} when warnings != [] -> review_with_blockers(archive_blockers(warnings))
-      {:ok, categorized} -> parsed_review(organization_id, version_id, categorized)
+      {:error, duplicates} ->
+        review_with_blockers(duplicates ++ archive_blockers(warnings), ignored_evolution_files)
+
+      {:ok, _files} when warnings != [] ->
+        review_with_blockers(archive_blockers(warnings), ignored_evolution_files)
+
+      {:ok, categorized} ->
+        parsed_review(organization_id, version_id, categorized, ignored_evolution_files)
     end
   end
 
-  defp parsed_review(organization_id, version_id, categorized) do
+  defp count_ignored_evolution_files(files) do
+    Enum.count(files, fn %{filename: filename} ->
+      normalized_filename(filename) == @ignored_evolution_filename
+    end)
+  end
+
+  defp parsed_review(organization_id, version_id, categorized, ignored_evolution_files) do
     levels =
       parse(categorized.levels, :level, "levels.txt", :level_id, organization_id, version_id, %{})
 
@@ -56,7 +73,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeReview do
       summary:
         Map.merge(Diff.summary(applicable), %{
           applicable: length(applicable),
-          preview: length(preview)
+          preview: length(preview),
+          ignored_evolution_files: ignored_evolution_files
         }),
       diagnostics: diagnostics([levels, stops, pathways])
     }
@@ -92,10 +110,18 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeReview do
     )
   end
 
-  defp review_with_blockers(blockers) do
+  defp review_with_blockers(blockers, ignored_evolution_files) do
     %{
       decisions: [],
-      summary: %{applicable: 0, preview: 0, add: 0, modify: 0, remove: 0, conflict: 0},
+      summary: %{
+        applicable: 0,
+        preview: 0,
+        add: 0,
+        modify: 0,
+        remove: 0,
+        conflict: 0,
+        ignored_evolution_files: ignored_evolution_files
+      },
       diagnostics: Enum.take(blockers, 100)
     }
   end
@@ -119,7 +145,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeReview do
   end
 
   defp group_file(file, grouped) do
-    normalized = %{file | filename: file.filename |> Path.basename() |> String.downcase()}
+    normalized = %{file | filename: normalized_filename(file.filename)}
 
     case normalized.filename do
       "levels.txt" -> Map.update!(grouped, :levels, &[normalized | &1])
@@ -128,6 +154,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeReview do
       _ -> grouped
     end
   end
+
+  defp normalized_filename(filename), do: filename |> Path.basename() |> String.downcase()
 
   defp archive_blockers(warnings) do
     Enum.map(warnings, fn warning ->

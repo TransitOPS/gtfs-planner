@@ -975,6 +975,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end)
   end
 
+  # Station merge ignores `pathway_evolutions.txt`; the count the compute step
+  # stored in the durable summary is what lets the review disclose that the
+  # upload carried it. A run from before the count existed has no key.
+  defp ignored_evolution_files(%ChangeRun{summary: summary}) when is_map(summary),
+    do: Map.get(summary, "ignored_evolution_files", 0) || 0
+
+  defp ignored_evolution_files(_run), do: 0
+
   defp run_blockers(%ChangeRun{state: :review}), do: []
   defp run_blockers(%ChangeRun{state: :failed, failure_code: code}), do: [%{reason: code}]
   defp run_blockers(_), do: []
@@ -1903,6 +1911,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               Choose corrected files
             </.button>
           </:action>
+        </.message>
+      </div>
+
+      <div
+        :if={ignored_evolution_files(@run) > 0}
+        id="diff-evolutions-ignored"
+        class="border-b border-subtle px-5 py-4"
+      >
+        <.message kind="info" title="Closures in this upload stay as they are">
+          <code class="font-mono text-[13px]">pathway_evolutions.txt</code>
+          is not applied by station merge. Existing scheduled closures are unchanged.
         </.message>
       </div>
 
