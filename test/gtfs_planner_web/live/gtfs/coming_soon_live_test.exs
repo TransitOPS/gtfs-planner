@@ -41,7 +41,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
     %{
       path: "/flex",
       title: "Flex",
-      sections: 5,
+      sections: 4,
       bar: nil,
       current: nil,
       tabs: 0
@@ -195,7 +195,8 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       assert LazyHTML.text(LazyHTML.query(doc, "#coming-soon-scope")) |> String.trim() ==
                "This version: #{version.name}"
 
-      assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) == 2
+      assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) == 4
+      assert has_element?(view, "h3#coming-soon-outcomes-title")
 
       assert LazyHTML.attribute(
                LazyHTML.query(doc, "#station-sub-nav a[aria-current='page']"),
