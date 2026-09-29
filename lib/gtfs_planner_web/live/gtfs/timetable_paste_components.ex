@@ -2,14 +2,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   @moduledoc """
   Presentation for the Paste timetable page shell.
 
-  Step 21 owns the shell only: the schedule line (`scope_line/1`), the setup
-  empty states (`setup_empty/1`) and the first-paint skeleton. The Change
-  schedule drawer (step 22), the timetable step (step 23) and the review UI
+  Step 21 owns the shell: the schedule line (`scope_line/1`), the setup
+  empty states (`setup_empty/1`) and the first-paint skeleton. Step 22 owns
+  the Change schedule drawer (`scope_drawer/1`): the calendar select over
+  every calendar, the direction radios and the direction-filtered pattern
+  select with trip counts. The timetable step (step 23) and the review UI
   (steps 25-28) add components here in later steps.
   """
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [first_use: 1]
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, message: 1]
+
+  alias GtfsPlanner.Gtfs.Trip
 
   @doc """
   Renders the schedule line: the resolved Calendar, Direction and Pattern plus
@@ -131,6 +136,198 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     </div>
     """
   end
+
+  @doc """
+  Renders the Change schedule drawer: the draft Calendar, Direction and
+  Pattern that `change_schedule` patches into the URL while the paste stays.
+
+  The drawer is the workspace `drawer/1` (planner chrome) with
+  `return_focus_id` set to the Change schedule button, so Close, Cancel,
+  Escape and the backdrop all return focus to `#paste-scope-open`. The
+  calendar select lists every calendar, including dates-only ones; the
+  direction radios carry the direction labels; the pattern select lists the
+  draft direction's patterns with their trip counts on the draft calendar.
+  When a review already exists, a warning names the rebuild.
+
+  Direction uses native radio inputs: `CoreComponents.input/1` documents
+  radio as unsupported ("best written directly in your templates"), and
+  the calendar and route-form components already write native radios the
+  same way.
+  """
+  attr :open, :boolean, required: true, doc: "the drawer is requested open"
+  attr :form, :any, required: true, doc: "the draft scope form from `to_form`"
+  attr :calendars, :list, required: true, doc: "every calendar summary"
+  attr :draft_scope, :map, default: nil, doc: "the prepared draft scope, if any"
+  attr :review, :any, default: nil, doc: "the current paste review, if any"
+  attr :route_label, :string, required: true, doc: "Route 12 style label"
+
+  def scope_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:calendar_options, calendar_options(assigns.calendars))
+      |> assign(:direction_options, direction_options(draft_trips(assigns.draft_scope)))
+      |> assign(:pattern_options, pattern_options(assigns.draft_scope))
+      |> assign(:direction_value, assigns.form[:direction].value)
+
+    ~H"""
+    <.drawer
+      id="paste-scope-drawer"
+      chrome="planner"
+      open={@open}
+      title="Change schedule"
+      on_close="close_scope_drawer"
+      initial_focus={:first_field}
+      return_focus_id="paste-scope-open"
+      class="max-w-[480px]"
+    >
+      <:lede>Route {@route_label} · the trips your paste adds or replaces</:lede>
+      <.form
+        :if={@open}
+        for={@form}
+        id="paste-scope-form"
+        phx-change="scope_draft_change"
+        phx-submit="change_schedule"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.drawer_scroll>
+          <.message
+            :if={@review}
+            id="paste-scope-rebuild-warning"
+            kind="warning"
+            title="Changing the schedule rebuilds the review"
+          >
+            Your paste stays; columns are matched again.
+          </.message>
+          <.input
+            field={@form[:service_id]}
+            id="paste-scope-calendar-field"
+            type="select"
+            label="Calendar"
+            options={@calendar_options}
+            help="Pasted trips run on this calendar's days."
+          />
+          <fieldset id="paste-scope-direction-field">
+            <legend class="text-[13px] font-[650] text-strong">Direction</legend>
+            <div class="mt-1.5 grid gap-1">
+              <label
+                :for={option <- @direction_options}
+                class="inline-flex min-h-11 items-center gap-2 text-sm"
+              >
+                <input
+                  type="radio"
+                  id={"paste-scope-direction-field-#{option.value}"}
+                  name={@form[:direction].name}
+                  value={option.value}
+                  checked={@direction_value == option.value}
+                  class="size-4 accent-action"
+                />
+                {option.label}
+              </label>
+            </div>
+          </fieldset>
+          <.input
+            field={@form[:pattern]}
+            id="paste-scope-pattern-field"
+            type="select"
+            label="Pattern"
+            options={@pattern_options}
+            help={pattern_help(@direction_value)}
+          />
+        </.drawer_scroll>
+        <.drawer_footer>
+          <.button type="button" variant="secondary" phx-click="close_scope_drawer">
+            Cancel
+          </.button>
+          <.button type="submit" id="paste-scope-apply">Use schedule</.button>
+        </.drawer_footer>
+      </.form>
+    </.drawer>
+    """
+  end
+
+  defp draft_trips(%{trips: trips}), do: trips
+  defp draft_trips(_draft_scope), do: []
+
+  defp calendar_options(calendars) do
+    Enum.map(calendars, fn calendar ->
+      {calendar_option_label(calendar), calendar.service_id}
+    end)
+  end
+
+  defp calendar_option_label(calendar) do
+    base = calendar.name || calendar.service_id
+    kind = if calendar.kind == :dates_only, do: " · Specific dates", else: ""
+    "#{base}#{kind}#{calendar_dates(calendar)}"
+  end
+
+  defp calendar_dates(%{first_active_date: %Date{} = first, last_active_date: %Date{} = last}) do
+    " · #{date_label(first, last)}"
+  end
+
+  defp calendar_dates(_calendar), do: ""
+
+  defp date_label(date, date), do: Calendar.strftime(date, "%b %-d, %Y")
+
+  defp date_label(first, last) do
+    "#{Calendar.strftime(first, "%b %-d, %Y")} – #{Calendar.strftime(last, "%b %-d, %Y")}"
+  end
+
+  defp direction_options(trips) do
+    for direction_id <- [0, 1] do
+      %{value: to_string(direction_id), label: scope_direction_label(trips, direction_id)}
+    end
+  end
+
+  defp scope_direction_label(trips, direction_id) do
+    base = Trip.direction_label(direction_id)
+
+    case common_headsign(trips, direction_id) do
+      nil -> base
+      headsign -> "#{base} · to #{headsign}"
+    end
+  end
+
+  defp common_headsign(trips, direction_id) do
+    headsigns =
+      trips
+      |> Enum.filter(&(&1.direction_id == direction_id))
+      |> Enum.map(& &1.trip_headsign)
+      |> Enum.reject(&(&1 in [nil, ""]))
+
+    case headsigns do
+      [] ->
+        nil
+
+      headsigns ->
+        counts = Enum.frequencies(headsigns)
+        most = counts |> Map.values() |> Enum.max()
+
+        counts
+        |> Enum.filter(fn {_headsign, count} -> count == most end)
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.min_by(&{String.downcase(&1), &1})
+    end
+  end
+
+  defp pattern_options(%{patterns: patterns, trips: trips}) do
+    Enum.map(patterns, fn pattern ->
+      count = Enum.count(trips, &(&1.route_pattern_id == pattern.route_pattern_id))
+      {"#{pattern.name} · #{trip_count(count)}", pattern.id}
+    end)
+  end
+
+  defp pattern_options(_draft_scope), do: []
+
+  defp pattern_help("1"), do: pattern_help_text("inbound")
+  defp pattern_help(_direction), do: pattern_help_text("outbound")
+
+  defp pattern_help_text(adjective) do
+    "Columns are matched to its stops. A row that skips stops goes on another #{adjective} " <>
+      "pattern when exactly one fits."
+  end
+
+  defp trip_count(1), do: "1 trip"
+  defp trip_count(count), do: "#{count} trips"
 
   defp calendar_detail(%{first_active_date: %Date{} = first, last_active_date: %Date{} = last}) do
     "#{Calendar.strftime(first, "%b %-d, %Y")} – #{Calendar.strftime(last, "%b %-d, %Y")}"

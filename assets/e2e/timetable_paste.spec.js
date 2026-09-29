@@ -1,10 +1,11 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * Step 21 first capture: the Paste timetable page shell for BROWSER_PASTE.
+ * Paste timetable shell (step 21) plus the Change schedule drawer (step 22).
  *
- * The full paste journey lands in step 31; this file only proves the shell
- * renders its schedule line. The fixture route comes from
+ * The full paste journey lands in step 31; this file proves the shell
+ * renders its schedule line and the drawer patches the schedule while the
+ * paste stays. The fixture route comes from
  * `test/support/browser_seed.exs`: BROWSER_PASTE (route 12, Downtown –
  * Riverside) with the Weekday calendar, outbound BPS-MAIN and inbound
  * BPS-INBOUND patterns.
@@ -57,5 +58,57 @@ test.describe("Paste timetable shell", () => {
       "Central Station → Riverside Terminal",
     );
     await expect(page.locator("#paste-scope-open")).toContainText("Change schedule");
+  });
+});
+
+test.describe("Change schedule drawer", () => {
+  test("changing the direction refilters the patterns and patches the schedule", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await expect(page.locator("#paste-scope-pattern")).toContainText(
+      "Central Station → Riverside Terminal",
+    );
+
+    await page.click("#paste-scope-open");
+    await expect(page.locator("#paste-scope-drawer")).toBeVisible();
+    await expect(page.locator("#paste-scope-form")).toBeVisible();
+    await expect(page.locator("#paste-scope-calendar-field")).toBeFocused();
+    await expect(page.locator("#paste-scope-calendar-field")).toContainText("Weekday");
+    await expect(page.locator("#paste-scope-pattern-field")).toContainText(
+      "Central Station → Riverside Terminal",
+    );
+
+    // Inbound refilters the patterns away from the outbound ones.
+    await page.click("label:has(#paste-scope-direction-field-1)");
+    await expect(page.locator("#paste-scope-pattern-field")).toContainText(
+      "Riverside Terminal → Central Station",
+    );
+    await expect(page.locator("#paste-scope-pattern-field")).not.toContainText(
+      "Central Station → Riverside Terminal",
+    );
+
+    await page.click("#paste-scope-apply");
+    await expect(page).toHaveURL(/direction=1/);
+    await expect(page.locator("#paste-scope-direction")).toContainText("Inbound");
+    await expect(page.locator("#paste-scope-pattern")).toContainText(
+      "Riverside Terminal → Central Station",
+    );
+  });
+
+  test("Escape closes the drawer and returns focus to Change schedule", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.click("#paste-scope-open");
+    await expect(page.locator("#paste-scope-drawer")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#paste-scope-open")).toBeFocused();
   });
 });

@@ -67,8 +67,24 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
     service_id
   end
 
-  # One route with a Weekday calendar, an outbound pattern with trips and an
-  # inbound pattern without trips.
+  defp dates_only_calendar(organization, version, service_id, name) do
+    calendar_date_fixture(organization.id, version.id, %{
+      service_id: service_id,
+      date: ~D[2026-07-04],
+      exception_type: 1
+    })
+
+    calendar_attribute_fixture(organization.id, version.id, %{
+      service_id: service_id,
+      service_description: name,
+      service_schedule_name: name
+    })
+
+    service_id
+  end
+
+  # One route with a Weekday calendar, an unused dates-only calendar, an
+  # outbound pattern with trips and an inbound pattern without trips.
   defp paste_route(%{organization: organization, version: version}) do
     route =
       route_fixture(organization.id, version.id, %{
@@ -78,6 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       })
 
     weekday = weekly_calendar(organization, version, "PASTE_WKD", "Weekday")
+    special = dates_only_calendar(organization, version, "PASTE_SPECIAL", "Special")
 
     Enum.each(1..3, fn index ->
       stop_fixture(organization.id, version.id, %{
@@ -108,20 +125,21 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       trip_headsign: "Riverside Terminal"
     })
 
-    schedule_pattern_fixture(organization.id, version.id, %{
-      route_id: route.route_id,
-      direction_id: 1,
-      route_pattern_id: "PASTE-INBOUND",
-      route_pattern_name: "Return",
-      route_pattern_typicality: 1,
-      timing_name: "Standard",
-      stops: [
-        {"PASTE_S3", 0, 0, 1},
-        {"PASTE_S1", 1500, 1500, 1}
-      ]
-    })
+    inbound =
+      schedule_pattern_fixture(organization.id, version.id, %{
+        route_id: route.route_id,
+        direction_id: 1,
+        route_pattern_id: "PASTE-INBOUND",
+        route_pattern_name: "Return",
+        route_pattern_typicality: 1,
+        timing_name: "Standard",
+        stops: [
+          {"PASTE_S3", 0, 0, 1},
+          {"PASTE_S1", 1500, 1500, 1}
+        ]
+      })
 
-    %{route: route, weekday: weekday, main: main}
+    %{route: route, weekday: weekday, special: special, main: main, inbound: inbound}
   end
 
   describe "page shell" do
@@ -272,6 +290,213 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
 
       assert routes_path == "/gtfs/#{version.id}/routes"
       assert is_binary(flash)
+    end
+  end
+
+  describe "scope drawer" do
+    # Step 22: the Change schedule drawer — its fields, its direction
+    # refiltering and its patch that keeps the paste. The paste itself is
+    # still blank (step 23 owns the timetable step), so the review re-runs
+    # to nil and the rebuild warning stays hidden; the positive-text and
+    # warning cases land with step 23's textarea.
+    setup :editor_scope
+
+    defp open_drawer(view) do
+      view |> element("#paste-scope-open") |> render_click()
+    end
+
+    defp draft_params(params) do
+      %{"scope" => params}
+    end
+
+    test "opening the drawer offers every calendar, labelled directions and the direction patterns with trip counts",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, paste.route, %{
+            "service_id" => paste.weekday,
+            "direction" => "0",
+            "pattern" => paste.main.pattern.id
+          })
+        )
+
+      open_drawer(view)
+
+      assert has_element?(view, "#paste-scope-drawer-overlay[data-open='true']")
+
+      assert has_element?(
+               view,
+               "#paste-scope-drawer-overlay[data-return-focus-id='paste-scope-open']"
+             )
+
+      assert has_element?(view, "#paste-scope-form")
+      assert has_element?(view, "#paste-scope-drawer", "Route 12")
+      assert has_element?(view, "#paste-scope-drawer", "the trips your paste adds")
+
+      assert has_element?(
+               view,
+               "#paste-scope-calendar-field option[value='#{paste.weekday}']",
+               "Weekday"
+             )
+
+      assert has_element?(
+               view,
+               "#paste-scope-calendar-field option[value='#{paste.special}']",
+               "Specific dates"
+             )
+
+      assert has_element?(view, "#paste-scope-direction-field-0")
+      assert has_element?(view, "#paste-scope-direction-field-1")
+
+      assert has_element?(
+               view,
+               "#paste-scope-direction-field",
+               "Outbound · to Riverside Terminal"
+             )
+
+      assert has_element?(view, "#paste-scope-direction-field", "Inbound")
+
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.main.pattern.id}']",
+               "Main · 1 trip"
+             )
+
+      refute has_element?(view, "#paste-scope-pattern-field option", "Return")
+      refute has_element?(view, "#paste-scope-rebuild-warning")
+    end
+
+    test "changing the direction refilters the pattern options and reselects",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, paste.route, %{
+            "service_id" => paste.weekday,
+            "direction" => "0",
+            "pattern" => paste.main.pattern.id
+          })
+        )
+
+      open_drawer(view)
+
+      render_change(
+        view,
+        "scope_draft_change",
+        draft_params(%{
+          "service_id" => paste.weekday,
+          "direction" => "1",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.inbound.pattern.id}']",
+               "Return · 0 trips"
+             )
+
+      refute has_element?(view, "#paste-scope-pattern-field option", "Main")
+      assert has_element?(view, "#paste-scope-drawer", "another inbound pattern")
+    end
+
+    test "using a schedule patches the URL, rebuilds the scope and closes the drawer",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, paste.route, %{
+            "service_id" => paste.weekday,
+            "direction" => "0",
+            "pattern" => paste.main.pattern.id
+          })
+        )
+
+      open_drawer(view)
+
+      render_submit(
+        view,
+        "change_schedule",
+        draft_params(%{
+          "service_id" => paste.weekday,
+          "direction" => "1",
+          "pattern" => paste.inbound.pattern.id
+        })
+      )
+
+      inbound_path =
+        paste_path(version, paste.route, %{
+          "service_id" => paste.weekday,
+          "direction" => "1",
+          "pattern" => paste.inbound.pattern.id
+        })
+
+      assert_patch(view, inbound_path)
+      _html = follow(view, inbound_path)
+
+      assert has_element?(view, "#paste-scope-direction", "Inbound")
+      assert has_element?(view, "#paste-scope-pattern", "Return")
+      assert has_element?(view, "#paste-scope-drawer-overlay[data-open='false']")
+      refute has_element?(view, "#paste-scope-form")
+      refute has_element?(view, "#paste-scope-rebuild-warning")
+
+      # The rebuilt scope drafts cleanly: reopening offers the new schedule.
+      open_drawer(view)
+      assert has_element?(view, "#paste-scope-drawer-overlay[data-open='true']")
+
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.inbound.pattern.id}']",
+               "Return · 0 trips"
+             )
+    end
+
+    test "closing the drawer discards the draft without changing the scope",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, paste.route, %{
+            "service_id" => paste.weekday,
+            "direction" => "0",
+            "pattern" => paste.main.pattern.id
+          })
+        )
+
+      open_drawer(view)
+
+      render_change(
+        view,
+        "scope_draft_change",
+        draft_params(%{
+          "service_id" => paste.weekday,
+          "direction" => "1",
+          "pattern" => paste.inbound.pattern.id
+        })
+      )
+
+      render_click(view, "close_scope_drawer")
+
+      assert has_element?(view, "#paste-scope-drawer-overlay[data-open='false']")
+      assert has_element?(view, "#paste-scope-direction", "Outbound")
+      assert has_element?(view, "#paste-scope-pattern", "Main")
     end
   end
 end
