@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the five catalog keys only. Any other key raises, so a
+  `feature/1` answers for the four catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described.
   """
@@ -120,35 +120,6 @@ defmodule GtfsPlannerWeb.ComingSoon do
           name: "Include closures in your export",
           text:
             "Closures are saved with your feed export. They use a GTFS extension that isn’t in the official reference, so some trip planners and validators may ignore them."
-        }
-      ]
-    }
-  end
-
-  def feature(:export_defaults) do
-    %{
-      title: "Export defaults",
-      scope: :all_versions,
-      summary: "Choose how future exports are written.",
-      sections: [
-        %{
-          name: "Choose your identifiers",
-          text:
-            "Pick which identifier your exports use for stops, blocks and routes. The exact choices are still being decided."
-        },
-        %{
-          name: "Fill in times between timepoints",
-          text:
-            "Choose whether exports estimate times for the stops between timepoints, and how. Filling times in route patterns uses the same choice."
-        },
-        %{
-          name: "Include on-demand service",
-          text:
-            "Choose whether exports add the flex file. The Flex page shows this choice and links here."
-        },
-        %{
-          name: "See what each export used",
-          text: "Each finished export keeps the settings it was made with."
         }
       ]
     }

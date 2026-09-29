@@ -10,8 +10,8 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   # Literal expectations transcribed from the finalized content table. They are
   # written here rather than read back from the catalog under test. Transfers,
-  # Blocks, Feed details, Agencies and Fares are absent: each destination ships
-  # as a working page, so it has no catalog entry.
+  # Blocks, Flex, Feed details, Agencies, Export defaults and Fares are absent:
+  # each destination ships as a working page, so it has no catalog entry.
   @catalog [
     runs: %{
       title: "Runs",
@@ -35,18 +35,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Export assignments"
       ]
     },
-    flex: %{
-      title: "Flex",
-      scope: :version,
-      summary:
-        "Describe your on-demand service so trip planners can show riders where and when they can book a ride.",
-      section_names: [
-        "Describe each service",
-        "Draw the area it covers",
-        "Add detours to a fixed route",
-        "Publish with your feed"
-      ]
-    },
     evolutions: %{
       title: "Evolutions",
       scope: :version,
@@ -57,17 +45,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Pick pathways on the floorplan",
         "Check station access",
         "Include closures in your export"
-      ]
-    },
-    export_defaults: %{
-      title: "Export defaults",
-      scope: :all_versions,
-      summary: "Choose how future exports are written.",
-      section_names: [
-        "Choose your identifiers",
-        "Fill in times between timepoints",
-        "Include on-demand service",
-        "See what each export used"
       ]
     },
     feed_url: %{
@@ -85,7 +62,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 6
+      assert length(@catalog) == 4
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -122,6 +99,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       # otherwise warn that `feature/1` has no clause for the literal atom.
       assert_raise FunctionClauseError, fn ->
         ComingSoon.feature(Function.identity(:blocks))
+      end
+    end
+
+    test "no longer answers for Export defaults, whose page shipped" do
+      # The retired placeholder key must not resolve to plausible placeholder
+      # copy: the Settings overview lists Export defaults as an Available page.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:export_defaults))
       end
     end
 
@@ -178,7 +163,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
       html =
         rendered_to_string(~H"""
-        <.coming_soon feature={ComingSoon.feature(:flex)} scope_label="All versions" />
+        <.coming_soon feature={ComingSoon.feature(:runs)} scope_label="All versions" />
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -187,7 +172,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders a labelled section with a semantic subsection list and no controls" do
-      doc = render_doc(ComingSoon.feature(:flex), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:runs), "This version: Fall 2026")
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "section#coming-soon"), "aria-labelledby") ==
                ["coming-soon-title"]

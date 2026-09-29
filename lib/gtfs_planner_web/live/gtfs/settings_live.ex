@@ -15,14 +15,14 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   "Settings" link above its heading (`PlannerComponents.back_link/1`). Pages that
   still render the tab bar drop it as they move to the same link.
 
-  The two unbuilt sections render the shared `GtfsPlannerWeb.ComingSoon` body,
-  and the overview reads those titles and summaries from the same catalog, so the
-  two surfaces cannot drift apart. A section slug is looked up in a fixed map:
-  no request string becomes an atom, and an unknown slug flashes and returns to
-  the overview instead of rendering a page nobody described. Feed details,
-  Agencies and Fares are built, so their literal routes are declared ahead of the
-  section route and the overview lists them above the placeholders, which
-  sit last under a "Coming soon" band.
+  The one unbuilt section (`feed-url`) renders the shared
+  `GtfsPlannerWeb.ComingSoon` body, and the overview reads its title and summary
+  from the same catalog, so the two surfaces cannot drift apart. A section slug is
+  looked up in a fixed map: no request string becomes an atom, and an unknown slug
+  flashes and returns to the overview instead of rendering a page nobody
+  described. Feed details, Agencies, Export defaults and Fares are built, so their
+  literal routes are declared ahead of the section route and the overview lists
+  them above the placeholder, which sits last under a "Coming soon" band.
 
   Access follows the other GTFS pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
@@ -47,13 +47,12 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  # The two placeholder sections, keyed by their literal URL slug. A request
-  # path only ever looks a slug up here, and the answer is one of these fixed
-  # atoms or `:error`. A built section is not listed: its literal route resolves
-  # before the `/settings/:section` placeholder route, so this map would only
-  # ever answer for a destination that no longer renders Coming soon.
+  # The one placeholder section, keyed by its literal URL slug. A request path
+  # only ever looks a slug up here, and the answer is this fixed atom or `:error`.
+  # A built section is not listed: its literal route resolves before the
+  # `/settings/:section` placeholder route, so this map would only ever answer
+  # for a destination that no longer renders Coming soon.
   @sections %{
-    "export-defaults" => :export_defaults,
     "feed-url" => :feed_url
   }
 
@@ -64,7 +63,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   # No version-scoped placeholder remains: Feed details, Agencies and Fares are
   # built pages, so they are listed below with their own copy.
   @version_sections []
-  @all_version_sections ["export-defaults", "feed-url"]
+  @all_version_sections ["feed-url"]
 
   # The built version-scoped pages, in the sitemap's order. Each moved here when
   # its page shipped: the summary is the copy its Coming soon entry used to
@@ -92,7 +91,17 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     }
   ]
 
+  # The built All versions pages, in the sitemap's order. A page that ships keeps
+  # the place its Coming soon entry held — Export defaults leads the group and
+  # carries that entry's summary — so building a page never reorders the group
+  # around it.
   @all_version_pages [
+    %{
+      key: :export_defaults,
+      slug: "export-defaults",
+      title: "Export defaults",
+      summary: "Choose how future exports are written."
+    },
     %{
       key: :garages,
       slug: "garages",
@@ -406,8 +415,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       |> Enum.filter(&ProductSurfaces.visible?(organization, &1.key))
 
     all_version_entries =
-      (Enum.map(@all_version_sections, &placeholder_entry(&1, version.id)) ++
-         Enum.map(@all_version_pages, &existing_page_entry(&1, version.id)))
+      (Enum.map(@all_version_pages, &existing_page_entry(&1, version.id)) ++
+         Enum.map(@all_version_sections, &placeholder_entry(&1, version.id)))
       |> Enum.filter(&ProductSurfaces.visible?(organization, &1.key))
 
     groups =
