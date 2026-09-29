@@ -27,6 +27,12 @@ defmodule GtfsPlanner.Gtfs.FareZoneImportExportTest do
   @stops_header "stop_id,stop_name,stop_desc,stop_lat,stop_lon,zone_id," <>
                   "location_type,parent_station,wheelchair_boarding,platform_code,level_id"
 
+  # The full export also writes stop_code, tts_stop_name, stop_url and
+  # stop_timezone, so its header differs from the input header above.
+  @exported_stops_header "stop_id,stop_code,stop_name,tts_stop_name,stop_desc,stop_lat," <>
+                           "stop_lon,zone_id,stop_url,location_type,parent_station," <>
+                           "stop_timezone,wheelchair_boarding,platform_code,level_id"
+
   @pathways_stops_header "stop_id,stop_name,stop_desc,stop_lat,stop_lon,location_type," <>
                            "parent_station,wheelchair_boarding,platform_code,level_id"
 
@@ -135,7 +141,7 @@ defmodule GtfsPlanner.Gtfs.FareZoneImportExportTest do
     entries = unzip(zip)
 
     stops_text = entry!(entries, "stops.txt")
-    assert stops_text |> String.split("\n") |> hd() == @stops_header
+    assert stops_text |> String.split("\n") |> hd() == @exported_stops_header
 
     exported_stops = parse!("stops.txt", stops_text)
 

@@ -143,6 +143,86 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     end
   end
 
+  describe "stop_code, tts_stop_name, stop_url and stop_timezone" do
+    setup do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "CODED", stop_name: "Coded"})
+
+      {1, _} =
+        Repo.update_all(from(s in Stop, where: s.id == ^stop.id),
+          set: [
+            stop_code: "4021",
+            tts_stop_name: "Coded Stop",
+            stop_url: "https://example.test/stops/coded",
+            stop_timezone: "America/New_York"
+          ]
+        )
+
+      %{organization: organization, version: version, stop: Repo.get!(Stop, stop.id)}
+    end
+
+    test "a stop form save cannot change them", %{stop: stop} do
+      assert {:ok, saved} =
+               Gtfs.update_stop(stop, %{
+                 stop_name: "Renamed",
+                 stop_code: nil,
+                 tts_stop_name: "Other",
+                 stop_url: nil,
+                 stop_timezone: "Europe/Paris"
+               })
+
+      assert %{
+               stop_name: "Renamed",
+               stop_code: "4021",
+               tts_stop_name: "Coded Stop",
+               stop_url: "https://example.test/stops/coded",
+               stop_timezone: "America/New_York"
+             } = Repo.get!(Stop, saved.id)
+    end
+
+    test "the import changeset cannot change them either", %{stop: stop} do
+      changeset =
+        Stop.import_changeset(stop, %{
+          stop_code: "9",
+          tts_stop_name: "Other",
+          stop_url: "https://example.test/other",
+          stop_timezone: "Europe/Paris"
+        })
+
+      assert changeset.changes == %{}
+    end
+
+    test "a rollback restores the reversible fields and leaves them untouched", %{
+      organization: org,
+      version: version,
+      stop: stop
+    } do
+      actor = user_fixture()
+
+      audit = %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+
+      assert {:ok, renamed} = Gtfs.update_stop(stop, %{stop_name: "Renamed"})
+      assert :ok = Gtfs.record_change(audit, :stop, stop, "updated", %{stop_name: "Renamed"})
+
+      assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", renamed.id)
+      assert {:ok, _restored} = Gtfs.rollback_entity(log, audit)
+
+      assert %{
+               stop_name: "Coded",
+               stop_code: "4021",
+               tts_stop_name: "Coded Stop",
+               stop_url: "https://example.test/stops/coded",
+               stop_timezone: "America/New_York"
+             } = Repo.get!(Stop, stop.id)
+    end
+  end
+
   describe "slugify/1" do
     test "slugifies a normal name" do
       assert Stop.slugify("Platform A") == "platform_a"

@@ -170,6 +170,56 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
       assert attrs.zone_id == nil
     end
+
+    test "keeps stop_code, tts_stop_name, stop_url and stop_timezone byte-for-byte", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "stop_id" => "S1",
+        "stop_code" => " 4021",
+        "tts_stop_name" => "Fourth Street ",
+        "stop_url" => "https://example.test/stops/S1?a=1,2",
+        "stop_timezone" => "America/New_York"
+      }
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+
+      assert %{
+               stop_code: " 4021",
+               tts_stop_name: "Fourth Street ",
+               stop_url: "https://example.test/stops/S1?a=1,2",
+               stop_timezone: "America/New_York"
+             } = attrs
+    end
+
+    test "stores empty stop_code, tts_stop_name, stop_url and stop_timezone as nil", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{
+        "stop_id" => "S1",
+        "stop_code" => "",
+        "tts_stop_name" => "",
+        "stop_url" => "",
+        "stop_timezone" => ""
+      }
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+
+      assert %{stop_code: nil, tts_stop_name: nil, stop_url: nil, stop_timezone: nil} = attrs
+    end
+
+    test "stores missing stop_code, tts_stop_name, stop_url and stop_timezone keys as nil", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      row = %{"stop_id" => "S1"}
+
+      assert {:ok, attrs} = RowParser.stop_row_to_attrs(row, org_id, version_id)
+
+      assert %{stop_code: nil, tts_stop_name: nil, stop_url: nil, stop_timezone: nil} = attrs
+    end
   end
 
   describe "stop_time_row_to_attrs/3" do

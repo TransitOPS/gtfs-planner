@@ -376,6 +376,78 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
              Repo.get!(ChangeRun, run.id)
   end
 
+  test "a reviewed station change leaves the stored stop_code, tts_stop_name, stop_url and stop_timezone" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop = stop_fixture(organization.id, version.id, %{stop_id: "central", stop_name: "Central"})
+
+    {1, _} =
+      Repo.update_all(from(s in Stop, where: s.id == ^stop.id),
+        set: [
+          stop_code: "4021",
+          tts_stop_name: "Central Station",
+          stop_url: "https://example.test/stops/central",
+          stop_timezone: "America/New_York"
+        ]
+      )
+
+    current_values = %{"stop_name" => "Central"}
+
+    run =
+      review_run!(organization.id, version.id, [
+        %{
+          decision(
+            :stop,
+            :modify,
+            "central",
+            %{stop_name: "Central Station"},
+            [],
+            "stop:central"
+          )
+          | current_values: current_values,
+            current_fingerprint: ChangeDecisionSerializer.current_fingerprint(current_values)
+        }
+      ])
+
+    # The intake allowlist refuses these fields, so the persisted decision is given
+    # them directly: applying it must still leave the stored values alone.
+    {1, _} =
+      Repo.update_all(
+        from(d in ChangeDecision, where: d.change_run_id == ^run.id),
+        set: [
+          uploaded_values: %{
+            "stop_name" => "Central Station",
+            "stop_code" => nil,
+            "tts_stop_name" => nil,
+            "stop_url" => nil,
+            "stop_timezone" => nil
+          }
+        ]
+      )
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    assert %{
+             stop_name: "Central Station",
+             stop_code: "4021",
+             tts_stop_name: "Central Station",
+             stop_url: "https://example.test/stops/central",
+             stop_timezone: "America/New_York"
+           } = GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert %ChangeRun{state: :completed, summary: %{"applied" => 1, "unapplied" => 0}} =
+             Repo.get!(ChangeRun, run.id)
+  end
+
   test "an apply executor failure before any commit is interrupted with an unapplied count" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)

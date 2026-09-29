@@ -10,6 +10,9 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
 
   alias GtfsPlanner.Gtfs
 
+  # Stop columns the pathways profile leaves out of stops.txt.
+  @pathways_dropped_stop_columns ~w(zone_id stop_code tts_stop_name stop_url stop_timezone)
+
   @doc """
   Returns the file specification for the given file type.
 
@@ -43,13 +46,17 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       schema: Gtfs.Stop,
       fields: [
         {"stop_id", :stop_id},
+        {"stop_code", :stop_code},
         {"stop_name", :stop_name},
+        {"tts_stop_name", :tts_stop_name},
         {"stop_desc", :stop_desc},
         {"stop_lat", :stop_lat},
         {"stop_lon", :stop_lon},
         {"zone_id", :zone_id},
+        {"stop_url", :stop_url},
         {"location_type", :location_type},
         {"parent_station", :parent_station},
+        {"stop_timezone", :stop_timezone},
         {"wheelchair_boarding", :wheelchair_boarding},
         {"platform_code", :platform_code},
         {"level_id", :level_id}
@@ -348,8 +355,9 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
   - `:full` - All GTFS files
   - `:pathways` - Only stops, levels, and pathways
 
-  Only the full export carries `stops.zone_id`: the pathways profile drops the
-  column from its `stops.txt` so that export keeps exactly its existing columns.
+  Only the full export carries `stops.zone_id`, `stop_code`, `tts_stop_name`,
+  `stop_url` and `stop_timezone`: the pathways profile drops those columns from its
+  `stops.txt` so that export keeps exactly its existing columns.
   """
   def get_specs(:full) do
     [
@@ -376,7 +384,9 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
 
   def get_specs(:pathways) do
     [
-      Map.update!(stops_spec(), :fields, &List.keydelete(&1, "zone_id", 0)),
+      Map.update!(stops_spec(), :fields, fn fields ->
+        Enum.reject(fields, fn {name, _source} -> name in @pathways_dropped_stop_columns end)
+      end),
       levels_spec(),
       pathways_spec()
     ]
