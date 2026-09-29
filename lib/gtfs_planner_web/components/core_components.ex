@@ -2081,6 +2081,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
     default: false,
     doc: "renders only the dismiss action, for informational dialogs"
 
+  attr :confirm_form, :string,
+    default: nil,
+    doc: """
+    the id of a form inside the body that the confirm action submits. The confirm
+    button then submits that form, so its fields travel with it, instead of pushing
+    `on_confirm` without them.
+    """
+
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -2137,9 +2145,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <button
               :if={not @single_action}
               id={"#{@id}-confirm"}
-              type="button"
+              type={if @confirm_form, do: "submit", else: "button"}
+              form={@confirm_form}
               class={@ui.confirm}
-              phx-click={@on_confirm}
+              phx-click={if @confirm_form, do: nil, else: @on_confirm}
               phx-target={@target}
               phx-disable-with={@pending_label}
               disabled={@pending or @confirm_disabled}
@@ -2566,12 +2575,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
     doc: "md for primary mode switches, sm for compact secondary filters"
 
   attr :emphasis, :atom,
-    values: [:primary, :quiet, :selection],
+    values: [:primary, :quiet, :selection, :strong],
     default: :primary,
     doc:
       "primary fills the selected segment; quiet keeps a neutral selected state; selection " <>
         "tints it with the design system's selection ground and action ink, so a mode switch " <>
-        "inside a drawer does not compete with the drawer's primary action (joined only)"
+        "inside a drawer does not compete with the drawer's primary action (joined only); " <>
+        "strong fills it with the darkest ink on a white track, the design system's view " <>
+        "toggle, so a switch of view is not mistaken for the page's primary action (joined only)"
 
   attr :legend_class, :any, default: nil, doc: "optional classes for the legend (e.g. sr-only)"
 
@@ -2614,11 +2625,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </p>
         <div class={[
           @appearance == :separate && "flex flex-wrap gap-2",
-          @appearance == :joined && "flex w-full overflow-hidden rounded-md p-0.5 sm:w-auto",
+          @appearance == :joined && "flex w-full overflow-hidden sm:w-auto",
+          @appearance == :joined && @emphasis != :strong && "rounded-md p-0.5",
+          @appearance == :joined && @emphasis == :strong && "rounded-control",
           @appearance == :joined && @emphasis == :primary &&
             "border border-control-border bg-base-100",
           @appearance == :joined && @emphasis == :quiet && "bg-base-200",
-          @appearance == :joined && @emphasis == :selection &&
+          @appearance == :joined && @emphasis in [:selection, :strong] &&
             "border border-control bg-white"
         ]}>
           <label
@@ -2652,6 +2665,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 "bg-selection font-semibold text-action",
               @appearance == :joined && @value != option.value && @emphasis == :selection &&
                 "text-muted hover:text-strong",
+              @appearance == :joined && @value == option.value && @emphasis == :strong &&
+                "bg-navy-800 font-bold text-white",
+              @appearance == :joined && @value != option.value && @emphasis == :strong &&
+                "font-semibold text-strong hover:bg-canvas",
               option.disabled && "cursor-not-allowed opacity-60"
             ]}
           >

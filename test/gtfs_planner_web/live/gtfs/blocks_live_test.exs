@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
 
-  @subtitle "A block is one vehicle's sequence of trips."
+  @subtitle "A block is one vehicle's trips for a service day, in order. Check that they fit, and give every trip a vehicle."
 
   defp editor_setup(_context) do
     organization = organization_fixture()

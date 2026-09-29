@@ -2,37 +2,48 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   @moduledoc """
   Function components for Operations › Blocks.
 
-  The page's day-type scope, whole-day summary, the paged timeline, the List
+  The page's service-day scope, whole-day summary, the paged timeline, the List
   view, the unassigned pool, the Service dates, Checks, Peak and Minimum layover
-  drawers, the “not plotted” list and the page states live here so
+  drawers, the “not shown on the timeline” list and the page states live here so
   `GtfsPlannerWeb.Gtfs.BlocksLive` stays a small state owner. Every component
   takes the pieces of the loaded day it prints, never the whole day, so
   `render/1` in the LiveView never reaches into the server-only day assign
   (CR-6). The trip, gap and block drawers render inside the same page.
+
+  The components are drawn in the TransitOps application design system: the
+  page carries the shared `.ds-page` scope, drawers and dialogs use the planner
+  chrome, states are messages and first-use panels, and a finding is a tinted
+  badge in drawers and cards but icon plus words in a dense table cell. What is
+  local to this page is the timeline table and the gap markers, styled by the
+  `blocks (design system)` section of `assets/css/app.css`.
 
   Times are printed from parsed seconds with `clock/1`; nothing here re-reads a
   clock string from the database (CR-3). The timeline reads the block's trips
   and findings only, and takes the block's plot order from the pure
   `Checks.sequence/1` so its bars align with the block's own `gaps/1` pairs. The
   List view and the pool take a trip's findings from the day's own finding list,
-  grouped by trip once per load, and print them through `status_badge`.
+  grouped by trip once per load, and print them as badges.
   """
 
   use GtfsPlannerWeb, :html
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
-  Renders the day-type scope: the day-type select, the route filter, “Problems
-  only”, the Service dates link and the Minimum layover button.
+  Renders the service-day scope: the service-day select, the route filter,
+  “Problems only”, the Service dates link and the Minimum layover link.
 
   The day select posts through its own form (`select_day`) so a day change is
   never mistaken for a route filter; the route and status controls post through
-  the `filter` form. The scope describes the whole day type, so neither control
-  changes the whole-day counts. The Minimum layover button prints the stored
-  value the day load read, so a save shows the new one on the next render.
+  the `filter` form. The scope describes the whole service day, so neither control
+  changes the whole-day counts. Service dates and Minimum layover are set rarely,
+  so they are quiet links at the far end. The Minimum layover link prints the
+  stored value the day load read, so a save shows the new one on the next render.
   """
   attr :day_types, :list, required: true
   attr :day_type, :map, required: true
@@ -44,46 +55,46 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     assigns = assign(assigns, :route_options, route_options(assigns.routes))
 
     ~H"""
-    <div id="blocks-scope" class="flex flex-wrap items-end gap-x-6 gap-y-3">
-      <form id="blocks-day-form" phx-change="select_day" class="min-w-0 max-w-full">
+    <div id="blocks-scope" class="flex flex-wrap items-end gap-x-5 gap-y-3 p-4">
+      <form id="blocks-day-form" phx-change="select_day" class="w-full min-w-0 sm:w-[360px]">
         <.day_select id="blocks-day" day_types={@day_types} selected={@day_type.key} />
       </form>
 
       <form
         id="blocks-filter-form"
         phx-change="filter"
-        class="flex flex-wrap items-end gap-x-6 gap-y-3"
+        class="flex min-w-0 flex-wrap items-end gap-x-5 gap-y-3 max-sm:w-full"
       >
-        <.input
-          type="select"
-          id="blocks-route"
-          name="route"
-          label="Route"
-          prompt="All routes"
-          value={@state.route || ""}
-          options={@route_options}
-          class="select select-lg w-full sm:w-48"
-        />
-        <label class="label min-h-11 cursor-pointer gap-2">
+        <div class="w-full min-w-0 sm:w-[230px]">
+          <.input
+            type="select"
+            id="blocks-route"
+            name="route"
+            label="Route"
+            prompt="All routes"
+            value={@state.route || ""}
+            options={@route_options}
+          />
+        </div>
+        <label class="flex min-h-11 cursor-pointer items-center gap-2.5 text-sm font-[650] text-strong">
           <input
             type="checkbox"
             id="blocks-problems-only"
             name="status"
             value="problems"
             checked={@state.status == :problems}
-            class="checkbox"
-          />
-          <span class="label-text">Problems only</span>
+            class="size-5 accent-action"
+          /> Problems only
         </label>
       </form>
 
-      <div class="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div class="ml-auto flex flex-wrap items-center gap-x-4">
         <button
           id="blocks-service-dates"
           type="button"
           phx-click="open_drawer"
           phx-value-key="service_dates"
-          class="link link-primary min-h-11"
+          class={link_class()}
         >
           Service dates
         </button>
@@ -92,7 +103,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           type="button"
           phx-click="open_drawer"
           phx-value-key="layover"
-          class="btn btn-sm min-h-11"
+          class={link_class()}
         >
           Minimum layover · {@min_layover_minutes} min
         </button>
@@ -102,11 +113,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the day-type select.
+  Renders the service-day select.
 
-  Every day type prints as “<label> · <date_count> dates”; day types with one
-  date sit in an optgroup labelled “Special days”. Passing a `nil` selection
-  selects nothing, which is the unknown-day recovery state.
+  Every service day prints as “<label> · <N> days”; service days with one date
+  sit in an optgroup labelled “Special days”. Passing a `nil` selection selects
+  nothing, which is the unknown-day recovery state.
   """
   attr :id, :string, required: true
   attr :day_types, :list, required: true
@@ -120,22 +131,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       type="select"
       id={@id}
       name="day"
-      label="Day type"
+      label="Service day"
       value={@selected}
       options={@options}
-      class="select select-lg w-full sm:w-80"
     />
     """
   end
 
   @doc """
-  Renders the whole-day count strip and the day-type note.
+  Renders the whole-day summary tiles and the service-day note.
 
-  Every figure is the whole day type's, so the route filter, “Problems only”
-  and any paging leave them unchanged. Each item is a button: the unassigned
-  figure opens the unassigned panel and the problems and peak figures open
-  their drawer. The items whose key names no target (`blocks`, `notices`) are
-  ignored by the handler.
+  Every figure is the whole service day's, so the route filter, “Problems only”
+  and any paging leave them unchanged. A tile that leads somewhere is a button:
+  Unassigned trips opens the unassigned panel while there are any, Problems
+  opens Checks and Peak vehicles out opens its drawer. Blocks and Notices lead
+  nowhere today, so they are plain tiles. A tile is neutral until its count
+  needs the operator: Unassigned trips and Problems take a state colour above
+  zero and read as done, with a check, at zero.
   """
   attr :day_type, :map, required: true
   attr :counts, :map, required: true
@@ -143,40 +155,78 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :open_drawer, :atom, default: nil
 
   def summary_strip(assigns) do
-    assigns =
-      assigns
-      |> assign(:items, count_items(assigns.counts, assigns.peak))
-      |> assign(:selected_key, assigns.open_drawer && Atom.to_string(assigns.open_drawer))
+    assigns = assign(assigns, :tiles, summary_tiles(assigns.counts, assigns.peak))
 
     ~H"""
     <section
       id="blocks-summary"
-      aria-label="Whole day type summary"
-      class="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-base-300 py-2"
+      aria-label="Whole service day summary"
+      class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-subtle px-4 py-3"
     >
-      <.count_strip
+      <div
         id="blocks-summary-counts"
-        items={@items}
-        event="open_drawer"
-        selected_key={@selected_key}
-      />
-      <span id="blocks-peak-detail" class="text-sm text-base-content/70">
-        {peak_detail(@peak)}
-      </span>
-      <span id="blocks-summary-note" class="ml-auto text-sm text-base-content/70">
-        Whole day type · {date_count_label(@day_type.date_count)}
+        data-role="count-strip"
+        class="grid min-w-0 grow grid-cols-2 gap-2 sm:flex sm:grow-0 sm:flex-wrap"
+      >
+        <.summary_tile :for={tile <- @tiles} tile={tile} />
+      </div>
+      <span id="blocks-summary-note" class="ml-auto text-[13px] text-muted">
+        Whole service day · {day_count_label(@day_type.date_count)}
       </span>
     </section>
     """
   end
 
+  attr :tile, :map, required: true
+
+  defp summary_tile(assigns) do
+    ~H"""
+    <.dynamic_tag
+      tag_name={if @tile.action?, do: "button", else: "div"}
+      id={"blocks-summary-counts-item-" <> @tile.key}
+      data-role="count-strip-item"
+      data-key={@tile.key}
+      type={@tile.action? && "button"}
+      phx-click={@tile.action? && "open_drawer"}
+      phx-value-key={@tile.action? && @tile.key}
+      class={[
+        "flex min-h-11 items-center gap-2 rounded-control border px-3.5 py-1.5 text-left",
+        summary_tile_tone(@tile.tone),
+        @tile.wide? && "max-sm:col-span-2",
+        @tile.action? && "hover:shadow-card"
+      ]}
+    >
+      <.icon name={@tile.icon} class="size-[18px] shrink-0" />
+      <span class={["text-sm", @tile.tone == :neutral && "text-muted"]}>{@tile.label}</span>
+      <strong
+        data-role="count-strip-value"
+        class="font-display text-[22px] font-semibold leading-none tabular-nums"
+      >
+        {@tile.count}
+      </strong>
+      <span
+        :if={@tile.detail}
+        id={@tile.key == "peak" && "blocks-peak-detail"}
+        class={["text-[13px]", @tile.tone == :neutral && "text-muted"]}
+      >
+        {@tile.detail}
+      </span>
+    </.dynamic_tag>
+    """
+  end
+
+  defp summary_tile_tone(:neutral), do: "border-subtle bg-white text-strong"
+  defp summary_tile_tone(:error), do: "border-error-line bg-error-bg text-error-fg"
+  defp summary_tile_tone(:info), do: "border-info-line bg-info-bg text-info-fg"
+  defp summary_tile_tone(:success), do: "border-success-line bg-success-bg text-success-fg"
+
   @doc """
   Renders the page's data states: the first-paint skeleton, the two calendar
   and trip empties, and the unknown-day recovery.
 
-  The skeleton mirrors the header, the count strip and eight rows. The recovery
-  state keeps the day select but applies no day type: a restored selection
-  loads the day the user chose (INV-6).
+  The skeleton mirrors the scope card, the summary tiles and eight rows. The
+  recovery state keeps the service-day select but applies no day: a restored
+  selection loads the day the user chose (INV-6).
   """
   attr :kind, :atom, required: true, values: [:loading, :no_dates, :empty, :unknown]
   attr :day_types, :list, default: []
@@ -184,74 +234,85 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   def page_state(%{kind: :loading} = assigns) do
     ~H"""
-    <.skeleton id="blocks-skeleton" label="Loading blocks…">
-      <div class="space-y-3">
-        <div class="h-6 w-36 bg-base-300"></div>
-        <div class="h-12 w-full bg-base-300"></div>
-        <div :for={_row <- 1..8} class="h-9 w-full bg-base-300"></div>
+    <div
+      id="blocks-skeleton"
+      class="overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="motion-safe:animate-pulse" aria-hidden="true">
+        <div class="flex flex-wrap gap-4 p-4">
+          <div :for={width <- ["w-[340px]", "w-[190px]", "w-[120px]"]} class={["max-w-full", width]}>
+            <div class="h-4 w-20 rounded-badge bg-canvas"></div>
+            <div class="mt-2 h-11 rounded-control bg-canvas"></div>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2 border-t border-subtle p-4">
+          <div :for={_tile <- 1..5} class="h-11 w-[150px] rounded-control bg-canvas"></div>
+        </div>
+        <div class="space-y-2 border-t border-subtle p-4">
+          <div class="h-9 w-64 rounded-control bg-canvas"></div>
+          <div :for={_row <- 1..8} class="h-9 w-full rounded-badge bg-canvas"></div>
+        </div>
       </div>
-    </.skeleton>
+      <p class="px-4 pb-4 text-sm text-muted">Loading blocks…</p>
+    </div>
     """
   end
 
   def page_state(%{kind: :no_dates} = assigns) do
     ~H"""
-    <div id="blocks-no-dates">
-      <.empty_state title="No calendar in this version has a service date.">
-        Add the days a calendar runs, then group the trips on those dates into each
-        vehicle's work.
-        <:action>
-          <.link
-            id="blocks-no-dates-link"
-            navigate={~p"/gtfs/#{@version_id}/calendars"}
-            class="btn btn-primary"
-          >
-            Open Calendars
-          </.link>
-        </:action>
-      </.empty_state>
-    </div>
+    <.first_use
+      id="blocks-no-dates"
+      icon="hero-calendar"
+      title="No calendar in this version has a service date"
+    >
+      Add the days a calendar runs, then group the trips on those days into each vehicle's work.
+      <:action>
+        <.button
+          id="blocks-no-dates-link"
+          navigate={~p"/gtfs/#{@version_id}/calendars"}
+          class="min-h-11"
+        >
+          Open Calendars
+        </.button>
+      </:action>
+    </.first_use>
     """
   end
 
   def page_state(%{kind: :empty} = assigns) do
     ~H"""
-    <div id="blocks-empty">
-      <.empty_state title="Blocks need trips with calendars">
-        Add scheduled trips and the days they run. Then group them into each vehicle's work.
-        <:action>
-          <.link
-            id="blocks-empty-link"
-            navigate={~p"/gtfs/#{@version_id}/routes"}
-            class="btn btn-primary"
-          >
-            Open Routes
-          </.link>
-        </:action>
-      </.empty_state>
-    </div>
+    <.first_use id="blocks-empty" icon="hero-inbox" title="Blocks need trips with calendars">
+      Add scheduled trips and the days they run. Then group them into each vehicle's work.
+      <:action>
+        <.button id="blocks-empty-link" navigate={~p"/gtfs/#{@version_id}/routes"} class="min-h-11">
+          Open Routes
+        </.button>
+      </:action>
+    </.first_use>
     """
   end
 
   def page_state(%{kind: :unknown} = assigns) do
     ~H"""
-    <div id="blocks-unknown-day">
-      <.empty_state title="Choose a day type">
-        This day type no longer matches the calendars. No day type is applied for you and
-        nothing has changed.
-        <:action>
-          <form id="blocks-unknown-day-form" phx-submit="select_day" class="mx-auto max-w-sm">
-            <.day_select id="blocks-day" day_types={@day_types} />
-            <button type="submit" class="btn btn-primary mt-3">Show selected day</button>
-          </form>
-        </:action>
-      </.empty_state>
-    </div>
+    <.first_use id="blocks-unknown-day" icon="hero-calendar" title="Choose a service day">
+      The service day in this link no longer matches your calendars. Nothing has changed, and no
+      day is picked for you.
+      <:action>
+        <form
+          id="blocks-unknown-day-form"
+          phx-submit="select_day"
+          class="mx-auto max-w-sm text-left"
+        >
+          <.day_select id="blocks-day" day_types={@day_types} />
+          <.button type="submit" class="mt-3 min-h-11 w-full">Show blocks</.button>
+        </form>
+      </:action>
+    </.first_use>
     """
   end
 
   @doc """
-  Renders the Service dates drawer: the day type's date count, its range and
+  Renders the Service dates drawer: the service day's date count, its range and
   every date grouped by month.
   """
   attr :open, :boolean, required: true
@@ -263,34 +324,47 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.drawer
       id="service-dates-drawer"
+      chrome="planner"
       open={@open}
       title="Service dates"
       return_focus_id="blocks-service-dates"
+      class="max-w-[520px]"
     >
-      <h3 class="text-sm font-semibold">
-        {@day_type.label} · {date_count_label(@day_type.date_count)}
-      </h3>
-      <p class="mt-1 text-sm text-base-content/70">{range_text(@day_type.dates)}</p>
+      <:lede>{@day_type.label} · {day_count_label(@day_type.date_count)}</:lede>
 
-      <div :for={{label, dates} <- @months} class="mt-4" data-role="service-dates-month">
-        <h4 class="text-sm font-semibold">{label}</h4>
-        <ul class="mt-1 space-y-0.5 text-sm">
-          <li :for={date <- dates}>{format_date(date)}</li>
-        </ul>
-      </div>
+      <.drawer_scroll>
+        <p class="text-sm text-muted">
+          {range_text(@day_type.dates)}. Blocks on this service day apply to every date below.
+        </p>
+
+        <section :for={{label, dates} <- @months} data-role="service-dates-month">
+          <h3 class="text-[15px] font-bold text-strong">
+            {label} <span class="font-normal text-muted">· {day_count_label(length(dates))}</span>
+          </h3>
+          <ul class="mt-2 flex flex-wrap gap-1.5">
+            <li
+              :for={date <- dates}
+              class="rounded-badge bg-canvas px-2 py-1 text-[13px] tabular-nums text-default"
+            >
+              {short_date(date)}
+            </li>
+          </ul>
+        </section>
+      </.drawer_scroll>
     </.drawer>
     """
   end
 
   @doc """
-  Renders the Checks drawer: the day type's problems first, then its notices.
+  Renders the Checks drawer: the service day's problems first, then its notices.
 
   Each finding names its block, its trips and what the finding is; “Open block”
   and “Open trip” carry the reader to the drawer for that block or trip. A
   finding whose trip is outside the loaded day prints the stored ID without an
-  action, because the day-type view does not hold the trips to open.
+  action, because the service-day view does not hold the trips to open.
   """
   attr :open, :boolean, required: true
+  attr :day_type, :map, required: true
   attr :findings, :list, required: true
   attr :trip_labels, :map, required: true
 
@@ -303,23 +377,35 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.drawer
       id="checks-drawer"
+      chrome="planner"
       open={@open}
       title="Checks and notices"
       return_focus_id="blocks-review-checks"
+      class="max-w-[520px]"
     >
-      <h3 class="text-sm font-semibold">Problems · {length(@problems)}</h3>
-      <div id="checks-drawer-problems" class="mt-2 space-y-4">
-        <.finding :for={finding <- @problems} finding={finding} trip_labels={@trip_labels} />
-        <p :if={@problems == []} class="text-sm text-base-content/70">None in this day type.</p>
-      </div>
+      <:lede>{@day_type.label} · every block</:lede>
 
-      <h3 class="mt-6 border-t border-base-300 pt-4 text-sm font-semibold">
-        Notices · {length(@notices)}
-      </h3>
-      <div id="checks-drawer-notices" class="mt-2 space-y-4">
-        <.finding :for={finding <- @notices} finding={finding} trip_labels={@trip_labels} />
-        <p :if={@notices == []} class="text-sm text-base-content/70">None in this day type.</p>
-      </div>
+      <.drawer_scroll>
+        <p class="text-sm text-muted">
+          Problems need a decision before this schedule is ready. Notices are things to know.
+        </p>
+
+        <section>
+          <h3 class="text-[15px] font-bold text-strong">Problems · {length(@problems)}</h3>
+          <div id="checks-drawer-problems" class="mt-3 space-y-4">
+            <.finding :for={finding <- @problems} finding={finding} trip_labels={@trip_labels} />
+            <p :if={@problems == []} class="text-sm text-muted">None on this service day.</p>
+          </div>
+        </section>
+
+        <section class="border-t border-subtle pt-5">
+          <h3 class="text-[15px] font-bold text-strong">Notices · {length(@notices)}</h3>
+          <div id="checks-drawer-notices" class="mt-3 space-y-4">
+            <.finding :for={finding <- @notices} finding={finding} trip_labels={@trip_labels} />
+            <p :if={@notices == []} class="text-sm text-muted">None on this service day.</p>
+          </div>
+        </section>
+      </.drawer_scroll>
     </.drawer>
     """
   end
@@ -333,17 +419,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       data-role="blocks-finding"
       data-code={@finding.code}
       data-severity={@finding.severity}
-      class="border-l-4 border-base-300 pl-3"
+      class={["rounded-card border-l-4 bg-white py-1 pl-3", severity_border(@finding.severity)]}
     >
-      <div class="flex flex-wrap items-center gap-2">
-        <.status_badge status={severity_status(@finding.severity)} label={code_label(@finding.code)} />
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-0">
+        <.code_badge code={@finding.code} />
         <button
           :if={@finding.block_id}
           data-role="blocks-finding-block"
           type="button"
           phx-click="open_block"
           phx-value-block={@finding.block_id}
-          class="link link-primary min-h-11"
+          class={link_class()}
         >
           Open block {@finding.block_id}
         </button>
@@ -351,23 +437,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
       <p class="mt-1 text-sm">{finding_detail(@finding)}</p>
 
-      <p :if={@finding.trip_ids != []} class="mt-1 text-sm">
-        <span
-          :for={uuid <- @finding.trip_ids}
-          class="mr-3 inline-block"
-          data-role="blocks-finding-trip"
-        >
+      <p :if={@finding.trip_ids != []} class="mt-0.5 flex flex-wrap gap-x-3 text-sm">
+        <span :for={uuid <- @finding.trip_ids} data-role="blocks-finding-trip">
           <%= if label = @trip_labels[uuid] do %>
             <button
               type="button"
               phx-click="open_trip"
               phx-value-trip={label}
-              class="link link-primary min-h-11"
+              class={[link_class(), "-ml-1"]}
             >
               Open trip {label}
             </button>
           <% else %>
-            <span class="text-base-content/70">{uuid}</span>
+            <span class="text-muted">{uuid}</span>
           <% end %>
         </span>
       </p>
@@ -376,8 +458,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the Peak drawer: the definition, a bar per 15-minute bin, the same
-  bins as a table and the count of trips the figure leaves out.
+  Renders the Peak drawer: the figure, the definition, a bar per 15-minute bin,
+  the same bins as a table and the count of trips the figure leaves out.
   """
   attr :open, :boolean, required: true
   attr :peak, :map, required: true
@@ -395,66 +477,86 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.drawer
       id="peak-drawer"
+      chrome="planner"
       open={@open}
       title="Peak vehicles out"
       return_focus_id="blocks-summary-counts-item-peak"
+      class="max-w-[520px]"
     >
-      <p class="text-sm font-semibold">{peak_headline(@peak)} · whole day type</p>
-      <p class="mt-1 text-sm text-base-content/70">
-        Blocks in progress, including time between trips. Excludes unassigned and frequency
-        trips.
-      </p>
+      <:lede>Whole service day</:lede>
 
-      <div :if={@bins != []} class="mt-4">
-        <div
-          id="peak-chart"
-          role="img"
-          aria-label={peak_chart_label(@peak, @bins, @axis)}
-          class="flex h-28 items-end gap-px border-b border-base-300"
-        >
-          <i
-            :for={bar <- @bars}
-            id={"peak-bin-bar-#{bar.start_secs}"}
-            style={"height: #{bar.height}%"}
-            class="min-w-0 flex-1 bg-base-content/40"
-            title={"#{clock(bar.start_secs)} · #{bar.count}"}
+      <.drawer_scroll>
+        <div>
+          <p class="font-display text-[32px] font-semibold leading-none text-strong">
+            {@peak.count}
+            <span :if={@peak.at_secs} class="text-base font-normal text-muted">
+              at {clock(@peak.at_secs)}
+            </span>
+          </p>
+          <p class="mt-2 text-sm text-muted">
+            Blocks in progress, including the time they wait between trips. It leaves out
+            unassigned and repeating trips, and it isn't a fleet requirement.
+          </p>
+        </div>
+
+        <div :if={@bins != []}>
+          <div
+            id="peak-chart"
+            role="img"
+            aria-label={peak_chart_label(@peak, @bins, @axis)}
+            class="flex h-32 items-end gap-px border-b border-control"
           >
-          </i>
+            <i
+              :for={bar <- @bars}
+              id={"peak-bin-bar-#{bar.start_secs}"}
+              style={"height: #{bar.height}%"}
+              class={[
+                "block min-w-0 flex-1",
+                if(bar.count == @peak.count, do: "bg-default", else: "bg-navy-300")
+              ]}
+              title={"#{clock(bar.start_secs)} · #{bar.count}"}
+            >
+            </i>
+          </div>
+          <div class="mt-1 flex justify-between text-xs tabular-nums text-muted">
+            <span>{clock(List.first(@bins).start_secs)}</span>
+            <span>{clock(List.last(@bins).start_secs + 900)}</span>
+          </div>
+
+          <details class="mt-4">
+            <summary class="flex min-h-11 cursor-pointer items-center text-sm font-[650] text-action">
+              Show the numbers by 15 minutes
+            </summary>
+            <table id="peak-bins" class="mt-1 w-full text-sm">
+              <caption class="sr-only">Vehicles out per 15-minute bin</caption>
+              <thead>
+                <tr class="bg-canvas text-left text-[13px] text-muted">
+                  <th scope="col" class="px-3 py-2 font-semibold">From</th>
+                  <th scope="col" class="px-3 py-2 text-right font-semibold">Vehicles out</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-subtle/60">
+                <tr :for={bar <- @bars} id={"peak-bin-#{bar.start_secs}"} data-role="peak-bin">
+                  <td class="px-3 py-1.5 tabular-nums">{clock(bar.start_secs)}</td>
+                  <td class="px-3 py-1.5 text-right tabular-nums">{bar.count}</td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
         </div>
-        <div class="mt-1 flex justify-between text-xs text-base-content/70">
-          <span>{clock(List.first(@bins).start_secs)}</span>
-          <span>{clock(List.last(@bins).start_secs + 900)}</span>
-        </div>
 
-        <table id="peak-bins" class="table table-sm mt-4">
-          <caption class="sr-only">Vehicles out per 15-minute bin</caption>
-          <thead>
-            <tr>
-              <th scope="col">From</th>
-              <th scope="col" class="text-right">Vehicles out</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr :for={bar <- @bars} id={"peak-bin-#{bar.start_secs}"} data-role="peak-bin">
-              <td>{clock(bar.start_secs)}</td>
-              <td class="text-right tabular-nums">{bar.count}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+        <p :if={@bins == []} id="peak-bins-empty" class="text-sm text-muted">
+          No block has timed trips on this service day, so there is no peak to show.
+        </p>
 
-      <p :if={@bins == []} id="peak-bins-empty" class="mt-4 text-sm text-base-content/70">
-        No block is timed in this day type, so there is no peak to show.
-      </p>
-
-      <p id="peak-exclusions" class="mt-4 text-sm text-base-content/70">
-        Excludes {count_label(@peak.excluded_unassigned, "unassigned trip", "unassigned trips")} and {count_label(
-          @peak.excluded_frequency,
-          "frequency trip",
-          "frequency trips"
-        )}. Trips without
-        usable timing are also left out, and this is not a fleet requirement.
-      </p>
+        <p id="peak-exclusions" class="rounded-card bg-canvas p-3 text-sm text-muted">
+          Left out: {count_label(@peak.excluded_unassigned, "unassigned trip", "unassigned trips")} and {count_label(
+            @peak.excluded_frequency,
+            "repeating trip",
+            "repeating trips"
+          )}. Trips with missing times are left out too.
+        </p>
+      </.drawer_scroll>
     </.drawer>
     """
   end
@@ -470,7 +572,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   `phx-change` is the drawer's own `open_drawer` event, which re-derives this
   drawer's state from the payload (CR-8) — and the submit saves through
   `Gtfs.update_blocking_settings/3`. Closing the drawer returns focus to the
-  header button that opened it.
+  link that opened it.
   """
   attr :open, :boolean, required: true
   attr :form, :any, required: true
@@ -480,12 +582,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.drawer
       id="layover-drawer"
+      chrome="planner"
       open={@open}
       title="Minimum layover"
       initial_focus={:first_field}
       initial_focus_id="layover-minutes"
       return_focus_id="blocks-min-layover"
+      class="max-w-[520px]"
     >
+      <:lede>Applies to every service day in this version</:lede>
+
       <.form
         for={@form}
         id="layover-form"
@@ -493,30 +599,40 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         phx-change="open_drawer"
         phx-debounce="200"
         phx-submit="save_layover"
-        class="space-y-2"
+        class="flex min-h-0 flex-1 flex-col"
       >
-        <.input
-          id="layover-minutes"
-          field={@form[:min_layover_minutes]}
-          type="number"
-          min={0}
-          max={120}
-          step={1}
-          label="Minimum layover (minutes)"
-          help="Flag connections shorter than this value. It applies to every day type in this version."
-          class="input input-lg w-full max-w-40 block"
-        />
+        <.drawer_scroll>
+          <.input
+            id="layover-minutes"
+            field={@form[:min_layover_minutes]}
+            type="number"
+            min={0}
+            max={120}
+            step={1}
+            label="Minimum layover (minutes)"
+            help="Flag connections shorter than this. A short connection between two trips shows as a warning in Checks. Changing it re-checks every block."
+            class="w-full input input-lg max-w-40"
+          />
 
-        <p :if={@error} id="layover-error" role="alert" class="text-sm text-error">{@error}</p>
+          <p :if={@error} id="layover-error" role="alert" class="text-sm font-semibold text-error-fg">
+            {@error}
+          </p>
+        </.drawer_scroll>
 
-        <div class="flex flex-wrap items-center gap-3 pt-2">
-          <button type="submit" id="layover-submit" class="btn btn-primary min-h-11">
-            Save minimum
-          </button>
-          <button type="button" id="layover-cancel" phx-click="close_drawer" class="btn min-h-11">
+        <.drawer_footer>
+          <.button
+            type="button"
+            id="layover-cancel"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="close_drawer"
+          >
             Cancel
-          </button>
-        </div>
+          </.button>
+          <.button type="submit" id="layover-submit" class="min-h-11" phx-disable-with="Saving…">
+            Save minimum
+          </.button>
+        </.drawer_footer>
       </.form>
     </.drawer>
     """
@@ -524,14 +640,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   @doc """
   Renders the read-only trip drawer: the trip's identity, its stored times and
-  block, every day type it runs in with the all-dates scope sentence, its own
+  block, every service day it runs in with the all-dates scope sentence, its own
   findings and every type 4/5 record naming it.
 
-  The day-type links patch `day` and `trip`, so one link follows the trip to
-  another day type's page with the drawer open again (AC-29). The record list is
+  The service-day links patch `day` and `trip`, so one link follows the trip to
+  another day's page with the drawer open again (AC-29). The record list is
   read-only and holds every record that names the trip, including one whose pair
-  has no hosting gap (AC-25, INV-3). A frequency trip carries the repeat text and
-  an unplottable one its missing-time warning; neither can be plotted.
+  has no hosting gap (AC-25, INV-3). A repeating trip carries the repeat text and
+  one with missing times its warning; neither can be plotted.
 
   A trip opened from the block drawer keeps that block in the URL and prints
   “Back to block <id>”, which returns to the block drawer (step 24).
@@ -552,174 +668,235 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   def trip_drawer(assigns) do
     assigns =
-      assign(assigns, :total_dates, Enum.sum(Enum.map(assigns.day_types, & &1.date_count)))
+      assigns
+      |> assign(:total_dates, Enum.sum(Enum.map(assigns.day_types, & &1.date_count)))
+      |> assign(:title, trip_title(assigns.trip))
 
     ~H"""
     <.drawer
       id="trip-drawer"
+      chrome="planner"
       open={@open}
-      title={"Trip " <> @trip.trip_id}
+      title={@title}
       return_focus_id={"trip-bar-" <> dom_token(@trip.trip_id)}
+      class="max-w-[520px]"
     >
-      <div class="flex flex-wrap items-center gap-2">
-        <.route_badge_for route_id={@trip.route_id} routes={@routes} />
-        <strong>{route_name(@routes, @trip.route_id)}</strong>
-        <.status_badge :if={@trip.frequency?} status="info" label="Frequency service" />
-      </div>
+      <:lede>Trip {@trip.trip_id}{if not @trip.plottable?, do: " · time missing"}</:lede>
 
-      <dl class="mt-4 divide-y divide-base-300 border-y border-base-300 text-sm">
-        <.trip_field label="Headsign">{blank_dash(@trip.trip_headsign)}</.trip_field>
-        <.trip_field label="Pattern">{blank_dash(@trip.route_pattern_id)}</.trip_field>
-        <.trip_field label="Calendar">{@calendar_label}</.trip_field>
-        <.trip_field label="Departure">
-          <strong>{clock(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
-        </.trip_field>
-        <.trip_field label="Arrival">
-          <strong>{clock(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
-        </.trip_field>
-        <.trip_field label="GTFS time">
-          {gtfs_time(@trip.first_departure)} → {gtfs_time(@trip.last_arrival)}
-        </.trip_field>
-        <.trip_field label="Block ID">{@trip.block_id || "Unassigned"}</.trip_field>
-      </dl>
-
-      <.callout
-        :if={@trip.frequency?}
-        id="trip-frequency"
-        kind="info"
-        title={frequency_text(@trip)}
-      />
-
-      <.callout
-        :if={not @trip.plottable?}
-        id="trip-unplottable"
-        kind="warning"
-        title="An endpoint time is missing."
-      >
-        This trip remains in the data and cannot be plotted or assigned until its timing
-        is restored.
-      </.callout>
-
-      <section id="trip-day-types" class="mt-6 border-t border-base-300 pt-4">
-        <h3 class="text-sm font-semibold">Runs on {@total_dates} dates in:</h3>
-        <div class="mt-2 space-y-1">
-          <.link
-            :for={day_type <- @day_types}
-            patch={day_type_trip_path(@version_id, day_type.key, @trip.trip_id)}
-            data-role="trip-day-type"
-            data-day={day_type.key}
-            class="link link-primary block min-h-11 content-center"
-          >
-            {day_type_option_label(day_type)}
-          </.link>
-        </div>
-        <p :if={@day_types == []} class="mt-2 text-sm text-base-content/70">
-          This trip has no active service dates.
-        </p>
-        <p class="mt-2 text-sm text-base-content/70">
-          Changes apply to all {@total_dates} dates this trip runs.
-        </p>
-      </section>
-
-      <section :if={@findings != []} class="mt-6 border-t border-base-300 pt-4">
-        <h3 class="text-sm font-semibold">Checks</h3>
-        <p
-          :for={finding <- @findings}
-          data-role="trip-finding"
-          data-code={finding.code}
-          class="mt-2 flex flex-wrap items-center gap-2 text-sm"
-        >
-          <.status_badge
-            status={severity_status(finding.severity)}
-            label={code_label(finding.code)}
+      <.drawer_scroll>
+        <div class="flex flex-wrap items-center gap-2">
+          <.route_badge_for route_id={@trip.route_id} routes={@routes} />
+          <strong class="text-strong">{route_name(@routes, @trip.route_id)}</strong>
+          <.finding_badge
+            :if={@trip.frequency?}
+            tone={:info}
+            icon="hero-arrow-path"
+            label="Repeating service"
           />
-          <span>{finding_detail(finding)}</span>
-        </p>
-      </section>
+        </div>
 
-      <section id="trip-transfers" class="mt-6 border-t border-base-300 pt-4">
-        <h3 class="text-sm font-semibold">Transfer records · {length(@in_seat)}</h3>
-        <div class="mt-2 space-y-3">
-          <div
-            :for={entry <- @in_seat}
-            data-role="trip-transfer"
-            data-transfer-type={entry.row.transfer_type}
-            class="border-l-4 border-base-300 pl-3"
+        <dl class="divide-y divide-subtle/70 border-y border-subtle/70 text-sm">
+          <.trip_field label="Departs">
+            <strong>{clock(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
+          </.trip_field>
+          <.trip_field label="Arrives">
+            <strong>{clock(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
+          </.trip_field>
+          <.trip_field label="Headsign">{blank_dash(@trip.trip_headsign)}</.trip_field>
+          <.trip_field label="Pattern">{blank_dash(@trip.route_pattern_id)}</.trip_field>
+          <.trip_field label="Calendar">{@calendar_label}</.trip_field>
+          <.trip_field label="Block">{@trip.block_id || "Unassigned"}</.trip_field>
+          <.trip_field label="GTFS trip ID">
+            <span class="font-mono text-[13px]">{@trip.trip_id}</span>
+          </.trip_field>
+          <.trip_field label="GTFS time">
+            <span class="font-mono text-[13px]">
+              {gtfs_time(@trip.first_departure)} → {gtfs_time(@trip.last_arrival)}
+            </span>
+          </.trip_field>
+        </dl>
+
+        <.message
+          :if={@trip.frequency?}
+          id="trip-frequency"
+          kind="info"
+          title={frequency_title(@trip)}
+        >
+          This view can't check the vehicle work of a repeating trip. An imported block can still
+          be removed.
+        </.message>
+
+        <.message
+          :if={not @trip.plottable?}
+          id="trip-unplottable"
+          kind="warning"
+          title="A time is missing."
+        >
+          This trip stays in your data, but it can't be drawn or assigned until its times are
+          restored.
+          <.link
+            id="trip-schedules-link"
+            navigate={schedules_path(@version_id, @trip)}
+            class="font-[650] underline underline-offset-4"
           >
-            <div class="flex flex-wrap items-center gap-2">
-              <strong>{transfer_type_label(entry.row.transfer_type)}</strong>
-              <.status_badge
-                status={transfer_state_status(entry.state)}
-                label={transfer_state_label(entry.state)}
-              />
-            </div>
-            <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
-            <p data-role="trip-transfer-state" class="text-sm text-base-content/70">
-              {in_seat_state_text(entry.state)}
+            Fix times in Schedules
+          </.link>
+        </.message>
+
+        <.drawer_section id="trip-day-types" title="Service days">
+          <p class="text-sm">
+            This trip runs on {@total_dates} days, in {if length(@day_types) == 1,
+              do: "this service day",
+              else: "these service days"}:
+          </p>
+          <div class="mt-2 divide-y divide-subtle/70 border-y border-subtle/70">
+            <.link
+              :for={day_type <- @day_types}
+              patch={day_type_trip_path(@version_id, day_type.key, @trip.trip_id)}
+              data-role="trip-day-type"
+              data-day={day_type.key}
+              class={[link_class(), "w-full justify-between font-medium"]}
+            >
+              {day_type_option_label(day_type)}
+              <.icon name="hero-chevron-right" class="size-4 shrink-0" />
+            </.link>
+          </div>
+          <p :if={@day_types == []} class="mt-2 text-sm text-muted">
+            This trip has no active service dates.
+          </p>
+          <p class="mt-2 text-[13px] text-muted">
+            A block assignment belongs to the trip, so a change applies on all {@total_dates} days it runs.
+          </p>
+        </.drawer_section>
+
+        <.drawer_section :if={@findings != []} title="Checks">
+          <div class="space-y-2">
+            <p
+              :for={finding <- @findings}
+              data-role="trip-finding"
+              data-code={finding.code}
+              class="flex flex-wrap items-center gap-2 text-sm"
+            >
+              <.code_badge code={finding.code} />
+              <span>{finding_detail(finding)}</span>
             </p>
           </div>
+        </.drawer_section>
+
+        <.drawer_section id="trip-transfers" title={"Stay-on-board records · #{length(@in_seat)}"}>
+          <div class="space-y-3">
+            <div
+              :for={entry <- @in_seat}
+              data-role="trip-transfer"
+              data-transfer-type={entry.row.transfer_type}
+              class="border-l-4 border-subtle pl-3"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <strong class="text-sm">{transfer_type_label(entry.row.transfer_type)}</strong>
+                <.finding_badge
+                  tone={transfer_state_tone(entry.state)}
+                  label={transfer_state_label(entry.state)}
+                />
+              </div>
+              <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
+              <p data-role="trip-transfer-state" class="text-[13px] text-muted">
+                {in_seat_state_text(entry.state)}
+              </p>
+            </div>
+          </div>
+          <p :if={@in_seat == []} class="text-sm text-muted">
+            No stay-on-board records mention this trip.
+          </p>
+        </.drawer_section>
+
+        <%!-- The trip's own assign controls: a blocked trip can be removed from its
+        block, and any eligible trip can open the destination picker in this drawer
+        (step 25). An ineligible trip keeps “Remove from block” only, because an
+        assignment needs usable times and a single trip (R10). Opening the picker
+        hands the drawer's one primary to its Save assignment. --%>
+        <div
+          :if={@trip.block_id || eligible?(@trip)}
+          class="flex flex-wrap justify-end gap-2 border-t border-subtle pt-5"
+        >
+          <.button
+            :if={@trip.block_id}
+            id="trip-unassign"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="unassign"
+            phx-value-scope="trip"
+            phx-value-trip={@trip.trip_id}
+          >
+            Remove from block
+          </.button>
+          <.button
+            :if={eligible?(@trip)}
+            id="trip-change-assignment"
+            type="button"
+            variant={if @assign != nil, do: "secondary", else: "primary"}
+            class="min-h-11"
+            phx-click="open_assign"
+            phx-value-scope="trip"
+            phx-value-trip={@trip.trip_id}
+            aria-expanded={to_string(@assign != nil)}
+          >
+            {if @trip.block_id, do: "Change assignment", else: "Assign trip"}
+          </.button>
         </div>
-        <p :if={@in_seat == []} class="mt-2 text-sm text-base-content/70">
-          No type 4/5 records reference this trip.
-        </p>
-      </section>
 
-      <%!-- The trip's own assign controls: a blocked trip can be removed from its
-      block, and any eligible trip can open the destination picker in this drawer
-      (step 25). An ineligible trip keeps “Remove from block” only, because an
-      assignment needs usable times and a single trip (R10). --%>
-      <div
-        :if={@trip.block_id || eligible?(@trip)}
-        class="mt-6 flex flex-wrap gap-2 border-t border-base-300 pt-4"
-      >
-        <button
-          :if={@trip.block_id}
-          id="trip-unassign"
-          type="button"
-          phx-click="unassign"
-          phx-value-scope="trip"
-          phx-value-trip={@trip.trip_id}
-          class="btn btn-sm min-h-11"
+        <div
+          :if={@assign && @assign.scope == :trip && @trip.id in @assign.trip_ids}
+          class="rounded-card border border-subtle p-4"
         >
-          Remove from block
-        </button>
-        <button
-          :if={eligible?(@trip)}
-          id="trip-change-assignment"
-          type="button"
-          phx-click="open_assign"
-          phx-value-scope="trip"
-          phx-value-trip={@trip.trip_id}
-          aria-expanded={to_string(@assign != nil)}
-          class="btn btn-sm btn-primary min-h-11"
-        >
-          {if @trip.block_id, do: "Change assignment", else: "Assign trip"}
-        </button>
-      </div>
+          <.assign_form
+            assign={@assign}
+            form={@assign_form}
+            options={@destination_options}
+            total={@destination_total}
+            total_dates={@total_dates}
+          />
+        </div>
 
-      <.assign_form
-        :if={@assign && @assign.scope == :trip && @trip.id in @assign.trip_ids}
-        assign={@assign}
-        form={@assign_form}
-        options={@destination_options}
-        total={@destination_total}
-        total_dates={@total_dates}
-      />
-
-      <%!-- “Back to block” is what a trip opened from the block drawer gets; a trip
-      opened from a bar or a marker has no block context and no back link. --%>
-      <div :if={@back_block} class="mt-6 border-t border-base-300 pt-4">
-        <button
-          id="trip-back-to-block"
-          type="button"
-          phx-click="open_block"
-          phx-value-block={@back_block}
-          class="btn btn-sm min-h-11"
-        >
-          Back to block {@back_block}
-        </button>
-      </div>
+        <%!-- “Back to block” is what a trip opened from the block drawer gets; a trip
+        opened from a bar or a marker has no block context and no back link. --%>
+        <div :if={@back_block} class="border-t border-subtle pt-5">
+          <.back_to_block id="trip-back-to-block" block={@back_block} />
+        </div>
+      </.drawer_scroll>
     </.drawer>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :block, :string, required: true
+
+  defp back_to_block(assigns) do
+    ~H"""
+    <.button
+      id={@id}
+      type="button"
+      variant="secondary"
+      class="min-h-11"
+      phx-click="open_block"
+      phx-value-block={@block}
+    >
+      <.icon name="hero-arrow-left" class="size-4" /> Back to block {@block}
+    </.button>
+    """
+  end
+
+  # A titled section of a drawer body, divided from the one above by a hairline.
+  attr :title, :string, required: true
+  attr :id, :string, default: nil
+  slot :inner_block, required: true
+
+  defp drawer_section(assigns) do
+    ~H"""
+    <section id={@id} class="border-t border-subtle pt-5">
+      <h3 class="text-[15px] font-bold text-strong">{@title}</h3>
+      <div class="mt-2">{render_slot(@inner_block)}</div>
+    </section>
     """
   end
 
@@ -729,12 +906,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   The form posts one `submit_assign` after the search has been narrowed by the
   debounced `search_destination` event, so the reader chooses one of at most 25
-  matching block IDs instead of scanning the day type (AC-26). “New block” is
+  matching block IDs instead of scanning the service day (AC-26). “New block” is
   always first because a new ID is resolved under the lock before the review; an
   exact match leads the results; a blocked trip also offers “No block”, which
   removes it. A failed save keeps the chosen radio checked and prints the
   sentence in `#assign-error`, and an ineligible trip is named instead of being
   silently dropped (FH-18).
+
+  A trip's form carries its own Save assignment. The selection's form sits in a
+  dialog whose footer submits it (`confirm_form`), so it renders none.
   """
   attr :assign, :map, required: true
   attr :form, :any, required: true
@@ -761,29 +941,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       phx-change="search_destination"
       phx-debounce="200"
       phx-submit="submit_assign"
-      class="mt-3 space-y-3"
+      class="grid gap-4 text-default"
     >
-      <p class="text-sm text-base-content/70">
-        {count_label(@trip_count, "trip", "trips")} · {@total_dates} affected dates
+      <p class="text-sm text-muted">
+        {count_label(@trip_count, "trip", "trips")} · applies on {@total_dates} days
       </p>
 
-      <div class="field">
-        <.input
-          id="destination-search"
-          field={@form[:search]}
-          type="search"
-          label="Find a block"
-          placeholder="Search block ID"
-          autocomplete="off"
-          help="Choose an existing ID or create a new block. This does not suggest operational compatibility."
-        />
-      </div>
+      <.input
+        id="destination-search"
+        field={@form[:search]}
+        type="search"
+        label="Find a block"
+        placeholder="Search block ID"
+        autocomplete="off"
+        help="Choose an existing block or start a new one. We don't check that trips suit the same vehicle."
+      />
 
       <%!-- An ineligible trip is named with its own reason, never skipped
-      silently (FH-18). A selection gets its own callout: the reason per trip
+      silently (FH-18). A selection gets its own message: the reason per trip
       and “Use eligible trips”, which drops the ineligible trips and keeps the
       dialog open on what remains (AC-24). --%>
-      <.callout
+      <.message
         :if={@ineligible != []}
         id={ineligible_callout_id(@assign)}
         kind="warning"
@@ -794,7 +972,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             {trip.trip_id} · {bulk_ineligibility_reason(trip)}
           </li>
         </ul>
-        <p>No trips will be changed until the selection is eligible.</p>
+        <p>No trips will change until every selected trip can be assigned.</p>
         <button
           :if={@assign.scope == :selection}
           id="bulk-use-eligible"
@@ -802,29 +980,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-click="open_assign"
           phx-value-scope="selection"
           phx-value-eligible="true"
-          class="link link-primary mt-1 inline-flex min-h-11 items-center"
+          class="mt-1 inline-flex min-h-11 items-center font-[650] underline underline-offset-4"
         >
           Use eligible trips
         </button>
-      </.callout>
+      </.message>
 
       <fieldset>
-        <legend class="text-sm font-medium">Destination block</legend>
-        <div class="mt-2 space-y-2">
-          <label class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+        <legend class="mb-2 text-[13px] font-[650] text-strong">Destination block</legend>
+        <div class={["grid gap-2", @assign.scope == :selection && "sm:grid-cols-2"]}>
+          <label class={destination_card_class()}>
             <input
               type="radio"
               id="destination-new"
               name={@form[:destination].name}
               value="new"
               checked={@assign.target in [nil, :new]}
-              class="radio radio-sm"
+              class="size-4 accent-action"
             />
             <span>
-              <span class="text-sm font-medium">New block</span>
-              <small class="block text-base-content/70">
-                A new ID is resolved before the review.
-              </small>
+              <span class="text-sm font-[650] text-strong">New block</span>
+              <span class="block text-[13px] text-muted">
+                We pick the next free number. The review shows it.
+              </span>
             </span>
           </label>
 
@@ -832,7 +1010,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             :for={option <- @options}
             data-role="destination-option"
             data-block={option.block_id}
-            class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+            class={destination_card_class()}
           >
             <input
               type="radio"
@@ -840,11 +1018,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               name={@form[:destination].name}
               value={option.block_id}
               checked={@assign.target == option.block_id}
-              class="radio radio-sm"
+              class="size-4 accent-action"
             />
             <span>
-              <span class="text-sm font-medium">Block {option.block_id}</span>
-              <small class="block text-base-content/70">{option.detail}</small>
+              <span class="text-sm font-[650] text-strong">Block {option.block_id}</span>
+              <span class="block text-[13px] text-muted">{option.detail}</span>
             </span>
           </label>
 
@@ -852,7 +1030,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             :if={@assign.blocked?}
             data-role="destination-option"
             data-block="none"
-            class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+            class={destination_card_class()}
           >
             <input
               type="radio"
@@ -860,33 +1038,38 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               name={@form[:destination].name}
               value="none"
               checked={@assign.target == :none}
-              class="radio radio-sm"
+              class="size-4 accent-action"
             />
             <span>
-              <span class="text-sm font-medium">No block</span>
-              <small class="block text-base-content/70">Remove this trip from its block.</small>
+              <span class="text-sm font-[650] text-strong">No block</span>
+              <span class="block text-[13px] text-muted">Take the trips off their block.</span>
             </span>
           </label>
         </div>
-        <p id="destination-summary" class="mt-2 text-sm text-base-content/70" role="status">
+        <p id="destination-summary" class="mt-2 text-[13px] text-muted" role="status">
           {@search_summary}
         </p>
       </fieldset>
 
-      <p id="assign-error" class="text-sm text-error" role="alert">{@assign.error}</p>
-
-      <p class="text-sm text-base-content/70">
-        Assignment follows the selected trips across all their dates. Changes with
-        additional consequences require confirmation.
+      <p id="assign-error" class="text-sm font-semibold text-error-fg" role="alert">
+        {@assign.error}
       </p>
 
-      <div class="flex justify-end">
-        <button type="submit" class="btn btn-primary min-h-11" phx-disable-with="Saving…">
-          Save assignment
-        </button>
+      <p class="text-[13px] text-muted">
+        The assignment follows the trips across all their days. You'll review anything that adds
+        problems before it saves.
+      </p>
+
+      <div :if={@assign.scope == :trip} class="flex justify-end">
+        <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save assignment</.button>
       </div>
     </.form>
     """
+  end
+
+  # A whole-card radio target, selected with the design system's selection ground.
+  defp destination_card_class do
+    "flex min-h-11 cursor-pointer items-center gap-3 rounded-control border border-subtle px-3 py-2 has-[:checked]:border-action has-[:checked]:bg-selection"
   end
 
   @doc """
@@ -894,10 +1077,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   A selection of trips has no single trip drawer to hold the form, so the bulk
   bar opens it here: the same `assign_form/1` with the selection's trip count and
-  affected dates, and one dismiss control that leaves the selection untouched.
-  The form is its own submit surface, so the dialog renders a single action
-  (`single_action`); closing it through “Cancel” or the backdrop fires
-  `close_drawer`, which drops the selection-scoped form.
+  affected days. The dialog's footer submits the form (`confirm_form`), and
+  closing it through “Cancel” or the backdrop fires `close_drawer`, which drops
+  the selection-scoped form and leaves the selection untouched.
   """
   attr :assign, :map, required: true
   attr :form, :any, required: true
@@ -909,16 +1091,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.confirm_dialog
       id="bulk-assign-dialog"
+      chrome="planner"
       open={true}
       title="Assign selected trips"
       confirm_label="Save assignment"
       pending_label="Saving…"
       on_confirm="submit_assign"
       on_cancel="close_drawer"
+      confirm_form="assign-form"
       cancel_label="Cancel"
-      size="lg"
+      size="xl"
       return_focus_id="bulk-assign"
-      single_action
     >
       <.assign_form
         assign={@assign}
@@ -932,17 +1115,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the block-change review: the day type and version, the preview counts,
-  the assignment changes table and one effect card per affected day type with its
-  added problems, plus the existing problems and new notices.
+  Renders the block-change review: the service day and version, the preview
+  counts, the assignment changes table and one effect card per affected service
+  day with its added problems, plus the existing problems and new notices.
 
   The dialog is the `confirm_dialog` review surface, so the confirm label repeats
-  the verb and its object (“Assign 1 trip”) and the cancel action is “Change
-  selection”, which returns to the form with its target. A stale confirmation
-  prints “Trips changed since you reviewed. Check the changes again.” above the
-  refreshed review and never saves; a failed save prints its own sentence above
-  the unchanged review, so a retry repeats exactly the reviewed command (AC-12,
-  AC-26).
+  the verb and its object (“Assign 1 trip”) and the cancel action names the way
+  back (“Change block”, “Change name”, “Keep trips”), which returns to the form
+  with its target. A stale confirmation prints “Trips changed since you
+  reviewed.” above the refreshed review and never saves; a failed save prints its
+  own sentence above the unchanged review, so a retry repeats exactly the
+  reviewed command (AC-12, AC-26).
   """
   attr :review, :map, default: nil
   attr :stale?, :boolean, default: false
@@ -955,6 +1138,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     assigns =
       assign(assigns,
         confirm_label: confirm_label(assigns.review),
+        cancel_label: cancel_label(assigns.review),
         notices: added_notices(assigns.review),
         existing: existing_problem_count(assigns.review)
       )
@@ -962,120 +1146,149 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.confirm_dialog
       id="block-review"
+      chrome="planner"
       open={@review != nil}
-      title="Review block changes"
+      title="Review before saving"
       confirm_label={@confirm_label}
       pending_label="Saving…"
       on_confirm="confirm_review"
       on_cancel="cancel_review"
-      cancel_label="Change selection"
+      cancel_label={@cancel_label}
       described_by="block-review-body"
-      size="lg"
-      confirm_variant="primary"
+      size="xl"
       return_focus_id={@return_focus_id}
       data-initial-focus-id="block-review-changes"
     >
-      <div :if={@review}>
-        <.callout
+      <div :if={@review} class="grid gap-4 text-default">
+        <.message
           :if={@stale?}
           id="block-review-stale"
           kind="warning"
-          title="Trips changed since you reviewed. Check the changes again."
-        />
+          title="Trips changed since you reviewed."
+        >
+          Check the changes again. Nothing was saved.
+        </.message>
 
-        <.callout :if={@error} id="block-review-error" kind="error" title={@error} />
+        <.message :if={@error} id="block-review-error" kind="error" title={@error}>
+          Your choices are kept. Try again.
+        </.message>
 
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <p class="text-sm text-base-content/70">
-            {(@day_type && @day_type.label) || "Day type"} · {@version_name}
+          <p class="text-sm text-muted">
+            {(@day_type && @day_type.label) || "Service day"} · {@version_name}
           </p>
-          <.status_badge status="warning" label="Preview · not saved" />
+          <.finding_badge tone={:warning} label="Preview · not saved" />
         </div>
 
-        <div class="mt-3 grid grid-cols-3 gap-2">
-          <div>
-            <strong>{length(@review.changes)}</strong>
-            <span class="block text-base-content/70">trips changing block</span>
-          </div>
-          <div>
-            <strong>{@review.affected_date_count}</strong>
-            <span class="block text-base-content/70">affected service dates</span>
-          </div>
-          <div>
-            <strong>{@review.added_problem_count}</strong>
-            <span class="block text-base-content/70">new problems across day types</span>
-          </div>
+        <div class="grid grid-cols-3 gap-3 rounded-card bg-canvas p-3">
+          <.review_metric value={length(@review.changes)} label="trips change block" />
+          <.review_metric value={@review.affected_date_count} label="service days affected" />
+          <.review_metric
+            value={@review.added_problem_count}
+            label="new problems"
+            tone={if @review.added_problem_count > 0, do: "text-error-fg", else: "text-strong"}
+          />
         </div>
 
-        <h3 id="block-review-changes" tabindex="-1" class="mt-4 text-sm font-semibold">
-          Assignment changes
-        </h3>
-
-        <.table id="block-review-changes-table" rows={@review.changes}>
-          <:col :let={change} label="Trip">{change.trip.trip_id}</:col>
-          <:col :let={change} label="Current block">{change.from || "Unassigned"}</:col>
-          <:col :let={change} label="Proposed block">
-            <strong data-role="review-proposed">{change.to || "Unassigned"}</strong>
-          </:col>
-        </.table>
-
-        <h3 class="mt-4 text-sm font-semibold">Affected dates</h3>
-
-        <div class="mt-2 space-y-3">
-          <div
-            :for={effect <- @review.effects}
-            id={"review-effect-" <> effect.day_type.key}
-            data-role="review-effect"
-            data-selected={to_string(effect.selected?)}
-            class="border border-base-300 px-3 py-2"
+        <div>
+          <h3
+            id="block-review-changes"
+            tabindex="-1"
+            class="text-[15px] font-bold text-strong focus-visible:outline-none"
           >
-            <strong>
-              {if effect.selected?, do: "Current view", else: "Also changes"} · {effect.day_type.label} · {date_count_label(
-                effect.day_type.date_count
-              )}
-            </strong>
-            <p class="mt-1">{effect_sentence(effect, @review)}</p>
-            <p :for={split <- effect.splits}>
-              Block {split.block_id} splits: {split.remaining} {if split.remaining == 1,
-                do: "trip stays",
-                else: "trips stay"} on {split.block_id}.
-            </p>
-            <p
-              :for={finding <- added_problems(effect)}
-              data-role="review-added"
-              class="mt-1 flex flex-wrap items-center gap-2"
-            >
-              <span class="font-medium">Added</span>
-              <.status_badge
-                status={severity_status(finding.severity)}
-                label={code_label(finding.code)}
-              />
-              <span>{finding_detail(finding)}</span>
-            </p>
-            <p :if={added_problems(effect) == []} class="mt-1 text-base-content/70">
-              No new timing or transfer problems on these dates.
-            </p>
+            Assignment changes
+          </h3>
+          <div class="mt-2 max-h-56 overflow-auto rounded-card border border-subtle">
+            <table id="block-review-changes-table" class="w-full text-sm">
+              <thead class="sticky top-0 bg-canvas text-left text-[13px] text-muted">
+                <tr>
+                  <th scope="col" class="px-3 py-2 font-semibold">Trip</th>
+                  <th scope="col" class="px-3 py-2 font-semibold">Current block</th>
+                  <th scope="col" class="px-3 py-2 font-semibold">New block</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-subtle/60">
+                <tr :for={change <- @review.changes}>
+                  <td class="px-3 py-1.5">{change.trip.trip_id}</td>
+                  <td class="px-3 py-1.5">{change.from || "Unassigned"}</td>
+                  <td class="px-3 py-1.5 font-bold text-strong" data-role="review-proposed">
+                    {change.to || "Unassigned"}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
-        <details class="mt-4 border-t border-base-300 pt-2">
-          <summary class="min-h-11 cursor-pointer content-center">
+        <div>
+          <h3 class="text-[15px] font-bold text-strong">Service days affected</h3>
+
+          <div class="mt-2 space-y-3">
+            <div
+              :for={effect <- @review.effects}
+              id={"review-effect-" <> effect.day_type.key}
+              data-role="review-effect"
+              data-selected={to_string(effect.selected?)}
+              class="rounded-card border border-subtle px-3.5 py-3 text-sm"
+            >
+              <p class="font-bold text-strong">
+                {if effect.selected?, do: "This service day", else: "Also changes"} · {effect.day_type.label} · {day_count_label(
+                  effect.day_type.date_count
+                )}
+              </p>
+              <p class="mt-1">{effect_sentence(effect, @review)}</p>
+              <p :for={split <- effect.splits} class="mt-1">
+                Block {split.block_id} splits: {split.remaining} {if split.remaining == 1,
+                  do: "trip stays",
+                  else: "trips stay"} on {split.block_id}.
+              </p>
+              <p
+                :for={finding <- added_problems(effect)}
+                data-role="review-added"
+                class="mt-1.5 flex flex-wrap items-center gap-2"
+              >
+                <span class="font-semibold">Added</span>
+                <.code_badge code={finding.code} />
+                <span>{finding_detail(finding)}</span>
+              </p>
+              <p :if={added_problems(effect) == []} class="mt-1 text-muted">
+                No new timing or transfer problems on these days.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <details class="border-t border-subtle pt-1">
+          <summary class="flex min-h-11 cursor-pointer items-center text-sm font-[650] text-action">
             Existing problems and new notices
           </summary>
-          <p class="mt-2 text-sm text-base-content/70">
-            {@existing} existing problem occurrences remain across affected day types.
+          <p class="text-sm text-muted">
+            {@existing} existing {if @existing == 1, do: "problem stays", else: "problems stay"} on the blocks involved.
           </p>
           <p :for={{label, notice} <- @notices} class="mt-1 text-sm">{label} · {notice}</p>
-          <p :if={@notices == []} class="mt-1 text-sm text-base-content/70">
-            No additional notices.
-          </p>
+          <p :if={@notices == []} class="mt-1 text-sm text-muted">No new notices.</p>
         </details>
 
-        <p class="mt-3 text-sm text-base-content/70">
-          Trip times, stop order, and transfer records stay unchanged by this assignment.
+        <p class="text-[13px] text-muted">
+          Trip times, stop order and stay-on-board records don't change.
         </p>
       </div>
     </.confirm_dialog>
+    """
+  end
+
+  attr :value, :integer, required: true
+  attr :label, :string, required: true
+  attr :tone, :string, default: "text-strong"
+
+  defp review_metric(assigns) do
+    ~H"""
+    <div>
+      <strong class={["font-display text-[26px] font-semibold leading-none tabular-nums", @tone]}>
+        {@value}
+      </strong>
+      <span class="mt-1 block text-[13px] text-muted">{@label}</span>
+    </div>
     """
   end
 
@@ -1085,9 +1298,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   any type 4/5 record for the pair.
 
   The sentence and the note come from the block's own gap and handoff (R5), so the
-  drawer re-derives neither a distance nor a handoff kind: an empty move is the
+  drawer re-derives neither a distance nor a handoff kind: a deadhead is the
   only kind that never prints the rider note, and it is the only one that says the
-  driving time is unknown. A negative gap is an overlap, and its drawer prints the
+  driving time is not recorded. A negative gap is an overlap, and its drawer prints the
   overlap minutes; the timeline deliberately draws no bar for one, so this drawer
   and the block drawer's own gap note are how an overlapping pair is read (AC-4).
 
@@ -1105,86 +1318,98 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :back_block, :string, default: nil
 
   def gap_drawer(assigns) do
-    assigns = assign(assigns, :text, gap_text(assigns.gap, assigns.from, assigns.to))
+    assigns =
+      assigns
+      |> assign(:text, gap_text(assigns.gap, assigns.from, assigns.to))
+      |> assign(:title, gap_title(assigns.gap, assigns.short?))
+      |> assign(:note, gap_note(assigns.gap))
 
     ~H"""
-    <.drawer id="gap-drawer" open={@open} title="Time between trips">
-      <p class="text-sm text-base-content/70">
-        Block {@block_id} · {@from.trip_id} → {@to.trip_id}
-      </p>
+    <.drawer
+      id="gap-drawer"
+      chrome="planner"
+      open={@open}
+      title={@title}
+      class="max-w-[520px]"
+    >
+      <:lede>Block {@block_id} · {@from.trip_id} → {@to.trip_id}</:lede>
 
-      <dl class="mt-4 divide-y divide-base-300 border-y border-base-300 text-sm">
-        <.trip_field label="Arrival">
-          <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
-        </.trip_field>
-        <.trip_field label="Departure">
-          <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
-        </.trip_field>
-      </dl>
+      <.drawer_scroll>
+        <%!-- A layover below the minimum is the block's own :short_layover finding,
+        which is also what marks the timeline's gap. --%>
+        <.message
+          :if={@note}
+          id="gap-text"
+          data-short={to_string(@short?)}
+          kind={gap_kind(@gap, @short?)}
+          title={@text}
+        >
+          {@note}
+        </.message>
+        <.message
+          :if={!@note}
+          id="gap-text"
+          data-short={to_string(@short?)}
+          kind={gap_kind(@gap, @short?)}
+          title={@text}
+        />
 
-      <%!-- A layover below the minimum is the block's own :short_layover finding,
-      which is also what outlines the timeline's gap bar. --%>
-      <.callout
-        id="gap-text"
-        data-short={to_string(@short?)}
-        kind={if @short?, do: "warning", else: "info"}
-        title={@text}
-      />
+        <dl class="divide-y divide-subtle/70 border-y border-subtle/70 text-sm">
+          <.trip_field label="Arrives">
+            <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
+          </.trip_field>
+          <.trip_field label="Next trip departs">
+            <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
+          </.trip_field>
+          <.trip_field label="Time between">{gap_between(@gap)}</.trip_field>
+        </dl>
 
-      <p :if={rider_note?(@gap)} id="gap-rider-note" class="mt-3 text-sm">
-        Trip planners such as Google Maps may tell riders they can stay on board.
-      </p>
-
-      <section id="gap-transfers" class="mt-6 border-t border-base-300 pt-4">
-        <h3 class="text-sm font-semibold">Transfer records · {length(@records)}</h3>
-        <div class="mt-2 space-y-3">
-          <div
-            :for={entry <- @records}
-            data-role="gap-transfer"
-            data-transfer-type={entry.row.transfer_type}
-            class="border-l-4 border-base-300 pl-3"
-          >
-            <div class="flex flex-wrap items-center gap-2">
-              <strong>{transfer_type_label(entry.row.transfer_type)}</strong>
-              <.status_badge
-                status={transfer_state_status(entry.state)}
-                label={transfer_state_label(entry.state)}
-              />
-            </div>
-            <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
-            <p data-role="gap-transfer-state" class="text-sm text-base-content/70">
-              {in_seat_state_text(entry.state)}
-            </p>
-          </div>
-        </div>
-        <p :if={@records == []} class="mt-2 text-sm text-base-content/70">
-          No explicit record for this pair. Inferred rider connections vary by consumer.
+        <p :if={rider_note?(@gap)} id="gap-rider-note" class="text-sm">
+          Trip planners such as Google Maps may tell riders they can stay on board.
         </p>
-      </section>
 
-      <div class="mt-6 flex flex-wrap gap-2 border-t border-base-300 pt-4">
-        <button
-          :for={trip <- [@from, @to]}
-          type="button"
-          data-role="gap-inspect"
-          phx-click="open_trip"
-          phx-value-trip={trip.trip_id}
-          phx-value-block={@back_block}
-          class="btn btn-sm min-h-11"
-        >
-          Inspect {trip.trip_id}
-        </button>
-        <button
-          :if={@back_block}
-          id="gap-back-to-block"
-          type="button"
-          phx-click="open_block"
-          phx-value-block={@back_block}
-          class="btn btn-sm min-h-11"
-        >
-          Back to block {@back_block}
-        </button>
-      </div>
+        <.drawer_section id="gap-transfers" title={"Stay-on-board records · #{length(@records)}"}>
+          <div class="space-y-3">
+            <div
+              :for={entry <- @records}
+              data-role="gap-transfer"
+              data-transfer-type={entry.row.transfer_type}
+              class="border-l-4 border-subtle pl-3"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <strong class="text-sm">{transfer_type_label(entry.row.transfer_type)}</strong>
+                <.finding_badge
+                  tone={transfer_state_tone(entry.state)}
+                  label={transfer_state_label(entry.state)}
+                />
+              </div>
+              <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
+              <p data-role="gap-transfer-state" class="text-[13px] text-muted">
+                {in_seat_state_text(entry.state)}
+              </p>
+            </div>
+          </div>
+          <p :if={@records == []} class="text-sm text-muted">
+            No record for this pair. Whether riders can stay on board depends on the trip planner.
+          </p>
+        </.drawer_section>
+
+        <div class="flex flex-wrap gap-2 border-t border-subtle pt-5">
+          <.button
+            :for={trip <- [@from, @to]}
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            data-role="gap-inspect"
+            phx-click="open_trip"
+            phx-value-trip={trip.trip_id}
+            phx-value-block={@back_block}
+          >
+            Inspect {trip.trip_id}
+          </.button>
+          <.back_to_block :if={@back_block} id="gap-back-to-block" block={@back_block} />
+        </div>
+      </.drawer_scroll>
     </.drawer>
     """
   end
@@ -1201,13 +1426,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   with the block kept, which is what gives that drawer its back link (AC-25).
 
   The actions are the reference's “Rename block”, “Merge into…” and “Remove all
-  trips” (AC-27). A rename renames this block's trips on the selected day type, a
-  merge joins them to another block of the day type (the picker offers no “New
+  trips” (AC-27). A rename renames this block's trips on the selected service day, a
+  merge joins them to another block of the day (the picker offers no “New
   block” and no “No block”, because a merge always lands on an existing ID), and
-  remove-all takes this block's trips on the selected day type back to the pool.
+  remove-all takes this block's trips on the selected service day back to the pool.
   Each one submits the same `submit_block_action` event, so all three run through
   the reviewed command and show the same review dialog with its split, its
-  affected day types and its added problems.
+  affected service days and its added problems.
 
   A refusal prints under the control that caused it — the rename field's own
   error sits inside the form, so the input keeps what the reader typed (AC-27) —
@@ -1227,7 +1452,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   attr :merge_options, :list,
     default: [],
-    doc: "the other blocks of the day type the picker offers"
+    doc: "the other blocks of the service day the picker offers"
 
   attr :merge_total, :integer, default: 0, doc: "the merge search's match count before the cap"
 
@@ -1238,161 +1463,189 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:rows, block_trip_rows(assigns.block))
 
     ~H"""
-    <.drawer id="block-drawer" open={@open} title={"Block " <> @summary.block_id}>
-      <p class="text-sm text-base-content/70">
+    <.drawer
+      id="block-drawer"
+      chrome="planner"
+      open={@open}
+      title={"Block " <> @summary.block_id}
+      class="max-w-[520px]"
+    >
+      <:lede>
         {count_label(@summary.trip_count, "trip", "trips")} · {clock(@summary.start_secs)}–{clock(
           @summary.end_secs
-        )}
-      </p>
+        )}{if @summary.hours, do: " · #{hours(@summary.hours)} h"}
+      </:lede>
 
-      <div class="mt-4 divide-y divide-base-300 border-t border-base-300">
-        <div :for={row <- @rows} class="py-3">
-          <div
-            :if={row.gap}
-            class="rounded-box mb-2 border border-base-300 bg-base-200/40 px-3"
-          >
-            <button
-              type="button"
-              data-role="block-gap"
-              data-minutes={div(row.gap.gap_secs, 60)}
-              phx-click="open_gap"
-              phx-value-from={row.gap.from_id}
-              phx-value-to={row.gap.to_id}
-              phx-value-block={@summary.block_id}
-              class="link link-primary min-h-11 text-left text-sm"
-            >
-              {gap_text(row.gap, row.from, row.trip)}
-            </button>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2">
-            <.route_badge_for route_id={row.trip.route_id} routes={@routes} />
-            <strong class="text-sm">
-              {row.trip.trip_id} · {clock(row.trip.first_departure)}–{clock(row.trip.last_arrival)}
-            </strong>
-            <button
-              type="button"
-              data-role="block-inspect"
-              phx-click="open_trip"
-              phx-value-trip={row.trip.trip_id}
-              phx-value-block={@summary.block_id}
-              class="link link-primary min-h-11"
-            >
-              Inspect
-            </button>
-          </div>
-
-          <p class="text-sm text-base-content/70">
-            {stop_name(row.trip.first_stop)} → {stop_name(row.trip.last_stop)}
-          </p>
-
-          <.issue_badges findings={Map.get(@findings_by_trip, row.trip.id, [])} />
-        </div>
-      </div>
-
-      <div class="mt-4 space-y-3 border-t border-base-300 pt-3">
-        <h3 class="text-sm font-semibold">Block actions</h3>
-
-        <.form
-          for={@form}
-          id="block-rename-form"
-          phx-submit="submit_block_action"
-          class="space-y-2"
-        >
-          <input type="hidden" name="block_action[action]" value="rename" />
-          <.input
-            id="block-rename-id"
-            field={@form[:block_id]}
-            label="Block ID"
-            errors={rename_errors(@action)}
-            help="The ID stored in GTFS. IDs on disjoint service dates may be reused."
-          />
-          <button type="submit" id="block-rename-submit" class="btn btn-sm min-h-11">
-            Rename block
-          </button>
-        </.form>
-
-        <.form
-          for={@form}
-          id="block-merge-form"
-          phx-change="search_destination"
-          phx-debounce="200"
-          phx-submit="submit_block_action"
-          class="space-y-2 border-t border-base-300 pt-3"
-        >
-          <input type="hidden" name="block_action[action]" value="merge" />
-          <.input
-            id="block-merge-search"
-            field={@form[:search]}
-            type="search"
-            label="Find a block"
-            placeholder="Search block ID"
-            autocomplete="off"
-            help="Choose the block these trips join. A merge never creates an ID."
-          />
-
-          <fieldset>
-            <legend class="text-sm font-medium">Merge into</legend>
-            <div class="mt-2 space-y-2">
-              <label
-                :for={option <- @merge_options}
-                data-role="merge-option"
-                data-block={option.block_id}
-                class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+      <.drawer_scroll>
+        <section>
+          <h3 class="text-[15px] font-bold text-strong">Trips in order</h3>
+          <div class="mt-1 divide-y divide-subtle/70">
+            <div :for={row <- @rows} class="py-3">
+              <button
+                :if={row.gap}
+                type="button"
+                data-role="block-gap"
+                data-minutes={div(row.gap.gap_secs, 60)}
+                phx-click="open_gap"
+                phx-value-from={row.gap.from_id}
+                phx-value-to={row.gap.to_id}
+                phx-value-block={@summary.block_id}
+                class={[
+                  "mb-2 flex min-h-11 w-full items-center gap-2 rounded-control border border-subtle bg-canvas px-3 text-left text-sm hover:bg-white",
+                  gap_note_tone(row.gap, row.short?)
+                ]}
               >
-                <input
-                  type="radio"
-                  id={"block-merge-" <> dom_token(option.block_id)}
-                  name="block_action[destination]"
-                  value={option.block_id}
-                  checked={@action.merge == option.block_id}
-                  class="radio radio-sm"
-                />
-                <span>
-                  <span class="text-sm font-medium">Block {option.block_id}</span>
-                  <small class="block text-base-content/70">{option.detail}</small>
-                </span>
-              </label>
+                <.icon name={gap_note_icon(row.gap)} class="size-4 shrink-0" />
+                <span class="min-w-0">{gap_text(row.gap, row.from, row.trip)}</span>
+              </button>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <.route_badge_for route_id={row.trip.route_id} routes={@routes} />
+                <strong class="text-sm tabular-nums text-strong">
+                  {trip_span(row.trip)}
+                </strong>
+                <button
+                  type="button"
+                  data-role="block-inspect"
+                  phx-click="open_trip"
+                  phx-value-trip={row.trip.trip_id}
+                  phx-value-block={@summary.block_id}
+                  class={link_class()}
+                >
+                  Inspect {row.trip.trip_id}
+                </button>
+              </div>
+
+              <p class="text-sm text-muted">
+                {stop_name(row.trip.first_stop)} → {stop_name(row.trip.last_stop)}
+              </p>
+
+              <div class="mt-1.5">
+                <.issue_badges findings={Map.get(@findings_by_trip, row.trip.id, [])} />
+              </div>
             </div>
-            <p id="block-merge-summary" class="mt-2 text-sm text-base-content/70" role="status">
-              {destination_summary(@merge_options, @merge_total)}
+          </div>
+        </section>
+
+        <section class="border-t border-subtle pt-5">
+          <h3 class="text-[15px] font-bold text-strong">Change this block</h3>
+
+          <.form
+            for={@form}
+            id="block-rename-form"
+            phx-submit="submit_block_action"
+            class="mt-3 grid gap-2"
+          >
+            <input type="hidden" name="block_action[action]" value="rename" />
+            <.input
+              id="block-rename-id"
+              field={@form[:block_id]}
+              label="Block ID"
+              errors={rename_errors(@action)}
+              help="The ID stored in your feed (GTFS block_id). Blocks on different service days can share an ID."
+              class="w-full input input-lg max-w-56"
+            />
+            <div>
+              <.button
+                type="submit"
+                id="block-rename-submit"
+                variant="secondary"
+                class="min-h-11"
+              >
+                Rename block
+              </.button>
+            </div>
+          </.form>
+
+          <.form
+            for={@form}
+            id="block-merge-form"
+            phx-change="search_destination"
+            phx-debounce="200"
+            phx-submit="submit_block_action"
+            class="mt-5 grid gap-2 border-t border-subtle pt-5"
+          >
+            <input type="hidden" name="block_action[action]" value="merge" />
+            <.input
+              id="block-merge-search"
+              field={@form[:search]}
+              type="search"
+              label="Merge into another block"
+              placeholder="Search block ID"
+              autocomplete="off"
+              help={"All #{count_label(@summary.trip_count, "trip", "trips")} join the block you choose. A merge never creates an ID."}
+            />
+
+            <fieldset>
+              <legend class="sr-only">Merge into</legend>
+              <div class="space-y-2">
+                <label
+                  :for={option <- @merge_options}
+                  data-role="merge-option"
+                  data-block={option.block_id}
+                  class={destination_card_class()}
+                >
+                  <input
+                    type="radio"
+                    id={"block-merge-" <> dom_token(option.block_id)}
+                    name="block_action[destination]"
+                    value={option.block_id}
+                    checked={@action.merge == option.block_id}
+                    class="size-4 accent-action"
+                  />
+                  <span>
+                    <span class="text-sm font-[650] text-strong">Block {option.block_id}</span>
+                    <span class="block text-[13px] text-muted">{option.detail}</span>
+                  </span>
+                </label>
+              </div>
+              <p id="block-merge-summary" class="pt-2 text-[13px] text-muted" role="status">
+                {destination_summary(@merge_options, @merge_total)}
+              </p>
+            </fieldset>
+
+            <p
+              :if={@action.kind == :merge}
+              id="block-merge-error"
+              class="text-sm font-semibold text-error-fg"
+              role="alert"
+            >
+              {@action.error}
             </p>
-          </fieldset>
 
-          <p
-            :if={@action.kind == :merge}
-            id="block-merge-error"
-            class="text-sm text-error"
-            role="alert"
-          >
-            {@action.error}
-          </p>
+            <div>
+              <.button type="submit" id="block-merge-submit" variant="secondary" class="min-h-11">
+                Merge blocks
+              </.button>
+            </div>
+          </.form>
 
-          <button type="submit" id="block-merge-submit" class="btn btn-sm min-h-11">
-            Merge blocks
-          </button>
-        </.form>
-
-        <div class="border-t border-base-300 pt-3">
-          <button
-            type="button"
-            id="block-remove-all"
-            phx-click="submit_block_action"
-            phx-value-action="remove_all"
-            class="btn btn-sm min-h-11"
-          >
-            Remove all trips
-          </button>
-          <p
-            :if={@action.kind == :remove_all}
-            id="block-remove-error"
-            class="text-sm text-error"
-            role="alert"
-          >
-            {@action.error}
-          </p>
-        </div>
-      </div>
+          <div class="mt-5 border-t border-subtle pt-5">
+            <.button
+              type="button"
+              id="block-remove-all"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="submit_block_action"
+              phx-value-action="remove_all"
+            >
+              Remove all trips
+            </.button>
+            <p class="mt-2 text-[13px] text-muted">
+              Puts {count_label(@summary.trip_count, "trip", "trips")} back in Unassigned trips.
+              You'll review the effect first.
+            </p>
+            <p
+              :if={@action.kind == :remove_all}
+              id="block-remove-error"
+              class="mt-1 text-sm font-semibold text-error-fg"
+              role="alert"
+            >
+              {@action.error}
+            </p>
+          </div>
+        </section>
+      </.drawer_scroll>
     </.drawer>
     """
   end
@@ -1406,9 +1659,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # The block drawer's rows: the block's own trip order with the gap that precedes
   # each trip, taken from the block's `gaps/1` pairs by the later trip's UUID and
   # kept only when the two trips are adjacent in that order, so a gap note always
-  # sits between the two trips it joins (and the first trip has none).
+  # sits between the two trips it joins (and the first trip has none). A gap the
+  # block's own finding calls short reads in the warning colour.
   defp block_trip_rows(block) do
     gaps = Map.new(block.gaps, &{&1.to_id, &1})
+    short_pairs = short_layover_pairs(block.findings)
     trips = block.trips
 
     trips
@@ -1418,14 +1673,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       gap = if previous, do: Map.get(gaps, trip.id)
       gap = if gap && gap.from_id == previous.id, do: gap
 
-      %{trip: trip, from: if(gap, do: previous), gap: gap}
+      %{
+        trip: trip,
+        from: if(gap, do: previous),
+        gap: gap,
+        short?: gap != nil and MapSet.member?(short_pairs, MapSet.new([gap.from_id, gap.to_id]))
+      }
     end)
   end
 
+  # A trip's times in the block drawer, or the reason it has none.
+  defp trip_span(%{plottable?: true} = trip),
+    do: "#{clock(trip.first_departure)}–#{clock(trip.last_arrival)}"
+
+  defp trip_span(_trip), do: "Time missing"
+
+  defp gap_note_tone(%{gap_secs: secs}, _short?) when secs < 0, do: "font-semibold text-error-fg"
+  defp gap_note_tone(_gap, true), do: "font-semibold text-warning-fg"
+  defp gap_note_tone(_gap, false), do: "text-default"
+
+  defp gap_note_icon(%{gap_secs: secs}) when secs < 0, do: "hero-x-circle"
+  defp gap_note_icon(%{handoff: {:moves, _meters}}), do: "hero-arrow-up-right"
+  defp gap_note_icon(_gap), do: "hero-clock"
+
   # Copy: the layover at one stop, the same station, a nearby stop with its
-  # distance and the time available, or the empty move, which alone says the
-  # driving time is unknown (and, without coordinates, that it cannot be estimated
-  # either).
+  # distance and the time available, or the deadhead, which alone says the
+  # driving time is not recorded (and, without coordinates, that there are none).
   defp gap_text(%{gap_secs: secs}, _from, _to) when secs < 0,
     do: "#{minutes(-secs)} overlap"
 
@@ -1439,14 +1712,38 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     do: "Nearby stop · #{meters} m · #{minutes(secs)} available"
 
   defp gap_text(%{handoff: {:moves, nil}}, from, to),
-    do: move_text(from, to, " (coordinates unavailable)")
+    do: move_text(from, to, " (no coordinates)")
 
   defp gap_text(%{handoff: {:moves, _meters}}, from, to), do: move_text(from, to, "")
 
   defp move_text(from, to, qualifier) do
-    "Moves empty: #{stop_name(from.last_stop)} → #{stop_name(to.first_stop)}. " <>
-      "Driving time is unknown#{qualifier}."
+    "Deadhead from #{stop_name(from.last_stop)} to #{stop_name(to.first_stop)}. " <>
+      "Driving time isn't recorded#{qualifier}."
   end
+
+  # The gap drawer's title names what the gap is, then the message under it says
+  # what that means.
+  defp gap_title(%{gap_secs: secs}, _short?) when secs < 0, do: "#{minutes(-secs)} overlap"
+  defp gap_title(%{gap_secs: secs}, true), do: "Short layover · #{minutes(secs)}"
+  defp gap_title(%{handoff: {:moves, _meters}}, _short?), do: "Deadhead between trips"
+  defp gap_title(%{gap_secs: secs}, _short?), do: "#{minutes(secs)} between trips"
+
+  defp gap_kind(%{gap_secs: secs}, _short?) when secs < 0, do: "error"
+  defp gap_kind(_gap, true), do: "warning"
+  defp gap_kind(_gap, false), do: "info"
+
+  defp gap_note(%{gap_secs: secs}) when secs < 0 do
+    "The vehicle can't be on both trips at once. Move one of them to another block, or change its times in Schedules."
+  end
+
+  defp gap_note(%{handoff: {:moves, _meters}, gap_secs: secs}) do
+    "#{minutes(secs)} are available. Driving time isn't recorded, so this view can't say whether the move fits."
+  end
+
+  defp gap_note(_gap), do: nil
+
+  defp gap_between(%{gap_secs: secs}) when secs < 0, do: "#{minutes(-secs)} overlap"
+  defp gap_between(%{gap_secs: secs}), do: minutes(secs)
 
   # The station a same-station handoff shares is the stops' parent station; a stop
   # reference carries the parent's ID rather than its name, so the ID stands for
@@ -1458,7 +1755,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp station_name(stop), do: stop_name(stop)
 
   # The rider note is for a handoff a rider could make on foot: the same stop, the
-  # same station or a nearby one. An empty move never shows it, however short the
+  # same station or a nearby one. A deadhead never shows it, however short the
   # gap (Copy, FH-19).
   defp rider_note?(%{handoff: :same_stop}), do: true
   defp rider_note?(%{handoff: :same_station}), do: true
@@ -1467,8 +1764,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   @doc """
   Renders the notice a `trip=` deep link shows when the trip is not in the loaded
-  day type: one link per day type the trip runs in, or the unavailable sentence
-  when the version holds no such trip (AC-29).
+  service day: one link per service day the trip runs in, or the unavailable
+  sentence when the version holds no such trip (AC-29).
   """
   attr :open, :boolean, required: true
   attr :trip_id, :string, required: true
@@ -1479,43 +1776,87 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <.drawer
       id="trip-elsewhere"
+      chrome="planner"
       open={@open}
       title={"Trip " <> @trip_id <> " isn't in this version"}
+      class="max-w-[520px]"
     >
-      <div id="blocks-trip-elsewhere">
-        <p>Trip {@trip_id} isn't in this version.</p>
-      </div>
+      <.drawer_scroll>
+        <div id="blocks-trip-elsewhere">
+          <.message kind="warning" title={"We couldn't find trip #{@trip_id} in this version."}>
+            The link may be from another version, or the trip was deleted. Pick a trip from the
+            timeline or the unassigned list.
+          </.message>
+        </div>
+      </.drawer_scroll>
     </.drawer>
     """
   end
 
   def trip_elsewhere(%{day_types: []} = assigns) do
     ~H"""
-    <.drawer id="trip-elsewhere" open={@open} title="Trip has no active service dates">
-      <div id="blocks-trip-elsewhere">
-        <p>Trip {@trip_id} has no active service dates in this version.</p>
-      </div>
+    <.drawer
+      id="trip-elsewhere"
+      chrome="planner"
+      open={@open}
+      title="Trip has no active service dates"
+      class="max-w-[520px]"
+    >
+      <:lede>Trip {@trip_id}</:lede>
+
+      <.drawer_scroll>
+        <div id="blocks-trip-elsewhere">
+          <.message
+            kind="warning"
+            title={"Trip #{@trip_id} has no active service dates in this version."}
+          >
+            Its calendar doesn't run on any day, so it can't be part of a block. Check the
+            calendar's dates.
+          </.message>
+          <.link
+            id="trip-elsewhere-calendars"
+            navigate={~p"/gtfs/#{@version_id}/calendars"}
+            class={[link_class(), "mt-3"]}
+          >
+            Open Calendars
+          </.link>
+        </div>
+      </.drawer_scroll>
     </.drawer>
     """
   end
 
   def trip_elsewhere(assigns) do
     ~H"""
-    <.drawer id="trip-elsewhere" open={@open} title="Trip runs on another day type">
-      <div id="blocks-trip-elsewhere">
-        <p>Trip {@trip_id} is not in this day type.</p>
-        <div class="mt-3 space-y-1">
-          <.link
-            :for={day_type <- @day_types}
-            patch={day_type_trip_path(@version_id, day_type.key, @trip_id)}
-            data-role="trip-day-type"
-            data-day={day_type.key}
-            class="link link-primary block min-h-11 content-center"
-          >
-            {day_type_option_label(day_type)}
-          </.link>
+    <.drawer
+      id="trip-elsewhere"
+      chrome="planner"
+      open={@open}
+      title="Trip runs on another service day"
+      class="max-w-[520px]"
+    >
+      <:lede>Trip {@trip_id}</:lede>
+
+      <.drawer_scroll>
+        <div id="blocks-trip-elsewhere">
+          <p class="text-sm">
+            Trip {@trip_id} isn't part of this service day. Open the service day where it runs to
+            see its block.
+          </p>
+          <div class="mt-3 divide-y divide-subtle/70 border-y border-subtle/70">
+            <.link
+              :for={day_type <- @day_types}
+              patch={day_type_trip_path(@version_id, day_type.key, @trip_id)}
+              data-role="trip-day-type"
+              data-day={day_type.key}
+              class={[link_class(), "w-full justify-between"]}
+            >
+              {day_type_option_label(day_type)}
+              <.icon name="hero-chevron-right" class="size-4 shrink-0" />
+            </.link>
+          </div>
         </div>
-      </div>
+      </.drawer_scroll>
     </.drawer>
     """
   end
@@ -1527,8 +1868,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp trip_field(assigns) do
     ~H"""
-    <div class="grid grid-cols-[minmax(6rem,auto)_1fr] gap-x-4 py-2">
-      <dt class="text-base-content/70">{@label}</dt>
+    <div class="grid grid-cols-[minmax(6.5rem,auto)_1fr] gap-x-4 py-2.5">
+      <dt class="text-muted">{@label}</dt>
       <dd class="min-w-0">{render_slot(@inner_block)}</dd>
     </div>
     """
@@ -1536,19 +1877,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   @doc """
   Renders the Blocks workspace: the work-queue tabs, the Timeline/List and
-  Whole day/Zoom in segmented controls, the hint line and the current panel.
+  Whole day/Zoom in segmented controls, the chart key and the current panel.
 
-  The Blocks tab holds the paged timeline or the paged List view, both over the
-  same streamed page of blocks: the timeline is one 36px row per block inside a
-  container that scrolls in both axes, and the List view is one stacked trip
-  table per block. The Unassigned tab holds the paged pool and its “Select this
-  page” control. A day type with no blocks shows the first-use copy in the
-  Blocks tab and still lists its unassigned trips in the pool.
+  The All blocks tab holds the paged timeline or the paged List view, both over
+  the same streamed page of blocks: the timeline is one 44px row per block inside
+  a container that scrolls in both axes, and the List view is one stacked trip
+  table per block. The Unassigned trips tab holds the paged pool and its “Select
+  this page” control. A service day with no blocks shows the first-use panel in
+  the All blocks tab and still lists its unassigned trips in the pool.
 
   A phone-width reader gets the List view rather than the timeline: the two are
   the same page in two densities, and the List view is the full-size control
   surface (Accessibility posture). The colocated hook pushes `set_view` once when
   the URL carries no view; it never patches a URL that already does.
+
+  The page keeps one primary action. `primary` names who holds it: the header's
+  Review action, the selection bar's Assign, or, on a day with no blocks, this
+  panel's “Choose trips for a block”.
   """
   attr :state, :map, required: true
   attr :counts, :map, required: true
@@ -1564,6 +1909,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :routes, :map, required: true
   attr :selected_ids, :any, required: true
   attr :bulk, :map, required: true
+  attr :primary, :atom, values: [:head, :bulk, :empty], default: :head
 
   def workspace(assigns) do
     assigns = assign(assigns, :filtered?, filtered?(assigns.state))
@@ -1572,83 +1918,74 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     <section
       id="blocks-workspace"
       phx-hook=".BlocksViewportDefault"
-      class={[
-        "overflow-hidden",
-        @counts.blocks == 0 && "rounded-box border border-base-300 bg-base-100 p-6"
-      ]}
+      class="overflow-hidden rounded-card border border-subtle bg-white"
     >
-      <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-base-300 bg-canvas px-4 py-2">
-        <div class="flex flex-wrap items-center gap-3" role="group" aria-label="Work queue">
-          <button
+      <div class="flex flex-wrap items-end justify-between gap-x-6 border-b border-subtle px-2 sm:px-4">
+        <div
+          id="blocks-tabs"
+          role="tablist"
+          aria-label="Work queue"
+          phx-hook="TablistHook"
+          class="flex"
+        >
+          <.work_tab
             id="panel-blocks"
-            type="button"
-            phx-click="set_panel"
-            phx-value-panel="blocks"
-            aria-pressed={to_string(@state.panel == :blocks)}
-            class={["btn btn-sm min-h-11", @state.panel == :blocks && "btn-primary"]}
-          >
-            Blocks
-          </button>
-          <button
+            panel="blocks"
+            label="All blocks"
+            count={@counts.blocks}
+            current?={@state.panel == :blocks}
+          />
+          <.work_tab
             id="panel-pool"
-            type="button"
-            phx-click="set_panel"
-            phx-value-panel="pool"
-            aria-pressed={to_string(@state.panel == :pool)}
-            class={["btn btn-sm min-h-11", @state.panel == :pool && "btn-primary"]}
-          >
-            Unassigned · {@counts.unassigned}
-          </button>
+            panel="pool"
+            label="Unassigned trips"
+            count={@counts.unassigned}
+            current?={@state.panel == :pool}
+          />
         </div>
 
-        <div class="flex flex-wrap items-end gap-3">
-          <div
+        <div class="flex flex-wrap items-center gap-3 py-2">
+          <.segmented_control
             :if={@state.panel == :blocks and @counts.blocks > 0}
-            class="flex flex-wrap items-end gap-3"
-          >
-            <.segmented_control
-              id="blocks-view"
-              name="view"
-              legend="Plan view"
-              legend_class="sr-only"
-              options={[{"Timeline", "timeline"}, {"List", "list"}]}
-              value={Atom.to_string(@state.view)}
-              event="set_view"
-              size={:sm}
-              appearance={:joined}
-            />
-            <.segmented_control
-              :if={@state.view == :timeline}
-              id="blocks-scale"
-              name="scale"
-              legend="Timeline scale"
-              legend_class="sr-only"
-              options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
-              value={Atom.to_string(@state.scale)}
-              event="set_scale"
-              size={:sm}
-              appearance={:joined}
-              emphasis={:quiet}
-            />
-          </div>
+            id="blocks-view"
+            name="view"
+            legend="Plan view"
+            legend_class="sr-only"
+            options={[{"Timeline", "timeline"}, {"List", "list"}]}
+            value={Atom.to_string(@state.view)}
+            event="set_view"
+            appearance={:joined}
+            emphasis={:strong}
+          />
+          <.segmented_control
+            :if={@state.panel == :blocks and @counts.blocks > 0 and @state.view == :timeline}
+            id="blocks-scale"
+            name="scale"
+            legend="Timeline scale"
+            legend_class="sr-only"
+            options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
+            value={Atom.to_string(@state.scale)}
+            event="set_scale"
+            appearance={:joined}
+            emphasis={:strong}
+          />
 
           <%!-- The reference puts “Select this page” beside the pool's tabs and
           in the List view's head, where the controls are large. --%>
-          <button
+          <.button
             :if={select_page?(@state, @counts, @pool_visible_count, @visible_count)}
             id="blocks-select-page"
             type="button"
+            variant="secondary"
+            class="min-h-11"
             phx-click="select_page"
-            class="btn btn-sm min-h-11"
           >
             Select this page
-          </button>
+          </.button>
         </div>
       </div>
 
-      <p class="border-b border-base-300 px-4 py-2 text-xs text-base-content/70">
-        {workspace_note(@state, @filtered?)}
-      </p>
+      <.chart_key :if={show_chart_key?(@state, @counts, @filtered?, @visible_count)} />
 
       <%!-- The bar sits between the toolbar and the records, so it stays in view
       while the reader pages through the selection (AC-24, UX obligations). --%>
@@ -1659,61 +1996,94 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         removable?={@bulk.removable?}
       />
 
-      <%= cond do %>
-        <% @state.panel == :pool -> %>
-          <p
-            :if={@counts.blocks == 0}
-            id="blocks-workspace-guidance"
-            class="text-sm text-base-content/70"
-          >
-            Start by selecting trips and assigning them to a new block.
-          </p>
-
-          <.pool
-            pool_rows={@pool_rows}
-            routes={@routes}
-            findings_by_trip={@findings_by_trip}
-            route_filter={@state.route}
-            total={@pool_visible_count}
-            page={@state.pool_page}
-            page_size={@page_size}
-            version_id={@state.version_id}
-            selected_ids={@selected_ids}
-          />
-        <% @counts.blocks == 0 -> %>
-          <p id="blocks-workspace-guidance" class="text-sm text-base-content/70">
-            Start by selecting trips and assigning them to a new block.
-          </p>
-        <% @filtered? and @visible_count == 0 -> %>
-          <div id="blocks-filtered-empty" class="px-4 py-8 text-center">
-            <p class="text-sm text-base-content/70">No blocks match these filters</p>
-            <button
-              id="blocks-clear-filters"
-              type="button"
-              phx-click="filter"
-              phx-value-route=""
-              phx-value-status="all"
-              class="btn btn-sm min-h-11 mt-2"
+      <div
+        id="blocks-panel-body"
+        role="tabpanel"
+        aria-labelledby={"panel-" <> Atom.to_string(@state.panel)}
+      >
+        <%= cond do %>
+          <% @state.panel == :pool -> %>
+            <p
+              :if={@counts.blocks == 0}
+              id="blocks-workspace-guidance"
+              class="border-b border-subtle px-4 py-3 text-sm text-muted"
             >
-              Clear filters
-            </button>
-          </div>
-        <% @state.view == :timeline -> %>
-          <.timeline
-            state={@state}
-            block_rows={@block_rows}
-            axis={@axis}
-            routes={@routes}
-          />
-        <% true -> %>
-          <.block_list
-            block_rows={@list_rows}
-            routes={@routes}
-            findings_by_trip={@findings_by_trip}
-            route_filter={@state.route}
-            selected_ids={@selected_ids}
-          />
-      <% end %>
+              Start by selecting trips and placing them on a new block.
+            </p>
+
+            <.pool
+              pool_rows={@pool_rows}
+              routes={@routes}
+              findings_by_trip={@findings_by_trip}
+              route_filter={@state.route}
+              total={@pool_visible_count}
+              page={@state.pool_page}
+              page_size={@page_size}
+              version_id={@state.version_id}
+              selected_ids={@selected_ids}
+            />
+          <% @counts.blocks == 0 -> %>
+            <.state_panel
+              id="blocks-workspace-guidance"
+              icon="hero-truck"
+              title="No blocks on this service day yet"
+            >
+              A block is the trips one vehicle works in order. This day has {count_label(
+                @counts.unassigned,
+                "trip",
+                "trips"
+              )} with no vehicle. Select trips and place them on a new block.
+              <:action>
+                <.button
+                  id="blocks-choose-trips"
+                  type="button"
+                  variant={if @primary == :empty, do: "primary", else: "secondary"}
+                  class="min-h-11"
+                  phx-click="set_panel"
+                  phx-value-panel="pool"
+                >
+                  Choose trips for a block
+                </.button>
+              </:action>
+            </.state_panel>
+          <% @filtered? and @visible_count == 0 -> %>
+            <.state_panel
+              id="blocks-filtered-empty"
+              icon="hero-magnifying-glass"
+              title="No blocks match these filters"
+            >
+              {filtered_empty_text(@state)}
+              <:action>
+                <.button
+                  id="blocks-clear-filters"
+                  type="button"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="filter"
+                  phx-value-route=""
+                  phx-value-status="all"
+                >
+                  Clear filters
+                </.button>
+              </:action>
+            </.state_panel>
+          <% @state.view == :timeline -> %>
+            <.timeline
+              state={@state}
+              block_rows={@block_rows}
+              axis={@axis}
+              routes={@routes}
+            />
+          <% true -> %>
+            <.block_list
+              block_rows={@list_rows}
+              routes={@routes}
+              findings_by_trip={@findings_by_trip}
+              route_filter={@state.route}
+              selected_ids={@selected_ids}
+            />
+        <% end %>
+      </div>
 
       <.untimed_list
         :if={@state.panel == :blocks}
@@ -1725,7 +2095,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       <div
         :if={@state.panel == :blocks and @visible_count > 0}
         id="blocks-pager"
-        class="border-t border-base-300 px-4"
+        class="border-t border-subtle px-4"
       >
         <.pagination
           page={@state.page}
@@ -1734,12 +2104,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           entity="blocks"
           event="paginate"
         />
+        <p class="max-w-3xl pb-3 text-[13px] text-muted">{workspace_note(@state, @filtered?)}</p>
       </div>
 
       <div
         :if={@state.panel == :pool and @pool_visible_count > 0}
         id="blocks-pool-pager"
-        class="border-t border-base-300 px-4"
+        class="border-t border-subtle px-4"
       >
         <.pagination
           page={@state.pool_page}
@@ -1748,6 +2119,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           entity="trips"
           event="paginate_pool"
         />
+        <p class="max-w-3xl pb-3 text-[13px] text-muted">{workspace_note(@state, @filtered?)}</p>
       </div>
     </section>
 
@@ -1766,6 +2138,119 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     """
   end
 
+  # A work-queue tab: the design system's local tab, an underline in the action
+  # colour with the queue's size beside its name. `TablistHook` supplies the
+  # arrow-key behavior and keeps only the current tab in the tab order.
+  attr :id, :string, required: true
+  attr :panel, :string, required: true
+  attr :label, :string, required: true
+  attr :count, :integer, required: true
+  attr :current?, :boolean, required: true
+
+  defp work_tab(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      role="tab"
+      phx-click="set_panel"
+      phx-value-panel={@panel}
+      aria-selected={to_string(@current?)}
+      aria-controls="blocks-panel-body"
+      tabindex={if @current?, do: "0", else: "-1"}
+      class={[
+        "-mb-px flex min-h-12 items-center gap-2 whitespace-nowrap border-b-[3px] px-3.5 text-sm",
+        @current? && "border-action font-bold text-action",
+        !@current? && "border-transparent font-semibold text-muted hover:text-strong"
+      ]}
+    >
+      {@label}
+      <span class={[
+        "rounded-badge px-1.5 py-0.5 text-[13px] font-bold tabular-nums",
+        if(@current?, do: "bg-selection", else: "bg-canvas")
+      ]}>
+        {@count}
+      </span>
+    </button>
+    """
+  end
+
+  # A panel state inside the workspace card: what belongs here, and the one next
+  # step.
+  attr :id, :string, required: true
+  attr :icon, :string, required: true
+  attr :title, :string, required: true
+  slot :inner_block, required: true
+  slot :action
+
+  defp state_panel(assigns) do
+    ~H"""
+    <div id={@id} class="px-4 py-14 text-center">
+      <span class="mx-auto flex size-12 items-center justify-center rounded-full bg-canvas text-muted">
+        <.icon name={@icon} class="size-6" />
+      </span>
+      <h2 class="mt-4 font-display text-[22px] font-semibold tracking-[-0.025em] text-strong">
+        {@title}
+      </h2>
+      <p class="mx-auto mt-2 max-w-lg text-sm text-muted">{render_slot(@inner_block)}</p>
+      <div :if={@action != []} class="mt-6 flex justify-center">{render_slot(@action)}</div>
+    </div>
+    """
+  end
+
+  # The chart key names every mark between trips in words, at its real size: a
+  # gap's four states differ by more than colour, and the key is the one place
+  # that says so.
+  defp chart_key(assigns) do
+    ~H"""
+    <div
+      id="blocks-chart-key"
+      class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-subtle bg-canvas px-4 py-1.5 text-[13px] text-muted"
+    >
+      <span class="font-semibold text-strong">Between trips</span>
+      <span class="inline-flex items-center gap-1.5">
+        <span class="inline-block h-3 w-6 border-b-[3px] border-control"></span> minutes waiting
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <span class="inline-flex h-4 w-6 items-center justify-center border-b-[3px] border-warning-line bg-warning-bg text-[11px] font-extrabold text-warning-fg">
+          !
+        </span>
+        short layover
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <span class="inline-flex h-3 w-6 items-center justify-center border-b-[3px] border-dashed border-info-line text-info-fg">
+          <.icon name="hero-arrow-up-right-mini" class="size-3" />
+        </span>
+        deadhead (drives empty)
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <span class="inline-flex size-4 items-center justify-center rounded-badge bg-white text-error-fg outline outline-2 outline-error-line">
+          <.icon name="hero-x-circle-mini" class="size-3" />
+        </span>
+        overlap
+      </span>
+      <span class="ml-auto hidden lg:inline">
+        Bars are colored by route and labeled with the route number.
+      </span>
+    </div>
+    """
+  end
+
+  defp show_chart_key?(state, counts, filtered?, visible_count) do
+    state.panel == :blocks and state.view == :timeline and counts.blocks > 0 and
+      not (filtered? and visible_count == 0)
+  end
+
+  defp filtered_empty_text(%{status: :problems, route: route}) when not is_nil(route),
+    do: "No block on this route has a problem on this service day."
+
+  defp filtered_empty_text(%{status: :problems}),
+    do: "No block has a problem on this service day."
+
+  defp filtered_empty_text(_state),
+    do:
+      "No block runs this route on this service day. Try a different route, or show every block."
+
   @doc """
   Renders the selection bar: the count, how many of the selected trips are on
   another page, and the three bulk actions.
@@ -1776,6 +2261,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   empties the set; “Assign N trips” opens the selection-scoped assignment form;
   “Remove from block” is offered only when a selected trip has a block, because
   the others are already in the pool (the reference hides it the same way).
+
+  While the bar shows, its Assign is the page's one primary: the header's Review
+  action drops to secondary.
   """
   attr :count, :integer, required: true
   attr :elsewhere, :integer, required: true
@@ -1787,38 +2275,42 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       id="blocks-bulk-bar"
       role="region"
       aria-label="Selected trips"
-      class="mx-4 my-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border border-primary/30 bg-primary/10 px-4 py-2.5"
+      class="mx-4 my-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-card border border-action/30 bg-selection px-4 py-2"
     >
-      <strong id="bulk-count">{bulk_count_label(@count, @elsewhere)}</strong>
+      <strong id="bulk-count" class="text-sm text-strong">
+        {bulk_count_label(@count, @elsewhere)}
+      </strong>
 
       <div class="flex flex-wrap items-center gap-2">
-        <button
+        <.button
           id="bulk-clear"
           type="button"
+          variant="secondary"
+          class="min-h-11"
           phx-click="clear_selection"
-          class="btn btn-sm min-h-11"
         >
           Clear selection
-        </button>
-        <button
+        </.button>
+        <.button
           :if={@removable?}
           id="bulk-remove"
           type="button"
+          variant="secondary"
+          class="min-h-11"
           phx-click="unassign"
           phx-value-scope="selection"
-          class="btn btn-sm min-h-11"
         >
           Remove from block
-        </button>
-        <button
+        </.button>
+        <.button
           id="bulk-assign"
           type="button"
+          class="min-h-11"
           phx-click="open_assign"
           phx-value-scope="selection"
-          class="btn btn-sm btn-primary min-h-11"
         >
           Assign {count_label(@count, "trip", "trips")}
-        </button>
+        </.button>
       </div>
     </div>
     """
@@ -1859,7 +2351,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   The gap is the layover before the trip, from the block's own `gaps/1` pairs, so
   it agrees with the timeline's gap bars; the first trip and every trip outside
   the plottable sequence have none. The Issues cell prints the trip's findings as
-  status badges, worst first, or “No problems”.
+  badges, worst first, or “No problems”. Below the `md` breakpoint each row is a
+  card: the trip and its select box first, then short values beside their labels.
   """
   attr :block_rows, :any, required: true, doc: "the List view's own stream of the block page"
   attr :routes, :map, required: true
@@ -1897,74 +2390,122 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       assign(assigns,
         summary: assigns.block.summary,
         rows: list_rows(assigns.block, assigns.route_filter),
-        gaps: Map.new(assigns.block.gaps, &{&1.to_id, &1})
+        gaps: Map.new(assigns.block.gaps, &{&1.to_id, &1}),
+        status: status_label(assigns.block.summary)
       )
 
     ~H"""
-    <section id={@dom} class="border-t border-base-300 py-2">
-      <h3 class="flex flex-wrap items-center gap-2 px-4 text-sm font-semibold">
-        Block
-        <button
-          type="button"
-          data-role="list-block"
-          phx-click="open_block"
-          phx-value-block={@summary.block_id}
-          class="link link-primary min-h-11 inline-flex items-center"
-        >
-          {@summary.block_id}
-        </button>
-        <span class="font-normal text-base-content/70">
-          {count_label(@summary.trip_count, "trip", "trips")}
+    <section id={@dom} class="border-t border-subtle first:border-t-0">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 bg-canvas px-4 py-1">
+        <h3 class="flex items-center gap-1 text-[15px]">
+          Block
+          <button
+            type="button"
+            data-role="list-block"
+            phx-click="open_block"
+            phx-value-block={@summary.block_id}
+            class={[link_class(), "font-bold"]}
+          >
+            {@summary.block_id}
+          </button>
+        </h3>
+        <span class="text-[13px] text-muted">
+          {count_label(@summary.trip_count, "trip", "trips")}{block_span(@summary)}
         </span>
-      </h3>
+        <span class="ml-auto text-[13px]"><.status_text status={@status} /></span>
+      </div>
 
-      <.table id={"block-list-" <> @dom} rows={@rows} responsive="stack">
-        <:col :let={trip} label="Select">
-          <.select_trip trip={trip} checked={MapSet.member?(@selected_ids, trip.id)} />
-        </:col>
-        <:col :let={trip} label="Trip">
-          <div>
-            <strong>{trip.trip_id}</strong>
-            <small class="block text-base-content/70">
-              {route_name(@routes, trip.route_id)}
-            </small>
-          </div>
-        </:col>
-        <:col :let={trip} label="Route">
-          <.route_badge_for route_id={trip.route_id} routes={@routes} />
-        </:col>
-        <:col :let={trip} label="Start">{clock(trip.first_departure)}</:col>
-        <:col :let={trip} label="End">{clock(trip.last_arrival)}</:col>
-        <:col :let={trip} label="From → To">
-          <.endpoints trip={trip} />
-        </:col>
-        <:col :let={trip} label="Gap">
-          <%= if gap = Map.get(@gaps, trip.id) do %>
-            <span data-role="list-gap" data-minutes={div(gap.gap_secs, 60)}>
-              {gap_label(gap)}
-            </span>
-          <% else %>
-            <span class="text-base-content/70">—</span>
-          <% end %>
-        </:col>
-        <:col :let={trip} label="Issues">
-          <.issue_badges findings={Map.get(@findings_by_trip, trip.id, [])} />
-        </:col>
-      </.table>
+      <div id={"block-list-" <> @dom <> "-container"} class="overflow-x-auto">
+        <table class="w-full min-w-[860px] text-sm max-md:min-w-0 max-md:[&_thead]:hidden max-md:[&_tr]:relative max-md:[&_tr]:grid max-md:[&_tr]:grid-cols-2 max-md:[&_tr]:gap-x-3 max-md:[&_tr]:gap-y-1 max-md:[&_tr]:px-4 max-md:[&_tr]:py-3 max-md:[&_td]:block max-md:[&_td]:px-0 max-md:[&_td]:py-0">
+          <thead>
+            <tr class="text-left text-[13px] text-muted">
+              <th scope="col" class="w-14 px-3 py-2 font-semibold">
+                <span class="sr-only">Select</span>
+              </th>
+              <th scope="col" class="px-3 py-2 font-semibold">Trip</th>
+              <th scope="col" class="px-3 py-2 font-semibold">Route</th>
+              <th scope="col" class="whitespace-nowrap px-3 py-2 font-semibold">Start</th>
+              <th scope="col" class="whitespace-nowrap px-3 py-2 font-semibold">End</th>
+              <th scope="col" class="px-3 py-2 font-semibold">From → To</th>
+              <th scope="col" class="whitespace-nowrap px-3 py-2 font-semibold">Gap</th>
+              <th scope="col" class="px-3 py-2 font-semibold">Issues</th>
+            </tr>
+          </thead>
+          <tbody id={"block-list-" <> @dom} class="divide-y divide-subtle/60">
+            <tr :for={trip <- @rows} class="hover:bg-canvas">
+              <td class="px-3 max-md:absolute max-md:right-1 max-md:top-0">
+                <.select_trip trip={trip} checked={MapSet.member?(@selected_ids, trip.id)} />
+              </td>
+              <td class="px-3 py-1.5 max-md:col-span-2 max-md:pr-12" data-label="Trip">
+                <strong>{trip.trip_id}</strong>
+                <small class="block text-[13px] text-muted">
+                  {route_name(@routes, trip.route_id)}
+                </small>
+              </td>
+              <td class="px-3 max-md:col-span-2" data-label="Route">
+                <.route_badge_for route_id={trip.route_id} routes={@routes} />
+              </td>
+              <td
+                class="px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]"
+                data-label="Start"
+              >
+                {clock(trip.first_departure)}
+              </td>
+              <td
+                class="px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]"
+                data-label="End"
+              >
+                {clock(trip.last_arrival)}
+              </td>
+              <td class="px-3 py-1.5 max-md:col-span-2" data-label="From → To">
+                <.endpoints trip={trip} />
+              </td>
+              <td
+                class={[
+                  "px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]",
+                  !Map.has_key?(@gaps, trip.id) && "max-md:hidden"
+                ]}
+                data-label="Gap"
+              >
+                <%= if gap = Map.get(@gaps, trip.id) do %>
+                  <span
+                    data-role="list-gap"
+                    data-minutes={div(gap.gap_secs, 60)}
+                    class={gap.gap_secs < 0 && "font-semibold text-error-fg"}
+                  >
+                    {gap_label(gap)}
+                  </span>
+                <% else %>
+                  <span class="text-muted">—</span>
+                <% end %>
+              </td>
+              <td class="px-3 py-1.5 max-md:col-span-2" data-label="Issues">
+                <.issue_badges findings={Map.get(@findings_by_trip, trip.id, [])} />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
     """
+  end
+
+  # “ · 06:00–15:50 · 9.8 h” after a block's trip count, when it has timed trips.
+  defp block_span(%{start_secs: nil}), do: ""
+
+  defp block_span(summary) do
+    " · #{clock(summary.start_secs)}–#{clock(summary.end_secs)} · #{hours(summary.hours)} h"
   end
 
   @doc """
   Renders the paged Unassigned panel: the pool page, its eligibility text and
   its own empty states.
 
-  The columns are the reference's Select, Route / trip, Block, Start → end,
-  From → to, Checks and Action. A frequency trip prints “Repeats every N min ·
-  not a single trip”; a trip whose endpoint time is missing prints “Time missing”
-  with a link to its route's Schedules for its calendar; an eligible trip offers
-  “Assign trip” (`open_assign`, scope `trip`) where the other two offer “View
-  trip”.
+  The columns are the reference's Select, Route / trip, Start → end, From → to,
+  Checks and Action. A repeating trip prints “Repeats every N min · not a single
+  trip”; a trip whose endpoint time is missing prints “Time missing” with a link
+  to its route's Schedules for its calendar; an eligible trip offers “Assign
+  trip” (`open_assign`, scope `trip`) where the other two offer “View trip”.
 
   The two empty states are distinct: a route filter that matches no pool trip
   offers to clear it, while an empty pool without a filter says every trip has a
@@ -1982,106 +2523,137 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   def pool(%{total: 0} = assigns) do
     ~H"""
-    <div :if={@route_filter} id="blocks-pool-filtered-empty" class="px-4 py-8 text-center">
-      <p class="text-sm text-base-content/70">No unassigned trips match</p>
-      <button
-        id="blocks-pool-clear-filters"
-        type="button"
-        phx-click="filter"
-        phx-value-route=""
-        phx-value-status="all"
-        class="btn btn-sm min-h-11 mt-2"
-      >
-        Clear filters
-      </button>
-    </div>
+    <.state_panel
+      :if={@route_filter}
+      id="blocks-pool-filtered-empty"
+      icon="hero-magnifying-glass"
+      title="No unassigned trips match"
+    >
+      No trips on this route are waiting for a vehicle on this service day.
+      <:action>
+        <.button
+          id="blocks-pool-clear-filters"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="filter"
+          phx-value-route=""
+          phx-value-status="all"
+        >
+          Clear filters
+        </.button>
+      </:action>
+    </.state_panel>
 
-    <div :if={is_nil(@route_filter)} id="blocks-pool-empty" class="px-4 py-8 text-center">
-      <p class="text-sm text-base-content/70">All trips have a block</p>
+    <div :if={is_nil(@route_filter)} id="blocks-pool-empty" class="px-4 py-14 text-center">
+      <span class="mx-auto flex size-12 items-center justify-center rounded-full bg-success-bg text-success-fg">
+        <.icon name="hero-check-circle" class="size-6" />
+      </span>
+      <h2 class="mt-4 font-display text-[22px] font-semibold tracking-[-0.025em] text-strong">
+        Every trip has a block
+      </h2>
+      <p class="mx-auto mt-2 max-w-lg text-sm text-muted">
+        Nothing is waiting for a vehicle on this service day.
+      </p>
     </div>
     """
   end
 
   def pool(assigns) do
     ~H"""
-    <.table id="blocks-pool-table" rows={@pool_rows} responsive="stack">
-      <:col :let={{_dom, trip}} label="Select">
-        <.select_trip trip={trip} checked={MapSet.member?(@selected_ids, trip.id)} />
-      </:col>
-      <:col :let={{_dom, trip}} label="Route / trip">
-        <div class="flex items-center gap-2">
-          <.route_badge_for route_id={trip.route_id} routes={@routes} />
-          <div>
-            <strong>{trip.trip_id}</strong>
-            <small class="block text-base-content/70">
-              {route_name(@routes, trip.route_id)}
-            </small>
-          </div>
-        </div>
-      </:col>
-      <:col :let={{_dom, _trip}} label="Block">Unassigned</:col>
-      <:col :let={{_dom, trip}} label="Start → end">
-        <div>
-          <div>{clock(trip.first_departure)} → {clock(trip.last_arrival)}</div>
-          <div
-            :if={text = eligibility_text(trip)}
-            data-role="pool-eligibility"
-            class="text-sm text-base-content/70"
-          >
-            <%= if trip.plottable? do %>
-              {text}
-            <% else %>
-              {text} ·
-              <.link
-                id={"pool-schedules-" <> dom_token(trip.trip_id)}
-                navigate={schedules_path(@version_id, trip)}
-                class="link link-primary"
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[820px] text-sm max-md:min-w-0 max-md:[&_thead]:hidden max-md:[&_tr]:relative max-md:[&_tr]:grid max-md:[&_tr]:grid-cols-2 max-md:[&_tr]:gap-x-3 max-md:[&_tr]:gap-y-1 max-md:[&_tr]:px-4 max-md:[&_tr]:py-3 max-md:[&_td]:block max-md:[&_td]:px-0 max-md:[&_td]:py-0">
+        <thead>
+          <tr class="bg-canvas text-left text-[13px] text-muted">
+            <th scope="col" class="w-14 px-3 py-2.5 font-semibold">
+              <span class="sr-only">Select</span>
+            </th>
+            <th scope="col" class="px-3 py-2.5 font-semibold">Route / trip</th>
+            <th scope="col" class="px-3 py-2.5 font-semibold">Start → end</th>
+            <th scope="col" class="px-3 py-2.5 font-semibold">From → to</th>
+            <th scope="col" class="px-3 py-2.5 font-semibold">Checks</th>
+            <th scope="col" class="px-3 py-2.5 font-semibold">Action</th>
+          </tr>
+        </thead>
+        <tbody id="blocks-pool-table" phx-update="stream" class="divide-y divide-subtle/60">
+          <tr :for={{dom_id, trip} <- @pool_rows} id={dom_id} class="hover:bg-canvas">
+            <td class="px-3 max-md:absolute max-md:right-1 max-md:top-0">
+              <.select_trip trip={trip} checked={MapSet.member?(@selected_ids, trip.id)} />
+            </td>
+            <td class="px-3 py-1.5 max-md:col-span-2 max-md:pr-12" data-label="Route / trip">
+              <div class="flex items-center gap-2">
+                <.route_badge_for route_id={trip.route_id} routes={@routes} />
+                <div>
+                  <strong>{trip.trip_id}</strong>
+                  <small class="block text-[13px] text-muted">
+                    {route_name(@routes, trip.route_id)}
+                  </small>
+                </div>
+              </div>
+            </td>
+            <td class="px-3 py-1.5 max-md:col-span-2" data-label="Start → end">
+              <span class="tabular-nums">
+                {clock(trip.first_departure)} → {clock(trip.last_arrival)}
+              </span>
+              <span
+                :if={text = eligibility_text(trip)}
+                data-role="pool-eligibility"
+                class="block text-[13px] text-muted"
               >
-                Open in Schedules
-              </.link>
-            <% end %>
-          </div>
-        </div>
-      </:col>
-      <:col :let={{_dom, trip}} label="From → to">
-        <.endpoints trip={trip} />
-      </:col>
-      <:col :let={{_dom, trip}} label="Checks">
-        <.issue_badges findings={Map.get(@findings_by_trip, trip.id, [])} />
-      </:col>
-      <:col :let={{_dom, trip}} label="Action">
-        <div class="whitespace-nowrap">
-          <button
-            :if={eligible?(trip)}
-            type="button"
-            data-role="assign-trip"
-            phx-click="open_assign"
-            phx-value-scope="trip"
-            phx-value-trip={trip.trip_id}
-            class="link link-primary min-h-11 inline-flex items-center"
-          >
-            Assign trip
-          </button>
-          <button
-            :if={not eligible?(trip)}
-            type="button"
-            data-role="view-trip"
-            phx-click="open_trip"
-            phx-value-trip={trip.trip_id}
-            class="link link-primary min-h-11 inline-flex items-center"
-          >
-            View trip
-          </button>
-        </div>
-      </:col>
-    </.table>
+                <%= if trip.plottable? do %>
+                  {text}
+                <% else %>
+                  {text} ·
+                  <.link
+                    id={"pool-schedules-" <> dom_token(trip.trip_id)}
+                    navigate={schedules_path(@version_id, trip)}
+                    class="font-[650] text-action underline underline-offset-4"
+                  >
+                    Fix times in Schedules
+                  </.link>
+                <% end %>
+              </span>
+            </td>
+            <td class="px-3 py-1.5 max-md:col-span-2" data-label="From → to">
+              <.endpoints trip={trip} />
+            </td>
+            <td class="px-3 py-1.5 max-md:col-span-2" data-label="Checks">
+              <.issue_badges findings={Map.get(@findings_by_trip, trip.id, [])} none="—" />
+            </td>
+            <td class="whitespace-nowrap px-3 max-md:col-span-2" data-label="Action">
+              <button
+                :if={eligible?(trip)}
+                type="button"
+                data-role="assign-trip"
+                phx-click="open_assign"
+                phx-value-scope="trip"
+                phx-value-trip={trip.trip_id}
+                class={link_class()}
+              >
+                Assign trip
+              </button>
+              <button
+                :if={not eligible?(trip)}
+                type="button"
+                data-role="view-trip"
+                phx-click="open_trip"
+                phx-value-trip={trip.trip_id}
+                class={link_class()}
+              >
+                View trip
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     """
   end
 
   @doc """
-  Renders the “not plotted” disclosure of the Blocks panel: every trip that has
-  a block but no usable endpoint time, with its reason and a link to its route's
-  Schedules for its calendar.
+  Renders the “not shown on the timeline” disclosure of the All blocks panel:
+  every trip that has a block but no usable endpoint time, with its reason and a
+  link to its route's Schedules for its calendar.
 
   The timeline cannot draw these trips and the pool does not hold them, so this
   list is where a blocked trip with missing timing stays visible (AC-23).
@@ -2092,31 +2664,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   def untimed_list(assigns) do
     ~H"""
-    <details
-      :if={@trips != []}
-      id="blocks-untimed"
-      class="border-t border-base-300 px-4 py-2 text-sm"
-    >
-      <summary class="min-h-11 cursor-pointer content-center">
-        Not plotted · {length(@trips)}
+    <details :if={@trips != []} id="blocks-untimed" class="border-t border-subtle px-4 py-1 text-sm">
+      <summary class="flex min-h-11 cursor-pointer items-center font-semibold text-strong">
+        Not shown on the timeline · {length(@trips)}
       </summary>
 
-      <ul class="mt-2 space-y-2">
+      <ul class="pb-3">
         <li
           :for={trip <- @trips}
           data-role="untimed-trip"
           data-trip={trip.trip_id}
-          class="flex flex-wrap items-center gap-2"
+          class="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5"
         >
           <.route_badge_for route_id={trip.route_id} routes={@routes} />
           <strong>{trip.trip_id}</strong>
-          <span data-role="untimed-reason">{eligibility_text(trip)}</span>
+          <span data-role="untimed-reason" class="text-muted">
+            Block {trip.block_id} · {eligibility_text(trip)}
+          </span>
           <.link
             id={"untimed-schedules-" <> dom_token(trip.trip_id)}
             navigate={schedules_path(@version_id, trip)}
-            class="link link-primary min-h-11 inline-flex items-center"
+            class={link_class()}
           >
-            Open in Schedules
+            Fix times in Schedules
           </.link>
         </li>
       </ul>
@@ -2124,8 +2694,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     """
   end
 
-  # The row's selection control: a 44px target around a daisyUI checkbox, and
-  # the trip's natural ID in the event. The checked state is the page's own
+  # The row's selection control: a 44px target around the checkbox, and the
+  # trip's natural ID in the event. The checked state is the page's own
   # selection, so a re-streamed row shows the state the reader last set (AC-24).
   attr :trip, :map, required: true
   attr :checked, :boolean, required: true
@@ -2133,7 +2703,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp select_trip(assigns) do
     ~H"""
     <label
-      class="grid min-h-11 min-w-11 place-items-center"
+      class="grid min-h-11 min-w-11 place-items-center max-md:min-h-12 max-md:min-w-12"
       for={"select-" <> dom_token(@trip.trip_id)}
     >
       <input
@@ -2145,7 +2715,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         phx-click="toggle_trip"
         phx-value-trip={@trip.trip_id}
         aria-label={"Select trip " <> @trip.trip_id}
-        class="checkbox"
+        class="size-5 accent-action"
       />
     </label>
     """
@@ -2159,14 +2729,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~H"""
     <div>
       <span>{stop_name(@trip.first_stop)}</span>
-      <span class="block text-base-content/70">→ {stop_name(@trip.last_stop)}</span>
+      <span class="block text-muted">→ {stop_name(@trip.last_stop)}</span>
     </div>
     """
   end
 
-  # The findings that name this trip, worst first, as status badges; a trip
-  # without one says so in text rather than leaving the cell blank.
+  # The findings that name this trip, worst first, as badges; a trip without one
+  # says so in text rather than leaving the cell blank.
   attr :findings, :list, required: true
+  attr :none, :string, default: "No problems"
 
   defp issue_badges(assigns) do
     assigns =
@@ -2179,16 +2750,82 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     ~H"""
     <div data-role="trip-issues" class="flex flex-wrap gap-1">
-      <span :if={@issues == []} class="text-base-content/70">No problems</span>
-      <.status_badge
+      <span :if={@issues == []} class="text-muted">{@none}</span>
+      <.code_badge
         :for={finding <- @issues}
-        status={severity_status(finding.severity)}
-        label={code_label(finding.code)}
+        code={finding.code}
         data-role="trip-issue"
         data-code={finding.code}
       />
     </div>
     """
+  end
+
+  # A finding as a tinted badge: an icon and the operator's word for it. Drawers
+  # and cards carry badges; a dense table cell carries `status_text/1`.
+  attr :tone, :atom, required: true, values: [:error, :warning, :info, :success, :neutral]
+  attr :icon, :string, default: nil
+  attr :label, :string, required: true
+  attr :rest, :global
+
+  defp finding_badge(assigns) do
+    ~H"""
+    <span
+      class={[
+        "inline-flex max-w-full items-center gap-1.5 rounded-badge px-2 py-1 text-[13px] font-semibold leading-tight",
+        tone_badge(@tone)
+      ]}
+      {@rest}
+    >
+      <.icon :if={@icon} name={@icon} class="size-[15px] shrink-0" />{@label}
+    </span>
+    """
+  end
+
+  attr :code, :atom, required: true
+  attr :rest, :global
+
+  defp code_badge(assigns) do
+    assigns = assign(assigns, :meta, code_meta(assigns.code))
+
+    ~H"""
+    <.finding_badge tone={@meta.tone} icon={@meta.icon} label={@meta.label} {@rest} />
+    """
+  end
+
+  # Status in a dense table cell: an icon and words in the state's ink on a white
+  # row, never a filled badge.
+  attr :status, :map, required: true
+
+  defp status_text(assigns) do
+    ~H"""
+    <span
+      data-role="block-status"
+      class={["inline-flex items-center gap-1.5 font-[650]", tone_text(@status.tone)]}
+    >
+      <.icon name={@status.icon} class="size-4 shrink-0" /> {@status.label}
+    </span>
+    """
+  end
+
+  defp tone_badge(:error), do: "bg-error-bg text-error-fg"
+  defp tone_badge(:warning), do: "bg-warning-bg text-warning-fg"
+  defp tone_badge(:info), do: "bg-info-bg text-info-fg"
+  defp tone_badge(:success), do: "bg-success-bg text-success-fg"
+  defp tone_badge(:neutral), do: "bg-canvas text-muted"
+
+  defp tone_text(:error), do: "text-error-fg"
+  defp tone_text(:warning), do: "text-warning-fg"
+  defp tone_text(:info), do: "text-info-fg"
+  defp tone_text(:success), do: "text-success-fg"
+
+  defp severity_border(:error), do: "border-error-line"
+  defp severity_border(:warning), do: "border-warning-line"
+  defp severity_border(:notice), do: "border-info-line"
+
+  # A link-styled button or link: the action colour, underlined, on a 44px target.
+  defp link_class do
+    "inline-flex min-h-11 items-center gap-1.5 rounded-control px-1 text-sm font-[650] text-action underline underline-offset-4 hover:text-action-hover"
   end
 
   # The route's feed identity for a bare route ID: the badge reads
@@ -2250,8 +2887,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     ~p"/gtfs/#{version_id}/routes/#{trip.route_id}/schedules?#{[service_id: trip.service_id]}"
   end
 
-  # A day-type link's URL state: the two parameters the page reads, so following
-  # it opens the trip's drawer again in the day type it names.
+  # A service-day link's URL state: the two parameters the page reads, so following
+  # it opens the trip's drawer again on the day it names.
   defp day_type_trip_path(version_id, day_key, trip_id) do
     "/gtfs/#{version_id}/blocks?" <> URI.encode_query([{"day", day_key}, {"trip", trip_id}])
   end
@@ -2260,7 +2897,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   Renders the paged timeline: the sticky sortable header, the whole-day axis with
   a tick every two hours, and one `block_row/1` per streamed block.
 
-  The header buttons sort the whole day type, not the page, and carry the
+  The header buttons sort the whole service day, not the page, and carry the
   direction in `aria-sort` and an arrow (CR-8's `sort` event). The axis and every
   bar are positioned by percentage of the same span, so they stay aligned inside
   the one scroll container.
@@ -2279,11 +2916,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     ~H"""
     <div id="blocks-timeline-scroll">
-      <table
-        id="blocks-timeline"
-        data-scale={@state.scale}
-        aria-label="Blocks by service-day time"
-      >
+      <table id="blocks-timeline" data-scale={@state.scale} aria-label="Blocks by service-day time">
         <colgroup>
           <col class="blocks-col-block" />
           <col class="blocks-col-trips" />
@@ -2301,23 +2934,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               aria-sort={aria_sort(@state, column.key)}
               class={["blocks-meta", "blocks-meta-#{column.key}"]}
             >
-              <button
-                type="button"
-                phx-click="sort"
-                phx-value-key={column.key}
-                class="blocks-sort"
-              >
+              <button type="button" phx-click="sort" phx-value-key={column.key} class="blocks-sort">
                 {column.label}
-                <span :if={Atom.to_string(@state.sort) == column.key} aria-hidden="true">
+                <span
+                  :if={Atom.to_string(@state.sort) == column.key}
+                  aria-hidden="true"
+                  class="text-action"
+                >
                   {sort_arrow(@state.dir)}
                 </span>
+                <.icon
+                  :if={Atom.to_string(@state.sort) != column.key}
+                  name="hero-chevron-up-down-micro"
+                  class="size-3.5 text-muted"
+                />
               </button>
             </th>
             <th scope="col" class="blocks-axis">
               <span class="blocks-axis-inner">
                 <span
                   :for={tick <- @ticks}
-                  class="blocks-axis-tick"
+                  class={["blocks-axis-tick", tick.first? && "blocks-axis-tick-first"]}
                   style={tick.style}
                 >
                   {tick.label}
@@ -2343,7 +2980,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders one 36px block row: the sticky Block, Trips, Start, End, Hours and
+  Renders one 44px block row: the sticky Block, Trips, Start, End, Hours and
   Status cells and the track with the block's trip bars and gaps.
 
   The bars are the block's sequence (plottable, non-frequency trips) so they line
@@ -2384,9 +3021,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       <td class={["blocks-meta", "blocks-meta-end"]}>{clock(@summary.end_secs)}</td>
       <td class={["blocks-meta", "blocks-meta-hours"]}>{hours(@summary.hours)}</td>
       <td class={["blocks-meta", "blocks-meta-status"]}>
-        <span data-role="block-status" class="inline-flex items-center gap-1">
-          <.icon name={@status.icon} class="size-3.5 shrink-0" /> {@status.label}
-        </span>
+        <.status_text status={@status} />
       </td>
       <td class="blocks-track" style={@track_style}>
         <%= for row <- @plotted do %>
@@ -2414,7 +3049,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders one trip as a 24px button positioned by the day type's axis.
+  Renders one trip as a 28px button positioned by the service day's axis.
 
   The bar carries the route's feed colours through `RouteIdentity.route_colors/1`
   (with its neutral fallback), the route's short name, and a title naming the trip,
@@ -2472,9 +3107,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   The bar spans from the previous trip's last arrival to this trip's first
   departure, so `from` is the earlier trip of the pair. Its minutes print only
-  when the bar is at least 32px wide, which the container query reads from the
-  bar's own width. An empty move draws dashed with the move icon and a short
-  layover draws the warning outline, so the two differ by more than colour.
+  when the bar is at least 26px wide, which the container query reads from the
+  bar's own width. A deadhead draws dashed with the move icon, and a short layover
+  is an 18px warning chip with its “!” always drawn, centred on the gap and above
+  the bars, so the states differ by more than colour.
   """
   attr :gap, :map, required: true
   attr :from, :map, required: true
@@ -2485,7 +3121,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     assigns =
       assigns
       |> assign(:move?, match?({:moves, _}, assigns.gap.handoff))
-      |> assign(:style, gap_geometry(assigns.gap, assigns.from, assigns.axis))
+      |> assign(:style, gap_geometry(assigns.gap, assigns.from, assigns.axis, assigns.short?))
 
     ~H"""
     <button
@@ -2505,8 +3141,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         @short? && "blocks-gap-short",
         @move? && "blocks-gap-move"
       ]}
-      title={gap_title(@gap)}
+      title={gap_hover(@gap)}
     >
+      <span :if={@short?} aria-hidden="true">!</span>
       <span :if={@move?} data-role="gap-move-icon" class="blocks-gap-icon">
         <.icon name="hero-arrow-up-right-mini" class="size-3" />
       </span>
@@ -2540,9 +3177,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     |> Enum.sort_by(&elem(&1, 0))
   end
 
+  # “1 · Coast Highway” when the route has both names, so the picker says what
+  # each number is.
   defp route_option_label(route_id, route) do
-    route.short_name || route.long_name || route_id
+    case {present(route.short_name), present(route.long_name)} do
+      {nil, nil} -> route_id
+      {short, nil} -> short
+      {nil, long} -> long
+      {short, long} -> "#{short} · #{long}"
+    end
   end
+
+  defp present(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      _trimmed -> value
+    end
+  end
+
+  defp present(_value), do: nil
 
   defp day_type_options(day_types) do
     {special, regular} = Enum.split_with(day_types, & &1.special?)
@@ -2559,43 +3212,116 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp day_type_option_label(day_type) do
-    "#{day_type.label} · #{date_count_label(day_type.date_count)}"
+    "#{day_type.label} · #{day_count_label(day_type.date_count)}"
   end
 
-  defp date_count_label(1), do: "1 date"
-  defp date_count_label(count), do: "#{count} dates"
+  defp day_count_label(1), do: "1 day"
+  defp day_count_label(count), do: "#{count} days"
 
-  defp count_items(counts, peak) do
+  # The whole-day tiles. A tile that leads somewhere is an action; the rest are
+  # figures. Unassigned trips and Problems take a state colour while there is
+  # something to do and read as done, with a check, at zero.
+  defp summary_tiles(counts, peak) do
     [
-      %{key: "blocks", label: "Blocks", count: counts.blocks, tone: :neutral},
-      %{key: "unassigned", label: "Unassigned trips", count: counts.unassigned, tone: :info},
-      %{key: "problems", label: "Problems", count: counts.problems, tone: :error},
-      %{key: "notices", label: "Notices", count: counts.notices, tone: :warning},
-      %{key: "peak", label: "Peak vehicles out", count: peak.count, tone: :neutral}
+      %{
+        key: "blocks",
+        label: "Blocks",
+        count: counts.blocks,
+        tone: :neutral,
+        icon: "hero-rectangle-stack",
+        action?: false,
+        wide?: false,
+        detail: nil
+      },
+      unassigned_tile(counts.unassigned),
+      problems_tile(counts.problems),
+      %{
+        key: "notices",
+        label: "Notices",
+        count: counts.notices,
+        tone: :neutral,
+        icon: "hero-information-circle",
+        action?: false,
+        wide?: false,
+        detail: nil
+      },
+      %{
+        key: "peak",
+        label: "Peak vehicles out",
+        count: peak.count,
+        tone: :neutral,
+        icon: "hero-truck",
+        action?: true,
+        wide?: true,
+        detail: peak_detail(peak)
+      }
     ]
   end
 
-  defp peak_detail(%{at_secs: nil}), do: "No block is timed"
-
-  defp peak_detail(peak) do
-    "Peak at #{clock(peak.at_secs)} · excludes " <>
-      count_label(peak.excluded_unassigned, "unassigned trip", "unassigned trips") <>
-      " and " <> count_label(peak.excluded_frequency, "frequency trip", "frequency trips")
+  defp unassigned_tile(0) do
+    %{
+      key: "unassigned",
+      label: "Unassigned trips",
+      count: 0,
+      tone: :success,
+      icon: "hero-check-circle",
+      action?: false,
+      wide?: false,
+      detail: nil
+    }
   end
+
+  defp unassigned_tile(count) do
+    %{
+      key: "unassigned",
+      label: "Unassigned trips",
+      count: count,
+      tone: :info,
+      icon: "hero-inbox",
+      action?: true,
+      wide?: false,
+      detail: nil
+    }
+  end
+
+  defp problems_tile(0) do
+    %{
+      key: "problems",
+      label: "Problems",
+      count: 0,
+      tone: :success,
+      icon: "hero-check-circle",
+      action?: true,
+      wide?: false,
+      detail: nil
+    }
+  end
+
+  defp problems_tile(count) do
+    %{
+      key: "problems",
+      label: "Problems",
+      count: count,
+      tone: :error,
+      icon: "hero-exclamation-triangle",
+      action?: true,
+      wide?: false,
+      detail: nil
+    }
+  end
+
+  defp peak_detail(%{at_secs: nil}), do: "none timed"
+  defp peak_detail(peak), do: "at #{clock(peak.at_secs)}"
 
   defp count_label(1, singular, _plural), do: "1 #{singular}"
   defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
-  defp peak_headline(%{at_secs: nil} = peak), do: "#{peak.count} vehicles out"
-
-  defp peak_headline(peak), do: "#{peak.count} at #{clock(peak.at_secs)}"
-
   defp peak_chart_label(peak, bins, axis) do
     "Vehicles out per 15-minute bin, #{peak.count} at the peak. " <>
       "Chart covers #{clock(List.first(bins).start_secs)} to " <>
-      "#{clock(List.last(bins).start_secs + 900)} of the day type" <>
+      "#{clock(List.last(bins).start_secs + 900)} of the service day" <>
       if(axis,
-        do: " (whole day type #{clock(axis.start_secs)}–#{clock(axis.end_secs)})",
+        do: " (whole service day #{clock(axis.start_secs)}–#{clock(axis.end_secs)})",
         else: ""
       )
   end
@@ -2625,17 +3351,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp format_date(date), do: Calendar.strftime(date, "%d %b %Y")
 
-  defp severity_status(:error), do: "error"
-  defp severity_status(:warning), do: "warning"
-  defp severity_status(:notice), do: "info"
+  # A date inside its month's group: the weekday and the day of the month.
+  defp short_date(date), do: Calendar.strftime(date, "%a %-d")
 
-  defp code_label(:overlap), do: "Overlap"
-  defp code_label(:short_layover), do: "Short layover"
-  defp code_label(:in_seat_stale), do: "In-seat row"
-  defp code_label(:in_seat_unconfirmed), do: "Can't confirm"
-  defp code_label(:repositions), do: "Empty move"
-  defp code_label(:frequency_trip), do: "Frequency"
-  defp code_label(:unplottable), do: "Time missing"
+  # One finding code's operator word, tone and icon. The GTFS names stay in the
+  # drawers' muted detail.
+  defp code_meta(:overlap), do: %{label: "Overlap", tone: :error, icon: "hero-x-circle"}
+
+  defp code_meta(:short_layover),
+    do: %{label: "Short layover", tone: :warning, icon: "hero-exclamation-triangle"}
+
+  defp code_meta(:in_seat_stale),
+    do: %{label: "Stay-on-board mismatch", tone: :warning, icon: "hero-exclamation-triangle"}
+
+  defp code_meta(:in_seat_unconfirmed),
+    do: %{label: "Can't confirm", tone: :info, icon: "hero-information-circle"}
+
+  defp code_meta(:repositions),
+    do: %{label: "Deadhead", tone: :info, icon: "hero-arrow-up-right"}
+
+  defp code_meta(:frequency_trip),
+    do: %{label: "Repeating trip", tone: :info, icon: "hero-arrow-path"}
+
+  defp code_meta(:unplottable),
+    do: %{label: "Missing times", tone: :info, icon: "hero-question-mark-circle"}
+
+  defp code_label(code), do: code_meta(code).label
 
   defp finding_detail(%{code: :overlap, detail: %{overlap_secs: secs}}) do
     "Two trips in this block overlap by #{minutes(secs)}."
@@ -2646,76 +3387,94 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp finding_detail(%{code: :repositions, detail: detail}) do
-    "The vehicle moves empty: #{minutes(detail.gap_secs)} available, " <>
+    distance =
       case detail.meters do
-        nil -> "driving time unknown."
-        meters -> "#{meters} m between the stops."
+        nil -> ""
+        meters -> " about " <> distance_label(meters)
       end
+
+    "The vehicle drives empty#{distance} with #{minutes(detail.gap_secs)} available. " <>
+      "Driving time isn't recorded."
   end
 
   defp finding_detail(%{code: :frequency_trip, detail: %{headway_secs: secs}}) do
-    "Repeats every #{div(secs, 60)} min; individual vehicle work can't be checked here."
+    "Repeats every #{div(secs, 60)} min, so this view can't check the individual vehicle's work."
   end
 
   defp finding_detail(%{code: :unplottable}) do
-    "An endpoint time is missing, so this trip can't be plotted or assigned."
+    "A time is missing, so this trip can't be drawn or assigned."
   end
 
   defp finding_detail(%{code: code, detail: %{reason: reason}})
        when code in [:in_seat_stale, :in_seat_unconfirmed] do
-    in_seat_reason(reason) <> "."
+    in_seat_reason(reason)
   end
 
   defp finding_detail(_finding), do: "Review this finding."
 
-  defp in_seat_reason(:trip_missing), do: "A trip in this record isn't in this version"
+  defp distance_label(meters) when meters >= 1000,
+    do: :erlang.float_to_binary(meters / 1000, decimals: 1) <> " km"
 
-  defp in_seat_reason(:no_shared_date), do: "The trips share no date"
+  defp distance_label(meters), do: "#{meters} m"
+
+  defp in_seat_reason(:trip_missing), do: "A trip in this record isn't in this version."
+
+  defp in_seat_reason(:no_shared_date), do: "The two trips never run on the same day."
 
   defp in_seat_reason(:no_block),
-    do: "No block · Google ignores this record; riders see stay-on-board only from blocks"
+    do:
+      "A trip has no block. Google ignores the record; riders only see stay-on-board from blocks."
 
   defp in_seat_reason(:stops_changed),
-    do: "Stops changed · the record's stops are no longer these trips' end stops"
+    do: "The record's stops no longer match where these trips end and start."
 
   defp in_seat_reason({:not_next, failures}) do
-    "Not next on this vehicle on " <>
-      Enum.map_join(failures, "; ", &"#{&1.label}, #{&1.date_count} dates")
+    "Riders are told they can stay on board, but the second trip isn't next on this vehicle on " <>
+      Enum.map_join(failures, " or ", &"#{&1.label} (#{day_count_label(&1.date_count)})") <> "."
   end
 
   defp in_seat_reason(:next_service_day),
-    do: "Can't be confirmed in this view · next-service-day continuation"
+    do: "Can't be confirmed here: the second trip continues on the next service day."
 
   defp in_seat_reason(:untimed),
-    do: "Can't be confirmed in this view · missing or repeating times"
+    do: "Can't be confirmed here: a trip has missing or repeating times."
 
-  defp in_seat_reason(:coupling), do: "Can't be confirmed in this view · coupling record"
+  defp in_seat_reason(:coupling),
+    do: "Can't be confirmed here: the trips are coupled, not consecutive."
 
-  defp in_seat_reason(reason) when is_atom(reason),
-    do: "Can't be confirmed in this view · #{reason}"
+  defp in_seat_reason(reason) when is_atom(reason), do: "Can't be confirmed here: #{reason}."
 
   # The trip drawer's record list: every state's copy from the page's vocabulary,
   # with the match that has no warning and the two severities the badge tints.
-  defp in_seat_state_text(:matches), do: "Matches the block on all shared dates"
+  defp in_seat_state_text(:matches), do: "Matches the block on every shared day."
   defp in_seat_state_text({_state, reason}), do: in_seat_reason(reason)
 
   defp transfer_type_label(4), do: "Riders stay on board"
   defp transfer_type_label(_type), do: "Riders must get off and board again"
 
-  defp transfer_state_status(:matches), do: "completed"
-  defp transfer_state_status({:stale, _reason}), do: "warning"
-  defp transfer_state_status({:unconfirmed, _reason}), do: "info"
+  defp transfer_state_tone(:matches), do: :success
+  defp transfer_state_tone({:stale, _reason}), do: :warning
+  defp transfer_state_tone({:unconfirmed, _reason}), do: :info
 
   defp transfer_state_label(:matches), do: "Matches block"
   defp transfer_state_label({:stale, _reason}), do: "Needs review"
   defp transfer_state_label({:unconfirmed, _reason}), do: "Can't confirm"
 
-  defp frequency_text(%{headway_secs: secs}) do
-    "Repeats every #{div(secs, 60)} min; individual vehicle work can't be checked here. " <>
-      "An imported block can be removed."
-  end
+  defp frequency_title(%{headway_secs: secs}), do: "Repeats every #{div(secs, 60)} min."
 
   defp minutes(secs) when is_integer(secs), do: "#{div(secs, 60)} min"
+
+  # The trip drawer's title: when the trip leaves and where it is headed, which is
+  # what an operator calls it; a trip with no departure time falls back to its
+  # headsign or its ID.
+  defp trip_title(trip) do
+    case {is_integer(trip.first_departure), present(trip.trip_headsign)} do
+      {true, nil} -> clock(trip.first_departure)
+      {true, headsign} -> clock(trip.first_departure) <> " to " <> headsign
+      {false, nil} -> "Trip " <> trip.trip_id
+      {false, headsign} -> "Trip to " <> headsign
+    end
+  end
 
   # ── Timeline helpers ──
 
@@ -2731,20 +3490,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp filtered?(state), do: state.route != nil or state.status == :problems
 
   defp workspace_note(%{panel: :pool}, _filtered?) do
-    "Select trips using times and terminal connections. Frequency trips and missing times " <>
-      "require separate attention."
+    "Select trips to place them on one block, or assign them one at a time."
   end
 
   defp workspace_note(%{view: :list}, filtered?) do
-    "Select trips to move or remove their assignments. " <> whole_block_note(filtered?)
+    "Select trips to move them or take them off a block. " <> whole_block_note(filtered?)
   end
 
   defp workspace_note(_state, filtered?) do
-    "Select a trip, block ID, or gap to inspect. Use List for larger controls. " <>
+    "Select a bar, a block number or a gap for details. Use List for larger controls. " <>
       whole_block_note(filtered?)
   end
 
-  defp whole_block_note(true), do: "Checks cover each whole block; other routes are hidden."
+  defp whole_block_note(true),
+    do: "Checks cover each whole block, even when the route filter hides some of its trips."
+
   defp whole_block_note(false), do: "Checks cover each whole block."
 
   defp sort_columns do
@@ -2779,7 +3539,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     |> Enum.map(&{&1, &1 * @tick_secs * 100 / span})
     |> Enum.reject(fn {_index, left} -> left > @axis_label_max_percent end)
     |> Enum.map(fn {index, left} ->
-      %{style: "left: #{percent_value(left)}%", label: clock(start + index * @tick_secs)}
+      %{
+        first?: index == 0,
+        style: if(index == 0, do: nil, else: "left: #{percent_value(left)}%"),
+        label: clock(start + index * @tick_secs)
+      }
     end)
   end
 
@@ -2805,7 +3569,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       "width: #{percent(trip.last_arrival - trip.first_departure, span)}%"
   end
 
-  defp gap_geometry(gap, previous, axis) do
+  # A short layover is a fixed-width chip centred on its gap, so it stays legible
+  # however brief the gap; every other gap spans its own layover.
+  defp gap_geometry(gap, previous, axis, true) do
+    {start, span} = axis_geometry(axis)
+    center = previous.last_arrival - start + div(gap.gap_secs, 2)
+
+    "left: #{percent(center, span)}%; width: 18px; transform: translateX(-50%)"
+  end
+
+  defp gap_geometry(gap, previous, axis, false) do
     {start, span} = axis_geometry(axis)
 
     "left: #{percent(previous.last_arrival - start, span)}%; " <>
@@ -2866,18 +3639,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp visible?(_trip, nil), do: true
   defp visible?(trip, route_id), do: trip.route_id == route_id
 
-  defp status_label(%{status: :ok}), do: %{icon: "hero-check-mini", label: "No problems"}
+  # A block's status in the timeline's Status cell: its worst finding's word, tone
+  # and icon, or “No problems”.
+  defp status_label(%{status: :ok}),
+    do: %{icon: "hero-check-circle", label: "No problems", tone: :success}
 
   defp status_label(%{status_code: code}) do
-    %{icon: code_icon(code), label: code_label(code)}
+    meta = code_meta(code)
+    %{icon: meta.icon, label: meta.label, tone: meta.tone}
   end
-
-  # Copy: error, warning, empty move, other notices, none.
-  defp code_icon(:overlap), do: "hero-x-circle-mini"
-  defp code_icon(:short_layover), do: "hero-exclamation-triangle-mini"
-  defp code_icon(:in_seat_stale), do: "hero-exclamation-triangle-mini"
-  defp code_icon(:repositions), do: "hero-arrow-up-right-mini"
-  defp code_icon(_code), do: "hero-information-circle-mini"
 
   defp hours(nil), do: "—"
   defp hours(hours), do: :erlang.float_to_binary(hours * 1.0, decimals: 1)
@@ -2915,15 +3685,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp gtfs_time(nil), do: "—"
   defp gtfs_time(secs), do: GtfsTime.format(secs)
 
-  defp gap_title(%{handoff: {:moves, _}} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · the vehicle moves empty"
+  # A gap's hover text: how long it is and what kind of handoff it is.
+  defp gap_hover(%{handoff: {:moves, _}} = gap),
+    do: "#{minutes(gap.gap_secs)} gap · deadhead, the vehicle drives empty"
 
-  defp gap_title(%{handoff: :same_stop} = gap), do: "#{minutes(gap.gap_secs)} gap · same stop"
+  defp gap_hover(%{handoff: :same_stop} = gap), do: "#{minutes(gap.gap_secs)} gap · same stop"
 
-  defp gap_title(%{handoff: :same_station} = gap),
+  defp gap_hover(%{handoff: :same_station} = gap),
     do: "#{minutes(gap.gap_secs)} gap · same station"
 
-  defp gap_title(%{handoff: {:nearby, meters}} = gap),
+  defp gap_hover(%{handoff: {:nearby, meters}} = gap),
     do: "#{minutes(gap.gap_secs)} gap · nearby stop, #{meters} m"
 
   defp handoff_key(:same_stop), do: "same_stop"
@@ -2933,7 +3704,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   # --- the assignment form and the review (step 25) --------------------------
 
-  # The picker's status line: how many of the day type's block IDs the search
+  # The picker's status line: how many of the service day's block IDs the search
   # matched, and whether the 25-entry cap cut the list (AC-26).
   defp destination_summary(options, total) do
     count = length(options)
@@ -2946,7 +3717,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   # An ineligible trip is named with its own reason rather than silently dropped
-  # (FH-18). The selection scope gets its own callout and one line per trip,
+  # (FH-18). The selection scope gets its own message and one line per trip,
   # because a bulk selection can hold several reasons at once (AC-24).
   defp ineligible_trips(%{ineligible: ids, trips: trips}),
     do: Enum.filter(trips, &(&1.id in ids))
@@ -2964,8 +3735,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     end
   end
 
-  # The bulk callout's per-trip reason: the rule that refused it, in the pool's
-  # own words (“repeats” for a frequency trip, “time missing” for one whose
+  # The bulk message's per-trip reason: the rule that refused it, in the pool's
+  # own words (“repeats” for a repeating trip, “time missing” for one whose
   # endpoint time is missing).
   defp bulk_ineligibility_reason(%{frequency?: true} = trip),
     do: "repeats every #{div(trip.headway_secs, 60)} min"
@@ -2983,6 +3754,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     do: "Assign " <> count_label(length(changes), "trip", "trips")
 
   defp confirm_label(_review), do: "Save changes"
+
+  # The cancel action names the way back to the form the review came from.
+  defp cancel_label(%{command: {:rename, _source, _target}}), do: "Change name"
+  defp cancel_label(%{command: {:unassign, _ids}}), do: "Keep trips"
+  defp cancel_label(_review), do: "Change block"
 
   defp effect_sentence(effect, review) do
     count = length(effect.changed_trip_ids)

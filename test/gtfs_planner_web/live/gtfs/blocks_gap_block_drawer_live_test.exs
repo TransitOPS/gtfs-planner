@@ -153,17 +153,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       assert_patch(view, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "Time between trips")
+      assert has_element?(view, "#gap-drawer", "12 min between trips")
       assert has_element?(view, "#gap-drawer", "Block 101 · a → b")
-      assert has_element?(view, "#gap-drawer", "Arrival")
+      assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "07:00")
-      assert has_element?(view, "#gap-drawer", "Departure")
+      assert has_element?(view, "#gap-drawer", "Next trip departs")
       assert has_element?(view, "#gap-drawer", "07:12")
       assert has_element?(view, "#gap-drawer", "Main St")
       assert has_element?(view, "#gap-text", "12 min layover at Main St")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)
-      assert has_element?(view, "#gap-transfers", "Transfer records · 0")
+      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 0")
 
       # Each trip's own drawer is one click away with the block context kept.
       assert attribute_values(view, "#gap-drawer [data-role='gap-inspect']", "phx-value-trip") ==
@@ -287,13 +287,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       # short layover and the callout stays an info one.
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "Time between trips")
+      assert has_element?(view, "#gap-drawer", "6 min between trips")
       assert has_element?(view, "#gap-text", "Nearby stop · 120 m · 6 min available")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)
     end
 
-    test "an empty move has no rider note and says the driving time is unknown",
+    test "a deadhead has no rider note and says the driving time is not recorded",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
 
@@ -343,14 +343,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert has_element?(
                view,
                "#gap-text",
-               "Moves empty: Riverside → North End. Driving time is unknown."
+               "Deadhead from Riverside to North End. Driving time isn't recorded."
              )
 
       assert has_element?(view, "#gap-text[data-short='false']")
       refute has_element?(view, "#gap-rider-note")
     end
 
-    test "an empty move without coordinates says so", %{version: version} = context do
+    test "a deadhead without coordinates says so", %{version: version} = context do
       calendar(context, "WK", "Weekday")
 
       main =
@@ -395,7 +395,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert has_element?(
                view,
                "#gap-text",
-               "Moves empty: Riverside → Depot. Driving time is unknown (coordinates unavailable)."
+               "Deadhead from Riverside to Depot. Driving time isn't recorded (no coordinates)."
              )
 
       refute has_element?(view, "#gap-rider-note")
@@ -508,7 +508,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-transfers", "Transfer records · 1")
+      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 1")
 
       assert has_element?(
                view,
@@ -519,7 +519,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert has_element?(
                view,
                "#gap-transfers [data-role='gap-transfer-state']",
-               "Matches the block on all shared dates"
+               "Matches the block on every shared day."
              )
 
       refute has_element?(view, "#gap-transfers", "Trip a → c")
@@ -587,7 +587,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
                "Inspect"
              )
 
-      assert has_element?(view, "#block-drawer [data-role='trip-issues']", "Time missing")
+      assert has_element?(view, "#block-drawer [data-role='trip-issues']", "Missing times")
       assert has_element?(view, "#block-drawer", "Main St → Main St")
     end
 
