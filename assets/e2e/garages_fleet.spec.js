@@ -594,6 +594,7 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await page.goto(`/gtfs/${versionId}/settings/garages`);
     await expect(page.locator("h1")).toContainText("Garages");
+    await waitForLiveView(page);
 
     const garageTrigger = (await page.locator("#add-garage").count())
       ? "add-garage"
@@ -611,6 +612,7 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
+    await waitForLiveView(page);
 
     const fleetTrigger = (await page.locator("#add-vehicles-header").count())
       ? "add-vehicles-header"
