@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.ResultComponents do
   """
   attr :tone, :string, values: @tone_values, required: true
   attr :icon, :string, default: nil, doc: "a hero icon name that replaces the tone's own icon"
+  attr :class, :any, default: nil, doc: "layout classes for the badge's place in its row"
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -81,7 +82,8 @@ defmodule GtfsPlannerWeb.ResultComponents do
     <span
       class={[
         "inline-flex items-center gap-1.5 rounded-badge px-2 py-1 text-[13px] font-semibold",
-        @t.badge
+        @t.badge,
+        @class
       ]}
       data-tone={@tone}
       {@rest}

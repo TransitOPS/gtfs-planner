@@ -180,6 +180,23 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   def decimal_to_float(f) when is_float(f), do: f
   def decimal_to_float(i) when is_integer(i), do: i / 1
 
+  @doc """
+  Formats a duration in seconds the way a person says it: `"40 s"`, `"6 min"`,
+  `"5 min 58 s"`. Fractions of a second are rounded.
+  """
+  @spec format_duration(number()) :: String.t()
+  def format_duration(seconds) when is_number(seconds) do
+    total = round(seconds)
+    minutes = div(total, 60)
+    rest = rem(total, 60)
+
+    cond do
+      minutes == 0 -> "#{rest} s"
+      rest == 0 -> "#{minutes} min"
+      true -> "#{minutes} min #{rest} s"
+    end
+  end
+
   # Private helpers
 
   defp deg_to_rad(deg), do: deg * :math.pi() / 180.0

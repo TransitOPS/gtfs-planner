@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   """
 
   alias GtfsPlanner.Gtfs.{Graph, Pathway, Stop}
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
   alias GtfsPlanner.Routing.PathwayTraversal
 
   @long_route_threshold 300
@@ -705,8 +706,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
           mode_name = String.downcase(step.mode || "unknown")
 
           [
-            "Route time of #{round(totals.time_seconds)}s exceeds the threshold. " <>
-              "The #{mode_name} at step #{step.num} accounts for #{round(step.time)}s " <>
+            "Route time of #{Helpers.format_duration(totals.time_seconds)} exceeds the threshold. " <>
+              "The #{mode_name} at step #{step.num} accounts for #{Helpers.format_duration(step.time)} " <>
               "of total traversal time; check whether traversal_time is set correctly on this pathway."
           ]
       end

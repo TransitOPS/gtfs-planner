@@ -25,6 +25,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   import GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
   import GtfsPlannerWeb.Gtfs.StationReport2Components
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.StationWorkspace, only: [station_header: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
@@ -54,7 +56,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
     {:ok,
      socket
-     |> assign(:page_title, "Station Report")
+     |> assign(:page_title, "Station report")
      |> assign(:user_roles, user_roles)
      |> assign(:stop_id, nil)
      |> assign(:generation, 0)
@@ -555,70 +557,91 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.station_sub_nav
-          :if={@station}
-          station={@station}
+        <%!-- The header needs only the version and the stop id, so it renders while
+              the report loads or fails and the station tabs stay reachable. --%>
+        <.station_header
+          title={station_title(@station, @stop_id)}
+          stop_id={@stop_id}
           gtfs_version_id={@current_gtfs_version.id}
           active_tab={:report}
-        />
+        >
+          <:meta :if={@model}>Station · {station_facts(@model)}</:meta>
+        </.station_header>
       </:sub_header>
 
-      <div id="station-report-2" class="space-y-6">
-        <.report_status state={@view_state} reason={@refresh_reason} error={@report_error} />
+      <div class="ds-page">
+        <div id="station-report-2" class="space-y-6">
+          <.report_status state={@view_state} reason={@refresh_reason} error={@report_error} />
 
-        <%= if @model do %>
-          <.report_toc station_name={@station.stop_name || @station.stop_id} model={@model}>
-            <.button
-              id="report-expand-all"
-              variant="secondary"
-              data-report-control
-              phx-click="toggle_expand_all"
-              aria-expanded={to_string(@all_expanded)}
-              aria-controls="station-report-2"
-              class="print:hidden min-h-11"
-            >
-              <.icon
-                name={
-                  if @all_expanded, do: "hero-arrows-pointing-in", else: "hero-arrows-pointing-out"
-                }
-                class="size-3.5"
-              />
-              {if @all_expanded, do: "Collapse all", else: "Expand all"}
-            </.button>
-          </.report_toc>
-          <.station_inventory_section report={@model.snapshot} />
-          <.data_quality_section
-            items={@model.data_quality_items}
-            section="data-quality"
-            expanded={@expanded_checks}
-          />
-          <.gps_checks_section items={@model.gps_items} section="gps" expanded={@expanded_checks} />
-          <.naming_conventions_section
-            checks={@model.naming_convention_checks}
-            expanded={@expanded_checks}
-          />
-          <.reachability_connectivity_section
-            connectivity_summaries={@model.connectivity_summaries}
-            connectivity_route_details={@model.connectivity_route_details}
-            connectivity_routes={@model.connectivity_routes}
-            expanded_sources={@expanded_sources}
-            expanded_route_keys={@expanded_route_keys}
-          />
-          <.pathway_field_completeness_section groups={@model.pathway_field_completeness_groups} />
-        <% end %>
+          <%= if @model do %>
+            <.report_summary station_name={@station.stop_name || @station.stop_id} model={@model}>
+              <.button
+                id="report-expand-all"
+                variant="secondary"
+                data-report-control
+                phx-click="toggle_expand_all"
+                aria-expanded={to_string(@all_expanded)}
+                aria-controls="station-report-2"
+                class="print:hidden min-h-11"
+              >
+                <.icon
+                  name={
+                    if @all_expanded,
+                      do: "hero-arrows-pointing-in",
+                      else: "hero-arrows-pointing-out"
+                  }
+                  class="size-4"
+                />
+                {if @all_expanded, do: "Collapse all", else: "Expand all"}
+              </.button>
+            </.report_summary>
+            <.data_quality_section
+              items={@model.data_quality_items}
+              section="data-quality"
+              expanded={@expanded_checks}
+            />
+            <.reachability_connectivity_section
+              connectivity_summaries={@model.connectivity_summaries}
+              connectivity_route_details={@model.connectivity_route_details}
+              connectivity_routes={@model.connectivity_routes}
+              expanded_sources={@expanded_sources}
+              expanded_route_keys={@expanded_route_keys}
+            />
+            <.gps_checks_section items={@model.gps_items} section="gps" expanded={@expanded_checks} />
+            <.pathway_field_completeness_section groups={@model.pathway_field_completeness_groups} />
+            <.naming_conventions_section
+              checks={@model.naming_convention_checks}
+              expanded={@expanded_checks}
+            />
+            <.station_inventory_section report={@model.snapshot} />
+          <% end %>
+        </div>
+
+        <.entity_drawer
+          drawer_entity={@drawer_entity}
+          drawer_entity_id={@drawer_entity_id}
+          drawer_form={@drawer_form}
+          drawer_error={@drawer_error}
+          drawer_levels={@drawer_levels}
+          drawer_return_focus_id={@drawer_return_focus_id}
+        />
       </div>
-
-      <.entity_drawer
-        drawer_entity={@drawer_entity}
-        drawer_entity_id={@drawer_entity_id}
-        drawer_form={@drawer_form}
-        drawer_error={@drawer_error}
-        drawer_levels={@drawer_levels}
-        drawer_return_focus_id={@drawer_return_focus_id}
-      />
     </Layouts.app>
     """
   end
+
+  # The station's name once its record is known, its stop id before that.
+  defp station_title(nil, stop_id), do: stop_id
+  defp station_title(station, stop_id), do: station.stop_name || stop_id
+
+  # The facts the workspace header adds once the report has loaded.
+  defp station_facts(%{snapshot: %{levels: levels, child_stops: child_stops}}) do
+    "#{pluralize(length(levels), "level", "levels")} · " <>
+      "#{pluralize(length(child_stops), "stop or node", "stops and nodes")} inside"
+  end
+
+  defp pluralize(1, one, _many), do: "1 #{one}"
+  defp pluralize(count, _one, many), do: "#{count} #{many}"
 
   attr :state, :atom, required: true
   attr :reason, :atom, default: nil
@@ -631,24 +654,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   defp report_status(assigns) do
     ~H"""
     <div id="report-status" data-role="report-status" data-state={@state} class="print:hidden">
-      <.skeleton :if={@state == :initial_loading} rows={6} label="Loading report…" />
+      <.report_skeleton :if={@state == :initial_loading} />
 
       <div
         :if={@state == :refreshing}
-        class="flex items-center gap-2 border border-base-300 px-4 py-3 text-sm"
+        role="status"
+        class="flex items-center gap-3 rounded-control bg-soft px-4 py-3 text-sm font-bold text-cyan-800"
       >
-        <.icon name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
+        <.icon name="hero-arrow-path" class="size-5 shrink-0 text-cyan-700 motion-safe:animate-spin" />
         <span>{refresh_label(@reason)}</span>
       </div>
 
-      <.callout :if={@state == :error} kind="error" title={error_title(@error)}>
+      <.message :if={@state == :error} kind="error" title={error_title(@error)}>
         {error_body(@error)}
-        <div class="mt-3">
-          <.button id="report-retry" type="button" phx-click="retry_report" size="sm">
+        <:action>
+          <.button id="report-retry" type="button" phx-click="retry_report" class="min-h-11">
             Retry report
           </.button>
+        </:action>
+      </.message>
+    </div>
+    """
+  end
+
+  # First paint only: it mirrors the summary card and the first two section
+  # cards, so the page does not jump when the report arrives.
+  defp report_skeleton(assigns) do
+    ~H"""
+    <div role="status">
+      <p class="text-sm text-muted">Loading report…</p>
+      <div aria-hidden="true" class="mt-4 space-y-6 motion-safe:animate-pulse">
+        <div class="space-y-3 rounded-card border border-subtle bg-white px-6 py-6">
+          <div class="h-6 w-56 rounded-control bg-navy-100"></div>
+          <div class="h-4 w-80 max-w-full rounded-control bg-navy-100"></div>
+          <div class="h-4 w-64 max-w-full rounded-control bg-navy-100"></div>
         </div>
-      </.callout>
+        <div
+          :for={_section <- 1..2}
+          class="overflow-clip rounded-card border border-subtle bg-white"
+        >
+          <div class="space-y-2 border-b border-subtle bg-canvas px-6 py-4">
+            <div class="h-5 w-48 rounded-control bg-navy-100"></div>
+            <div class="h-4 w-72 max-w-full rounded-control bg-navy-100"></div>
+          </div>
+          <div :for={_row <- 1..3} class="flex gap-5 border-b border-subtle px-6 py-4 last:border-b-0">
+            <div class="h-6 w-24 shrink-0 rounded-badge bg-navy-100"></div>
+            <div class="flex-1 space-y-2">
+              <div class="h-4 w-2/3 rounded-control bg-navy-100"></div>
+              <div class="h-4 w-1/2 rounded-control bg-navy-100"></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     """
   end

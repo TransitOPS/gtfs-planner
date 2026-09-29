@@ -3,6 +3,28 @@ defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
 
   alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
+  describe "format_duration/1" do
+    test "reads under a minute in seconds" do
+      assert Helpers.format_duration(40) == "40 s"
+    end
+
+    test "drops the seconds of a whole number of minutes" do
+      assert Helpers.format_duration(360) == "6 min"
+    end
+
+    test "reads minutes and seconds together" do
+      assert Helpers.format_duration(358) == "5 min 58 s"
+    end
+
+    test "rounds a fraction of a second" do
+      assert Helpers.format_duration(59.6) == "1 min"
+    end
+
+    test "reads zero as 0 s" do
+      assert Helpers.format_duration(0) == "0 s"
+    end
+  end
+
   describe "haversine/4" do
     test "returns ~111,195m for one equatorial degree of longitude" do
       distance = Helpers.haversine(0.0, 0.0, 0.0, 1.0)

@@ -1880,6 +1880,18 @@ dialog[role="alertdialog"][open] > div > div {
   }
 }
 
+/* ── station-report (design system) ──
+   `#station-report-2` reads the design system's status inks through daisyUI's
+   semantic tokens, so the shared count strip and the accessibility facts inside
+   it paint Problem, Suggestion, Note and Passed in the same colours as the
+   report's own badges. */
+#station-report-2 {
+  --color-success: var(--color-success-fg);
+  --color-warning: var(--color-warning-fg);
+  --color-error: var(--color-error-fg);
+  --color-info: var(--color-info-fg);
+}
+
 /* The vehicle drawer's mode switch draws its radios as `.sr-only` and shows the
    labels instead, so the browser's focus ring would land on a clipped 1px box.
    Mirror it inside the segment, because the joined control clips an outer ring:

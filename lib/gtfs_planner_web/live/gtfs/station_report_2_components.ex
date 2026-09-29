@@ -8,11 +8,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   ## Presentation contracts
 
-    * One H1 (the station) and six peer H2 sections; card and group titles are
-      H3/H4 so the outline stays a real hierarchy.
-    * Status is always a word plus a semantic token, never a literal palette
-      colour and never colour alone. Badges come from
-      `CoreComponents.status_badge/1`; accessibility facts come from
+    * The station's H1 lives in the workspace header (`StationWorkspace`); this
+      module renders a print-only copy so a printed report still names its
+      station. Six peer H2 sections follow; card and group titles are H3/H4 so
+      the outline stays a real hierarchy.
+    * Status is always a word plus an icon and a semantic token, never a literal
+      palette colour and never colour alone, and it uses the words the
+      validation pages use: Problem, Suggestion, Note, Passed. Naming and ID
+      conventions are house style rather than GTFS rules, so a failed naming
+      check reads as a Suggestion. Accessibility facts come from
       `TransitPresentation` so their three-state meaning survives.
     * Counts come from `CoreComponents.count_strip/1`. The component owns the
       structure; this module owns every label, tone, and number.
@@ -27,46 +31,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   import GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents
 
-  import GtfsPlannerWeb.CoreComponents,
-    only: [icon: 1, status_badge: 1, callout: 1, empty_state: 1, count_strip: 1, metric: 1]
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1, count_strip: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
 
   alias GtfsPlanner.Gtfs.{Pathway, Stop}
   alias GtfsPlanner.Gtfs.StationReport2.Outcome
 
-  @toc_sections [
-    %{
-      id: "report2-station-inventory",
-      label: "Station Inventory",
-      desc:
-        "Node counts by location type, edge counts by pathway mode, directionality, and levels."
-    },
-    %{
-      id: "report2-data-quality",
-      label: "Data Quality",
-      desc:
-        "Structural checks for orphaned nodes, duplicate IDs, missing parents, and required children."
-    },
-    %{
-      id: "report2-gps-checks",
-      label: "GPS",
-      desc: "Coordinate presence, longitude sign consistency, entrance distance, and clustering."
-    },
-    %{
-      id: "report2-naming-conventions",
-      label: "Naming & ID Conventions",
-      desc:
-        "Title case, ID prefix conventions, prefix/type alignment, and auto-generated name detection."
-    },
-    %{
-      id: "report2-reachability-connectivity",
-      label: "Reachability & Connectivity",
-      desc: "Pathway connectivity between entrances, platforms, and exits."
-    },
-    %{
-      id: "report2-pathway-field-completeness",
-      label: "Pathway Field Completeness",
-      desc: "Fill rates for optional pathway fields like traversal time, stair count, and slope."
-    }
+  # Problems come first, so the sections read in the order a reader would fix
+  # them: getting through the station, then where things are, then how complete
+  # the details are, then naming, and last what the station contains.
+  @sections [
+    %{id: "report2-data-quality", label: "Data quality"},
+    %{id: "report2-reachability-connectivity", label: "Routes riders can take"},
+    %{id: "report2-gps-checks", label: "Stop locations"},
+    %{id: "report2-pathway-field-completeness", label: "Pathway details"},
+    %{id: "report2-naming-conventions", label: "Names and IDs"},
+    %{id: "report2-station-inventory", label: "What's in this station"}
   ]
 
   @collapsible_detail_layouts [:stop_ids, :stop_ids_with_dots, :stop_ids_with_reasons]
@@ -125,67 +106,148 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp expanded?(nil, _key), do: false
   defp expanded?(set, key), do: MapSet.member?(set, key)
 
+  # -- Severity vocabulary ---------------------------------------------------
+
+  # The word, tone and plural a check outcome reads as. A naming check that
+  # fails is a house-style suggestion, not a GTFS problem, so its outcome is
+  # mapped before it is displayed or counted.
+  defp naming_severity(:fail), do: :warn
+  defp naming_severity(status), do: status
+
+  defp severity_word(:pass), do: "Passed"
+  defp severity_word(:fail), do: "Problem"
+  defp severity_word(:warn), do: "Suggestion"
+  defp severity_word(_other), do: "Note"
+
+  defp severity_tone(:pass), do: "success"
+  defp severity_tone(:fail), do: "error"
+  defp severity_tone(:warn), do: "warning"
+  defp severity_tone(_other), do: "info"
+
+  defp with_naming_severity(checks) do
+    Enum.map(checks, &%{&1 | status: naming_severity(&1.status)})
+  end
+
+  # The report owns this vocabulary; `count_strip/1` owns only the structure.
+  defp outcome_items(counts) do
+    [
+      %{key: "problems", label: "Problems", count: counts.failed, tone: :error},
+      %{key: "suggestions", label: "Suggestions", count: counts.warnings, tone: :warning},
+      %{key: "notes", label: "Notes", count: counts.info, tone: :info},
+      %{key: "passed", label: "Passed", count: counts.passed, tone: :success}
+    ]
+  end
+
   # -- Report header ---------------------------------------------------------
 
   attr :station_name, :string, required: true
   attr :model, :map, default: nil
   slot :inner_block
 
-  @doc "Renders the report identity, outcome counts, and section index."
-  def report_toc(assigns) do
+  @doc "Renders the outcome counts, the honest limit of the checks, and the section index."
+  def report_summary(assigns) do
     assigns =
       assigns
-      |> assign(:sections, @toc_sections)
+      |> assign(:sections, @sections)
       |> assign(:outcome_items, outcome_count_items(assigns[:model]))
 
     ~H"""
-    <div class="mb-8 space-y-4">
-      <div class="flex flex-wrap items-start justify-between gap-4">
+    <div id="report-summary" class="overflow-clip rounded-card border border-subtle bg-white">
+      <div class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 px-5 py-5 sm:px-6">
         <div class="min-w-0">
-          <p class="hidden text-sm text-base-content/70 print:block">Pathways report</p>
-          <h1 class="text-2xl font-semibold break-words">{@station_name}</h1>
-          <p class="mt-1 text-sm text-base-content/70">
+          <%!-- The workspace header carries the station's name on screen and is
+                not printed, so print gets its own title. --%>
+          <p class="hidden text-sm text-muted print:block">Pathways report</p>
+          <h1 class="hidden break-words font-display text-2xl font-semibold text-strong print:block">
+            {@station_name}
+          </h1>
+          <p class="font-display text-[24px] font-semibold leading-tight tracking-[-0.025em] text-strong">
+            What the checks found
+          </p>
+          <p class="mt-1.5 text-sm text-muted">
             Station structure, data quality, and connectivity checks
           </p>
         </div>
         {render_slot(@inner_block)}
       </div>
 
-      <.count_strip id="report-outcome-counts" items={@outcome_items} />
+      <div class="border-t border-subtle px-5 py-4 sm:px-6">
+        <.count_strip id="report-outcome-counts" items={@outcome_items} />
+      </div>
 
-      <nav aria-label="Report sections">
-        <ol class="space-y-1">
-          <li :for={section <- @sections} class="text-sm">
+      <nav aria-label="Report sections" class="border-t border-subtle px-5 py-2 sm:px-6 print:hidden">
+        <ol class="flex flex-wrap gap-x-6">
+          <li :for={section <- @sections}>
             <a
               href={"##{section.id}"}
-              class="font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              class={[
+                "inline-flex min-h-11 items-center text-sm font-[650] text-action no-underline",
+                "hover:text-action-hover hover:underline",
+                "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+              ]}
             >
               {section.label}
             </a>
-            <span class="text-base-content/70">{" · " <> section.desc}</span>
           </li>
         </ol>
       </nav>
+
+      <p class="border-t border-subtle bg-canvas px-5 py-3 text-[13px] text-muted sm:px-6">
+        Checks find gaps and contradictions in the data. They can't confirm it matches the station as built.
+      </p>
     </div>
     """
   end
 
-  # The report owns this vocabulary; `count_strip/1` owns only the structure.
   defp outcome_count_items(nil), do: outcome_items(Outcome.counts([]))
 
   defp outcome_count_items(model) do
-    (model.data_quality_items ++ model.gps_items ++ model.naming_convention_checks)
+    (model.data_quality_items ++
+       model.gps_items ++ with_naming_severity(model.naming_convention_checks))
     |> Outcome.counts()
     |> outcome_items()
   end
 
-  defp outcome_items(counts) do
-    [
-      %{key: "passed", label: "Passed", count: counts.passed, tone: :success},
-      %{key: "warnings", label: "Warnings", count: counts.warnings, tone: :warning},
-      %{key: "failed", label: "Failed", count: counts.failed, tone: :error},
-      %{key: "info", label: "Info", count: counts.info, tone: :neutral}
-    ]
+  # -- Section frame ---------------------------------------------------------
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :description, :string, required: true
+  slot :counts, doc: "a count strip that sums up the section"
+  slot :inner_block, required: true
+
+  # One card per section: a tinted band that names the section and what it
+  # asks, then the evidence. The section owns its H2.
+  defp report_section(assigns) do
+    ~H"""
+    <section id={@id} class="scroll-mt-4 overflow-clip rounded-card border border-subtle bg-white">
+      <div class="border-b border-subtle bg-canvas px-5 py-4 sm:px-6">
+        <h2 class="font-display text-[20px] font-semibold leading-tight tracking-[-0.02em] text-strong">
+          {@title}
+        </h2>
+        <p class="mt-1 text-[13px] text-muted">{@description}</p>
+        <div :if={@counts != []} class="mt-3">{render_slot(@counts)}</div>
+      </div>
+      {render_slot(@inner_block)}
+    </section>
+    """
+  end
+
+  attr :title, :string, required: true
+  attr :rest, :global
+  slot :inner_block
+
+  # What a region says when its data is missing: what is absent, and why nothing
+  # appears. It sits inside a section card, so it draws no border of its own.
+  defp report_empty(assigns) do
+    ~H"""
+    <div class="px-5 py-8 text-center sm:px-6" {@rest}>
+      <p class="font-bold text-strong">{@title}</p>
+      <p :if={@inner_block != []} class="mx-auto mt-1 max-w-[52ch] text-sm text-muted">
+        {render_slot(@inner_block)}
+      </p>
+    </div>
+    """
   end
 
   # -- Station inventory -----------------------------------------------------
@@ -196,69 +258,97 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     assigns = assign(assigns, :inventory, compute_inventory(assigns.report))
 
     ~H"""
-    <section id="report2-station-inventory" class="scroll-mt-4">
-      <h2 class="text-xl font-semibold">Station Inventory</h2>
-
-      <div class="mt-3 space-y-6">
+    <.report_section
+      id="report2-station-inventory"
+      title="What's in this station"
+      description="Counts of what the station contains. Compare them with the real station."
+    >
+      <div class="grid gap-6 px-5 py-5 sm:px-6">
         <div>
-          <h3 class="text-sm font-semibold">Node inventory by location type</h3>
-          <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-            <.metric :for={item <- @inventory.node_counts} value={item.count} label={item.label} />
+          <h3 class="text-sm font-bold text-strong">Node inventory by location type</h3>
+          <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <.stat_tile :for={item <- @inventory.node_counts} value={item.count} label={item.label} />
           </div>
         </div>
 
         <div>
-          <h3 class="text-sm font-semibold">Edge inventory by pathway mode</h3>
-          <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-            <.metric :for={item <- @inventory.edge_counts} value={item.count} label={item.label} />
+          <h3 class="text-sm font-bold text-strong">Edge inventory by pathway mode</h3>
+          <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+            <.stat_tile :for={item <- @inventory.edge_counts} value={item.count} label={item.label} />
           </div>
         </div>
 
         <div>
-          <h3 class="text-sm font-semibold">Pathway directionality</h3>
-          <div class="mt-2 grid max-w-md grid-cols-2 gap-2">
-            <.metric value={@inventory.directionality.bidirectional} label="Bidirectional" />
-            <.metric value={@inventory.directionality.unidirectional} label="Unidirectional" />
+          <h3 class="text-sm font-bold text-strong">Pathway directionality</h3>
+          <div class="mt-2 grid max-w-md grid-cols-2 gap-3">
+            <.stat_tile value={@inventory.directionality.bidirectional} label="Bidirectional" />
+            <.stat_tile value={@inventory.directionality.unidirectional} label="Unidirectional" />
           </div>
         </div>
+      </div>
 
-        <.empty_state
+      <div class="border-t border-subtle">
+        <.report_empty
           :if={@inventory.levels == []}
           id="report2-levels-empty"
           title="No levels defined"
         >
           Level count, names, and indices appear here once the station's stops reference level records.
-        </.empty_state>
+        </.report_empty>
 
-        <div :if={@inventory.levels != []} class="rounded-box border border-base-300 bg-base-100">
-          <h3 class="border-b border-base-300 px-4 py-2 text-sm font-semibold">
+        <div :if={@inventory.levels != []}>
+          <h3 class="px-5 pt-4 text-sm font-bold text-strong sm:px-6">
             Level count, names, and indices
           </h3>
-          <.table_region label="Levels">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="border-b border-base-300">
-                  <.column_header>Level</.column_header>
-                  <.column_header>Name</.column_header>
-                  <.column_header align="right">Index</.column_header>
-                  <.column_header align="right">Nodes</.column_header>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-base-300">
-                <tr :for={level <- @inventory.levels}>
-                  <td class="px-3 py-2 font-mono break-words">{level.level_id}</td>
-                  <td class="px-3 py-2 break-words">{level.level_name || "—"}</td>
-                  <td class="px-3 py-2 text-right tabular-nums">
-                    {format_level_index(level.level_index)}
-                  </td>
-                  <td class="px-3 py-2 text-right font-medium tabular-nums">{level.node_count}</td>
-                </tr>
-              </tbody>
-            </table>
-          </.table_region>
+          <div class="mt-2">
+            <.table_region label="Levels">
+              <table class="w-full text-sm">
+                <thead class="bg-canvas">
+                  <tr class="border-y border-subtle">
+                    <.column_header>Level</.column_header>
+                    <.column_header>Name</.column_header>
+                    <.column_header align="right">Index</.column_header>
+                    <.column_header align="right">Nodes</.column_header>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-subtle">
+                  <tr :for={level <- @inventory.levels}>
+                    <td class="break-words px-4 py-2.5 font-mono sm:px-6">{level.level_id}</td>
+                    <td class="break-words px-4 py-2.5">{level.level_name || "—"}</td>
+                    <td class="px-4 py-2.5 text-right tabular-nums">
+                      {format_level_index(level.level_index)}
+                    </td>
+                    <td class="px-4 py-2.5 text-right font-bold tabular-nums text-strong sm:px-6">
+                      {level.node_count}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </.table_region>
+          </div>
         </div>
       </div>
-    </section>
+    </.report_section>
+    """
+  end
+
+  attr :value, :any, required: true
+  attr :label, :string, required: true
+
+  # One prominent figure and what it counts. The caller owns both strings.
+  defp stat_tile(assigns) do
+    ~H"""
+    <div data-role="metric" class="rounded-control border border-subtle px-4 py-3">
+      <div
+        data-role="metric-value"
+        class="font-display text-[28px] font-semibold leading-none tabular-nums text-strong"
+      >
+        {@value}
+      </div>
+      <div data-role="metric-label" class="mt-1.5 break-words text-[13px] text-muted">
+        {@label}
+      </div>
+    </div>
     """
   end
 
@@ -322,7 +412,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <.check_section
       id="report2-data-quality"
-      title="Data Quality"
+      title="Data quality"
+      description="Can riders reach every platform, and is each stop filed under the right place? Includes accessibility settings and duplicate IDs."
       counts_id="data-quality-counts"
       empty_title="No data quality checks ran"
       empty_body="Structural checks appear here once the station snapshot can be evaluated."
@@ -341,7 +432,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <.check_section
       id="report2-gps-checks"
-      title="GPS"
+      title="Stop locations"
+      description="Does every stop have coordinates, and are they in the right place?"
       counts_id="gps-counts"
       empty_title="No GPS checks ran"
       empty_body="Coordinate checks appear here once the station has stops to evaluate."
@@ -354,6 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :id, :string, required: true
   attr :title, :string, required: true
+  attr :description, :string, required: true
   attr :counts_id, :string, required: true
   attr :empty_title, :string, required: true
   attr :empty_body, :string, required: true
@@ -365,25 +458,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     assigns = assign(assigns, :count_items, outcome_items(Outcome.counts(assigns.items)))
 
     ~H"""
-    <section id={@id} class="scroll-mt-4">
-      <h2 class="text-xl font-semibold">{@title}</h2>
-      <.count_strip id={@counts_id} items={@count_items} class="mt-2" />
+    <.report_section id={@id} title={@title} description={@description}>
+      <:counts><.count_strip id={@counts_id} items={@count_items} /></:counts>
 
-      <.empty_state :if={@items == []} id={"#{@id}-empty"} title={@empty_title} class="mt-3">
+      <.report_empty :if={@items == []} id={"#{@id}-empty"} title={@empty_title}>
         {@empty_body}
-      </.empty_state>
+      </.report_empty>
 
-      <div :if={@items != []} class="mt-3 rounded-box border border-base-300 bg-base-100">
-        <div class="divide-y divide-base-300">
-          <.report_check_row
-            :for={item <- @items}
-            item={item}
-            section={@section}
-            expanded={@expanded}
-          />
-        </div>
+      <div :if={@items != []} class="divide-y divide-subtle">
+        <.report_check_row :for={item <- @items} item={item} section={@section} expanded={@expanded} />
       </div>
-    </section>
+    </.report_section>
     """
   end
 
@@ -400,15 +485,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       |> assign(:open?, expanded?(assigns.expanded, key))
 
     ~H"""
-    <div class="px-4 py-3" data-check={@item.id}>
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+    <div class="px-5 py-4 sm:px-6" data-check={@item.id}>
+      <div class="flex flex-col gap-3 sm:flex-row sm:gap-5">
         <.check_status_badge status={@item.status} />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <p class="text-sm font-medium break-words">{@item.label}</p>
+            <p class="break-words text-[15px] font-bold text-strong">{@item.label}</p>
             <.check_value item={@item} />
           </div>
-          <p class="mt-0.5 text-xs text-base-content/70 break-words">{@item.description}</p>
+          <p class="mt-1 break-words text-sm text-muted">{@item.description}</p>
           <.check_details :if={@item.detail_layout != nil} item={@item} key={@key} open?={@open?} />
         </div>
       </div>
@@ -416,29 +501,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  attr :status, :atom, required: true
+  attr :status, :atom,
+    required: true,
+    doc: "the outcome as displayed: :pass, :fail, :warn or :info"
 
+  # A fixed column so every check's title starts on the same vertical line.
   defp check_status_badge(assigns) do
     ~H"""
-    <%!-- Fixed width so every check label starts on the same vertical line. --%>
-    <.status_badge
-      status={badge_status(@status)}
-      label={status_word(@status)}
-      class="w-24 shrink-0 self-start"
-      data-status={to_string(@status)}
-    />
+    <div class="sm:w-32 sm:shrink-0">
+      <.tone_badge
+        tone={severity_tone(@status)}
+        class="whitespace-nowrap"
+        data-status={to_string(@status)}
+      >
+        {severity_word(@status)}
+      </.tone_badge>
+    </div>
     """
   end
-
-  defp badge_status(:pass), do: :pass
-  defp badge_status(:fail), do: :failed
-  defp badge_status(:warn), do: :warning
-  defp badge_status(_other), do: :info
-
-  defp status_word(:pass), do: "Pass"
-  defp status_word(:fail), do: "Fail"
-  defp status_word(:warn), do: "Warning"
-  defp status_word(_other), do: "Info"
 
   attr :item, :map, required: true
 
@@ -452,34 +532,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   # in a column of checks without reading every badge.
   defp check_value(%{item: %{value_format: :count, value: 0}} = assigns) do
     ~H"""
-    <span class="shrink-0 text-sm text-base-content/70 tabular-nums">0 flagged</span>
+    <span class="shrink-0 text-sm tabular-nums text-muted">0 flagged</span>
     """
   end
 
   defp check_value(%{item: %{value_format: :count}} = assigns) do
     ~H"""
     <span class="shrink-0 text-sm tabular-nums">
-      <span class={["font-semibold", count_value_tone(@item.status)]}>{@item.value}</span>
-      <span class="text-base-content/70">flagged</span>
+      <span class={["font-bold", count_value_tone(@item.status)]}>{@item.value}</span>
+      <span class="text-muted">flagged</span>
     </span>
     """
   end
 
   defp check_value(%{item: %{value_format: :boolean, value: true}} = assigns) do
     ~H"""
-    <span class="shrink-0 text-sm font-medium text-success">Yes</span>
+    <span class="shrink-0 text-sm font-bold text-success-fg">Yes</span>
     """
   end
 
   defp check_value(%{item: %{value_format: :boolean, value: false}} = assigns) do
     ~H"""
-    <span class="shrink-0 text-sm font-medium text-error">No</span>
+    <span class="shrink-0 text-sm font-bold text-error-fg">No</span>
     """
   end
 
   defp check_value(%{item: %{value_format: :text}} = assigns) do
     ~H"""
-    <span class="text-sm font-medium break-words">{@item.value}</span>
+    <span class="break-words text-sm font-bold text-strong">{@item.value}</span>
     """
   end
 
@@ -513,9 +593,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H""
   end
 
-  defp count_value_tone(:fail), do: "text-error"
-  defp count_value_tone(:warn), do: "text-warning"
-  defp count_value_tone(_other), do: nil
+  defp count_value_tone(:fail), do: "text-error-fg"
+  defp count_value_tone(:warn), do: "text-warning-fg"
+  defp count_value_tone(_other), do: "text-strong"
 
   attr :bad_count, :integer, required: true
   attr :bad_label, :string, required: true
@@ -526,14 +606,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp compound_value(assigns) do
     ~H"""
-    <span class="flex flex-wrap items-baseline gap-x-2 text-xs">
-      <span :if={@bad_count > 0} class="font-medium text-error tabular-nums">
+    <span class="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+      <span :if={@bad_count > 0} class="font-bold tabular-nums text-error-fg">
         {@bad_count} {@bad_label}
       </span>
-      <span :if={@warn_count > 0} class="font-medium text-warning tabular-nums">
+      <span :if={@warn_count > 0} class="font-bold tabular-nums text-warning-fg">
         {@warn_count} {@warn_label}
       </span>
-      <span class="text-base-content/70 tabular-nums">{@good_count} {@good_label}</span>
+      <span class="tabular-nums text-muted">{@good_count} {@good_label}</span>
     </span>
     """
   end
@@ -545,23 +625,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_details(%{item: %{detail_layout: :table, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <div class="mt-3 rounded-box border border-base-300">
+    <div class="mt-3 overflow-clip rounded-control border border-subtle">
       <.table_region label={@item.label}>
         <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-base-300">
+          <thead class="bg-canvas">
+            <tr class="border-b border-subtle">
               <.column_header>Type</.column_header>
               <.column_header align="right">Present</.column_header>
               <.column_header align="right">Missing</.column_header>
             </tr>
           </thead>
-          <tbody class="divide-y divide-base-300">
+          <tbody class="divide-y divide-subtle">
             <tr :for={row <- @item.details}>
-              <td class="px-3 py-2 break-words">{row.type_label}</td>
-              <td class="px-3 py-2 text-right tabular-nums">{row.present}</td>
+              <td class="break-words px-4 py-2.5">{row.type_label}</td>
+              <td class="px-4 py-2.5 text-right tabular-nums">{row.present}</td>
               <td class={[
-                "px-3 py-2 text-right tabular-nums",
-                row.missing > 0 && "font-medium text-error"
+                "px-4 py-2.5 text-right tabular-nums",
+                row.missing > 0 && "font-bold text-error-fg"
               ]}>
                 {row.missing}
               </td>
@@ -573,41 +653,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  defp check_details(%{item: %{detail_layout: :stop_ids, details: details}} = assigns)
-       when is_list(details) and details != [] do
+  defp check_details(%{item: %{detail_layout: layout, details: details}} = assigns)
+       when layout in [:stop_ids, :stop_ids_with_dots] and is_list(details) and details != [] do
     ~H"""
     <div class="mt-2">
       <.check_disclosure_button key={@key} open?={@open?} label={@item.detail_label} />
-      <ul id={detail_region_id(@key)} class={["mt-2 space-y-1", not @open? && "hidden print:grid"]}>
-        <li :for={entry <- @item.details}>
+      <.evidence_list id={detail_region_id(@key)} open?={@open?}>
+        <li :for={entry <- @item.details} class="px-4 py-1">
           <.stop_name_link
             opener_id={stop_link_id(@key, entry.id)}
             stop_id={entry.id}
             name={entry.name}
           />
         </li>
-      </ul>
-    </div>
-    """
-  end
-
-  defp check_details(%{item: %{detail_layout: :stop_ids_with_dots, details: details}} = assigns)
-       when is_list(details) and details != [] do
-    ~H"""
-    <div class="mt-2">
-      <.check_disclosure_button key={@key} open?={@open?} label={@item.detail_label} />
-      <ul
-        id={detail_region_id(@key)}
-        class={["mt-2 space-y-1 list-disc pl-5", not @open? && "hidden print:grid"]}
-      >
-        <li :for={entry <- @item.details}>
-          <.stop_name_link
-            opener_id={stop_link_id(@key, entry.id)}
-            stop_id={entry.id}
-            name={entry.name}
-          />
-        </li>
-      </ul>
+      </.evidence_list>
     </div>
     """
   end
@@ -619,22 +678,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <div class="mt-2">
       <.check_disclosure_button key={@key} open?={@open?} label={@item.detail_label} />
-      <ul id={detail_region_id(@key)} class={["mt-2 space-y-1.5", not @open? && "hidden print:grid"]}>
-        <li :for={entry <- @item.details} class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <.evidence_list id={detail_region_id(@key)} open?={@open?}>
+        <li :for={entry <- @item.details} class="px-4 py-1">
           <.stop_name_link
             opener_id={stop_link_id(@key, entry.id)}
             stop_id={entry.id}
             name={entry.name}
           />
-          <span class="text-xs text-base-content/70 break-words">{entry.reason}</span>
+          <p class="break-words text-[13px] text-muted">{entry.reason}</p>
         </li>
-      </ul>
+      </.evidence_list>
     </div>
     """
   end
 
   defp check_details(assigns) do
     ~H""
+  end
+
+  attr :id, :string, required: true
+  attr :open?, :boolean, required: true
+  slot :inner_block, required: true
+
+  # The stops a check flagged, in one inset list. Collapsed on screen, but still
+  # in the document and shown in print.
+  defp evidence_list(assigns) do
+    ~H"""
+    <ul
+      id={@id}
+      class={[
+        "mt-2 divide-y divide-subtle overflow-clip rounded-control border border-subtle bg-canvas py-1",
+        not @open? && "hidden print:block"
+      ]}
+    >
+      {render_slot(@inner_block)}
+    </ul>
+    """
   end
 
   attr :key, :string, required: true
@@ -650,13 +729,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       phx-value-key={@key}
       aria-expanded={to_string(@open?)}
       aria-controls={detail_region_id(@key)}
-      class="print:hidden inline-flex min-h-11 items-center gap-1 text-sm font-medium text-primary group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      class={[
+        "group print:hidden -ml-1 inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-control px-1 text-sm font-[650] text-action",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+      ]}
     >
       <.icon
         name={if @open?, do: "hero-chevron-down", else: "hero-chevron-right"}
         class="size-4 shrink-0"
       />
-      <span class="text-left break-words underline-offset-2 group-hover:underline">{@label}</span>
+      <span class="break-words text-left underline-offset-2 group-hover:underline">{@label}</span>
     </button>
     """
   end
@@ -667,7 +749,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp stop_name_link(assigns) do
     ~H"""
-    <span class="inline-flex flex-wrap items-baseline gap-x-2">
+    <span class="flex flex-wrap items-baseline gap-x-2">
       <button
         id={@opener_id}
         type="button"
@@ -676,11 +758,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         phx-value-entity_type="stop"
         phx-value-opener_id={@opener_id}
         title={@stop_id}
-        class="text-left text-sm font-medium text-primary underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 break-words"
+        class={[
+          "min-h-11 cursor-pointer break-words text-left text-sm font-[650] text-action underline-offset-2",
+          "hover:text-action-hover hover:underline",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        ]}
       >
         {@name}
       </button>
-      <span :if={@name != @stop_id} class="font-mono text-xs text-base-content/70 break-all">
+      <span :if={@name != @stop_id} class="break-all font-mono text-[13px] text-muted">
         {@stop_id}
       </span>
     </span>
@@ -693,35 +779,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :expanded, :any, required: true, doc: "MapSet of server-owned open disclosure keys"
 
   def naming_conventions_section(assigns) do
-    counts = Outcome.counts(assigns.checks)
+    counts = assigns.checks |> with_naming_severity() |> Outcome.counts()
 
     count_items = [
-      %{key: "passed", label: "Passed", count: counts.passed, tone: :success},
-      %{key: "failed", label: "Failed", count: counts.failed, tone: :error}
+      %{key: "suggestions", label: "Suggestions", count: counts.warnings, tone: :warning},
+      %{key: "passed", label: "Passed", count: counts.passed, tone: :success}
     ]
 
     assigns = assign(assigns, :count_items, count_items)
 
     ~H"""
-    <section id="report2-naming-conventions" class="scroll-mt-4">
-      <h2 class="text-xl font-semibold">Naming &amp; ID Conventions</h2>
-      <.count_strip id="naming-counts" items={@count_items} class="mt-2" />
+    <.report_section
+      id="report2-naming-conventions"
+      title="Names and IDs"
+      description="Are stop names and IDs consistent? These are house conventions. GTFS does not require them."
+    >
+      <:counts><.count_strip id="naming-counts" items={@count_items} /></:counts>
 
-      <.empty_state
+      <.report_empty
         :if={@checks == []}
         id="report2-naming-conventions-empty"
         title="No naming checks ran"
-        class="mt-3"
       >
         Naming and ID convention checks appear here once the station has stops to evaluate.
-      </.empty_state>
+      </.report_empty>
 
-      <div :if={@checks != []} class="mt-3 rounded-box border border-base-300 bg-base-100">
-        <div class="divide-y divide-base-300">
-          <.naming_check_row :for={check <- @checks} check={check} expanded={@expanded} />
-        </div>
+      <div :if={@checks != []} class="divide-y divide-subtle">
+        <.naming_check_row :for={check <- @checks} check={check} expanded={@expanded} />
       </div>
-    </section>
+    </.report_section>
     """
   end
 
@@ -740,28 +826,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       |> assign(:region_id, detail_region_id(key))
       |> assign(:open?, expanded?(assigns.expanded, key))
       |> assign(:failed?, assigns.check.status == :fail)
+      |> assign(:severity, naming_severity(assigns.check.status))
 
     ~H"""
-    <div class="px-4 py-3" data-check={@check.id}>
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
-        <.check_status_badge status={@check.status} />
+    <div class="px-5 py-4 sm:px-6" data-check={@check.id}>
+      <div class="flex flex-col gap-3 sm:flex-row sm:gap-5">
+        <.check_status_badge status={@severity} />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <p class="text-sm font-medium break-words">{@check.label}</p>
-            <span
-              :if={@check.issue_count == 0}
-              class="shrink-0 text-sm text-base-content/70 tabular-nums"
-            >
+            <p class="break-words text-[15px] font-bold text-strong">{@check.label}</p>
+            <span :if={@check.issue_count == 0} class="shrink-0 text-sm tabular-nums text-muted">
               0 flagged
             </span>
             <span :if={@check.issue_count > 0} class="shrink-0 text-sm tabular-nums">
-              <span class={["font-semibold", count_value_tone(@check.status)]}>
+              <span class={["font-bold", count_value_tone(@severity)]}>
                 {@check.issue_count}
               </span>
-              <span class="text-base-content/70">flagged</span>
+              <span class="text-muted">flagged</span>
             </span>
           </div>
-          <p class="mt-0.5 text-xs text-base-content/70 break-words">{@check.rule}</p>
+          <p class="mt-1 break-words text-sm text-muted">{@check.rule}</p>
           <div :if={@failed?} class="mt-2">
             <.check_disclosure_button key={@key} open?={@open?} label="Show affected stops" />
             <div id={@region_id} class={["mt-2", not @open? && "hidden print:block"]}>
@@ -780,24 +864,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     assigns = assign(assigns, :intro, naming_violation_intro(assigns.check.id))
 
     ~H"""
-    <div class="border-l-4 border-error bg-error/10 px-4 py-3">
-      <p class="text-sm">{@intro}</p>
-      <p :if={@check.id == "naming_prefix_type_mismatch"} class="mt-1 text-xs text-base-content/70">
+    <div class="rounded-control border border-subtle bg-canvas px-4 py-3">
+      <p class="text-sm text-default">{@intro}</p>
+      <p :if={@check.id == "naming_prefix_type_mismatch"} class="mt-1 text-[13px] text-muted">
         Expected prefixes by type: entrance/exit entrance_ · boarding area boarding_ · generic node node_
       </p>
-      <ul class="mt-2 space-y-1">
+      <ul class="mt-2 space-y-1.5">
         <li
           :for={detail <- @check.details}
           class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm"
         >
-          <span class="font-mono break-all">{detail.stop_id}</span>
-          <span :if={detail.stop_name} class="text-base-content/80 break-words">
+          <span class="break-all font-mono text-[13px] text-strong">{detail.stop_id}</span>
+          <span :if={detail.stop_name} class="break-words text-default">
             {detail.stop_name}
           </span>
-          <span :if={detail.location_type} class="text-xs text-base-content/70 break-words">
+          <span :if={detail.location_type} class="break-words text-[13px] text-muted">
             location type {detail.location_type} ({Stop.location_type_label(detail.location_type)})
           </span>
-          <span :if={detail.expected_prefix} class="text-xs text-base-content/70">
+          <span :if={detail.expected_prefix} class="text-[13px] text-muted">
             expected prefix {detail.expected_prefix}
           </span>
         </li>
@@ -836,19 +920,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   def reachability_connectivity_section(assigns) do
     ~H"""
-    <section id="report2-reachability-connectivity" class="scroll-mt-4">
-      <h2 class="text-xl font-semibold">Reachability &amp; Connectivity</h2>
-
-      <.empty_state
+    <.report_section
+      id="report2-reachability-connectivity"
+      title="Routes riders can take"
+      description="Can riders get from each entrance to each platform, between platforms, and back out? Following pathway directions."
+    >
+      <.report_empty
         :if={is_nil(@connectivity_summaries)}
         id="connectivity-empty-report"
         title="No connectivity data"
-        class="mt-3"
       >
         Reachability appears here once the station snapshot can be evaluated.
-      </.empty_state>
+      </.report_empty>
 
-      <div :if={@connectivity_summaries} class="mt-3 flex flex-col gap-4">
+      <div :if={@connectivity_summaries} class="divide-y divide-subtle">
         <.connectivity_dimension_section
           :for={dim <- [:entrance_to_platform, :platform_to_platform, :platform_to_exit]}
           summary={Map.get(@connectivity_summaries, dim)}
@@ -859,7 +944,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           expanded_route_keys={@expanded_route_keys}
         />
       </div>
-    </section>
+    </.report_section>
     """
   end
 
@@ -908,21 +993,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       |> assign(:all_expanded, all_expanded)
 
     ~H"""
-    <div id={"connectivity-#{@dimension}"} class="rounded-box border border-base-300 bg-base-100">
-      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-base-300 px-4 py-3">
+    <div id={"connectivity-#{@dimension}"}>
+      <div class="flex flex-wrap items-start justify-between gap-3 px-5 py-4 sm:px-6">
         <div class="min-w-0">
-          <h3 class="text-base font-semibold break-words">{@summary.title}</h3>
-          <p class="mt-0.5 text-sm text-base-content/70 break-words">{@summary.description}</p>
+          <h3 class="break-words text-base font-bold text-strong">{@summary.title}</h3>
+          <p class="mt-0.5 break-words text-sm text-muted">{@summary.description}</p>
         </div>
-        <.status_badge
-          status={dimension_badge_status(@summary.status)}
-          label={dimension_badge_label(@summary.status)}
-          class="shrink-0"
+        <.tone_badge
+          tone={dimension_tone(@summary.status)}
+          class="shrink-0 whitespace-nowrap"
           data-dimension-status={to_string(@summary.status)}
-        />
+        >
+          {dimension_label(@summary.status)}
+        </.tone_badge>
       </div>
 
-      <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 px-5 pb-3 sm:px-6">
         <.count_strip id={"connectivity-#{@dimension}-counts"} items={@count_items} />
         <button
           :if={@summary.summary_rows != []}
@@ -932,7 +1018,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           phx-value-dimension={to_string(@dimension)}
           aria-expanded={to_string(@all_expanded)}
           aria-controls={"connectivity-sources-#{@dimension}"}
-          class="print:hidden inline-flex min-h-11 items-center gap-1 text-sm font-medium text-primary group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          class={[
+            "group print:hidden inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-control px-1 text-sm font-[650] text-action",
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          ]}
         >
           <.icon
             name={if @all_expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
@@ -944,19 +1033,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         </button>
       </div>
 
-      <.empty_state
+      <.report_empty
         :if={@summary.summary_rows == []}
         id={"connectivity-empty-#{@dimension}"}
         title={"No #{String.downcase(@summary.source_label)} records to check"}
-        class="mx-4 mb-4 mt-0"
       >
         Reachability appears here once the station has {String.downcase(@summary.source_label)} records.
-      </.empty_state>
+      </.report_empty>
 
       <div
         :if={@summary.summary_rows != []}
         id={"connectivity-sources-#{@dimension}"}
-        class="divide-y divide-base-300 border-t border-base-300"
+        class="divide-y divide-subtle border-t border-subtle"
       >
         <div
           :for={row <- @summary.summary_rows}
@@ -974,15 +1062,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         </div>
       </div>
 
-      <div :if={@summary.alerts != []} class="space-y-2 px-4 pb-4">
-        <div :for={{alert, index} <- Enum.with_index(@summary.alerts)}>
-          <.callout
-            id={"connectivity-#{@dimension}-alert-#{index}"}
-            kind={to_string(alert.level)}
-            title={alert.text}
-            role={if alert.level == :error, do: "alert", else: "status"}
-          />
-        </div>
+      <div :if={@summary.alerts != []} class="space-y-2 px-5 pb-4 sm:px-6">
+        <.message
+          :for={{alert, index} <- Enum.with_index(@summary.alerts)}
+          id={"connectivity-#{@dimension}-alert-#{index}"}
+          kind={if alert.level == :error, do: "error", else: "warning"}
+          role={if alert.level == :error, do: "alert", else: "status"}
+          title={alert.text}
+        />
       </div>
     </div>
     """
@@ -1005,7 +1092,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       )
 
     ~H"""
-    <div class="px-4 py-3">
+    <div class="px-5 py-4 sm:px-6">
       <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <button
           type="button"
@@ -1015,7 +1102,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           phx-value-source_stop_id={@row.source_stop_id}
           aria-expanded={to_string(@expanded)}
           aria-controls={@region_id}
-          class="print:hidden inline-flex min-h-11 min-w-0 items-center gap-1 text-left text-sm font-medium text-primary group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          class={[
+            "group print:hidden -ml-1 inline-flex min-h-11 min-w-0 cursor-pointer items-center gap-1 rounded-control px-1 text-left text-sm font-[650] text-action",
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          ]}
         >
           <.icon
             name={if @expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
@@ -1025,37 +1115,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             {@row.source_name}
           </span>
         </button>
-        <p class="hidden text-sm font-medium print:block break-words">{@row.source_name}</p>
+        <p class="hidden break-words text-sm font-bold text-strong print:block">
+          {@row.source_name}
+        </p>
         <.reachability_status status={@row.status} />
       </div>
 
-      <dl class="mt-2 space-y-1 text-sm sm:pl-5">
+      <dl class="mt-1 space-y-1 text-sm sm:pl-5">
         <div class="flex flex-col gap-x-2 gap-y-0.5 sm:flex-row">
-          <dt class="shrink-0 text-base-content/70 sm:w-32">Reachable</dt>
+          <dt class="shrink-0 text-muted sm:w-32">Reachable</dt>
           <dd class="min-w-0 break-words">
             {if @row.reachable != [], do: Enum.join(@row.reachable, ", "), else: "None"}
           </dd>
         </div>
         <div class="flex flex-col gap-x-2 gap-y-0.5 sm:flex-row">
-          <dt class="shrink-0 text-base-content/70 sm:w-32">Unreachable</dt>
+          <dt class="shrink-0 text-muted sm:w-32">Unreachable</dt>
           <dd class="min-w-0 break-words">
             {if @row.unreachable != [], do: Enum.join(@row.unreachable, ", "), else: "None"}
           </dd>
         </div>
         <div class="flex flex-col gap-x-2 gap-y-0.5 sm:flex-row">
-          <dt class="shrink-0 text-base-content/70 sm:w-32">{@source_label} ID</dt>
-          <dd class="min-w-0 font-mono text-xs break-all">{@row.source_stop_id}</dd>
+          <dt class="shrink-0 text-muted sm:w-32">{@source_label} ID</dt>
+          <dd class="min-w-0 break-all font-mono text-[13px]">{@row.source_stop_id}</dd>
         </div>
       </dl>
 
-      <%!-- Full-bleed: the group's rules span the card so the evidence reads as
-            a tier of this card, not a box inside a box. The negative bottom
-            margin lets the parent divide-y line double as the group's close. --%>
-      <div
-        :if={@group}
-        id={@region_id}
-        class={["-mx-4 -mb-3 mt-3", not @expanded && "hidden print:block"]}
-      >
+      <div :if={@group} id={@region_id} class={["mt-4", not @expanded && "hidden print:block"]}>
         <.source_group_card
           group={@group}
           dimension={@dimension}
@@ -1071,32 +1156,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp reachability_status(assigns) do
     ~H"""
-    <.status_badge
-      status={reachability_badge_status(@status)}
-      label={reachability_label(@status)}
-      class="shrink-0 self-start"
+    <.tone_badge
+      tone={reachability_tone(@status)}
+      class="shrink-0 self-start whitespace-nowrap"
       data-reachability={to_string(@status)}
-    />
+    >
+      {reachability_label(@status)}
+    </.tone_badge>
     """
   end
 
-  defp reachability_badge_status(:full), do: :pass
-  defp reachability_badge_status(:partial), do: :warning
-  defp reachability_badge_status(:exit_only), do: :warning
-  defp reachability_badge_status(_none), do: :failed
+  defp reachability_tone(:full), do: "success"
+  defp reachability_tone(:partial), do: "warning"
+  defp reachability_tone(:exit_only), do: "warning"
+  defp reachability_tone(_none), do: "error"
 
   defp reachability_label(:full), do: "Fully reachable"
   defp reachability_label(:partial), do: "Partially reachable"
   defp reachability_label(:exit_only), do: "Exit only"
   defp reachability_label(_none), do: "Not reachable"
 
-  defp dimension_badge_status(:passed), do: :pass
-  defp dimension_badge_status(:warning), do: :warning
-  defp dimension_badge_status(_fail), do: :failed
+  defp dimension_tone(:passed), do: "success"
+  defp dimension_tone(:warning), do: "warning"
+  defp dimension_tone(_fail), do: "error"
 
-  defp dimension_badge_label(:passed), do: "Passed"
-  defp dimension_badge_label(:warning), do: "Warning"
-  defp dimension_badge_label(_fail), do: "Fail"
+  defp dimension_label(:passed), do: "Connected"
+  defp dimension_label(:warning), do: "Some routes missing"
+  defp dimension_label(_fail), do: "Cut off"
 
   # -- Pathway field completeness -------------------------------------------
 
@@ -1104,56 +1190,73 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   def pathway_field_completeness_section(assigns) do
     ~H"""
-    <section id="report2-pathway-field-completeness" class="scroll-mt-4">
-      <h2 class="text-xl font-semibold">Pathway Field Completeness</h2>
-
-      <.empty_state
+    <.report_section
+      id="report2-pathway-field-completeness"
+      title="Pathway details"
+      description="Do pathways carry the details trip planners use? Fill rates for optional fields such as length, travel time and stair count."
+    >
+      <.report_empty
         :if={@groups == []}
         id="report2-pathway-field-completeness-empty"
         title="No pathways to measure"
-        class="mt-3"
       >
         Fill rates appear here once the station has pathway records.
-      </.empty_state>
+      </.report_empty>
 
-      <div
-        :if={@groups != []}
-        class="mt-3 rounded-box divide-y divide-base-300 border border-base-300 bg-base-100"
-      >
-        <div :for={group <- @groups} class="px-4 py-3">
-          <h3 class="text-sm font-semibold">{group.mode_label}</h3>
+      <div :if={@groups != []} class="divide-y divide-subtle">
+        <div :for={group <- @groups} class="px-5 py-4 sm:px-6">
+          <h3 class="text-sm font-bold text-strong">{group.mode_label}</h3>
           <div class="mt-2 space-y-2">
             <.field_completeness_row :for={field <- group.fields} field={field} />
           </div>
         </div>
       </div>
-    </section>
+    </.report_section>
     """
   end
 
   attr :field, :map, required: true
 
+  # An optional field is never an error, so a low fill rate reads as a
+  # suggestion-toned "Missing", not a red "Fail".
   defp field_completeness_row(assigns) do
     ~H"""
     <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-4">
-      <span class="text-sm font-medium break-words sm:w-32 sm:shrink-0">{@field.label}</span>
+      <span class="break-words text-sm font-[650] text-strong sm:w-32 sm:shrink-0">
+        {@field.label}
+      </span>
       <%!-- `flex-1` is applied only from `sm` up: in a column flex container it
            would resolve the basis on the vertical axis and collapse the track. --%>
-      <div class="h-2 w-full max-w-xs bg-base-300 sm:flex-1" aria-hidden="true">
-        <div class="h-full bg-base-content/60" style={"width: #{@field.percent}%;"}></div>
+      <div class="h-2 w-full max-w-xs rounded-full bg-navy-100 sm:flex-1" aria-hidden="true">
+        <div
+          class={["h-full rounded-full", fill_tone(@field.status)]}
+          style={"width: #{@field.percent}%;"}
+        >
+        </div>
       </div>
       <span class="text-sm tabular-nums sm:w-20 sm:shrink-0 sm:text-right">
-        {@field.present} / {@field.total}
+        {@field.present} of {@field.total}
       </span>
-      <.status_badge
-        status={badge_status(@field.status)}
-        label={status_word(@field.status)}
-        class="shrink-0 self-start sm:self-auto"
+      <.tone_badge
+        tone={fill_badge_tone(@field.status)}
+        class="shrink-0 self-start whitespace-nowrap sm:self-auto"
         data-field-status={to_string(@field.status)}
-      />
+      >
+        {fill_word(@field.status)}
+      </.tone_badge>
     </div>
     """
   end
+
+  defp fill_tone(:pass), do: "bg-success-line"
+  defp fill_tone(_partial_or_missing), do: "bg-warning-line"
+
+  defp fill_badge_tone(:pass), do: "success"
+  defp fill_badge_tone(_partial_or_missing), do: "warning"
+
+  defp fill_word(:pass), do: "Complete"
+  defp fill_word(:warn), do: "Partial"
+  defp fill_word(_none), do: "Missing"
 
   # -- Shared table scaffolding ---------------------------------------------
 
@@ -1168,7 +1271,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       role="region"
       aria-label={@label}
       tabindex="0"
-      class="overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+      class="overflow-x-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
     >
       {render_slot(@inner_block)}
     </div>
@@ -1183,7 +1286,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <th
       scope="col"
       class={[
-        "px-3 py-2 text-xs font-semibold text-base-content/70",
+        "px-4 py-2 text-[13px] font-[650] text-muted sm:px-6",
         @align == "right" && "text-right",
         @align == "left" && "text-left"
       ]}

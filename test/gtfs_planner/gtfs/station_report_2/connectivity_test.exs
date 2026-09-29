@@ -778,7 +778,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       result = Connectivity.build_expanded_route(snapshot, "ENT_1", "PLAT_1")
       assert result.status == :long
       assert length(result.warnings) == 1
-      assert hd(result.warnings) =~ "exceeds the threshold"
+      assert hd(result.warnings) =~ "Route time of 6 min 40 s exceeds the threshold"
+      assert hd(result.warnings) =~ "accounts for 6 min 40 s of total traversal time"
     end
 
     test "no path returns :nopath" do

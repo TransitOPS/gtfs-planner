@@ -9,26 +9,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   ## Contracts consumed
 
-  Shared `drawer/1`, `input/1`, `button/1`, and `callout/1` supply the
-  structure, labels, error association, and actions. `drawer/1` also owns
-  opener restoration: the caller passes `return_focus_id`, and the shipped
+  Shared `drawer/1` (planner chrome), `input/1`, `button/1`, and the planner
+  `message/1`, `form_error_summary/1`, `drawer_scroll/1` and `drawer_footer/1`
+  supply the structure, labels, error association, and actions. `drawer/1` also
+  owns opener restoration: the caller passes `return_focus_id`, and the shipped
   `OverlayDialog` hook returns focus there when the dialog closes.
 
   The wrapper carries `phx-hook="FormErrorFocus"`, the existing scoped focus
   hook. On a rejected save the LiveView pushes `focus_form_error` naming this
-  form and `#report-stop-form-error` as the bounded fallback.
+  form and `#report-stop-form-error` as the bounded fallback. That summary lists
+  each rejected field and links to it.
 
   ## Layout
 
-  One column at every width, capped at 40rem so the fields stay a readable
-  measure inside the wider drawer panel. Labels are sentence case and always
-  visible; raw GTFS keys appear as secondary help under each control, never
-  as the label. Optional fields say so in the label — that is the only
-  required/optional system used here.
+  One column at every width, capped at 520px so the fields stay a readable
+  measure. Labels are sentence case and always visible; raw GTFS keys appear as
+  a "GTFS:" line in the help under each control, never as the label. Optional
+  fields say so in the label — that is the only required/optional system used
+  here. The actions sit in a footer that stays in view under the scrolling
+  fields.
   """
   use Phoenix.Component
 
-  import GtfsPlannerWeb.CoreComponents, only: [button: 1, callout: 1, drawer: 1, input: 1]
+  import GtfsPlannerWeb.CoreComponents,
+    only: [button: 1, drawer: 1, input: 1, translate_error: 1]
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, form_error_summary: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Stop
 
@@ -41,6 +48,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
     {"1 — Accessible", "1"},
     {"2 — Not accessible", "2"}
   ]
+
+  @field_labels %{
+    stop_name: "Stop name",
+    stop_lat: "Latitude",
+    stop_lon: "Longitude",
+    level_id: "Level",
+    wheelchair_boarding: "Wheelchair boarding",
+    platform_code: "Platform code"
+  }
 
   @doc "The stable id of the stop edit form, shared with the focus event."
   def form_id, do: @form_id
@@ -62,13 +78,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
     ~H"""
     <.drawer
       id="report-entity-drawer"
+      chrome="planner"
       open={drawer_open?(@drawer_entity, @drawer_error)}
       on_close="close_entity_drawer"
       title={drawer_title(@drawer_entity)}
       initial_focus={:first_field}
       return_focus_id={@drawer_return_focus_id}
+      class="max-w-[520px]"
     >
-      <div id="report-stop-drawer" phx-hook="FormErrorFocus" class="max-w-[40rem]">
+      <:lede :if={@drawer_entity}>Saving rebuilds the report with your change.</:lede>
+
+      <div id="report-stop-drawer" phx-hook="FormErrorFocus" class="flex min-h-0 flex-1 flex-col">
         <.lookup_recovery :if={@drawer_error} message={@drawer_error} />
 
         <.stop_drawer_form
@@ -100,11 +120,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   defp lookup_recovery(assigns) do
     ~H"""
-    <div class="space-y-4">
-      <.callout id="report-stop-lookup-error" kind="error" title="Stop not found" tabindex="-1">
+    <.drawer_scroll>
+      <.message id="report-stop-lookup-error" kind="error" title="Stop not found" tabindex="-1">
         {@message}
-      </.callout>
-
+      </.message>
+    </.drawer_scroll>
+    <.drawer_footer>
       <.button
         id="report-stop-lookup-retry"
         type="button"
@@ -113,7 +134,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
       >
         Retry lookup
       </.button>
-    </div>
+    </.drawer_footer>
     """
   end
 
@@ -128,7 +149,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
     assigns =
       assigns
-      |> assign(:save_failed?, save_failed?(assigns.form))
+      |> assign(:failures, save_failures(assigns.form))
       |> assign(:level_required?, level_required?)
       |> assign(
         :level_options,
@@ -140,61 +161,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
       |> assign(:error_summary_id, @error_summary_id)
 
     ~H"""
-    <div class="space-y-6">
-      <section aria-labelledby="report-stop-identity-title" class="space-y-2">
-        <h3 id="report-stop-identity-title" class="text-sm font-semibold">Stop identity</h3>
-        <p class="text-sm text-base-content/70">These fields are not editable from the report.</p>
-
-        <dl class="divide-y divide-base-300 border border-base-300">
-          <.identity_row label="Stop ID" gtfs_key="stop_id" value={@entity.stop_id} />
-          <.identity_row
-            label="Location type"
-            gtfs_key="location_type"
-            value={
-              "#{@entity.location_type} — #{Stop.location_type_label(@entity.location_type)}"
-            }
-          />
-          <.identity_row
-            label="Parent station"
-            gtfs_key="parent_station"
-            value={presence(@entity.parent_station) || "None"}
-          />
-        </dl>
-      </section>
-
-      <%!--
-        `novalidate` is deliberate. The numeric range attributes below are real
-        input affordances (spinner clamping, decimal keypads), but leaving native
-        constraint validation on would let the browser block the submit before
-        LiveView ever sees it — the range error would surface as a transient
-        native bubble while `level_id` still needed a server message. One error
-        system: the changeset decides, and every message is rendered inline and
-        associated through `aria-describedby`.
-      --%>
-      <.form
-        for={@form}
-        id={@form_id}
-        novalidate
-        phx-change="validate_entity"
-        phx-submit="save_entity"
-        class="space-y-1"
-      >
-        <div :if={@save_failed?} class="mb-4">
-          <.callout
-            id={@error_summary_id}
-            kind="error"
-            title="Check the highlighted fields"
-            tabindex="-1"
-          >
-            Nothing was saved. Correct the fields marked below, then save again.
-          </.callout>
-        </div>
+    <%!--
+      `novalidate` is deliberate. The numeric range attributes below are real
+      input affordances (spinner clamping, decimal keypads), but leaving native
+      constraint validation on would let the browser block the submit before
+      LiveView ever sees it — the range error would surface as a transient
+      native bubble while `level_id` still needed a server message. One error
+      system: the changeset decides, and every message is rendered inline and
+      associated through `aria-describedby`.
+    --%>
+    <.form
+      for={@form}
+      id={@form_id}
+      novalidate
+      phx-change="validate_entity"
+      phx-submit="save_entity"
+      class="flex min-h-0 flex-1 flex-col"
+    >
+      <.drawer_scroll>
+        <%!-- A failed save is the only state that earns a summary. Validation on
+              change marks its own fields and must not shout about a save that
+              was never attempted. --%>
+        <.form_error_summary
+          id={@error_summary_id}
+          title="Nothing was saved. Fix these fields:"
+          failures={@failures}
+          class=""
+        />
 
         <.input
           field={@form[:stop_name]}
           type="text"
           label="Stop name (optional)"
-          help="stop_name — the rider-facing name shown on the report."
+          help="The name riders see. GTFS: stop_name"
         />
 
         <%!--
@@ -212,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
             min="-90"
             max="90"
             inputmode="decimal"
-            help="stop_lat — decimal degrees between -90 and 90. Leave blank if unknown."
+            help="Decimal degrees between -90 and 90. Leave blank if unknown. GTFS: stop_lat"
           />
         </div>
 
@@ -225,7 +224,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
             min="-180"
             max="180"
             inputmode="decimal"
-            help="stop_lon — decimal degrees between -180 and 180. Leave blank if unknown."
+            help="Decimal degrees between -180 and 180. Leave blank if unknown. GTFS: stop_lon"
           />
         </div>
 
@@ -245,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
             type="select"
             label="Wheelchair boarding (optional)"
             options={@wheelchair_options}
-            help="wheelchair_boarding — leave with no value to inherit the station's accessibility."
+            help="Leave with no value to use the station's setting. GTFS: wheelchair_boarding"
           />
         </div>
 
@@ -254,23 +253,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
             field={@form[:platform_code]}
             type="text"
             label="Platform code (optional)"
-            help="platform_code — the platform number or letter riders see, such as 3 or B."
+            help="What riders see on the platform, such as 3 or B. GTFS: platform_code"
           />
         </div>
 
-        <div class="flex flex-wrap items-center gap-3 pt-3">
-          <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save changes</.button>
-          <.button
-            type="button"
-            variant="quiet"
-            class="min-h-11"
-            phx-click="close_entity_drawer"
-          >
-            Cancel
-          </.button>
-        </div>
-      </.form>
-    </div>
+        <section
+          aria-labelledby="report-stop-identity-title"
+          class="border-t border-subtle pt-5"
+        >
+          <h3 id="report-stop-identity-title" class="text-sm font-bold text-strong">
+            Stop identity
+          </h3>
+          <p class="mt-0.5 text-[13px] text-muted">These can't be changed from the report.</p>
+
+          <dl class="mt-3 divide-y divide-subtle overflow-clip rounded-control border border-subtle">
+            <.identity_row label="Stop ID" gtfs_key="stop_id" value={@entity.stop_id} />
+            <.identity_row
+              label="Location type"
+              gtfs_key="location_type"
+              value={
+                "#{@entity.location_type} — #{Stop.location_type_label(@entity.location_type)}"
+              }
+            />
+            <.identity_row
+              label="Parent station"
+              gtfs_key="parent_station"
+              value={presence(@entity.parent_station) || "None"}
+            />
+          </dl>
+        </section>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="close_entity_drawer"
+        >
+          Cancel
+        </.button>
+        <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save changes</.button>
+      </.drawer_footer>
+    </.form>
     """
   end
 
@@ -281,11 +306,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   defp identity_row(assigns) do
     ~H"""
     <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 px-3 py-2">
-      <dt class="text-sm">
+      <dt class="text-sm text-default">
         {@label}
-        <span class="ml-1 font-mono text-xs text-base-content/70">{@gtfs_key}</span>
+        <span class="ml-1 font-mono text-[13px] text-muted">{@gtfs_key}</span>
       </dt>
-      <dd class="font-mono text-sm break-all">{@value}</dd>
+      <dd class="break-all font-mono text-sm text-strong">{@value}</dd>
     </div>
     """
   end
@@ -324,11 +349,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   defp level_help(required?, stale_level_id) do
     base =
       if required?,
-        do: "level_id — the level this stop is on. Required for a stop inside a station.",
-        else: "level_id — the level this stop is on. Choose No level if it has none."
+        do: "The level this stop is on. Required for a stop inside a station. GTFS: level_id",
+        else: "The level this stop is on. Choose No level if it has none. GTFS: level_id"
 
     if stale_level_id,
-      do: "#{base} Stored level #{stale_level_id} does not exist in this version.",
+      do: "#{base}. Stored level #{stale_level_id} does not exist in this version.",
       else: base
   end
 
@@ -337,12 +362,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   defp level_required?(_entity), do: false
 
-  # A failed save is the only state that earns a view-level banner. Validation
-  # on change marks its own fields and must not shout about a save that was
-  # never attempted.
-  defp save_failed?(%Phoenix.HTML.Form{source: %Ecto.Changeset{action: action}, errors: errors})
-       when action in [:update, :insert] and errors != [],
-       do: true
+  # Every rejected field, once, as a sentence that links to the field. Only a
+  # failed save produces any: validation on change carries no changeset action,
+  # so it renders no summary.
+  defp save_failures(%Phoenix.HTML.Form{source: %Ecto.Changeset{action: action}, errors: errors})
+       when action in [:update, :insert] and errors != [] do
+    errors
+    |> Enum.uniq_by(fn {field, _error} -> field end)
+    |> Enum.map(fn {field, error} ->
+      label = Map.get(@field_labels, field, Phoenix.Naming.humanize(field))
+      %{href: "#stop_#{field}", msg: "#{label} #{translate_error(error)}."}
+    end)
+  end
 
-  defp save_failed?(_form), do: false
+  defp save_failures(_form), do: []
 end

@@ -211,8 +211,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       {_view, html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      # Entrance-to-platform has partial connectivity (ENT_B disconnected) → Fail badge
-      assert html =~ "Fail"
+      # ENT_B has no route to any platform, so the dimension reads as cut off.
+      assert html =~ "Cut off"
     end
 
     test "toggling dimension shows and hides route detail inline", %{
@@ -959,7 +959,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       assert has_element?(
                view,
                "#connectivity-entrance_to_platform [data-dimension-status='warning']",
-               "Warning"
+               "Some routes missing"
              )
 
       assert has_element?(
@@ -1161,9 +1161,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       route_html = view |> element("#route-ENT_FULL-PLAT_A") |> render()
 
-      # 40s is the fixture's single traversal time; the presentation rewrite must
+      # 40 s is the fixture's single traversal time; the presentation rewrite must
       # not change what the Connectivity builder calculated.
-      assert route_html =~ "40s"
+      assert route_html =~ "40 s"
 
       assert has_element?(
                view,
@@ -1175,6 +1175,87 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
                view,
                "#{target_button("ENT_NONE", "PLAT_A")} [data-accessibility='unknown']",
                "No data"
+             )
+    end
+  end
+
+  describe "Connectivity times and distances" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_TIME",
+          stop_name: "Time Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      _level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_T",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_T",
+          stop_name: "Timed Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_T"
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_T",
+          stop_name: "Timed Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_T"
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{
+          pathway_id: "PW_T",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          traversal_time: 358,
+          length: 80
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      %{view: view}
+    end
+
+    test "a route's time reads in minutes and seconds and its distance in metres", %{view: view} do
+      route = view |> element("#route-ENT_T-PLAT_T") |> render()
+
+      assert route =~ "5 min 58 s"
+      assert route =~ "80 m"
+      refute route =~ "358 s"
+      refute route =~ "358s"
+    end
+
+    test "a route over five minutes is flagged as long in words", %{view: view} do
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_T'] [data-route-status='long']",
+               "Long route"
              )
     end
   end
