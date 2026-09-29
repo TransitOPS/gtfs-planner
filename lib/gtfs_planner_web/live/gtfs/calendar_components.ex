@@ -21,9 +21,29 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   @date_format "%b %-d, %Y"
   @short_date_format "%b %-d"
+  # The month title `ServiceDates.month_grid/3` derives for a grid, so a month
+  # navigator and the grid it moves name the same month the same way.
+  @month_format "%B %Y"
 
   @doc "Formats one civil date for calendar surfaces."
   def format_date(%Date{} = date), do: Elixir.Calendar.strftime(date, @date_format)
+
+  @doc """
+  Formats one civil month the way the month grid titles it, such as `October 2026`.
+
+  A month navigator and the grid it moves name the same month the same way, so a
+  caller that moves one month at a time asks for it here instead of writing a
+  second date format.
+  """
+  @spec month_title(Date.t()) :: String.t()
+  def month_title(%Date{} = month), do: Elixir.Calendar.strftime(month, @month_format)
+
+  @doc "Returns the first day of the month `offset` months away from `month`."
+  @spec shift_month(Date.t(), integer()) :: Date.t()
+  def shift_month(%Date{} = month, offset) when is_integer(offset) do
+    total = month.year * 12 + (month.month - 1) + offset
+    Date.new!(div(total, 12), rem(total, 12) + 1, 1)
+  end
 
   @doc """
   Renders the derived service periods, breaks, holidays and extra dates.
