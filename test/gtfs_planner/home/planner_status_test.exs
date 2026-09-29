@@ -189,6 +189,24 @@ defmodule GtfsPlanner.Home.PlannerStatusTest do
     assert Home.pathways_attention(context.organization.id, context.version.id) == []
   end
 
+  test "published_on is the agency-local date of the publication instant", context do
+    agency_fixture(context.organization.id, context.version.id, %{
+      agency_timezone: "America/New_York"
+    })
+
+    publish_at(context.version, ~U[2026-03-10 02:30:00.000000Z])
+
+    assert %{published_on: ~D[2026-03-09]} =
+             Home.planner_status(context.organization.id, context.version.id)
+  end
+
+  test "published_on falls back to the UTC date when the agency has no time zone", context do
+    publish_at(context.version, ~U[2026-03-10 02:30:00.000000Z])
+
+    assert %{published_on: ~D[2026-03-10]} =
+             Home.planner_status(context.organization.id, context.version.id)
+  end
+
   defp import_calendars(context, calendar_csv, attributes_csv) do
     assert {:ok, _result} =
              Import.import_files(context.organization.id, context.version.id, [
@@ -197,6 +215,12 @@ defmodule GtfsPlanner.Home.PlannerStatusTest do
              ])
 
     :ok
+  end
+
+  defp publish_at(version, published_at) do
+    version
+    |> Ecto.Changeset.change(published_at: published_at)
+    |> Repo.update!()
   end
 
   defp staging_version(organization, name) do

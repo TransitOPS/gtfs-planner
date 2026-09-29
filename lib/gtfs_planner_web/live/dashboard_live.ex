@@ -507,7 +507,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
   defp render_dashboard_state(:planner, assigns) do
     assigns =
       assign(assigns,
-        lede: planner_lede(assigns.status, assigns.current_gtfs_version),
+        lede: planner_lede(assigns.status),
         attention: planner_attention(assigns.status),
         counts: planner_counts(assigns.status),
         first_use: planner_first_use?(assigns.status),
@@ -724,8 +724,11 @@ defmodule GtfsPlannerWeb.DashboardLive do
   # unreadable or failed calendar read makes no coverage claim (AC-8). It is
   # absent until the status region answers, because only the version is known
   # synchronously.
-  defp planner_lede(%AsyncResult{ok?: true, result: %{coverage: coverage}}, version) do
-    published = format_day(version.published_at || version.inserted_at)
+  defp planner_lede(%AsyncResult{
+         ok?: true,
+         result: %{coverage: coverage, published_on: published_on}
+       }) do
+    published = format_day(published_on)
 
     case coverage do
       {:through, last_date} ->
@@ -739,7 +742,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
     end
   end
 
-  defp planner_lede(_status, _version), do: nil
+  defp planner_lede(_status), do: nil
 
   defp planner_attention(%AsyncResult{ok?: true, result: %{attention: items}}), do: items
 

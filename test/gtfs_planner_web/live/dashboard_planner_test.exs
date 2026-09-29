@@ -153,6 +153,26 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
       assert flat_text(d, "#area-stops") =~ "Stops & stations · 1"
     end
 
+    # The version is published far in the future so it stays the newest one the
+    # page picks, whatever the organization's default version was stamped with.
+    test "the lede dates the publication on the agency's calendar day", context do
+      user = planner_member(context.organization)
+      conn = log_in_user(context.conn, user, organization: context.organization)
+
+      agency_fixture(context.organization.id, context.version.id, %{
+        agency_timezone: "America/New_York"
+      })
+
+      context.version
+      |> Ecto.Changeset.change(published_at: ~U[2099-01-10 02:30:00.000000Z])
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      render_async(view, 2_000)
+
+      assert has_element?(view, "#home-lede", "Published Jan 9, 2099")
+    end
+
     test "a dead render shows both region skeletons before the data arrives", context do
       user = planner_member(context.organization)
       conn = log_in_user(context.conn, user, organization: context.organization)

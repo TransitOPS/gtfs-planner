@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Home do
   alias GtfsPlanner.Home.Attention
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Versions
 
   @admin_role "pathways_studio_admin"
 
@@ -158,7 +159,9 @@ defmodule GtfsPlanner.Home do
   `today` is the agency-local date the screen resolved; a failed read falls back
   to the UTC date because no agency zone was read. Counts are the route count,
   the calendar-screen row count and the top-level stop count. A version with no
-  routes, no stops and no calendars is a first use.
+  routes, no stops and no calendars is a first use. `published_on` is the
+  agency-local date of the version's publication (its creation when it was never
+  published), so the lede's day agrees with the clock times the page shows.
 
   Attention comes from the stopped imports — recoverable runs that are not
   active, so a `cleaning` run is not shown and a `failed` one is — and from the
@@ -173,6 +176,7 @@ defmodule GtfsPlanner.Home do
   @spec planner_status(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
           coverage: {:through, Date.t()} | :none | :unknown,
           today: Date.t(),
+          published_on: Date.t(),
           counts: %{
             routes: non_neg_integer(),
             calendars: non_neg_integer(),
@@ -190,6 +194,7 @@ defmodule GtfsPlanner.Home do
     %{
       coverage: coverage,
       today: today,
+      published_on: published_on(organization_id, gtfs_version_id),
       counts: counts,
       first_use?: first_use?(counts),
       attention:
@@ -320,6 +325,15 @@ defmodule GtfsPlanner.Home do
 
   defp since_facts(organization_id, gtfs_version_id, %{finished_at: finished_at}) do
     Gtfs.count_changes_since(organization_id, gtfs_version_id, finished_at)
+  end
+
+  defp published_on(organization_id, gtfs_version_id) do
+    version = Versions.get_gtfs_version_for_lifecycle(organization_id, gtfs_version_id)
+
+    [published_local] =
+      local_times(organization_id, gtfs_version_id, [version.published_at || version.inserted_at])
+
+    NaiveDateTime.to_date(published_local)
   end
 
   defp calendar_screen(organization_id, gtfs_version_id) do
